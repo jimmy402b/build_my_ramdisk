@@ -1,99 +1,163 @@
+#include "cli_parser.h"
 #include "vhd_engine.h"
+#include "aim_bridge.h"
+#include "save_scheduler.h"
+#include "utils.h"
+
+#include <windows.h>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
 #include <vector>
 
-int main() {
-    const char* testPath = "test_smoke.vhd";
-    uint64_t size = 10ULL * 1024 * 1024; // 10 MB
+static VhdEngine g_vhd;
+static AimBridge g_aim;
+static SaveScheduler g_scheduler;
+static std::string g_vhdPath;
+static uint64_t g_sizeBytes = 0;
+static int g_deviceNumber = 0;
+static std::string g_mountPoint;
 
-    // Test 1: Create dynamic VHD
-    VhdEngine vhd;
-    if (!vhd.Create(testPath, size, true)) {
-        printf("FAIL CREATE: %s\n", vhd.GetLastError().c_str());
-        return 1;
+static bool DoSave() {
+    if (!g_vhd.IsOpen()) { LogError("VHD not open"); return false; }
+    std::vector<uint8_t> buffer(g_sizeBytes);
+    if (!g_aim.ReadDeviceData(g_deviceNumber, g_sizeBytes, buffer.data())) {
+        LogError("Failed to read device data");
+        return false;
     }
-    printf("PASS: Created %s (%llu bytes, %llu sectors)\n",
-           testPath,
-           (unsigned long long)vhd.GetSizeBytes(),
-           (unsigned long long)vhd.GetTotalSectors());
-    vhd.Close();
+    if (!g_vhd.WriteAll(buffer.data())) {
+        LogError("Failed to write VHD: " + g_vhd.GetLastError());
+        return false;
+    }
+    LogInfo("Saved " + FormatSize(g_sizeBytes) + " to " + g_vhdPath);
+    return true;
+}
 
-    // Test 2: Open it back
-    if (!vhd.Open(testPath, true)) {
-        printf("FAIL OPEN: %s\n", vhd.GetLastError().c_str());
+static int CmdCreate(const CreateOptions& opts) {
+    LogInfo("Creating VHD: " + opts.outputPath + " (" + FormatSize(opts.sizeBytes) + ")");
+    if (!g_vhd.Create(opts.outputPath, opts.sizeBytes, opts.dynamic)) {
+        LogError("Failed to create VHD: " + g_vhd.GetLastError());
         return 2;
     }
-    printf("PASS: Opened %s\n", testPath);
+    g_vhd.Close();
 
-    // Test 3: Write and read back
-    std::vector<uint8_t> writeBuf(512, 0xAB);
-    if (!vhd.WriteSectors(0, 1, writeBuf.data())) {
-        printf("FAIL WRITE: %s\n", vhd.GetLastError().c_str());
+    LogInfo("Mounting as RAM disk...");
+    if (!g_aim.MountVm(opts.outputPath, opts.sizeBytes, g_mountPoint)) {
+        LogError("Failed to mount RAM disk");
         return 3;
     }
-    printf("PASS: Wrote 512 bytes of 0xAB to sector 0\n");
 
-    std::vector<uint8_t> readBuf(512, 0);
-    if (!vhd.ReadSectors(0, 1, readBuf.data())) {
-        printf("FAIL READ: %s\n", vhd.GetLastError().c_str());
-        return 4;
-    }
-    printf("PASS: Read sector 0 back\n");
+    g_vhdPath = opts.outputPath;
+    g_sizeBytes = opts.sizeBytes;
 
-    if (readBuf != writeBuf) {
-        printf("FAIL: DATA MISMATCH\n");
-        return 5;
+    if (!g_vhd.Open(opts.outputPath, true)) {
+        LogError("Failed to re-open VHD: " + g_vhd.GetLastError());
+        g_aim.Unmount(g_deviceNumber, true);
+        return 2;
     }
-    printf("PASS: Data round-trip matches\n");
 
-    // Test 4: Write to sector 1000 (different block)
-    std::vector<uint8_t> writeBuf2(512, 0xCD);
-    if (!vhd.WriteSectors(1000, 1, writeBuf2.data())) {
-        printf("FAIL WRITE2: %s\n", vhd.GetLastError().c_str());
-        return 6;
-    }
-    printf("PASS: Wrote 0xCD to sector 1000\n");
+    g_scheduler.SetSaveCallback(DoSave);
+    g_scheduler.RegisterShutdownHandler();
+    g_scheduler.Start(opts.saveIntervalSec);
 
-    std::vector<uint8_t> readBuf2(512, 0);
-    if (!vhd.ReadSectors(1000, 1, readBuf2.data())) {
-        printf("FAIL READ2: %s\n", vhd.GetLastError().c_str());
-        return 7;
-    }
-    if (readBuf2 != writeBuf2) {
-        printf("FAIL: DATA MISMATCH at sector 1000\n");
-        return 8;
-    }
-    printf("PASS: Sector 1000 round-trip matches\n");
+    printf("\nRAM disk ready: %s (%s)\n", g_mountPoint.c_str(), opts.outputPath.c_str());
+    if (opts.saveIntervalSec > 0)
+        printf("Save interval: %ds | Press Ctrl+C to stop\n", opts.saveIntervalSec);
+    else
+        printf("Manual save only | Press Ctrl+C to stop\n");
 
-    // Test 5: Sector 0 still has 0xAB (persistence across block boundaries)
-    std::vector<uint8_t> readBuf3(512, 0);
-    vhd.ReadSectors(0, 1, readBuf3.data());
-    if (readBuf3 != writeBuf) {
-        printf("FAIL: Sector 0 corrupted after writing sector 1000\n");
-        return 9;
-    }
-    printf("PASS: Sector 0 still has 0xAB\n");
-
-    // Test 6: Close, reopen, verify persistence
-    vhd.Close();
-    VhdEngine vhd2;
-    if (!vhd2.Open(testPath, true)) {
-        printf("FAIL REOPEN: %s\n", vhd2.GetLastError().c_str());
-        return 10;
-    }
-    std::vector<uint8_t> readBuf4(512, 0);
-    vhd2.ReadSectors(0, 1, readBuf4.data());
-    if (readBuf4 != writeBuf) {
-        printf("FAIL: Data NOT persisted after close/reopen\n");
-        return 11;
-    }
-    printf("PASS: Data persists after close/reopen\n");
-    vhd2.Close();
-
-    // Cleanup
-    remove(testPath);
-    printf("\n=== ALL VHD TESTS PASSED ===\n");
+    while (g_scheduler.IsRunning()) Sleep(1000);
     return 0;
+}
+
+static int CmdMount(const MountOptions& opts) {
+    LogInfo("Opening VHD: " + opts.inputPath);
+    if (!g_vhd.Open(opts.inputPath, !opts.readonly)) {
+        LogError("Failed to open VHD: " + g_vhd.GetLastError());
+        return 2;
+    }
+
+    g_vhdPath = opts.inputPath;
+    g_sizeBytes = g_vhd.GetSizeBytes();
+    LogInfo("VHD size: " + FormatSize(g_sizeBytes));
+
+    LogInfo("Mounting as RAM disk...");
+    if (!g_aim.MountVmFromFile(opts.inputPath, g_mountPoint)) {
+        LogError("Failed to mount RAM disk");
+        return 3;
+    }
+
+    if (!opts.readonly) {
+        g_scheduler.SetSaveCallback(DoSave);
+        g_scheduler.RegisterShutdownHandler();
+        g_scheduler.Start(opts.saveIntervalSec);
+    } else {
+        LogInfo("Read-only mode — auto-save disabled");
+    }
+
+    printf("\nRAM disk ready: %s (%s, %s)\n",
+           g_mountPoint.c_str(), opts.inputPath.c_str(),
+           opts.readonly ? "read-only" : "writable");
+    if (!opts.readonly && opts.saveIntervalSec > 0)
+        printf("Save interval: %ds | Press Ctrl+C to stop\n", opts.saveIntervalSec);
+    else if (!opts.readonly)
+        printf("Manual save only | Press Ctrl+C to stop\n");
+
+    while (g_scheduler.IsRunning()) Sleep(1000);
+    return 0;
+}
+
+static int CmdSave(const SaveOptions& opts) {
+    if (!g_vhd.IsOpen()) { LogError("No active VHD session"); return 2; }
+    return DoSave() ? 0 : 2;
+}
+
+static int CmdUnmount(const UnmountOptions& opts) {
+    if (!opts.noSave && g_vhd.IsOpen()) {
+        LogInfo("Saving before unmount...");
+        DoSave();
+    }
+    g_scheduler.Stop();
+    g_vhd.Close();
+    if (!g_aim.Unmount(opts.device, false)) {
+        LogError("Failed to unmount device " + std::to_string(opts.device));
+        return 3;
+    }
+    printf("RAM disk unmounted.\n");
+    return 0;
+}
+
+static int CmdStatus() {
+    auto devices = g_aim.ListDevices();
+    if (devices.empty()) { printf("No RAM disks mounted.\n"); return 0; }
+    for (auto& d : devices) {
+        printf("[%d] %s -> %s (%s)\n", d.number,
+               d.backingFile.c_str(), d.mountPoint.c_str(),
+               FormatSize(d.sizeBytes).c_str());
+    }
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    auto r = ParseArgs(argc, argv);
+
+    if (!r.error.empty()) { fprintf(stderr, "Error: %s\nTry 'ramdisk-cli help'\n", r.error.c_str()); return 1; }
+
+    bool needsAim = (r.command == Command::Create || r.command == Command::Mount ||
+                     r.command == Command::Save || r.command == Command::Unmount ||
+                     r.command == Command::Status);
+    if (needsAim && !AimBridge::IsAvailable()) {
+        fprintf(stderr, "Error: aim_ll.exe not found.\nInstall AIM Toolkit or set AIM_LL_PATH.\n");
+        return 3;
+    }
+
+    switch (r.command) {
+    case Command::Create:   return CmdCreate(r.create);
+    case Command::Mount:    return CmdMount(r.mount);
+    case Command::Save:     return CmdSave(r.save);
+    case Command::Unmount:  return CmdUnmount(r.unmount);
+    case Command::Status:   return CmdStatus();
+    case Command::Help:     PrintHelp(); return 0;
+    case Command::Version:  PrintVersion(); return 0;
+    default:                PrintHelp(); return 0;
+    }
 }
