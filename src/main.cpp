@@ -20,7 +20,21 @@ static std::string g_mountPoint;
 static bool DoSave() {
     if (!g_vhd.IsOpen()) { LogError("VHD not open"); return false; }
     std::vector<uint8_t> buffer(g_sizeBytes);
-    if (!g_aim.ReadDeviceData(g_deviceNumber, g_sizeBytes, buffer.data())) {
+
+    // Find physical drive path from mounted devices
+    auto devices = g_aim.ListDevices();
+    std::string physPath;
+    for (auto& d : devices) {
+        if (d.number == g_deviceNumber) { physPath = d.physicalDrive; break; }
+    }
+    if (physPath.empty()) {
+        LogError("Cannot find physical drive for device " + std::to_string(g_deviceNumber));
+        return false;
+    }
+    // Convert \\?\PhysicalDrive1 → \\.\PhysicalDrive1
+    if (StartsWith(physPath, "\\\\?\\")) physPath = "\\\\.\\" + physPath.substr(4);
+
+    if (!g_aim.ReadDeviceData(physPath, g_sizeBytes, buffer.data())) {
         LogError("Failed to read device data");
         return false;
     }
@@ -91,7 +105,7 @@ static int CmdMount(const MountOptions& opts) {
         g_scheduler.RegisterShutdownHandler();
         g_scheduler.Start(opts.saveIntervalSec);
     } else {
-        LogInfo("Read-only mode — auto-save disabled");
+        LogInfo("Read-only mode");
     }
 
     printf("\nRAM disk ready: %s (%s, %s)\n",
@@ -112,10 +126,7 @@ static int CmdSave(const SaveOptions& opts) {
 }
 
 static int CmdUnmount(const UnmountOptions& opts) {
-    if (!opts.noSave && g_vhd.IsOpen()) {
-        LogInfo("Saving before unmount...");
-        DoSave();
-    }
+    if (!opts.noSave && g_vhd.IsOpen()) { LogInfo("Saving before unmount..."); DoSave(); }
     g_scheduler.Stop();
     g_vhd.Close();
     if (!g_aim.Unmount(opts.device, false)) {
@@ -131,22 +142,20 @@ static int CmdStatus() {
     if (devices.empty()) { printf("No RAM disks mounted.\n"); return 0; }
     for (auto& d : devices) {
         printf("[%d] %s -> %s (%s)\n", d.number,
-               d.backingFile.c_str(), d.mountPoint.c_str(),
-               FormatSize(d.sizeBytes).c_str());
+               d.backingFile.empty() ? "(no file)" : d.backingFile.c_str(),
+               d.physicalDrive.c_str(), FormatSize(d.sizeBytes).c_str());
     }
     return 0;
 }
 
 int main(int argc, char* argv[]) {
     auto r = ParseArgs(argc, argv);
-
     if (!r.error.empty()) { fprintf(stderr, "Error: %s\nTry 'ramdisk-cli help'\n", r.error.c_str()); return 1; }
 
     bool needsAim = (r.command == Command::Create || r.command == Command::Mount ||
-                     r.command == Command::Save || r.command == Command::Unmount ||
-                     r.command == Command::Status);
+                     r.command == Command::Save || r.command == Command::Unmount || r.command == Command::Status);
     if (needsAim && !AimBridge::IsAvailable()) {
-        fprintf(stderr, "Error: aim_ll.exe not found.\nInstall AIM Toolkit or set AIM_LL_PATH.\n");
+        fprintf(stderr, "Error: aim_ll.exe not found. Install AIM Toolkit or set AIM_LL_PATH.\n");
         return 3;
     }
 

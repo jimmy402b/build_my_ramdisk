@@ -7,9 +7,10 @@
 class AimBridge {
 public:
     struct DeviceInfo {
-        int number;
-        std::string mountPoint;
-        uint64_t sizeBytes;
+        int number = -1;
+        std::string physicalDrive;  // e.g. "\\?\PhysicalDrive1"
+        std::string mountPoint;     // drive letter or "?"
+        uint64_t sizeBytes = 0;
         std::string backingFile;
     };
 
@@ -18,10 +19,9 @@ public:
     bool MountVmFromFile(const std::string& vhdPath, std::string& outMountPoint);
     bool Unmount(int deviceNumber, bool force = false);
     std::vector<DeviceInfo> ListDevices();
-    bool ReadDeviceData(int deviceNumber, uint64_t sizeBytes, void* buffer);
+    bool ReadDeviceData(const std::string& physicalDrivePath, uint64_t sizeBytes, void* buffer);
     static std::string FindAimLl();
 
 private:
     bool RunAimLl(const std::string& args, std::string& stdoutOutput);
-    std::string FindPhysicalDrivePath(int deviceNumber);
 };

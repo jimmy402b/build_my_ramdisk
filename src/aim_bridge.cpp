@@ -97,7 +97,10 @@ bool AimBridge::MountVm(const std::string& vhdPath, uint64_t sizeBytes, std::str
 
     auto devices = ListDevices();
     for (auto& d : devices) {
-        if (d.number == devNum) { outMountPoint = d.mountPoint; return true; }
+        if (d.number == devNum) {
+            outMountPoint = d.physicalDrive.empty() ? d.mountPoint : d.physicalDrive;
+            return true;
+        }
     }
     outMountPoint = "?";
     return true;
@@ -113,7 +116,10 @@ bool AimBridge::MountVmFromFile(const std::string& vhdPath, std::string& outMoun
 
     auto devices = ListDevices();
     for (auto& d : devices) {
-        if (d.number == devNum) { outMountPoint = d.mountPoint; return true; }
+        if (d.number == devNum) {
+            outMountPoint = d.physicalDrive.empty() ? d.mountPoint : d.physicalDrive;
+            return true;
+        }
     }
     outMountPoint = "?";
     return true;
@@ -131,36 +137,54 @@ std::vector<AimBridge::DeviceInfo> AimBridge::ListDevices() {
     std::string output;
     if (!RunAimLl("-l", output)) return result;
 
+    // Parse aim_ll -l output format:
+    // Device number 000000
+    // Device is \\?\PhysicalDrive1
+    // Image file: \??\path
+    // Size: 104857600 bytes (100 MB), Virtual Memory, HDD.
     std::istringstream iss(output);
     std::string line;
+    DeviceInfo info;
     while (std::getline(iss, line)) {
         line = Trim(line);
         if (line.empty()) continue;
-        DeviceInfo info;
-        std::istringstream liness(line);
-        liness >> info.number;
-        std::string token;
-        if (liness >> token) {
-            if (token.size() == 2 && token[1] == ':') { info.mountPoint = token; liness >> info.sizeBytes; }
-            else { info.mountPoint = ""; info.sizeBytes = std::stoull(token); }
+        if (line.find("device") != std::string::npos && line.find("found") != std::string::npos) continue;
+
+        if (StartsWith(line, "Device number")) {
+            if (info.number >= 0) result.push_back(info);
+            info = DeviceInfo();
+            std::string numStr = line.substr(strlen("Device number"));
+            info.number = std::atoi(Trim(numStr).c_str());
         }
-        std::string rest;
-        std::getline(liness, rest);
-        info.backingFile = Trim(rest);
-        result.push_back(info);
+        else if (StartsWith(line, "Image file:")) {
+            std::string path = line.substr(strlen("Image file:"));
+            path = Trim(path);
+            // Remove NT prefix \??\
+            if (StartsWith(path, "\\??\\")) path = path.substr(4);
+            info.backingFile = path;
+        }
+        else if (StartsWith(line, "Size:")) {
+            std::string rest = line.substr(strlen("Size:"));
+            // "104857600 bytes (100 MB), Virtual Memory, HDD."
+            std::istringstream srest(rest);
+            std::string bytesStr;
+            srest >> bytesStr;
+            try { info.sizeBytes = std::stoull(bytesStr); }
+            catch (...) { info.sizeBytes = 0; }
+            info.mountPoint = "?";  // Will be filled from Device is line if needed
+        }
+        else if (StartsWith(line, "Device is")) {
+            info.physicalDrive = Trim(line.substr(strlen("Device is")));
+        }
     }
+    if (info.number >= 0) result.push_back(info);
     return result;
 }
 
-std::string AimBridge::FindPhysicalDrivePath(int deviceNumber) {
-    return "\\\\.\\PhysicalDrive" + std::to_string(deviceNumber);
-}
+bool AimBridge::ReadDeviceData(const std::string& physicalDrivePath, uint64_t sizeBytes, void* buffer) {
+    LogInfo("Reading device data from: " + physicalDrivePath);
 
-bool AimBridge::ReadDeviceData(int deviceNumber, uint64_t sizeBytes, void* buffer) {
-    std::string physPath = FindPhysicalDrivePath(deviceNumber);
-    LogInfo("Reading device data from: " + physPath);
-
-    HANDLE h = CreateFileA(physPath.c_str(), GENERIC_READ,
+    HANDLE h = CreateFileA(physicalDrivePath.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE,
                            nullptr, OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
