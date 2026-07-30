@@ -8,4 +8,4 @@ add_executable(ramdisk-cli
 )
 
 target_include_directories(ramdisk-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ramdisk-cli PRIVATE minivhd)
+# VHD format implemented inline in vhd_engine.cpp — no external dependencies
