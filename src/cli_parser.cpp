@@ -48,6 +48,8 @@ ParseResult ParseArgs(int argc, char* argv[]) {
             else if (arg == "--daemon") { r.create.daemon = true; }
             else if (arg == "--log-file" && i+1 < argc) { r.create.logFile = argv[++i]; }
             else if (arg == "--mode" && i+1 < argc) { r.create.mode = argv[++i]; }
+            else if (arg == "--auto-format") { r.create.autoFormat = true; }
+            else if (arg == "--fs" && i+1 < argc) { r.create.filesystem = argv[++i]; }
             else if (arg == "-v" || arg == "--verbose") { r.verbose = true; }
             else if (arg == "-h" || arg == "--help") { r.command = Command::Help; return r; }
             else { r.error = "unknown option: "+arg; return r; }

@@ -15,6 +15,8 @@ struct CreateOptions {
     bool daemon = false;
     std::string logFile = "ramdisk-cli.log";
     std::string mode = "vm";
+    bool autoFormat = false;
+    std::string filesystem = "NTFS";
 };
 
 struct MountOptions {

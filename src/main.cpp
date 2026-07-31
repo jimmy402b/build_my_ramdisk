@@ -170,6 +170,51 @@ static int CmdCreate(const CreateOptions& opts) {
     if (!dl.empty()) { printf("Drive: %s\n", dl.c_str()); WriteLog("Drive: " + dl); }
     else { WriteLog("Drive letter assignment skipped or failed"); }
 
+    // Auto-format if requested
+    if (opts.autoFormat && !dl.empty()) {
+        WriteLog("Auto-formatting " + dl + " as " + opts.filesystem + "...");
+        // Build and run diskpart script
+        char scriptPath[MAX_PATH], tmpPath[MAX_PATH];
+        GetTempPathA(sizeof(tmpPath), tmpPath);
+        snprintf(scriptPath, sizeof(scriptPath), "%s\\ramdisk_fmt.txt", tmpPath);
+        FILE* f = fopen(scriptPath, "w");
+        if (f) {
+            int dnum = 0;
+            auto devs = g_aim.ListDevices();
+            for (auto& d : devs) { if (d.number == g_deviceNumber) { dnum = d.number; break; } }
+            // Find disk number by size
+            for (int diskN = 0; diskN < 16; diskN++) {
+                char phys[64]; snprintf(phys, sizeof(phys), "\\\\.\\PhysicalDrive%d", diskN);
+                HANDLE hd = CreateFileA(phys, 0, FILE_SHARE_READ|FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+                if (hd == INVALID_HANDLE_VALUE) continue;
+                GET_LENGTH_INFORMATION gli; DWORD rd = 0;
+                if (DeviceIoControl(hd, IOCTL_DISK_GET_LENGTH_INFO, nullptr, 0, &gli, sizeof(gli), &rd, nullptr)
+                    && gli.Length.QuadPart == (LONGLONG)opts.sizeBytes) {
+                    fprintf(f, "select disk %d\n", diskN);
+                    fprintf(f, "online disk\n");
+                    fprintf(f, "convert gpt\n");
+                    fprintf(f, "create partition primary\n");
+                    fprintf(f, "format fs=%s quick label=%s\n", opts.filesystem.c_str(), opts.label.c_str());
+                    fprintf(f, "assign letter=%c\n", dl[0]);
+                    fprintf(f, "exit\n");
+                    CloseHandle(hd); break;
+                }
+                CloseHandle(hd);
+            }
+            fclose(f);
+            // Run diskpart
+            char cmd[512]; snprintf(cmd, sizeof(cmd), "diskpart /s \"%s\"", scriptPath);
+            STARTUPINFOA dsi = { sizeof(dsi) }; dsi.dwFlags = STARTF_USESHOWWINDOW; dsi.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION dpi = {};
+            if (CreateProcessA(nullptr, cmd, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &dsi, &dpi)) {
+                WaitForSingleObject(dpi.hProcess, 30000);
+                CloseHandle(dpi.hProcess); CloseHandle(dpi.hThread);
+            }
+            remove(scriptPath);
+            WriteLog("Auto-format complete: " + dl + " (" + opts.filesystem + ", " + opts.label + ")");
+        }
+    }
+
     WriteLog("Mounted: " + opts.outputPath + " (" + FormatSize(opts.sizeBytes) +
              "), interval=" + std::to_string(opts.saveIntervalSec) + "s");
 
