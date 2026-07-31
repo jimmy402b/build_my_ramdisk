@@ -36,3 +36,11 @@ target_link_libraries(myrd_request_processor_tests PRIVATE myrd_test_support myr
 target_include_directories(myrd_request_processor_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_request_processor_tests)
 add_test(NAME unit.request_processor COMMAND myrd_request_processor_tests)
+
+add_executable(myrd_object_names_tests
+    unit/object_names_tests.cpp
+)
+target_link_libraries(myrd_object_names_tests PRIVATE myrd_test_support myrd_proxy)
+target_include_directories(myrd_object_names_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_object_names_tests)
+add_test(NAME unit.object_names COMMAND myrd_object_names_tests)
