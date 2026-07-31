@@ -154,9 +154,26 @@ int main(int argc, char* argv[]) {
 
     bool needsAim = (r.command == Command::Create || r.command == Command::Mount ||
                      r.command == Command::Save || r.command == Command::Unmount || r.command == Command::Status);
-    if (needsAim && !AimBridge::IsAvailable()) {
-        fprintf(stderr, "Error: aim_ll.exe not found. Install AIM Toolkit or set AIM_LL_PATH.\n");
-        return 3;
+    // Check for admin privileges for commands that need AIM
+    if (needsAim) {
+        BOOL isElevated = FALSE;
+        HANDLE hToken = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            TOKEN_ELEVATION elev;
+            DWORD size = sizeof(elev);
+            if (GetTokenInformation(hToken, TokenElevation, &elev, size, &size))
+                isElevated = elev.TokenIsElevated;
+            CloseHandle(hToken);
+        }
+        if (!isElevated) {
+            fprintf(stderr, "Error: Administrator privileges required.\n");
+            fprintf(stderr, "Please run this command from an elevated terminal (Run as Administrator).\n");
+            return 3;
+        }
+        if (!AimBridge::IsAvailable()) {
+            fprintf(stderr, "Error: aim_ll.exe not found. Install AIM Toolkit or set AIM_LL_PATH.\n");
+            return 3;
+        }
     }
 
     switch (r.command) {
