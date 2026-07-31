@@ -44,3 +44,11 @@ target_link_libraries(myrd_object_names_tests PRIVATE myrd_test_support myrd_pro
 target_include_directories(myrd_object_names_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_object_names_tests)
 add_test(NAME unit.object_names COMMAND myrd_object_names_tests)
+
+add_executable(myrd_shm_proxy_server_tests
+    integration/shm_proxy_server_tests.cpp
+)
+target_link_libraries(myrd_shm_proxy_server_tests PRIVATE myrd_test_support myrd_proxy)
+target_include_directories(myrd_shm_proxy_server_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_shm_proxy_server_tests)
+add_test(NAME integration.shm COMMAND myrd_shm_proxy_server_tests)

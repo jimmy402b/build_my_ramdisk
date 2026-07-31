@@ -17,6 +17,9 @@ add_library(myrd_proxy STATIC
     proxy/request_processor.h
 )
 target_include_directories(myrd_proxy PUBLIC "${CMAKE_SOURCE_DIR}")
-target_sources(myrd_proxy PRIVATE proxy/object_names.cpp proxy/object_names.h)
+target_sources(myrd_proxy PRIVATE
+    proxy/object_names.cpp proxy/object_names.h
+    proxy/shared_memory_channel.cpp proxy/shared_memory_channel.h
+)
 target_link_libraries(myrd_proxy PUBLIC myrd_storage bcrypt)
 myrd_enable_warnings(myrd_proxy)
