@@ -155,7 +155,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 
 | Task | 状态 | Start commit | Implementation commit | Review commit | 证据/说明 |
 |---:|---|---|---|---|---|
-| 0 | NOT_STARTED | — | — | — | — |
+| 0 | ON_TRACK | 2794db5 | 39ee930 | (pending) | — |
 | 1 | NOT_STARTED | — | — | — | — |
 | 2 | NOT_STARTED | — | — | — | — |
 | 3 | NOT_STARTED | — | — | — | — |
@@ -215,7 +215,7 @@ Plan: [Task 0](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R0.5 记录实际命令、输出摘要、偏差和风险。
 - [ ] R0.6 结论为 `ON_TRACK` 后创建 `chore: review M0 task 0 alignment`。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Claude`; Start `2794db5`; Implementation `39ee930`; Evidence `cmake 4.2.2, Ninja 1.13.2, VS 2022 BuildTools, SDK 10.0.26100.0, phdskmnt 1.2.28.93 Running/Automatic, deviosvc Running/Manual`; Deviations `None`; Verdict `ON_TRACK`.
 
 ### Task 1 — Add deterministic MSVC/Ninja environment entry
 
