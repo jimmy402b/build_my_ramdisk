@@ -84,3 +84,11 @@ target_link_libraries(myrd_report_tests PRIVATE myrd_test_support myrd_poc)
 target_include_directories(myrd_report_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_report_tests)
 add_test(NAME unit.report COMMAND myrd_report_tests)
+
+add_executable(myrd_lifecycle_runner_tests
+    unit/lifecycle_runner_tests.cpp
+)
+target_link_libraries(myrd_lifecycle_runner_tests PRIVATE myrd_test_support myrd_poc myrd_driver myrd_proxy)
+target_include_directories(myrd_lifecycle_runner_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_lifecycle_runner_tests)
+add_test(NAME unit.lifecycle_runner COMMAND myrd_lifecycle_runner_tests)

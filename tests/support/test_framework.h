@@ -39,7 +39,7 @@ struct Registrar {
         if (!(cond)) {                                                         \
             std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": "        \
                       << #cond << std::endl;                                   \
-            std::abort();                                                      \
+            std::_Exit(1);                                                      \
         }                                                                      \
     } while (0)
 
@@ -48,7 +48,7 @@ struct Registrar {
         if (!((a) == (b))) {                                                   \
             std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << ": "        \
                       << #a << " == " << #b << std::endl;                      \
-            std::abort();                                                      \
+            std::_Exit(1);                                                      \
         }                                                                      \
     } while (0)
 
