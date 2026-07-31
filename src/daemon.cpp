@@ -4,10 +4,15 @@
 #include <cstdio>
 #include <ctime>
 #include <cstring>
+#include <mutex>
 #include <vector>
+#include <io.h>
 
 static FILE* g_logFile = nullptr;
+static std::mutex g_logMutex;
 static const char* UNMOUNT_EVENT_NAME = "Global\\RamDiskCli_Unmount";
+static const char* DAEMON_MUTEX_NAME = "Global\\RamDiskCli_Daemon_Mutex";
+static HANDLE g_hDaemonMutex = nullptr;
 
 bool InitLogFile(const std::string& path) {
     g_logFile = fopen(path.c_str(), "a");
@@ -16,14 +21,22 @@ bool InitLogFile(const std::string& path) {
     char tb[32]; struct tm* tm = localtime(&now);
     strftime(tb, sizeof(tb), "%Y-%m-%d %H:%M:%S", tm);
     fprintf(g_logFile, "[%s] === RamDisk CLI daemon started ===\n", tb);
-    fflush(g_logFile); return true;
+    fflush(g_logFile);
+    // Also flush OS buffers
+    FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(g_logFile)));
+    return true;
 }
 
 void WriteLog(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(g_logMutex);
     time_t now = time(nullptr);
     char tb[32]; struct tm* tm = localtime(&now);
     strftime(tb, sizeof(tb), "%Y-%m-%d %H:%M:%S", tm);
-    if (g_logFile) { fprintf(g_logFile, "[%s] %s\n", tb, msg.c_str()); fflush(g_logFile); }
+    if (g_logFile) {
+        fprintf(g_logFile, "[%s] %s\n", tb, msg.c_str());
+        fflush(g_logFile);
+        FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(g_logFile)));
+    }
     LogInfo(msg);
 }
 
@@ -39,6 +52,14 @@ void CloseLogFile() {
 
 bool Daemonize(int argc, char* argv[]) {
     for (int i = 0; i < argc; i++) if (strcmp(argv[i], "--internal-daemon") == 0) return true;
+
+    // Prevent multiple daemon instances
+    g_hDaemonMutex = CreateMutexA(nullptr, FALSE, DAEMON_MUTEX_NAME);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        LogError("Another daemon is already running");
+        CloseHandle(g_hDaemonMutex); g_hDaemonMutex = nullptr;
+        return false;
+    }
 
     // Get full path of current executable
     char myPath[MAX_PATH];
@@ -75,4 +96,22 @@ void SignalUnmount(void* eventHandle) {
     if (eventHandle) SetEvent((HANDLE)eventHandle);
     HANDLE h = OpenEventA(EVENT_MODIFY_STATE, FALSE, UNMOUNT_EVENT_NAME);
     if (h) { SetEvent(h); CloseHandle(h); }
+}
+
+void SetAutoStart(bool enable) {
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) return;
+
+    if (enable) {
+        char path[MAX_PATH];
+        GetModuleFileNameA(nullptr, path, sizeof(path));
+        std::string cmd = "\"" + std::string(path) + "\" --auto-start";
+        RegSetValueExA(hKey, "RamDiskCLI", 0, REG_SZ,
+                       (BYTE*)cmd.c_str(), (DWORD)cmd.size() + 1);
+    } else {
+        RegDeleteValueA(hKey, "RamDiskCLI");
+    }
+    RegCloseKey(hKey);
 }

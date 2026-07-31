@@ -8,3 +8,4 @@ bool Daemonize(int argc, char* argv[]);
 void* CreateUnmountEvent();
 bool IsUnmountSignaled(void* eventHandle);
 void SignalUnmount(void* eventHandle);
+void SetAutoStart(bool enable);
