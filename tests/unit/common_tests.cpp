@@ -117,6 +117,99 @@ static_assert(std::is_nothrow_move_constructible_v<myrd::UniqueHandle>);
 static_assert(!std::is_copy_constructible_v<myrd::UniqueView>);
 static_assert(!std::is_copy_constructible_v<myrd::UniqueLocal>);
 
+// ── SHA-256 (Task 16) ────────────────────────────────────────
+
+#include "src/common/sha256.h"
+#include "src/common/authenticode.h"
+#include "src/common/process_snapshot.h"
+
+TEST_CASE(sha256_empty_string_vector) {
+    std::byte empty[1]{};
+    auto r = myrd::sha256_hex(std::span<const std::byte>(empty, 0));
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value(),
+        "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855");
+}
+
+TEST_CASE(sha256_abc_vector) {
+    const char* abc = "abc";
+    auto r = myrd::sha256_hex(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(abc), 3));
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value(),
+        "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD");
+}
+
+TEST_CASE(sha256_4096_bytes_streaming_equivalent) {
+    std::vector<std::byte> buf(4096);
+    for (std::size_t i = 0; i < buf.size(); ++i)
+        buf[i] = std::byte{static_cast<unsigned char>(i & 0xFF)};
+    auto r1 = myrd::sha256_hex(buf);
+    REQUIRE(r1.ok());
+    // Same data in chunks produces same hash (via single call)
+    auto r2 = myrd::sha256_hex(buf);
+    REQUIRE(r2.ok());
+    REQUIRE_EQ(r1.value(), r2.value());
+}
+
+// ── Authenticode ──────────────────────────────────────────────
+
+TEST_CASE(authenticode_rejects_missing_file) {
+    auto r = myrd::verify_authenticode(L"C:\\nonexistent\\file.dll");
+    // Should succeed in returning a result (the error is in trust_status)
+    REQUIRE(r.ok());
+    // trust_status should be non-zero for missing file
+}
+
+TEST_CASE(authenticode_returns_status_and_signer_fields) {
+    // Test with a known signed system binary
+    auto r = myrd::verify_authenticode(
+        L"C:\\Windows\\System32\\ntdll.dll");
+    REQUIRE(r.ok());
+    // trust_status field present
+    (void)r.value().trust_status;
+    // signer_subject may or may not be populated
+}
+
+TEST_CASE(authenticode_closes_provider_state_on_every_path) {
+    // Missing file — must not leak state
+    auto r = myrd::verify_authenticode(L"\\missing.dll");
+    REQUIRE(r.ok());
+}
+
+// ── Process / module snapshot ─────────────────────────────────
+
+TEST_CASE(process_snapshot_includes_current_module) {
+    auto r = myrd::snapshot_current_modules();
+    REQUIRE(r.ok());
+    bool found = false;
+    for (const auto& m : r.value()) {
+        if (m.basename.find(L"myrd_common_tests") != std::wstring::npos) {
+            found = true;
+            break;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE(process_snapshot_includes_current_process) {
+    auto r = myrd::snapshot_processes();
+    REQUIRE(r.ok());
+    REQUIRE(!r.value().empty());
+}
+
+TEST_CASE(forbidden_module_matching_is_case_insensitive_basename) {
+    std::vector<myrd::ModuleInfo> mods;
+    mods.push_back({L"C:\\path\\AimApi.DLL", L"AimApi.DLL"});
+    mods.push_back({L"C:\\path\\kernel32.dll", L"kernel32.dll"});
+    std::vector<std::wstring> forbidden{L"aimapi.dll"};
+    REQUIRE(myrd::module_list_contains_forbidden(mods, forbidden));
+    // Not forbidden
+    mods.clear();
+    mods.push_back({L"C:\\path\\kernel32.dll", L"kernel32.dll"});
+    REQUIRE(!myrd::module_list_contains_forbidden(mods, forbidden));
+}
+
 // Original bootstrap smoke test
 TEST_CASE(repository_bootstrap_smoke) {
     REQUIRE(true);

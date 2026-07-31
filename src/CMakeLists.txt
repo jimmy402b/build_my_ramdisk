@@ -1,7 +1,13 @@
 # Source directory — targets added in later tasks.
 
-add_library(myrd_common INTERFACE)
-target_include_directories(myrd_common INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/common")
+add_library(myrd_common STATIC
+    common/sha256.cpp common/sha256.h
+    common/authenticode.cpp common/authenticode.h
+    common/process_snapshot.cpp common/process_snapshot.h
+)
+target_include_directories(myrd_common PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_common PUBLIC bcrypt wintrust crypt32)
+myrd_enable_warnings(myrd_common)
 
 add_library(myrd_storage STATIC
     storage/memory_block_device.cpp
