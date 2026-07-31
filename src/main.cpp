@@ -40,15 +40,27 @@ static bool DoSave() {
     // Convert \\?\PhysicalDrive1 → \\.\PhysicalDrive1
     if (StartsWith(physPath, "\\\\?\\")) physPath = "\\\\.\\" + physPath.substr(4);
 
-    // Flush all volumes on this disk before reading
-    // This ensures Windows filesystem cache is written to disk sectors
+    // Flush ALL mounted volumes on this disk before reading.
+    // FlushFileBuffers on PhysicalDrive only flushes disk cache, NOT NTFS volume cache.
+    // We must enumerate and flush each volume (drive letter) on the disk.
     {
-        HANDLE hVol = CreateFileA(physPath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                  nullptr, OPEN_EXISTING, 0, nullptr);
-        if (hVol != INVALID_HANDLE_VALUE) {
-            FlushFileBuffers(hVol);
-            CloseHandle(hVol);
+        DWORD drives = GetLogicalDrives();
+        for (char c = 'A'; c <= 'Z'; c++) {
+            if (drives & (1 << (c - 'A'))) {
+                char volPath[8];
+                snprintf(volPath, sizeof(volPath), "%c:\\", c);
+                UINT type = GetDriveTypeA(volPath);
+                if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE) {
+                    HANDLE hVol = CreateFileA(volPath, GENERIC_READ | GENERIC_WRITE,
+                                              FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                              nullptr, OPEN_EXISTING,
+                                              FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                    if (hVol != INVALID_HANDLE_VALUE) {
+                        FlushFileBuffers(hVol);
+                        CloseHandle(hVol);
+                    }
+                }
+            }
         }
     }
 
@@ -279,11 +291,23 @@ static int CmdSave(const SaveOptions& opts) {
         std::string physPath = d.physicalDrive;
         if (StartsWith(physPath, "\\\\?\\")) physPath = "\\\\.\\" + physPath.substr(4);
 
-        // Flush volume to ensure filesystem cache is on disk
-        HANDLE hFlush = CreateFileA(physPath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                     nullptr, OPEN_EXISTING, 0, nullptr);
-        if (hFlush != INVALID_HANDLE_VALUE) { FlushFileBuffers(hFlush); CloseHandle(hFlush); }
+        // Flush all volumes before reading device
+        {
+            DWORD drives = GetLogicalDrives();
+            for (char c = 'A'; c <= 'Z'; c++) {
+                if (drives & (1 << (c - 'A'))) {
+                    char vp[8]; snprintf(vp, sizeof(vp), "%c:\\", c);
+                    UINT t = GetDriveTypeA(vp);
+                    if (t == DRIVE_FIXED || t == DRIVE_REMOVABLE) {
+                        HANDLE hv = CreateFileA(vp, GENERIC_READ | GENERIC_WRITE,
+                                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                                nullptr, OPEN_EXISTING,
+                                                FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                        if (hv != INVALID_HANDLE_VALUE) { FlushFileBuffers(hv); CloseHandle(hv); }
+                    }
+                }
+            }
+        }
 
         if (!g_aim.ReadDeviceData(physPath, size, buffer.data())) {
             LogError("Failed to read device data");
