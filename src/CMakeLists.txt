@@ -11,3 +11,11 @@ add_library(myrd_storage STATIC
 target_include_directories(myrd_storage PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_storage PUBLIC myrd_common)
 myrd_enable_warnings(myrd_storage)
+
+add_library(myrd_proxy STATIC
+    proxy/request_processor.cpp
+    proxy/request_processor.h
+)
+target_include_directories(myrd_proxy PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_proxy PUBLIC myrd_storage)
+myrd_enable_warnings(myrd_proxy)

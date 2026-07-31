@@ -28,3 +28,11 @@ target_link_libraries(myrd_storage_tests PRIVATE myrd_test_support myrd_storage)
 target_include_directories(myrd_storage_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_storage_tests)
 add_test(NAME unit.storage COMMAND myrd_storage_tests)
+
+add_executable(myrd_request_processor_tests
+    unit/request_processor_tests.cpp
+)
+target_link_libraries(myrd_request_processor_tests PRIVATE myrd_test_support myrd_proxy)
+target_include_directories(myrd_request_processor_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_request_processor_tests)
+add_test(NAME unit.request_processor COMMAND myrd_request_processor_tests)
