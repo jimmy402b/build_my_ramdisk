@@ -48,6 +48,7 @@ add_library(myrd_poc STATIC
     poc/poc_report.cpp poc/poc_report.h
     poc/cli.cpp poc/cli.h
     poc/lifecycle_runner.cpp poc/lifecycle_runner.h
+    poc/raw_round_trip.cpp poc/raw_round_trip.h
 )
 target_include_directories(myrd_poc PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_poc PUBLIC myrd_common)

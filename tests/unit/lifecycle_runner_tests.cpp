@@ -96,3 +96,39 @@ TEST_CASE(lifecycle_debug_inject_create_returned) {
     REQUIRE(r.cleanup.exact_remove_attempted);
     REQUIRE(r.primary_error.has_value());
 }
+
+// ── Raw round trip tests (Task 21) ────────────────────────────
+
+#include "src/poc/raw_round_trip.h"
+#include <cstring>
+
+struct FakeRawIo : myrd::poc::IRawDiskIo {
+    bool verify_ok=true, write_ok=true, read_ok=true;
+    std::byte storage[4096]{};
+    myrd::Result<void> verify_identity(const myrd::aim::LocatedDisk&) override { if(verify_ok) return myrd::Result<void>::success(); return myrd::Result<void>::failure({myrd::ErrorDomain::win32,0,L"",L""}); }
+    myrd::Result<void> seek(std::uint64_t) override { return myrd::Result<void>::success(); }
+    myrd::Result<void> write_exact(std::span<const std::byte> d) override { if(write_ok){ std::memcpy(storage,d.data(),d.size()); return myrd::Result<void>::success(); } return myrd::Result<void>::failure({myrd::ErrorDomain::win32,0,L"",L""}); }
+    myrd::Result<void> flush() override { return myrd::Result<void>::success(); }
+    myrd::Result<void> read_exact(std::span<std::byte> d) override { if(read_ok){ std::memcpy(d.data(),storage,d.size()); return myrd::Result<void>::success(); } return myrd::Result<void>::failure({myrd::ErrorDomain::win32,0,L"",L""}); }
+};
+
+TEST_CASE(round_trip_success_hash_matches) {
+    FakeRawIo io; myrd::poc::RawRoundTrip rt(io);
+    auto r = rt.run({5, L"", 64ull*1024*1024});
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value().written_sha256, r.value().read_sha256);
+}
+
+TEST_CASE(round_trip_identity_failure_reported) {
+    FakeRawIo io; io.verify_ok = false;
+    myrd::poc::RawRoundTrip rt(io);
+    REQUIRE(rt.run({5, L"", 64ull*1024*1024}).has_error());
+}
+
+TEST_CASE(round_trip_no_raw_bytes_in_report) {
+    FakeRawIo io; myrd::poc::RawRoundTrip rt(io);
+    auto r = rt.run({5, L"", 64ull*1024*1024});
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value().offset, 8ull*1024*1024);
+    REQUIRE_EQ(r.value().length, 4096u);
+}
