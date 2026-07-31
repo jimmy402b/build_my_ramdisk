@@ -45,6 +45,9 @@ ParseResult ParseArgs(int argc, char* argv[]) {
             } else if (arg == "--save-interval" && i+1 < argc) { r.create.saveIntervalSec = std::atoi(argv[++i]); }
             else if (arg == "--label" && i+1 < argc) { r.create.label = argv[++i]; }
             else if (arg == "--mount-point" && i+1 < argc) { r.create.mountPoint = argv[++i]; }
+            else if (arg == "--daemon") { r.create.daemon = true; }
+            else if (arg == "--log-file" && i+1 < argc) { r.create.logFile = argv[++i]; }
+            else if (arg == "--mode" && i+1 < argc) { r.create.mode = argv[++i]; }
             else if (arg == "-v" || arg == "--verbose") { r.verbose = true; }
             else if (arg == "-h" || arg == "--help") { r.command = Command::Help; return r; }
             else { r.error = "unknown option: "+arg; return r; }
@@ -60,6 +63,9 @@ ParseResult ParseArgs(int argc, char* argv[]) {
             else if (arg == "--save-interval" && i+1 < argc) { r.mount.saveIntervalSec = std::atoi(argv[++i]); }
             else if (arg == "--readonly") { r.mount.readonly = true; }
             else if (arg == "--label" && i+1 < argc) { r.mount.label = argv[++i]; }
+            else if (arg == "--daemon") { r.mount.daemon = true; }
+            else if (arg == "--log-file" && i+1 < argc) { r.mount.logFile = argv[++i]; }
+            else if (arg == "--mode" && i+1 < argc) { r.mount.mode = argv[++i]; }
             else if (arg == "-v" || arg == "--verbose") { r.verbose = true; }
             else if (arg == "-h" || arg == "--help") { r.command = Command::Help; return r; }
             else { r.error = "unknown option: "+arg; return r; }

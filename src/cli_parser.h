@@ -12,6 +12,9 @@ struct CreateOptions {
     int saveIntervalSec = 300;
     std::string label = "RAMDISK";
     std::string mountPoint;
+    bool daemon = false;
+    std::string logFile = "ramdisk-cli.log";
+    std::string mode = "vm";
 };
 
 struct MountOptions {
@@ -19,6 +22,9 @@ struct MountOptions {
     int saveIntervalSec = 300;
     bool readonly = false;
     std::string label = "RAMDISK";
+    bool daemon = false;
+    std::string logFile = "ramdisk-cli.log";
+    std::string mode = "vm";
 };
 
 struct SaveOptions    { int device = 0; };

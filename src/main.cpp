@@ -3,6 +3,8 @@
 #include "aim_bridge.h"
 #include "save_scheduler.h"
 #include "utils.h"
+#include "drive_letter.h"
+#include "daemon.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -16,6 +18,8 @@ static std::string g_vhdPath;
 static uint64_t g_sizeBytes = 0;
 static int g_deviceNumber = 0;
 static std::string g_mountPoint;
+static int g_origArgc = 0;
+static char** g_origArgv = nullptr;
 
 static bool DoSave() {
     if (!g_vhd.IsOpen()) { LogError("VHD not open"); return false; }
@@ -55,10 +59,12 @@ static bool DoSave() {
         return false;
     }
     LogInfo("Saved " + FormatSize(g_sizeBytes) + " to " + g_vhdPath);
+    WriteLog("Save: " + FormatSize(g_sizeBytes) + " -> " + g_vhdPath);
     return true;
 }
 
 static int CmdCreate(const CreateOptions& opts) {
+    if (opts.daemon) { if (!Daemonize(g_origArgc, g_origArgv)) return 0; InitLogFile(opts.logFile); }
     LogInfo("Creating VHD: " + opts.outputPath + " (" + FormatSize(opts.sizeBytes) + ")");
     if (!g_vhd.Create(opts.outputPath, opts.sizeBytes, opts.dynamic)) {
         LogError("Failed to create VHD: " + g_vhd.GetLastError());
@@ -110,11 +116,31 @@ static int CmdCreate(const CreateOptions& opts) {
     else
         printf("Manual save only | Press Ctrl+C to stop\n");
 
-    while (g_scheduler.IsRunning()) Sleep(1000);
+    // Auto-assign drive letter (non-fatal)
+    std::string dl = AssignDriveLetter(opts.sizeBytes);
+    if (!dl.empty()) { printf("Drive: %s\n", dl.c_str()); WriteLog("Drive: " + dl); }
+    else { WriteLog("Drive letter assignment skipped or failed"); }
+
+    WriteLog("Mounted: " + opts.outputPath + " (" + FormatSize(opts.sizeBytes) +
+             "), interval=" + std::to_string(opts.saveIntervalSec) + "s");
+
+    void* hUnmount = CreateUnmountEvent();
+    while (g_scheduler.IsRunning()) {
+        if (IsUnmountSignaled(hUnmount)) { WriteLog("Unmount signal received"); break; }
+        Sleep(500);
+    }
+    WriteLog("Saving before exit...");
+    DoSave();
+    g_vhd.Close();
+    g_aim.Unmount(g_deviceNumber, true);
+    WriteLog("Unmounted, exiting.");
+    CloseLogFile();
+    if (hUnmount) CloseHandle((HANDLE)hUnmount);
     return 0;
 }
 
 static int CmdMount(const MountOptions& opts) {
+    if (opts.daemon) { if (!Daemonize(g_origArgc, g_origArgv)) return 0; InitLogFile(opts.logFile); }
     LogInfo("Opening VHD: " + opts.inputPath);
     if (!g_vhd.Open(opts.inputPath, !opts.readonly)) {
         LogError("Failed to open VHD: " + g_vhd.GetLastError());
@@ -165,7 +191,23 @@ static int CmdMount(const MountOptions& opts) {
     else if (!opts.readonly)
         printf("Manual save only | Press Ctrl+C to stop\n");
 
-    while (g_scheduler.IsRunning()) Sleep(1000);
+    std::string dl = AssignDriveLetter(g_sizeBytes);
+    if (!dl.empty()) printf("Drive: %s\n", dl.c_str());
+
+    WriteLog("Mounted: " + opts.inputPath + " (" + FormatSize(g_sizeBytes) + ")");
+
+    void* hUnmount = CreateUnmountEvent();
+    while (g_scheduler.IsRunning()) {
+        if (IsUnmountSignaled(hUnmount)) { WriteLog("Unmount signal received"); break; }
+        Sleep(500);
+    }
+    WriteLog("Saving before exit...");
+    DoSave();
+    g_vhd.Close();
+    g_aim.Unmount(g_deviceNumber, true);
+    WriteLog("Unmounted, exiting.");
+    CloseLogFile();
+    if (hUnmount) CloseHandle((HANDLE)hUnmount);
     return 0;
 }
 
@@ -223,8 +265,25 @@ static int CmdSave(const SaveOptions& opts) {
 }
 
 static int CmdUnmount(const UnmountOptions& opts) {
-    if (!opts.noSave) { SaveOptions so; so.device = opts.device; CmdSave(so); }
+    // Try signaling daemon first
+    HANDLE h = OpenEventA(EVENT_MODIFY_STATE, FALSE, "Global\\RamDiskCli_Unmount");
+    if (h) {
+        // Daemon is running — signal it and let it handle save + unmount
+        SetEvent(h); CloseHandle(h);
+        printf("Unmount signal sent to daemon.\n");
+        // Give daemon time to save + unmount
+        for (int i = 0; i < 30; i++) {
+            Sleep(500);
+            auto devices = g_aim.ListDevices();
+            bool found = false;
+            for (auto& d : devices) if (d.number == opts.device) { found = true; break; }
+            if (!found) { printf("Daemon unmounted successfully.\n"); return 0; }
+        }
+        printf("Daemon did not unmount within timeout. Forcing...\n");
+    }
 
+    // No daemon — do it ourselves
+    if (!opts.noSave) { SaveOptions so; so.device = opts.device; CmdSave(so); }
     if (!g_aim.Unmount(opts.device, false)) {
         LogError("Failed to unmount device " + std::to_string(opts.device));
         return 3;
@@ -249,7 +308,14 @@ static int CmdStatus() {
 }
 
 int main(int argc, char* argv[]) {
-    auto r = ParseArgs(argc, argv);
+    g_origArgc = argc; g_origArgv = argv;
+    // Filter --internal-daemon before parsing
+    std::vector<char*> filteredArgs;
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--internal-daemon") != 0)
+            filteredArgs.push_back(argv[i]);
+    }
+    auto r = ParseArgs((int)filteredArgs.size(), filteredArgs.data());
     if (!r.error.empty()) { fprintf(stderr, "Error: %s\nTry 'ramdisk-cli help'\n", r.error.c_str()); return 1; }
 
     bool needsAim = (r.command == Command::Create || r.command == Command::Mount ||

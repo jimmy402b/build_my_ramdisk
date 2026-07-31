@@ -5,6 +5,10 @@ add_executable(ramdisk-cli
     aim_bridge.cpp
     save_scheduler.cpp
     utils.cpp
+    drive_letter.cpp
+    daemon.cpp
+    dirty_bitmap.cpp
+    sector_cache.cpp
 )
 
 target_include_directories(ramdisk-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
