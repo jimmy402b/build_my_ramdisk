@@ -48,6 +48,13 @@ ramdisk-cli.exe
 | 增量保存逻辑 | 仅写回变更扇区 | 3 扇区修改 → 3 扇区写入, 不变扇区确认未变 |
 | Watchdog | 崩溃检测 → 自动重启 | Worker 退出后自动重启 3 次循环 |
 | 延迟加载 | 首次读触发 VHD 加载, 重复读命中缓存 | cache miss=4, hit=1 |
+| 快速增量保存 | `--quick-save` 仅写回变更扇区 | 快照对比, 首次全量后续增量 |
+| 系统托盘 GUI | `tray` 命令, 右键菜单 | Win32 Shell_NotifyIcon |
+| 固定 VHD 支持 | `-t fixed` 创建 type=2 VHD | 零 BAT 开销, 直接文件读写 |
+| VHD 大端序兼容 | footer/dynhdr/BAT 字节序转换 | 自洽验证通过 |
+| 自动格式化 | `--auto-format --fs NTFS` | diskpart 自动化 |
+| Daemon 互斥 + 开机自启 | CreateMutex + 注册表 Run | SetAutoStart() |
+| aimapi.dll 直调 | LoadLibrary + GetProcAddress | 55 函数指针已加载 |
 
 ### 🟡 已实现但有限制
 
@@ -63,11 +70,9 @@ ramdisk-cli.exe
 | 功能 | 说明 |
 |------|------|
 | 动态内存管理 (DMM) | Primo Ramdisk 的核心特性——按需分配/释放物理内存。当前为全量预分配 |
-| GUI / 托盘图标 | CLI 工具, 不在 MVP 范围 |
-| 多设备同时管理 | 当前仅支持单个 RAM 盘 |
+| 多设备同时管理 | 当前仅支持单个 RAM 盘（多盘 CLI 参数支持，全局状态待 map 改造） |
 | 驱动崩溃恢复 | phdskmnt.sys 崩溃后无自动恢复机制 |
 | 安装程序 | 需手动编译运行, 依赖 AIM Toolkit 预装 |
-| 固定 VHD 支持 | 仅支持动态 VHD (type=3) |
 | AIM proxy 真实接入 | IMDPROXY 协议已从源码提取, StorageServer 已实现协议, 但 AIM Free Mode 内核驱动拒绝第三方 pipe 连接 |
 
 ---
