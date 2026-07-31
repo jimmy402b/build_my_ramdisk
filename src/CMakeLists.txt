@@ -3,6 +3,7 @@ add_executable(ramdisk-cli
     cli_parser.cpp
     vhd_engine.cpp
     aim_bridge.cpp
+    aim_api.cpp
     save_scheduler.cpp
     utils.cpp
     drive_letter.cpp
