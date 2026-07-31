@@ -387,6 +387,7 @@ bool VhdEngine::Open(const std::string& path, bool writable) {
 
     if (footer.diskType == VHD_TYPE_FIXED) {
         // Fixed VHD: raw data from offset 0, footer at EOF
+        pImpl->fileHandle = h;
         pImpl->dynamic = false;
         pImpl->sizeBytes = footer.currentSize;
         pImpl->totalSectors = footer.currentSize / VHD_SECTOR_SIZE;

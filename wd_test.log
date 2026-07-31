@@ -1,0 +1,23 @@
+[2026-07-31 14:47:56] === RamDisk CLI daemon started ===
+[2026-07-31 14:47:56] Watchdog E2E starting
+[2026-07-31 14:47:56] WD: Worker launched (PID 6684)
+[2026-07-31 14:47:56] Watchdog started, waiting for cycles...
+[2026-07-31 14:47:57] WD: Worker exited (code=0)
+[2026-07-31 14:47:57] WD: Restarting worker...
+[2026-07-31 14:47:58] WD: Worker launched (PID 2944)
+[2026-07-31 14:47:59] WD: Worker exited (code=0)
+[2026-07-31 14:47:59] WD: Restarting worker...
+[2026-07-31 14:48:00] WD: Worker launched (PID 9472)
+[2026-07-31 14:48:01] WD: Worker exited (code=0)
+[2026-07-31 14:48:01] WD: Restarting worker...
+[2026-07-31 14:48:02] WD: Worker launched (PID 9492)
+[2026-07-31 14:48:03] WD: Worker exited (code=0)
+[2026-07-31 14:48:03] WD: Restarting worker...
+[2026-07-31 14:48:04] WD: Worker launched (PID 11596)
+[2026-07-31 14:48:05] WD: Worker exited (code=0)
+[2026-07-31 14:48:05] WD: Restarting worker...
+[2026-07-31 14:48:06] WD: Worker launched (PID 20160)
+[2026-07-31 14:48:06] Launches=6 Exits=5
+[2026-07-31 14:48:06] PASS: watchdog restarted worker >=3 times
+[2026-07-31 14:48:06] Watchdog E2E PASS
+[2026-07-31 14:48:06] === Daemon stopped ===
