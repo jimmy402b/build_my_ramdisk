@@ -162,8 +162,8 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 4 | ON_TRACK | bd31d9b | 9e1f533 | b561fa7 | — |
 | 5 | ON_TRACK | acd31d0 | 5f33734 | 4ca7de4 | — |
 | 6 | ON_TRACK | 2c3227d | 112218a | 920f8d3 | — |
-| 7 | ON_TRACK | 83019ad | 8c960f3 | (pending) | — |
-| 8 | NOT_STARTED | — | — | — | — |
+| 7 | ON_TRACK | 83019ad | 8c960f3 | 0114cfe | — |
+| 8 | ON_TRACK | 0114cfe | c02af59 | (pending) | — |
 | 9 | NOT_STARTED | — | — | — | — |
 | 10 | NOT_STARTED | — | — | — | — |
 | 11 | NOT_STARTED | — | — | — | — |
@@ -407,6 +407,7 @@ Plan: [Task 7](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R7.6 结论 `ON_TRACK` 后提交 Task 7 alignment review。
 
 Review Record：Executor `Claude`; Start `83019ad`; Implementation `8c960f3`; Evidence `6/6 INFO tests pass Debug+Release, data area untouched, counters precise`; Deviations `None`; Verdict `ON_TRACK`.
+Review Record：Executor `Claude`; Start `0114cfe`; Implementation `c02af59`; Evidence `20/20 tests pass Debug+Release, private copy for WRITE, 6-condition validation, fatal for unknown codes`; Deviations `None`; Verdict `ON_TRACK`.
 
 ### Task 8 — Add READ, WRITE, CLOSE, and fatal request behavior
 
