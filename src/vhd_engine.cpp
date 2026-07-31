@@ -511,11 +511,10 @@ bool VhdEngine::ReadSectors(uint64_t sectorOffset, uint32_t sectorCount, void* b
             // Unallocated block, not in cache — return zeroes
             memset(dst, 0, bytesToRead);
         } else {
-            // Read from file
-            uint64_t fileOffset = static_cast<uint64_t>(batEntry) * VHD_SECTOR_SIZE +
-                                  static_cast<uint64_t>(sectorInBlock) * VHD_SECTOR_SIZE;
+            // Read entire block from file (seek to block start, not sector offset)
+            uint64_t blockStart = static_cast<uint64_t>(batEntry) * VHD_SECTOR_SIZE;
             LARGE_INTEGER li;
-            li.QuadPart = static_cast<LONGLONG>(fileOffset);
+            li.QuadPart = static_cast<LONGLONG>(blockStart);
             if (!SetFilePointerEx(pImpl->fileHandle, li, nullptr, FILE_BEGIN)) {
                 pImpl->lastError = "Seek failed in ReadSectors";
                 return false;
