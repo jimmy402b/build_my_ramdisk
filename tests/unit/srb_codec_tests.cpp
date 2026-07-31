@@ -131,3 +131,17 @@ TEST_CASE(srb_response_returns_exact_payload_slice) {
     REQUIRE_EQ(r.value().payload.size(), 8u);
     REQUIRE(r.value().payload[0] == std::byte{0xAA});
 }
+
+// ── Windows transport non-real test (Task 14) ─────────────────
+
+#include "src/driver/windows_srb_transport.h"
+
+TEST_CASE(windows_transport_invalid_handle_returns_error) {
+    myrd::aim::WindowsSrbTransport transport(INVALID_HANDLE_VALUE);
+    std::byte pld[4]{};
+    auto r = transport.transact(myrd::aim::kQueryVersion, pld, 4, 30);
+    // Must return error, not crash
+    REQUIRE(r.has_error());
+    REQUIRE_EQ(static_cast<int>(r.error().domain),
+               static_cast<int>(myrd::ErrorDomain::win32));
+}
