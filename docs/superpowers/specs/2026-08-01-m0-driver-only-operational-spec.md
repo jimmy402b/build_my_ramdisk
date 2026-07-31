@@ -2,7 +2,7 @@
 
 > 日期：2026-08-01
 >
-> 状态：待用户评审（不改变已批准的总体架构）
+> 状态：已批准
 >
 > 上位规格：`docs/superpowers/specs/2026-07-31-aim-driver-only-clean-slate-design.md`
 >

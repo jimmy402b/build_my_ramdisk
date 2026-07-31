@@ -10,6 +10,8 @@
 
 **Normative SPEC:** `docs/superpowers/specs/2026-08-01-m0-driver-only-operational-spec.md`
 
+**Approval:** User approved the Operational SPEC and this Agent Plan on 2026-08-01. Execution progress is tracked in `/tasklist.md`.
+
 ---
 
 ## 1. Execution contract for every Agent
