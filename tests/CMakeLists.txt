@@ -20,3 +20,11 @@ myrd_enable_warnings(myrd_protocol_tests)
 include(CTest)
 add_test(NAME unit.common COMMAND myrd_common_tests)
 add_test(NAME unit.protocol COMMAND myrd_protocol_tests)
+
+add_executable(myrd_storage_tests
+    unit/storage_tests.cpp
+)
+target_link_libraries(myrd_storage_tests PRIVATE myrd_test_support myrd_storage)
+target_include_directories(myrd_storage_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_storage_tests)
+add_test(NAME unit.storage COMMAND myrd_storage_tests)
