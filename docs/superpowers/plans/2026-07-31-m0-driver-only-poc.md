@@ -1,5 +1,7 @@
 # M0 Driver-only PoC Implementation Plan
 
+> **Superseded:** 本计划保留为历史初稿。新的规范性 M0 SPEC 是 `docs/superpowers/specs/2026-08-01-m0-driver-only-operational-spec.md`，新的 Agent 可执行计划是 `docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md`。后续实现不得混用两版步骤。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build and repeatedly verify a 64 MiB AIM Shared Memory Proxy disk using only our C++20 executable and the installed signed `phdskmnt.sys`, without loading or launching AIM Toolkit user-mode components.
