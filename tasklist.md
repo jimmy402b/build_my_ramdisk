@@ -155,7 +155,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 
 | Task | 状态 | Start commit | Implementation commit | Review commit | 证据/说明 |
 |---:|---|---|---|---|---|
-| 0 | ON_TRACK | 2794db5 | 39ee930 | (pending) | — |
+| 0 | ON_TRACK | 2794db5 | 39ee930 | 6fea4a5 | — |
 | 1 | NOT_STARTED | — | — | — | — |
 | 2 | NOT_STARTED | — | — | — | — |
 | 3 | NOT_STARTED | — | — | — | — |
