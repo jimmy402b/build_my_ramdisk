@@ -7,6 +7,8 @@
 #include "daemon.h"
 #include "storage_server.h"
 #include "watchdog.h"
+#include "aim_api.h"
+#include "tray_icon.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -22,6 +24,9 @@ static int g_deviceNumber = 0;
 static std::string g_mountPoint;
 static int g_origArgc = 0;
 static char** g_origArgv = nullptr;
+static std::vector<uint8_t> g_lastSnapshot; // for quick-save
+static bool g_useQuickSave = false;
+static AimApi g_aimApi; // aimapi.dll (non-fatal if unavailable)
 
 static bool DoSave() {
     if (!g_vhd.IsOpen()) { LogError("VHD not open"); return false; }
@@ -68,17 +73,31 @@ static bool DoSave() {
         LogError("Failed to read device data");
         return false;
     }
-    if (!g_vhd.WriteAll(buffer.data())) {
-        LogError("Failed to write VHD: " + g_vhd.GetLastError());
-        return false;
+    if (g_useQuickSave && !g_lastSnapshot.empty()) {
+        uint64_t changed = 0;
+        for (uint64_t off = 0; off < g_sizeBytes; off += 512) {
+            if (memcmp(buffer.data() + off, g_lastSnapshot.data() + off, 512) != 0) {
+                g_vhd.WriteSectors(off / 512, 1, buffer.data() + off);
+                changed++;
+            }
+        }
+        LogInfo("Quick save: " + std::to_string(changed) + " sectors (" + FormatSize(changed*512) + ")");
+        WriteLog("Quick save: " + std::to_string(changed) + " sectors -> " + g_vhdPath);
+    } else {
+        if (!g_vhd.WriteAll(buffer.data())) {
+            LogError("Failed to write VHD: " + g_vhd.GetLastError());
+            return false;
+        }
+        LogInfo("Saved " + FormatSize(g_sizeBytes) + " to " + g_vhdPath);
+        WriteLog("Save: " + FormatSize(g_sizeBytes) + " -> " + g_vhdPath);
     }
-    LogInfo("Saved " + FormatSize(g_sizeBytes) + " to " + g_vhdPath);
-    WriteLog("Save: " + FormatSize(g_sizeBytes) + " -> " + g_vhdPath);
+    g_lastSnapshot = std::move(buffer);
     return true;
 }
 
 static int CmdCreate(const CreateOptions& opts) {
     if (opts.daemon) { if (!Daemonize(g_origArgc, g_origArgv)) return 0; InitLogFile(opts.logFile); }
+    g_useQuickSave = opts.quickSave;
     LogInfo("Creating VHD: " + opts.outputPath + " (" + FormatSize(opts.sizeBytes) + ")");
     if (!g_vhd.Create(opts.outputPath, opts.sizeBytes, opts.dynamic)) {
         LogError("Failed to create VHD: " + g_vhd.GetLastError());
@@ -235,6 +254,7 @@ static int CmdCreate(const CreateOptions& opts) {
 
 static int CmdMount(const MountOptions& opts) {
     if (opts.daemon) { if (!Daemonize(g_origArgc, g_origArgv)) return 0; InitLogFile(opts.logFile); }
+    g_useQuickSave = opts.quickSave;
     LogInfo("Opening VHD: " + opts.inputPath);
     if (!g_vhd.Open(opts.inputPath, !opts.readonly)) {
         LogError("Failed to open VHD: " + g_vhd.GetLastError());
@@ -413,8 +433,19 @@ static int CmdStatus() {
     return 0;
 }
 
+static int CmdTray() {
+    TrayIcon tray;
+    tray.Create(GetModuleHandle(nullptr), "RamDisk CLI");
+    tray.OnOpenDisk([]() { if (!g_mountPoint.empty()) ShellExecuteA(nullptr, "open", g_mountPoint.c_str(), nullptr, nullptr, SW_SHOW); });
+    tray.OnSave([]() { DoSave(); });
+    tray.OnExit([]() { PostQuitMessage(0); });
+    tray.Run();
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     g_origArgc = argc; g_origArgv = argv;
+    g_aimApi.Load(); // non-fatal
     // Filter --internal-daemon before parsing
     std::vector<char*> filteredArgs;
     for (int i = 0; i < argc; i++) {
@@ -455,6 +486,7 @@ int main(int argc, char* argv[]) {
     case Command::Save:     return CmdSave(r.save);
     case Command::Unmount:  return CmdUnmount(r.unmount);
     case Command::Status:   return CmdStatus();
+    case Command::Tray:     return CmdTray();
     case Command::Help:     PrintHelp(); return 0;
     case Command::Version:  PrintVersion(); return 0;
     default:                PrintHelp(); return 0;

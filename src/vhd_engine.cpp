@@ -552,7 +552,7 @@ void VhdEngine::Close() {
             footer.diskGeometry = Swap32(footer.diskGeometry);
             footer.diskType = Swap32(footer.diskType);
 
-            footer.dataOffset = Swap64(VHD_SECTOR_SIZE);
+            footer.dataOffset = VHD_SECTOR_SIZE;  // host value, will be swapped below
 
             footer.features = Swap32(footer.features);
             footer.fileFormatVersion = Swap32(footer.fileFormatVersion);

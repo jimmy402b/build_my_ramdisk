@@ -3,7 +3,7 @@
 #include <string>
 #include <cstdint>
 
-enum class Command { None, Create, Mount, Save, Unmount, Status, Help, Version };
+enum class Command { None, Create, Mount, Save, Unmount, Status, Tray, Help, Version };
 
 struct CreateOptions {
     uint64_t sizeBytes = 0;
@@ -17,6 +17,7 @@ struct CreateOptions {
     std::string mode = "vm";
     bool autoFormat = false;
     std::string filesystem = "NTFS";
+    bool quickSave = false;
 };
 
 struct MountOptions {
@@ -27,6 +28,7 @@ struct MountOptions {
     bool daemon = false;
     std::string logFile = "ramdisk-cli.log";
     std::string mode = "vm";
+    bool quickSave = false;
 };
 
 struct SaveOptions    { int device = 0; };

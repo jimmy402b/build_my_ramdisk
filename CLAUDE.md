@@ -32,6 +32,10 @@ ramdisk-cli create -s <size> -o <vhd-path> [options]
 | `--daemon` | 后台守护模式 |
 | `--log-file` | 日志文件路径 (默认 ramdisk-cli.log) |
 | `--mode` | vm (默认) / proxy |
+| `--auto-format` | 自动初始化 + 格式化 + 分配盘符 |
+| `--fs` | 文件系统 (默认 NTFS) |
+| `--quick-save` | 快速增量保存 (仅写回变更扇区) |
+| `-t, --type` | fixed / dynamic |
 
 ### mount — 加载已有 VHD
 
@@ -64,6 +68,12 @@ ramdisk-cli unmount [--device N] [--no-save]
 ramdisk-cli status
 ```
 
+### tray — 系统托盘图标
+
+```bash
+ramdisk-cli tray
+```
+
 ### help / version
 
 ```bash
@@ -88,9 +98,11 @@ main.cpp (CLI 入口 + 命令分发)
 ├── cli_parser    — 参数解析 (ParseArgs → ParseResult)
 ├── vhd_engine    — VHD 格式引擎 (内联实现, 动态 VHD 创建/读写/持久化)
 ├── aim_bridge    — aim_ll.exe 子进程桥接 (CreateProcess + stdout)
+├── aim_api       — aimapi.dll 直接 API 封装 (LoadLibrary + GetProcAddress)
 ├── save_scheduler — 定时保存 + Ctrl+C 关机信号
 ├── storage_server — AIM proxy pipe 存储后端 (增量保存 + 延迟加载)
-└── watchdog       — 进程守护 (崩溃重启 + 速率限制)
+├── watchdog       — 进程守护 (崩溃重启 + 速率限制)
+└── tray_icon      — Win32 系统托盘图标 + 右键菜单
 ```
 
 ### 数据流
