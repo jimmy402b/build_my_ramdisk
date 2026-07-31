@@ -31,6 +31,7 @@ add_library(myrd_driver STATIC
     driver/direct_aim_adapter.cpp driver/direct_aim_adapter.h
     driver/adapter_discovery.cpp driver/adapter_discovery.h
     driver/windows_srb_transport.cpp driver/windows_srb_transport.h
+    driver/physical_drive_locator.cpp driver/physical_drive_locator.h
 )
 target_include_directories(myrd_driver PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_driver PUBLIC myrd_common Setupapi Cfgmgr32)

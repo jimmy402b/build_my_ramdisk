@@ -68,3 +68,11 @@ target_link_libraries(myrd_direct_aim_adapter_tests PRIVATE myrd_test_support my
 target_include_directories(myrd_direct_aim_adapter_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_direct_aim_adapter_tests)
 add_test(NAME unit.direct_aim_adapter COMMAND myrd_direct_aim_adapter_tests)
+
+add_executable(myrd_physical_drive_locator_tests
+    unit/physical_drive_locator_tests.cpp
+)
+target_link_libraries(myrd_physical_drive_locator_tests PRIVATE myrd_test_support myrd_driver)
+target_include_directories(myrd_physical_drive_locator_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_physical_drive_locator_tests)
+add_test(NAME unit.physical_drive_locator COMMAND myrd_physical_drive_locator_tests)
