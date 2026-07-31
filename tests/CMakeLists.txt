@@ -7,6 +7,7 @@ add_executable(myrd_common_tests
     unit/common_tests.cpp
 )
 target_link_libraries(myrd_common_tests PRIVATE myrd_test_support)
+target_include_directories(myrd_common_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_common_tests)
 
 include(CTest)
