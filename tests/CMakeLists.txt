@@ -60,3 +60,11 @@ target_link_libraries(myrd_srb_codec_tests PRIVATE myrd_test_support myrd_driver
 target_include_directories(myrd_srb_codec_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_srb_codec_tests)
 add_test(NAME unit.srb_codec COMMAND myrd_srb_codec_tests)
+
+add_executable(myrd_direct_aim_adapter_tests
+    unit/direct_aim_adapter_tests.cpp
+)
+target_link_libraries(myrd_direct_aim_adapter_tests PRIVATE myrd_test_support myrd_driver)
+target_include_directories(myrd_direct_aim_adapter_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_direct_aim_adapter_tests)
+add_test(NAME unit.direct_aim_adapter COMMAND myrd_direct_aim_adapter_tests)
