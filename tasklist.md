@@ -158,7 +158,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 0 | ON_TRACK | 2794db5 | 39ee930 | 6fea4a5 | — |
 | 1 | ON_TRACK | 359b3d9 | 9948154 | 75c2bc0 | — |
 | 2 | ON_TRACK | c34ca9e | 0d03d2f | a120d1a | — |
-| 3 | BLOCKED | deb40df | — | — | GitHub unreachable: `git clone https://github.com/ArsenalRecon/Arsenal-Image-Mounter.git` fails with "Failed to connect to github.com port 443". Network/proxy required. |
+| 3 | ON_TRACK | deb40df | efacdab | (pending) | — |
 | 4 | NOT_STARTED | — | — | — | — |
 | 5 | NOT_STARTED | — | — | — | — |
 | 6 | NOT_STARTED | — | — | — | — |
@@ -298,7 +298,7 @@ Plan: [Task 3](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R3.5 记录每个来源哈希、差异和未确认事项。
 - [ ] R3.6 结论 `ON_TRACK` 后提交 Task 3 alignment review。
 
-Review Record：Executor `Claude`; Start `deb40df`; Implementation `N/A`; Evidence `git clone github.com:443 unreachable — BLOCKED_PROTOCOL_SOURCE`; Deviations `External dependency missing`; Verdict `BLOCKED`.
+Review Record：Executor `Claude`; Start `deb40df`; Implementation `efacdab`; Evidence `commit d379caa verified, 4 source files present, all 10 sections of contract filled, V0 provenance PASS`; Deviations `None`; Verdict `ON_TRACK`.
 
 ### Task 4 — Implement common Result, ownership, and checked conversion primitives
 
