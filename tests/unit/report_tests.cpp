@@ -88,3 +88,66 @@ TEST_CASE(report_utf8_encodes_non_ascii_signer) {
             s.find("é") != std::string::npos ||
             s.find("\xC3\xA9") != std::string::npos);
 }
+
+// ── CLI tests (Task 18) ────────────────────────────────────────
+
+#include "src/poc/cli.h"
+
+static std::vector<std::wstring_view> mk(std::initializer_list<const wchar_t*> il) {
+    std::vector<std::wstring_view> v;
+    for (auto p : il) v.push_back(std::wstring_view(p));
+    return v;
+}
+
+TEST_CASE(cli_parses_query_driver_report) {
+    auto av = mk({L"query-driver", L"--report", L"reports/t.json"});
+    auto r = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r.ok());
+    REQUIRE(r.value().mode == myrd::poc::CommandMode::query_driver);
+}
+
+TEST_CASE(cli_parses_run_report) {
+    auto av = mk({L"run", L"--report", L"reports/t.json"});
+    auto r = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r.ok());
+}
+
+TEST_CASE(cli_rejects_unknown_command) {
+    auto av = mk({L"invalid", L"--report", L"r.json"});
+    auto r = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r.has_error());
+}
+
+TEST_CASE(cli_rejects_missing_report) {
+    auto av = mk({L"query-driver"});
+    auto r = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r.has_error());
+}
+
+TEST_CASE(cli_rejects_duplicate_report) {
+    auto av = mk({L"query-driver", L"--report", L"a.json", L"--report", L"b.json"});
+    auto r = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r.has_error());
+}
+
+TEST_CASE(cli_rejects_unknown_option) {
+    auto av = mk({L"query-driver", L"--report", L"r.json", L"--unknown"});
+    auto r = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r.has_error());
+}
+
+TEST_CASE(cli_accepts_failure_injection_only_in_debug) {
+    auto av = mk({L"run", L"--report", L"r.json",
+        L"--inject-failure-after", L"create_returned"});
+    auto r1 = myrd::poc::parse_command_line(av, true);
+    REQUIRE(r1.ok());
+    auto r2 = myrd::poc::parse_command_line(av, false);
+    REQUIRE(r2.has_error());
+}
+
+TEST_CASE(cli_rejects_failure_injection_for_query_driver) {
+    auto av = mk({L"query-driver", L"--report", L"r.json",
+        L"--inject-failure-after", L"create_returned"});
+    auto r = myrd::poc::parse_command_line(av, true);
+    REQUIRE(r.has_error());
+}
