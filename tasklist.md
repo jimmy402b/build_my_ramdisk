@@ -157,7 +157,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 |---:|---|---|---|---|---|
 | 0 | ON_TRACK | 2794db5 | 39ee930 | 6fea4a5 | — |
 | 1 | ON_TRACK | 359b3d9 | 9948154 | 75c2bc0 | — |
-| 2 | NOT_STARTED | — | — | — | — |
+| 2 | ON_TRACK | c34ca9e | 0d03d2f | (pending) | — |
 | 3 | NOT_STARTED | — | — | — | — |
 | 4 | NOT_STARTED | — | — | — | — |
 | 5 | NOT_STARTED | — | — | — | — |
@@ -270,7 +270,7 @@ Plan: [Task 2](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R2.5 确认 `out/`、`reports/` 未被跟踪并记录偏差。
 - [ ] R2.6 结论 `ON_TRACK` 后提交 Task 2 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Claude`; Start `c34ca9e`; Implementation `0d03d2f`; Evidence `Debug/Release build OK, unit.common 100% (1/1), out+reports ignored, /W4 /WX /permissive- /Zc:__cplusplus /utf-8 active`; Deviations `None`; Verdict `ON_TRACK`.
 
 ### Task 3 — Acquire and prove the fixed AIM protocol source
 
