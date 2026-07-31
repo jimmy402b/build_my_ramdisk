@@ -160,7 +160,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 2 | ON_TRACK | c34ca9e | 0d03d2f | a120d1a | — |
 | 3 | ON_TRACK | deb40df | efacdab | 7934bb9 | — |
 | 4 | ON_TRACK | bd31d9b | 9e1f533 | b561fa7 | — |
-| 5 | NOT_STARTED | — | — | — | — |
+| 5 | ON_TRACK | acd31d0 | 5f33734 | (pending) | — |
 | 6 | NOT_STARTED | — | — | — | — |
 | 7 | NOT_STARTED | — | — | — | — |
 | 8 | NOT_STARTED | — | — | — | — |
@@ -352,9 +352,7 @@ Plan: [Task 5](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R5.5 记录协议差异；任何无法映射项都标为 `DEVIATED`。
 - [ ] R5.6 结论 `ON_TRACK` 后提交 Task 5 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
-
-### Task 6 — Implement the fixed 64 MiB memory block device
+Review Record：Executor `Claude`; Start `acd31d0`; Implementation `5f33734`; Evidence `unit.protocol+unit.common 2/2 pass Debug+Release, all ABI offsets verified, wire helpers tested`; Deviations `src/CMakeLists.txt not modified (header-only, no target needed)`; Verdict `ON_TRACK`. — Implement the fixed 64 MiB memory block device
 
 Plan: [Task 6](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#task-6-implement-the-fixed-64-mib-memory-block-device)
 
