@@ -9,13 +9,21 @@
 #include <atomic>
 #include <vector>
 
-// AIM proxy pipe protocol constants (placeholder — should match Task 5 findings)
+// IMDPROXY protocol — from Arsenal Image Mounter imdproxy.h / Enums.cs
+// All fields are ULONGLONG (uint64_t). Driver sends request_code first.
 #pragma pack(push, 1)
-struct AimPipeRequest { uint32_t op; uint64_t offset; uint32_t count; uint32_t dataLen; };
-struct AimPipeResponse { uint32_t status; uint32_t dataLen; };
+enum IMDPROXY_REQ : uint64_t {
+    REQ_NULL, REQ_INFO=1, REQ_READ=2, REQ_WRITE=3,
+    REQ_CONNECT=4, REQ_CLOSE=5, REQ_UNMAP=6, REQ_ZERO=7, REQ_SCSI=8, REQ_SHARED=9
+};
+struct IMDPROXY_INFO_RESP  { uint64_t file_size, req_alignment, flags; };
+struct IMDPROXY_READ_REQ   { uint64_t request_code, offset, length; };
+struct IMDPROXY_READ_RESP  { uint64_t errorno, length; };
+struct IMDPROXY_WRITE_REQ  { uint64_t request_code, offset, length; };
+struct IMDPROXY_WRITE_RESP { uint64_t errorno, length; };
+struct IMDPROXY_CLOSE_REQ  { uint64_t request_code; };
+static const uint64_t IMDPROXY_REQ_ALIGNMENT = 512;
 #pragma pack(pop)
-enum { AIM_OP_READ = 1, AIM_OP_WRITE = 2, AIM_OP_FLUSH = 3, AIM_OP_INFO = 4 };
-enum { AIM_OK = 0, AIM_ERR = 1 };
 
 struct StorageServer::Impl {
     std::string pipeName, vhdPath;
@@ -70,47 +78,71 @@ bool StorageServer::Start(const std::string& pipeName, const std::string& vhdPat
         DWORD rd = 0;
         while (pImpl->running) {
             if (!ReadFile(pImpl->hPipe, buf, sizeof(buf), &rd, nullptr)) break;
-            if (rd < sizeof(AimPipeRequest)) continue;
-            auto* req = (AimPipeRequest*)buf;
-            auto* rsp = (AimPipeResponse*)resp;
-            uint32_t rspLen = sizeof(AimPipeResponse);
+            uint64_t reqCode = (rd >= 8) ? *(uint64_t*)buf : 0;
 
-            switch (req->op) {
-            case AIM_OP_READ: {
-                uint8_t* dst = resp + sizeof(AimPipeResponse);
-                for (uint32_t i = 0; i < req->count; i++) {
-                    uint64_t sec = req->offset + i;
+            if (reqCode == REQ_INFO) {
+                // Driver requests disk info — respond with size, alignment, flags
+                IMDPROXY_INFO_RESP infoResp = { pImpl->diskSizeBytes, IMDPROXY_REQ_ALIGNMENT, 0 };
+                DWORD wr = 0;
+                WriteFile(pImpl->hPipe, &infoResp, sizeof(infoResp), &wr, nullptr);
+                continue;
+            }
+
+            if (reqCode == REQ_CLOSE) {
+                if (pImpl->logger) pImpl->logger("Driver closed connection");
+                break;
+            }
+
+            if (reqCode == REQ_READ) {
+                auto* req = (IMDPROXY_READ_REQ*)buf;
+                uint64_t offset = req->offset, length = req->length;
+                uint64_t sectorCount = length / 512;
+                uint64_t startSector = offset / 512;
+
+                // Build response: header + data
+                IMDPROXY_READ_RESP* rsp = (IMDPROXY_READ_RESP*)resp;
+                rsp->errorno = 0;
+                rsp->length = length;
+                uint8_t* dst = resp + sizeof(IMDPROXY_READ_RESP);
+
+                for (uint64_t i = 0; i < sectorCount; i++) {
+                    uint64_t sec = startSector + i;
                     const uint8_t* c = pImpl->cache->Get(sec);
                     if (c) { memcpy(dst + i*512, c, 512); }
                     else {
-                        uint8_t tmp[512];
+                        uint8_t tmp[512] = {};
                         pImpl->vhd.ReadSectors(sec, 1, tmp);
                         pImpl->cache->Put(sec, tmp);
                         memcpy(dst + i*512, tmp, 512);
                     }
                 }
-                rsp->status = AIM_OK; rsp->dataLen = req->count * 512; rspLen += rsp->dataLen;
-                break;
+                DWORD wr = 0;
+                WriteFile(pImpl->hPipe, resp, (DWORD)(sizeof(IMDPROXY_READ_RESP) + length), &wr, nullptr);
+                continue;
             }
-            case AIM_OP_WRITE: {
-                const uint8_t* src = buf + sizeof(AimPipeRequest);
-                for (uint32_t i = 0; i < req->count; i++) {
-                    uint64_t sec = req->offset + i;
+
+            if (reqCode == REQ_WRITE) {
+                auto* req = (IMDPROXY_WRITE_REQ*)buf;
+                uint64_t offset = req->offset, length = req->length;
+                uint64_t sectorCount = length / 512;
+                uint64_t startSector = offset / 512;
+
+                const uint8_t* src = buf + sizeof(IMDPROXY_WRITE_REQ);
+                for (uint64_t i = 0; i < sectorCount; i++) {
+                    uint64_t sec = startSector + i;
                     pImpl->cache->Put(sec, src + i*512);
                     pImpl->dirty->Set(sec);
                 }
-                rsp->status = AIM_OK; rsp->dataLen = 0;
-                break;
+                IMDPROXY_WRITE_RESP wrResp = { 0, length };
+                DWORD wr = 0;
+                WriteFile(pImpl->hPipe, &wrResp, sizeof(wrResp), &wr, nullptr);
+                continue;
             }
-            case AIM_OP_FLUSH: SaveDirty(); rsp->status = AIM_OK; rsp->dataLen = 0; break;
-            case AIM_OP_INFO: {
-                *(uint64_t*)(resp + sizeof(AimPipeResponse)) = pImpl->diskSizeBytes;
-                rsp->status = AIM_OK; rsp->dataLen = 8; rspLen += 8;
-                break;
-            }
-            default: rsp->status = AIM_ERR; rsp->dataLen = 0; break;
-            }
-            DWORD wr = 0; WriteFile(pImpl->hPipe, resp, rspLen, &wr, nullptr);
+
+            // Unknown request — send error
+            uint64_t errResp[2] = { 1, 0 };
+            DWORD wr = 0;
+            WriteFile(pImpl->hPipe, errResp, sizeof(errResp), &wr, nullptr);
         }
     });
     return true;
