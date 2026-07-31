@@ -181,6 +181,20 @@ std::vector<AimBridge::DeviceInfo> AimBridge::ListDevices() {
     return result;
 }
 
+bool AimBridge::MountProxy(const std::string& pipeName, uint64_t sizeBytes, std::string& outMountPoint) {
+    char sizeBuf[32];
+    snprintf(sizeBuf, sizeof(sizeBuf), "%llu", (unsigned long long)sizeBytes);
+    std::string args = "-a -t proxy -f \"" + pipeName + "\" -s " + sizeBuf + " -n";
+    std::string output;
+    if (!RunAimLl(args, output)) return false;
+    int devNum = std::atoi(output.c_str());
+    LogInfo("Proxy device mounted as device " + std::to_string(devNum));
+    auto devices = ListDevices();
+    for (auto& d : devices) { if (d.number == devNum) { outMountPoint = d.physicalDrive; return true; } }
+    outMountPoint = "?";
+    return true;
+}
+
 bool AimBridge::ReadDeviceData(const std::string& physicalDrivePath, uint64_t sizeBytes, void* buffer) {
     LogInfo("Reading device data from: " + physicalDrivePath);
 

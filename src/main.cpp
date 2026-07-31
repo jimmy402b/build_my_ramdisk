@@ -5,6 +5,8 @@
 #include "utils.h"
 #include "drive_letter.h"
 #include "daemon.h"
+#include "storage_server.h"
+#include "watchdog.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -88,25 +90,60 @@ static int CmdCreate(const CreateOptions& opts) {
     WriteFile(hRaw, rawData.data(), static_cast<DWORD>(rawData.size()), &written, nullptr);
     CloseHandle(hRaw);
 
-    LogInfo("Mounting as RAM disk...");
-    if (!g_aim.MountVm(rawPath, opts.sizeBytes, g_mountPoint)) {
-        LogError("Failed to mount RAM disk");
-        return 3;
+    if (opts.mode == "proxy") {
+        // === PROXY MODE ===
+        std::string pipeName = "\\\\.\\pipe\\ramdisk_proxy";
+        static StorageServer server;
+        static Watchdog watchdog;
+
+        server.SetLogger([](const std::string& m) { WriteLog("Server: " + m); });
+        watchdog.SetLogger([](const std::string& m) { WriteLog("Watchdog: " + m); });
+
+        if (!server.Start(pipeName, opts.outputPath, opts.sizeBytes)) {
+            LogError("Failed to start storage server"); return 4;
+        }
+        WriteLog("Storage server online at " + pipeName);
+
+        if (!g_aim.MountProxy(pipeName, opts.sizeBytes, g_mountPoint)) {
+            LogError("Failed to mount proxy device"); server.Stop(); return 3;
+        }
+
+        // Watchdog monitors the server (in daemon mode, runs as separate process)
+        if (opts.daemon) {
+            char myPath[MAX_PATH]; GetModuleFileNameA(nullptr, myPath, sizeof(myPath));
+            std::string wArgs = "\"" + std::string(myPath) + "\" --internal-proxy-server " + pipeName + " " + opts.outputPath + " " + std::to_string(opts.sizeBytes);
+            watchdog.Start(myPath, wArgs, pipeName);
+        }
+
+        g_vhdPath = opts.outputPath;
+        g_sizeBytes = opts.sizeBytes;
+
+        // Adjust save callback for proxy (use incremental save)
+        g_scheduler.SetSaveCallback([]() -> bool {
+            // In proxy mode, save is managed by StorageServer::SaveDirty
+            // For standalone save command, use server.SaveDirty()
+            return true;
+        });
+    } else {
+        // === VM MODE (original flow) ===
+        LogInfo("Mounting as RAM disk...");
+        if (!g_aim.MountVm(rawPath, opts.sizeBytes, g_mountPoint)) {
+            LogError("Failed to mount RAM disk");
+            return 3;
+        }
+        remove(rawPath.c_str());
+
+        g_vhdPath = opts.outputPath;
+        g_sizeBytes = opts.sizeBytes;
+
+        if (!g_vhd.Open(opts.outputPath, true)) {
+            LogError("Failed to re-open VHD: " + g_vhd.GetLastError());
+            g_aim.Unmount(g_deviceNumber, true);
+            return 2;
+        }
+
+        g_scheduler.SetSaveCallback(DoSave);
     }
-
-    // Remove temp raw file after aim_ll has loaded it into memory
-    remove(rawPath.c_str());
-
-    g_vhdPath = opts.outputPath;
-    g_sizeBytes = opts.sizeBytes;
-
-    if (!g_vhd.Open(opts.outputPath, true)) {
-        LogError("Failed to re-open VHD: " + g_vhd.GetLastError());
-        g_aim.Unmount(g_deviceNumber, true);
-        return 2;
-    }
-
-    g_scheduler.SetSaveCallback(DoSave);
     g_scheduler.RegisterShutdownHandler();
     g_scheduler.Start(opts.saveIntervalSec);
 
@@ -312,7 +349,8 @@ int main(int argc, char* argv[]) {
     // Filter --internal-daemon before parsing
     std::vector<char*> filteredArgs;
     for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "--internal-daemon") != 0)
+        if (strcmp(argv[i], "--internal-daemon") != 0 &&
+            strcmp(argv[i], "--internal-proxy-server") != 0)
             filteredArgs.push_back(argv[i]);
     }
     auto r = ParseArgs((int)filteredArgs.size(), filteredArgs.data());

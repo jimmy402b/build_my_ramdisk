@@ -9,6 +9,8 @@ add_executable(ramdisk-cli
     daemon.cpp
     dirty_bitmap.cpp
     sector_cache.cpp
+    storage_server.cpp
+    watchdog.cpp
 )
 
 target_include_directories(ramdisk-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
