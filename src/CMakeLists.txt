@@ -49,7 +49,15 @@ add_library(myrd_poc STATIC
     poc/cli.cpp poc/cli.h
     poc/lifecycle_runner.cpp poc/lifecycle_runner.h
     poc/raw_round_trip.cpp poc/raw_round_trip.h
+    poc/m0_provider.cpp poc/m0_provider.h
 )
 target_include_directories(myrd_poc PUBLIC "${CMAKE_SOURCE_DIR}")
-target_link_libraries(myrd_poc PUBLIC myrd_common)
+target_link_libraries(myrd_poc PUBLIC myrd_common myrd_proxy myrd_storage)
 myrd_enable_warnings(myrd_poc)
+
+add_executable(myrd-m0-poc
+    poc/main.cpp
+)
+target_include_directories(myrd-m0-poc PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd-m0-poc PRIVATE myrd_poc myrd_driver myrd_proxy myrd_storage myrd_common bcrypt wintrust crypt32 Setupapi Cfgmgr32)
+myrd_enable_warnings(myrd-m0-poc)
