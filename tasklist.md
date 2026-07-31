@@ -172,7 +172,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 14 | IN_PROGRESS | 71df34fd61b8c6d25f3fc3371dd3c819392f464a | — | — | — |
 | 15 | IN_PROGRESS | ff64d67a44ab7f84a0961f77a6f901db2aa91b80 | — | — | — |
 | 16 | IN_PROGRESS | e84dd6439036ebaa6fc17839122024d142ec2a9f | — | — | — |
-| 17 | IN_PROGRESS | (p) | — | — | — |
+| 17 | IN_PROGRESS | 86a8603fe26b82b4901f31c29993623f0e018b06 | — | — | — |
 | 18 | NOT_STARTED | — | — | — | — |
 | 19 | NOT_STARTED | — | — | — | — |
 | 20 | NOT_STARTED | — | — | — | — |
