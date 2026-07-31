@@ -156,7 +156,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | Task | 状态 | Start commit | Implementation commit | Review commit | 证据/说明 |
 |---:|---|---|---|---|---|
 | 0 | ON_TRACK | 2794db5 | 39ee930 | 6fea4a5 | — |
-| 1 | NOT_STARTED | — | — | — | — |
+| 1 | ON_TRACK | 359b3d9 | 9948154 | (pending) | — |
 | 2 | NOT_STARTED | — | — | — | — |
 | 3 | NOT_STARTED | — | — | — | — |
 | 4 | NOT_STARTED | — | — | — | — |
@@ -242,7 +242,7 @@ Plan: [Task 1](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R1.5 记录版本、退出码和偏差。
 - [ ] R1.6 结论 `ON_TRACK` 后提交 Task 1 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Claude`; Start `359b3d9`; Implementation `9948154`; Evidence `cl 19.44.35228 x64, Ninja 1.13.2, VSCMD_ARG_TGT_ARCH=x64`; Deviations `None`; Verdict `ON_TRACK`.
 
 ### Task 2 — Bootstrap the C++20 build and named CTest suites
 
