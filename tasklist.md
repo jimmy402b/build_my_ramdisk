@@ -163,8 +163,8 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 5 | ON_TRACK | acd31d0 | 5f33734 | 4ca7de4 | — |
 | 6 | ON_TRACK | 2c3227d | 112218a | 920f8d3 | — |
 | 7 | ON_TRACK | 83019ad | 8c960f3 | 0114cfe | — |
-| 8 | ON_TRACK | 0114cfe | c02af59 | (pending) | — |
-| 9 | NOT_STARTED | — | — | — | — |
+| 8 | ON_TRACK | 0114cfe | c02af59 | 9f08777 | — |
+| 9 | ON_TRACK | 9f08777 | 9f9b1c7 | (pending) | — |
 | 10 | NOT_STARTED | — | — | — | — |
 | 11 | NOT_STARTED | — | — | — | — |
 | 12 | NOT_STARTED | — | — | — | — |
@@ -462,7 +462,7 @@ Plan: [Task 9](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R9.5 记录生成样本、测试和偏差，但不记录敏感数据。
 - [ ] R9.6 结论 `ON_TRACK` 后提交 Task 9 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Claude`; Start `9f08777`; Implementation `9f9b1c7`; Evidence `8/8 object_names tests pass Debug+Release, BCrypt CSPRNG, lowercase hex enforced`; Deviations `None`; Verdict `ON_TRACK`.
 ### Task 10 — Own the shared mapping, events, and server mutex
 
 Plan: [Task 10](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#task-10-own-the-shared-mapping-events-and-server-mutex)
