@@ -15,6 +15,7 @@
 |---|---|
 | CMake | 4.2.2 |
 | Ninja | 1.13.2 |
+| MSVC (cl) | 19.44.35228 (x64) |
 | Visual Studio | 2022 BuildTools at `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools` |
 | Windows SDK | `10.0.26100.0` (also present: `10.0.22621.0`) |
 
