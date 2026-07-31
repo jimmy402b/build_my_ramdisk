@@ -161,8 +161,8 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 3 | ON_TRACK | deb40df | efacdab | 7934bb9 | — |
 | 4 | ON_TRACK | bd31d9b | 9e1f533 | b561fa7 | — |
 | 5 | ON_TRACK | acd31d0 | 5f33734 | 4ca7de4 | — |
-| 6 | ON_TRACK | 2c3227d | 112218a | (pending) | — |
-| 7 | NOT_STARTED | — | — | — | — |
+| 6 | ON_TRACK | 2c3227d | 112218a | 920f8d3 | — |
+| 7 | IN_PROGRESS | 920f8d3 | — | — | — | | — | — | — | — |
 | 8 | NOT_STARTED | — | — | — | — |
 | 9 | NOT_STARTED | — | — | — | — |
 | 10 | NOT_STARTED | — | — | — | — |
