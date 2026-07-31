@@ -24,3 +24,11 @@ target_sources(myrd_proxy PRIVATE
 )
 target_link_libraries(myrd_proxy PUBLIC myrd_storage bcrypt)
 myrd_enable_warnings(myrd_proxy)
+
+add_library(myrd_driver STATIC
+    driver/srb_codec.cpp driver/srb_codec.h
+    driver/srb_transport.h
+)
+target_include_directories(myrd_driver PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_driver PUBLIC myrd_common)
+myrd_enable_warnings(myrd_driver)

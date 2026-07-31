@@ -52,3 +52,11 @@ target_link_libraries(myrd_shm_proxy_server_tests PRIVATE myrd_test_support myrd
 target_include_directories(myrd_shm_proxy_server_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_shm_proxy_server_tests)
 add_test(NAME integration.shm COMMAND myrd_shm_proxy_server_tests)
+
+add_executable(myrd_srb_codec_tests
+    unit/srb_codec_tests.cpp
+)
+target_link_libraries(myrd_srb_codec_tests PRIVATE myrd_test_support myrd_driver)
+target_include_directories(myrd_srb_codec_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_srb_codec_tests)
+add_test(NAME unit.srb_codec COMMAND myrd_srb_codec_tests)
