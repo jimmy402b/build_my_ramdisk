@@ -159,7 +159,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 1 | ON_TRACK | 359b3d9 | 9948154 | 75c2bc0 | — |
 | 2 | ON_TRACK | c34ca9e | 0d03d2f | a120d1a | — |
 | 3 | ON_TRACK | deb40df | efacdab | 7934bb9 | — |
-| 4 | ON_TRACK | bd31d9b | 9e1f533 | (pending) | — |
+| 4 | ON_TRACK | bd31d9b | 9e1f533 | b561fa7 | — |
 | 5 | NOT_STARTED | — | — | — | — |
 | 6 | NOT_STARTED | — | — | — | — |
 | 7 | NOT_STARTED | — | — | — | — |
