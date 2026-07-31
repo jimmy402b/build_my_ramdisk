@@ -159,7 +159,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 1 | ON_TRACK | 359b3d9 | 9948154 | 75c2bc0 | — |
 | 2 | ON_TRACK | c34ca9e | 0d03d2f | a120d1a | — |
 | 3 | ON_TRACK | deb40df | efacdab | 7934bb9 | — |
-| 4 | NOT_STARTED | — | — | — | — |
+| 4 | ON_TRACK | bd31d9b | 9e1f533 | (pending) | — |
 | 5 | NOT_STARTED | — | — | — | — |
 | 6 | NOT_STARTED | — | — | — | — |
 | 7 | NOT_STARTED | — | — | — | — |
@@ -326,9 +326,7 @@ Plan: [Task 4](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#ta
 - [ ] R4.5 记录文件、测试数量和偏差。
 - [ ] R4.6 结论 `ON_TRACK` 后提交 Task 4 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
-
-### Task 5 — Encode AIM and IMDPROXY ABI from the audited contract
+Review Record：Executor `Claude`; Start `bd31d9b`; Implementation `9e1f533`; Evidence `10/10 tests pass Debug+Release, static_asserts for move-only types verified, NOMINMAX added for MSVC compat`; Deviations `None`; Verdict `ON_TRACK`. — Encode AIM and IMDPROXY ABI from the audited contract
 
 Plan: [Task 5](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#task-5-encode-aim-and-imdproxy-abi-from-the-audited-contract)
 
