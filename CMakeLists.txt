@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.25)
+project(MyRamDiskM0 VERSION 0.1.0 LANGUAGES CXX)
+
+if(NOT MSVC)
+    message(FATAL_ERROR "M0 requires MSVC")
+endif()
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "M0 requires x64")
+endif()
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+include(CTest)
+include(cmake/Warnings.cmake)
+add_subdirectory(src)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
