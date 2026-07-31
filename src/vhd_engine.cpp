@@ -184,7 +184,7 @@ bool VhdEngine::Create(const std::string& path, uint64_t sizeBytes, bool dynamic
     }
 
     HANDLE h = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           0, nullptr, CREATE_ALWAYS,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         pImpl->lastError = "Cannot create file: " + path;
@@ -296,7 +296,7 @@ bool VhdEngine::Open(const std::string& path, bool writable) {
     }
 
     DWORD access = GENERIC_READ;
-    DWORD share = FILE_SHARE_READ;
+    DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE;
     if (writable) {
         access |= GENERIC_WRITE;
     }

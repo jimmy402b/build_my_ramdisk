@@ -34,6 +34,18 @@ static bool DoSave() {
     // Convert \\?\PhysicalDrive1 → \\.\PhysicalDrive1
     if (StartsWith(physPath, "\\\\?\\")) physPath = "\\\\.\\" + physPath.substr(4);
 
+    // Flush all volumes on this disk before reading
+    // This ensures Windows filesystem cache is written to disk sectors
+    {
+        HANDLE hVol = CreateFileA(physPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_EXISTING, 0, nullptr);
+        if (hVol != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(hVol);
+            CloseHandle(hVol);
+        }
+    }
+
     if (!g_aim.ReadDeviceData(physPath, g_sizeBytes, buffer.data())) {
         LogError("Failed to read device data");
         return false;
@@ -52,13 +64,32 @@ static int CmdCreate(const CreateOptions& opts) {
         LogError("Failed to create VHD: " + g_vhd.GetLastError());
         return 2;
     }
+
+    // Extract raw data from VHD for aim_ll (VHD has headers; aim_ll needs flat raw data)
+    std::vector<uint8_t> rawData(opts.sizeBytes, 0);
+    g_vhd.ReadAll(rawData.data());
     g_vhd.Close();
 
+    // Write raw data to temp flat file for aim_ll
+    std::string rawPath = opts.outputPath + ".raw";
+    HANDLE hRaw = CreateFileA(rawPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (hRaw == INVALID_HANDLE_VALUE) {
+        LogError("Failed to create raw temp file: " + rawPath);
+        return 4;
+    }
+    DWORD written = 0;
+    WriteFile(hRaw, rawData.data(), static_cast<DWORD>(rawData.size()), &written, nullptr);
+    CloseHandle(hRaw);
+
     LogInfo("Mounting as RAM disk...");
-    if (!g_aim.MountVm(opts.outputPath, opts.sizeBytes, g_mountPoint)) {
+    if (!g_aim.MountVm(rawPath, opts.sizeBytes, g_mountPoint)) {
         LogError("Failed to mount RAM disk");
         return 3;
     }
+
+    // Remove temp raw file after aim_ll has loaded it into memory
+    remove(rawPath.c_str());
 
     g_vhdPath = opts.outputPath;
     g_sizeBytes = opts.sizeBytes;
@@ -94,11 +125,29 @@ static int CmdMount(const MountOptions& opts) {
     g_sizeBytes = g_vhd.GetSizeBytes();
     LogInfo("VHD size: " + FormatSize(g_sizeBytes));
 
+    // Extract raw data from VHD for aim_ll
+    std::vector<uint8_t> rawData(g_sizeBytes, 0);
+    g_vhd.ReadAll(rawData.data());
+
+    // Write to temp flat file
+    std::string rawPath = opts.inputPath + ".raw";
+    HANDLE hRaw = CreateFileA(rawPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (hRaw == INVALID_HANDLE_VALUE) {
+        LogError("Failed to create raw temp file");
+        return 4;
+    }
+    DWORD written = 0;
+    WriteFile(hRaw, rawData.data(), static_cast<DWORD>(rawData.size()), &written, nullptr);
+    CloseHandle(hRaw);
+
     LogInfo("Mounting as RAM disk...");
-    if (!g_aim.MountVmFromFile(opts.inputPath, g_mountPoint)) {
+    if (!g_aim.MountVm(rawPath, g_sizeBytes, g_mountPoint)) {
         LogError("Failed to mount RAM disk");
+        remove(rawPath.c_str());
         return 3;
     }
+    remove(rawPath.c_str());
 
     if (!opts.readonly) {
         g_scheduler.SetSaveCallback(DoSave);
@@ -121,14 +170,61 @@ static int CmdMount(const MountOptions& opts) {
 }
 
 static int CmdSave(const SaveOptions& opts) {
-    if (!g_vhd.IsOpen()) { LogError("No active VHD session"); return 2; }
-    return DoSave() ? 0 : 2;
+    // Standalone save: find device, read PhysicalDrive, write to VHD
+    auto devices = g_aim.ListDevices();
+    if (devices.empty()) { LogError("No RAM disks mounted"); return 3; }
+
+    for (auto& d : devices) {
+        if (opts.device != 0 && d.number != opts.device) continue;
+        if (d.backingFile.empty()) continue;
+
+        // Clean NT path prefix and map .raw back to .vhd
+        std::string vhdPath = d.backingFile;
+        if (StartsWith(vhdPath, "\\??\\")) vhdPath = vhdPath.substr(4);
+        // If mounted via raw temp file, map back to VHD
+        if (vhdPath.size() > 4 && vhdPath.substr(vhdPath.size() - 4) == ".raw") {
+            vhdPath = vhdPath.substr(0, vhdPath.size() - 4);
+        }
+
+        LogInfo("Saving device " + std::to_string(d.number) + " -> " + vhdPath);
+
+        VhdEngine vhd;
+        if (!vhd.Open(vhdPath, true)) {
+            LogError("Cannot open VHD: " + vhd.GetLastError());
+            return 2;
+        }
+
+        uint64_t size = vhd.GetSizeBytes();
+        std::vector<uint8_t> buffer(size);
+
+        std::string physPath = d.physicalDrive;
+        if (StartsWith(physPath, "\\\\?\\")) physPath = "\\\\.\\" + physPath.substr(4);
+
+        // Flush volume to ensure filesystem cache is on disk
+        HANDLE hFlush = CreateFileA(physPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                     nullptr, OPEN_EXISTING, 0, nullptr);
+        if (hFlush != INVALID_HANDLE_VALUE) { FlushFileBuffers(hFlush); CloseHandle(hFlush); }
+
+        if (!g_aim.ReadDeviceData(physPath, size, buffer.data())) {
+            LogError("Failed to read device data");
+            return 3;
+        }
+
+        if (!vhd.WriteAll(buffer.data())) {
+            LogError("Failed to write VHD: " + vhd.GetLastError());
+            return 2;
+        }
+
+        vhd.Close();
+        LogInfo("Saved " + FormatSize(size) + " to " + d.backingFile);
+    }
+    return 0;
 }
 
 static int CmdUnmount(const UnmountOptions& opts) {
-    if (!opts.noSave && g_vhd.IsOpen()) { LogInfo("Saving before unmount..."); DoSave(); }
-    g_scheduler.Stop();
-    g_vhd.Close();
+    if (!opts.noSave) { SaveOptions so; so.device = opts.device; CmdSave(so); }
+
     if (!g_aim.Unmount(opts.device, false)) {
         LogError("Failed to unmount device " + std::to_string(opts.device));
         return 3;
@@ -141,8 +237,12 @@ static int CmdStatus() {
     auto devices = g_aim.ListDevices();
     if (devices.empty()) { printf("No RAM disks mounted.\n"); return 0; }
     for (auto& d : devices) {
+        std::string path = d.backingFile;
+        if (StartsWith(path, "\\??\\")) path = path.substr(4);
+        if (path.size() > 4 && path.substr(path.size() - 4) == ".raw")
+            path = path.substr(0, path.size() - 4);
         printf("[%d] %s -> %s (%s)\n", d.number,
-               d.backingFile.empty() ? "(no file)" : d.backingFile.c_str(),
+               path.empty() ? "(no file)" : path.c_str(),
                d.physicalDrive.c_str(), FormatSize(d.sizeBytes).c_str());
     }
     return 0;
