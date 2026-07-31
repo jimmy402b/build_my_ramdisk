@@ -70,6 +70,19 @@ struct VhdDynamicHeader {
 // Helpers
 // ============================================================
 
+// VHD format is big-endian on disk. Simple byte-level swap.
+static uint32_t Swap32(uint32_t v) {
+    uint8_t* b = (uint8_t*)&v;
+    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3];
+}
+static uint64_t Swap64(uint64_t v) {
+    uint8_t* b = (uint8_t*)&v;
+    return ((uint64_t)b[0] << 56) | ((uint64_t)b[1] << 48) |
+           ((uint64_t)b[2] << 40) | ((uint64_t)b[3] << 32) |
+           ((uint64_t)b[4] << 24) | ((uint64_t)b[5] << 16) |
+           ((uint64_t)b[6] << 8)  |  (uint64_t)b[7];
+}
+
 static uint32_t CalcFooterChecksum(const VhdFooter& f) {
     VhdFooter tmp = f;
     tmp.checksum = 0;
@@ -131,6 +144,17 @@ static void FillFooter(VhdFooter& f, uint64_t sizeBytes, uint32_t diskType) {
         f.uniqueId[i] = static_cast<uint8_t>((ts >> ((i % 4) * 8)) & 0xFF);
         ts = ts * 1103515245 + 12345;
     }
+    // Convert multi-byte fields to big-endian (VHD on-disk format)
+    f.features = Swap32(f.features);
+    f.fileFormatVersion = Swap32(f.fileFormatVersion);
+    f.dataOffset = Swap64(f.dataOffset);
+    f.timestamp = Swap32(f.timestamp);
+    f.creatorVersion = Swap32(f.creatorVersion);
+    f.originalSize = Swap64(f.originalSize);
+    f.currentSize = Swap64(f.currentSize);
+    f.diskGeometry = Swap32(f.diskGeometry);
+    f.diskType = Swap32(f.diskType);
+
     f.checksum = CalcFooterChecksum(f);
 }
 
@@ -178,17 +202,37 @@ bool VhdEngine::Create(const std::string& path, uint64_t sizeBytes, bool dynamic
         return false;
     }
 
-    if (!dynamic) {
-        pImpl->lastError = "Fixed VHD not yet supported; use dynamic=true";
-        return false;
-    }
-
     HANDLE h = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         pImpl->lastError = "Cannot create file: " + path;
         return false;
+    }
+
+    if (!dynamic) {
+        // Fixed VHD: pre-allocate file to size+512, write footer at end
+        LARGE_INTEGER li;
+        li.QuadPart = sizeBytes + VHD_FOOTER_SIZE;
+        SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+        SetEndOfFile(h);
+
+        VhdFooter footer;
+        FillFooter(footer, sizeBytes, VHD_TYPE_FIXED);
+
+        li.QuadPart = sizeBytes;
+        SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+        DWORD written = 0;
+        WriteFile(h, &footer, sizeof(footer), &written, nullptr);
+
+        pImpl->fileHandle = h;
+        pImpl->path = path;
+        pImpl->sizeBytes = sizeBytes;
+        pImpl->totalSectors = sizeBytes / VHD_SECTOR_SIZE;
+        pImpl->dynamic = false;
+        pImpl->open = true;
+        pImpl->writable = true;
+        return true;
     }
 
     // Calculate layout
@@ -212,7 +256,7 @@ bool VhdEngine::Create(const std::string& path, uint64_t sizeBytes, bool dynamic
     // Write footer copy at offset 0
     VhdFooter footer;
     FillFooter(footer, sizeBytes, VHD_TYPE_DYNAMIC);
-    footer.dataOffset = VHD_SECTOR_SIZE;  // points to dyn header (absolute, not relative)
+    footer.dataOffset = Swap64(VHD_SECTOR_SIZE);  // big-endian, points to dyn header
 
     DWORD written = 0;
     if (!WriteFile(h, &footer, sizeof(footer), &written, nullptr) || written != sizeof(footer)) {
@@ -225,12 +269,12 @@ bool VhdEngine::Create(const std::string& path, uint64_t sizeBytes, bool dynamic
     memset(&dynHdr, 0, sizeof(dynHdr));
     memcpy(dynHdr.cookie, VHD_DYNHDR_COOKIE, 8);
     dynHdr.dataOffset = 0xFFFFFFFFFFFFFFFFULL;
-    dynHdr.tableOffset = batFileOffset;
-    dynHdr.headerVersion = 0x00010000;
-    dynHdr.maxTableEntries = maxTableEntries;
-    dynHdr.blockSize = blockSize;
+    dynHdr.tableOffset = Swap64(batFileOffset);
+    dynHdr.headerVersion = Swap32(0x00010000);
+    dynHdr.maxTableEntries = Swap32(maxTableEntries);
+    dynHdr.blockSize = Swap32(blockSize);
     dynHdr.checksum = 0;
-    dynHdr.checksum = CalcDynHdrChecksum(dynHdr);
+    dynHdr.checksum = Swap32(CalcDynHdrChecksum(dynHdr)); // checksum computed on BE struct, result also in BE
 
     if (!WriteFile(h, &dynHdr, sizeof(dynHdr), &written, nullptr) || written != sizeof(dynHdr)) {
         pImpl->lastError = "Failed to write dynamic header";
@@ -259,7 +303,7 @@ bool VhdEngine::Create(const std::string& path, uint64_t sizeBytes, bool dynamic
     SetFilePointerEx(h, liMeta, nullptr, FILE_BEGIN);
     // For dynamic VHD, the footer must be at EOF which is currently at metaSize
     VhdFooter endFooter = footer;
-    endFooter.dataOffset = VHD_SECTOR_SIZE;
+    endFooter.dataOffset = Swap64(VHD_SECTOR_SIZE);
     endFooter.checksum = CalcFooterChecksum(endFooter);
 
     if (!WriteFile(h, &endFooter, sizeof(endFooter), &written, nullptr) || written != sizeof(endFooter)) {
@@ -330,8 +374,30 @@ bool VhdEngine::Open(const std::string& path, bool writable) {
         CloseHandle(h); return false;
     }
 
+    // Swap footer fields from big-endian to host byte order
+    footer.features = Swap32(footer.features);
+    footer.fileFormatVersion = Swap32(footer.fileFormatVersion);
+    footer.dataOffset = Swap64(footer.dataOffset);
+    footer.timestamp = Swap32(footer.timestamp);
+    footer.creatorVersion = Swap32(footer.creatorVersion);
+    footer.originalSize = Swap64(footer.originalSize);
+    footer.currentSize = Swap64(footer.currentSize);
+    footer.diskGeometry = Swap32(footer.diskGeometry);
+    footer.diskType = Swap32(footer.diskType);
+
+    if (footer.diskType == VHD_TYPE_FIXED) {
+        // Fixed VHD: raw data from offset 0, footer at EOF
+        pImpl->dynamic = false;
+        pImpl->sizeBytes = footer.currentSize;
+        pImpl->totalSectors = footer.currentSize / VHD_SECTOR_SIZE;
+        pImpl->open = true;
+        pImpl->writable = writable;
+        pImpl->path = path;
+        return true;
+    }
+
     if (footer.diskType != VHD_TYPE_DYNAMIC) {
-        pImpl->lastError = "Only dynamic VHD supported for now";
+        pImpl->lastError = "Only dynamic and fixed VHD supported";
         CloseHandle(h); return false;
     }
 
@@ -354,6 +420,13 @@ bool VhdEngine::Open(const std::string& path, bool writable) {
         CloseHandle(h); return false;
     }
 
+    // Swap dynhdr from big-endian
+    dynHdr.dataOffset = Swap64(dynHdr.dataOffset);
+    dynHdr.tableOffset = Swap64(dynHdr.tableOffset);
+    dynHdr.headerVersion = Swap32(dynHdr.headerVersion);
+    dynHdr.maxTableEntries = Swap32(dynHdr.maxTableEntries);
+    dynHdr.blockSize = Swap32(dynHdr.blockSize);
+
     // Read BAT
     uint32_t maxEntries = dynHdr.maxTableEntries;
     std::vector<uint32_t> bat(maxEntries);
@@ -369,6 +442,9 @@ bool VhdEngine::Open(const std::string& path, bool writable) {
         pImpl->lastError = "Failed to read BAT";
         CloseHandle(h); return false;
     }
+    // Swap BAT from big-endian
+    for (uint32_t i = 0; i < maxEntries; i++)
+        bat[i] = Swap32(bat[i]);
 
     // Initialize state
     pImpl->fileHandle = h;
@@ -394,6 +470,15 @@ bool VhdEngine::Open(const std::string& path, bool writable) {
 
 void VhdEngine::Close() {
     if (pImpl->fileHandle != INVALID_HANDLE_VALUE) {
+        if (!pImpl->dynamic) {
+            // Fixed VHD: nothing to flush, just close
+            CloseHandle(pImpl->fileHandle);
+            pImpl->fileHandle = INVALID_HANDLE_VALUE;
+            pImpl->open = false;
+            pImpl->path.clear();
+            return;
+        }
+
         // Get current end-of-file (where end footer sits)
         LARGE_INTEGER liZero;
         liZero.QuadPart = 0;
@@ -430,12 +515,16 @@ void VhdEngine::Close() {
 
         // If BAT was modified, write it back
         if (batModified) {
+            // Swap BAT to big-endian before writing
+            std::vector<uint32_t> batBe(pImpl->bat);
+            for (auto& v : batBe) v = Swap32(v);
+
             LARGE_INTEGER liBat;
             liBat.QuadPart = static_cast<LONGLONG>(pImpl->batOffset);
             SetFilePointerEx(pImpl->fileHandle, liBat, nullptr, FILE_BEGIN);
             DWORD written = 0;
-            WriteFile(pImpl->fileHandle, pImpl->bat.data(),
-                      static_cast<DWORD>(pImpl->bat.size() * 4), &written, nullptr);
+            WriteFile(pImpl->fileHandle, batBe.data(),
+                      static_cast<DWORD>(batBe.size() * 4), &written, nullptr);
 
             // Write new end footer at dataAreaEnd
             LARGE_INTEGER liFooter;
@@ -446,14 +535,35 @@ void VhdEngine::Close() {
             memset(&footer, 0, sizeof(footer));
             // Seek back from current file position: read from sector 0
             // Actually, just write a fresh footer
-            // Read the footer from beginning (sector 0) and update dataOffset
+            // Read footer copy from start, swap to host, update, swap back
             LARGE_INTEGER liFtr;
             liFtr.QuadPart = 0;
             SetFilePointerEx(pImpl->fileHandle, liFtr, nullptr, FILE_BEGIN);
             DWORD read = 0;
             ReadFile(pImpl->fileHandle, &footer, sizeof(footer), &read, nullptr);
 
-            footer.dataOffset = VHD_SECTOR_SIZE;  // dynamic header at sector 1
+            footer.features = Swap32(footer.features);
+            footer.fileFormatVersion = Swap32(footer.fileFormatVersion);
+            footer.dataOffset = Swap64(footer.dataOffset);
+            footer.timestamp = Swap32(footer.timestamp);
+            footer.creatorVersion = Swap32(footer.creatorVersion);
+            footer.originalSize = Swap64(footer.originalSize);
+            footer.currentSize = Swap64(footer.currentSize);
+            footer.diskGeometry = Swap32(footer.diskGeometry);
+            footer.diskType = Swap32(footer.diskType);
+
+            footer.dataOffset = Swap64(VHD_SECTOR_SIZE);
+
+            footer.features = Swap32(footer.features);
+            footer.fileFormatVersion = Swap32(footer.fileFormatVersion);
+            footer.dataOffset = Swap64(footer.dataOffset);
+            footer.timestamp = Swap32(footer.timestamp);
+            footer.creatorVersion = Swap32(footer.creatorVersion);
+            footer.originalSize = Swap64(footer.originalSize);
+            footer.currentSize = Swap64(footer.currentSize);
+            footer.diskGeometry = Swap32(footer.diskGeometry);
+            footer.diskType = Swap32(footer.diskType);
+
             footer.checksum = CalcFooterChecksum(footer);
 
             liFooter.QuadPart = static_cast<LONGLONG>(dataAreaEnd);
@@ -483,13 +593,22 @@ void VhdEngine::Close() {
 // ============================================================
 
 bool VhdEngine::ReadSectors(uint64_t sectorOffset, uint32_t sectorCount, void* buffer) {
-    if (!pImpl->open) {
-        pImpl->lastError = "VhdEngine not open";
-        return false;
-    }
-    if (sectorOffset + sectorCount > pImpl->totalSectors) {
-        pImpl->lastError = "ReadSectors: out of bounds";
-        return false;
+    if (!pImpl->open) { pImpl->lastError = "VhdEngine not open"; return false; }
+    if (sectorOffset + sectorCount > pImpl->totalSectors) { pImpl->lastError = "ReadSectors: out of bounds"; return false; }
+
+    // Fixed VHD: direct file access, no BAT
+    if (!pImpl->dynamic) {
+        uint64_t fileOffset = sectorOffset * VHD_SECTOR_SIZE;
+        LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(fileOffset);
+        if (!SetFilePointerEx(pImpl->fileHandle, li, nullptr, FILE_BEGIN)) {
+            pImpl->lastError = "Seek failed"; return false;
+        }
+        DWORD totalBytes = sectorCount * VHD_SECTOR_SIZE;
+        DWORD rd = 0;
+        if (!ReadFile(pImpl->fileHandle, buffer, totalBytes, &rd, nullptr) || rd != totalBytes) {
+            pImpl->lastError = "ReadFile failed"; return false;
+        }
+        return true;
     }
 
     uint8_t* dst = static_cast<uint8_t*>(buffer);
@@ -547,13 +666,22 @@ bool VhdEngine::ReadSectors(uint64_t sectorOffset, uint32_t sectorCount, void* b
 // ============================================================
 
 bool VhdEngine::WriteSectors(uint64_t sectorOffset, uint32_t sectorCount, const void* buffer) {
-    if (!pImpl->open || !pImpl->writable) {
-        pImpl->lastError = "VhdEngine not open or not writable";
-        return false;
-    }
-    if (sectorOffset + sectorCount > pImpl->totalSectors) {
-        pImpl->lastError = "WriteSectors: out of bounds";
-        return false;
+    if (!pImpl->open || !pImpl->writable) { pImpl->lastError = "VhdEngine not open or not writable"; return false; }
+    if (sectorOffset + sectorCount > pImpl->totalSectors) { pImpl->lastError = "WriteSectors: out of bounds"; return false; }
+
+    // Fixed VHD: direct file access
+    if (!pImpl->dynamic) {
+        uint64_t fileOffset = sectorOffset * VHD_SECTOR_SIZE;
+        LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(fileOffset);
+        if (!SetFilePointerEx(pImpl->fileHandle, li, nullptr, FILE_BEGIN)) {
+            pImpl->lastError = "Seek failed"; return false;
+        }
+        DWORD totalBytes = sectorCount * VHD_SECTOR_SIZE;
+        DWORD wr = 0;
+        if (!WriteFile(pImpl->fileHandle, buffer, totalBytes, &wr, nullptr) || wr != totalBytes) {
+            pImpl->lastError = "WriteFile failed"; return false;
+        }
+        return true;
     }
 
     const uint8_t* src = static_cast<const uint8_t*>(buffer);
