@@ -76,3 +76,11 @@ target_link_libraries(myrd_physical_drive_locator_tests PRIVATE myrd_test_suppor
 target_include_directories(myrd_physical_drive_locator_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_physical_drive_locator_tests)
 add_test(NAME unit.physical_drive_locator COMMAND myrd_physical_drive_locator_tests)
+
+add_executable(myrd_report_tests
+    unit/report_tests.cpp
+)
+target_link_libraries(myrd_report_tests PRIVATE myrd_test_support myrd_poc)
+target_include_directories(myrd_report_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_report_tests)
+add_test(NAME unit.report COMMAND myrd_report_tests)
