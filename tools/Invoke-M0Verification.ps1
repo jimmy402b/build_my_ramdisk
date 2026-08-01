@@ -104,6 +104,9 @@ $v4 = {
         assertTestSelection 'debug' '^(unit\.|integration\.shm$)' 11
         ctest --preset debug
     }
+    step "V4: harness preflight safety tests" {
+        & "$root\tests\e2e\test-m0-harness-preflight.ps1"
+    }
     step "V4: single Debug E2E lifecycle" {
         & "$root\tests\e2e\run-m0-driver-only.ps1" `
             -Iterations 1 -Configuration Debug -ReportRoot reports/m0-v4

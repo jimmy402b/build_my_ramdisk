@@ -20,6 +20,23 @@ function Assert-SameStringSet($left, $right, [string]$label) {
     }
 }
 
+function Assert-NoReparsePointToRoot([string]$ExistingPath,
+                                     [string]$RequiredRoot) {
+    $rootFullPath = [IO.Path]::GetFullPath($RequiredRoot).TrimEnd('\')
+    $pathItem = Get-Item -LiteralPath $ExistingPath -Force
+    while ($null -ne $pathItem) {
+        if (($pathItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "ReportRoot must not traverse a reparse point: $($pathItem.FullName)"
+        }
+        if ($pathItem.FullName.TrimEnd('\') -eq $rootFullPath) {
+            return
+        }
+        $pathItem = $pathItem.Parent
+    }
+    throw 'ReportRoot ancestry could not be proven below reports'
+}
+
 $outerRunId = Get-Date -Format 'yyyyMMdd-HHmmss-fffffff'
 $preflightSummaryDir = Join-Path $repoRoot 'reports\m0-harness-preflight'
 $summaryWasWritten = $false
@@ -38,7 +55,15 @@ try {
     # ── Preflight: serial mutex ────────────────────────────────
     $mutex = New-Object System.Threading.Mutex(
         $false, 'Global\myrd-m0-e2e-mutex')
-    if (-not $mutex.WaitOne(0)) {
+    $mutexAcquired = $false
+    try {
+        $mutexAcquired = $mutex.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        # WaitOne grants ownership before reporting abandonment. Continue with
+        # the recovered lock and release it in the outer finally block.
+        $mutexAcquired = $true
+    }
+    if (-not $mutexAcquired) {
         throw 'Another M0 E2E run is already in progress.'
     }
     $mutexOwned = $true
@@ -79,32 +104,34 @@ try {
 
     # ── Preflight: ReportRoot ──────────────────────────────────
     $reportsRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'reports'))
-    $reportFullPath = [IO.Path]::GetFullPath(
-        (Join-Path (Get-Location) $ReportRoot))
+    $reportFullPath = if ([IO.Path]::IsPathRooted($ReportRoot)) {
+        [IO.Path]::GetFullPath($ReportRoot)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path (Get-Location) $ReportRoot))
+    }
     $reportsPrefix = $reportsRoot.TrimEnd('\') + '\'
     if (-not $reportFullPath.StartsWith(
             $reportsPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'ReportRoot must resolve below the repository reports directory'
     }
+
+    # Check the nearest existing ancestor before creating anything. Otherwise
+    # New-Item could follow an existing junction and write outside reports.
+    $existingAncestor = $reportFullPath
+    while (-not (Test-Path -LiteralPath $existingAncestor)) {
+        $parent = [IO.Directory]::GetParent($existingAncestor)
+        if ($null -eq $parent) {
+            throw 'ReportRoot existing ancestry could not be determined'
+        }
+        $existingAncestor = $parent.FullName
+    }
+    Assert-NoReparsePointToRoot $existingAncestor $reportsRoot
+
     if (-not (Test-Path -LiteralPath $reportFullPath)) {
         New-Item -ItemType Directory -Path $reportFullPath -Force | Out-Null
     }
     $reportDir = (Resolve-Path -LiteralPath $reportFullPath).Path
-    $pathItem = Get-Item -LiteralPath $reportDir -Force
-    while ($null -ne $pathItem) {
-        if (($pathItem.Attributes -band
-                [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "ReportRoot must not traverse a reparse point: $($pathItem.FullName)"
-        }
-        if ($pathItem.FullName.TrimEnd('\') -eq
-            $reportsRoot.TrimEnd('\')) {
-            break
-        }
-        $pathItem = $pathItem.Parent
-    }
-    if ($null -eq $pathItem) {
-        throw 'ReportRoot ancestry could not be proven below reports'
-    }
+    Assert-NoReparsePointToRoot $reportDir $reportsRoot
     $preflightSummaryDir = $reportDir
     $runId = (Get-Date -Format 'yyyyMMdd-HHmmss-fffffff')
 
@@ -122,6 +149,7 @@ try {
     $allReports = @()
     $childExitCodes = @{}
     $reportSha256 = @{}
+    $querySha256 = @{}
     $queryBefore = $null
     $queryAfter = $null
     $harnessError = $null
@@ -146,6 +174,9 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "query-driver baseline failed (exit $LASTEXITCODE)"
         }
+        & $repoRoot\tools\Verify-M0Json.ps1 -Path $queryBefore | Out-Null
+        $querySha256[$queryBefore] =
+            (Get-FileHash -LiteralPath $queryBefore -Algorithm SHA256).Hash
 
         # Run lifecycle iterations
         $failureArg = if ($FailurePoint -ne 'none') {
@@ -189,8 +220,9 @@ try {
             throw "query-driver after run failed (exit $LASTEXITCODE)"
         }
 
-        & $repoRoot\tools\Verify-M0Json.ps1 -Path $queryBefore | Out-Null
         & $repoRoot\tools\Verify-M0Json.ps1 -Path $queryAfter | Out-Null
+        $querySha256[$queryAfter] =
+            (Get-FileHash -LiteralPath $queryAfter -Algorithm SHA256).Hash
         $beforeReport = Get-Content -LiteralPath $queryBefore -Raw -Encoding utf8 |
             ConvertFrom-Json
         $afterReport = Get-Content -LiteralPath $queryAfter -Raw -Encoding utf8 |
@@ -271,6 +303,24 @@ try {
         }
     }
 
+    foreach ($queryPath in @($queryBefore, $queryAfter)) {
+        if ([string]::IsNullOrWhiteSpace([string]$queryPath)) { continue }
+        try {
+            $expectedHash = $querySha256[$queryPath]
+            if ([string]::IsNullOrWhiteSpace([string]$expectedHash)) {
+                throw "missing validated query report hash: $queryPath"
+            }
+            $currentHash = (Get-FileHash -LiteralPath $queryPath `
+                -Algorithm SHA256).Hash
+            if ($currentHash -ne $expectedHash) {
+                throw "published query report changed after validation: $queryPath"
+            }
+            & $repoRoot\tools\Verify-M0Json.ps1 -Path $queryPath | Out-Null
+        } catch {
+            if ($null -eq $harnessError) { $harnessError = $_ }
+        }
+    }
+
     if (-not $stateRestored -or -not $startModeUnchanged) {
         if ($null -eq $harnessError) {
             $harnessError = 'deviosvc state or StartMode was not restored'
@@ -293,6 +343,7 @@ try {
         report_paths = $allReports
         child_exit_codes = $childExitCodes
         report_sha256 = $reportSha256
+        query_sha256 = $querySha256
         query_before = $queryBefore
         query_after = $queryAfter
         failure_point = $FailurePoint
@@ -340,6 +391,7 @@ try {
             report_paths = @()
             child_exit_codes = @{}
             report_sha256 = @{}
+            query_sha256 = @{}
             query_before = $null
             query_after = $null
             failure_point = $FailurePoint

@@ -85,7 +85,9 @@ Corrected 2026-08-01 per Windows SDK ntddscsi.h and AIM source srbioctl.cpp (ups
 
 ### 5.3 IMSCSI_DEVICE_CONFIGURATION
 
-`#pragma pack(push, 4)` applied. `sizeof` = 34 + variable FileName.
+`#pragma pack(push, 4)` applied. The wire fixed prefix is 34 bytes, followed by
+the variable FileName. Do not use the native C++ `sizeof` for wire encoding;
+MSVC may add tail padding and report 36 bytes.
 
 | Field | Type | Size | Offset | Notes |
 |---|---|---|---|---|
@@ -98,7 +100,7 @@ Corrected 2026-08-01 per Windows SDK ntddscsi.h and AIM source srbioctl.cpp (ups
 | FileNameLength | USHORT | 2 | 32 | Length in **bytes** of FileName; AIM's managed caller excludes NUL |
 | FileName[] | WCHAR | variable | 34 | UTF-16LE string |
 
-`sizeof` (without FileName) = 34 bytes.
+Wire FileName offset / fixed-prefix length = 34 bytes.
 
 M0 CREATE flags: `IMSCSI_DEVICE_TYPE_HD | IMSCSI_TYPE_PROXY | IMSCSI_PROXY_TYPE_SHM` = `0x00003310`.
 
@@ -109,7 +111,7 @@ M0 write. Lifecycle identity validation requires this exact normalized value.
 
 ### 5.4 SRB_IMSCSI_CREATE_DATA
 
-`SRB_IO_CONTROL` (28 bytes) + `IMSCSI_DEVICE_CONFIGURATION` (34+ bytes).
+`SRB_IO_CONTROL` (28 bytes) + the 34-byte configuration wire prefix + FileName.
 
 Total header size before FileName: 28 + 34 = 62 bytes.
 

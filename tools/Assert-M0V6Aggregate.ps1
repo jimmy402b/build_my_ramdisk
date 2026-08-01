@@ -69,12 +69,32 @@ require (@($executableHashes | Select-Object -Unique).Count -eq 1) `
 require (@($driverHashes | Select-Object -Unique).Count -eq 1) `
     'driver hash changed during V6'
 
+$queryPaths = @([string]$summary.query_before, [string]$summary.query_after)
+foreach ($queryPath in $queryPaths) {
+    require (Test-Path -LiteralPath $queryPath) `
+        "missing query report: $queryPath"
+    $queryHashProperty =
+        $summary.query_sha256.PSObject.Properties[$queryPath]
+    require ($null -ne $queryHashProperty) `
+        "missing immutable query report hash: $queryPath"
+    require ((Get-FileHash -LiteralPath $queryPath -Algorithm SHA256).Hash `
+        -eq [string]$queryHashProperty.Value) `
+        "published query report changed: $queryPath"
+    & "$PSScriptRoot\Verify-M0Json.ps1" -Path $queryPath | Out-Null
+}
+
 $queryBefore = Get-Content -LiteralPath $summary.query_before `
     -Raw -Encoding utf8 | ConvertFrom-Json
 $queryAfter = Get-Content -LiteralPath $summary.query_after `
     -Raw -Encoding utf8 | ConvertFrom-Json
 require ($queryBefore.success -and $queryAfter.success) `
     'independent query baseline failed'
+require ($queryBefore.environment.executable_sha256 -eq $executableHashes[0] `
+    -and $queryAfter.environment.executable_sha256 -eq $executableHashes[0]) `
+    'query baseline used a different executable'
+require ($queryBefore.driver.sha256 -eq $driverHashes[0] -and
+         $queryAfter.driver.sha256 -eq $driverHashes[0]) `
+    'query baseline observed a different driver'
 require ((@($queryBefore.baseline.aim_device_ids_before | Sort-Object) -join ',') `
     -eq (@($queryAfter.baseline.aim_device_ids_after | Sort-Object) -join ',')) `
     'final AIM device list differs from baseline'
@@ -161,6 +181,7 @@ $aggregate = [ordered]@{
     driver_sha256 = $driverHashes[0]
     query_before = $summary.query_before
     query_after = $summary.query_after
+    query_sha256 = $summary.query_sha256
     final_query_after_service_restore = $finalQueryPath
     named_objects_reopen_failed_for_all = $true
     service_state_restored = $true
