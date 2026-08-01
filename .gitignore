@@ -1,5 +1,19 @@
-build/
-*.o
-*.exe
-*.a
-.DS_Store
+# Build output
+/out/
+
+# Reports (test output, diagnostics, evidence reports)
+/reports/
+
+# IDE state
+.idea/
+.vs/
+.vscode/
+*.suo
+*.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+# Generated report JSON (if any end up at root)
+*.json
+!CMakePresets.json

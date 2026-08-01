@@ -1,0 +1,32 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "msvc",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/out/build/msvc",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "msvc", "configuration": "Debug" },
+    { "name": "release", "configurePreset": "msvc", "configuration": "Release" }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "msvc",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "release",
+      "configurePreset": "msvc",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
