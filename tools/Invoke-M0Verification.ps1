@@ -17,7 +17,7 @@ function step($name, $script) {
 
 . "$PSScriptRoot\Enter-MsvcEnvironment.ps1"
 
-# Build V0 commands
+# V0: documentation and protocol checks
 $v0 = {
     step "V0: source commit" { git -C out/reference/aim rev-parse HEAD }
     step "V0: protocol contract" {
@@ -27,7 +27,7 @@ $v0 = {
     step "V0: git diff check" { git diff --check }
 }
 
-# Build V1 commands
+# V1: build + unit tests
 $v1 = {
     & $v0
     step "V1: configure" { cmake --preset msvc }
@@ -35,7 +35,7 @@ $v1 = {
     step "V1: unit tests" { ctest --preset $Configuration.ToLower() -R '^unit\.' }
 }
 
-# Build V2 commands
+# V2: local integration
 $v2 = {
     & $v1
     step "V2: integration SHM 50x" {
@@ -46,10 +46,59 @@ $v2 = {
     }
 }
 
-# V3 placeholder
+# V3: read-only driver gate
 $v3 = {
     & $v2
-    step "V3: dependency audit" { & "$PSScriptRoot\Audit-M0Dependencies.ps1" -Executable "out/build/msvc/src/$Configuration/myrd-m0-poc.exe" }
+    $exe = "out/build/msvc/src/$Configuration/myrd-m0-poc.exe"
+    step "V3: dependency audit" { & "$PSScriptRoot\Audit-M0Dependencies.ps1" -Executable $exe }
+    step "V3: query-driver" {
+        $reportPath = "reports/m0-v3-verify-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".json"
+        New-Item -ItemType Directory -Path reports -Force | Out-Null
+        & $exe query-driver --report $reportPath
+        if ($LASTEXITCODE -ne 0) { throw "query-driver failed (exit $LASTEXITCODE)" }
+        & "$PSScriptRoot\Verify-M0Json.ps1" -Path $reportPath
+    }
+}
+
+# V4: single normal E2E lifecycle (Debug)
+$v4 = {
+    & $v3
+    step "V4: single Debug E2E lifecycle" {
+        & "$root\tests\e2e\run-m0-driver-only.ps1" `
+            -Iterations 1 -Configuration Debug -ReportRoot reports/m0-v4
+    }
+}
+
+# V5: fault injection + normal run
+$v5 = {
+    & $v4
+    $faultPoints = @('create_returned','device_confirmed',
+                      'physical_drive_confirmed','round_trip_verified')
+    foreach ($fp in $faultPoints) {
+        step "V5: fault injection $fp" {
+            & "$root\tests\e2e\run-m0-driver-only.ps1" `
+                -Iterations 1 -Configuration Debug `
+                -FailurePoint $fp -ReportRoot "reports/m0-v5-$fp"
+        }
+    }
+    step "V5: normal run after faults" {
+        & "$root\tests\e2e\run-m0-driver-only.ps1" `
+            -Iterations 1 -Configuration Debug -ReportRoot reports/m0-v5-normal
+    }
+}
+
+# V6: Release dependency audit + 20 cycles
+$v6 = {
+    & $v5
+    $exe = "out/build/msvc/src/Release/myrd-m0-poc.exe"
+    step "V6: Release import audit" {
+        cmake --build --preset release --target myrd-m0-poc
+        & "$PSScriptRoot\Audit-M0Dependencies.ps1" -Executable $exe
+    }
+    step "V6: 20 Release E2E cycles" {
+        & "$root\tests\e2e\run-m0-driver-only.ps1" `
+            -Iterations 20 -Configuration Release -ReportRoot reports/m0-v6
+    }
 }
 
 if ($ListCommands) {
