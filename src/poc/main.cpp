@@ -9,6 +9,7 @@
 #include "src/driver/direct_aim_adapter.h"
 #include "src/driver/physical_drive_locator.h"
 #include "src/driver/windows_srb_transport.h"
+#include "src/poc/windows_raw_disk_io.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -249,13 +250,6 @@ int wmain(int argc, wchar_t* argv[]) {
 
         // M0Provider for lifecycle
         myrd::poc::M0Provider provider;
-        // Fake round-trip for now (real implementation needs IRawDiskIo)
-        struct NoOpRT : myrd::poc::IRoundTrip {
-            myrd::Result<myrd::poc::RawRoundTripEvidence> run(const myrd::aim::LocatedDisk&) override {
-                return myrd::Result<myrd::poc::RawRoundTripEvidence>::failure({myrd::ErrorDomain::internal,0,L"",L""});
-            }
-        };
-        NoOpRT noopRt;
 
         myrd::poc::RunConfig config;
         config.run_id = current_utc();
@@ -263,8 +257,10 @@ int wmain(int argc, wchar_t* argv[]) {
         config.injected_failure = cmd.injected_failure;
         config.report_path = cmd.report_path.string();
 
+        myrd::poc::WindowsRawDiskIo diskIo;
+        myrd::poc::RawRoundTrip realRt(diskIo);
         auto result = myrd::poc::run_lifecycle(
-            provider, kAdapter, kLocator, noopRt, config);
+            provider, kAdapter, kLocator, realRt, config);
 
         result.finished_utc = current_utc();
         auto json = myrd::poc::serialize_report(result);

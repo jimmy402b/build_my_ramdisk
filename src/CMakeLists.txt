@@ -50,6 +50,7 @@ add_library(myrd_poc STATIC
     poc/lifecycle_runner.cpp poc/lifecycle_runner.h
     poc/raw_round_trip.cpp poc/raw_round_trip.h
     poc/m0_provider.cpp poc/m0_provider.h
+    poc/windows_raw_disk_io.cpp poc/windows_raw_disk_io.h
 )
 target_include_directories(myrd_poc PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_poc PUBLIC myrd_common myrd_proxy myrd_storage)
