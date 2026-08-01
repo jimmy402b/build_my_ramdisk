@@ -180,11 +180,11 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 22 | ON_TRACK | e30c15a | 3a82f03 | 656a1f07e98063202443e402a06645f9e0ffcc72 | — |
 | 23 | ON_TRACK | 5967407 | bf89d16 | 7c6af0d883ce5910a937149648a0ecd2fb796f1e | — |
 | 24 | ON_TRACK | 588f172 | e878280 | a44d989314cdccf7d77576b8674e1eca20202dac | Harness 最终加固包含于 `a4cd750` |
-| 25 | ON_TRACK | a44d989314cdccf7d77576b8674e1eca20202dac | a4cd750 | PENDING_FINAL_ALIGNMENT | `reports/m0-v4/summary-20260801-233319-6446216.json`，1/1 PASS |
-| 26 | ON_TRACK | 4119a57 | a4cd750 | PENDING_FINAL_ALIGNMENT | 四个故障点和正常 post-check 均 1/1 PASS |
-| 27 | ON_TRACK | 4119a57 | a4cd750 | PENDING_FINAL_ALIGNMENT | `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`，20/20 PASS |
-| 28 | ON_TRACK | a4cd750 | 2316402 | PENDING_FINAL_ALIGNMENT | 正式结论：machine-scoped M0 GO |
-| 29 | ON_TRACK | a4cd750 | 2316402 | PENDING_FINAL_ALIGNMENT | Debug/Release V2 和完整 Release V6 fresh PASS |
+| 25 | ON_TRACK | a44d989314cdccf7d77576b8674e1eca20202dac | a4cd750 | 4589c03 | `reports/m0-v4/summary-20260801-233319-6446216.json`，1/1 PASS |
+| 26 | ON_TRACK | 4119a57 | a4cd750 | 4589c03 | 四个故障点和正常 post-check 均 1/1 PASS |
+| 27 | ON_TRACK | 4119a57 | a4cd750 | 4589c03 | `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`，20/20 PASS |
+| 28 | ON_TRACK | a4cd750 | 2316402 | 4589c03 | 正式结论：machine-scoped M0 GO |
+| 29 | ON_TRACK | a4cd750 | 2316402 | 4589c03 | Debug/Release V2 和完整 Release V6 fresh PASS |
 
 ## 7. Task execution checklist
 
