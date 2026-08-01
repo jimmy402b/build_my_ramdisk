@@ -23,6 +23,17 @@
 
 namespace {
 
+std::string w2s(std::wstring_view ws) {
+    if (ws.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.data(),
+        static_cast<int>(ws.size()), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string s(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.data(),
+        static_cast<int>(ws.size()), s.data(), len, nullptr, nullptr);
+    return s;
+}
+
 void publish_report(const std::string& json, const std::string& path) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
@@ -89,20 +100,36 @@ int wmain(int argc, wchar_t* argv[]) {
             if (!adapter) {
                 report.exit_code = 5;
                 report.success = false;
+                report.primary_error = myrd::poc::ErrorEvidence{
+                    std::to_string(static_cast<int>(adapter.error().domain)),
+                    adapter.error().code,
+                    w2s(adapter.error().operation),
+                    w2s(adapter.error().message)};
                 report.finished_utc = current_utc();
                 auto json = myrd::poc::serialize_report(report);
                 publish_report(json, cmd.report_path.string());
                 return 5;
             }
 
+            report.driver.adapter_interface_path =
+                w2s(adapter.value().interface_path);
+            report.driver.service_name = "phdskmnt";
+
             myrd::aim::WindowsSrbTransport transport(
                 adapter.value().handle.get());
             myrd::aim::DirectAimAdapter aim(transport);
 
             auto ver = aim.query_version();
-            if (ver)
+            if (ver) {
                 report.driver.query_version_raw =
-                    std::to_string(ver.value().raw);
+                    std::to_string(ver.value().api_version) +
+                    " (sub_version=0x" +
+                    [](std::uint32_t sv) {
+                        char buf[16];
+                        std::snprintf(buf, sizeof(buf), "%08X", sv);
+                        return std::string(buf);
+                    }(ver.value().sub_version) + ")";
+            }
 
             auto devices = aim.list_devices();
             if (devices) {

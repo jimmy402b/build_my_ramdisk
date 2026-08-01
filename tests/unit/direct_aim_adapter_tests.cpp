@@ -18,12 +18,13 @@ struct FakeCall {
 class FakeSrbTransport final : public myrd::aim::ISrbTransport {
 public:
     std::vector<FakeCall> calls;
+    std::uint32_t queued_return_code = 0;
     std::vector<std::byte> queued_response;
     bool inject_transport_error = false;
 
     int send_count() const { return static_cast<int>(calls.size()); }
 
-    myrd::Result<std::vector<std::byte>> transact(
+    myrd::Result<myrd::aim::SrbTransactionResult> transact(
         std::uint32_t control_code,
         std::span<const std::byte> request_payload,
         std::size_t response_payload_capacity,
@@ -33,11 +34,14 @@ public:
                 request_payload.begin(), request_payload.end()),
             response_payload_capacity, timeout_seconds});
         if (inject_transport_error) {
-            return myrd::Result<std::vector<std::byte>>::failure(
+            return myrd::Result<myrd::aim::SrbTransactionResult>::failure(
                 {myrd::ErrorDomain::win32, 5,
                  L"fake_transport", L"injected error"});
         }
-        return myrd::Result<std::vector<std::byte>>::success(queued_response);
+        myrd::aim::SrbTransactionResult r{};
+        r.return_code = queued_return_code;
+        r.payload = queued_response;
+        return myrd::Result<myrd::aim::SrbTransactionResult>::success(r);
     }
 };
 
@@ -53,22 +57,54 @@ static std::wstring make_native_path() {
 
 // ── QUERY_VERSION ─────────────────────────────────────────────
 
-TEST_CASE(adapter_query_version_decodes_exact_value) {
+TEST_CASE(adapter_query_version_reads_api_version_from_return_code) {
     FakeSrbTransport fake;
-    std::uint32_t ver = 0x0101u;
-    fake.queued_response = make_bytes(&ver, 4);
+    // Simulate real QUERY_VERSION: ReturnCode=0x101, SubVersion=0x01021C5D
+    fake.queued_return_code = 0x00000101u;  // API version in ReturnCode
+    std::uint32_t sv = 0x01021C5Du;
+    fake.queued_response = make_bytes(&sv, 4);  // SubVersion in payload
     myrd::aim::DirectAimAdapter adapter(fake);
     auto r = adapter.query_version();
     REQUIRE(r.ok());
-    REQUIRE_EQ(r.value().raw, 0x0101u);
+    REQUIRE_EQ(r.value().api_version, 0x00000101u);
+    REQUIRE_EQ(r.value().sub_version, 0x01021C5Du);
 }
 
-TEST_CASE(adapter_query_version_rejects_truncated_payload) {
+TEST_CASE(adapter_query_version_return_code_and_subversion_are_distinct) {
     FakeSrbTransport fake;
-    fake.queued_response = std::vector<std::byte>(2, std::byte{0});
+    fake.queued_return_code = 0x0101u;  // api_version
+    std::uint32_t sv = 0x99999999u;     // sub_version
+    fake.queued_response = make_bytes(&sv, 4);
     myrd::aim::DirectAimAdapter adapter(fake);
     auto r = adapter.query_version();
-    REQUIRE(r.has_error());
+    REQUIRE(r.ok());
+    // api_version != sub_version — they must not be confused
+    REQUIRE(r.value().api_version != r.value().sub_version);
+    REQUIRE_EQ(r.value().api_version, 0x0101u);
+    REQUIRE_EQ(r.value().sub_version, 0x99999999u);
+}
+
+TEST_CASE(adapter_query_version_preserves_srb_return_code) {
+    FakeSrbTransport fake;
+    fake.queued_return_code = 0x0101u;
+    std::uint32_t sv = 0x01021C5Du;
+    fake.queued_response = make_bytes(&sv, 4);
+    myrd::aim::DirectAimAdapter adapter(fake);
+    auto r = adapter.query_version();
+    REQUIRE(r.ok());
+    // API version comes from ReturnCode, NOT from payload
+    REQUIRE_EQ(r.value().api_version, 0x0101u);
+}
+
+TEST_CASE(adapter_query_version_truncated_payload_still_has_api_version) {
+    FakeSrbTransport fake;
+    fake.queued_return_code = 0x0101u;
+    fake.queued_response = std::vector<std::byte>{};  // empty payload
+    myrd::aim::DirectAimAdapter adapter(fake);
+    auto r = adapter.query_version();
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value().api_version, 0x0101u);
+    REQUIRE_EQ(r.value().sub_version, 0u);  // no payload → sub_version=0
 }
 
 // ── QUERY_ADAPTER / list_devices ──────────────────────────────

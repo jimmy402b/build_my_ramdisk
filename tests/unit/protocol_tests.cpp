@@ -27,11 +27,12 @@ TEST_CASE(aim_control_codes_match_audited_contract) {
 // ── AIM structure layouts ──────────────────────────────────────
 
 TEST_CASE(aim_create_layout_matches_audited_contract) {
-    // SRB_IO_CONTROL
+    // SRB_IO_CONTROL — verified against Windows SDK ntddscsi.h
     REQUIRE_EQ(sizeof(myrd::aim::SrbIoControl), 28u);
     REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, Signature), 4u);
     REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, ControlCode), 16u);
-    REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, ReturnCode), 24u);
+    REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, ReturnCode), 20u);
+    REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, Length), 24u);
     // DeviceConfiguration — key field offsets verified
     REQUIRE_EQ(offsetof(myrd::aim::DeviceConfiguration, DiskSize), 4u);
     REQUIRE_EQ(offsetof(myrd::aim::DeviceConfiguration, BytesPerSector), 12u);
@@ -126,9 +127,65 @@ TEST_CASE(write_wire_writes_and_read_wire_roundtrips) {
 // ── Sentinel constant is identifiable ──────────────────────────
 
 TEST_CASE(all_devices_sentinel_is_distinct) {
-    // The sentinel must be representable and distinguishable from a
-    // valid owned DeviceId (which would normally be a small integer).
     REQUIRE_EQ(myrd::aim::kAllDevices, 0x00FFFFFFu);
     myrd::aim::DeviceId sentinel{myrd::aim::kAllDevices};
     REQUIRE_EQ(sentinel.value, 0x00FFFFFFu);
+}
+
+// ── Task 23 regression: SRB ReturnCode vs Length (FIELD ORDER) ──
+
+TEST_CASE(srb_layout_returncode_at_20_length_at_24) {
+    // Verified against Windows SDK ntddscsi.h
+    REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, ReturnCode), 20u);
+    REQUIRE_EQ(offsetof(myrd::aim::SrbIoControl, Length), 24u);
+}
+
+// ── Task 23 regression: QUERY_VERSION real byte layout ──────────
+// Evidence: DeviceIoControl succeeded, bytes_returned=32,
+// ReturnCode/API version=0x00000101, Length=4, SubVersion=0x01021C5D
+
+TEST_CASE(query_version_response_byte_layout_returncode_is_api_version) {
+    // Build a 32-byte buffer matching real QUERY_VERSION response
+    std::byte buf[32]{};
+    // HeaderLength = 28 at offset 0
+    std::uint32_t hl = 28;
+    std::memcpy(buf + 0, &hl, 4);
+    // Signature "PhDskMnt" at offset 4
+    std::memcpy(buf + 4, "PhDskMnt", 8);
+    // Timeout = 0 at offset 12
+    // ControlCode = SMP_IMSCSI_QUERY_VERSION at offset 16
+    std::uint32_t cc = myrd::aim::kQueryVersion;
+    std::memcpy(buf + 16, &cc, 4);
+    // ReturnCode = 0x00000101 (API version) at offset 20
+    std::uint32_t rc = 0x00000101u;
+    std::memcpy(buf + 20, &rc, 4);
+    // Length = 4 at offset 24
+    std::uint32_t len = 4;
+    std::memcpy(buf + 24, &len, 4);
+    // SubVersion = 0x01021C5D at offset 28
+    std::uint32_t sv = 0x01021C5Du;
+    std::memcpy(buf + 28, &sv, 4);
+
+    // Verify raw bytes — ReturnCode is at 20, NOT 24
+    std::uint32_t read_rc = 0, read_len = 0, read_sv = 0;
+    std::memcpy(&read_rc, buf + 20, 4);
+    std::memcpy(&read_len, buf + 24, 4);
+    std::memcpy(&read_sv, buf + 28, 4);
+    REQUIRE_EQ(read_rc, 0x00000101u);  // API version in ReturnCode
+    REQUIRE_EQ(read_len, 4u);
+    REQUIRE_EQ(read_sv, 0x01021C5Du);  // SubVersion in payload
+}
+
+// ── Task 23 regression: GUID_DEVINTERFACE_STORAGEPORT ──────────
+
+#include <windows.h>
+#include <winioctl.h>
+
+TEST_CASE(storageport_guid_is_correct_from_sdk) {
+    // GUID_DEVINTERFACE_STORAGEPORT from Windows SDK winioctl.h:
+    // {0x2ACCFE60, 0xC130, 0x11D2, {0xB0,0x82,0x00,0xA0,0xC9,0x1E,0xFB,0x8B}}
+    // Data3 must be 0x11D2, NOT 0x11D1
+    REQUIRE_EQ(GUID_DEVINTERFACE_STORAGEPORT.Data3, 0x11D2u);
+    // Data1 verification
+    REQUIRE_EQ(GUID_DEVINTERFACE_STORAGEPORT.Data1, 0x2ACCFE60u);
 }

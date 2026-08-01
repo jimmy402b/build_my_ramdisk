@@ -9,7 +9,7 @@ namespace myrd::aim {
 class WindowsSrbTransport final : public ISrbTransport {
 public:
     explicit WindowsSrbTransport(HANDLE adapter) noexcept;
-    Result<std::vector<std::byte>> transact(
+    Result<SrbTransactionResult> transact(
         std::uint32_t control_code,
         std::span<const std::byte> request_payload,
         std::size_t response_payload_capacity,

@@ -66,10 +66,11 @@ Standard Windows structure. The signature `"PhDskMnt"` (8 bytes, no NUL) is set 
 | Signature[8] | UCHAR | 8 | 4 | `"PhDskMnt"` — zero-padded to 8 bytes |
 | Timeout | ULONG | 4 | 12 | Set per-call (30 s default) |
 | ControlCode | ULONG | 4 | 16 | SMP_IMSCSI_* value |
-| Length | ULONG | 4 | 20 | Payload length after header |
-| ReturnCode | ULONG | 4 | 24 | Set to 0 before call; driver sets result |
+| ReturnCode | ULONG | 4 | 20 | Set to 0 before call; driver sets result. For QUERY_VERSION: = API version (0x0101) |
+| Length | ULONG | 4 | 24 | Payload length after header |
 
-`sizeof(SRB_IO_CONTROL)` = 28 bytes on x64 (header length used in `ImScsiInitializeSrbIoBlock`).
+`sizeof(SRB_IO_CONTROL)` = 28 bytes on x64.
+Corrected 2026-08-01 per Windows SDK ntddscsi.h and AIM source srbioctl.cpp (upstream commit d379caa).
 
 ### 5.2 DEVICE_NUMBER
 
@@ -265,8 +266,10 @@ Length of this path in WCHAR: `25 + 32 = 57` characters × 2 = 114 bytes + NUL =
 
 ## 10. SRB ReturnCode Semantics
 
-- `SrbIoControl.ReturnCode`: Set by the driver. 0 = success. Non-zero = driver-specific error.
+- `SrbIoControl.ReturnCode`: Set by the driver. For most control codes, 0 = success, non-zero = driver error.
+- **QUERY_VERSION special case**: `ReturnCode` = API compatibility version (`IMSCSI_DRIVER_VERSION` = 0x0101). The 4-byte payload after the SRB header is `SubVersion` (build-specific revision).
 - M0 must preserve the raw ReturnCode value and distinguish it from Win32 API errors.
+- Verified against AIM source: `srbioctl.cpp` line ~112-126 (upstream commit d379caa).
 
 ## 11. DeviceId Decoding
 

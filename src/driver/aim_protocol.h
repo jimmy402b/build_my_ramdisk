@@ -75,8 +75,15 @@ constexpr std::uint32_t kM0CreateFlags =
 
 constexpr const char kSrbSignature[9] = "PhDskMnt";  // 8 chars + NUL
 
-// ── SRB_IO_CONTROL (Windows SDK layout, x64) ──────────────────
-// Size confirmed: sizeof(SRB_IO_CONTROL) == 28 on x64
+// ── SRB_IO_CONTROL (Windows SDK ntddscsi.h layout, x64) ────────
+// Correct field order verified against Windows SDK 10.0.26100.0:
+//   ULONG HeaderLength;  // offset 0
+//   UCHAR Signature[8];  // offset 4
+//   ULONG Timeout;       // offset 12
+//   ULONG ControlCode;   // offset 16
+//   ULONG ReturnCode;    // offset 20
+//   ULONG Length;        // offset 24
+// sizeof == 28 on x64
 
 #pragma pack(push, 1)
 struct SrbIoControl {
@@ -84,8 +91,8 @@ struct SrbIoControl {
     std::uint8_t  Signature[8];
     std::uint32_t Timeout;
     std::uint32_t ControlCode;
-    std::uint32_t Length;
     std::uint32_t ReturnCode;
+    std::uint32_t Length;
 };
 #pragma pack(pop)
 
@@ -94,8 +101,8 @@ static_assert(offsetof(SrbIoControl, HeaderLength) == 0);
 static_assert(offsetof(SrbIoControl, Signature) == 4);
 static_assert(offsetof(SrbIoControl, Timeout) == 12);
 static_assert(offsetof(SrbIoControl, ControlCode) == 16);
-static_assert(offsetof(SrbIoControl, Length) == 20);
-static_assert(offsetof(SrbIoControl, ReturnCode) == 24);
+static_assert(offsetof(SrbIoControl, ReturnCode) == 20);
+static_assert(offsetof(SrbIoControl, Length) == 24);
 
 // ── DEVICE_NUMBER ──────────────────────────────────────────────
 

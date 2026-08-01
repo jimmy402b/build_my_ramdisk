@@ -9,7 +9,7 @@ namespace myrd::aim {
 WindowsSrbTransport::WindowsSrbTransport(HANDLE adapter) noexcept
     : adapter_(adapter) {}
 
-Result<std::vector<std::byte>> WindowsSrbTransport::transact(
+Result<SrbTransactionResult> WindowsSrbTransport::transact(
     std::uint32_t control_code,
     std::span<const std::byte> request_payload,
     std::size_t response_payload_capacity,
@@ -17,7 +17,7 @@ Result<std::vector<std::byte>> WindowsSrbTransport::transact(
 
     auto frame = build_srb_frame(control_code, request_payload,
                                   response_payload_capacity, timeout_seconds);
-    if (!frame) return Result<std::vector<std::byte>>::failure(frame.error());
+    if (!frame) return Result<SrbTransactionResult>::failure(frame.error());
 
     DWORD bytes_returned = 0;
     DWORD input_size = static_cast<DWORD>(frame.value().size());
@@ -32,14 +32,14 @@ Result<std::vector<std::byte>> WindowsSrbTransport::transact(
     DWORD win_err = GetLastError();
 
     if (!ok) {
-        return Result<std::vector<std::byte>>::failure(
+        return Result<SrbTransactionResult>::failure(
             {ErrorDomain::win32, static_cast<std::uint32_t>(win_err),
              L"DeviceIoControl(IOCTL_SCSI_MINIPORT)",
              L"IOCTL failed"});
     }
 
     if (bytes_returned < sizeof(SrbIoControl)) {
-        return Result<std::vector<std::byte>>::failure(
+        return Result<SrbTransactionResult>::failure(
             {ErrorDomain::protocol, 0,
              L"DeviceIoControl",
              L"bytes returned too small for SRB header"});
@@ -48,12 +48,13 @@ Result<std::vector<std::byte>> WindowsSrbTransport::transact(
     auto parsed = parse_srb_response(
         std::span<const std::byte>(frame.value().data(), frame.value().size()),
         control_code, bytes_returned);
-    if (!parsed) return Result<std::vector<std::byte>>::failure(parsed.error());
+    if (!parsed) return Result<SrbTransactionResult>::failure(parsed.error());
 
-    // Return copy of payload
-    std::vector<std::byte> result(
-        parsed.value().payload.begin(), parsed.value().payload.end());
-    return Result<std::vector<std::byte>>::success(std::move(result));
+    SrbTransactionResult result{};
+    result.return_code = parsed.value().return_code;
+    result.payload.assign(parsed.value().payload.begin(),
+                          parsed.value().payload.end());
+    return Result<SrbTransactionResult>::success(std::move(result));
 }
 
 } // namespace myrd::aim

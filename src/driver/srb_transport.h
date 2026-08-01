@@ -8,10 +8,15 @@
 
 namespace myrd::aim {
 
+struct SrbTransactionResult {
+    std::uint32_t return_code;
+    std::vector<std::byte> payload;
+};
+
 class ISrbTransport {
 public:
     virtual ~ISrbTransport() = default;
-    virtual Result<std::vector<std::byte>> transact(
+    virtual Result<SrbTransactionResult> transact(
         std::uint32_t control_code,
         std::span<const std::byte> request_payload,
         std::size_t response_payload_capacity,

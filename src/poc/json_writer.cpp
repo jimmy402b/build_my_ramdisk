@@ -40,7 +40,9 @@ void JsonWriter::key(std::string_view k) {
     emit_comma();
     raw("\n");
     emit_indent();
-    string_value(k);
+    raw("\"");
+    raw(escape(k));
+    raw("\"");
     raw(": ");
     need_comma_ = false;
 }

@@ -10,7 +10,10 @@
 
 namespace myrd::aim {
 
-struct DriverVersion { std::uint32_t raw; };
+struct DriverVersion {
+    std::uint32_t api_version;  // from SrbIoControl.ReturnCode
+    std::uint32_t sub_version;  // from QUERY_VERSION payload
+};
 
 struct DiskInfo {
     DeviceId id;
