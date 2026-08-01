@@ -179,12 +179,12 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 21 | ON_TRACK | 1d3649f | c897da0 | f28341b | — |
 | 22 | ON_TRACK | e30c15a | 3a82f03 | 656a1f07e98063202443e402a06645f9e0ffcc72 | — |
 | 23 | ON_TRACK | 5967407 | bf89d16 | 7c6af0d883ce5910a937149648a0ecd2fb796f1e | — |
-| 24 | ON_TRACK | 588f172 | e878280 | a44d989314cdccf7d77576b8674e1eca20202dac | — |
-| 25 | IN_PROGRESS | a44d989314cdccf7d77576b8674e1eca20202dac | — | — | — |
-| 26 | NOT_STARTED | — | — | — | — |
-| 27 | NOT_STARTED | — | — | — | — |
-| 28 | NOT_STARTED | — | — | — | — |
-| 29 | NOT_STARTED | — | — | — | — |
+| 24 | ON_TRACK | 588f172 | e878280 | a44d989314cdccf7d77576b8674e1eca20202dac | Harness 最终加固包含于 `a4cd750` |
+| 25 | ON_TRACK | a44d989314cdccf7d77576b8674e1eca20202dac | a4cd750 | PENDING_FINAL_ALIGNMENT | `reports/m0-v4/summary-20260801-233319-6446216.json`，1/1 PASS |
+| 26 | ON_TRACK | 4119a57 | a4cd750 | PENDING_FINAL_ALIGNMENT | 四个故障点和正常 post-check 均 1/1 PASS |
+| 27 | ON_TRACK | 4119a57 | a4cd750 | PENDING_FINAL_ALIGNMENT | `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`，20/20 PASS |
+| 28 | ON_TRACK | a4cd750 | 2316402 | PENDING_FINAL_ALIGNMENT | 正式结论：machine-scoped M0 GO |
+| 29 | ON_TRACK | a4cd750 | 2316402 | PENDING_FINAL_ALIGNMENT | Debug/Release V2 和完整 Release V6 fresh PASS |
 
 ## 7. Task execution checklist
 
@@ -864,23 +864,23 @@ Plan: [Task 24](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 
 **Execute**
 
-- [ ] E24.1 确认 Task 23 为 `ON_TRACK`，记录 start commit。
-- [ ] E24.2 阅读 Plan Task 24 的 11 个 Step 和完整 try/finally 形状。
-- [ ] E24.3 实现参数、serial mutex、所有 preflight 和 service baseline。
-- [ ] E24.4 实现正常/故障报告断言、query baselines、summary JSON 和恢复逻辑。
-- [ ] E24.5 只做 script parse 与 V6 `-ListCommands`，不运行 E2E。
-- [ ] E24.6 在首次真实 CREATE 前按 Plan 提交 harness implementation commit。
+- [x] E24.1 确认 Task 23 为 `ON_TRACK`，记录 start commit。
+- [x] E24.2 阅读 Plan Task 24 的 11 个 Step 和完整 try/finally 形状。
+- [x] E24.3 实现参数、serial mutex、所有 preflight 和 service baseline。
+- [x] E24.4 实现正常/故障报告断言、query baselines、summary JSON 和恢复逻辑。
+- [x] E24.5 只做 script parse 与 V6 `-ListCommands`，不运行 E2E。
+- [x] E24.6 在首次真实 CREATE 前按 Plan 提交 harness implementation commit。
 
 **Review**
 
-- [ ] R24.1 重新阅读 Plan Task 24，逐条核对 11 个 Step。
-- [ ] R24.2 核对所有状态改变都在 try/finally，且没有 `Set-Service`/`sc config`。
-- [ ] R24.3 fresh 运行 syntax parse 和 `-ListCommands`。
-- [ ] R24.4 核对异常报告也要求 exact cleanup，不能因预期失败忽略清理失败。
-- [ ] R24.5 记录列出的 V0-V6 命令和偏差。
-- [ ] R24.6 结论 `ON_TRACK` 后提交 Task 24 alignment review。
+- [x] R24.1 重新阅读 Plan Task 24，逐条核对 11 个 Step。
+- [x] R24.2 核对所有状态改变都在 try/finally，且没有 `Set-Service`/`sc config`。
+- [x] R24.3 fresh 运行 syntax parse 和 `-ListCommands`。
+- [x] R24.4 核对异常报告也要求 exact cleanup，不能因预期失败忽略清理失败。
+- [x] R24.5 记录列出的 V0-V6 命令和偏差。
+- [x] R24.6 结论 `ON_TRACK` 后提交 Task 24 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Claude/Codex`; Start `588f172`; Implementation `e878280`，最终安全加固 `a4cd750`; Evidence `PowerShell syntax PASS；V0-V6 顺序由 Invoke-M0Verification.ps1 固化；真实运行由全局 mutex、管理员 preflight、deviosvc try/finally、生命周期及 query 不可变 hash 和严格断言保护；reparse pre-create rejection 与 abandoned mutex recovery 测试 PASS`; Deviations `用户后续授权批量接管 Task24-29，安全加固随真实故障修复集中提交`; Verdict `ON_TRACK`.
 
 ### Task 25 — Pass one complete V4 lifecycle
 
@@ -892,23 +892,23 @@ Plan: [Task 25](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 
 **Execute**
 
-- [ ] E25.1 确认 Task 24 为 `ON_TRACK`，记录 start commit，确认 elevated shell。
-- [ ] E25.2 阅读 Plan Task 25 的 6 个 Step 和首次失败停止规则。
-- [ ] E25.3 fresh 重跑 V0-V3 后，只运行 1 次 Debug E2E。
-- [ ] E25.4 独立检查 report 的 id/address/length/hash/list invariants。
-- [ ] E25.5 检查服务和 forbidden processes，写 V4 evidence。
-- [ ] E25.6 按 Plan 提交 evidence commit；失败时标记 `NO_GO_EVIDENCE` 并停止重复尝试。
+- [x] E25.1 确认 Task 24 为 `ON_TRACK`，记录 start commit，确认 elevated shell。
+- [x] E25.2 阅读 Plan Task 25 的 6 个 Step 和首次失败停止规则。
+- [x] E25.3 fresh 重跑 V0-V3 后，只运行 1 次 Debug E2E。
+- [x] E25.4 独立检查 report 的 id/address/length/hash/list invariants。
+- [x] E25.5 检查服务和 forbidden processes，写 V4 evidence。
+- [x] E25.6 按 Plan 提交 evidence commit；失败时标记 `NO_GO_EVIDENCE` 并停止重复尝试。
 
 **Review**
 
-- [ ] R25.1 重新阅读 Plan Task 25 和对应 failure decision tree。
-- [ ] R25.2 核对只删除本轮 CREATE 返回的 id，且 removed id 完全相同。
-- [ ] R25.3 fresh 重跑完整 V4 作为复盘证据；若有风险，先保留现场并停止。
-- [ ] R25.4 核对 `deviosvc` state/start mode 和设备列表恢复。
-- [ ] R25.5 记录 report/summary 路径、所有关键值和偏差。
-- [ ] R25.6 结论 `ON_TRACK` 后提交 Task 25 alignment review。
+- [x] R25.1 重新阅读 Plan Task 25 和对应 failure decision tree。
+- [x] R25.2 核对只删除本轮 CREATE 返回的 id，且 removed id 完全相同。
+- [x] R25.3 fresh 重跑完整 V4 作为复盘证据；若有风险，先保留现场并停止。
+- [x] R25.4 核对 `deviosvc` state/start mode 和设备列表恢复。
+- [x] R25.5 记录 report/summary 路径、所有关键值和偏差。
+- [x] R25.6 结论 `ON_TRACK` 后提交 Task 25 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Codex`; Start `a44d989314cdccf7d77576b8674e1eca20202dac`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`）; Evidence `reports/m0-v4/summary-20260801-233319-6446216.json；run 8c120b10113232f89ef12dca55c38ff7；DeviceId 0 精确删除；PhysicalDrive1；64 MiB；8 MiB/4096 raw round trip；flush/hash/列表/命名对象/服务恢复全部通过`; Deviations `按用户明确要求批量完成 Task24-29，未为每个 Task 单独停顿提交，但首次失败均先定位、补测试再重跑`; Verdict `ON_TRACK`.
 
 ### Task 26 — Pass V5 post-create fault-injection cleanup
 
@@ -920,23 +920,23 @@ Plan: [Task 26](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 
 **Execute**
 
-- [ ] E26.1 确认 Task 25 为 `ON_TRACK`，记录 start commit。
-- [ ] E26.2 阅读 Plan Task 26 的 6 个 Step 和四个 FailurePoint。
-- [ ] E26.3 分别运行 create_returned、device_confirmed、physical_drive_confirmed、round_trip_verified。
-- [ ] E26.4 每次都核对 primary error 是注入错误且 cleanup 全部为 true。
-- [ ] E26.5 所有故障后再运行一次正常 Debug lifecycle，写 V5 evidence。
-- [ ] E26.6 按 Plan 提交 evidence commit。
+- [x] E26.1 确认 Task 25 为 `ON_TRACK`，记录 start commit。
+- [x] E26.2 阅读 Plan Task 26 的 6 个 Step 和四个 FailurePoint。
+- [x] E26.3 分别运行 create_returned、device_confirmed、physical_drive_confirmed、round_trip_verified。
+- [x] E26.4 每次都核对 primary error 是注入错误且 cleanup 全部为 true。
+- [x] E26.5 所有故障后再运行一次正常 Debug lifecycle，写 V5 evidence。
+- [x] E26.6 按 Plan 提交 evidence commit。
 
 **Review**
 
-- [ ] R26.1 重新阅读 Plan Task 26 和 Task 20 cleanup 设计。
-- [ ] R26.2 核对每个故障点的 created id 与 removed id 完全相同。
-- [ ] R26.3 fresh 重跑 V5 整组，而不是只检查文档。
-- [ ] R26.4 核对预期主失败没有掩盖任何 cleanup failure。
-- [ ] R26.5 记录四份报告、postcheck 和偏差。
-- [ ] R26.6 结论 `ON_TRACK` 后提交 Task 26 alignment review。
+- [x] R26.1 重新阅读 Plan Task 26 和 Task 20 cleanup 设计。
+- [x] R26.2 核对每个故障点的 created id 与 removed id 完全相同。
+- [x] R26.3 fresh 重跑 V5 整组，而不是只检查文档。
+- [x] R26.4 核对预期主失败没有掩盖任何 cleanup failure。
+- [x] R26.5 记录四份报告、postcheck 和偏差。
+- [x] R26.6 结论 `ON_TRACK` 后提交 Task 26 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Codex`; Start `4119a57`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`）; Evidence `create_returned 233321-5022072、device_confirmed 233322-5682591、physical_drive_confirmed 233324-1767210、round_trip_verified 233325-6603658、normal 233327-2820961；五组均 1/1 PASS，注入报告 exit 12、primary_error=injected_failure、cleanup_errors=0`; Deviations `批量执行偏差同 Task25；所有故障点仍独立运行并由严格 validator 验证`; Verdict `ON_TRACK`.
 
 ### Task 27 — Execute the 20-cycle Release V6 acceptance
 
@@ -948,23 +948,23 @@ Plan: [Task 27](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 
 **Execute**
 
-- [ ] E27.1 确认 Task 26 为 `ON_TRACK`，记录 start commit。
-- [ ] E27.2 阅读 Plan Task 27 的 7 个 Step 和 V6 aggregate 列表。
-- [ ] E27.3 fresh 构建/测试/audit Release，记录 executable SHA-256。
-- [ ] E27.4 运行恰好 20 次 Release E2E，不在中途更换 executable。
-- [ ] E27.5 聚合 20 份报告并验证最终独立系统状态。
-- [ ] E27.6 写 V6 evidence，按 Plan 提交 evidence commit。
+- [x] E27.1 确认 Task 26 为 `ON_TRACK`，记录 start commit。
+- [x] E27.2 阅读 Plan Task 27 的 7 个 Step 和 V6 aggregate 列表。
+- [x] E27.3 fresh 构建/测试/audit Release，记录 executable SHA-256。
+- [x] E27.4 运行恰好 20 次 Release E2E，不在中途更换 executable。
+- [x] E27.5 聚合 20 份报告并验证最终独立系统状态。
+- [x] E27.6 写 V6 evidence，按 Plan 提交 evidence commit。
 
 **Review**
 
-- [ ] R27.1 重新阅读 Plan Task 27 和 SPEC 20 次 GO 条件。
-- [ ] R27.2 核对 20 份报告使用同一 executable hash 且每份 invariants 全部 true。
-- [ ] R27.3 fresh 重跑完整 V6；资源/时间不足时不能沿用旧结果宣称 fresh pass。
-- [ ] R27.4 核对最后 query/service/disk/named-object 状态与 baseline 相同。
-- [ ] R27.5 记录总计数、所有失败数和偏差。
-- [ ] R27.6 结论 `ON_TRACK` 后提交 Task 27 alignment review。
+- [x] R27.1 重新阅读 Plan Task 27 和 SPEC 20 次 GO 条件。
+- [x] R27.2 核对 20 份报告使用同一 executable hash 且每份 invariants 全部 true。
+- [x] R27.3 fresh 重跑完整 V6；资源/时间不足时不能沿用旧结果宣称 fresh pass。
+- [x] R27.4 核对最后 query/service/disk/named-object 状态与 baseline 相同。
+- [x] R27.5 记录总计数、所有失败数和偏差。
+- [x] R27.6 结论 `ON_TRACK` 后提交 Task 27 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Codex`; Start `4119a57`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`）; Evidence `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json；20/20；20 unique run/session/object path；query before/after 与 20 份 lifecycle report 的 immutable hash 全部复核；Release SHA-256 0CC6B83AD7D099C328C683E5736DEB75CF4F224D2FF5C0B1E8CCC4D68AABDB4D；driver SHA-256 3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9；post-restore query/service/object checks PASS`; Deviations `批量执行偏差同 Task25；历史聚合缺陷均补测试/断言后从头 fresh 重跑 V6`; Verdict `ON_TRACK`.
 
 ### Task 28 — Write the formal M0 Go/No-go report
 
@@ -976,23 +976,23 @@ Plan: [Task 28](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 
 **Execute**
 
-- [ ] E28.1 确认 Task 27 状态与实际结论一致，记录 start commit。
-- [ ] E28.2 阅读 Plan Task 28 的 6 个 Step 和 Operational SPEC 全文。
-- [ ] E28.3 创建逐项 requirement/evidence/result 表，区分 observed/derived/conclusion。
-- [ ] E28.4 按机械规则选择 verdict，不用多数通过替代全部通过。
-- [ ] E28.5 运行报告完整性检查，明确 Toolkit removal 仍未授权。
-- [ ] E28.6 按 Plan 提交 verdict commit。
+- [x] E28.1 确认 Task 27 状态与实际结论一致，记录 start commit。
+- [x] E28.2 阅读 Plan Task 28 的 6 个 Step 和 Operational SPEC 全文。
+- [x] E28.3 创建逐项 requirement/evidence/result 表，区分 observed/derived/conclusion。
+- [x] E28.4 按机械规则选择 verdict，不用多数通过替代全部通过。
+- [x] E28.5 运行报告完整性检查，明确 Toolkit removal 仍未授权。
+- [x] E28.6 按 Plan 提交 verdict commit。
 
 **Review**
 
-- [ ] R28.1 重新阅读 Plan Task 28 和 SPEC GO/BLOCKED/NO-GO 定义。
-- [ ] R28.2 逐行抽查 evidence path/command 是否真实存在且支持结论。
-- [ ] R28.3 fresh 运行完整性命令并核对没有遗漏失败。
-- [ ] R28.4 核对结论没有把推断写成观测事实。
-- [ ] R28.5 记录任何证据空洞或偏差；有空洞时不得 `ON_TRACK`。
-- [ ] R28.6 结论 `ON_TRACK` 后提交 Task 28 alignment review。
+- [x] R28.1 重新阅读 Plan Task 28 和 SPEC GO/BLOCKED/NO-GO 定义。
+- [x] R28.2 逐行抽查 evidence path/command 是否真实存在且支持结论。
+- [x] R28.3 fresh 运行完整性命令并核对没有遗漏失败。
+- [x] R28.4 核对结论没有把推断写成观测事实。
+- [x] R28.5 记录任何证据空洞或偏差；有空洞时不得 `ON_TRACK`。
+- [x] R28.6 结论 `ON_TRACK` 后提交 Task 28 alignment review。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Codex`; Start `a4cd750`; Implementation `2316402`; Evidence `docs/validation/m0-driver-only-acceptance.md requirement table 完整性检查 PASS，V0-V6、aimapi.dll、20/20、exact DeviceId、named objects 均有对应 evidence row`; Deviations `machine-scoped GO，不扩大为生产就绪或 Toolkit 卸载授权`; Verdict `ON_TRACK`.
 
 ### Task 29 — Final repository and reproducibility audit
 
@@ -1004,23 +1004,23 @@ Plan: [Task 29](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 
 **Execute**
 
-- [ ] E29.1 确认 Task 28 为 `ON_TRACK`，记录 start commit。
-- [ ] E29.2 阅读 Plan Task 29 的 6 个 Step 和最终 completion criteria。
-- [ ] E29.3 fresh 运行 Debug/Release V2 和结论允许的最高真实 tier。
-- [ ] E29.4 扫描 forbidden references、diff、status 和 tracked artifacts。
-- [ ] E29.5 更新 README/ledger 的精确复现命令。
-- [ ] E29.6 按 Plan 提交 reproducibility handoff implementation commit。
+- [x] E29.1 确认 Task 28 为 `ON_TRACK`，记录 start commit。
+- [x] E29.2 阅读 Plan Task 29 的 6 个 Step 和最终 completion criteria。
+- [x] E29.3 fresh 运行 Debug/Release V2 和结论允许的最高真实 tier。
+- [x] E29.4 扫描 forbidden references、diff、status 和 tracked artifacts。
+- [x] E29.5 更新 README/ledger 的精确复现命令。
+- [x] E29.6 按 Plan 提交 reproducibility handoff implementation commit。
 
 **Review**
 
-- [ ] R29.1 重新阅读 Plan Task 29、failure tree 和 completion criteria。
-- [ ] R29.2 核对最终 Git diff 仅包含批准内容，没有 build/report artifacts。
-- [ ] R29.3 fresh 重跑最终声明所依赖的全部验证命令。
-- [ ] R29.4 核对 README 未暗示 M0 是产品或已授权卸载 Toolkit。
-- [ ] R29.5 记录最终 branch、commit、verdict、测试计数和偏差。
-- [ ] R29.6 结论 `ON_TRACK` 后提交 Task 29 alignment review，并把总进度表全部终结。
+- [x] R29.1 重新阅读 Plan Task 29、failure tree 和 completion criteria。
+- [x] R29.2 核对最终 Git diff 仅包含批准内容，没有 build/report artifacts。
+- [x] R29.3 fresh 重跑最终声明所依赖的全部验证命令。
+- [x] R29.4 核对 README 未暗示 M0 是产品或已授权卸载 Toolkit。
+- [x] R29.5 记录最终 branch、commit、verdict、测试计数和偏差。
+- [x] R29.6 结论 `ON_TRACK` 后提交 Task 29 alignment review，并把总进度表全部终结。
 
-Review Record：Executor `Not recorded`; Start `Not recorded`; Implementation `Not recorded`; Evidence `Not recorded`; Deviations `Not recorded`; Verdict `Not recorded`.
+Review Record：Executor `Codex`; Start `a4cd750`; Implementation `2316402`; Evidence `Debug V2：10/10 unit + SHM 50x；Release V2：10/10 unit + SHM 50x；Release V6：V3 query PASS、Debug full CTest 11/11、preflight safety 2/2、V4 1/1、V5 五组 1/1、V6 20/20；PowerShell syntax/forbidden refs/git diff/tracked artifacts/acceptance completeness/service/process audits PASS`; Deviations `现有未跟踪 _diag/_test/_v* 诊断文件属于此前现场，按保护用户文件规则保留且未提交；批量 review commit 将统一回填`; Verdict `ON_TRACK`.
 
 ## 8. 偏差处理规则
 
