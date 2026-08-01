@@ -180,11 +180,11 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 22 | ON_TRACK | e30c15a | 3a82f03 | 656a1f07e98063202443e402a06645f9e0ffcc72 | — |
 | 23 | ON_TRACK | 5967407 | bf89d16 | 7c6af0d883ce5910a937149648a0ecd2fb796f1e | — |
 | 24 | ON_TRACK | 588f172 | e878280 | a44d989314cdccf7d77576b8674e1eca20202dac | Harness 最终加固包含于 `a4cd750` |
-| 25 | ON_TRACK | a44d989314cdccf7d77576b8674e1eca20202dac | a4cd750 | 4589c03 | `reports/m0-v4/summary-20260801-233319-6446216.json`，1/1 PASS |
-| 26 | ON_TRACK | 4119a57 | a4cd750 | 4589c03 | 四个故障点和正常 post-check 均 1/1 PASS |
-| 27 | ON_TRACK | 4119a57 | a4cd750 | 4589c03 | `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`，20/20 PASS |
-| 28 | ON_TRACK | a4cd750 | 2316402 | 4589c03 | 正式结论：machine-scoped M0 GO |
-| 29 | ON_TRACK | a4cd750 | 2316402 | 4589c03 | Debug/Release V2 和完整 Release V6 fresh PASS |
+| 25 | ON_TRACK | a44d989314cdccf7d77576b8674e1eca20202dac | a4cd750 | 4589c03 | 最新：`reports/m0-v4/summary-20260802-005326-7137299.json`，1/1 PASS；post-merge cleanup fix `bc9b852` |
+| 26 | ON_TRACK | 4119a57 | a4cd750 | 4589c03 | 最新四个故障点和正常 post-check 均 1/1 PASS；post-merge cleanup fix `bc9b852` |
+| 27 | ON_TRACK | 4119a57 | a4cd750 | 4589c03 | 最新：`reports/m0-v6/summary-20260802-005337-3234647-aggregate.json`，20/20 PASS；post-merge cleanup fix `bc9b852` |
+| 28 | ON_TRACK | a4cd750 | 2316402 | 4589c03 | 正式结论：machine-scoped M0 GO；最新验收刷新 `bc9b852` |
+| 29 | ON_TRACK | a4cd750 | 2316402 | 4589c03 | Debug/Release V2 和完整 Release V6 fresh PASS；最新验收刷新 `bc9b852` |
 
 ## 7. Task execution checklist
 
@@ -908,7 +908,7 @@ Plan: [Task 25](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 - [x] R25.5 记录 report/summary 路径、所有关键值和偏差。
 - [x] R25.6 结论 `ON_TRACK` 后提交 Task 25 alignment review。
 
-Review Record：Executor `Codex`; Start `a44d989314cdccf7d77576b8674e1eca20202dac`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`）; Evidence `reports/m0-v4/summary-20260801-233319-6446216.json；run 8c120b10113232f89ef12dca55c38ff7；DeviceId 0 精确删除；PhysicalDrive1；64 MiB；8 MiB/4096 raw round trip；flush/hash/列表/命名对象/服务恢复全部通过`; Deviations `按用户明确要求批量完成 Task24-29，未为每个 Task 单独停顿提交，但首次失败均先定位、补测试再重跑`; Verdict `ON_TRACK`.
+Review Record：Executor `Codex`; Start `a44d989314cdccf7d77576b8674e1eca20202dac`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`，post-merge cleanup fix `bc9b852`）; Evidence `reports/m0-v4/summary-20260802-005326-7137299.json；run 1867955068cee93c03e05118a8086947；DeviceId 0 精确删除；PhysicalDrive1；64 MiB；8 MiB/4096 raw round trip；flush/hash/列表/命名对象/服务恢复全部通过`; Deviations `按用户明确要求批量完成 Task24-29，未为每个 Task 单独停顿提交，但首次失败均先定位、补测试再重跑`; Verdict `ON_TRACK`.
 
 ### Task 26 — Pass V5 post-create fault-injection cleanup
 
@@ -936,7 +936,7 @@ Plan: [Task 26](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 - [x] R26.5 记录四份报告、postcheck 和偏差。
 - [x] R26.6 结论 `ON_TRACK` 后提交 Task 26 alignment review。
 
-Review Record：Executor `Codex`; Start `4119a57`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`）; Evidence `create_returned 233321-5022072、device_confirmed 233322-5682591、physical_drive_confirmed 233324-1767210、round_trip_verified 233325-6603658、normal 233327-2820961；五组均 1/1 PASS，注入报告 exit 12、primary_error=injected_failure、cleanup_errors=0`; Deviations `批量执行偏差同 Task25；所有故障点仍独立运行并由严格 validator 验证`; Verdict `ON_TRACK`.
+Review Record：Executor `Codex`; Start `4119a57`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`，post-merge cleanup fix `bc9b852`）; Evidence `create_returned 005328-5759637、device_confirmed 005329-6335771、physical_drive_confirmed 005331-0747670、round_trip_verified 005332-6421580、normal 005334-1843324；五组均 1/1 PASS，注入报告 exit 12、primary_error=injected_failure、cleanup_errors=0`; Deviations `批量执行偏差同 Task25；所有故障点仍独立运行并由严格 validator 验证`; Verdict `ON_TRACK`.
 
 ### Task 27 — Execute the 20-cycle Release V6 acceptance
 
@@ -964,7 +964,7 @@ Plan: [Task 27](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 - [x] R27.5 记录总计数、所有失败数和偏差。
 - [x] R27.6 结论 `ON_TRACK` 后提交 Task 27 alignment review。
 
-Review Record：Executor `Codex`; Start `4119a57`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`）; Evidence `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json；20/20；20 unique run/session/object path；query before/after 与 20 份 lifecycle report 的 immutable hash 全部复核；Release SHA-256 0CC6B83AD7D099C328C683E5736DEB75CF4F224D2FF5C0B1E8CCC4D68AABDB4D；driver SHA-256 3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9；post-restore query/service/object checks PASS`; Deviations `批量执行偏差同 Task25；历史聚合缺陷均补测试/断言后从头 fresh 重跑 V6`; Verdict `ON_TRACK`.
+Review Record：Executor `Codex`; Start `4119a57`; Implementation `a4cd750`（核心生命周期实现见 `ff380e1`，post-merge cleanup fix `bc9b852`）; Evidence `reports/m0-v6/summary-20260802-005337-3234647-aggregate.json；20/20；20 unique run/session/object path；query before/after 与 20 份 lifecycle report 的 immutable hash 全部复核；Release SHA-256 CBC84333F1E64504EDC156A5FEA69C1CF90BC8BCE5C8C232EB642C113BD1AB85；driver SHA-256 3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9；post-restore query/service/object checks PASS`; Deviations `批量执行偏差同 Task25；post-merge 首轮在 8/9 安全停止，确认异步 handle-release 竞态后以条件等待修复并从头 fresh 重跑 V6`; Verdict `ON_TRACK`.
 
 ### Task 28 — Write the formal M0 Go/No-go report
 
@@ -992,7 +992,7 @@ Plan: [Task 28](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 - [x] R28.5 记录任何证据空洞或偏差；有空洞时不得 `ON_TRACK`。
 - [x] R28.6 结论 `ON_TRACK` 后提交 Task 28 alignment review。
 
-Review Record：Executor `Codex`; Start `a4cd750`; Implementation `2316402`; Evidence `docs/validation/m0-driver-only-acceptance.md requirement table 完整性检查 PASS，V0-V6、aimapi.dll、20/20、exact DeviceId、named objects 均有对应 evidence row`; Deviations `machine-scoped GO，不扩大为生产就绪或 Toolkit 卸载授权`; Verdict `ON_TRACK`.
+Review Record：Executor `Codex`; Start `a4cd750`; Implementation `2316402`，post-merge acceptance refresh `bc9b852`; Evidence `docs/validation/m0-driver-only-acceptance.md requirement table 完整性检查 PASS，V0-V6、aimapi.dll、20/20、exact DeviceId、named objects 均有对应 evidence row`; Deviations `machine-scoped GO，不扩大为生产就绪或 Toolkit 卸载授权`; Verdict `ON_TRACK`.
 
 ### Task 29 — Final repository and reproducibility audit
 
@@ -1020,7 +1020,7 @@ Plan: [Task 29](docs/superpowers/plans/2026-08-01-m0-driver-only-agent-plan.md#t
 - [x] R29.5 记录最终 branch、commit、verdict、测试计数和偏差。
 - [x] R29.6 结论 `ON_TRACK` 后提交 Task 29 alignment review，并把总进度表全部终结。
 
-Review Record：Executor `Codex`; Start `a4cd750`; Implementation `2316402`; Evidence `Debug V2：10/10 unit + SHM 50x；Release V2：10/10 unit + SHM 50x；Release V6：V3 query PASS、Debug full CTest 11/11、preflight safety 2/2、V4 1/1、V5 五组 1/1、V6 20/20；PowerShell syntax/forbidden refs/git diff/tracked artifacts/acceptance completeness/service/process audits PASS`; Deviations `现有未跟踪 _diag/_test/_v* 诊断文件属于此前现场，按保护用户文件规则保留且未提交；批量 review commit 将统一回填`; Verdict `ON_TRACK`.
+Review Record：Executor `Codex`; Start `a4cd750`; Implementation `2316402`，post-merge acceptance refresh `bc9b852`; Evidence `Debug V2：10/10 unit + SHM 50x；Release V2：10/10 unit + SHM 50x；Release V6：V3 query PASS、Debug full CTest 11/11、preflight safety 2/2、V4 1/1、V5 五组 1/1、V6 20/20；PowerShell syntax/forbidden refs/git diff/tracked artifacts/acceptance completeness/service/process audits PASS`; Deviations `现有未跟踪 _diag/_test/_v* 诊断文件属于此前现场，按保护用户文件规则保留且未提交；post-merge 竞态修复保持零残留门槛不变`; Verdict `ON_TRACK`.
 
 ## 8. 偏差处理规则
 

@@ -85,7 +85,7 @@ Update the validation documents with the new V6 summary and aggregate paths.
 Do not cite the failed 8/9 run as accepted evidence; retain it under `reports/`
 as diagnostic history.
 
-- [ ] **Step 3: Commit the verified fix**
+- [x] **Step 3: Commit the verified fix**
 
 Commit source, regression test, design/plan and updated validation documents.
 Do not add generated `out/`, `reports/` or pre-existing diagnostic files.
