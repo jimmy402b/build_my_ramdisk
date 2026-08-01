@@ -109,6 +109,19 @@ TEST_CASE(srb_response_rejects_length_beyond_bytes_returned) {
     REQUIRE(r.has_error());
 }
 
+TEST_CASE(srb_response_uses_bytes_returned_when_driver_keeps_capacity_length) {
+    auto buf = make_valid_response(kTestCtrl, 0, 100);
+    constexpr std::size_t actual_payload_size = 34;
+    const auto bytes_returned =
+        sizeof(myrd::aim::SrbIoControl) + actual_payload_size;
+
+    auto r = myrd::aim::parse_srb_response(
+        buf, kTestCtrl, bytes_returned);
+
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value().payload.size(), actual_payload_size);
+}
+
 TEST_CASE(srb_response_preserves_nonzero_return_code) {
     auto buf = make_valid_response(kTestCtrl, 0xC0000001u, 0);
     auto r = myrd::aim::parse_srb_response(buf, kTestCtrl, buf.size());

@@ -2,7 +2,11 @@
 
 #include "src/poc/json_writer.h"
 #include "src/poc/poc_report.h"
+#include "src/poc/report_publisher.h"
 
+#include <filesystem>
+#include <fstream>
+#include <chrono>
 #include <string>
 
 TEST_CASE(json_writer_escapes_quote_backslash_and_controls) {
@@ -87,6 +91,30 @@ TEST_CASE(report_utf8_encodes_non_ascii_signer) {
     REQUIRE(s.find("\\u00e9") != std::string::npos ||
             s.find("é") != std::string::npos ||
             s.find("\xC3\xA9") != std::string::npos);
+}
+
+TEST_CASE(report_publisher_creates_parent_and_rejects_overwrite) {
+    const auto unique_suffix = std::to_string(
+        std::chrono::high_resolution_clock::now()
+            .time_since_epoch().count());
+    const auto root = std::filesystem::temp_directory_path() /
+        ("myrd-report-publisher-test-" + unique_suffix);
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+    const auto target = root / "nested" / "report.json";
+
+    auto first = myrd::poc::publish_report_atomic("{\"value\":1}\n", target);
+    REQUIRE(first.ok());
+    REQUIRE(std::filesystem::exists(target, filesystem_error));
+
+    auto second = myrd::poc::publish_report_atomic("{\"value\":2}\n", target);
+    REQUIRE(second.has_error());
+
+    std::ifstream input(target, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(input)),
+                        std::istreambuf_iterator<char>());
+    REQUIRE_EQ(content, std::string("{\"value\":1}\n"));
+    std::filesystem::remove_all(root, filesystem_error);
 }
 
 // ── CLI tests (Task 18) ────────────────────────────────────────

@@ -22,8 +22,12 @@ Result<void> M0Provider::start() {
     auto ch = proxy::SharedMemoryChannel::create(names_);
     if (!ch) return Result<void>::failure(ch.error());
 
-    // Move channel into optional for ownership
-    channel_.emplace(std::move(ch.value()));
+    server_.emplace(std::move(ch.value()), processor_);
+    auto started = server_->start();
+    if (!started) {
+        server_.reset();
+        return started;
+    }
 
     return Result<void>::success();
 }
@@ -33,7 +37,6 @@ Result<void> M0Provider::stop_and_release() {
         server_->stop();
         server_.reset();
     }
-    channel_.reset();
     return Result<void>::success();
 }
 
@@ -46,10 +49,26 @@ proxy::RequestCounters M0Provider::counters() const {
 }
 
 Result<bool> M0Provider::named_objects_released() const {
-    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, names_.mapping.c_str());
-    if (h) { CloseHandle(h); return Result<bool>::success(false); }
-    if (GetLastError() != ERROR_FILE_NOT_FOUND)
-        return Result<bool>::success(false);
+    HANDLE mapping = OpenFileMappingW(
+        FILE_MAP_READ, FALSE, names_.mapping.c_str());
+    if (mapping) { CloseHandle(mapping); return Result<bool>::success(false); }
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+
+    HANDLE request = OpenEventW(
+        SYNCHRONIZE, FALSE, names_.request.c_str());
+    if (request) { CloseHandle(request); return Result<bool>::success(false); }
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+
+    HANDLE response = OpenEventW(
+        SYNCHRONIZE, FALSE, names_.response.c_str());
+    if (response) { CloseHandle(response); return Result<bool>::success(false); }
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+
+    HANDLE server = OpenMutexW(
+        SYNCHRONIZE, FALSE, names_.server.c_str());
+    if (server) { CloseHandle(server); return Result<bool>::success(false); }
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+
     return Result<bool>::success(true);
 }
 

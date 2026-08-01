@@ -200,7 +200,7 @@ TEST_CASE(process_snapshot_includes_current_process) {
 
 TEST_CASE(forbidden_module_matching_is_case_insensitive_basename) {
     std::vector<myrd::ModuleInfo> mods;
-    mods.push_back({L"C:\\path\\AimApi.DLL", L"AimApi.DLL"});
+    mods.push_back({L"C:\\path\\AimApi.DLL", L"AimApi.DLL"});  // forbidden-module fixture
     mods.push_back({L"C:\\path\\kernel32.dll", L"kernel32.dll"});
     std::vector<std::wstring> forbidden{L"aimapi.dll"};
     REQUIRE(myrd::module_list_contains_forbidden(mods, forbidden));

@@ -54,7 +54,8 @@ Result<SrbResponse> parse_srb_response(
     std::size_t bytes_returned) {
 
     // 1. Check total header fits
-    if (bytes.size() < sizeof(SrbIoControl)) {
+    if (bytes.size() < sizeof(SrbIoControl) ||
+        bytes_returned < sizeof(SrbIoControl)) {
         return Result<SrbResponse>::failure(
             {ErrorDomain::protocol, 0,
              L"parse_srb_response", L"response too short for SRB header"});
@@ -85,17 +86,28 @@ Result<SrbResponse> parse_srb_response(
              L"parse_srb_response", L"control code mismatch"});
     }
 
-    // 6. Verify declared Length against bytes_returned
-    if (hdr.Length > bytes_returned ||
-        bytes_returned < sizeof(SrbIoControl) + hdr.Length) {
+    // 6. Length is the caller-provided payload capacity. AIM can return fewer
+    // bytes without rewriting this field, notably for QUERY_DEVICE. The actual
+    // response length is DeviceIoControl's bytes_returned value.
+    const std::size_t payload_capacity =
+        bytes.size() - sizeof(SrbIoControl);
+    if (bytes_returned > bytes.size() || hdr.Length > payload_capacity) {
         return Result<SrbResponse>::failure(
             {ErrorDomain::protocol, 0,
-             L"parse_srb_response", L"declared length exceeds bytes returned"});
+             L"parse_srb_response", L"response length exceeds buffer capacity"});
+    }
+    const std::size_t actual_payload_size =
+        bytes_returned - sizeof(SrbIoControl);
+    if (actual_payload_size > hdr.Length) {
+        return Result<SrbResponse>::failure(
+            {ErrorDomain::protocol, 0,
+             L"parse_srb_response", L"returned payload exceeds declared capacity"});
     }
 
     SrbResponse resp{};
     resp.return_code = hdr.ReturnCode;
-    resp.payload = bytes.subspan(sizeof(SrbIoControl), hdr.Length);
+    resp.payload = bytes.subspan(
+        sizeof(SrbIoControl), actual_payload_size);
     return Result<SrbResponse>::success(resp);
 }
 

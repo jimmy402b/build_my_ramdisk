@@ -26,7 +26,6 @@ private:
         aim::kM0DiskSize, aim::kM0SectorSize};
     proxy::RequestProcessor processor_{device_};
     proxy::ObjectNames names_;
-    std::optional<proxy::SharedMemoryChannel> channel_;
     std::optional<proxy::ShmProxyServer> server_;
 };
 

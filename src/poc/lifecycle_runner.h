@@ -19,6 +19,7 @@ namespace myrd::poc {
 
 struct RunConfig {
     std::string run_id;
+    std::string started_utc;
     bool debug_build = false;
     FailurePoint injected_failure = FailurePoint::none;
     std::string report_path;
@@ -42,6 +43,7 @@ public:
     virtual Result<std::vector<aim::DeviceId>> list_devices() = 0;
     virtual Result<aim::DeviceId> create_proxy_disk(
         const aim::ProxyDiskSpec&) = 0;
+    virtual Result<void> rescan_adapter() = 0;
     virtual Result<aim::DiskInfo> query_device(aim::DeviceId) = 0;
     virtual Result<void> remove_device(aim::DeviceId) = 0;
     virtual Result<void> wait_until_absent(

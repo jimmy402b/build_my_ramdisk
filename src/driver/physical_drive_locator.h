@@ -24,7 +24,15 @@ struct LocatedDisk {
     std::uint32_t physical_drive_number;
     std::wstring  path;
     std::uint64_t length_bytes;
+    std::uint8_t  path_id = 0;
+    std::uint8_t  target_id = 0;
+    std::uint8_t  lun = 0;
 };
+
+std::uint32_t disk_candidate_open_access() noexcept;
+
+bool same_located_disk_identity(
+    const LocatedDisk& left, const LocatedDisk& right) noexcept;
 
 Result<LocatedDisk> match_created_disk(
     DeviceId created, std::span<const DiskCandidate> candidates);

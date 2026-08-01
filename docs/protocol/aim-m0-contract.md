@@ -95,12 +95,17 @@ Corrected 2026-08-01 per Windows SDK ntddscsi.h and AIM source srbioctl.cpp (ups
 | WriteOverlayFileNameLength / Reserved | USHORT / ULONG | 4 | 16 | Not used in M0 |
 | ImageOffset | LARGE_INTEGER | 8 | 20 | Image file offset |
 | Flags | ULONG | 4 | 28 | Creation flags |
-| FileNameLength | USHORT | 2 | 32 | Length in **bytes** of FileName (includes NUL if present) |
+| FileNameLength | USHORT | 2 | 32 | Length in **bytes** of FileName; AIM's managed caller excludes NUL |
 | FileName[] | WCHAR | variable | 34 | UTF-16LE string |
 
 `sizeof` (without FileName) = 34 bytes.
 
 M0 CREATE flags: `IMSCSI_DEVICE_TYPE_HD | IMSCSI_TYPE_PROXY | IMSCSI_PROXY_TYPE_SHM` = `0x00003310`.
+
+`QUERY_DEVICE` does not echo the proxy transport subtype. The pinned driver's
+`ImScsiQueryDevice` rebuilds flags from persistent device-extension state and
+returns `IMSCSI_DEVICE_TYPE_HD | IMSCSI_TYPE_PROXY` = `0x00000310` before the
+M0 write. Lifecycle identity validation requires this exact normalized value.
 
 ### 5.4 SRB_IMSCSI_CREATE_DATA
 
@@ -256,13 +261,13 @@ Any unrecognized request code is a fatal protocol error. M0 only implements INFO
 
 ## 9. FileName Length Semantics
 
-The `FileNameLength` field in `IMSCSI_DEVICE_CONFIGURATION` is the byte count of `FileName`, including the NUL terminator if present (common.h:242). For M0, the path is:
+The `FileNameLength` field in `IMSCSI_DEVICE_CONFIGURATION` is the byte count of `FileName` (common.h:242). The pinned AIM managed caller computes it from `MemoryMarshal.AsBytes(Filename.AsSpan()).Length`, so the transmitted length excludes a NUL terminator. For M0, the path is:
 
 ```
 \BaseNamedObjects\Global\myrd-m0-<32-hex-chars>
 ```
 
-Length of this path in WCHAR: `25 + 32 = 57` characters × 2 = 114 bytes + NUL = 116 bytes total.
+Length of this path in WCHAR: `33 + 32 = 65` characters × 2 = 130 bytes. The exact CREATE payload is therefore 34 fixed bytes plus 130 path bytes, with no C++ tail padding and no NUL terminator.
 
 ## 10. SRB ReturnCode Semantics
 

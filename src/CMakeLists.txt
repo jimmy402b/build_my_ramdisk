@@ -46,6 +46,7 @@ myrd_enable_warnings(myrd_driver)
 add_library(myrd_poc STATIC
     poc/json_writer.cpp poc/json_writer.h
     poc/poc_report.cpp poc/poc_report.h
+    poc/report_publisher.cpp poc/report_publisher.h
     poc/cli.cpp poc/cli.h
     poc/lifecycle_runner.cpp poc/lifecycle_runner.h
     poc/raw_round_trip.cpp poc/raw_round_trip.h

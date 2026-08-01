@@ -70,6 +70,10 @@ constexpr std::uint32_t kDriverVersion   = 0x0101u;
 // M0 CREATE flags: HD | PROXY | SHM
 constexpr std::uint32_t kM0CreateFlags =
     kDeviceTypeHd | kTypeProxy | kProxyTypeShm;  // 0x00003310
+// QUERY_DEVICE reconstructs persistent device semantics and does not return
+// the proxy transport subtype (see pinned srbioctl.cpp ImScsiQueryDevice).
+constexpr std::uint32_t kM0QueryFlags =
+    kDeviceTypeHd | kTypeProxy;  // 0x00000310
 
 // ── SRB signature ──────────────────────────────────────────────
 

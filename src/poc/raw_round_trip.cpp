@@ -49,9 +49,8 @@ Result<RawRoundTripEvidence> RawRoundTrip::run(
     if (!wr) return Result<RawRoundTripEvidence>::failure(wr.error());
 
     // 6. Flush
-    bool flushed = true;
     auto fl = io_.flush();
-    if (!fl) flushed = false;
+    if (!fl) return Result<RawRoundTripEvidence>::failure(fl.error());
 
     // 7. Re-seek
     auto sk2 = io_.seek(kOffset);
@@ -71,7 +70,7 @@ Result<RawRoundTripEvidence> RawRoundTrip::run(
     ev.length = kLength;
     ev.written_sha256 = written_hash.value();
     ev.read_sha256 = read_hash.value();
-    ev.flush_succeeded = flushed;
+    ev.flush_succeeded = true;
 
     if (ev.written_sha256 != ev.read_sha256) {
         return Result<RawRoundTripEvidence>::failure(

@@ -135,7 +135,8 @@ Result<AdapterHandle> discover_aim_adapter() {
         }
 
         candidates.push_back(
-            {std::wstring(detail->DevicePath), std::move(h)});
+            {std::wstring(detail->DevicePath), std::move(h),
+             static_cast<std::uint32_t>(dev_info_data.DevInst)});
     }
 
     if (candidates.empty()) {
@@ -164,6 +165,17 @@ Result<AdapterHandle> discover_aim_adapter() {
     }
 
     return Result<AdapterHandle>::success(std::move(candidates[0]));
+}
+
+Result<void> rescan_aim_adapter(std::uint32_t dev_inst) {
+    const CONFIGRET status = CM_Reenumerate_DevNode(
+        static_cast<DEVINST>(dev_inst), 0);
+    if (status != CR_SUCCESS) {
+        return Result<void>::failure(
+            {ErrorDomain::win32, static_cast<std::uint32_t>(status),
+             L"CM_Reenumerate_DevNode", L"failed to rescan AIM adapter"});
+    }
+    return Result<void>::success();
 }
 
 } // namespace myrd::aim

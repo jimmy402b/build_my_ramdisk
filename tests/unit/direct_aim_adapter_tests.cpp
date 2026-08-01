@@ -167,6 +167,23 @@ TEST_CASE(adapter_create_encodes_exact_native_object_path_length) {
         myrd::aim::kM0SectorSize, path};
     auto r = adapter.create_proxy_disk(spec);
     REQUIRE(r.ok());
+
+    REQUIRE_EQ(fake.send_count(), 1);
+    const auto& payload = fake.calls[0].request_payload;
+    constexpr std::size_t file_name_offset =
+        offsetof(myrd::aim::DeviceConfiguration, FileNameLength) +
+        sizeof(std::uint16_t);
+    const auto name_bytes = path.size() * sizeof(wchar_t);
+
+    std::uint16_t encoded_name_bytes = 0;
+    std::memcpy(&encoded_name_bytes,
+                payload.data() +
+                    offsetof(myrd::aim::DeviceConfiguration, FileNameLength),
+                sizeof(encoded_name_bytes));
+    REQUIRE_EQ(encoded_name_bytes, name_bytes);
+    REQUIRE_EQ(payload.size(), file_name_offset + name_bytes);
+    REQUIRE(std::memcmp(payload.data() + file_name_offset,
+                        path.data(), name_bytes) == 0);
 }
 
 TEST_CASE(adapter_create_rejects_empty_path) {
@@ -175,6 +192,20 @@ TEST_CASE(adapter_create_rejects_empty_path) {
     myrd::aim::ProxyDiskSpec spec{myrd::aim::kM0DiskSize,
         myrd::aim::kM0SectorSize, L""};
     auto r = adapter.create_proxy_disk(spec);
+    REQUIRE(r.has_error());
+    REQUIRE_EQ(fake.send_count(), 0);
+}
+
+TEST_CASE(adapter_create_rejects_path_larger_than_wire_length_field) {
+    FakeSrbTransport fake;
+    myrd::aim::DirectAimAdapter adapter(fake);
+    myrd::aim::ProxyDiskSpec spec{
+        myrd::aim::kM0DiskSize,
+        myrd::aim::kM0SectorSize,
+        std::wstring(32768, L'x')};
+
+    auto r = adapter.create_proxy_disk(spec);
+
     REQUIRE(r.has_error());
     REQUIRE_EQ(fake.send_count(), 0);
 }
@@ -199,6 +230,21 @@ TEST_CASE(adapter_create_returns_exact_driver_device_id) {
     REQUIRE_EQ(r.value().value, 0x0A0B0C0Du);
 }
 
+TEST_CASE(adapter_create_rejects_auto_device_sentinel_response) {
+    FakeSrbTransport fake;
+    const std::uint32_t sentinel = myrd::aim::kAutoDeviceNumber;
+    fake.queued_response = make_bytes(&sentinel, sizeof(sentinel));
+    myrd::aim::DirectAimAdapter adapter(fake);
+    myrd::aim::ProxyDiskSpec spec{
+        myrd::aim::kM0DiskSize,
+        myrd::aim::kM0SectorSize,
+        make_native_path()};
+
+    auto r = adapter.create_proxy_disk(spec);
+
+    REQUIRE(r.has_error());
+}
+
 TEST_CASE(adapter_create_does_not_hide_returned_id_behind_query) {
     FakeSrbTransport fake;
     std::uint32_t dev_id = 99;
@@ -212,6 +258,50 @@ TEST_CASE(adapter_create_does_not_hide_returned_id_behind_query) {
 }
 
 // ── REMOVE ────────────────────────────────────────────────────
+
+TEST_CASE(adapter_query_device_decodes_path_from_wire_offset_34) {
+    FakeSrbTransport fake;
+    const auto path = make_native_path();
+    constexpr std::size_t path_offset =
+        offsetof(myrd::aim::DeviceConfiguration, FileNameLength) +
+        sizeof(std::uint16_t);
+    const auto path_bytes = path.size() * sizeof(wchar_t);
+    fake.queued_response.resize(path_offset + path_bytes);
+
+    myrd::aim::DeviceConfiguration cfg{};
+    cfg.DeviceNumber = 42;
+    cfg.DiskSize = static_cast<std::int64_t>(myrd::aim::kM0DiskSize);
+    cfg.BytesPerSector = myrd::aim::kM0SectorSize;
+    cfg.Flags = myrd::aim::kDeviceTypeHd | myrd::aim::kTypeProxy;
+    cfg.FileNameLength = static_cast<std::uint16_t>(path_bytes);
+    std::memcpy(fake.queued_response.data(), &cfg, path_offset);
+    std::memcpy(fake.queued_response.data() + path_offset,
+                path.data(), path_bytes);
+
+    myrd::aim::DirectAimAdapter adapter(fake);
+    auto r = adapter.query_device(myrd::aim::DeviceId{42});
+
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value().native_object_path, path);
+    REQUIRE_EQ(r.value().size_bytes, myrd::aim::kM0DiskSize);
+    REQUIRE_EQ(r.value().sector_size, myrd::aim::kM0SectorSize);
+}
+
+TEST_CASE(adapter_query_device_rejects_truncated_path) {
+    FakeSrbTransport fake;
+    constexpr std::size_t path_offset =
+        offsetof(myrd::aim::DeviceConfiguration, FileNameLength) +
+        sizeof(std::uint16_t);
+    fake.queued_response.resize(path_offset + sizeof(wchar_t));
+    myrd::aim::DeviceConfiguration cfg{};
+    cfg.DeviceNumber = 42;
+    cfg.FileNameLength = 4 * sizeof(wchar_t);
+    std::memcpy(fake.queued_response.data(), &cfg, path_offset);
+
+    myrd::aim::DirectAimAdapter adapter(fake);
+    auto r = adapter.query_device(myrd::aim::DeviceId{42});
+    REQUIRE(r.has_error());
+}
 
 TEST_CASE(adapter_remove_rejects_all_devices_sentinel_without_transport) {
     FakeSrbTransport fake;

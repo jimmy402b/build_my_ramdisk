@@ -2,7 +2,15 @@
 
 #include "src/driver/physical_drive_locator.h"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <vector>
+
+TEST_CASE(locator_opens_disk_with_read_access_for_length_ioctl) {
+    REQUIRE((myrd::aim::disk_candidate_open_access() & GENERIC_READ) != 0);
+}
 
 TEST_CASE(locator_matches_exact_path_target_lun) {
     std::vector<myrd::aim::DiskCandidate> cands;
@@ -60,4 +68,16 @@ TEST_CASE(locator_does_not_match_capacity_without_scsi_address) {
     myrd::aim::DeviceId id{0x00000001u}; // different path
     auto r = myrd::aim::match_created_disk(id, cands);
     REQUIRE(r.has_error());
+}
+
+TEST_CASE(locator_repeated_confirmation_requires_identical_identity) {
+    const myrd::aim::LocatedDisk first{
+        5, L"\\\\.\\PhysicalDrive5", 64ull * 1024ull * 1024ull,
+        1, 2, 3};
+    auto same = first;
+    auto different = first;
+    different.physical_drive_number = 6;
+
+    REQUIRE(myrd::aim::same_located_disk_identity(first, same));
+    REQUIRE(!myrd::aim::same_located_disk_identity(first, different));
 }

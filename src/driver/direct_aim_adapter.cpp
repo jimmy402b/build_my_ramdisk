@@ -3,6 +3,7 @@
 #include "srb_codec.h"
 
 #include <cstring>
+#include <limits>
 
 namespace myrd::aim {
 
@@ -67,9 +68,18 @@ Result<DeviceId> DirectAimAdapter::create_proxy_disk(
              L"create_proxy_disk", L"size not aligned to sector size"});
     }
 
-    std::uint16_t name_bytes = static_cast<std::uint16_t>(
+    if (spec.native_object_path.size() >
+        (std::numeric_limits<std::uint16_t>::max)() / sizeof(wchar_t)) {
+        return Result<DeviceId>::failure(
+            {ErrorDomain::usage, 0,
+             L"create_proxy_disk", L"native object path is too long"});
+    }
+    const auto name_bytes = static_cast<std::uint16_t>(
         spec.native_object_path.size() * sizeof(wchar_t));
-    std::size_t pl_size = sizeof(DeviceConfiguration) + name_bytes;
+    constexpr std::size_t file_name_offset =
+        offsetof(DeviceConfiguration, FileNameLength) +
+        sizeof(DeviceConfiguration::FileNameLength);
+    const std::size_t pl_size = file_name_offset + name_bytes;
     std::vector<std::byte> payload(pl_size);
 
     DeviceConfiguration cfg{};
@@ -79,8 +89,8 @@ Result<DeviceId> DirectAimAdapter::create_proxy_disk(
     cfg.ImageOffset = 0;
     cfg.Flags = kM0CreateFlags;
     cfg.FileNameLength = name_bytes;
-    std::memcpy(payload.data(), &cfg, sizeof(cfg));
-    std::memcpy(payload.data() + sizeof(cfg),
+    std::memcpy(payload.data(), &cfg, file_name_offset);
+    std::memcpy(payload.data() + file_name_offset,
                 spec.native_object_path.data(), name_bytes);
 
     auto sr = transport_.transact(kCreateDevice, payload, 4, 30);
@@ -98,10 +108,19 @@ Result<DeviceId> DirectAimAdapter::create_proxy_disk(
     }
     std::uint32_t raw_id{};
     std::memcpy(&raw_id, sr.value().payload.data(), 4);
+    if (raw_id == kAutoDeviceNumber || raw_id == kAllDevices) {
+        return Result<DeviceId>::failure(
+            {ErrorDomain::protocol, 0,
+             L"create_proxy_disk",
+             L"driver returned the auto/all-devices sentinel instead of an owned DeviceId"});
+    }
     return Result<DeviceId>::success(DeviceId{raw_id});
 }
 
 Result<DiskInfo> DirectAimAdapter::query_device(DeviceId id) {
+    constexpr std::size_t file_name_offset =
+        offsetof(DeviceConfiguration, FileNameLength) +
+        sizeof(DeviceConfiguration::FileNameLength);
     std::uint32_t raw = id.value;
     auto sr = transport_.transact(
         kQueryDevice,
@@ -116,13 +135,13 @@ Result<DiskInfo> DirectAimAdapter::query_device(DeviceId id) {
              L"query_device", L"driver returned non-zero SRB ReturnCode"});
     }
     auto& payload = sr.value().payload;
-    if (payload.size() < sizeof(DeviceConfiguration)) {
+    if (payload.size() < file_name_offset) {
         return Result<DiskInfo>::failure(
             {ErrorDomain::protocol, 0,
              L"query_device", L"response too short"});
     }
     DeviceConfiguration cfg{};
-    std::memcpy(&cfg, payload.data(), sizeof(cfg));
+    std::memcpy(&cfg, payload.data(), file_name_offset);
 
     if (cfg.DeviceNumber != id.value) {
         return Result<DiskInfo>::failure(
@@ -136,12 +155,21 @@ Result<DiskInfo> DirectAimAdapter::query_device(DeviceId id) {
     info.sector_size = cfg.BytesPerSector;
     info.flags = cfg.Flags;
 
-    if (cfg.FileNameLength > 0 &&
-        payload.size() >= sizeof(DeviceConfiguration) + cfg.FileNameLength) {
+    if ((cfg.FileNameLength % sizeof(wchar_t)) != 0) {
+        return Result<DiskInfo>::failure(
+            {ErrorDomain::protocol, 0,
+             L"query_device", L"path length is not WCHAR-aligned"});
+    }
+    if (cfg.FileNameLength > 0) {
+        if (payload.size() < file_name_offset + cfg.FileNameLength) {
+            return Result<DiskInfo>::failure(
+                {ErrorDomain::protocol, 0,
+                 L"query_device", L"response path is truncated"});
+        }
         std::wstring path(
-            reinterpret_cast<const wchar_t*>(
-                payload.data() + sizeof(DeviceConfiguration)),
-            (cfg.FileNameLength / sizeof(wchar_t)) - 1);
+            cfg.FileNameLength / sizeof(wchar_t), L'\0');
+        std::memcpy(path.data(), payload.data() + file_name_offset,
+                    cfg.FileNameLength);
         info.native_object_path = std::move(path);
     }
     return Result<DiskInfo>::success(info);
