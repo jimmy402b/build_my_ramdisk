@@ -15,11 +15,11 @@ Date: 2026-08-01 (Asia/Shanghai)
 ## Real-driver result
 
 - Harness summary:
-  `reports/m0-v6/summary-20260801-230009-6480435.json`
+  `reports/m0-v6/summary-20260801-233330-5281463.json`
 - Independent aggregate:
-  `reports/m0-v6/summary-20260801-230009-6480435-aggregate.json`
+  `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`
 - Post-restore independent query:
-  `reports/m0-v6/summary-20260801-230009-6480435-final-query.json`
+  `reports/m0-v6/summary-20260801-233330-5281463-final-query.json`
 - Result: 20 attempted, 20 passed.
 
 The independent aggregate re-parsed the exact report list from the summary and
@@ -32,6 +32,9 @@ confirmed:
   cleanup assertions;
 - the summary's before/after queries and the new post-service-restore query all
   observed AIM/PhysicalDrive sets equal to the initial baseline;
+- the before/after query reports and all 20 lifecycle reports retained their
+  recorded immutable SHA-256 values through service restoration and aggregate
+  validation;
 - reopening every session mapping, Request event, Response event and Server
   mutex failed as expected;
 - `phdskmnt` remained Running and `deviosvc` state/StartMode were restored.

@@ -56,10 +56,10 @@ StartMode restoration before accepting a run.
 
 | Tier | Evidence |
 |---|---|
-| V3 | `reports/m0-v3-verify-20260801-225957.json` |
-| V4 | `reports/m0-v4/summary-20260801-225959-6283944.json` |
+| V3 | `reports/m0-v3-verify-20260801-233314.json` |
+| V4 | `reports/m0-v4/summary-20260801-233319-6446216.json` |
 | V5 | `docs/validation/m0-v5-fault-cleanup.md` |
-| V6 | `reports/m0-v6/summary-20260801-230009-6480435-aggregate.json` |
+| V6 | `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json` |
 
 ### Historical Git State at Initial M0 Planning
 

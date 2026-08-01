@@ -39,7 +39,7 @@ Observed: `phdskmnt.sys` 1.2.28.93 is Running/Automatic; the Release import audi
 passes; V4 is 1/1; all V5 cases are 1/1; V6 is 20/20; every V6 report contains
 matching SHA-256 values, exact DeviceId cleanup and zero fatal protocol errors.
 The accepted aggregate is
-`reports/m0-v6/summary-20260801-230009-6480435-aggregate.json`; its fixed Release
+`reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`; its fixed Release
 executable SHA-256 is
 `0CC6B83AD7D099C328C683E5736DEB75CF4F224D2FF5C0B1E8CCC4D68AABDB4D`.
 
