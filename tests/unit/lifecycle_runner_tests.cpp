@@ -15,12 +15,20 @@ static const myrd::aim::DeviceId kFakeId{42};
 
 struct FakeProv : myrd::poc::IProviderLifecycle {
     int start_c = 0, stop_c = 0; bool rel = true, stop_ok = true;
+    mutable int release_checks = 0;
+    mutable int transient_release_checks = 0;
     myrd::proxy::RequestCounters request_counters{};
     myrd::Result<void> start() override { start_c++; return myrd::Result<void>::success(); }
     myrd::Result<void> stop_and_release() override { stop_c++; if (stop_ok) return myrd::Result<void>::success(); return myrd::Result<void>::failure({myrd::ErrorDomain::internal,0,L"stop_and_release",L"failed"}); }
     std::wstring native_object_path() const override { return L"\\BaseNamedObjects\\Global\\myrd-m0-0123456789abcdef0123456789abcdef"; }
     myrd::proxy::RequestCounters counters() const override { return request_counters; }
-    myrd::Result<bool> named_objects_released() const override { return myrd::Result<bool>::success(rel); }
+    myrd::Result<bool> named_objects_released() const override {
+        ++release_checks;
+        if (transient_release_checks-- > 0) {
+            return myrd::Result<bool>::success(false);
+        }
+        return myrd::Result<bool>::success(rel);
+    }
 };
 
 struct FakeAd : myrd::poc::IKernelDiskAdapter {
@@ -128,6 +136,22 @@ TEST_CASE(lifecycle_retries_transient_post_cleanup_disk_snapshot_error) {
     REQUIRE(l.snapshot_calls >= 3);
 }
 
+TEST_CASE(lifecycle_retries_transient_named_object_release) {
+    FakeProv p;
+    p.transient_release_checks = 1;
+    FakeAd a;
+    FakeLoc l;
+    FakeRT rt;
+    myrd::poc::RunConfig cfg;
+    cfg.run_id = "transient-named-object-release";
+
+    auto r = myrd::poc::run_lifecycle(p, a, l, rt, cfg);
+
+    REQUIRE(r.success);
+    REQUIRE(r.cleanup.named_objects_released);
+    REQUIRE(p.release_checks >= 2);
+}
+
 // 2. CREATE failure — no remove
 TEST_CASE(lifecycle_create_failure_no_remove) {
     FakeProv p; FakeAd a; a.c_ok = false; FakeLoc l; FakeRT rt;
@@ -233,6 +257,12 @@ TEST_CASE(lifecycle_debug_inject_create_returned) {
 TEST_CASE(m0_provider_start_services_info_request) {
     myrd::poc::M0Provider provider;
     auto started = provider.start();
+    if (!started) {
+        std::wcerr << L"M0Provider::start failed: code="
+                   << started.error().code << L" operation="
+                   << started.error().operation << L" message="
+                   << started.error().message << std::endl;
+    }
     REQUIRE(started.ok());
 
     const auto names = provider.names();

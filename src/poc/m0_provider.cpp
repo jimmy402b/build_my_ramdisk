@@ -49,25 +49,38 @@ proxy::RequestCounters M0Provider::counters() const {
 }
 
 Result<bool> M0Provider::named_objects_released() const {
-    HANDLE mapping = OpenFileMappingW(
-        FILE_MAP_READ, FALSE, names_.mapping.c_str());
-    if (mapping) { CloseHandle(mapping); return Result<bool>::success(false); }
-    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+    const auto probe = [](HANDLE handle,
+                          const wchar_t* operation) -> Result<bool> {
+        const DWORD error = handle == nullptr ? GetLastError() : ERROR_SUCCESS;
+        if (handle != nullptr) {
+            CloseHandle(handle);
+            return Result<bool>::success(false);
+        }
+        if (error == ERROR_FILE_NOT_FOUND) {
+            return Result<bool>::success(true);
+        }
+        return Result<bool>::failure({
+            ErrorDomain::win32,
+            static_cast<std::uint32_t>(error),
+            operation,
+            L"named-object absence probe failed"});
+    };
 
-    HANDLE request = OpenEventW(
-        SYNCHRONIZE, FALSE, names_.request.c_str());
-    if (request) { CloseHandle(request); return Result<bool>::success(false); }
-    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+    auto mapping = probe(OpenFileMappingW(
+        FILE_MAP_READ, FALSE, names_.mapping.c_str()), L"OpenFileMappingW");
+    if (!mapping || !mapping.value()) return mapping;
 
-    HANDLE response = OpenEventW(
-        SYNCHRONIZE, FALSE, names_.response.c_str());
-    if (response) { CloseHandle(response); return Result<bool>::success(false); }
-    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+    auto request = probe(OpenEventW(
+        SYNCHRONIZE, FALSE, names_.request.c_str()), L"OpenEventW(Request)");
+    if (!request || !request.value()) return request;
 
-    HANDLE server = OpenMutexW(
-        SYNCHRONIZE, FALSE, names_.server.c_str());
-    if (server) { CloseHandle(server); return Result<bool>::success(false); }
-    if (GetLastError() != ERROR_FILE_NOT_FOUND) return Result<bool>::success(false);
+    auto response = probe(OpenEventW(
+        SYNCHRONIZE, FALSE, names_.response.c_str()), L"OpenEventW(Response)");
+    if (!response || !response.value()) return response;
+
+    auto server = probe(OpenMutexW(
+        SYNCHRONIZE, FALSE, names_.server.c_str()), L"OpenMutexW(Server)");
+    if (!server || !server.value()) return server;
 
     return Result<bool>::success(true);
 }

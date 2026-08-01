@@ -1,21 +1,21 @@
 # M0 V4 Single-cycle Evidence
 
-Date: 2026-08-01 (Asia/Shanghai)
+Date: 2026-08-02 (Asia/Shanghai)
 
 ## Result
 
 V4 passed: 1 attempted, 1 passed.
 
-- Summary: `reports/m0-v4/summary-20260801-233319-6446216.json`
-- Lifecycle report: `reports/m0-v4/run-20260801-233319-6446216-1.json`
+- Summary: `reports/m0-v4/summary-20260802-005326-7137299.json`
+- Lifecycle report: `reports/m0-v4/run-20260802-005326-7137299-1.json`
 - Query before/after are recorded by the summary.
 
 ## Observed values
 
 | Evidence | Value |
 |---|---|
-| Run id | `8c120b10113232f89ef12dca55c38ff7` |
-| Provider session | `228dce7e3d310e22378256b54661fc6b` |
+| Run id | `1867955068cee93c03e05118a8086947` |
+| Provider session | `e427b93f8ac94af651f8d387a2af5293` |
 | Created/removed DeviceId | `0` / `0` |
 | SCSI address | Path 0, Target 0, LUN 0 |
 | Normalized QUERY flags | `0x00000310` (784) |
@@ -23,9 +23,9 @@ V4 passed: 1 attempted, 1 passed.
 | Disk length | 67,108,864 bytes |
 | INFO/READ/WRITE/CLOSE | 1 / 2 / 1 / 1 |
 | Raw offset/length | 8,388,608 / 4,096 bytes |
-| Written/read SHA-256 | `C03FFF26DE4D64CB509786CD54C2A9D8663E70ED8FA6A5FEBBE53BEB69FD04F0` |
+| Written/read SHA-256 | `74A3AB627B36412C63ABB13C905F739F5C1F7A3E876996A49391E0B464302FF6` |
 | Flush | succeeded |
-| Debug executable SHA-256 | `91B2BF3BF078455025207116C9B6890206ECED79675621D0E6113C9475723817` |
+| Debug executable SHA-256 | `D23F0D47200F4E2A52712FC3BA50EC2F8278081D6122BEF48E2223D9C4172014` |
 | Driver SHA-256 | `3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9` |
 
 The atomically published lifecycle report confirms QUERY_DEVICE identity,
@@ -53,5 +53,7 @@ that an abandoned global serial mutex is safely recovered and released.
   read-only and read-write handles.
 - Cleanup retries transient PnP enumeration errors until the complete
   PhysicalDrive baseline is observed again.
+- Cleanup condition-waits for delayed kernel release of all four per-session
+  named objects, while preserving a hard 15-second failure deadline.
 
 Verdict: V4 PASS.

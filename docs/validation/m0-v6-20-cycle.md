@@ -1,6 +1,6 @@
 # M0 V6 Twenty-cycle Evidence
 
-Date: 2026-08-01 (Asia/Shanghai)
+Date: 2026-08-02 (Asia/Shanghai)
 
 ## Build and dependency evidence
 
@@ -8,18 +8,18 @@ Date: 2026-08-01 (Asia/Shanghai)
   integration was also repeated 50 consecutive times.
 - Release import audit found no forbidden AIM user-mode dependency.
 - Release executable SHA-256:
-  `0CC6B83AD7D099C328C683E5736DEB75CF4F224D2FF5C0B1E8CCC4D68AABDB4D`.
+  `CBC84333F1E64504EDC156A5FEA69C1CF90BC8BCE5C8C232EB642C113BD1AB85`.
 - `phdskmnt.sys` SHA-256:
   `3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9`.
 
 ## Real-driver result
 
 - Harness summary:
-  `reports/m0-v6/summary-20260801-233330-5281463.json`
+  `reports/m0-v6/summary-20260802-005337-3234647.json`
 - Independent aggregate:
-  `reports/m0-v6/summary-20260801-233330-5281463-aggregate.json`
+  `reports/m0-v6/summary-20260802-005337-3234647-aggregate.json`
 - Post-restore independent query:
-  `reports/m0-v6/summary-20260801-233330-5281463-final-query.json`
+  `reports/m0-v6/summary-20260802-005337-3234647-final-query.json`
 - Result: 20 attempted, 20 passed.
 
 The independent aggregate re-parsed the exact report list from the summary and
@@ -38,5 +38,11 @@ confirmed:
 - reopening every session mapping, Request event, Response event and Server
   mutex failed as expected;
 - `phdskmnt` remained Running and `deviosvc` state/StartMode were restored.
+
+This accepted run includes the named-object race fix. A prior post-merge run
+stopped safely at 8/9 when the ninth lifecycle observed a still-open object;
+the object disappeared shortly afterward. The lifecycle now polls the exact
+condition for up to 15 seconds instead of weakening or removing the per-run
+assertion. The failed run remains under `reports/` as diagnostic history.
 
 Verdict: V6 PASS. This is the fresh highest-tier Task29 acceptance run.

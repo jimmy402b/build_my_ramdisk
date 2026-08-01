@@ -177,6 +177,38 @@ PocReport run_lifecycle(
         }
     };
 
+    auto wait_for_named_objects_released = [&]() {
+        constexpr auto kReleaseTimeout = std::chrono::seconds(15);
+        constexpr auto kReleaseInterval = std::chrono::milliseconds(100);
+        const auto deadline =
+            std::chrono::steady_clock::now() + kReleaseTimeout;
+
+        do {
+            auto released = provider.named_objects_released();
+            if (!released) {
+                cleanup_errors.push_back(ErrorEvidence{
+                    "cleanup",
+                    static_cast<std::uint32_t>(released.error().code),
+                    w2s(released.error().operation),
+                    w2s(released.error().message)});
+                return;
+            }
+            if (released.value()) {
+                report.cleanup.named_objects_released = true;
+                return;
+            }
+
+            if (std::chrono::steady_clock::now() >= deadline) break;
+            std::this_thread::sleep_for(kReleaseInterval);
+        } while (true);
+
+        cleanup_errors.push_back(ErrorEvidence{
+            "cleanup",
+            WAIT_TIMEOUT,
+            "wait_for_named_objects_released",
+            "provider named objects remained open after timeout"});
+    };
+
     // Scope guard for cleanup
     auto cleanup = [&]() {
         // 1. If owned DeviceId exists, try remove
@@ -213,9 +245,8 @@ PocReport run_lifecycle(
                 "cleanup", 0, "stop_and_release", "provider stop failed"});
         }
 
-        // 3. Check named objects released
-        auto rel = provider.named_objects_released();
-        report.cleanup.named_objects_released = rel.ok() && rel.value();
+        // 3. Wait for the driver to release its final object references.
+        wait_for_named_objects_released();
 
         capture_post_baseline();
 
@@ -365,8 +396,7 @@ PocReport run_lifecycle(
         stage = LifecycleStage::provider_stopped;
 
         // Stage 10: Check cleanup
-        auto rel = provider.named_objects_released();
-        report.cleanup.named_objects_released = rel.ok() && rel.value();
+        wait_for_named_objects_released();
 
         capture_post_baseline();
         stage = LifecycleStage::cleanup_verified;
