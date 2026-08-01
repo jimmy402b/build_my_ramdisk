@@ -5,8 +5,9 @@
 
 ## Status
 
-M0 is a milestone within the `rewrite/driver-only` branch.
-Execution progress is tracked in `tasklist.md`.
+M0 has a machine-scoped **GO** verdict on the `rewrite/driver-only` branch.
+Tasks 24-29 and the fresh V6 acceptance are recorded in `tasklist.md` and
+`docs/validation/m0-driver-only-acceptance.md`.
 
 ## Requirements
 
@@ -40,7 +41,45 @@ ctest --preset release
 | V5 | Yes | Yes | Fault injection and cleanup proof |
 | V6 | Yes | Yes | 20-cycle final acceptance |
 
-Run with: `.\tools\Invoke-M0Verification.ps1 -Tier <V0-V6> -Configuration <Debug|Release>`
+## Exact reproduction
+
+Run non-real tiers in any x64 PowerShell with the MSVC environment loaded:
+
+```powershell
+. .\tools\Enter-MsvcEnvironment.ps1
+.\tools\Invoke-M0Verification.ps1 -Tier V0 -Configuration Debug
+.\tools\Invoke-M0Verification.ps1 -Tier V1 -Configuration Debug
+.\tools\Invoke-M0Verification.ps1 -Tier V2 -Configuration Debug
+.\tools\Invoke-M0Verification.ps1 -Tier V2 -Configuration Release
+```
+
+Run real-driver tiers only from an elevated x64 PowerShell, in order:
+
+```powershell
+. .\tools\Enter-MsvcEnvironment.ps1
+.\tools\Invoke-M0Verification.ps1 -Tier V3 -Configuration Release
+.\tools\Invoke-M0Verification.ps1 -Tier V4 -Configuration Release
+.\tools\Invoke-M0Verification.ps1 -Tier V5 -Configuration Release
+.\tools\Invoke-M0Verification.ps1 -Tier V6 -Configuration Release
+```
+
+The E2E harness serializes all real runs, stops `deviosvc` only inside a
+`try/finally`, restores its original state and StartMode, and writes reports
+below `reports/`. Normal and injected reports are checked by
+`tools/Assert-M0RunReport.ps1`; V6 is independently checked by
+`tools/Assert-M0V6Aggregate.ps1`, including a new read-only query after service
+restoration. Child reports are atomically published and the harness verifies
+that their SHA-256 hashes remain unchanged.
+
+Expected evidence documents are under `docs/validation/` and generated JSON is
+under `reports/m0-v4*`, `reports/m0-v5*` and `reports/m0-v6*`.
+
+## Authorization warning
+
+M0 GO proves runtime driver-only feasibility on this machine only. It does not
+authorize uninstalling AIM Toolkit, deleting `deviosvc`, replacing the signed
+driver, or distributing a standalone driver package. Toolkit removal and a
+driver-only installation procedure require M5 disposable-VM validation.
 
 ## License
 

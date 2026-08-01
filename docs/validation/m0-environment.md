@@ -9,6 +9,14 @@
 
 ## Machine Facts (2026-08-01)
 
+| Property | Value |
+|---|---|
+| Windows version/build | 10.0 / 26200 |
+| OS and PowerShell architecture | x64 |
+| Real-test privilege | Elevated administrator |
+| System disk baseline | `PhysicalDrive0` only |
+| AIM device baseline | Empty |
+
 ### Build Toolchain
 
 | Tool | Version / Path |
@@ -26,6 +34,10 @@
 | `phdskmnt` | Running | Automatic |
 | `deviosvc` | Running | Manual |
 
+The harness records the original `deviosvc` PID and service path in every
+summary, stops it during query/lifecycle work, and verifies exact state and
+StartMode restoration before accepting a run.
+
 ### Driver Binary
 
 | Property | Value |
@@ -34,10 +46,27 @@
 | FileVersion | 1.2.28.93 |
 | ProductVersion | 1.2.28.93 |
 | CompanyName | Arsenal Recon |
+| SHA-256 | `3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9` |
+| Authenticode | `0x0` (trusted) |
+| Service | `phdskmnt`, Running/Automatic |
+| Adapter interface | `\\?\root#scsiadapter#0000#{2accfe60-c130-11d2-b082-00a0c91efb8b}` |
+| QUERY_VERSION | API 257, sub-version `0x01021C5D` |
 
-### Git State at Start
+### Accepted evidence
+
+| Tier | Evidence |
+|---|---|
+| V3 | `reports/m0-v3-verify-20260801-225957.json` |
+| V4 | `reports/m0-v4/summary-20260801-225959-6283944.json` |
+| V5 | `docs/validation/m0-v5-fault-cleanup.md` |
+| V6 | `reports/m0-v6/summary-20260801-230009-6480435-aggregate.json` |
+
+### Historical Git State at Initial M0 Planning
 
 ```
 commit 2794db5 (HEAD -> rewrite/driver-only)
 docs: add M0 execution tasklist and drift reviews
 ```
+
+The final handoff is based on the later Task24-29 implementation and evidence,
+not on this historical start commit.
