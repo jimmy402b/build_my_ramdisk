@@ -167,9 +167,9 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 9 | ON_TRACK | 9f08777 | 9f9b1c7 | c674f0a | — |
 | 10 | ON_TRACK | c674f0a | 5265252 | 4da2d4c | — |
 | 11 | ON_TRACK | 4da2d4c | 9f66da7 | f87bacb7381c481e45c45dbdbf08fa1d856903a8 | — |
-| 12 | IN_PROGRESS | f87bacb7381c481e45c45dbdbf08fa1d856903a8 | — | — | — |
-| 13 | IN_PROGRESS | da28809e3521640b1acd42779b97815317591978 | — | — | — |
-| 14 | IN_PROGRESS | 71df34fd61b8c6d25f3fc3371dd3c819392f464a | — | — | — |
+| 12 | ON_TRACK | f9ed70f | dcc7e28 | da28809 | — |
+| 13 | ON_TRACK | 0451c42 | 3078c6f | 71df34f | — |
+| 14 | ON_TRACK | 08cd399 | 739a02a | ff64d67 | — |
 | 15 | ON_TRACK | 6aa7b0a | c43dc6e | e84dd64 | — |
 | 16 | ON_TRACK | 983124f | 44dda4c | 86a8603 | — |
 | 17 | ON_TRACK | 59fe916 | 88f9377 | 2129014 | — |
@@ -179,7 +179,7 @@ Agent 每次改变 Task 状态都必须更新本表。
 | 21 | ON_TRACK | 1d3649f | c897da0 | f28341b | — |
 | 22 | ON_TRACK | e30c15a | 3a82f03 | 656a1f07e98063202443e402a06645f9e0ffcc72 | — |
 | 23 | ON_TRACK | 5967407 | bf89d16 | 7c6af0d883ce5910a937149648a0ecd2fb796f1e | — |
-| 24 | NOT_STARTED | — | — | — | — |
+| 24 | IN_PROGRESS | 588f172 | — | — | — |
 | 25 | NOT_STARTED | — | — | — | — |
 | 26 | NOT_STARTED | — | — | — | — |
 | 27 | NOT_STARTED | — | — | — | — |
