@@ -67,8 +67,10 @@ Result<DeviceId> DirectAimAdapter::create_proxy_disk(
              L"create_proxy_disk", L"size not aligned to sector size"});
     }
 
+    // FileNameLength = byte count WITHOUT NUL (matches managed code:
+    // MemoryMarshal.AsBytes(Filename.AsSpan()).Length)
     std::uint16_t name_bytes = static_cast<std::uint16_t>(
-        spec.native_object_path.size() * sizeof(wchar_t) + sizeof(wchar_t));
+        spec.native_object_path.size() * sizeof(wchar_t));
     std::size_t pl_size = sizeof(DeviceConfiguration) + name_bytes;
     std::vector<std::byte> payload(pl_size);
 

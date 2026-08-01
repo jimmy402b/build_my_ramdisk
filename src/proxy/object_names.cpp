@@ -56,7 +56,8 @@ Result<ObjectNames> ObjectNames::from_session(
     names.request     = base + L"_Request";
     names.response    = base + L"_Response";
     names.server      = base + L"_Server";
-    names.driver_path = std::wstring(L"\\BaseNamedObjects\\") + base;
+    names.driver_path = std::wstring(L"\\BaseNamedObjects\\Global\\") +
+                         std::wstring(session_id);
     return Result<ObjectNames>::success(names);
 }
 

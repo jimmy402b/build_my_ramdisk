@@ -127,9 +127,18 @@ PocReport run_lifecycle(
 
         stage = LifecycleStage::baseline_captured;
 
-        // Stage 3: Provider ready
-        if (config.injected_failure == FailurePoint::none) {
-            // Provider already started by caller
+        // Stage 3: Start provider
+        {
+            auto start_result = provider.start();
+            if (!start_result) {
+                set_error(start_result.error());
+                cleanup();
+                goto done;
+            }
+            report.provider.native_object_path =
+                w2s(provider.native_object_path());
+            report.provider.mapping_size = proxy::kMappingSize;
+            report.provider.data_area_size = proxy::kDataAreaSize;
             stage = LifecycleStage::provider_ready;
         }
 
