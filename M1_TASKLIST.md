@@ -151,7 +151,7 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 7 | ON_TRACK | 6 | e1b4730 | b943f95 | 未记录 | INFO/READ/WRITE/CLOSE, 17/17 pass, stable errorno |
 | 8 | ON_TRACK | 7 | 9167775 | 31a726a | 未记录 | WRITE 12 tests + all 17/17 pass |
 | 9 | ON_TRACK | 8 | 31a726a | b092f1f | 未记录 | UNMAP/ZERO/CLOSE/fatal 20 tests, 17/17 pass |
-| 10 | NOT_STARTED | 9 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 10 | ON_TRACK | 9 | 0202a49 | 7096d2b | 未记录 | 10K cases seed 0x4D3150524F585955, 20/20 passes, 7/7 M1 unit |
 | 11 | NOT_STARTED | 10 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 12 | NOT_STARTED | 11 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 13 | NOT_STARTED | 12 | 未记录 | 未记录 | 未记录 | 未记录 |
