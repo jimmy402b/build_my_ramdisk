@@ -143,7 +143,7 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 |---:|---|---|---|---|---|---|
 | 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | a62a9d4 | CMake 4.2.2, Ninja 1.13.2, MSVC 19.44.35228, 11/11 tests pass, AIM d379caa verified |
 | 1 | ON_TRACK | 0 | 96dfa76 | 7692559 | 1369a1b | 3/3 operation_context tests, 11/11 unit regression pass |
-| 2 | NOT_STARTED | 1 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 2 | ON_TRACK | 1 | 98c40ec | 77f4a7a | a91044f | 8/8 contract tests, 12/12 unit regression pass, no M2 pattern |
 | 3 | NOT_STARTED | 2 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 4 | NOT_STARTED | 3 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 5 | NOT_STARTED | 4 | 未记录 | 未记录 | 未记录 | 未记录 |
@@ -343,7 +343,7 @@ Plan：[Task 2](docs/superpowers/plans/2026-08-02-m1-proxy-productization.md#tas
 - [ ] R2.06 比较 diff 文件与允许列表。
 - [ ] R2.07 Verdict `ON_TRACK` 后提交 alignment review。
 
-Review Record：Executor `未记录`; Start `未记录`; Implementation `未记录`; Files `未记录`; Commands `未记录`; Results `未记录`; Evidence `未记录`; Deviations `未记录`; Risks `未记录`; Verdict `NOT_REVIEWED`。
+Review Record：Executor `Claude`; Start `98c40ec`; Implementation `77f4a7a`; Files `src/storage/block_device.h, src/storage/memory_block_device.h/.cpp, src/proxy/request_processor.cpp, tests/unit/block_device_contract_tests.cpp, tests/unit/storage_tests.cpp, tests/unit/request_processor_tests.cpp, tests/CMakeLists.txt`; Commands `ctest -R "^unit\.m1\.block_device_contract$"; ctest -R "^unit\."; rg "VirtualAlloc|MEM_COMMIT|evict|dirty|backing" src/storage`; Results `8/8 contract tests pass (features, read/write, zero, unmap, misalignment, overflow, read-only, cancel); 12/12 all unit pass; no M2 patterns found`; Evidence `DataRange/DeviceFeatures/IBlockDevice matching SPEC 7; MemoryBlockDevice with mutex/read_only/validate-all-then-zero; subtraction-safe bounds check; old tests pass with OperationContext{}`; Deviations `None`; Risks `None`; Verdict `ON_TRACK`。
 
 ### Task 3 — 锁定完整 M1 Wire ABI
 
