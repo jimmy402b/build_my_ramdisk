@@ -144,7 +144,7 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | a62a9d4 | CMake 4.2.2, Ninja 1.13.2, MSVC 19.44.35228, 11/11 tests pass, AIM d379caa verified |
 | 1 | ON_TRACK | 0 | 96dfa76 | 7692559 | 1369a1b | 3/3 operation_context tests, 11/11 unit regression pass |
 | 2 | ON_TRACK | 1 | 98c40ec | 77f4a7a | a91044f | 8/8 contract tests, 12/12 unit regression pass, no M2 pattern |
-| 3 | NOT_STARTED | 2 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 3 | ON_TRACK | 2 | 039a369 | 5790b03 | 未记录 | 6/6 ABI tests, old+new protocol pass, codes/flags/sizes match AIM |
 | 4 | NOT_STARTED | 3 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 5 | NOT_STARTED | 4 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 6 | NOT_STARTED | 5 | 未记录 | 未记录 | 未记录 | 未记录 |
@@ -382,7 +382,7 @@ Plan：[Task 3](docs/superpowers/plans/2026-08-02-m1-proxy-productization.md#tas
 - [ ] R3.06 记录 SDK 结构 size/offset 证据。
 - [ ] R3.07 Verdict `ON_TRACK` 后提交 alignment review。
 
-Review Record：Executor `未记录`; Start `未记录`; Implementation `未记录`; Files `未记录`; Commands `未记录`; Results `未记录`; Evidence `未记录`; Deviations `未记录`; Risks `未记录`; Verdict `NOT_REVIEWED`。
+Review Record：Executor `Claude`; Start `039a369`; Implementation `5790b03`; Files `src/proxy/imdproxy_protocol.h, tests/unit/m1_protocol_tests.cpp, tests/CMakeLists.txt`; Commands `ctest -R "^(unit\.m1\.protocol|unit\.protocol)$"`; Results `6/6 M1 ABI tests pass; 2/2 old+new protocol pass`; Evidence `kReqUnmap=6 kReqZero=7 kFlagSupportsUnmap=0x02 kFlagSupportsZero=0x04 match pinned AIM d379caa; DataSetRangeWire offset/size match DEVICE_DATA_SET_RANGE; truncation/sentinel/round-trip verified`; Deviations `None`; Risks `None`; Verdict `ON_TRACK`。
 
 ### Task 4 — 稳定 Proxy 错误映射
 
