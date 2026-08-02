@@ -147,8 +147,8 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 3 | ON_TRACK | 2 | 039a369 | 5790b03 | 未记录 | 6/6 ABI tests, old+new protocol pass, codes/flags/sizes match AIM |
 | 4 | ON_TRACK | 3 | 3ad6cd5 | 5674b9f | 未记录 | 6/6 error mapping tests, 4/4 M1 unit pass |
 | 5 | ON_TRACK | 4 | d571097 | bf8f262 | 未记录 | 11/11 normalizer tests, 6/6 M1 unit pass |
-| 6 | NOT_STARTED | 5 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 7 | NOT_STARTED | 6 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 6 | ON_TRACK | 5 | 718eaa8 | e1b4730 | 未记录 | FakeBlockDevice consumer test pass |
+| 7 | ON_TRACK | 6 | e1b4730 | b943f95 | 未记录 | INFO/READ/WRITE/CLOSE, 17/17 pass, stable errorno |
 | 8 | NOT_STARTED | 7 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 9 | NOT_STARTED | 8 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 10 | NOT_STARTED | 9 | 未记录 | 未记录 | 未记录 | 未记录 |
