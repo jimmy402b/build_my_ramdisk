@@ -146,7 +146,7 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 2 | ON_TRACK | 1 | 98c40ec | 77f4a7a | a91044f | 8/8 contract tests, 12/12 unit regression pass, no M2 pattern |
 | 3 | ON_TRACK | 2 | 039a369 | 5790b03 | 未记录 | 6/6 ABI tests, old+new protocol pass, codes/flags/sizes match AIM |
 | 4 | ON_TRACK | 3 | 3ad6cd5 | 5674b9f | 未记录 | 6/6 error mapping tests, 4/4 M1 unit pass |
-| 5 | NOT_STARTED | 4 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 5 | ON_TRACK | 4 | d571097 | bf8f262 | 未记录 | 11/11 normalizer tests, 6/6 M1 unit pass |
 | 6 | NOT_STARTED | 5 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 7 | NOT_STARTED | 6 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 8 | NOT_STARTED | 7 | 未记录 | 未记录 | 未记录 | 未记录 |
@@ -458,7 +458,7 @@ Plan：[Task 5](docs/superpowers/plans/2026-08-02-m1-proxy-productization.md#tas
 - [ ] R5.06 检查 diff 文件范围。
 - [ ] R5.07 Verdict `ON_TRACK` 后提交 alignment review。
 
-Review Record：Executor `未记录`; Start `未记录`; Implementation `未记录`; Files `未记录`; Commands `未记录`; Results `未记录`; Evidence `未记录`; Deviations `未记录`; Risks `未记录`; Verdict `NOT_REVIEWED`。
+Review Record：Executor `Claude`; Start `d571097`; Implementation `bf8f262`; Files `src/proxy/range_normalizer.h/.cpp, tests/unit/range_normalizer_tests.cpp, src/CMakeLists.txt, tests/CMakeLists.txt`; Commands `ctest -R "^unit\.m1\.range_normalizer$"; ctest -R "^(unit\.m1\.|unit\.protocol)"`; Results `11/11 normalizer tests pass (empty, non-multiple-16, encoded-length, zero-length, misalignment, overflow, device-end, sort/merge, adjacent, separated); 6/6 M1+protocol pass`; Evidence `8-step validation order matching PLAN; read_wire no reinterpret-cast; subtraction-safe bounds; sort+merge verified`; Deviations `None`; Risks `None`; Verdict `ON_TRACK`。
 
 ### Task 6 — 严格 FakeBlockDevice 测试替身
 
