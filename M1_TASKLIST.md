@@ -141,7 +141,7 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 
 | Task | 状态 | 依赖 | Start commit | Implementation commit | Review commit | 证据摘要 |
 |---:|---|---|---|---|---|---|
-| 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | 未记录 | CMake 4.2.2, Ninja 1.13.2, MSVC 19.44.35228, 11/11 tests pass |
+| 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | a62a9d4 | CMake 4.2.2, Ninja 1.13.2, MSVC 19.44.35228, 11/11 tests pass, AIM d379caa verified |
 | 1 | NOT_STARTED | 0 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 2 | NOT_STARTED | 1 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 3 | NOT_STARTED | 2 | 未记录 | 未记录 | 未记录 | 未记录 |
