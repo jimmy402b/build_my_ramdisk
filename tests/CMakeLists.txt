@@ -85,6 +85,14 @@ target_include_directories(myrd_m1_namespace_policy_tests PRIVATE "${CMAKE_SOURC
 myrd_enable_warnings(myrd_m1_namespace_policy_tests)
 add_test(NAME unit.m1.namespace_policy COMMAND myrd_m1_namespace_policy_tests)
 
+add_executable(myrd_m1_raw_protocol_io_tests
+    unit/m1_raw_protocol_io_tests.cpp
+)
+target_link_libraries(myrd_m1_raw_protocol_io_tests PRIVATE myrd_test_support myrd_m1)
+target_include_directories(myrd_m1_raw_protocol_io_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_raw_protocol_io_tests)
+add_test(NAME unit.m1.raw_protocol_io COMMAND myrd_m1_raw_protocol_io_tests)
+
 add_executable(myrd_storage_tests
     unit/storage_tests.cpp
 )

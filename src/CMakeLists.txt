@@ -65,6 +65,7 @@ myrd_enable_warnings(myrd_poc)
 
 add_library(myrd_m1 STATIC
     m1/m1_provider.cpp m1/m1_provider.h
+    m1/m1_raw_protocol_io.cpp m1/m1_raw_protocol_io.h
 )
 target_include_directories(myrd_m1 PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m1 PUBLIC myrd_proxy myrd_storage myrd_common)
