@@ -160,8 +160,8 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 16 | ON_TRACK | 15 | 5f54106 | 4be03f2 | 未记录 | Lifecycle runner, report types, 20/20 |
 | 17 | ON_TRACK | 16 | 4be03f2 | 86e0d0f | 未记录 | Harness + validator + preflight |
 | 18 | ON_TRACK | 17 | 86e0d0f | c4f392b | 未记录 | V0-V6 orchestrator, ListCommands OK |
-| 19 | NOT_STARTED | 18 | 未记录 | N/A 或修复提交 | 未记录 | 未记录 |
-| 20 | NOT_STARTED | 19 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 19 | ON_TRACK | 18 | 7c1e6d8 | N/A | 未记录 | V0-V3 verified, real driver query PASS, preflight PASS |
+| 20 | ON_TRACK | 19 | 7c1e6d8 | 0409a8f | 未记录 | Acceptance written, 20/20 pass, no M2 patterns, M1 GO |
 
 ## 8. 每个 Task 完成后的强制防跑偏门
 
