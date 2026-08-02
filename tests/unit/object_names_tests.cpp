@@ -20,6 +20,7 @@ TEST_CASE(object_names_build_exact_win32_names) {
     REQUIRE(n.request  == L"Global\\myrd-m0-00112233445566778899aabbccddeeff_Request");
     REQUIRE(n.response == L"Global\\myrd-m0-00112233445566778899aabbccddeeff_Response");
     REQUIRE(n.server   == L"Global\\myrd-m0-00112233445566778899aabbccddeeff_Server");
+    REQUIRE(n.cancel   == L"Global\\myrd-m0-00112233445566778899aabbccddeeff_Cancel");
 }
 
 TEST_CASE(object_names_build_exact_native_path) {
