@@ -71,6 +71,14 @@ target_include_directories(myrd_m1 PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m1 PUBLIC myrd_proxy myrd_storage myrd_common)
 myrd_enable_warnings(myrd_m1)
 
+add_executable(myrd-m1-e2e
+    m1/main.cpp
+    m1/m1_cli.cpp m1/m1_cli.h
+)
+target_include_directories(myrd-m1-e2e PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd-m1-e2e PRIVATE myrd_m1 myrd_driver myrd_proxy myrd_storage myrd_common bcrypt wintrust crypt32 Setupapi Cfgmgr32)
+myrd_enable_warnings(myrd-m1-e2e)
+
 add_executable(myrd-m0-poc
     poc/main.cpp
 )
