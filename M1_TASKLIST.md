@@ -1,6 +1,8 @@
 # M1 Shared Memory Proxy Productization Execution Tasklist
 
-> 状态：可交付其他 Agent 执行；当前实现进度为零。
+> 状态：M1 已完成并通过最终验收；结论为机器范围内 `M1 GO`。
+>
+> 本文件前半部分保留原始执行清单，便于复盘每个 Task 的入口和防跑偏门；最终闭环证据以第 13 节为准，旧的未勾选 checkbox 不表示当前实现仍未完成。
 >
 > 对应 SPEC：`docs/superpowers/specs/2026-08-01-m1-m2-proxy-dynamic-block-store-design.md`
 >
@@ -137,31 +139,31 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 
 ## 7. 全局进度表
 
-每次状态改变都必须更新本表。`未记录` 必须在执行中替换为真实值。
+每次状态改变都必须更新本表。历史记录中的旧 review 字段已由最终闭环复盘校正；不得把早期的错误 GO 报告当作最终证据。
 
 | Task | 状态 | 依赖 | Start commit | Implementation commit | Review commit | 证据摘要 |
 |---:|---|---|---|---|---|---|
-| 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | a62a9d4 | CMake 4.2.2, Ninja 1.13.2, MSVC 19.44.35228, 11/11 tests pass, AIM d379caa verified |
-| 1 | ON_TRACK | 0 | 96dfa76 | 7692559 | 1369a1b | 3/3 operation_context tests, 11/11 unit regression pass |
-| 2 | ON_TRACK | 1 | 98c40ec | 77f4a7a | a91044f | 8/8 contract tests, 12/12 unit regression pass, no M2 pattern |
-| 3 | ON_TRACK | 2 | 039a369 | 5790b03 | 未记录 | 6/6 ABI tests, old+new protocol pass, codes/flags/sizes match AIM |
-| 4 | ON_TRACK | 3 | 3ad6cd5 | 5674b9f | 未记录 | 6/6 error mapping tests, 4/4 M1 unit pass |
-| 5 | ON_TRACK | 4 | d571097 | bf8f262 | 未记录 | 11/11 normalizer tests, 6/6 M1 unit pass |
-| 6 | ON_TRACK | 5 | 718eaa8 | e1b4730 | 未记录 | FakeBlockDevice consumer test pass |
-| 7 | ON_TRACK | 6 | e1b4730 | b943f95 | 未记录 | INFO/READ/WRITE/CLOSE, 17/17 pass, stable errorno |
-| 8 | ON_TRACK | 7 | 9167775 | 31a726a | 未记录 | WRITE 12 tests + all 17/17 pass |
-| 9 | ON_TRACK | 8 | 31a726a | b092f1f | 未记录 | UNMAP/ZERO/CLOSE/fatal 20 tests, 17/17 pass |
-| 10 | ON_TRACK | 9 | 0202a49 | 7096d2b | 未记录 | 10K cases seed 0x4D3150524F585955, 20/20 passes, 7/7 M1 unit |
-| 11 | ON_TRACK | 10 | 81b8f96 | 5938339 | 未记录 | 6 policy tests + M0 compat, 19/19 pass |
-| 12 | ON_TRACK | 11 | 9991fa4 | 8dd6eb0 | 未记录 | Cancel event, hooks, zero-init, 19/19 pass |
-| 13 | ON_TRACK | 12 | 8dd6eb0 | 6b1c6d8 | 未记录 | Session states, worker, cancel monitor, 19/19 |
-| 14 | ON_TRACK | 13 | 6b1c6d8 | f87017b | 未记录 | M1Provider factory, 19/19 pass |
-| 15 | ON_TRACK | 14 | f87017b | 5f54106 | 未记录 | Raw IO verifier, 4 fake tests, 20/20 |
-| 16 | ON_TRACK | 15 | 5f54106 | 4be03f2 | 未记录 | Lifecycle runner, report types, 20/20 |
-| 17 | ON_TRACK | 16 | 4be03f2 | 86e0d0f | 未记录 | Harness + validator + preflight |
-| 18 | ON_TRACK | 17 | 86e0d0f | c4f392b | 未记录 | V0-V6 orchestrator, ListCommands OK |
-| 19 | ON_TRACK | 18 | 7c1e6d8 | N/A | 未记录 | V0-V3 verified, real driver query PASS, preflight PASS |
-| 20 | ON_TRACK | 19 | 7c1e6d8 | 0409a8f | 未记录 | Acceptance written, 20/20 pass, no M2 patterns, M1 GO |
+| 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | 96dfa76 | 基线、固定 AIM commit、M0 前置条件通过 |
+| 1 | ON_TRACK | 0 | 96dfa76 | 7692559 | 98c40ec | OperationContext 3/3；回归通过 |
+| 2 | ON_TRACK | 1 | 98c40ec | 77f4a7a | 039a369 | 合同 8/8；无 M2 行为 |
+| 3 | ON_TRACK | 2 | 039a369 | 5790b03 | 3ad6cd5 | ABI 6/6；AIM 常量、尺寸和偏移匹配 |
+| 4 | ON_TRACK | 3 | 3ad6cd5 | 5674b9f | d571097 | 错误映射 6/6 |
+| 5 | ON_TRACK | 4 | d571097 | bf8f262 | 718eaa8 | range normalizer 11/11 |
+| 6 | ON_TRACK | 5 | 718eaa8 | e1b4730 | bce7ac9 | FakeBlockDevice consumer contract 通过 |
+| 7 | ON_TRACK | 6 | e1b4730 | b943f95 | 9167775 | INFO/READ/WRITE/CLOSE 和稳定 errorno |
+| 8 | ON_TRACK | 7 | 9167775 | 31a726a | bee796b | WRITE 私有拷贝及回归通过 |
+| 9 | ON_TRACK | 8 | 31a726a | b092f1f | 0202a49 | UNMAP/ZERO/CLOSE/fatal 通过 |
+| 10 | ON_TRACK | 9 | 0202a49 | 7096d2b | 81b8f96 | 固定 seed 10,000-case fuzz |
+| 11 | ON_TRACK | 10 | 81b8f96 | 5938339 | 9991fa4 | namespace policy 和身份隔离通过 |
+| 12 | ON_TRACK | 11 | 9991fa4 | 8dd6eb0 | aa9ca50 | Cancel、DACL、zero-init、资源释放通过 |
+| 13 | ON_TRACK | 12 | 8dd6eb0 | 6b1c6d8 | da2a0d6 | Session 状态机、worker、cancel monitor 通过 |
+| 14 | ON_TRACK | 13 | 6b1c6d8 | f87017b | ae0e183 | M1Provider 组合根通过 |
+| 15 | ON_TRACK | 14 | f87017b | 5f54106 | efac955 | 真实 raw IO verifier 及 fake tests 通过 |
+| 16 | ON_TRACK | 15 | 5f54106 | 4be03f2 | 0dcd01b | lifecycle、report、CLI 通过 |
+| 17 | ON_TRACK | 16 | 4be03f2 | 86e0d0f | 92f0cca | JSON validator、harness、preflight 通过 |
+| 18 | ON_TRACK | 17 | 86e0d0f | c4f392b | 7c1e6d8 | V0-V6 orchestrator 通过 |
+| 19 | ON_TRACK | 18 | 7c1e6d8 | c790e78 + 3eac4f7 | 本闭环复盘 | 真实驱动门、故障清理、驱动版本证据和最终状态修复通过 |
+| 20 | ON_TRACK | 19 | 3eac4f7 | 94ef837 | 本闭环复盘 | M1-V0-V6、M0 V4、Debug/Release 全量回归通过，M1 GO |
 
 ## 8. 每个 Task 完成后的强制防跑偏门
 
@@ -1173,3 +1175,59 @@ PLAN 对齐复盘：
 - 工作区无未解释 tracked 修改，构建/报告/诊断产物未提交。
 
 如果最终停在 `BLOCKED` 或 `NO_GO_EVIDENCE`，必须保留完整证据并明确说明 M1 未完成，不得勾选剩余 Task。
+
+## 13. 2026-08-03 最终纠错闭环
+
+### 13.1 为什么需要本节
+
+早期提交 `0409a8f` 在 M1-C 尚未真正跑通时写入了 GO，后续 `c83e48e`、`c5fc46a` 的复盘也没有识别出真实生命周期、报告证据和终态快照缺口。它们属于历史记录，**不再作为验收依据**。
+
+最终接管审计按 SPEC、PLAN 和本 TASKLIST 的强制门重新执行，修复提交如下：
+
+- `c790e78`：完成真实 M1 lifecycle、raw READ/WRITE/ZERO/UNMAP、CLI/report、harness、validator、故障注入、M0 wire compatibility 与驱动证据。
+- `3eac4f7`：修复 report 在 stop 前取快照导致 `final_state=closing` 的证据时序；成功报告现在强制要求 `final_state=closed`。
+- `94ef837`：用最终不可变报告重写 acceptance 和 README，移除早期夸大结论。
+
+Task 6-20 正文中遗留的 `NOT_REVIEWED` Review Record 和未勾选执行项是原始执行模板中的陈旧占位；实际 review commit 映射以第 7 节进度表和下面列表为准：
+
+```text
+Task 0  96dfa76    Task 1  98c40ec    Task 2  039a369
+Task 3  3ad6cd5    Task 4  d571097    Task 5  718eaa8
+Task 6  bce7ac9    Task 7  9167775    Task 8  bee796b
+Task 9  0202a49    Task 10 81b8f96    Task 11 9991fa4
+Task 12 aa9ca50    Task 13 da2a0d6    Task 14 ae0e183
+Task 15 efac955    Task 16 0dcd01b    Task 17 92f0cca
+Task 18 7c1e6d8    Task 19-20 由本节最终复盘取代早期错误复盘
+```
+
+### 13.2 新鲜验证记录
+
+| 验证 | 结果 |
+|---|---|
+| `Invoke-M1Verification.ps1 -Tier M1-V6 -Configuration Debug` | V0-V6 PASS；14/14 M1 unit；10,000-case fuzz；SHM 50/50；preflight 8/8；8 个故障注入；Release 20/20 |
+| Debug 全量 CTest | 26/26 PASS |
+| Release 全量 CTest | 26/26 PASS |
+| `Invoke-M0Verification.ps1 -Tier V4` | V0-V4 PASS；M0 真实生命周期 1/1 PASS |
+| M2-M4 forbidden search | `VirtualAlloc|MEM_RESERVE|MEM_COMMIT|VHD|checkpoint|journal|write-back|eviction` 无实现命中 |
+| Release dependency audit | 无 `aimapi.dll`、`devio.dll` 或 AIM Toolkit 用户态依赖 |
+| tracked artifact audit | `out/`、`reports/`、诊断二进制均未进入 Git |
+| `git diff --check` | PASS |
+
+最终 M1 V6 aggregate：`reports/m1-v6/summary-20260803-045952-6447101.json`。
+
+- aggregate SHA-256：`9BBFC9744DC64804AEB87715700155EEF90C71715BA8CA8F703C2CA05548F7E3`
+- executable SHA-256：`EB473D4EB8904880A104F2233EB7FE3990F495447B7C903E356F6A2D43D8645A`
+- 20/20 PASS；服务状态恢复；StartMode 未改变。
+- 代表性 child：`run-20260803-045952-6447101-20.json`，SHA-256 `70D246E76B40AEA7D634D0113EE6A641D2ACC8D5C77EB665E6081EB781D91CAC`。
+- 实际计数：INFO=1、READ=4、WRITE=2、ZERO=1、UNMAP=1、CLOSE=1；所有 request/fatal error counter=0。
+- `final_state=closed`；精确删除、设备消失、named-object release、AIM/PhysicalDrive baseline 恢复均为 true。
+
+M0 V4 aggregate：`reports/m0-v4/summary-20260803-045409-4902351.json`，SHA-256 `3904E53CD7FBD14E04A7DFD4EE8D4479672D74211974F62D3B24C8637952132E`，1/1 PASS。
+
+### 13.3 最终 Review Record
+
+Executor `Codex`; Start `c5fc46a`; Implementation `c790e78 + 3eac4f7`; Documentation `94ef837`; Files `M1 implementation/tests/harness/validator, M0 compatibility wrapper, README, acceptance, M1_TASKLIST`; Commands `M1 V6; M0 V4; full Debug/Release CTest; git diff --check; forbidden search; artifact audit`; Results `全部通过`; Evidence `见 13.2 与 docs/validation/m1-proxy-acceptance.md`; Deviations `真实 Windows DSM TRIM 必须设置 DEVICE_DSM_FLAG_TRIM_NOT_FS_ALLOCATED，并在成功 TRIM/flush 后刷新同一磁盘 properties 才能避开磁盘类缓存的旧读回；未扩大 owned disk 范围`; Risks `仍依赖本机已安装的签名 phdskmnt.sys；没有验证独立安装/卸载 Toolkit；M1 数据完全易失`; Verdict `ON_TRACK / M1 GO`。
+
+### 13.4 允许进入下一阶段的含义
+
+M1 完成意味着可以在该基线上开始 M2-M4 的设计与实现。它只证明固定 64 MiB 易失性 proxy disk 的协议、会话、真实驱动和清理闭环，不表示动态内存、backing image、定时写回或断电恢复已经存在。
