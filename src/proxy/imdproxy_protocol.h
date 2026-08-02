@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
+#include <type_traits>
 
 #include "src/common/result.h"
 
@@ -23,6 +25,14 @@ constexpr std::uint64_t kReqInfo  = 1;
 constexpr std::uint64_t kReqRead  = 2;
 constexpr std::uint64_t kReqWrite = 3;
 constexpr std::uint64_t kReqClose = 5;
+constexpr std::uint64_t kReqUnmap = 6;
+constexpr std::uint64_t kReqZero  = 7;
+
+// ── INFO flags ─────────────────────────────────────────────────
+
+constexpr std::uint64_t kFlagReadOnly       = 0x01;
+constexpr std::uint64_t kFlagSupportsUnmap  = 0x02;
+constexpr std::uint64_t kFlagSupportsZero   = 0x04;
 
 // ── INFO response ──────────────────────────────────────────────
 
@@ -78,6 +88,45 @@ struct CloseRequest {
 };
 
 static_assert(sizeof(CloseRequest) == 8, "IMDPROXY_CLOSE_REQ size mismatch");
+
+// ── UNMAP request / response ───────────────────────────────────
+
+struct UnmapRequest {
+    std::uint64_t request_code;
+    std::uint64_t length;
+};
+
+static_assert(sizeof(UnmapRequest) == 16);
+
+struct UnmapResponse {
+    std::uint64_t errorno;
+};
+
+static_assert(sizeof(UnmapResponse) == 8);
+
+// ── ZERO request / response ────────────────────────────────────
+
+struct ZeroRequest {
+    std::uint64_t request_code;
+    std::uint64_t length;
+};
+
+static_assert(sizeof(ZeroRequest) == 16);
+
+struct ZeroResponse {
+    std::uint64_t errorno;
+};
+
+static_assert(sizeof(ZeroResponse) == 8);
+
+// ── Data set range wire structure ───────────────────────────────
+
+struct DataSetRangeWire {
+    std::uint64_t offset;
+    std::uint64_t length;
+};
+
+static_assert(sizeof(DataSetRangeWire) == 16);
 
 // ── Safe wire helpers ──────────────────────────────────────────
 
