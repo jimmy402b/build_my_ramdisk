@@ -45,6 +45,14 @@ target_include_directories(myrd_m1_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m1_protocol_tests)
 add_test(NAME unit.m1.protocol COMMAND myrd_m1_protocol_tests)
 
+add_executable(myrd_m1_proxy_error_tests
+    unit/proxy_error_tests.cpp
+)
+target_link_libraries(myrd_m1_proxy_error_tests PRIVATE myrd_test_support myrd_proxy)
+target_include_directories(myrd_m1_proxy_error_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_proxy_error_tests)
+add_test(NAME unit.m1.proxy_error COMMAND myrd_m1_proxy_error_tests)
+
 add_executable(myrd_storage_tests
     unit/storage_tests.cpp
 )
