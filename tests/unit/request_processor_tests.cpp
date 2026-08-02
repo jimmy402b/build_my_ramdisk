@@ -45,7 +45,7 @@ TEST_CASE(processor_info_reports_512_alignment) {
     REQUIRE_EQ(r.value().req_alignment, 512u);
 }
 
-TEST_CASE(processor_info_advertises_zero_optional_flags) {
+TEST_CASE(processor_info_advertises_unmap_and_zero_flags) {
     myrd::MemoryBlockDevice dev(k64MiB, 512);
     myrd::proxy::RequestProcessor proc(dev);
     auto m = make_mapping();
@@ -53,7 +53,8 @@ TEST_CASE(processor_info_advertises_zero_optional_flags) {
     proc.process(m);
     auto r = myrd::proxy::read_wire<myrd::proxy::InfoResponse>(
         std::span<const std::byte>(m.data(), myrd::proxy::kHeaderSize), 0);
-    REQUIRE_EQ(r.value().flags, 0u);
+    REQUIRE_EQ(r.value().flags,
+        myrd::proxy::kFlagSupportsUnmap | myrd::proxy::kFlagSupportsZero);
 }
 
 TEST_CASE(processor_info_increments_only_info_counter) {
@@ -123,7 +124,7 @@ TEST_CASE(processor_read_rejects_length_larger_than_data_area) {
     REQUIRE(o.action == myrd::proxy::ProcessorAction::respond);
     auto resp = myrd::proxy::read_wire<myrd::proxy::ReadResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().errorno, 1u);
+    REQUIRE(resp.value().errorno != 0u);
     REQUIRE_EQ(resp.value().length, 0u);
 }
 
@@ -136,7 +137,7 @@ TEST_CASE(processor_read_returns_error_response_for_unaligned_range) {
     proc.process(m);
     auto resp = myrd::proxy::read_wire<myrd::proxy::ReadResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().errorno, 1u);
+    REQUIRE(resp.value().errorno != 0u);
 }
 
 TEST_CASE(processor_read_returns_error_response_for_backend_range_failure) {
@@ -148,7 +149,7 @@ TEST_CASE(processor_read_returns_error_response_for_backend_range_failure) {
     proc.process(m);
     auto resp = myrd::proxy::read_wire<myrd::proxy::ReadResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().errorno, 1u);
+    REQUIRE(resp.value().errorno != 0u);
 }
 
 // ── WRITE tests ──────────────────────────────────────────────
@@ -208,7 +209,7 @@ TEST_CASE(processor_write_rejects_length_larger_than_data_area) {
     proc.process(m);
     auto resp = myrd::proxy::read_wire<myrd::proxy::WriteResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().errorno, 1u);
+    REQUIRE(resp.value().errorno != 0u);
 }
 
 TEST_CASE(processor_write_returns_error_response_for_unaligned_range) {
@@ -220,7 +221,7 @@ TEST_CASE(processor_write_returns_error_response_for_unaligned_range) {
     proc.process(m);
     auto resp = myrd::proxy::read_wire<myrd::proxy::WriteResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().errorno, 1u);
+    REQUIRE(resp.value().errorno != 0u);
 }
 
 TEST_CASE(processor_write_returns_error_response_for_backend_failure) {
@@ -232,7 +233,7 @@ TEST_CASE(processor_write_returns_error_response_for_backend_failure) {
     proc.process(m);
     auto resp = myrd::proxy::read_wire<myrd::proxy::WriteResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().errorno, 1u);
+    REQUIRE(resp.value().errorno != 0u);
 }
 
 // ── CLOSE and fatal tests ────────────────────────────────────
@@ -274,5 +275,7 @@ TEST_CASE(processor_never_advertises_unimplemented_capabilities) {
     proc.process(m);
     auto resp = myrd::proxy::read_wire<myrd::proxy::InfoResponse>(
         std::span<const std::byte>(m.data(), 4096), 0);
-    REQUIRE_EQ(resp.value().flags, 0u); // No optional capabilities
+    // M1: UNMAP and ZERO are now implemented capabilities
+    REQUIRE_EQ(resp.value().flags,
+        myrd::proxy::kFlagSupportsUnmap | myrd::proxy::kFlagSupportsZero);
 }

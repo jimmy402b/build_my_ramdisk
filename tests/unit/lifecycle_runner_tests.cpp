@@ -17,7 +17,7 @@ struct FakeProv : myrd::poc::IProviderLifecycle {
     int start_c = 0, stop_c = 0; bool rel = true, stop_ok = true;
     mutable int release_checks = 0;
     mutable int transient_release_checks = 0;
-    myrd::proxy::RequestCounters request_counters{};
+    myrd::proxy::RequestCounters request_counters{0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     myrd::Result<void> start() override { start_c++; return myrd::Result<void>::success(); }
     myrd::Result<void> stop_and_release() override { stop_c++; if (stop_ok) return myrd::Result<void>::success(); return myrd::Result<void>::failure({myrd::ErrorDomain::internal,0,L"stop_and_release",L"failed"}); }
     std::wstring native_object_path() const override { return L"\\BaseNamedObjects\\Global\\myrd-m0-0123456789abcdef0123456789abcdef"; }
@@ -85,7 +85,7 @@ TEST_CASE(lifecycle_success_path) {
 
 TEST_CASE(lifecycle_report_captures_provider_counters_after_stop) {
     FakeProv p;
-    p.request_counters = {1, 2, 3, 4, 5};
+    p.request_counters = {.info=1, .read=2, .write=3, .close=4, .fatal_protocol_errors=5};
     FakeAd a; FakeLoc l; FakeRT rt;
     myrd::poc::RunConfig cfg; cfg.run_id = "provider-counters";
 
@@ -301,7 +301,8 @@ TEST_CASE(m0_provider_start_services_info_request) {
     REQUIRE_EQ(wait_result, WAIT_OBJECT_0);
     REQUIRE_EQ(info.file_size, myrd::aim::kM0DiskSize);
     REQUIRE_EQ(info.req_alignment, myrd::aim::kM0SectorSize);
-    REQUIRE_EQ(info.flags, 0u);
+    REQUIRE_EQ(info.flags,
+        myrd::proxy::kFlagSupportsUnmap | myrd::proxy::kFlagSupportsZero);
     REQUIRE_EQ(counters.info, 1u);
 }
 

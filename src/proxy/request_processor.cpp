@@ -1,4 +1,5 @@
 #include "request_processor.h"
+#include "proxy_error.h"
 
 #include <algorithm>
 #include <cstring>
@@ -11,158 +12,214 @@ RequestProcessor::RequestProcessor(IBlockDevice& device) noexcept
 
 namespace {
 
-// Validate the six conditions for READ/WRITE.
 Result<void> validate_io(std::uint64_t offset, std::uint64_t length,
-                         std::uint64_t device_size, std::uint32_t sector_size) {
-    if (length == 0) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"validate_io", L"zero-length I/O request"});
+                         std::uint64_t device_size,
+                         std::uint32_t sector_size) {
+    if (length == 0 || length > kDataAreaSize || offset > device_size ||
+        length > device_size - offset) {
+        return Result<void>::failure({
+            ErrorDomain::protocol,
+            static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
+            L"validate_io", L"request range is invalid"});
     }
-    if (length > kDataAreaSize) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"validate_io", L"request length exceeds data area"});
-    }
-    if ((offset % sector_size) != 0) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"validate_io", L"offset not sector-aligned"});
-    }
-    if ((length % sector_size) != 0) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"validate_io", L"length not sector-aligned"});
-    }
-    if (offset > device_size) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"validate_io", L"offset beyond device"});
-    }
-    if (length > device_size - static_cast<std::size_t>(offset)) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"validate_io", L"length beyond device end"});
+    if ((offset % sector_size) != 0 || (length % sector_size) != 0) {
+        return Result<void>::failure({
+            ErrorDomain::protocol,
+            static_cast<std::uint32_t>(OperationErrorCode::misaligned),
+            L"validate_io", L"request range is not sector aligned"});
     }
     return Result<void>::success();
+}
+
+template <class T>
+ProcessOutcome write_error_response(std::span<std::byte> mapping,
+                                    const Error& error,
+                                    RequestMetadata meta) {
+    T resp{};
+    resp.errorno = to_proxy_errorno(error);
+    resp.length = 0;
+    auto w = write_wire(mapping.subspan(0, sizeof(T)), 0, resp);
+    if (!w) {
+        return {ProcessorAction::fatal, w.error(), meta};
+    }
+    return {ProcessorAction::respond, error, meta};
+}
+
+template <class T>
+ProcessOutcome write_success_response(std::span<std::byte> mapping,
+                                      const T& resp, RequestMetadata meta) {
+    auto w = write_wire(mapping.subspan(0, sizeof(T)), 0, resp);
+    if (!w) {
+        return {ProcessorAction::fatal, w.error(), meta};
+    }
+    return {ProcessorAction::respond, std::nullopt, meta};
+}
+
+ProcessOutcome fatal_outcome(const Error& error) {
+    return {ProcessorAction::fatal, error, RequestMetadata{}};
 }
 
 } // anonymous namespace
 
 ProcessOutcome RequestProcessor::process(
+    const OperationContext& context,
     std::span<std::byte> mapping) noexcept {
-    if (mapping.size() != kMappingSize) {
+    try {
+        if (mapping.size() != kMappingSize) {
+            counters_.fatal_protocol_errors++;
+            return fatal_outcome({ErrorDomain::protocol, 0,
+                L"RequestProcessor::process", L"mapping size mismatch"});
+        }
+
+        auto req_code = read_wire<std::uint64_t>(
+            std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
+        if (!req_code) {
+            counters_.fatal_protocol_errors++;
+            return fatal_outcome(req_code.error());
+        }
+
+        RequestMetadata meta{req_code.value(), 0, 0};
+
+        switch (req_code.value()) {
+
+        case kReqInfo: {
+            const auto features = device_.features();
+            InfoResponse resp{
+                device_.size_bytes(),
+                device_.sector_size(),
+                (features.read_only ? kFlagReadOnly : 0ull) |
+                (features.supports_unmap ? kFlagSupportsUnmap : 0ull) |
+                (features.supports_zero ? kFlagSupportsZero : 0ull)};
+            auto w = write_wire(mapping.subspan(0, sizeof(InfoResponse)), 0, resp);
+            if (!w) {
+                counters_.fatal_protocol_errors++;
+                return fatal_outcome(w.error());
+            }
+            counters_.info++;
+            return {ProcessorAction::respond, std::nullopt, meta};
+        }
+
+        case kReqRead: {
+            auto req = read_wire<ReadRequest>(
+                std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
+            if (!req) {
+                counters_.fatal_protocol_errors++;
+                return fatal_outcome(req.error());
+            }
+            meta.offset = req.value().offset;
+            meta.length = req.value().length;
+
+            auto v = validate_io(req.value().offset, req.value().length,
+                                 device_.size_bytes(), device_.sector_size());
+            if (!v) {
+                counters_.read_errors++;
+                return write_error_response<ReadResponse>(mapping, v.error(), meta);
+            }
+
+            auto live = check_operation_context(context);
+            if (!live) {
+                if (live.error().code == static_cast<std::uint32_t>(
+                        OperationErrorCode::cancelled)) {
+                    counters_.cancelled++;
+                } else {
+                    counters_.timed_out++;
+                }
+                counters_.read_errors++;
+                return write_error_response<ReadResponse>(mapping, live.error(), meta);
+            }
+
+            auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
+            auto r = device_.read(context, req.value().offset,
+                data_area.subspan(0, static_cast<std::size_t>(req.value().length)));
+            if (!r) {
+                counters_.read_errors++;
+                return write_error_response<ReadResponse>(mapping, r.error(), meta);
+            }
+
+            counters_.read++;
+            ReadResponse ok{0, req.value().length};
+            return write_success_response(mapping, ok, meta);
+        }
+
+        case kReqWrite: {
+            auto req = read_wire<WriteRequest>(
+                std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
+            if (!req) {
+                counters_.fatal_protocol_errors++;
+                return fatal_outcome(req.error());
+            }
+            meta.offset = req.value().offset;
+            meta.length = req.value().length;
+
+            auto v = validate_io(req.value().offset, req.value().length,
+                                 device_.size_bytes(), device_.sector_size());
+            if (!v) {
+                counters_.write_errors++;
+                return write_error_response<WriteResponse>(mapping, v.error(), meta);
+            }
+
+            auto live = check_operation_context(context);
+            if (!live) {
+                if (live.error().code == static_cast<std::uint32_t>(
+                        OperationErrorCode::cancelled)) {
+                    counters_.cancelled++;
+                } else {
+                    counters_.timed_out++;
+                }
+                counters_.write_errors++;
+                return write_error_response<WriteResponse>(mapping, live.error(), meta);
+            }
+
+            const auto length = static_cast<std::size_t>(req.value().length);
+            std::vector<std::byte> private_copy(length);
+            std::memcpy(private_copy.data(), mapping.data() + kHeaderSize, length);
+            auto r = device_.write(context, req.value().offset, private_copy);
+            if (!r) {
+                counters_.write_errors++;
+                return write_error_response<WriteResponse>(mapping, r.error(), meta);
+            }
+
+            counters_.write++;
+            WriteResponse ok{0, req.value().length};
+            return write_success_response(mapping, ok, meta);
+        }
+
+        case kReqClose: {
+            counters_.close++;
+            return {ProcessorAction::close, std::nullopt, meta};
+        }
+
+        default:
+            counters_.fatal_protocol_errors++;
+            return {ProcessorAction::fatal,
+                    Error{ErrorDomain::protocol,
+                          static_cast<std::uint32_t>(
+                              OperationErrorCode::unknown_request),
+                          L"RequestProcessor::process",
+                          L"unknown request code"},
+                    meta};
+        }
+    } catch (const std::bad_alloc&) {
+        return {ProcessorAction::respond,
+                Error{ErrorDomain::storage,
+                      static_cast<std::uint32_t>(
+                          OperationErrorCode::memory_hard_limit),
+                      L"process", L"allocation failed"},
+                RequestMetadata{}};
+    } catch (...) {
         counters_.fatal_protocol_errors++;
         return {ProcessorAction::fatal,
-                Error{ErrorDomain::protocol, 0,
-                      L"RequestProcessor::process",
-                      L"mapping size mismatch"}};
+                Error{ErrorDomain::internal,
+                      static_cast<std::uint32_t>(
+                          OperationErrorCode::internal_invariant),
+                      L"process", L"unexpected exception"},
+                RequestMetadata{}};
     }
+}
 
-    auto req_code = read_wire<std::uint64_t>(
-        std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
-    if (!req_code) {
-        counters_.fatal_protocol_errors++;
-        return {ProcessorAction::fatal, req_code.error()};
-    }
-
-    switch (req_code.value()) {
-
-    case kReqInfo: {
-        InfoResponse resp{};
-        resp.file_size = device_.size_bytes();
-        resp.req_alignment = device_.sector_size();
-        resp.flags = 0;
-        auto w = write_wire(mapping.subspan(0, sizeof(InfoResponse)), 0, resp);
-        if (!w) {
-            counters_.fatal_protocol_errors++;
-            return {ProcessorAction::fatal, w.error()};
-        }
-        counters_.info++;
-        return {ProcessorAction::respond, std::nullopt};
-    }
-
-    case kReqRead: {
-        auto req = read_wire<ReadRequest>(
-            std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
-        if (!req) {
-            counters_.fatal_protocol_errors++;
-            return {ProcessorAction::fatal, req.error()};
-        }
-        auto v = validate_io(req.value().offset, req.value().length,
-                             device_.size_bytes(), device_.sector_size());
-        if (!v) {
-            ReadResponse err_resp{};
-            err_resp.errorno = 1;
-            err_resp.length = 0;
-            write_wire(mapping.subspan(0, sizeof(ReadResponse)), 0, err_resp);
-            counters_.read++;
-            return {ProcessorAction::respond, std::nullopt};
-        }
-        auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
-        auto r = device_.read(OperationContext{}, req.value().offset,
-            data_area.subspan(0, static_cast<std::size_t>(req.value().length)));
-        if (!r) {
-            ReadResponse err_resp{};
-            err_resp.errorno = 1;
-            err_resp.length = 0;
-            write_wire(mapping.subspan(0, sizeof(ReadResponse)), 0, err_resp);
-            counters_.read++;
-            return {ProcessorAction::respond, std::nullopt};
-        }
-        ReadResponse ok_resp{};
-        ok_resp.errorno = 0;
-        ok_resp.length = req.value().length;
-        write_wire(mapping.subspan(0, sizeof(ReadResponse)), 0, ok_resp);
-        counters_.read++;
-        return {ProcessorAction::respond, std::nullopt};
-    }
-
-    case kReqWrite: {
-        auto req = read_wire<WriteRequest>(
-            std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
-        if (!req) {
-            counters_.fatal_protocol_errors++;
-            return {ProcessorAction::fatal, req.error()};
-        }
-        auto v = validate_io(req.value().offset, req.value().length,
-                             device_.size_bytes(), device_.sector_size());
-        if (!v) {
-            WriteResponse err_resp{};
-            err_resp.errorno = 1;
-            err_resp.length = 0;
-            write_wire(mapping.subspan(0, sizeof(WriteResponse)), 0, err_resp);
-            counters_.write++;
-            return {ProcessorAction::respond, std::nullopt};
-        }
-        // Private copy before backend call
-        auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
-        std::vector<std::byte> private_copy(
-            data_area.begin(),
-            data_area.begin() + static_cast<std::size_t>(req.value().length));
-        auto r = device_.write(OperationContext{}, req.value().offset, private_copy);
-        if (!r) {
-            WriteResponse err_resp{};
-            err_resp.errorno = 1;
-            err_resp.length = 0;
-            write_wire(mapping.subspan(0, sizeof(WriteResponse)), 0, err_resp);
-            counters_.write++;
-            return {ProcessorAction::respond, std::nullopt};
-        }
-        WriteResponse ok_resp{};
-        ok_resp.errorno = 0;
-        ok_resp.length = req.value().length;
-        write_wire(mapping.subspan(0, sizeof(WriteResponse)), 0, ok_resp);
-        counters_.write++;
-        return {ProcessorAction::respond, std::nullopt};
-    }
-
-    case kReqClose: {
-        counters_.close++;
-        return {ProcessorAction::close, std::nullopt};
-    }
-
-    default:
-        counters_.fatal_protocol_errors++;
-        return {ProcessorAction::fatal,
-                Error{ErrorDomain::protocol, 0,
-                      L"RequestProcessor::process",
-                      L"unknown request code"}};
-    }
+ProcessOutcome RequestProcessor::process(
+    std::span<std::byte> mapping) noexcept {
+    return process(OperationContext{}, mapping);
 }
 
 RequestCounters RequestProcessor::counters() const noexcept {
