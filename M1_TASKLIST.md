@@ -149,8 +149,8 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 5 | ON_TRACK | 4 | d571097 | bf8f262 | 未记录 | 11/11 normalizer tests, 6/6 M1 unit pass |
 | 6 | ON_TRACK | 5 | 718eaa8 | e1b4730 | 未记录 | FakeBlockDevice consumer test pass |
 | 7 | ON_TRACK | 6 | e1b4730 | b943f95 | 未记录 | INFO/READ/WRITE/CLOSE, 17/17 pass, stable errorno |
-| 8 | NOT_STARTED | 7 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 9 | NOT_STARTED | 8 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 8 | ON_TRACK | 7 | 9167775 | 31a726a | 未记录 | WRITE 12 tests + all 17/17 pass |
+| 9 | ON_TRACK | 8 | 31a726a | b092f1f | 未记录 | UNMAP/ZERO/CLOSE/fatal 20 tests, 17/17 pass |
 | 10 | NOT_STARTED | 9 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 11 | NOT_STARTED | 10 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 12 | NOT_STARTED | 11 | 未记录 | 未记录 | 未记录 | 未记录 |
