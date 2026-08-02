@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace myrd {
@@ -39,9 +40,9 @@ public:
 private:
     std::unique_ptr<MemoryBlockDevice> device_;
     std::unique_ptr<proxy::RequestProcessor> processor_;
-    std::unique_ptr<proxy::SharedMemoryChannel> channel_;
     std::unique_ptr<proxy::ShmProxySession> session_;
     proxy::ProxyObjectNames names_;
+    std::optional<proxy::SessionSnapshot> final_snapshot_;
 };
 
 } // namespace myrd

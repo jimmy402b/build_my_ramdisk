@@ -301,8 +301,10 @@ TEST_CASE(m0_provider_start_services_info_request) {
     REQUIRE_EQ(wait_result, WAIT_OBJECT_0);
     REQUIRE_EQ(info.file_size, myrd::aim::kM0DiskSize);
     REQUIRE_EQ(info.req_alignment, myrd::aim::kM0SectorSize);
-    REQUIRE_EQ(info.flags,
-        myrd::proxy::kFlagSupportsUnmap | myrd::proxy::kFlagSupportsZero);
+    // M0's frozen wire contract predates ZERO/UNMAP advertisement. M1 uses
+    // the same storage implementation but advertises those capabilities via
+    // M1Provider only.
+    REQUIRE_EQ(info.flags, 0u);
     REQUIRE_EQ(counters.info, 1u);
 }
 

@@ -66,17 +66,25 @@ myrd_enable_warnings(myrd_poc)
 add_library(myrd_m1 STATIC
     m1/m1_provider.cpp m1/m1_provider.h
     m1/m1_raw_protocol_io.cpp m1/m1_raw_protocol_io.h
+    m1/m1_cli.cpp m1/m1_cli.h
+    m1/m1_lifecycle_runner.cpp m1/m1_lifecycle_runner.h
 )
 target_include_directories(myrd_m1 PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m1 PUBLIC myrd_proxy myrd_storage myrd_common)
 myrd_enable_warnings(myrd_m1)
 
+add_library(myrd_m1_report STATIC
+    m1/m1_report.cpp m1/m1_report.h
+)
+target_include_directories(myrd_m1_report PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_m1_report PUBLIC myrd_m1 myrd_poc)
+myrd_enable_warnings(myrd_m1_report)
+
 add_executable(myrd-m1-e2e
     m1/main.cpp
-    m1/m1_cli.cpp m1/m1_cli.h
 )
 target_include_directories(myrd-m1-e2e PRIVATE "${CMAKE_SOURCE_DIR}")
-target_link_libraries(myrd-m1-e2e PRIVATE myrd_m1 myrd_driver myrd_proxy myrd_storage myrd_common bcrypt wintrust crypt32 Setupapi Cfgmgr32)
+target_link_libraries(myrd-m1-e2e PRIVATE myrd_m1_report myrd_m1 myrd_poc myrd_driver myrd_proxy myrd_storage myrd_common bcrypt wintrust crypt32 version Setupapi Cfgmgr32)
 myrd_enable_warnings(myrd-m1-e2e)
 
 add_executable(myrd-m0-poc

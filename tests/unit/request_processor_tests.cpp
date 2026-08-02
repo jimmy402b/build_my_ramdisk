@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "src/proxy/request_processor.h"
+#include "src/poc/m0_provider.h"
 #include "src/storage/memory_block_device.h"
 
 #include <cstring>
@@ -55,6 +56,18 @@ TEST_CASE(processor_info_advertises_unmap_and_zero_flags) {
         std::span<const std::byte>(m.data(), myrd::proxy::kHeaderSize), 0);
     REQUIRE_EQ(r.value().flags,
         myrd::proxy::kFlagSupportsUnmap | myrd::proxy::kFlagSupportsZero);
+}
+
+TEST_CASE(m0_compatibility_device_keeps_legacy_info_flags) {
+    myrd::poc::M0CompatibilityBlockDevice dev(k64MiB, 512);
+    myrd::proxy::RequestProcessor proc(dev);
+    auto m = make_mapping();
+    myrd::proxy::write_wire<std::uint64_t>(m, 0, myrd::proxy::kReqInfo);
+    proc.process(m);
+    auto r = myrd::proxy::read_wire<myrd::proxy::InfoResponse>(
+        std::span<const std::byte>(m.data(), myrd::proxy::kHeaderSize), 0);
+    REQUIRE(r.ok());
+    REQUIRE_EQ(r.value().flags, 0u);
 }
 
 TEST_CASE(processor_info_increments_only_info_counter) {

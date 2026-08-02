@@ -78,6 +78,7 @@ ProcessOutcome fatal_outcome(const Error& error) {
 ProcessOutcome RequestProcessor::process(
     const OperationContext& context,
     std::span<std::byte> mapping) noexcept {
+    std::scoped_lock lock(mutex_);
     try {
         if (mapping.size() != kMappingSize) {
             counters_.fatal_protocol_errors++;
@@ -325,6 +326,7 @@ ProcessOutcome RequestProcessor::process(
 }
 
 RequestCounters RequestProcessor::counters() const noexcept {
+    std::scoped_lock lock(mutex_);
     return counters_;
 }
 

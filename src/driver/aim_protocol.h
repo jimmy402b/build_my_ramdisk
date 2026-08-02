@@ -63,6 +63,7 @@ constexpr std::uint32_t kRemoveDevice    = 0x83730806u;  // SMP_IMSCSI | 0x806
 constexpr std::uint32_t kDeviceTypeHd   = 0x00000010u;
 constexpr std::uint32_t kTypeProxy       = 0x00000300u;
 constexpr std::uint32_t kProxyTypeShm    = 0x00003000u;
+constexpr std::uint32_t kOptionSparseFile = 0x00000004u;
 constexpr std::uint32_t kAllDevices      = 0x00FFFFFFu;
 constexpr std::uint32_t kAutoDeviceNumber = 0x00FFFFFFu;
 constexpr std::uint32_t kDriverVersion   = 0x0101u;
@@ -74,6 +75,10 @@ constexpr std::uint32_t kM0CreateFlags =
 // the proxy transport subtype (see pinned srbioctl.cpp ImScsiQueryDevice).
 constexpr std::uint32_t kM0QueryFlags =
     kDeviceTypeHd | kTypeProxy;  // 0x00000310
+// QUERY_DEVICE maps an INFO SupportsZero response to the historical
+// IMSCSI_OPTION_SPARSE_FILE bit. M1 advertises ZERO, unlike M0.
+constexpr std::uint32_t kM1QueryFlags =
+    kM0QueryFlags | kOptionSparseFile;  // 0x00000314
 
 // ── SRB signature ──────────────────────────────────────────────
 

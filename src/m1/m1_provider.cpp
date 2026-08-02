@@ -25,18 +25,14 @@ Result<std::unique_ptr<M1Provider>> M1Provider::create(
     if (!channel) {
         return Result<std::unique_ptr<M1Provider>>::failure(channel.error());
     }
-    auto chan_ptr = std::make_unique<proxy::SharedMemoryChannel>(
-        std::move(channel.value()));
-
     proxy::ShmProxySessionOptions opts{config.request_timeout, 64};
     auto session = std::make_unique<proxy::ShmProxySession>(
-        std::move(*chan_ptr), *processor, opts);
+        std::move(channel.value()), *processor, opts);
 
     auto provider = std::unique_ptr<M1Provider>(new M1Provider());
     provider->names_ = names.value();
     provider->device_ = std::move(device);
     provider->processor_ = std::move(processor);
-    provider->channel_ = std::move(chan_ptr);
     provider->session_ = std::move(session);
 
     return Result<std::unique_ptr<M1Provider>>::success(std::move(provider));
@@ -64,18 +60,14 @@ Result<std::unique_ptr<M1Provider>> M1Provider::create_for_test(
     if (!channel) {
         return Result<std::unique_ptr<M1Provider>>::failure(channel.error());
     }
-    auto chan_ptr = std::make_unique<proxy::SharedMemoryChannel>(
-        std::move(channel.value()));
-
     proxy::ShmProxySessionOptions opts{config.request_timeout, 64};
     auto session = std::make_unique<proxy::ShmProxySession>(
-        std::move(*chan_ptr), *processor, opts);
+        std::move(channel.value()), *processor, opts);
 
     auto provider = std::unique_ptr<M1Provider>(new M1Provider());
     provider->names_ = names.value();
     provider->device_ = std::move(device);
     provider->processor_ = std::move(processor);
-    provider->channel_ = std::move(chan_ptr);
     provider->session_ = std::move(session);
 
     return Result<std::unique_ptr<M1Provider>>::success(std::move(provider));
@@ -96,8 +88,8 @@ Result<void> M1Provider::start() {
 Result<void> M1Provider::stop() {
     if (session_) {
         auto r = session_->stop();
+        final_snapshot_ = session_->snapshot();
         session_.reset();
-        channel_.reset();
         return r;
     }
     return Result<void>::success();
@@ -115,6 +107,7 @@ proxy::SessionSnapshot M1Provider::snapshot() const {
     if (session_) {
         return session_->snapshot();
     }
+    if (final_snapshot_) return *final_snapshot_;
     return proxy::SessionSnapshot{};
 }
 

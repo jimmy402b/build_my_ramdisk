@@ -1,7 +1,8 @@
 param([Parameter(Mandatory)][string]$Executable)
 $ErrorActionPreference = 'Stop'
-$forbidden = @('aimapi.dll','aim_ll.exe','RamDyn.exe','AIMtk-Dlg.exe',
-    'AIMtk-svc.exe','aim_cli.exe','MountImg.exe','RamDiskUI.exe','deviosvc.exe')
+$forbidden = @('aimapi.dll','devio.dll','aim_ll.exe','RamDyn.exe','AIMtk.exe',
+    'AIMtk-Dlg.exe','AIMtk-svc.exe','aim_cli.exe','MountImg.exe',
+    'RamDiskUI.exe','deviosvc.exe')
 $forbiddenLower = $forbidden | ForEach-Object { $_.ToLowerInvariant() }
 $dumpbin = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue)
 if (-not $dumpbin) {

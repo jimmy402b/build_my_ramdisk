@@ -5,6 +5,7 @@
 #include "src/storage/block_device.h"
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <span>
 
@@ -51,6 +52,7 @@ public:
 
 private:
     IBlockDevice& device_;
+    mutable std::mutex mutex_;
     RequestCounters counters_{};
 };
 

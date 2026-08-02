@@ -93,6 +93,51 @@ target_include_directories(myrd_m1_raw_protocol_io_tests PRIVATE "${CMAKE_SOURCE
 myrd_enable_warnings(myrd_m1_raw_protocol_io_tests)
 add_test(NAME unit.m1.raw_protocol_io COMMAND myrd_m1_raw_protocol_io_tests)
 
+add_executable(myrd_m1_shm_session_tests
+    integration/m1_shm_session_tests.cpp
+)
+target_link_libraries(myrd_m1_shm_session_tests PRIVATE myrd_test_support myrd_proxy)
+target_include_directories(myrd_m1_shm_session_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_shm_session_tests)
+add_test(NAME integration.m1.shm COMMAND myrd_m1_shm_session_tests)
+set_tests_properties(integration.m1.shm PROPERTIES TIMEOUT 20)
+
+add_executable(myrd_m1_provider_tests
+    unit/m1_provider_tests.cpp
+)
+target_link_libraries(myrd_m1_provider_tests PRIVATE myrd_test_support myrd_m1)
+target_include_directories(myrd_m1_provider_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_provider_tests)
+add_test(NAME unit.m1.provider COMMAND myrd_m1_provider_tests)
+set_tests_properties(unit.m1.provider PROPERTIES TIMEOUT 20)
+
+add_executable(myrd_m1_cli_tests unit/m1_cli_tests.cpp)
+target_link_libraries(myrd_m1_cli_tests PRIVATE myrd_test_support myrd_m1)
+target_include_directories(myrd_m1_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_cli_tests)
+add_test(NAME unit.m1.cli COMMAND myrd_m1_cli_tests)
+
+add_executable(myrd_m1_lifecycle_runner_tests
+    unit/m1_lifecycle_runner_tests.cpp
+)
+target_link_libraries(myrd_m1_lifecycle_runner_tests PRIVATE
+    myrd_test_support myrd_m1 myrd_driver)
+target_include_directories(myrd_m1_lifecycle_runner_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_lifecycle_runner_tests)
+add_test(NAME unit.m1.lifecycle_runner COMMAND myrd_m1_lifecycle_runner_tests)
+
+add_executable(myrd_m1_report_tests unit/m1_report_tests.cpp)
+target_link_libraries(myrd_m1_report_tests PRIVATE
+    myrd_test_support myrd_m1_report myrd_m1 myrd_poc)
+target_include_directories(myrd_m1_report_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_report_tests)
+add_test(NAME unit.m1.report COMMAND myrd_m1_report_tests)
+
+add_test(NAME unit.m1.verification_script
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m1_verification_script_tests.ps1")
+set_tests_properties(unit.m1.verification_script PROPERTIES TIMEOUT 30)
+
 add_executable(myrd_storage_tests
     unit/storage_tests.cpp
 )

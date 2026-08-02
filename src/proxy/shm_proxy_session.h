@@ -4,6 +4,7 @@
 #include "src/proxy/shared_memory_channel.h"
 
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -68,8 +69,8 @@ public:
     ShmProxySession& operator=(const ShmProxySession&) = delete;
 
 private:
-    void run_request_worker(std::stop_token token);
     void run_cancel_monitor(std::stop_token token);
+    void record_diagnostic(const ProcessOutcome& outcome);
 
     SharedMemoryChannel channel_;
     RequestProcessor& processor_;

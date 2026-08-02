@@ -24,147 +24,226 @@ const ProxyObjectNames& ShmProxySession::names() const noexcept {
 }
 
 Result<void> ShmProxySession::start() {
-    std::scoped_lock lock(mutex_);
-    if (state_ != SessionState::constructed) {
-        return Result<void>::failure({ErrorDomain::protocol, 0,
-            L"ShmProxySession::start", L"session already started"});
-    }
-    state_ = SessionState::objects_created;
-
-    // Launch cancel monitor thread
-    if (hooks_.before_start_stage) {
-        auto r = hooks_.before_start_stage(SessionStartStage::cancel_monitor);
-        if (!r) {
-            state_ = SessionState::failed;
-            return r;
+    {
+        std::scoped_lock lock(mutex_);
+        if (state_ != SessionState::constructed) {
+            return Result<void>::failure({ErrorDomain::protocol, 0,
+                L"ShmProxySession::start", L"session already started"});
         }
+        state_ = SessionState::objects_created;
     }
-    std::promise<Result<void>> ready_promise;
-    auto ready_future = ready_promise.get_future();
 
-    cancel_thread_ = std::jthread(
-        [this](std::stop_token token) { run_cancel_monitor(token); });
+    const auto fail_start = [this](const Error& error) {
+        std::scoped_lock lock(mutex_);
+        last_error_ = error;
+        state_ = SessionState::failed;
+    };
+    const auto stop_started_threads = [this] {
+        stop_source_.request_stop();
+        request_thread_.request_stop();
+        cancel_thread_.request_stop();
+        SetEvent(channel_.cancel_event());
+        if (request_thread_.joinable()) request_thread_.join();
+        if (cancel_thread_.joinable()) cancel_thread_.join();
+    };
 
-    if (hooks_.before_start_stage) {
-        auto r = hooks_.before_start_stage(SessionStartStage::request_worker);
-        if (!r) {
-            state_ = SessionState::failed;
-            stop_source_.request_stop();
-            SetEvent(channel_.cancel_event());
-            if (cancel_thread_.joinable()) cancel_thread_.join();
-            return r;
+    try {
+        if (hooks_.before_start_stage) {
+            auto result = hooks_.before_start_stage(
+                SessionStartStage::cancel_monitor);
+            if (!result) {
+                fail_start(result.error());
+                return result;
+            }
         }
-    }
-    request_thread_ = std::jthread(
-        [this, promise = std::move(ready_promise),
-         token = stop_source_.get_token()]() mutable {
-        try {
-            // Publish ready
-            {
-                std::scoped_lock lk(mutex_);
-                state_ = SessionState::ready;
+
+        cancel_thread_ = std::jthread(
+            [this](std::stop_token token) { run_cancel_monitor(token); });
+
+        if (hooks_.before_start_stage) {
+            auto result = hooks_.before_start_stage(
+                SessionStartStage::request_worker);
+            if (!result) {
+                fail_start(result.error());
+                stop_started_threads();
+                return result;
             }
-            promise.set_value(Result<void>::success());
+        }
 
-            // Transition to serving
-            {
-                std::scoped_lock lk(mutex_);
-                state_ = SessionState::serving;
-            }
-
-            // Main request loop
-            while (!token.stop_requested()) {
-                HANDLE handles[] = {
-                    channel_.request_event(),
-                    channel_.cancel_event()
-                };
-                DWORD wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
-                if (wait == WAIT_OBJECT_0 + 1 || token.stop_requested()) {
-                    break; // Cancel signaled or stop requested
+        std::promise<Result<void>> ready_promise;
+        auto ready_future = ready_promise.get_future();
+        request_thread_ = std::jthread(
+            [this, promise = std::move(ready_promise),
+             token = stop_source_.get_token()]() mutable {
+            bool ready_published = false;
+            try {
+                if (hooks_.before_start_stage) {
+                    auto result = hooks_.before_start_stage(
+                        SessionStartStage::ready_publish);
+                    if (!result) {
+                        {
+                            std::scoped_lock lock(mutex_);
+                            last_error_ = result.error();
+                            state_ = SessionState::failed;
+                        }
+                        promise.set_value(Result<void>::failure(result.error()));
+                        ready_published = true;
+                        stop_source_.request_stop();
+                        SetEvent(channel_.cancel_event());
+                        return;
+                    }
                 }
-                if (wait != WAIT_OBJECT_0) {
-                    std::scoped_lock lk(mutex_);
-                    last_error_ = Error{ErrorDomain::win32,
-                        static_cast<std::uint32_t>(GetLastError()),
-                        L"WaitForMultipleObjects", L"wait failed"};
-                    state_ = SessionState::failed;
-                    break;
-                }
-
-                // Process request
-                OperationContext ctx{
-                    token,
-                    std::chrono::steady_clock::now() + options_.request_timeout
-                };
-                auto outcome = processor_.process(ctx, channel_.mapping());
 
                 {
-                    std::scoped_lock lk(mutex_);
-                    if (state_ != SessionState::serving) break;
+                    std::scoped_lock lock(mutex_);
+                    state_ = SessionState::ready;
+                }
+                promise.set_value(Result<void>::success());
+                ready_published = true;
+
+                {
+                    std::scoped_lock lock(mutex_);
+                    if (state_ == SessionState::ready) {
+                        state_ = SessionState::serving;
+                    }
                 }
 
-                if (outcome.action == ProcessorAction::respond) {
-                    if (hooks_.signal_event) {
-                        auto r = hooks_.signal_event(
-                            channel_.response_event(), L"Response");
-                        if (!r) {
-                            std::scoped_lock lk(mutex_);
-                            last_error_ = r.error();
+                while (!token.stop_requested()) {
+                    HANDLE handles[] = {
+                        channel_.request_event(),
+                        channel_.cancel_event()
+                    };
+                    const DWORD wait = WaitForMultipleObjects(
+                        2, handles, FALSE, INFINITE);
+                    if (wait == WAIT_OBJECT_0 + 1 || token.stop_requested()) {
+                        break;
+                    }
+                    if (wait != WAIT_OBJECT_0) {
+                        std::scoped_lock lock(mutex_);
+                        last_error_ = Error{
+                            ErrorDomain::win32,
+                            static_cast<std::uint32_t>(GetLastError()),
+                            L"WaitForMultipleObjects", L"wait failed"};
+                        state_ = SessionState::failed;
+                        break;
+                    }
+
+                    OperationContext context{
+                        token,
+                        std::chrono::steady_clock::now() +
+                            options_.request_timeout
+                    };
+                    auto outcome = processor_.process(
+                        context, channel_.mapping());
+
+                    {
+                        std::scoped_lock lock(mutex_);
+                        if (state_ != SessionState::serving) break;
+                    }
+
+                    if (outcome.action == ProcessorAction::respond) {
+                        Result<void> signal = Result<void>::success();
+                        if (hooks_.signal_event) {
+                            signal = hooks_.signal_event(
+                                channel_.response_event(), L"Response");
+                        } else if (!SetEvent(channel_.response_event())) {
+                            signal = Result<void>::failure({
+                                ErrorDomain::win32,
+                                static_cast<std::uint32_t>(GetLastError()),
+                                L"SetEvent(response)",
+                                L"failed to signal response event"});
+                        }
+                        if (!signal) {
+                            std::scoped_lock lock(mutex_);
+                            last_error_ = signal.error();
                             state_ = SessionState::failed;
                             break;
                         }
-                    } else {
-                        SetEvent(channel_.response_event());
-                    }
-                    if (outcome.error.has_value()) {
-                        SessionDiagnostic diag{
-                            diagnostic_seq_++, outcome.request,
-                            outcome.error.value()};
-                        std::scoped_lock dlk(diag_mutex_);
-                        diagnostics_.push_back(diag);
-                        if (diagnostics_.size() > options_.max_recent_diagnostics) {
-                            diagnostics_.erase(diagnostics_.begin());
+                        if (outcome.error.has_value()) {
+                            record_diagnostic(outcome);
                         }
+                    } else if (outcome.action == ProcessorAction::close) {
+                        std::scoped_lock lock(mutex_);
+                        state_ = SessionState::closing;
+                        break;
+                    } else {
+                        {
+                            std::scoped_lock lock(mutex_);
+                            last_error_ = outcome.error;
+                            state_ = SessionState::failed;
+                        }
+                        if (outcome.error.has_value()) {
+                            record_diagnostic(outcome);
+                        }
+                        break;
                     }
-                } else if (outcome.action == ProcessorAction::close) {
-                    std::scoped_lock lk(mutex_);
-                    state_ = SessionState::closing;
-                    break;
-                } else if (outcome.action == ProcessorAction::fatal) {
-                    std::scoped_lock lk(mutex_);
-                    last_error_ = outcome.error;
+                }
+            } catch (...) {
+                const Error error{
+                    ErrorDomain::internal,
+                    static_cast<std::uint32_t>(
+                        OperationErrorCode::internal_invariant),
+                    L"request_worker", L"unhandled exception"};
+                {
+                    std::scoped_lock lock(mutex_);
+                    last_error_ = error;
                     state_ = SessionState::failed;
-                    if (outcome.error.has_value()) {
-                        SessionDiagnostic diag{
-                            diagnostic_seq_++, outcome.request,
-                            outcome.error.value()};
-                        std::scoped_lock dlk(diag_mutex_);
-                        diagnostics_.push_back(diag);
-                    }
-                    break;
+                }
+                if (!ready_published) {
+                    promise.set_value(Result<void>::failure(error));
                 }
             }
-        } catch (...) {
-            std::scoped_lock lk(mutex_);
-            last_error_ = Error{ErrorDomain::internal,
-                static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
-                L"request_worker", L"unhandled exception"};
-            state_ = SessionState::failed;
-            promise.set_value(Result<void>::failure(last_error_.value()));
-        }
-    });
+            stop_source_.request_stop();
+            SetEvent(channel_.cancel_event());
+        });
 
-    auto ready_result = ready_future.get();
-    if (!ready_result.ok()) {
-        return ready_result;
+        auto ready_result = ready_future.get();
+        if (!ready_result) {
+            stop_started_threads();
+            return ready_result;
+        }
+        return Result<void>::success();
+    } catch (...) {
+        const Error error{
+            ErrorDomain::internal,
+            static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
+            L"ShmProxySession::start", L"failed to start worker threads"};
+        fail_start(error);
+        stop_started_threads();
+        return Result<void>::failure(error);
     }
-    return Result<void>::success();
+}
+
+void ShmProxySession::record_diagnostic(const ProcessOutcome& outcome) {
+    if (!outcome.error.has_value() || options_.max_recent_diagnostics == 0) {
+        return;
+    }
+    SessionDiagnostic diagnostic{
+        diagnostic_seq_++, outcome.request, outcome.error.value()};
+    std::scoped_lock lock(diag_mutex_);
+    diagnostics_.push_back(std::move(diagnostic));
+    if (diagnostics_.size() > options_.max_recent_diagnostics) {
+        diagnostics_.erase(
+            diagnostics_.begin(),
+            diagnostics_.begin() + static_cast<std::ptrdiff_t>(
+                diagnostics_.size() - options_.max_recent_diagnostics));
+    }
 }
 
 void ShmProxySession::run_cancel_monitor(std::stop_token token) {
     while (!token.stop_requested()) {
-        DWORD wait = WaitForSingleObject(channel_.cancel_event(), INFINITE);
+        const DWORD wait = WaitForSingleObject(channel_.cancel_event(), 100);
         if (wait == WAIT_OBJECT_0) {
+            stop_source_.request_stop();
+            break;
+        }
+        if (wait == WAIT_FAILED) {
+            std::scoped_lock lock(mutex_);
+            last_error_ = Error{
+                ErrorDomain::win32,
+                static_cast<std::uint32_t>(GetLastError()),
+                L"WaitForSingleObject(cancel)", L"wait failed"};
+            state_ = SessionState::failed;
             stop_source_.request_stop();
             break;
         }
@@ -173,7 +252,14 @@ void ShmProxySession::run_cancel_monitor(std::stop_token token) {
 
 Result<void> ShmProxySession::cancel() {
     stop_source_.request_stop();
-    SetEvent(channel_.cancel_event());
+    request_thread_.request_stop();
+    cancel_thread_.request_stop();
+    if (!SetEvent(channel_.cancel_event())) {
+        return Result<void>::failure({
+            ErrorDomain::win32,
+            static_cast<std::uint32_t>(GetLastError()),
+            L"SetEvent(cancel)", L"failed to signal cancel event"});
+    }
     return Result<void>::success();
 }
 
@@ -188,8 +274,10 @@ Result<void> ShmProxySession::join() {
 }
 
 Result<void> ShmProxySession::stop() {
-    cancel();
-    return join();
+    auto cancelled = cancel();
+    auto joined = join();
+    if (!cancelled) return cancelled;
+    return joined;
 }
 
 SessionSnapshot ShmProxySession::snapshot() const {
