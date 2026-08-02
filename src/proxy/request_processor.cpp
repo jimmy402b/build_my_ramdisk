@@ -1,5 +1,6 @@
 #include "request_processor.h"
 #include "proxy_error.h"
+#include "range_normalizer.h"
 
 #include <algorithm>
 #include <cstring>
@@ -32,12 +33,25 @@ Result<void> validate_io(std::uint64_t offset, std::uint64_t length,
 }
 
 template <class T>
-ProcessOutcome write_error_response(std::span<std::byte> mapping,
-                                    const Error& error,
-                                    RequestMetadata meta) {
+ProcessOutcome write_io_error_response(std::span<std::byte> mapping,
+                                       const Error& error,
+                                       RequestMetadata meta) {
     T resp{};
     resp.errorno = to_proxy_errorno(error);
     resp.length = 0;
+    auto w = write_wire(mapping.subspan(0, sizeof(T)), 0, resp);
+    if (!w) {
+        return {ProcessorAction::fatal, w.error(), meta};
+    }
+    return {ProcessorAction::respond, error, meta};
+}
+
+template <class T>
+ProcessOutcome write_range_error_response(std::span<std::byte> mapping,
+                                          const Error& error,
+                                          RequestMetadata meta) {
+    T resp{};
+    resp.errorno = to_proxy_errorno(error);
     auto w = write_wire(mapping.subspan(0, sizeof(T)), 0, resp);
     if (!w) {
         return {ProcessorAction::fatal, w.error(), meta};
@@ -113,7 +127,7 @@ ProcessOutcome RequestProcessor::process(
                                  device_.size_bytes(), device_.sector_size());
             if (!v) {
                 counters_.read_errors++;
-                return write_error_response<ReadResponse>(mapping, v.error(), meta);
+                return write_io_error_response<ReadResponse>(mapping, v.error(), meta);
             }
 
             auto live = check_operation_context(context);
@@ -125,7 +139,7 @@ ProcessOutcome RequestProcessor::process(
                     counters_.timed_out++;
                 }
                 counters_.read_errors++;
-                return write_error_response<ReadResponse>(mapping, live.error(), meta);
+                return write_io_error_response<ReadResponse>(mapping, live.error(), meta);
             }
 
             auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
@@ -133,7 +147,7 @@ ProcessOutcome RequestProcessor::process(
                 data_area.subspan(0, static_cast<std::size_t>(req.value().length)));
             if (!r) {
                 counters_.read_errors++;
-                return write_error_response<ReadResponse>(mapping, r.error(), meta);
+                return write_io_error_response<ReadResponse>(mapping, r.error(), meta);
             }
 
             counters_.read++;
@@ -155,7 +169,7 @@ ProcessOutcome RequestProcessor::process(
                                  device_.size_bytes(), device_.sector_size());
             if (!v) {
                 counters_.write_errors++;
-                return write_error_response<WriteResponse>(mapping, v.error(), meta);
+                return write_io_error_response<WriteResponse>(mapping, v.error(), meta);
             }
 
             auto live = check_operation_context(context);
@@ -167,7 +181,7 @@ ProcessOutcome RequestProcessor::process(
                     counters_.timed_out++;
                 }
                 counters_.write_errors++;
-                return write_error_response<WriteResponse>(mapping, live.error(), meta);
+                return write_io_error_response<WriteResponse>(mapping, live.error(), meta);
             }
 
             const auto length = static_cast<std::size_t>(req.value().length);
@@ -176,11 +190,99 @@ ProcessOutcome RequestProcessor::process(
             auto r = device_.write(context, req.value().offset, private_copy);
             if (!r) {
                 counters_.write_errors++;
-                return write_error_response<WriteResponse>(mapping, r.error(), meta);
+                return write_io_error_response<WriteResponse>(mapping, r.error(), meta);
             }
 
             counters_.write++;
             WriteResponse ok{0, req.value().length};
+            return write_success_response(mapping, ok, meta);
+        }
+
+        case kReqUnmap: {
+            auto req = read_wire<UnmapRequest>(
+                std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
+            if (!req) {
+                counters_.fatal_protocol_errors++;
+                return fatal_outcome(req.error());
+            }
+            counters_.unmap++;
+            meta.length = req.value().length;
+
+            auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
+            auto ranges = decode_and_normalize_ranges(
+                data_area, req.value().length,
+                device_.size_bytes(), device_.sector_size());
+            if (!ranges) {
+                counters_.unmap_errors++;
+                return write_range_error_response<UnmapResponse>(
+                    mapping, ranges.error(), meta);
+            }
+
+            auto live = check_operation_context(context);
+            if (!live) {
+                if (live.error().code == static_cast<std::uint32_t>(
+                        OperationErrorCode::cancelled)) {
+                    counters_.cancelled++;
+                } else {
+                    counters_.timed_out++;
+                }
+                counters_.unmap_errors++;
+                return write_range_error_response<UnmapResponse>(
+                    mapping, live.error(), meta);
+            }
+
+            auto r = device_.unmap(context, ranges.value());
+            if (!r) {
+                counters_.unmap_errors++;
+                return write_range_error_response<UnmapResponse>(
+                    mapping, r.error(), meta);
+            }
+
+            UnmapResponse ok{0};
+            return write_success_response(mapping, ok, meta);
+        }
+
+        case kReqZero: {
+            auto req = read_wire<ZeroRequest>(
+                std::span<const std::byte>(mapping.data(), kHeaderSize), 0);
+            if (!req) {
+                counters_.fatal_protocol_errors++;
+                return fatal_outcome(req.error());
+            }
+            counters_.zero++;
+            meta.length = req.value().length;
+
+            auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
+            auto ranges = decode_and_normalize_ranges(
+                data_area, req.value().length,
+                device_.size_bytes(), device_.sector_size());
+            if (!ranges) {
+                counters_.zero_errors++;
+                return write_range_error_response<ZeroResponse>(
+                    mapping, ranges.error(), meta);
+            }
+
+            auto live = check_operation_context(context);
+            if (!live) {
+                if (live.error().code == static_cast<std::uint32_t>(
+                        OperationErrorCode::cancelled)) {
+                    counters_.cancelled++;
+                } else {
+                    counters_.timed_out++;
+                }
+                counters_.zero_errors++;
+                return write_range_error_response<ZeroResponse>(
+                    mapping, live.error(), meta);
+            }
+
+            auto r = device_.zero(context, ranges.value());
+            if (!r) {
+                counters_.zero_errors++;
+                return write_range_error_response<ZeroResponse>(
+                    mapping, r.error(), meta);
+            }
+
+            ZeroResponse ok{0};
             return write_success_response(mapping, ok, meta);
         }
 
