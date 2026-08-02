@@ -28,6 +28,7 @@ target_sources(myrd_proxy PRIVATE
     proxy/shared_memory_channel.cpp proxy/shared_memory_channel.h
     proxy/shm_proxy_server.cpp proxy/shm_proxy_server.h
     proxy/proxy_error.cpp proxy/proxy_error.h
+    proxy/range_normalizer.cpp proxy/range_normalizer.h
     proxy/imdproxy_protocol.h
 )
 target_link_libraries(myrd_proxy PUBLIC myrd_storage bcrypt)
