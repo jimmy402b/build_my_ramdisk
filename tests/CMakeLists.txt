@@ -29,6 +29,14 @@ add_test(NAME unit.common COMMAND myrd_common_tests)
 add_test(NAME unit.protocol COMMAND myrd_protocol_tests)
 add_test(NAME unit.m1.operation_context COMMAND myrd_m1_operation_context_tests)
 
+add_executable(myrd_m1_block_device_contract_tests
+    unit/block_device_contract_tests.cpp
+)
+target_link_libraries(myrd_m1_block_device_contract_tests PRIVATE myrd_test_support myrd_storage)
+target_include_directories(myrd_m1_block_device_contract_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m1_block_device_contract_tests)
+add_test(NAME unit.m1.block_device_contract COMMAND myrd_m1_block_device_contract_tests)
+
 add_executable(myrd_storage_tests
     unit/storage_tests.cpp
 )

@@ -94,7 +94,7 @@ ProcessOutcome RequestProcessor::process(
             return {ProcessorAction::respond, std::nullopt};
         }
         auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);
-        auto r = device_.read(req.value().offset,
+        auto r = device_.read(OperationContext{}, req.value().offset,
             data_area.subspan(0, static_cast<std::size_t>(req.value().length)));
         if (!r) {
             ReadResponse err_resp{};
@@ -134,7 +134,7 @@ ProcessOutcome RequestProcessor::process(
         std::vector<std::byte> private_copy(
             data_area.begin(),
             data_area.begin() + static_cast<std::size_t>(req.value().length));
-        auto r = device_.write(req.value().offset, private_copy);
+        auto r = device_.write(OperationContext{}, req.value().offset, private_copy);
         if (!r) {
             WriteResponse err_resp{};
             err_resp.errorno = 1;

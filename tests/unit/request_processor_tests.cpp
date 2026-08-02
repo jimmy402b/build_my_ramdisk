@@ -86,7 +86,7 @@ TEST_CASE(processor_read_copies_backend_bytes_to_data_area) {
     myrd::MemoryBlockDevice dev(k64MiB, 512);
     // Pre-fill backend
     std::byte wbuf[512]; std::memset(wbuf, 0xCD, 512);
-    dev.write(0, std::span<const std::byte>(wbuf, 512));
+    dev.write(myrd::OperationContext{}, 0, std::span<const std::byte>(wbuf, 512));
     myrd::proxy::RequestProcessor proc(dev);
     auto m = make_mapping();
     myrd::proxy::ReadRequest req{myrd::proxy::kReqRead, 0, 512};
@@ -166,7 +166,7 @@ TEST_CASE(processor_write_copies_data_area_to_backend) {
     REQUIRE_EQ(proc.counters().write, 1u);
     // Verify backend received data
     std::byte rbuf[512]{};
-    dev.read(0, rbuf);
+    dev.read(myrd::OperationContext{}, 0, rbuf);
     REQUIRE(rbuf[0] == std::byte{0xBB});
 }
 
@@ -181,7 +181,7 @@ TEST_CASE(processor_write_uses_private_copy_before_backend_call) {
     // Modify shared memory after write — backend should still have original
     std::memset(m.data() + 4096, 0xDD, 512);
     std::byte rbuf[512]{};
-    dev.read(0, rbuf);
+    dev.read(myrd::OperationContext{}, 0, rbuf);
     REQUIRE(rbuf[0] == std::byte{0xCC}); // Original preserved
 }
 
