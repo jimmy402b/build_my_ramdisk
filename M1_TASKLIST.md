@@ -153,13 +153,13 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | 9 | ON_TRACK | 8 | 31a726a | b092f1f | 未记录 | UNMAP/ZERO/CLOSE/fatal 20 tests, 17/17 pass |
 | 10 | ON_TRACK | 9 | 0202a49 | 7096d2b | 未记录 | 10K cases seed 0x4D3150524F585955, 20/20 passes, 7/7 M1 unit |
 | 11 | ON_TRACK | 10 | 81b8f96 | 5938339 | 未记录 | 6 policy tests + M0 compat, 19/19 pass |
-| 12 | NOT_STARTED | 11 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 13 | NOT_STARTED | 12 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 14 | NOT_STARTED | 13 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 15 | NOT_STARTED | 14 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 16 | NOT_STARTED | 15 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 17 | NOT_STARTED | 16 | 未记录 | 未记录 | 未记录 | 未记录 |
-| 18 | NOT_STARTED | 17 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 12 | ON_TRACK | 11 | 9991fa4 | 8dd6eb0 | 未记录 | Cancel event, hooks, zero-init, 19/19 pass |
+| 13 | ON_TRACK | 12 | 8dd6eb0 | 6b1c6d8 | 未记录 | Session states, worker, cancel monitor, 19/19 |
+| 14 | ON_TRACK | 13 | 6b1c6d8 | f87017b | 未记录 | M1Provider factory, 19/19 pass |
+| 15 | ON_TRACK | 14 | f87017b | 5f54106 | 未记录 | Raw IO verifier, 4 fake tests, 20/20 |
+| 16 | ON_TRACK | 15 | 5f54106 | 4be03f2 | 未记录 | Lifecycle runner, report types, 20/20 |
+| 17 | ON_TRACK | 16 | 4be03f2 | 86e0d0f | 未记录 | Harness + validator + preflight |
+| 18 | ON_TRACK | 17 | 86e0d0f | c4f392b | 未记录 | V0-V6 orchestrator, ListCommands OK |
 | 19 | NOT_STARTED | 18 | 未记录 | N/A 或修复提交 | 未记录 | 未记录 |
 | 20 | NOT_STARTED | 19 | 未记录 | 未记录 | 未记录 | 未记录 |
 
