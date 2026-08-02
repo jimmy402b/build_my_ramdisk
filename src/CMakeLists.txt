@@ -32,6 +32,9 @@ target_sources(myrd_proxy PRIVATE
     proxy/imdproxy_protocol.h
 )
 target_link_libraries(myrd_proxy PUBLIC myrd_storage bcrypt)
+target_sources(myrd_proxy PRIVATE
+    proxy/shm_proxy_session.cpp proxy/shm_proxy_session.h
+)
 myrd_enable_warnings(myrd_proxy)
 
 add_library(myrd_driver STATIC
@@ -59,6 +62,13 @@ add_library(myrd_poc STATIC
 target_include_directories(myrd_poc PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_poc PUBLIC myrd_common myrd_proxy myrd_storage)
 myrd_enable_warnings(myrd_poc)
+
+add_library(myrd_m1 STATIC
+    m1/m1_provider.cpp m1/m1_provider.h
+)
+target_include_directories(myrd_m1 PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_m1 PUBLIC myrd_proxy myrd_storage myrd_common)
+myrd_enable_warnings(myrd_m1)
 
 add_executable(myrd-m0-poc
     poc/main.cpp
