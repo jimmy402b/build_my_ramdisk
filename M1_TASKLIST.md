@@ -142,7 +142,7 @@ Task 0 不修改实现，不需要 implementation commit。它只在完成基线
 | Task | 状态 | 依赖 | Start commit | Implementation commit | Review commit | 证据摘要 |
 |---:|---|---|---|---|---|---|
 | 0 | ON_TRACK | 文档已提交 | 0e2b3b3 | N/A | a62a9d4 | CMake 4.2.2, Ninja 1.13.2, MSVC 19.44.35228, 11/11 tests pass, AIM d379caa verified |
-| 1 | NOT_STARTED | 0 | 未记录 | 未记录 | 未记录 | 未记录 |
+| 1 | ON_TRACK | 0 | 96dfa76 | 7692559 | 1369a1b | 3/3 operation_context tests, 11/11 unit regression pass |
 | 2 | NOT_STARTED | 1 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 3 | NOT_STARTED | 2 | 未记录 | 未记录 | 未记录 | 未记录 |
 | 4 | NOT_STARTED | 3 | 未记录 | 未记录 | 未记录 | 未记录 |
@@ -300,7 +300,7 @@ Plan：[Task 1](docs/superpowers/plans/2026-08-02-m1-proxy-productization.md#tas
 - [ ] R1.06 记录实际 test count、偏差和风险。
 - [ ] R1.07 Verdict `ON_TRACK` 后创建 alignment review commit。
 
-Review Record：Executor `未记录`; Start `未记录`; Implementation `未记录`; Files `未记录`; Commands `未记录`; Results `未记录`; Evidence `未记录`; Deviations `未记录`; Risks `未记录`; Verdict `NOT_REVIEWED`。
+Review Record：Executor `Claude`; Start `96dfa76`; Implementation `7692559`; Files `src/common/error.h, src/common/operation_context.h, tests/unit/operation_context_tests.cpp, tests/CMakeLists.txt`; Commands `ctest --preset debug -R "^unit\.m1\.operation_context$"; ctest --preset debug -R "^unit\."`; Results `3/3 operation_context tests pass; 11/11 all unit tests pass`; Evidence `OperationErrorCode 14 values matching PLAN; native_code default=0 preserves M0 aggregate init; check_operation_context cancellation-priority verified`; Deviations `None`; Risks `None`; Verdict `ON_TRACK`。
 
 ### Task 2 — 发布 IBlockDevice M1 合同
 
