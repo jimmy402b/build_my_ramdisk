@@ -52,6 +52,9 @@ Require ($jsonVerifier -match
 Require ($jsonVerifier -match
     '\$report\.driver\.authenticode_status\s+-match') `
     'M1 JSON verifier does not reject an empty Authenticode status'
+Require ($jsonVerifier -match
+    '\$report\.provider\.final_state\s+-eq\s+''closed''') `
+    'M1 JSON verifier does not require a closed successful provider'
 
 $mainText = Get-Content -Raw .\src\m1\main.cpp
 Require ($mainText -match 'GetFileVersionInfoSizeW') `

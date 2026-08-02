@@ -53,8 +53,11 @@ struct FakeProvider final : myrd::IM1ProviderLifecycle {
     }
     Result<void> stop_and_release() override {
         ++stop_calls;
-        return stop_ok ? Result<void>::success()
-                       : Result<void>::failure(failure(L"provider_stop"));
+        if (!stop_ok) {
+            return Result<void>::failure(failure(L"provider_stop"));
+        }
+        session.state = myrd::proxy::SessionState::closed;
+        return Result<void>::success();
     }
     std::wstring native_object_path() const override {
         return L"\\BaseNamedObjects\\Global\\myrd-m1-0123456789abcdef0123456789abcdef";
@@ -220,6 +223,7 @@ TEST_CASE(m1_lifecycle_success_uses_exact_order_and_proves_cleanup) {
     REQUIRE(report.cleanup.named_objects_released);
     REQUIRE(report.cleanup.aim_device_lists_match);
     REQUIRE(report.cleanup.physical_drive_lists_match);
+    REQUIRE_EQ(report.provider.final_state, std::string("closed"));
     REQUIRE(kernel.log == std::vector<std::string>({
         "list", "driver", "create", "rescan", "query",
         "remove:197121", "absent", "list"}));

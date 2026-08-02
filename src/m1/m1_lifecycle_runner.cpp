@@ -169,9 +169,9 @@ M1Report run_m1_lifecycle(
         }
 
         if (provider) {
+            auto stopped = provider->stop_and_release();
             capture_provider(report, provider->snapshot(),
                              provider->native_object_path());
-            auto stopped = provider->stop_and_release();
             if (!stopped) add_cleanup(stopped.error());
             else report.cleanup.provider_stopped = true;
 

@@ -126,6 +126,8 @@ Require (Same-Set $report.baseline.physical_drive_numbers_before `
 
 if ($ExpectedFailurePoint -eq 'none') {
     Require $report.success 'normal M1 lifecycle failed'
+    Require ($report.provider.final_state -eq 'closed') `
+        'successful provider final_state must be closed'
     Require ($null -eq $report.primary_error) `
         'successful report contains primary_error'
     Require (@($report.cleanup_errors).Count -eq 0) `
