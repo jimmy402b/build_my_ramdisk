@@ -41,7 +41,7 @@ Result<void> transfer_exact(
             L"run_m2_performance_probe(transfer_exact)",
             L"raw performance transfer completed short"});
     }
-    return Result<void>::success();
+    return check_operation_context(context);
 }
 
 Result<std::uint64_t> checked_rate(
@@ -129,6 +129,56 @@ bool complete_policy(const M2PerformancePolicy& policy) noexcept {
            !policy.process_policy.empty();
 }
 
+bool valid_operation(M2RawOperation operation) noexcept {
+    return operation == M2RawOperation::Read ||
+           operation == M2RawOperation::Write;
+}
+
+bool rate_matches(
+    std::uint64_t units,
+    std::uint64_t frequency,
+    std::uint64_t elapsed_ticks,
+    std::uint64_t reported_rate) noexcept {
+    return frequency != 0 && elapsed_ticks != 0 &&
+           units <= (std::numeric_limits<std::uint64_t>::max)() / frequency &&
+           (units * frequency) / elapsed_ticks == reported_rate;
+}
+
+bool canonical_result(const M2PerformanceProbeResult& result) noexcept {
+    return result.methodology_id == kM2PerformanceMethodologyId &&
+           valid_operation(result.operation) &&
+           result.queue_depth == 1 &&
+           (result.region_offset % (64ull << 10)) == 0 &&
+           result.region_offset <=
+               (std::numeric_limits<std::uint64_t>::max)() -
+                   kM2SequentialRegionBytes &&
+           result.region_bytes == kM2SequentialRegionBytes &&
+           result.sequential_io_bytes == kM2SequentialIoBytes &&
+           result.random_io_bytes == kM2RandomIoBytes &&
+           result.random_seed == kM2PerformanceRandomSeed &&
+           result.sequential_warmup_operations ==
+               kM2SequentialWarmupOperationCount &&
+           result.random_warmup_operations ==
+               kM2RandomWarmupOperationCount &&
+           result.sequential.bytes == kM2SequentialRegionBytes &&
+           result.sequential.operations == kM2SequentialOperationCount &&
+           result.random.bytes ==
+               kM2RandomIoBytes * kM2RandomOperationCount &&
+           result.random.operations == kM2RandomOperationCount &&
+           result.sequential.clock_frequency_hz ==
+               result.random.clock_frequency_hz &&
+           rate_matches(
+               result.sequential.bytes,
+               result.sequential.clock_frequency_hz,
+               result.sequential.elapsed_ticks,
+               result.sequential.bytes_per_second) &&
+           rate_matches(
+               result.random.operations,
+               result.random.clock_frequency_hz,
+               result.random.elapsed_ticks,
+               result.random.operations_per_second);
+}
+
 bool same_methodology(
     const M2PerformanceProbeResult& left,
     const M2PerformanceProbeResult& right) noexcept {
@@ -153,6 +203,10 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
     IM2PerformanceClock& clock,
     const OperationContext& context,
     const M2ProbeConfig& config) {
+    if (!valid_operation(config.operation)) {
+        return probe_error(0xB10B, L"run_m2_performance_probe",
+                           L"raw performance operation is invalid");
+    }
     if ((config.region_offset % (64ull << 10)) != 0) {
         return probe_error(0xB105, L"run_m2_performance_probe",
                            L"performance region must be 64 KiB aligned");
@@ -166,7 +220,8 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
         return probe_error(0xB107, L"run_m2_performance_probe",
                            L"performance region is outside the raw device");
     }
-    if (clock.frequency_hz() == 0) {
+    const auto clock_frequency_hz = clock.frequency_hz();
+    if (clock_frequency_hz == 0) {
         return probe_error(0xB108, L"run_m2_performance_probe",
                            L"performance clock frequency is zero");
     }
@@ -240,7 +295,7 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
         }
 
         auto sequential_rate = checked_rate(
-            kM2SequentialRegionBytes, clock.frequency_hz(),
+            kM2SequentialRegionBytes, clock_frequency_hz,
             sequential_elapsed.value(),
             L"run_m2_performance_probe(sequential_rate)");
         if (!sequential_rate) {
@@ -248,7 +303,7 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
                 sequential_rate.error());
         }
         auto random_rate = checked_rate(
-            kM2RandomOperationCount, clock.frequency_hz(),
+            kM2RandomOperationCount, clock_frequency_hz,
             random_elapsed.value(),
             L"run_m2_performance_probe(random_rate)");
         if (!random_rate) {
@@ -264,14 +319,14 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
             kM2SequentialRegionBytes,
             kM2SequentialOperationCount,
             sequential_elapsed.value(),
-            clock.frequency_hz(),
+            clock_frequency_hz,
             sequential_rate.value(),
         };
         result.random = {
             kM2RandomIoBytes * kM2RandomOperationCount,
             kM2RandomOperationCount,
             random_elapsed.value(),
-            clock.frequency_hz(),
+            clock_frequency_hz,
             random_rate.value(),
         };
         return Result<M2PerformanceProbeResult>::success(std::move(result));
@@ -293,9 +348,8 @@ Result<M2PerformanceComparison> compare_m2_performance(
         return comparison_error(
             0xB110, L"machine/build/process policies do not match");
     }
-    if (fixed_baseline.methodology_id != kM2PerformanceMethodologyId ||
-        dynamic_sample.methodology_id != kM2PerformanceMethodologyId ||
-        fixed_baseline.queue_depth != 1 || dynamic_sample.queue_depth != 1 ||
+    if (!canonical_result(fixed_baseline) ||
+        !canonical_result(dynamic_sample) ||
         !same_methodology(fixed_baseline, dynamic_sample)) {
         return comparison_error(
             0xB111, L"performance methodologies are not comparable");

@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <stop_token>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,6 +41,11 @@ public:
         if (cancel_source != nullptr && call == cancel_after_call) {
             cancel_source->request_stop();
         }
+        if (expire_deadline_call != 0 && call == expire_deadline_call) {
+            while (std::chrono::steady_clock::now() < context.deadline) {
+                std::this_thread::yield();
+            }
+        }
         if (fail_call != 0 && call == fail_call) {
             return myrd::Result<std::size_t>::failure({
                 myrd::ErrorDomain::storage, 0xB001,
@@ -56,6 +63,7 @@ public:
     std::size_t short_call{};
     std::stop_source* cancel_source{};
     std::size_t cancel_after_call{};
+    std::size_t expire_deadline_call{};
 };
 
 class ScriptClock final : public myrd::IM2PerformanceClock {
@@ -83,6 +91,32 @@ private:
     std::size_t next_{};
 };
 
+class ChangingFrequencyClock final : public myrd::IM2PerformanceClock {
+public:
+    std::uint64_t frequency_hz() const noexcept override {
+        ++frequency_calls_;
+        return frequency_calls_ == 1 ? 1'000'000 : 2'000'000;
+    }
+
+    myrd::Result<std::uint64_t> now_ticks() override {
+        constexpr std::uint64_t values[] = {
+            100, 1'000'100, 500, 2'000'500};
+        if (next_ >= std::size(values)) {
+            return myrd::Result<std::uint64_t>::failure({
+                myrd::ErrorDomain::internal, 0xB003,
+                L"ChangingFrequencyClock::now_ticks",
+                L"clock script exhausted"});
+        }
+        return myrd::Result<std::uint64_t>::success(values[next_++]);
+    }
+
+    std::size_t frequency_calls() const noexcept { return frequency_calls_; }
+
+private:
+    mutable std::size_t frequency_calls_{};
+    std::size_t next_{};
+};
+
 myrd::M2PerformancePolicy policy(std::string suffix = {}) {
     return {"machine" + suffix, "build" + suffix,
             "single-thread-normal-priority" + suffix};
@@ -104,10 +138,38 @@ myrd::M2PerformanceProbeResult sample(
     value.policy = std::move(value_policy);
     value.operation = myrd::M2RawOperation::Write;
     value.queue_depth = 1;
+    value.region_offset = config().region_offset;
+    value.sequential.bytes = myrd::kM2SequentialRegionBytes;
+    value.sequential.operations = myrd::kM2SequentialOperationCount;
+    const auto frequency = sequential_rate != 0 && random_rate != 0
+        ? sequential_rate * random_rate
+        : (sequential_rate != 0 ? sequential_rate
+                                : (random_rate != 0 ? random_rate : 1));
+    value.sequential.elapsed_ticks = sequential_rate == 0
+        ? (std::numeric_limits<std::uint64_t>::max)()
+        : myrd::kM2SequentialRegionBytes *
+              (random_rate == 0 ? 1 : random_rate);
+    value.sequential.clock_frequency_hz = frequency;
     value.sequential.bytes_per_second = sequential_rate;
+    value.random.bytes =
+        myrd::kM2RandomIoBytes * myrd::kM2RandomOperationCount;
+    value.random.operations = myrd::kM2RandomOperationCount;
+    value.random.elapsed_ticks = random_rate == 0
+        ? (std::numeric_limits<std::uint64_t>::max)()
+        : myrd::kM2RandomOperationCount *
+              (sequential_rate == 0 ? 1 : sequential_rate);
+    value.random.clock_frequency_hz = frequency;
     value.random.operations_per_second = random_rate;
     value.methodology_id = std::string(myrd::kM2PerformanceMethodologyId);
     return value;
+}
+
+constexpr std::size_t expected_transfer_calls() {
+    return static_cast<std::size_t>(
+        myrd::kM2SequentialWarmupOperationCount +
+        myrd::kM2SequentialOperationCount +
+        myrd::kM2RandomWarmupOperationCount +
+        myrd::kM2RandomOperationCount);
 }
 
 } // namespace
@@ -235,6 +297,15 @@ TEST_CASE(m2_performance_rejects_invalid_geometry_and_clock_samples) {
     ScriptClock non_monotonic({100, 99, 200, 201});
     REQUIRE(myrd::run_m2_performance_probe(
                 io, non_monotonic, context, config()).has_error());
+
+    auto invalid_operation = config();
+    invalid_operation.operation = static_cast<myrd::M2RawOperation>(0xFF);
+    ScriptClock invalid_operation_clock({1, 2, 3, 4});
+    FakeRawIo invalid_operation_io;
+    REQUIRE(myrd::run_m2_performance_probe(
+                invalid_operation_io, invalid_operation_clock, context,
+                invalid_operation).has_error());
+    REQUIRE(invalid_operation_io.records.empty());
 }
 
 TEST_CASE(m2_performance_honors_cancel_and_deadline_before_and_during_probe) {
@@ -268,6 +339,46 @@ TEST_CASE(m2_performance_honors_cancel_and_deadline_before_and_during_probe) {
         midflight_io, midflight_clock, midflight_context, config());
     REQUIRE(midflight.has_error());
     REQUIRE_EQ(midflight_io.records.size(), std::size_t{2});
+
+    FakeRawIo final_cancel_io;
+    std::stop_source final_cancel_source;
+    final_cancel_io.cancel_source = &final_cancel_source;
+    final_cancel_io.cancel_after_call = expected_transfer_calls();
+    ScriptClock final_cancel_clock({1, 2, 3, 4});
+    myrd::OperationContext final_cancel_context{
+        final_cancel_source.get_token()};
+    auto final_cancel = myrd::run_m2_performance_probe(
+        final_cancel_io, final_cancel_clock, final_cancel_context, config());
+    REQUIRE(final_cancel.has_error());
+    REQUIRE_EQ(final_cancel_io.records.size(), expected_transfer_calls());
+
+    FakeRawIo final_deadline_io;
+    final_deadline_io.expire_deadline_call = expected_transfer_calls();
+    ScriptClock final_deadline_clock({1, 2, 3, 4});
+    myrd::OperationContext final_deadline_context{
+        {}, std::chrono::steady_clock::now() + std::chrono::milliseconds(100)};
+    auto final_deadline = myrd::run_m2_performance_probe(
+        final_deadline_io, final_deadline_clock, final_deadline_context,
+        config());
+    REQUIRE(final_deadline.has_error());
+    REQUIRE_EQ(final_deadline_io.records.size(), expected_transfer_calls());
+}
+
+TEST_CASE(m2_performance_snapshots_clock_frequency_once) {
+    FakeRawIo io;
+    ChangingFrequencyClock clock;
+    myrd::OperationContext context{};
+
+    auto result = myrd::run_m2_performance_probe(
+        io, clock, context, config());
+
+    REQUIRE(result.ok());
+    REQUIRE_EQ(clock.frequency_calls(), std::size_t{1});
+    REQUIRE_EQ(result.value().sequential.clock_frequency_hz, 1'000'000ull);
+    REQUIRE_EQ(result.value().random.clock_frequency_hz, 1'000'000ull);
+    REQUIRE_EQ(result.value().sequential.bytes_per_second,
+               myrd::kM2SequentialRegionBytes);
+    REQUIRE_EQ(result.value().random.operations_per_second, 5'000ull);
 }
 
 TEST_CASE(m2_performance_thresholds_are_exact_and_fail_closed) {
@@ -321,4 +432,24 @@ TEST_CASE(m2_performance_thresholds_are_exact_and_fail_closed) {
         REQUIRE(myrd::compare_m2_performance(
                     baseline, changed).has_error());
     }
+
+    auto invalid_operation = sample(1'000'000, 10'000);
+    invalid_operation.operation = static_cast<myrd::M2RawOperation>(0xFF);
+    REQUIRE(myrd::compare_m2_performance(
+                invalid_operation, invalid_operation).has_error());
+
+    auto noncanonical = sample(1'000'000, 10'000);
+    noncanonical.region_bytes++;
+    REQUIRE(myrd::compare_m2_performance(
+                noncanonical, noncanonical).has_error());
+
+    auto malformed_sample = sample(1'000'000, 10'000);
+    malformed_sample.sequential.elapsed_ticks = 0;
+    REQUIRE(myrd::compare_m2_performance(
+                malformed_sample, malformed_sample).has_error());
+
+    auto inconsistent_rate = sample(1'000'000, 10'000);
+    inconsistent_rate.random.operations_per_second++;
+    REQUIRE(myrd::compare_m2_performance(
+                inconsistent_rate, inconsistent_rate).has_error());
 }
