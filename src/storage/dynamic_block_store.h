@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -132,19 +133,28 @@ private:
     bool closing_requested() const noexcept;
     void notify_lifecycle_event(std::uint8_t event) noexcept;
     void notify_all_waiters();
+    Result<void> read_one_segment(
+        const OperationContext& context,
+        std::uint64_t block_index,
+        std::uint64_t block_offset_bytes,
+        std::span<std::byte> destination);
 
     BlockGeometry geometry_{};
     DynamicBlockStoreOptions options_{};
     std::uint32_t sector_size_bytes_{};
 
     mutable std::mutex state_mutex_;
+    std::condition_variable backing_view_condition_;
     BackingView backing_view_{};
     DynamicBlockStoreStats stats_{};
+    std::uint64_t commit_reservation_bytes_{};
+    std::uint64_t backing_publications_in_progress_{};
 
     mutable std::mutex lifecycle_mutex_;
     std::condition_variable lifecycle_condition_;
     LifecycleState lifecycle_state_{LifecycleState::Open};
     std::atomic<bool> closing_requested_{false};
+    std::stop_source close_stop_source_{};
     std::uint64_t active_requests_{};
     bool worker_running_{};
     bool deferred_close_ready_{};
@@ -152,6 +162,7 @@ private:
     std::thread worker_;
     std::atomic<std::uint64_t> stripe_waiter_count_{0};
     std::atomic<std::uint64_t> access_epoch_{0};
+    std::atomic<std::uint64_t> transition_epoch_{0};
 
     std::unique_ptr<VirtualMemoryArena> arena_;
     std::unique_ptr<LockStripeSet> stripes_;

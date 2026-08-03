@@ -463,3 +463,18 @@ add_test(NAME unit.m2.read COMMAND myrd_m2_read_tests)
 set_tests_properties(unit.m2.read PROPERTIES
     LABELS "m2-v1"
     TIMEOUT 20)
+
+add_executable(myrd_m2_limit_tests
+    unit/dynamic_block_store_limit_tests.cpp
+    support/fake_backing_store.h
+    support/fake_virtual_memory_api.h
+)
+target_link_libraries(myrd_m2_limit_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_limit_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_limit_tests)
+add_test(NAME unit.m2.limits COMMAND myrd_m2_limit_tests)
+set_tests_properties(unit.m2.limits PROPERTIES
+    LABELS "m2-v1"
+    TIMEOUT 20)

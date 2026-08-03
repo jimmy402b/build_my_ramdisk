@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include "fake_backing_store.h"
 #include "src/storage/dynamic_block_store.h"
 #include "src/storage/dynamic_block_store_internal.h"
 #include "src/storage/zero_backing_store.h"
@@ -64,6 +65,29 @@ std::vector<std::byte> pattern(std::uint8_t seed) {
 bool all_equal(std::span<const std::byte> bytes, std::byte value) {
     return std::all_of(bytes.begin(), bytes.end(),
                        [value](std::byte byte) { return byte == value; });
+}
+
+myrd::test::FakeBackingStore::BlockData block_data(std::byte value) {
+    myrd::test::FakeBackingStore::BlockData data{};
+    data.fill(value);
+    return data;
+}
+
+std::uint32_t result_code(const myrd::Result<void>& result) {
+    return result.has_error()
+               ? result.error().code
+               : (std::numeric_limits<std::uint32_t>::max)();
+}
+
+bool wait_for_stripe_waiters(const myrd::DynamicBlockStore& store,
+                             std::uint64_t expected) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (store.stripe_waiter_count_for_test() != expected &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return store.stripe_waiter_count_for_test() == expected;
 }
 
 class CountingBackingStore final : public myrd::IBackingStore {
@@ -463,4 +487,469 @@ TEST_CASE(m2_read_observer_may_reenter_close_without_deadlock) {
     REQUIRE(observer->reentered());
     REQUIRE(store->is_closed());
     REQUIRE(all_equal(output, std::byte{0}));
+}
+
+TEST_CASE(m2_read_unresident_data_loads_once_and_publishes_clean_generation) {
+    const auto data = block_data(std::byte{0xC7});
+    auto backing = myrd::test::FakeBackingStoreBuilder(10)
+                       .data_block(0, data)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.initial_backing_generation = 7;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+
+    std::vector<std::byte> output(kBlock, std::byte{0});
+    REQUIRE(store->read(myrd::OperationContext{}, 0, output).ok());
+    REQUIRE(std::equal(output.begin(), output.end(), data.begin()));
+    REQUIRE_EQ(backing->block_load_count(0), 1ull);
+    REQUIRE_EQ(backing->last_load_destination_address(0) % kBlock, 0ull);
+
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::ResidentClean);
+    REQUIRE_EQ(entry.clean_generation, 7ull);
+    REQUIRE_EQ(store->stats().backing_reads_total, 1ull);
+    REQUIRE_EQ(store->stats().backing_read_bytes_total, kBlock);
+}
+
+TEST_CASE(m2_read_unresident_all_zero_publishes_zero_clean_without_commit) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(11)
+                       .all_zero_block(1)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.initial_backing_generation = 9;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+
+    std::vector<std::byte> output(kBlock, std::byte{0xA5});
+    REQUIRE(store->read(myrd::OperationContext{}, kBlock, output).ok());
+    REQUIRE(all_equal(output, std::byte{0}));
+    REQUIRE_EQ(backing->block_load_count(1), 1ull);
+
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 1, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::ZeroClean);
+    REQUIRE_EQ(entry.clean_generation, 9ull);
+    REQUIRE_EQ(store->stats().committed_bytes, 0ull);
+}
+
+TEST_CASE(m2_read_same_block_misses_are_single_flight_for_2_8_and_32_readers) {
+    for (const auto reader_count : {2u, 8u, 32u}) {
+        auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+        const auto expected = block_data(
+            std::byte{static_cast<std::uint8_t>(0x40u + reader_count)});
+        auto backing = myrd::test::FakeBackingStoreBuilder(12)
+                           .data_block(0, expected)
+                           .gate_block(0, gate)
+                           .build();
+        auto args = valid_args();
+        args.initial_state = myrd::InitialBlockState::BackingUnresident;
+        args.backing_store = backing;
+        auto store = require_store(std::move(args));
+
+        std::vector<std::vector<std::byte>> outputs(
+            reader_count, std::vector<std::byte>(kBlock, std::byte{0}));
+        std::vector<std::uint32_t> codes(reader_count, 0);
+        std::atomic<std::uint32_t> ready{0};
+        std::vector<std::thread> readers;
+        readers.reserve(reader_count);
+        for (std::uint32_t index = 0; index < reader_count; ++index) {
+            readers.emplace_back([&, index] {
+                ready.fetch_add(1, std::memory_order_release);
+                const auto result = store->read(
+                    myrd::OperationContext{}, 0, outputs[index]);
+                codes[index] = result.ok() ? 0 : result_code(result);
+            });
+        }
+        while (ready.load(std::memory_order_acquire) != reader_count) {
+            std::this_thread::yield();
+        }
+        REQUIRE(gate->wait_until_entered(
+            1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+        const bool all_waiters_registered =
+            wait_for_stripe_waiters(*store, reader_count - 1);
+        gate->open();
+        for (auto& reader : readers) {
+            reader.join();
+        }
+        REQUIRE(all_waiters_registered);
+        for (std::size_t index = 0; index < reader_count; ++index) {
+            REQUIRE_EQ(codes[index], 0u);
+            REQUIRE(std::equal(outputs[index].begin(),
+                               outputs[index].end(),
+                               expected.begin()));
+        }
+        REQUIRE_EQ(backing->block_load_count(0), 1ull);
+    }
+}
+
+TEST_CASE(m2_read_different_block_misses_execute_backing_io_in_parallel) {
+    auto gate0 = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto gate1 = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    const auto expected0 = block_data(std::byte{0x51});
+    const auto expected1 = block_data(std::byte{0xA8});
+    auto backing = myrd::test::FakeBackingStoreBuilder(13)
+                       .data_block(0, expected0)
+                       .data_block(1, expected1)
+                       .gate_block(0, gate0)
+                       .gate_block(1, gate1)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+    std::vector<std::byte> first(kBlock), second(kBlock);
+    std::atomic<std::uint32_t> ready{0};
+    std::array<std::uint32_t, 2> codes{};
+    std::thread reader0([&] {
+        ready.fetch_add(1, std::memory_order_release);
+        const auto result = store->read(myrd::OperationContext{}, 0, first);
+        codes[0] = result.ok() ? 0 : result_code(result);
+    });
+    std::thread reader1([&] {
+        ready.fetch_add(1, std::memory_order_release);
+        const auto result = store->read(
+            myrd::OperationContext{}, kBlock, second);
+        codes[1] = result.ok() ? 0 : result_code(result);
+    });
+    while (ready.load(std::memory_order_acquire) != 2) {
+        std::this_thread::yield();
+    }
+    REQUIRE(gate0->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    REQUIRE(gate1->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    gate0->open();
+    gate1->open();
+    reader0.join();
+    reader1.join();
+    REQUIRE_EQ(codes[0], 0u);
+    REQUIRE_EQ(codes[1], 0u);
+    REQUIRE(std::equal(first.begin(), first.end(), expected0.begin()));
+    REQUIRE(std::equal(second.begin(), second.end(), expected1.begin()));
+    REQUIRE_EQ(backing->total_load_count(), 2ull);
+}
+
+TEST_CASE(m2_read_waiter_cancellation_does_not_cancel_load_owner) {
+    auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(14)
+                       .gate_block(0, gate)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+
+    std::vector<std::byte> owner_output(kBlock), waiter_output(kBlock);
+    std::atomic<std::uint32_t> owner_code{0};
+    std::thread owner([&] {
+        const auto result = store->read(
+            myrd::OperationContext{}, 0, owner_output);
+        owner_code.store(result.ok() ? 0 : result_code(result),
+                         std::memory_order_release);
+    });
+    REQUIRE(gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+
+    std::stop_source waiter_stop;
+    std::atomic<std::uint32_t> waiter_code{0};
+    std::thread waiter([&] {
+        const auto result = store->read(
+            myrd::OperationContext{waiter_stop.get_token()},
+            0,
+            waiter_output);
+        waiter_code.store(result.ok() ? 0 : result_code(result),
+                          std::memory_order_release);
+    });
+    const bool waiter_registered = wait_for_stripe_waiters(*store, 1);
+    waiter_stop.request_stop();
+    waiter.join();
+    REQUIRE(waiter_registered);
+    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(backing->block_load_count(0), 1ull);
+    gate->open();
+    owner.join();
+    REQUIRE_EQ(owner_code.load(std::memory_order_acquire), 0u);
+}
+
+TEST_CASE(m2_read_waiter_deadline_does_not_cancel_load_owner) {
+    auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(15)
+                       .gate_block(0, gate)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+
+    std::vector<std::byte> owner_output(kBlock), waiter_output(kBlock);
+    std::atomic<std::uint32_t> owner_code{0};
+    std::thread owner([&] {
+        const auto result = store->read(
+            myrd::OperationContext{}, 0, owner_output);
+        owner_code.store(result.ok() ? 0 : result_code(result),
+                         std::memory_order_release);
+    });
+    REQUIRE(gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    std::atomic<std::uint32_t> waiter_code{0};
+    std::thread waiter([&] {
+        const auto result = store->read(
+            myrd::OperationContext{{}, deadline}, 0, waiter_output);
+        waiter_code.store(result.ok() ? 0 : result_code(result),
+                          std::memory_order_release);
+    });
+    const bool waiter_registered = wait_for_stripe_waiters(*store, 1);
+    waiter.join();
+    REQUIRE(waiter_registered);
+    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::timed_out));
+    REQUIRE_EQ(backing->block_load_count(0), 1ull);
+    gate->open();
+    owner.join();
+    REQUIRE_EQ(owner_code.load(std::memory_order_acquire), 0u);
+}
+
+TEST_CASE(m2_read_owner_cancellation_rolls_back_and_allows_retry) {
+    auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    const auto expected = block_data(std::byte{0x6A});
+    auto backing = myrd::test::FakeBackingStoreBuilder(151)
+                       .data_block(0, expected)
+                       .gate_block(0, gate)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+    std::stop_source owner_stop;
+    std::vector<std::byte> cancelled_output(kBlock, std::byte{0xA5});
+    std::vector<std::byte> waiter_output(kBlock, std::byte{0x5A});
+    std::atomic<std::uint32_t> owner_code{0};
+    std::atomic<std::uint32_t> waiter_code{0};
+    std::thread owner([&] {
+        const auto result = store->read(
+            myrd::OperationContext{owner_stop.get_token()},
+            0,
+            cancelled_output);
+        owner_code.store(result.ok() ? 0 : result_code(result),
+                         std::memory_order_release);
+    });
+    REQUIRE(gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    std::thread waiter([&] {
+        const auto result = store->read(
+            myrd::OperationContext{}, 0, waiter_output);
+        waiter_code.store(result.ok() ? 0 : result_code(result),
+                          std::memory_order_release);
+    });
+    const bool waiter_registered = wait_for_stripe_waiters(*store, 1);
+    if (!waiter_registered) {
+        gate->open();
+    }
+    owner_stop.request_stop();
+    owner.join();
+    waiter.join();
+    REQUIRE(waiter_registered);
+    REQUIRE_EQ(owner_code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::cancelled));
+    REQUIRE(all_equal(cancelled_output, std::byte{0xA5}));
+    REQUIRE(all_equal(waiter_output, std::byte{0x5A}));
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::Unresident);
+    REQUIRE_EQ(store->stats().loading_blocks, 0ull);
+
+    gate->open();
+    std::vector<std::byte> retry_output(kBlock, std::byte{0});
+    REQUIRE(store->read(
+        myrd::OperationContext{}, 0, retry_output).ok());
+    REQUIRE(std::equal(
+        retry_output.begin(), retry_output.end(), expected.begin()));
+    REQUIRE_EQ(backing->block_load_count(0), 2ull);
+}
+
+TEST_CASE(m2_read_owner_failure_rolls_back_and_wakes_waiters_once) {
+    constexpr std::size_t reader_count = 8;
+    auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(16)
+                       .gate_block(0, gate)
+                       .fail_block(0)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+    std::array<std::vector<std::byte>, reader_count> outputs;
+    std::array<std::uint32_t, reader_count> codes{};
+    for (auto& output : outputs) {
+        output.assign(kBlock, std::byte{0xA6});
+    }
+    std::atomic<std::uint32_t> ready{0};
+    std::array<std::thread, reader_count> readers;
+    for (std::size_t index = 0; index < readers.size(); ++index) {
+        readers[index] = std::thread([&, index] {
+            ready.fetch_add(1, std::memory_order_release);
+            const auto result = store->read(
+                myrd::OperationContext{}, 0, outputs[index]);
+            codes[index] = result.ok() ? 0 : result_code(result);
+        });
+    }
+    while (ready.load(std::memory_order_acquire) != readers.size()) {
+        std::this_thread::yield();
+    }
+    REQUIRE(gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    const bool all_waiters_registered =
+        wait_for_stripe_waiters(*store, reader_count - 1);
+    gate->open();
+    for (auto& reader : readers) {
+        reader.join();
+    }
+    REQUIRE(all_waiters_registered);
+    for (std::size_t index = 0; index < reader_count; ++index) {
+        const auto code = codes[index];
+        REQUIRE_EQ(code, static_cast<std::uint32_t>(
+                             myrd::OperationErrorCode::backing_read_failed));
+        REQUIRE(all_equal(outputs[index], std::byte{0xA6}));
+    }
+    REQUIRE_EQ(backing->block_load_count(0), 1ull);
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::Unresident);
+    REQUIRE_EQ(store->stats().loading_blocks, 0ull);
+}
+
+TEST_CASE(m2_read_close_cancels_owner_load_and_restores_unresident) {
+    auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(17)
+                       .gate_block(0, gate)
+                       .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.backing_store = backing;
+    auto store = require_store(std::move(args));
+    std::vector<std::byte> output(kBlock);
+    std::atomic<std::uint32_t> code{0};
+    std::thread reader([&] {
+        const auto result = store->read(myrd::OperationContext{}, 0, output);
+        code.store(result.ok() ? 0 : result_code(result),
+                   std::memory_order_release);
+    });
+    REQUIRE(gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    store->close();
+    reader.join();
+    REQUIRE_EQ(code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::session_closed));
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::Unresident);
+    REQUIRE_EQ(store->stats().loading_blocks, 0ull);
+}
+
+TEST_CASE(m2_read_old_generation_result_is_discarded_and_retried) {
+    auto old_gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto lifetime =
+        std::make_shared<myrd::test::FakeBackingStoreLifetimeTracker>();
+    const auto old_data = block_data(std::byte{0x31});
+    const auto new_data = block_data(std::byte{0xE2});
+    auto old_backing = myrd::test::FakeBackingStoreBuilder(18)
+                           .data_block(0, old_data)
+                           .gate_block(0, old_gate)
+                           .lifetime_tracker(lifetime)
+                           .build();
+    std::weak_ptr<const myrd::test::FakeBackingStore> old_weak = old_backing;
+    auto successor = myrd::test::FakeBackingStoreBuilder(19)
+                         .data_block(0, new_data)
+                         .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.initial_backing_generation = 1;
+    args.backing_store = old_backing;
+    auto store = require_store(std::move(args));
+    old_backing.reset();
+
+    std::vector<std::byte> output(kBlock);
+    std::atomic<std::uint32_t> code{0};
+    std::thread reader([&] {
+        const auto result = store->read(myrd::OperationContext{}, 0, output);
+        code.store(result.ok() ? 0 : result_code(result),
+                   std::memory_order_release);
+    });
+    REQUIRE(old_gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    REQUIRE(store->install_backing_view({2, successor}).ok());
+    REQUIRE(!old_weak.expired());
+    old_gate->open();
+    reader.join();
+    REQUIRE_EQ(code.load(std::memory_order_acquire), 0u);
+    REQUIRE(std::equal(output.begin(), output.end(), new_data.begin()));
+    REQUIRE(old_weak.expired());
+    REQUIRE_EQ(successor->block_load_count(0), 1ull);
+    const auto stats = store->stats();
+    REQUIRE_EQ(stats.stale_backing_load_retries, 1ull);
+    REQUIRE_EQ(stats.backing_reads_total, 2ull);
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.clean_generation, 2ull);
+}
+
+TEST_CASE(m2_read_stale_all_zero_result_does_not_modify_failed_destination) {
+    auto old_gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto old_backing = myrd::test::FakeBackingStoreBuilder(20)
+                           .all_zero_block(0)
+                           .gate_block(0, old_gate)
+                           .build();
+    auto failing_successor = myrd::test::FakeBackingStoreBuilder(21)
+                                 .fail_block(0)
+                                 .build();
+    auto args = valid_args();
+    args.initial_state = myrd::InitialBlockState::BackingUnresident;
+    args.initial_backing_generation = 4;
+    args.backing_store = old_backing;
+    auto store = require_store(std::move(args));
+    std::vector<std::byte> output(kBlock, std::byte{0xD4});
+    std::atomic<std::uint32_t> code{0};
+    std::thread reader([&] {
+        const auto result = store->read(myrd::OperationContext{}, 0, output);
+        code.store(result.ok() ? 0 : result_code(result),
+                   std::memory_order_release);
+    });
+    REQUIRE(old_gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    REQUIRE(store->install_backing_view({5, failing_successor}).ok());
+    old_gate->open();
+    reader.join();
+
+    REQUIRE_EQ(code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::backing_read_failed));
+    REQUIRE(all_equal(output, std::byte{0xD4}));
+    REQUIRE_EQ(old_backing->block_load_count(0), 1ull);
+    REQUIRE_EQ(failing_successor->block_load_count(0), 1ull);
+    REQUIRE_EQ(store->stats().stale_backing_load_retries, 1ull);
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::Unresident);
 }

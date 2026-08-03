@@ -115,7 +115,8 @@ public:
             return Result<BlockLoadResult>::failure(live.error());
         }
 
-        const auto occurrence = record_load(block_index);
+        const auto occurrence = record_load(
+            block_index, reinterpret_cast<std::uintptr_t>(destination.data()));
 
         const auto gate = gates_.find(block_index);
         if (gate != gates_.end()) {
@@ -168,6 +169,15 @@ public:
         return found == block_load_counts_.end() ? 0 : found->second;
     }
 
+    std::uintptr_t last_load_destination_address(
+        std::uint64_t block_index) const noexcept {
+        std::scoped_lock lock(state_mutex_);
+        const auto found = last_load_destination_addresses_.find(block_index);
+        return found == last_load_destination_addresses_.end()
+            ? 0
+            : found->second;
+    }
+
     static std::byte deterministic_byte(std::uint64_t seed,
         std::uint64_t block_index, std::size_t offset) noexcept {
         auto value = seed ^ (block_index + 0x9E37'79B9'7F4A'7C15ull);
@@ -207,8 +217,10 @@ private:
         std::uint64_t block;
     };
 
-    LoadOccurrence record_load(std::uint64_t block_index) const {
+    LoadOccurrence record_load(std::uint64_t block_index,
+                               std::uintptr_t destination_address) const {
         std::scoped_lock lock(state_mutex_);
+        last_load_destination_addresses_[block_index] = destination_address;
         return {++total_load_count_, ++block_load_counts_[block_index]};
     }
 
@@ -226,6 +238,8 @@ private:
     mutable std::uint64_t total_load_count_ = 0;
     mutable std::unordered_map<std::uint64_t, std::uint64_t>
         block_load_counts_;
+    mutable std::unordered_map<std::uint64_t, std::uintptr_t>
+        last_load_destination_addresses_;
 };
 
 class FakeBackingStoreBuilder final {

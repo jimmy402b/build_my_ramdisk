@@ -317,6 +317,7 @@ void DynamicBlockStore::close() {
         closing_requested_.store(true, std::memory_order_release);
     }
 
+    close_stop_source_.request_stop();
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::RejectNewRequests));
     notify_all_waiters();
@@ -530,7 +531,10 @@ Result<void> DynamicBlockStore::install_backing_view(
 
     BackingView retired_view;
     {
-        std::scoped_lock lock(state_mutex_);
+        std::unique_lock lock(state_mutex_);
+        backing_view_condition_.wait(lock, [this] {
+            return backing_publications_in_progress_ == 0;
+        });
         if (!next_view.store ||
             next_view.generation <= backing_view_.generation) {
             ++stats_.backing_generation_conflicts;

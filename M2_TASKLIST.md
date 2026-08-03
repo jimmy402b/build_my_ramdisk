@@ -61,13 +61,13 @@
 | ID | 任务 | 状态 | 依赖 | 主要门禁 |
 |---|---|---|---|---|
 | 00 | M1 基线与 M2 构建壳 | DONE | 无 | M2-V0 |
-| 01 | 几何、选项、状态与统计类型 | TODO | 00 | M2-V1 |
-| 02 | 不可变 Backing 接口、Zero 与 Fake | TODO | 01 | M2-V1 |
-| 03 | Windows 虚拟内存 Arena | TODO | 01 | M2-V1 |
-| 04 | 稀疏目录与固定锁条带 | TODO | 01 | M2-V1 |
-| 05 | Store 工厂、生命周期、默认状态 | TODO | 02,03,04 | M2-V1 |
-| 06 | Zero/Resident READ | TODO | 05 | M2-V1 |
-| 07 | Backing 懒加载与 Read-through | TODO | 06 | M2-V1 |
+| 01 | 几何、选项、状态与统计类型 | DONE | 00 | M2-V1 |
+| 02 | 不可变 Backing 接口、Zero 与 Fake | DONE | 01 | M2-V1 |
+| 03 | Windows 虚拟内存 Arena | DONE | 01 | M2-V1 |
+| 04 | 稀疏目录与固定锁条带 | DONE | 01 | M2-V1 |
+| 05 | Store 工厂、生命周期、默认状态 | DONE | 02,03,04 | M2-V1 |
+| 06 | Zero/Resident READ | DONE | 05 | M2-V1 |
+| 07 | Backing 懒加载与 Read-through | DONE | 06 | M2-V1 |
 | 08 | WRITE 与内容版本 | TODO | 07 | M2-V1 |
 | 09 | UNMAP/ZERO 与零覆盖 | TODO | 08 | M2-V1 |
 | 10 | Backing generation、脏快照与 persisted ack | TODO | 09 | M2-V1 |
@@ -415,43 +415,48 @@ Executor / timestamp:
 
 ## Task 07 — 单飞 lazy backing load 与 hard-pressure read-through
 
+**状态：DONE**
+
 **目标：** 第一次访问才载入 64 KiB；同块并发只调用 backing 一次；无法缓存时 read 仍可有界完成。
 
 **文件：** `dynamic_block_store_read.cpp`、internal header、read/limit tests。
 
 ### 红灯测试
 
-- [ ] `Unresident + Data -> ResidentClean`，内容和 load count 正确。
-- [ ] `Unresident + AllZero -> ZeroClean`，无 commit。
-- [ ] 2/8/32 个同块 readers 只产生一次 backing load。
-- [ ] 不同块可同时 load，不被 global lock 串行。
-- [ ] waiter cancellation/deadline 独立返回，不取消 owner。
-- [ ] owner cancellation/failure 恢复 prior state 并唤醒全部 waiter。
-- [ ] commit failure 恢复 stable state、释放 budget、无不可访问地址。
-- [ ] close during load 可合作取消并 join。
-- [ ] hard limit 无 victim 时，Data 由 private buffer read-through，状态回 `Unresident`。
-- [ ] read-through counter +1，commit bytes 不变；下一次读可再次 load。
-- [ ] gate 阻塞 generation G 的 load，安装内容不同的 G+1，再释放旧 load：旧结果不发布，自动从 G+1 重试。
-- [ ] 上述竞态的 `stale_backing_load_retries` 精确 +1；最终 Clean 记录 G+1；旧 backing 在调用返回前保持存活，之后可释放。
+- [x] `Unresident + Data -> ResidentClean`，内容和 load count 正确。
+- [x] `Unresident + AllZero -> ZeroClean`，无 commit。
+- [x] 2/8/32 个同块 readers 只产生一次 backing load。
+- [x] 不同块可同时 load，不被 global lock 串行。
+- [x] waiter cancellation/deadline 独立返回，不取消 owner。
+- [x] owner cancellation/failure 恢复 prior state 并唤醒全部 waiter。
+- [x] commit failure 恢复 stable state、释放 budget、无不可访问地址。
+- [x] close during load 可合作取消并 join。
+- [x] hard limit 无 victim 时，Data 由 private buffer read-through，状态回 `Unresident`。
+- [x] hard limit 下 8 个同时 miss 的 readers 共享同一 load 和 epoch-scoped private buffer。
+- [x] read-through counter 精确按成功 reader 计数，commit bytes 不变；下一次读可再次 load。
+- [x] gate 阻塞 generation G 的 load，安装内容不同的 G+1，再释放旧 load：旧结果不发布，自动从 G+1 重试。
+- [x] 上述竞态的 `stale_backing_load_retries` 精确 +1；最终 Clean 记录 G+1；旧 backing 在调用返回前保持存活，之后可释放。
 
 ### 实现
 
-- [ ] 锁内用 `Unresident -> Loading` 和 owner epoch 选主。
-- [ ] waiter 使用 predicate loop，处理 spurious wake、cancel、deadline、close。
-- [ ] 原子捕获 `{generation, shared_ptr<const IBackingStore>}`，backing I/O 写入私有 64 KiB buffer，期间不持 metadata/leaf lock。
-- [ ] AllZero publish 前由 store 负责 read 目标清零。
-- [ ] publish 前复核 owner/epoch 和 captured generation；generation 已变化则丢弃旧结果并有界重试。
-- [ ] generation 未变化时，Data 先获得 budget，再 commit/copy，最后以 captured generation publish `ResidentClean`；AllZero 同样记录 `ZeroClean.clean_generation`。
-- [ ] 每条失败路径检查 owner epoch 后恢复 prior state并 notify_all。
-- [ ] hard limit 缓存失败只对 read 允许 read-through；write 不允许。
-- [ ] 不把一个 waiter 的取消传播给仍有价值的 owner load。
+- [x] 锁内用 `Unresident -> Loading` 和 owner epoch 选主。
+- [x] waiter 使用 predicate loop，处理 spurious wake、cancel、deadline、close。
+- [x] 原子捕获 `{generation, shared_ptr<const IBackingStore>}`，backing I/O 写入私有 64 KiB 对齐 buffer，期间不持 metadata/leaf lock。
+- [x] AllZero publish 前由 store 负责在锁外将 read 目标清零，并用短暂 publication gate 阻止 generation 穿越。
+- [x] publish 前复核 owner/epoch 和 captured generation；generation 已变化则丢弃旧结果并有界重试。
+- [x] generation 未变化时，Data 先获得 budget，再 commit/copy，最后以 captured generation publish `ResidentClean`；AllZero 同样记录 `ZeroClean.clean_generation`。
+- [x] 每条失败路径检查 owner epoch 后恢复 prior state并 notify_all。
+- [x] hard limit 缓存失败只对 read 允许 read-through；write 不允许。
+- [x] 不把一个 waiter 的取消传播给仍有价值的 owner load。
+- [x] waiter 计数由异常安全 RAII 注销；read-through 裸指针发布后由 fail-fast guard 保证不会悬空返回。
 
 ### 验证与验收
 
-- [ ] `unit.m2.read`、`unit.m2.limits` 通过。
-- [ ] 有测试证明 backing call 期间其他 stripe 能前进。
-- [ ] 回读 Plan Task 7 与 1.3/1.4；核对 single-flight、immutable view lifetime、generation retry 和 lock boundary。
-- [ ] 建议提交：`feat(storage): add lazy block loading and read through`。
+- [x] `unit.m2.read`、`unit.m2.limits` 通过。
+- [x] 有测试证明 backing call 期间其他 stripe 能前进。
+- [x] 回读 Plan Task 7 与 1.3/1.4；核对 single-flight、immutable view lifetime、generation retry 和 lock boundary。
+- [x] 两轮独立复审最终均为 APPROVED，无 Critical、Important 或 Minor。
+- [x] 建议提交：`feat(storage): add lazy block loading and read through`。
 
 ---
 
@@ -1325,3 +1330,17 @@ Evidence paths: Task 03 source/tests and console transcript; specification revie
 Plan drift audit: Task 03 only; the 1 TiB arena creates no per-block metadata, Fake remains test-only, and no sparse directory, store state machine, proxy, driver, persistence, or Task 04 behavior was introduced
 Open risks: real 64 GiB/1 TiB `VirtualAlloc` and `VirtualQuery` integration remains intentionally assigned to Task 18; Task 03 proves exact calls and failure semantics through the injectable seam
 Executor / timestamp: Codex / `2026-08-03T14:48:31+08:00`
+
+Task: 07 — 单飞 lazy backing load 与 hard-pressure read-through
+Status: DONE
+Start commit / end commit: `dddc8dbc60c6ca7f31168e32361c2f0104b9c412` / this Task 07 commit
+Files changed: `src/storage/dynamic_block_store.h`, `src/storage/dynamic_block_store_core.cpp`, `src/storage/dynamic_block_store_internal.h`, `src/storage/dynamic_block_store_read.cpp`, `tests/support/fake_backing_store.h`, `tests/unit/dynamic_block_store_read_tests.cpp`, `tests/unit/dynamic_block_store_limit_tests.cpp`, `tests/CMakeLists.txt`, and this Task 07 checklist/status/record in `M2_TASKLIST.md`
+Red test and observed failure: after adding deterministic concurrency/alignment tests before the final production fix, Debug `unit.m2.read` failed because the private backing destination was not 64 KiB aligned, and `unit.m2.limits` failed because 8 simultaneous hard-limit readers produced more than one backing load
+Focused verification command / exit code: fresh-layout Debug and Release builds exit 0; exact `unit.m2.read|unit.m2.limits` 2/2 in both configurations; final submitted-state Debug and Release `unit.m2.read` and `unit.m2.limits` each passed `--repeat until-fail:100`
+Cumulative verification command / exit code: complete Debug and Release builds exit 0; Debug M2-V1 11/11; Release M2-V1 11/11; full Release CTest 34/34; `git diff --check` exit 0
+Evidence paths: `tests/unit/dynamic_block_store_read_tests.cpp`, `tests/unit/dynamic_block_store_limit_tests.cpp`, Task 07 production files, and the console transcripts for the red test, focused gates, four 100-run loops, cumulative gates, and final two-reviewer APPROVED verdicts
+Review findings and resolution: hard-pressure waiters now share one epoch-scoped aligned private result; AllZero clears the destination outside metadata locks before publication; waiter counts use exception-safe RAII; owner cancellation/failure wakes real registered waiters; a fail-fast guard prevents any published read-through pointer from becoming dangling during an exceptional synchronization failure
+Plan drift audit: implementation remains inside Plan Task 7 and sections 1.3/1.4; backing I/O holds no metadata/leaf lock; generation publication is coherent; no WRITE, range mutation, dirty snapshot, eviction, filesystem backing, M3/M4 persistence, proxy, or driver behavior was introduced
+Status table normalization: rows 01–06 were corrected from stale TODO values to DONE to match their already accepted commits `70fc9c1`, `0ccc14f`, `bc1619c`, `309239d`, `58ac6ee`, and `dddc8db`; no earlier implementation was changed by this documentation correction
+Open risks: Task 12 must extend global invariant/accounting checks over all reservation/publication counters; Task 07 itself has no open Critical, Important, or Minor review findings
+Executor / timestamp: Codex / `2026-08-03T17:32:37+08:00`

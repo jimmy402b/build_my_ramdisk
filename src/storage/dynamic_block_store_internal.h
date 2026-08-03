@@ -31,6 +31,15 @@ struct BlockEntry {
     std::uint64_t dirty_epoch{};
     BackingGeneration dirty_base_generation{};
     BackingGeneration clean_generation{};
+    std::uint64_t load_waiter_count{};
+    std::uint64_t completed_load_epoch{};
+    std::uint64_t completed_load_waiters{};
+    std::byte* read_through_buffer{};
+    BackingGeneration read_through_generation{};
+    std::uint32_t completed_load_error_code{};
+    std::uint32_t completed_load_native_code{};
+    std::uint8_t completed_load_error_domain{};
+    bool read_through_ready{};
     bool reference_bit{};
     DirtyRecordKind dirty_kind{DirtyRecordKind::Data};
 };
@@ -195,6 +204,8 @@ public:
                                BlockEntry& output);
     static bool try_decommit_resident_clean(DynamicBlockStore& store,
                                             std::uint64_t block_index);
+    static std::uint64_t commit_reservation_bytes(
+        DynamicBlockStore& store);
 };
 
 struct DynamicBlockStoreTestDependencies {
