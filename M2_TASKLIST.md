@@ -297,34 +297,36 @@ Executor / timestamp:
 
 ### 红灯测试
 
-- [ ] leaf index / entry index 的首尾边界。
-- [ ] 每 leaf 恰好 1,024 entries，覆盖 64 MiB。
-- [ ] 空目录只分配 top-level pointers，不分配 leaves。
-- [ ] 第一次访问按需创建一个 leaf。
-- [ ] 同 leaf 并发创建最终只发布一个 leaf。
-- [ ] 不同 leaf 可并发创建。
-- [ ] 已发布 entry 地址直到 store 析构保持稳定。
-- [ ] implicit initial state 不需要 entry。
-- [ ] stripe 映射为 `block_index & (count - 1)`，same/different stripe 用例明确。
-- [ ] 64 GiB/1 TiB construction metadata 不与 block 数线性增长为完整 entries。
+- [x] leaf index / entry index 的首尾边界。
+- [x] 每 leaf 恰好 1,024 entries，覆盖 64 MiB。
+- [x] 空目录只分配 top-level pointers，不分配 leaves。
+- [x] 第一次访问按需创建一个 leaf。
+- [x] 同 leaf 并发创建最终只发布一个 leaf。
+- [x] 不同 leaf 可并发创建。
+- [x] 已发布 entry 地址直到 store 析构保持稳定。
+- [x] implicit initial state 不需要 entry。
+- [x] stripe 映射为 `block_index & (count - 1)`，same/different stripe 用例明确。
+- [x] 64 GiB/1 TiB construction metadata 不与 block 数线性增长为完整 entries。
 
 ### 实现
 
-- [ ] `BlockEntry` 包含 state、prior state、owner/epoch、version、pin、reference bit、transition/load epoch、zero dirty kind、`dirty_base_generation`、`clean_generation`。
-- [ ] 每块不放 mutex/CV。
-- [ ] top-level 使用安全 publication 方案；leaf publication lock 持有时间极短。
-- [ ] published leaf 不回收，防止悬空 entry 指针。
-- [ ] 固定 stripe 数在 factory 时一次创建，每条含 mutex/CV。
-- [ ] backing I/O、VM commit/decommit、wait 均不得持 leaf publication lock。
-- [ ] 增加 debug/test invariant checker。
-- [ ] invariant checker 明确拒绝 generation 回绕，以及 `ResidentClean.clean_generation > current backing generation`。
+- [x] `BlockEntry` 包含 state、prior state、owner/epoch、version、pin、reference bit、transition/load epoch、zero dirty kind、`dirty_base_generation`、`clean_generation`。
+- [x] 每块不放 mutex/CV。
+- [x] top-level 使用安全 publication 方案；leaf publication lock 持有时间极短。
+- [x] published leaf 不回收，防止悬空 entry 指针。
+- [x] 固定 stripe 数在 factory 时一次创建，每条含 mutex/CV。
+- [x] backing I/O、VM commit/decommit、wait 均不得持 leaf publication lock。
+- [x] 增加 debug/test invariant checker。
+- [x] invariant checker 明确拒绝 generation 回绕，以及 `ResidentClean.clean_generation > current backing generation`。
 
 ### 验证与验收
 
-- [ ] `unit.m2.block_directory` 通过并含并发 publication。
-- [ ] 记录 64 GiB/1 TiB 初始 metadata 估算/实测。
-- [ ] 回读 Plan Task 4 与 1.4；确认没有 per-block lock 和 eager leaves。
-- [ ] 建议提交：`feat(storage): add sparse block metadata directory`。
+- [x] `unit.m2.block_directory` 通过并含并发 publication。
+- [x] 记录 64 GiB/1 TiB 初始 metadata 估算/实测。
+- [x] 回读 Plan Task 4 与 1.4；确认没有 per-block lock 和 eager leaves。
+- [x] 建议提交：`feat(storage): add sparse block metadata directory`。
+
+验收记录（2026-08-03）：顶层目录实测为 64 GiB = 8,192 bytes、1 TiB = 131,072 bytes，初始 leaf 数均为 0；并发 publication 重复 100 次通过，规格审查 COMPLIANT，质量审查 APPROVED。
 
 ---
 
