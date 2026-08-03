@@ -1644,8 +1644,8 @@ private:
             bus_type->empty() || vendor->empty() || product->empty() ||
             serial->empty() || unique_id->empty() || volume_guids->empty() ||
             mount_points->empty() || *path > 0xFF || *target > 0xFF ||
-            *lun > 0xFF || *create_flags == 0 ||
-            *create_flags != *query_flags || !*confirmed ||
+            *lun > 0xFF || *create_flags != aim::kM0CreateFlags ||
+            *query_flags != aim::kM1QueryFlags || !*confirmed ||
             *physical_number == 0 || !disk_size_bytes_ ||
             *disk_length != *disk_size_bytes_) {
             fail();

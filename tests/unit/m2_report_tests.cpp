@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "src/m2/m2_report.h"
+#include "src/driver/aim_protocol.h"
 
 #include <chrono>
 #include <cstdint>
@@ -232,8 +233,8 @@ myrd::M2Report complete_report() {
     report.device_identity.path_id = 1;
     report.device_identity.target_id = 2;
     report.device_identity.lun = 3;
-    report.device_identity.create_flags = 0x3310;
-    report.device_identity.query_flags = 0x3310;
+    report.device_identity.create_flags = myrd::aim::kM0CreateFlags;
+    report.device_identity.query_flags = myrd::aim::kM1QueryFlags;
     report.device_identity.confirmed_by_query_device = true;
     report.device_identity.physical_drive_number = 42;
     report.device_identity.physical_drive_path = R"(\\.\PhysicalDrive42)";
