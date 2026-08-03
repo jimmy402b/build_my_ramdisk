@@ -102,6 +102,7 @@ myrd_enable_warnings(myrd_m1_report)
 
 add_library(myrd_m2 STATIC
     m2/m2_provider.cpp m2/m2_provider.h
+    m2/m2_performance_probe.cpp m2/m2_performance_probe.h
 )
 target_include_directories(myrd_m2 PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m2 PUBLIC myrd_proxy myrd_storage myrd_common)
