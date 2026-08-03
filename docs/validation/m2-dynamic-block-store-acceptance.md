@@ -16,6 +16,8 @@ claim M2-V1, M2-V2, M2-V3, M2-V4 behavior, M2-A/B/C, or an M2 GO verdict.
 | Worktree | `C:\Users\JimmyLin\Desktop\build_my_ramdisk\.worktrees\m2-implementation` |
 | Branch | `feature/m2-dynamic-block-store` |
 | Start commit | `724a00e2cf22e65de0eab18f0a6423f8194156be` |
+| Initial isolated-worktree status | clean; `git status --short` produced no output before Task 00 edits |
+| Parent checkout status | dirty user-owned M0/M1 diagnostics; exact protected snapshot below |
 | Functional M1 commit | `3eac4f7a477c134e5dfac0fc58ff160bcd9e9f23` (ancestor, M1 acceptance source baseline) |
 | Merged planning baseline | `2adf84ab16187a749bf350dee3d350cd297d52d6` (ancestor) |
 | M0 acceptance | `docs/validation/m0-driver-only-acceptance.md`: final M0 GO |
@@ -32,6 +34,50 @@ claim M2-V1, M2-V2, M2-V3, M2-V4 behavior, M2-A/B/C, or an M2 GO verdict.
 | Ninja | `1.13.2` |
 | Generator | checked-in `Ninja Multi-Config` preset `msvc` |
 | Target architecture | x64 (`VSCMD_ARG_TGT_ARCH=x64`, 64-bit process/OS) |
+
+The parent checkout was deliberately left untouched. Its protected
+`git status --short` snapshot was:
+
+```text
+ M tasklist.md
+?? .claude/
+?? _diag_map.cpp
+?? _diag_map.exe
+?? _diag_map.obj
+?? _recover_task25_orphan.exe
+?? _recover_task25_orphan.obj
+?? _recover_task25_signal.exe
+?? _recover_task25_signal.obj
+?? _test2.cpp
+?? _test2.exe
+?? _test2.obj
+?? _test_map.cpp
+?? _test_map.exe
+?? _test_map.obj
+?? _test_map2.ps1
+?? _test_map3.ps1
+?? _test_map4.ps1
+?? _test_mapE.exe
+?? _test_prov.cpp
+?? _test_prov.exe
+?? _test_prov.obj
+?? _test_run.ps1
+?? _test_run2.ps1
+?? _v3_final.ps1
+?? _v4.ps1
+?? _v4b.ps1
+?? _v4c.ps1
+?? _v4d.ps1
+?? _v4e.ps1
+?? _v4f.ps1
+?? _v4g.ps1
+?? _v4h.ps1
+?? _v5t.ps1
+?? tools/_diag_scsi.ps1
+?? tools/_list_scsi.ps1
+?? tools/_v3_elevated.ps1
+?? tools/_v3_run.ps1
+```
 
 The checked-in preset mapping is unchanged: `msvc` configures
 `out/build/msvc`; `debug` and `release` select the Debug and Release
@@ -135,7 +181,9 @@ build with tests disabled, and builds only `myrd_storage`. It rejects the
 resolved build whenever build output or produced artifacts contain the proxy
 or driver implementation targets, so intermediate targets, generator
 expressions, and `add_dependencies()` edges are covered by the actual
-generator-resolved dependency closure. The probe was fault-tested by
+generator-resolved dependency closure. Its PowerShell body is generated into
+the build tree by `tests/CMakeLists.txt`, keeping Task 00 inside its exact
+source-file allowlist. The probe was fault-tested by
 temporarily injecting `add_dependencies(myrd_storage myrd_driver)`: the old
 gate incorrectly passed, while the isolated gate failed after observing the
 driver build; the injection was then removed before the canonical green run.

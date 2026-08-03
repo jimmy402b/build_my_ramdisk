@@ -1195,3 +1195,15 @@ Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`; isolated
 Plan drift audit: strengthens only the Task 00 storage target boundary; no product behavior, Task 01 code, or persistent fault injection
 Open risks: repeated specification review remains
 Executor / timestamp: Codex / `2026-08-03T11:39:25+08:00`
+
+Task: 00 — 文件白名单与工作树证据审查修复记录
+Status: DONE
+Start commit / end commit: `a116f45` / allowlist-fix commit with the requested message
+Files changed: only `tests/CMakeLists.txt`, `docs/validation/m2-dynamic-block-store-acceptance.md`, and this appended record; the out-of-allowlist source script was deleted
+Red test and observed failure: specification review found `tests/support/verify_storage_boundary.ps1` outside the Task 00 exact file list and found no explicit `git status --short` evidence in acceptance
+Focused verification command / exit code: configure generated `out/build/msvc/tests/verify_storage_boundary_Release.ps1`; exact structural CTest exit 0 (1/1)
+Cumulative verification command / exit code: Release build exit 0; full CTest 27/27; M2-V1/V2/V3 4/4 each; M2-V4 27/27; fresh M1-V2 Debug PASS (14/14, fuzz 1/1, SHM 50/50)
+Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`
+Plan drift audit: final source changes return to the Task 00 allowlist; generated probe remains under ignored `out/`; no Task 01 code
+Open risks: repeated specification review remains
+Executor / timestamp: Codex / `2026-08-03T11:49:24+08:00`
