@@ -70,7 +70,7 @@
 | 07 | Backing 懒加载与 Read-through | DONE | 06 | M2-V1 |
 | 08 | WRITE 与内容版本 | DONE | 07 | M2-V1 |
 | 09 | UNMAP/ZERO 与零覆盖 | DONE | 08 | M2-V1 |
-| 10 | Backing generation、脏快照与 persisted ack | TODO | 09 | M2-V1 |
+| 10 | Backing generation、脏快照与 persisted ack | DONE | 09 | M2-V1 |
 | 11 | Clean CLOCK eviction | TODO | 10 | M2-V1 |
 | 12 | Hard limit、预算和失败回滚 | TODO | 11 | M2-V1 |
 | 13 | 100,000 次参考模型 | TODO | 12 | M2-V2 / M2-A |
@@ -1363,3 +1363,16 @@ Review findings and resolution: partial Unresident mutation now patches the Task
 Plan drift audit: implementation remains inside Plan Task 8 and the approved state table; full writes never load backing, partial writes reuse the Task 07 single-flight state machine, M1 multi-block prefix/error semantics are unchanged, and no UNMAP/ZERO, dirty snapshot/ack, eviction, file backing, proxy, driver, M3, or M4 behavior was introduced
 Open risks: synchronous clean eviction under hard pressure remains intentionally assigned to Task 12; snapshot/mutation and broader write/write race matrices remain assigned to Tasks 10, 14, and 15; Task 08 has no open review finding
 Executor / timestamp: Codex / `2026-08-03T18:26:34+08:00`
+
+Task: 10 — Backing generation、dirty snapshot 与 exact persisted ack
+Status: DONE
+Start commit / end commit: `db4e0e1` / pending commit `feat(storage): add versioned dirty snapshots`
+Files changed: `src/CMakeLists.txt`, `src/storage/dynamic_block_store.h`, `src/storage/dynamic_block_store_core.cpp`, `src/storage/dynamic_block_store_internal.h`, `src/storage/dynamic_block_store_backing.cpp`, `src/storage/dynamic_block_store_snapshot.cpp`, `tests/CMakeLists.txt`, `tests/unit/dynamic_block_store_backing_generation_tests.cpp`, `tests/unit/dynamic_block_store_snapshot_tests.cpp`, and this Task 10 status/record
+Red test and observed failure: initial focused tests failed against unimplemented snapshot/backing stubs; allocation-failure and close-interruption cases first exposed missing test seams; a deterministic transient-wait cancellation test then failed under the old callback protocol because cancellation could be lost until the backing load completed; a deterministic snapshot-pin/exact-ack test failed because `mark_persisted` could clean a pinned block and make the snapshot return `FatalInternalInvariant`
+Focused verification command / exit code: Debug and Release `ctest --test-dir out/build/msvc -C <config> -R '^unit\.m2\.(snapshot|backing_generation)$'` exit 0 (2/2); the focused pair passed `--repeat until-fail:100` in both configurations
+Cumulative verification command / exit code: after `cmake --build --preset debug --clean-first`, Debug full CTest exit 0 (38/38, M2-V1 15/15); after `cmake --build --preset release --clean-first`, Release full CTest exit 0 (38/38, M2-V1 15/15)
+Evidence paths: `tests/unit/dynamic_block_store_snapshot_tests.cpp`, `tests/unit/dynamic_block_store_backing_generation_tests.cpp`, `src/storage/dynamic_block_store_snapshot.cpp`, `src/storage/dynamic_block_store_backing.cpp`, and the clean-build CTest transcripts
+Review findings and resolution: specification re-review returned `COMPLIANT`; code-quality review initially found the pin/ack race, lock-held virtual observer, and assertion-before-join cleanup hazard; exact ack now waits on pin/state/epoch predicates, the virtual observer was replaced by private atomic test-only latches released by close, and the concurrent view test joins before assertions; final quality re-review returned `APPROVED`
+Plan drift audit: Task 10 only; coherent monotonic backing generation, owned dirty snapshots, exact install-before-ack, and resurrection-safe metadata are implemented; no filesystem I/O, file format, checkpoint/journal, durability claim, eviction worker, proxy, driver, M3, or M4 behavior was introduced
+Open risks: Task 11 still owns clean-only CLOCK eviction; Task 12 still owns hard-limit synchronous pressure and complete reservation reconciliation; broader snapshot/eviction/close stress belongs to Tasks 14–16
+Executor / timestamp: Codex / `2026-08-03T19:48:34+08:00`

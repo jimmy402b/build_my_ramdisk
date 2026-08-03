@@ -507,3 +507,32 @@ add_test(NAME unit.m2.ranges COMMAND myrd_m2_range_tests)
 set_tests_properties(unit.m2.ranges PROPERTIES
     LABELS "m2-v1"
     TIMEOUT 20)
+
+add_executable(myrd_m2_snapshot_tests
+    unit/dynamic_block_store_snapshot_tests.cpp
+    support/fake_backing_store.h
+)
+target_link_libraries(myrd_m2_snapshot_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_snapshot_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_snapshot_tests)
+add_test(NAME unit.m2.snapshot COMMAND myrd_m2_snapshot_tests)
+set_tests_properties(unit.m2.snapshot PROPERTIES
+    LABELS "m2-v1"
+    TIMEOUT 20)
+
+add_executable(myrd_m2_backing_generation_tests
+    unit/dynamic_block_store_backing_generation_tests.cpp
+    support/fake_backing_store.h
+)
+target_link_libraries(myrd_m2_backing_generation_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_backing_generation_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_backing_generation_tests)
+add_test(NAME unit.m2.backing_generation
+    COMMAND myrd_m2_backing_generation_tests)
+set_tests_properties(unit.m2.backing_generation PROPERTIES
+    LABELS "m2-v1"
+    TIMEOUT 20)

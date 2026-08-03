@@ -33,13 +33,6 @@ Error make_session_closed_error(std::wstring operation) {
         L"dynamic block store is closed");
 }
 
-Error make_not_implemented_error(std::wstring operation) {
-    return make_store_error(
-        static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
-        std::move(operation),
-        L"data path is scheduled for a later M2 task");
-}
-
 Error make_factory_error(std::wstring operation, std::wstring message) {
     return make_store_error(
         static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
@@ -170,7 +163,10 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
                           std::move(stripes),
                           std::move(directory),
                           std::move(dependencies.lifecycle_observer),
-                          std::move(dependencies.read_observer)));
+                          std::move(dependencies.read_observer),
+                          dependencies.fail_snapshot_allocation,
+                          dependencies.pause_before_snapshot_wait,
+                          dependencies.pause_after_snapshot_pin));
     if (!store) {
         return Result<std::unique_ptr<DynamicBlockStore>>::failure(
             make_factory_error(L"DynamicBlockStore::create/object",
@@ -217,7 +213,10 @@ DynamicBlockStore::DynamicBlockStore(
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver>
         lifecycle_observer,
     std::shared_ptr<IDynamicBlockStoreReadObserver>
-        read_observer) noexcept
+        read_observer,
+    bool fail_snapshot_allocation,
+    bool pause_before_snapshot_wait,
+    bool pause_after_snapshot_pin) noexcept
     : geometry_(geometry),
       options_(args.options),
       sector_size_bytes_(args.sector_size_bytes),
@@ -226,7 +225,10 @@ DynamicBlockStore::DynamicBlockStore(
       stripes_(std::move(stripes)),
       directory_(std::move(directory)),
       lifecycle_observer_(std::move(lifecycle_observer)),
-      read_observer_(std::move(read_observer)) {
+      read_observer_(std::move(read_observer)),
+      fail_snapshot_allocation_(fail_snapshot_allocation),
+      snapshot_wait_pause_for_test_(pause_before_snapshot_wait),
+      snapshot_pin_pause_for_test_(pause_after_snapshot_pin) {
     stats_.logical_size_bytes = geometry_.logical_size_bytes;
     stats_.reserved_bytes = geometry_.reservation_size_bytes;
     stats_.zero_clean_blocks =
@@ -432,6 +434,18 @@ void DynamicBlockStore::notify_lifecycle_event(std::uint8_t event) noexcept {
 }
 
 void DynamicBlockStore::notify_all_waiters() {
+    snapshot_wait_pause_for_test_.store(false, std::memory_order_release);
+    snapshot_wait_pause_for_test_.notify_all();
+    snapshot_pin_pause_for_test_.store(false, std::memory_order_release);
+    snapshot_pin_pause_for_test_.notify_all();
+    {
+        // Synchronize with install_backing_view's predicate check before
+        // notifying it. Without taking state_mutex_, close could publish the
+        // closing flag between that check and condition_variable::wait's
+        // atomic unlock-and-sleep sequence.
+        std::scoped_lock state_lock(state_mutex_);
+    }
+    backing_view_condition_.notify_all();
     if (!stripes_) {
         return;
     }
@@ -457,89 +471,6 @@ std::uint32_t DynamicBlockStore::sector_size() const noexcept {
 
 DeviceFeatures DynamicBlockStore::features() const noexcept {
     return DeviceFeatures{false, true, true};
-}
-
-BackingGeneration DynamicBlockStore::backing_generation() const {
-    std::scoped_lock lock(state_mutex_);
-    return backing_view_.generation;
-}
-
-Result<void> DynamicBlockStore::install_backing_view(
-    BackingView next_view) {
-    RequestToken request;
-    if (!try_enter_request(request)) {
-        return Result<void>::failure(make_session_closed_error(
-            L"DynamicBlockStore::install_backing_view"));
-    }
-    ScopeExit leave([this, &request]() { leave_request(request); });
-
-    BackingView retired_view;
-    {
-        std::unique_lock lock(state_mutex_);
-        backing_view_condition_.wait(lock, [this] {
-            return backing_publications_in_progress_ == 0;
-        });
-        if (!next_view.store ||
-            next_view.generation <= backing_view_.generation) {
-            ++stats_.backing_generation_conflicts;
-            return Result<void>::failure(make_store_error(
-                static_cast<std::uint32_t>(
-                    DynamicBlockStoreErrorCode::BackingGenerationConflict),
-                L"DynamicBlockStore::install_backing_view",
-                L"backing view must be non-null and strictly newer"));
-        }
-
-        retired_view = std::move(backing_view_);
-        backing_view_ = std::move(next_view);
-        stats_.backing_generation = backing_view_.generation;
-        ++stats_.backing_view_installs_total;
-    }
-    // shared_ptr destruction is user-controlled code. Keep it outside the
-    // state lock so a backing implementation may safely query the store.
-    retired_view.store.reset();
-    return Result<void>::success();
-}
-
-Result<std::vector<DirtyBlockSnapshot>>
-DynamicBlockStore::copy_dirty_batch(
-    const OperationContext& context,
-    DirtyScanCursor& cursor,
-    std::size_t max_bytes) {
-    RequestToken request;
-    if (!try_enter_request(request)) {
-        return Result<std::vector<DirtyBlockSnapshot>>::failure(
-            make_session_closed_error(
-                L"DynamicBlockStore::copy_dirty_batch"));
-    }
-    ScopeExit leave([this, &request]() { leave_request(request); });
-    (void)cursor;
-    (void)max_bytes;
-    const auto live = check_operation_context(context);
-    if (!live.ok()) {
-        return Result<std::vector<DirtyBlockSnapshot>>::failure(live.error());
-    }
-    return Result<std::vector<DirtyBlockSnapshot>>::failure(
-        make_not_implemented_error(
-            L"DynamicBlockStore::copy_dirty_batch"));
-}
-
-Result<void> DynamicBlockStore::mark_persisted(
-    std::uint64_t block_index,
-    std::uint64_t expected_version,
-    DirtyRecordKind expected_kind,
-    BackingGeneration persisted_generation) {
-    RequestToken request;
-    if (!try_enter_request(request)) {
-        return Result<void>::failure(make_session_closed_error(
-            L"DynamicBlockStore::mark_persisted"));
-    }
-    ScopeExit leave([this, &request]() { leave_request(request); });
-    (void)block_index;
-    (void)expected_version;
-    (void)expected_kind;
-    (void)persisted_generation;
-    return Result<void>::failure(
-        make_not_implemented_error(L"DynamicBlockStore::mark_persisted"));
 }
 
 const BlockGeometry& DynamicBlockStore::geometry() const noexcept {
@@ -711,6 +642,11 @@ Result<void> DynamicBlockStore::wait_for_close_for_test(
 
 std::uint64_t DynamicBlockStore::stripe_waiter_count_for_test() const noexcept {
     return stripe_waiter_count_.load(std::memory_order_acquire);
+}
+
+std::uint64_t
+DynamicBlockStore::backing_install_waiter_count_for_test() const noexcept {
+    return backing_install_waiter_count_.load(std::memory_order_acquire);
 }
 
 } // namespace myrd

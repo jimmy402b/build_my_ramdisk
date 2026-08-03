@@ -209,6 +209,14 @@ public:
                                             std::uint64_t block_index);
     static std::uint64_t commit_reservation_bytes(
         DynamicBlockStore& store);
+    static bool begin_backing_publication(DynamicBlockStore& store);
+    static bool end_backing_publication(DynamicBlockStore& store);
+    static bool snapshot_wait_gap_reached(
+        const DynamicBlockStore& store) noexcept;
+    static bool release_snapshot_wait_gap(DynamicBlockStore& store) noexcept;
+    static bool snapshot_pin_gap_reached(
+        const DynamicBlockStore& store) noexcept;
+    static bool release_snapshot_pin_gap(DynamicBlockStore& store) noexcept;
 };
 
 struct DynamicBlockStoreTestDependencies {
@@ -218,6 +226,9 @@ struct DynamicBlockStoreTestDependencies {
     std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer;
     DynamicBlockStoreFactoryStage fail_stage{
         DynamicBlockStoreFactoryStage::None};
+    bool fail_snapshot_allocation{};
+    bool pause_before_snapshot_wait{};
+    bool pause_after_snapshot_pin{};
 };
 
 } // namespace myrd

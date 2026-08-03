@@ -93,6 +93,7 @@ public:
     bool worker_running_for_test() const;
     Result<void> wait_for_close_for_test(std::uint64_t block_index);
     std::uint64_t stripe_waiter_count_for_test() const noexcept;
+    std::uint64_t backing_install_waiter_count_for_test() const noexcept;
 
 private:
     friend class DynamicBlockStoreTestAccess;
@@ -123,7 +124,10 @@ private:
         std::shared_ptr<IDynamicBlockStoreLifecycleObserver>
             lifecycle_observer,
         std::shared_ptr<IDynamicBlockStoreReadObserver>
-            read_observer) noexcept;
+            read_observer,
+        bool fail_snapshot_allocation,
+        bool pause_before_snapshot_wait,
+        bool pause_after_snapshot_pin) noexcept;
 
     static Result<std::unique_ptr<DynamicBlockStore>> create_impl(
         DynamicBlockStoreCreateArgs args,
@@ -184,6 +188,7 @@ private:
     std::thread::id close_owner_{};
     std::thread worker_;
     std::atomic<std::uint64_t> stripe_waiter_count_{0};
+    std::atomic<std::uint64_t> backing_install_waiter_count_{0};
     std::atomic<std::uint64_t> access_epoch_{0};
     std::atomic<std::uint64_t> dirty_epoch_{0};
     std::atomic<std::uint64_t> transition_epoch_{0};
@@ -193,6 +198,11 @@ private:
     std::unique_ptr<BlockDirectory> directory_;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer_;
     std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer_;
+    bool fail_snapshot_allocation_{};
+    std::atomic<bool> snapshot_wait_pause_for_test_{};
+    std::atomic<bool> snapshot_wait_gap_reached_for_test_{};
+    std::atomic<bool> snapshot_pin_pause_for_test_{};
+    std::atomic<bool> snapshot_pin_gap_reached_for_test_{};
 
     static thread_local RequestToken* current_request_token_;
 };
