@@ -641,3 +641,16 @@ add_test(NAME unit.m2.stress COMMAND myrd_m2_stress_tests)
 set_tests_properties(unit.m2.stress PROPERTIES
     LABELS "m2-v3"
     TIMEOUT 120)
+
+add_executable(myrd_m2_report_tests
+    unit/m2_report_tests.cpp
+)
+target_link_libraries(myrd_m2_report_tests PRIVATE
+    myrd_test_support myrd_m2_report)
+target_include_directories(myrd_m2_report_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_report_tests)
+add_test(NAME unit.m2.report COMMAND myrd_m2_report_tests)
+set_tests_properties(unit.m2.report PROPERTIES
+    LABELS "m2-v4"
+    TIMEOUT 30)

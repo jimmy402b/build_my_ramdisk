@@ -108,6 +108,13 @@ target_include_directories(myrd_m2 PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m2 PUBLIC myrd_proxy myrd_storage myrd_common)
 myrd_enable_warnings(myrd_m2)
 
+add_library(myrd_m2_report STATIC
+    m2/m2_report.cpp m2/m2_report.h
+)
+target_include_directories(myrd_m2_report PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_m2_report PUBLIC myrd_poc)
+myrd_enable_warnings(myrd_m2_report)
+
 add_executable(myrd-m1-e2e
     m1/main.cpp
 )
