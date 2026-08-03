@@ -248,3 +248,27 @@ set_property(TEST
     unit.m1.block_device_contract
     unit.storage
     APPEND PROPERTY LABELS m2-v1 m2-v2 m2-v3)
+
+# Keep the M2 storage boundary executable as a continuous build-system gate.
+# This test builds only the existing storage target (and its declared common
+# dependency), so adding a proxy/driver dependency cannot hide behind the full
+# product build.
+foreach(_myrd_storage_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_myrd_storage_link_items myrd_storage ${_myrd_storage_link_property})
+    if(_myrd_storage_link_items)
+        foreach(_myrd_forbidden_storage_dependency IN ITEMS myrd_proxy myrd_driver)
+            if(_myrd_forbidden_storage_dependency IN_LIST _myrd_storage_link_items)
+                message(FATAL_ERROR
+                    "myrd_storage must not depend on ${_myrd_forbidden_storage_dependency}")
+            endif()
+        endforeach()
+    endif()
+endforeach()
+
+add_test(
+    NAME structural.m2.storage_independent_build
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+            --config "$<CONFIG>" --target myrd_storage)
+set_tests_properties(structural.m2.storage_independent_build PROPERTIES
+    LABELS "m2-v1;m2-v2;m2-v3;m2-v4"
+    RUN_SERIAL TRUE)

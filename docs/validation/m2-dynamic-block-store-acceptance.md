@@ -110,23 +110,27 @@ All commands below were run from the worktree above.
 | Post-change independent storage build | `cmake --build --preset release --target myrd_storage --clean-first` | `0`, 6/6 steps; only `myrd_common` and `myrd_storage` were built |
 | Post-change configure | `cmake --preset msvc --fresh` | `0`, configure/generate succeeded |
 | Post-change Release build | `cmake --build --preset release --clean-first` | `0`, 94/94 build steps |
-| Post-change full local regression | `ctest --preset release --output-on-failure` | `0`, 26/26 passed; no `No tests were found` or skipped test |
+| Post-change full local regression | `ctest --preset release --output-on-failure` | `0`, 27/27 passed; no `No tests were found` or skipped test |
 | Fresh M1 local gate after shell | `& .\tools\Invoke-M1Verification.ps1 -Tier M1-V2 -Configuration Debug` | `0`, M1-V2 PASS: 14/14 M1 unit tests, 1/1 fuzz, 50/50 local SHM |
 
 The post-change Release CTest label summary was deterministic:
 
 | Label | Selected real tests | Meaning at Task 00 |
 |---|---:|---|
-| `m2-v1` | 3 | Existing operation-context, block-device-contract, and storage prerequisite tests |
-| `m2-v2` | 3 | Same real prerequisite slice reserved until model/VM tests exist |
-| `m2-v3` | 3 | Same real prerequisite slice reserved until concurrency/resource tests exist |
-| `m2-v4` | 26 | Complete current local regression baseline, including all M1 and legacy local tests |
+| `m2-v1` | 4 | Existing operation-context, block-device-contract, and storage prerequisite tests plus the independent-storage build gate |
+| `m2-v2` | 4 | Same real prerequisite slice reserved until model/VM tests exist |
+| `m2-v3` | 4 | Same real prerequisite slice reserved until concurrency/resource tests exist |
+| `m2-v4` | 27 | Complete current local regression baseline plus the independent-storage build gate |
 
 These are CTest labels on existing deterministic tests, not artificial tests
 created to make a label pass. Future M2 tasks must add their actual tests to
 the appropriate labels before claiming a tier.
 
-The Release Ninja dependency query was:
+The storage boundary is also enforced continuously by
+`structural.m2.storage_independent_build`. CMake configuration fails if
+`myrd_storage` directly names `myrd_proxy` or `myrd_driver`, and the CTest gate
+builds only `myrd_storage` on every selected M2 tier. The Release Ninja
+dependency query used for the initial audit was:
 
 ```powershell
 . .\tools\Enter-MsvcEnvironment.ps1

@@ -1171,3 +1171,15 @@ Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`; pinned r
 Plan drift audit: Task 00 only; no M1 behavior source, no duplicate storage target, no Task 01/M2 behavior, no CodeGraph initialization
 Open risks: M2-V1..V4 behavior is intentionally unimplemented and must not be inferred from reserved prerequisite labels
 Executor / timestamp: Codex / `2026-08-03T11:14:58+08:00`
+
+Task: 00 — 规格审查修复记录
+Status: DONE
+Start commit / end commit: `6a96f2e` / review-fix commit with the requested message
+Files changed: `tests/CMakeLists.txt`, `docs/validation/m2-dynamic-block-store-acceptance.md`, and this appended record
+Red test and observed failure: exact-name CTest discovery returned `Total Tests: 0`, then the wrapper failed with `RED: required structural storage build test is absent`
+Focused verification command / exit code: exact-name discovery found 1 test; `ctest --preset release --output-on-failure -R '^structural\.m2\.storage_independent_build$'` exit 0 (1/1)
+Cumulative verification command / exit code: Release build exit 0; full CTest 27/27; M2-V1/V2/V3 4/4 each; M2-V4 27/27; fresh M1-V2 Debug PASS (14/14, fuzz 1/1, SHM 50/50)
+Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`
+Plan drift audit: closes the Task 00 continuous storage-boundary gate only; no Task 01 or product behavior
+Open risks: repeated specification review remains
+Executor / timestamp: Codex / `2026-08-03T11:29:32+08:00`
