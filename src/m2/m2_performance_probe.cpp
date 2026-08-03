@@ -123,6 +123,29 @@ Result<std::uint64_t> ratio_basis_points(
         (candidate * 10'000) / baseline);
 }
 
+bool complete_policy(const M2PerformancePolicy& policy) noexcept {
+    return !policy.machine_fingerprint.empty() &&
+           !policy.build_fingerprint.empty() &&
+           !policy.process_policy.empty();
+}
+
+bool same_methodology(
+    const M2PerformanceProbeResult& left,
+    const M2PerformanceProbeResult& right) noexcept {
+    return left.methodology_id == right.methodology_id &&
+           left.operation == right.operation &&
+           left.queue_depth == right.queue_depth &&
+           left.region_offset == right.region_offset &&
+           left.region_bytes == right.region_bytes &&
+           left.sequential_io_bytes == right.sequential_io_bytes &&
+           left.random_io_bytes == right.random_io_bytes &&
+           left.random_seed == right.random_seed &&
+           left.sequential_warmup_operations ==
+               right.sequential_warmup_operations &&
+           left.random_warmup_operations ==
+               right.random_warmup_operations;
+}
+
 } // namespace
 
 Result<M2PerformanceProbeResult> run_m2_performance_probe(
@@ -134,9 +157,7 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
         return probe_error(0xB105, L"run_m2_performance_probe",
                            L"performance region must be 64 KiB aligned");
     }
-    if (config.policy.machine_fingerprint.empty() ||
-        config.policy.build_fingerprint.empty() ||
-        config.policy.process_policy.empty()) {
+    if (!complete_policy(config.policy)) {
         return probe_error(0xB106, L"run_m2_performance_probe",
                            L"performance comparison policy is incomplete");
     }
@@ -266,14 +287,16 @@ Result<M2PerformanceProbeResult> run_m2_performance_probe(
 Result<M2PerformanceComparison> compare_m2_performance(
     const M2PerformanceProbeResult& fixed_baseline,
     const M2PerformanceProbeResult& dynamic_sample) {
-    if (fixed_baseline.policy != dynamic_sample.policy) {
+    if (!complete_policy(fixed_baseline.policy) ||
+        !complete_policy(dynamic_sample.policy) ||
+        fixed_baseline.policy != dynamic_sample.policy) {
         return comparison_error(
             0xB110, L"machine/build/process policies do not match");
     }
     if (fixed_baseline.methodology_id != kM2PerformanceMethodologyId ||
         dynamic_sample.methodology_id != kM2PerformanceMethodologyId ||
-        fixed_baseline.operation != dynamic_sample.operation ||
-        fixed_baseline.queue_depth != 1 || dynamic_sample.queue_depth != 1) {
+        fixed_baseline.queue_depth != 1 || dynamic_sample.queue_depth != 1 ||
+        !same_methodology(fixed_baseline, dynamic_sample)) {
         return comparison_error(
             0xB111, L"performance methodologies are not comparable");
     }

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +36,9 @@ public:
         }
         records.push_back({operation, offset, buffer.size()});
         const auto call = records.size();
+        if (cancel_source != nullptr && call == cancel_after_call) {
+            cancel_source->request_stop();
+        }
         if (fail_call != 0 && call == fail_call) {
             return myrd::Result<std::size_t>::failure({
                 myrd::ErrorDomain::storage, 0xB001,
@@ -50,6 +54,8 @@ public:
     std::vector<TransferRecord> records;
     std::size_t fail_call{};
     std::size_t short_call{};
+    std::stop_source* cancel_source{};
+    std::size_t cancel_after_call{};
 };
 
 class ScriptClock final : public myrd::IM2PerformanceClock {
@@ -231,6 +237,39 @@ TEST_CASE(m2_performance_rejects_invalid_geometry_and_clock_samples) {
                 io, non_monotonic, context, config()).has_error());
 }
 
+TEST_CASE(m2_performance_honors_cancel_and_deadline_before_and_during_probe) {
+    FakeRawIo io;
+    ScriptClock clock({1, 2, 3, 4});
+
+    std::stop_source already_cancelled;
+    already_cancelled.request_stop();
+    myrd::OperationContext cancelled_context{already_cancelled.get_token()};
+    auto cancelled = myrd::run_m2_performance_probe(
+        io, clock, cancelled_context, config());
+    REQUIRE(cancelled.has_error());
+    REQUIRE(io.records.empty());
+
+    FakeRawIo expired_io;
+    ScriptClock expired_clock({1, 2, 3, 4});
+    myrd::OperationContext expired_context{
+        {}, std::chrono::steady_clock::now() - std::chrono::milliseconds(1)};
+    auto expired = myrd::run_m2_performance_probe(
+        expired_io, expired_clock, expired_context, config());
+    REQUIRE(expired.has_error());
+    REQUIRE(expired_io.records.empty());
+
+    FakeRawIo midflight_io;
+    std::stop_source midflight_source;
+    midflight_io.cancel_source = &midflight_source;
+    midflight_io.cancel_after_call = 2;
+    ScriptClock midflight_clock({1, 2, 3, 4});
+    myrd::OperationContext midflight_context{midflight_source.get_token()};
+    auto midflight = myrd::run_m2_performance_probe(
+        midflight_io, midflight_clock, midflight_context, config());
+    REQUIRE(midflight.has_error());
+    REQUIRE_EQ(midflight_io.records.size(), std::size_t{2});
+}
+
 TEST_CASE(m2_performance_thresholds_are_exact_and_fail_closed) {
     auto exact = myrd::compare_m2_performance(
         sample(1'000'000, 10'000), sample(700'000, 6'000));
@@ -262,4 +301,24 @@ TEST_CASE(m2_performance_thresholds_are_exact_and_fail_closed) {
     wrong_method.methodology_id = "different-method";
     REQUIRE(myrd::compare_m2_performance(
                 sample(1'000'000, 10'000), wrong_method).has_error());
+
+    REQUIRE(myrd::compare_m2_performance(
+                sample(1'000'000, 10'000, {}),
+                sample(700'000, 6'000, {})).has_error());
+
+    const auto baseline = sample(1'000'000, 10'000);
+    for (int changed_field = 0; changed_field < 7; ++changed_field) {
+        auto changed = sample(700'000, 6'000);
+        switch (changed_field) {
+        case 0: changed.region_bytes++; break;
+        case 1: changed.sequential_io_bytes++; break;
+        case 2: changed.random_io_bytes++; break;
+        case 3: changed.random_seed++; break;
+        case 4: changed.sequential_warmup_operations++; break;
+        case 5: changed.random_warmup_operations++; break;
+        case 6: changed.region_offset++; break;
+        }
+        REQUIRE(myrd::compare_m2_performance(
+                    baseline, changed).has_error());
+    }
 }

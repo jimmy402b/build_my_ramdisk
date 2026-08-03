@@ -24,7 +24,7 @@ inline constexpr std::uint64_t kM2PerformanceRandomSeed =
 inline constexpr std::uint64_t kM2SequentialThresholdBasisPoints = 7'000;
 inline constexpr std::uint64_t kM2RandomThresholdBasisPoints = 6'000;
 inline constexpr std::string_view kM2PerformanceMethodologyId =
-    "m2-raw-qd1-write-v1";
+    "m2-raw-qd1-v1";
 
 enum class M2RawOperation : std::uint8_t {
     Read = 0,
