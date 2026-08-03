@@ -9,57 +9,265 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
+
+myrd::M2PerformanceProbeResult performance_sample(
+    std::uint64_t sequential_rate,
+    std::uint64_t random_rate) {
+    myrd::M2PerformanceProbeResult sample;
+    sample.operation = myrd::M2RawOperation::Write;
+    sample.region_offset = 64ULL << 20U;
+    sample.policy = {
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "single-thread-normal-priority",
+        "FILE_FLAG_NO_BUFFERING|FILE_FLAG_WRITE_THROUGH"};
+    const auto frequency = sequential_rate * random_rate;
+    sample.sequential = {
+        myrd::kM2SequentialRegionBytes,
+        myrd::kM2SequentialOperationCount,
+        myrd::kM2SequentialRegionBytes * random_rate,
+        frequency,
+        sequential_rate};
+    sample.random = {
+        myrd::kM2RandomIoBytes * myrd::kM2RandomOperationCount,
+        myrd::kM2RandomOperationCount,
+        myrd::kM2RandomOperationCount * sequential_rate,
+        frequency,
+        random_rate};
+    return sample;
+}
+
+myrd::M2StoreStatsSample store_sample(
+    myrd::M2StoreSamplePoint point,
+    std::uint64_t committed_bytes,
+    std::uint64_t unmap_bytes) {
+    myrd::M2StoreStatsSample sample;
+    sample.point = point;
+    sample.captured_utc = "2026-08-04T01:02:30Z";
+    sample.stats.logical_size_bytes = 1ULL << 40U;
+    sample.stats.reserved_bytes = 1ULL << 40U;
+    sample.stats.committed_bytes = committed_bytes;
+    sample.stats.unmap_bytes_total = unmap_bytes;
+    sample.stats.backing_generation = 0;
+    return sample;
+}
+
+myrd::M2OsMemorySample memory_sample(
+    myrd::M2StoreSamplePoint point,
+    myrd::M2PhaseId phase_id,
+    std::string captured_utc,
+    std::uint64_t elapsed_ms,
+    std::uint64_t private_bytes,
+    std::uint64_t commit_bytes) {
+    myrd::M2OsMemorySample sample;
+    sample.point = point;
+    sample.phase_id = phase_id;
+    sample.captured_utc = std::move(captured_utc);
+    sample.provider_process_id = 4242;
+    sample.elapsed_ms = elapsed_ms;
+    sample.working_set_bytes = private_bytes / 2;
+    sample.private_bytes = private_bytes;
+    sample.commit_bytes = commit_bytes;
+    return sample;
+}
+
+std::vector<myrd::M2Phase> passed_phases() {
+    const myrd::M2PhaseId ids[] = {
+        myrd::M2PhaseId::capture_baseline,
+        myrd::M2PhaseId::construct_provider,
+        myrd::M2PhaseId::start_provider,
+        myrd::M2PhaseId::create_device,
+        myrd::M2PhaseId::wait_for_disk,
+        myrd::M2PhaseId::setup_write,
+        myrd::M2PhaseId::sample_after_write,
+        myrd::M2PhaseId::delete_retrim,
+        myrd::M2PhaseId::sample_after_retrim,
+        myrd::M2PhaseId::performance,
+        myrd::M2PhaseId::remove_mounts,
+        myrd::M2PhaseId::remove_device,
+        myrd::M2PhaseId::stop_provider,
+        myrd::M2PhaseId::restore_service,
+        myrd::M2PhaseId::compare_baseline,
+        myrd::M2PhaseId::publish_report};
+    std::vector<myrd::M2Phase> phases;
+    for (const auto id : ids) {
+        phases.push_back({id, "2026-08-04T01:02:04Z",
+                          "2026-08-04T01:02:05Z",
+                          myrd::M2PhaseStatus::passed, "", 1000});
+    }
+    return phases;
+}
+
+std::vector<myrd::M2CleanupAction> succeeded_cleanup_actions() {
+    return {
+        {myrd::M2CleanupActionId::remove_mounts, true,
+         myrd::M2CleanupResult::succeeded, ""},
+        {myrd::M2CleanupActionId::remove_device, true,
+         myrd::M2CleanupResult::succeeded, ""},
+        {myrd::M2CleanupActionId::stop_provider, true,
+         myrd::M2CleanupResult::succeeded, ""},
+        {myrd::M2CleanupActionId::restore_service, true,
+         myrd::M2CleanupResult::succeeded, ""}};
+}
+
+myrd::M2InventorySnapshot inventory_snapshot() {
+    myrd::M2InventorySnapshot snapshot;
+    snapshot.physical_disks = {"0", "1"};
+    snapshot.volumes = {R"(\\?\Volume{system}\)"};
+    snapshot.mount_points = {R"(C:\)"};
+    snapshot.service_state = "running";
+    snapshot.service_start_type = "automatic";
+    snapshot.process_handle_count = 100;
+    snapshot.process_thread_count = 10;
+    snapshot.process_private_bytes = 64ULL << 20U;
+    return snapshot;
+}
 
 myrd::M2Report complete_report() {
     myrd::M2Report report;
     report.run = {"run-0123456789abcdef", myrd::M2RunMode::fake,
                   "2026-08-04T01:02:03Z", "2026-08-04T01:03:04Z"};
-    report.build_toolchain = {
-        "2.0.0", "5ee5a00", "Debug", "MSVC", "19.44", "4.1"};
+    report.build_toolchain.build_version = "2.0.0";
+    report.build_toolchain.git_commit = "5ee5a00";
+    report.build_toolchain.configuration = "Debug";
+    report.build_toolchain.compiler = "MSVC";
+    report.build_toolchain.compiler_version = "19.44";
+    report.build_toolchain.cmake_version = "4.1";
+    report.build_toolchain.executable_path = "myrd-m2-e2e.exe";
+    report.build_toolchain.executable_sha256 =
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    report.build_toolchain.build_fingerprint =
+        report.build_toolchain.executable_sha256;
     report.accepted_m1_baseline = {
-        "m1-accepted.json", "abcdef0123456789", 1, "GO", true};
-    report.machine_os = {
-        "test-machine", "Windows", "11 24H2", "x64"};
-    report.state_before = {"loaded", "deviosvc", "running"};
-    report.state_after = {"loaded", "deviosvc", "running"};
-    report.geometry_options = {
-        1ULL << 40U, 64ULL << 10U, 1ULL << 30U, true};
-    report.state = {myrd::M2InitialState::empty, 7, 9,
-                    std::string(myrd::kM2NoDurableSuccessorStatement)};
-    report.phases.push_back({
-        "fake-acceptance", "2026-08-04T01:02:04Z",
-        "2026-08-04T01:02:05Z", myrd::M2PhaseStatus::passed, "", 1000});
-    report.io = {"write-sha256", "read-sha256",
+        "m1-accepted.json",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1, "GO", true};
+    report.machine_os.machine_name = "test-machine";
+    report.machine_os.os_name = "Windows";
+    report.machine_os.os_version = "11 24H2";
+    report.machine_os.architecture = "x64";
+    report.machine_os.windows_build = "26100";
+    report.machine_os.cpu_model = "Test CPU";
+    report.machine_os.logical_processor_count = 16;
+    report.machine_os.physical_memory_bytes = 32ULL << 30U;
+    report.machine_os.machine_fingerprint =
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    report.state_before.driver_state = "loaded";
+    report.state_before.service_name = "deviosvc";
+    report.state_before.service_state = "running";
+    report.state_before.service_start_type = "automatic";
+    report.state_before.driver_file_path = R"(C:\Windows\System32\drivers\phdskmnt.sys)";
+    report.state_before.driver_file_version = "1.2.28.93";
+    report.state_before.driver_sha256 =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    report.state_after = report.state_before;
+    report.geometry_options.disk_size_bytes = 1ULL << 40U;
+    report.geometry_options.sector_size_bytes = 512;
+    report.geometry_options.block_size_bytes = 64ULL << 10U;
+    report.geometry_options.soft_limit_bytes = 512ULL << 20U;
+    report.geometry_options.hard_limit_bytes = 1ULL << 30U;
+    report.geometry_options.eviction_low_watermark_bytes = 384ULL << 20U;
+    report.geometry_options.max_snapshot_batch_bytes = 64ULL << 20U;
+    report.geometry_options.max_snapshot_batch_records = 1024;
+    report.geometry_options.lock_stripe_count = 64;
+    report.geometry_options.test_policy_selected = false;
+    report.geometry_options.backing_kind = "fake";
+    report.state.initial_state = myrd::M2InitialState::empty;
+    report.state.initial_backing_generation = 0;
+    report.state.current_backing_generation = 0;
+    report.state.durable_successor_installed = false;
+    report.state.durable_successor_generation_present = false;
+    report.state.durable_successor_generation = 0;
+    report.phases = passed_phases();
+    report.io = {
+                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                  (std::numeric_limits<std::uint64_t>::max)(), 1024, 512};
-    report.store_stats = {11, 12, 13, 14};
-    report.os_memory_samples.push_back({
-        "2026-08-04T01:02:30Z", 100, 200, 300});
-    report.performance.fixed = {1000, 64'000, 2'000};
-    report.performance.dynamic = {1000, 64'000, 1'800};
-    report.performance.ratio_numerator = 11;
-    report.performance.ratio_denominator = 10;
-    report.performance.ratio_basis_points = 11'000;
-    report.performance.minimum_ratio_basis_points = 10'000;
+    report.store_stats_samples = {
+        store_sample(myrd::M2StoreSamplePoint::ready, 0, 0),
+        store_sample(myrd::M2StoreSamplePoint::after_write, 1ULL << 30U, 0),
+        store_sample(myrd::M2StoreSamplePoint::after_retrim, 0, 1ULL << 30U),
+        store_sample(myrd::M2StoreSamplePoint::final, 0, 1ULL << 30U)};
+    report.store_stats_samples[0].captured_utc = "2026-08-04T01:02:30Z";
+    report.store_stats_samples[1].captured_utc = "2026-08-04T01:02:31Z";
+    report.store_stats_samples[2].captured_utc = "2026-08-04T01:02:40Z";
+    report.store_stats_samples[3].captured_utc = "2026-08-04T01:02:41Z";
+    report.os_memory_samples = {
+        memory_sample(
+            myrd::M2StoreSamplePoint::ready,
+            myrd::M2PhaseId::start_provider,
+            "2026-08-04T01:02:30Z", 0,
+            64ULL << 20U, 64ULL << 20U),
+        memory_sample(
+            myrd::M2StoreSamplePoint::after_write,
+            myrd::M2PhaseId::sample_after_write,
+            "2026-08-04T01:02:31Z", 1'000,
+            164ULL << 20U, 164ULL << 20U),
+        memory_sample(
+            myrd::M2StoreSamplePoint::after_retrim,
+            myrd::M2PhaseId::sample_after_retrim,
+            "2026-08-04T01:02:40Z", 10'000,
+            74ULL << 20U, 74ULL << 20U),
+        memory_sample(
+            myrd::M2StoreSamplePoint::final,
+            myrd::M2PhaseId::stop_provider,
+            "2026-08-04T01:02:41Z", 11'000,
+            64ULL << 20U, 64ULL << 20U)};
+    report.performance.fixed = performance_sample(1'000'000, 10'000);
+    report.performance.dynamic = performance_sample(700'000, 6'000);
+    report.performance.comparison.sequential_ratio_basis_points = 7'000;
+    report.performance.comparison.random_ratio_basis_points = 6'000;
+    report.performance.comparison.sequential_pass = true;
+    report.performance.comparison.random_pass = true;
+    report.performance.comparison.overall_pass = true;
     report.performance.gate_status = myrd::M2PerformanceGateStatus::passed;
-    report.performance.comparable_policy = {
-        "same-request-stream-v1", true, "identical geometry and workload"};
-    report.device_identity = {
-        "device-0001", 1, 2, 3, 42, R"(\\.\PhysicalDrive42)"};
-    report.cleanup_actions.push_back({
-        "remove-device", true, myrd::M2CleanupResult::succeeded, ""});
-    report.final_baseline_comparison = {
-        myrd::M2BaselineComparison::match, "before-hash", "before-hash"};
+    report.device_identity.provider_session_id = "m2-session-0001";
+    report.device_identity.native_object_path =
+        R"(Global\myrd-m2-session-0001)";
+    report.device_identity.device_id_raw = "197121";
+    report.device_identity.path_id = 1;
+    report.device_identity.target_id = 2;
+    report.device_identity.lun = 3;
+    report.device_identity.create_flags = 0x3310;
+    report.device_identity.query_flags = 0x3310;
+    report.device_identity.confirmed_by_query_device = true;
+    report.device_identity.physical_drive_number = 42;
+    report.device_identity.physical_drive_path = R"(\\.\PhysicalDrive42)";
+    report.device_identity.disk_length_bytes = 1ULL << 40U;
+    report.device_identity.bus_type = "SCSI";
+    report.device_identity.vendor_id = "MYRD";
+    report.device_identity.product_id = "DynamicDisk";
+    report.device_identity.serial_number = "run-0123456789abcdef";
+    report.device_identity.disk_unique_id = "m2-disk-0001";
+    report.device_identity.volume_guids = {R"(\\?\Volume{m2-test}\)"};
+    report.device_identity.mount_points = {R"(C:\m2-test\)"};
+    report.cleanup_actions = succeeded_cleanup_actions();
+    report.final_baseline_comparison.comparison =
+        myrd::M2BaselineComparison::match;
+    report.final_baseline_comparison.exact_match = true;
+    report.final_baseline_comparison.resources_within_tolerance = true;
+    report.final_baseline_comparison.private_bytes_tolerance = 1ULL << 20U;
+    report.final_baseline_comparison.before_fingerprint =
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    report.final_baseline_comparison.after_fingerprint =
+        report.final_baseline_comparison.before_fingerprint;
+    report.final_baseline_comparison.before = inventory_snapshot();
+    report.final_baseline_comparison.after = inventory_snapshot();
     report.verdict = myrd::M2Verdict::go;
     return report;
 }
 
 void mark_performance_failed(myrd::M2Report& report) {
-    report.performance.ratio_numerator = 1;
-    report.performance.ratio_denominator = 2;
-    report.performance.ratio_basis_points = 5'000;
+    report.performance.dynamic = performance_sample(500'000, 5'000);
+    report.performance.comparison.sequential_ratio_basis_points = 5'000;
+    report.performance.comparison.random_ratio_basis_points = 5'000;
+    report.performance.comparison.sequential_pass = false;
+    report.performance.comparison.random_pass = false;
+    report.performance.comparison.overall_pass = false;
     report.performance.gate_status = myrd::M2PerformanceGateStatus::failed;
 }
 
@@ -109,8 +317,22 @@ std::filesystem::path unique_test_directory() {
 
 TEST_CASE(m2_report_enum_strings_are_stable_and_unknown_values_are_rejected) {
     REQUIRE_EQ(myrd::to_string(myrd::M2RunMode::fake), "FAKE");
+    REQUIRE_EQ(myrd::to_string(myrd::M2RunMode::real), "REAL");
+    REQUIRE_EQ(myrd::parse_m2_run_mode("REAL"), myrd::M2RunMode::real);
     REQUIRE_EQ(myrd::to_string(myrd::M2InitialState::empty), "EMPTY");
     REQUIRE_EQ(myrd::to_string(myrd::M2InitialState::seeded), "SEEDED");
+    REQUIRE_EQ(myrd::to_string(myrd::M2StoreSamplePoint::ready), "READY");
+    REQUIRE_EQ(myrd::to_string(myrd::M2StoreSamplePoint::after_write),
+               "AFTER-WRITE");
+    REQUIRE_EQ(myrd::to_string(myrd::M2StoreSamplePoint::after_retrim),
+               "AFTER-RETRIM");
+    REQUIRE_EQ(myrd::to_string(myrd::M2StoreSamplePoint::final), "FINAL");
+    REQUIRE_EQ(myrd::to_string(myrd::M2PhaseId::capture_baseline),
+               "CAPTURE-BASELINE");
+    REQUIRE_EQ(myrd::to_string(myrd::M2PhaseId::publish_report),
+               "PUBLISH-REPORT");
+    REQUIRE_EQ(myrd::to_string(myrd::M2CleanupActionId::remove_device),
+               "REMOVE-DEVICE");
     REQUIRE_EQ(myrd::to_string(myrd::M2PhaseStatus::not_run), "NOT-RUN");
     REQUIRE_EQ(myrd::to_string(myrd::M2PhaseStatus::passed), "PASS");
     REQUIRE_EQ(myrd::to_string(myrd::M2PhaseStatus::failed), "FAIL");
@@ -133,6 +355,9 @@ TEST_CASE(m2_report_enum_strings_are_stable_and_unknown_values_are_rejected) {
 
     REQUIRE(!myrd::parse_m2_run_mode("UNKNOWN"));
     REQUIRE(!myrd::parse_m2_initial_state("UNKNOWN"));
+    REQUIRE(!myrd::parse_m2_store_sample_point("UNKNOWN"));
+    REQUIRE(!myrd::parse_m2_phase_id("UNKNOWN"));
+    REQUIRE(!myrd::parse_m2_cleanup_action_id("UNKNOWN"));
     REQUIRE(!myrd::parse_m2_phase_status("UNKNOWN"));
     REQUIRE(!myrd::parse_m2_cleanup_result("UNKNOWN"));
     REQUIRE(!myrd::parse_m2_performance_gate_status("UNKNOWN"));
@@ -158,30 +383,72 @@ TEST_CASE(m2_report_serializes_and_schema_names_every_required_field) {
         "schema_version", "run", "run_id", "mode", "started_utc",
         "ended_utc", "build_toolchain", "build_version", "git_commit",
         "configuration", "compiler", "compiler_version", "cmake_version",
+        "executable_path", "executable_sha256", "build_fingerprint",
         "accepted_m1_baseline", "report_path", "report_sha256",
         "m1_schema_version", "m1_verdict", "accepted", "machine_os",
         "machine_name", "os_name", "os_version", "architecture",
+        "windows_build", "cpu_model", "logical_processor_count",
+        "physical_memory_bytes", "machine_fingerprint",
         "state_before", "state_after", "driver_state", "service_name",
-        "service_state", "geometry_options", "disk_size_bytes",
-        "block_size_bytes", "memory_limit_bytes", "fake_backing",
+        "service_state", "service_start_type", "driver_file_path",
+        "driver_file_version", "driver_sha256", "geometry_options",
+        "disk_size_bytes",
+        "sector_size_bytes", "block_size_bytes", "soft_limit_bytes",
+        "hard_limit_bytes", "eviction_low_watermark_bytes",
+        "max_snapshot_batch_bytes", "max_snapshot_batch_records",
+        "lock_stripe_count", "test_policy_selected", "backing_kind",
         "state", "initial_state", "initial_backing_generation",
-        "current_backing_generation", "durability_scope_statement",
-        "phases", "phase_name", "phase_started_utc", "phase_ended_utc",
+        "current_backing_generation", "durable_successor_installed",
+        "durable_successor_generation_present",
+        "durable_successor_generation", "durability_scope_statement",
+        "phases", "phase_id", "phase_started_utc", "phase_ended_utc",
         "phase_status", "phase_error", "phase_elapsed_ms", "io",
         "write_sha256", "read_sha256", "bytes_written", "bytes_read",
-        "bytes_deleted", "store_stats", "view_install_count",
-        "generation_conflict_count", "stale_load_count",
-        "stale_load_retry_count", "os_memory_samples", "captured_utc",
-        "working_set_bytes", "private_bytes", "commit_bytes",
-        "performance", "fixed", "dynamic", "operations", "bytes",
-        "elapsed_us", "ratio_numerator", "ratio_denominator",
-        "ratio_basis_points", "minimum_ratio_basis_points", "gate_status",
-        "comparable_policy", "policy_name", "same_workload", "notes",
-        "device_identity", "device_id", "path_id", "target_id", "lun",
-        "physical_drive_number", "physical_drive_path", "cleanup_actions",
-        "cleanup_name", "cleanup_attempted", "cleanup_result",
+        "bytes_deleted", "store_stats_samples", "sample_point",
+        "logical_size_bytes", "reserved_bytes", "committed_bytes",
+        "resident_clean_blocks", "resident_dirty_blocks",
+        "zero_clean_blocks", "zero_dirty_blocks", "loading_blocks",
+        "evicted_blocks_total", "backing_reads_total",
+        "backing_read_bytes_total", "uncached_reads_total",
+        "unmap_bytes_total", "zero_bytes_total", "hard_limit_rejections",
+        "commit_failures", "decommit_failures",
+        "synchronous_pressure_passes_total",
+        "synchronous_pressure_waits_total",
+        "synchronous_pressure_no_progress_total",
+        "synchronous_pressure_cancellations_total",
+        "synchronous_pressure_deadlines_total",
+        "commit_reservation_rollbacks_total", "snapshot_records_total",
+        "snapshot_version_conflicts", "backing_generation",
+        "backing_view_installs_total", "backing_generation_conflicts",
+        "stale_backing_load_retries", "os_memory_samples", "captured_utc",
+        "memory_sample_point", "memory_phase_id", "provider_process_id",
+        "elapsed_ms", "working_set_bytes", "private_bytes", "commit_bytes",
+        "performance", "fixed", "dynamic", "methodology_id", "operation",
+        "queue_depth", "region_offset", "region_bytes",
+        "sequential_io_bytes", "random_io_bytes", "random_seed",
+        "sequential_warmup_operations", "random_warmup_operations",
+        "policy", "machine_fingerprint", "build_fingerprint",
+        "process_policy", "raw_io_flags", "sequential", "random",
+        "operations", "bytes",
+        "elapsed_ticks", "clock_frequency_hz", "bytes_per_second",
+        "operations_per_second", "comparison",
+        "sequential_ratio_basis_points", "random_ratio_basis_points",
+        "sequential_threshold_basis_points", "random_threshold_basis_points",
+        "sequential_pass", "random_pass", "overall_pass", "gate_status",
+        "device_identity", "provider_session_id", "native_object_path",
+        "device_id_raw", "path_id", "target_id", "lun", "create_flags",
+        "query_flags", "confirmed_by_query_device", "physical_drive_number",
+        "physical_drive_path", "disk_length_bytes", "bus_type", "vendor_id",
+        "product_id", "serial_number", "disk_unique_id", "volume_guids",
+        "mount_points", "cleanup_actions",
+        "cleanup_action_id", "cleanup_attempted", "cleanup_result",
         "cleanup_error", "final_baseline_comparison", "comparison",
-        "before_fingerprint", "after_fingerprint", "failures",
+        "exact_match", "resources_within_tolerance",
+        "private_bytes_tolerance", "before_fingerprint", "after_fingerprint",
+        "before", "after", "diff", "physical_disks", "volumes",
+        "m2_device_ids", "service_start_type", "process_handle_count",
+        "process_thread_count", "process_private_bytes", "added", "removed",
+        "changed", "failures",
         "failure_phase", "failure_code", "failure_message", "verdict"};
 
     for (const auto key : required_keys) {
@@ -208,41 +475,82 @@ TEST_CASE(m2_report_validator_rejects_each_missing_required_member) {
         "schema_version", "run", "run_id", "mode", "started_utc",
         "ended_utc", "build_toolchain", "build_version", "git_commit",
         "configuration", "compiler", "compiler_version", "cmake_version",
+        "executable_path", "executable_sha256", "build_fingerprint",
         "accepted_m1_baseline", "report_path", "report_sha256",
         "m1_schema_version", "m1_verdict", "accepted", "machine_os",
         "machine_name", "os_name", "os_version", "architecture",
+        "windows_build", "cpu_model", "logical_processor_count",
+        "physical_memory_bytes", "machine_fingerprint",
         "state_before", "state_after", "geometry_options", "disk_size_bytes",
-        "block_size_bytes", "memory_limit_bytes", "fake_backing", "state",
+        "sector_size_bytes", "block_size_bytes", "soft_limit_bytes",
+        "hard_limit_bytes", "eviction_low_watermark_bytes",
+        "max_snapshot_batch_bytes", "max_snapshot_batch_records",
+        "lock_stripe_count", "test_policy_selected", "backing_kind", "state",
         "initial_state", "initial_backing_generation",
-        "current_backing_generation", "durability_scope_statement", "phases",
-        "phase_name", "phase_started_utc", "phase_ended_utc", "phase_status",
+        "current_backing_generation", "durable_successor_installed",
+        "durable_successor_generation_present",
+        "durable_successor_generation", "durability_scope_statement", "phases",
+        "phase_id", "phase_started_utc", "phase_ended_utc", "phase_status",
         "phase_error", "phase_elapsed_ms", "io", "write_sha256",
         "read_sha256", "bytes_written", "bytes_read", "bytes_deleted",
-        "store_stats", "view_install_count", "generation_conflict_count",
-        "stale_load_count", "stale_load_retry_count", "os_memory_samples",
-        "captured_utc", "working_set_bytes", "private_bytes", "commit_bytes",
-        "performance", "ratio_numerator", "ratio_denominator",
-        "ratio_basis_points", "minimum_ratio_basis_points", "gate_status",
-        "comparable_policy", "policy_name", "same_workload", "notes",
-        "device_identity", "device_id", "path_id", "target_id", "lun",
-        "physical_drive_number", "physical_drive_path", "cleanup_actions",
-        "cleanup_name", "cleanup_attempted", "cleanup_result", "cleanup_error",
-        "final_baseline_comparison", "comparison", "before_fingerprint",
-        "after_fingerprint", "failures", "verdict"};
+        "store_stats_samples", "sample_point", "logical_size_bytes",
+        "reserved_bytes", "committed_bytes", "resident_clean_blocks",
+        "resident_dirty_blocks", "zero_clean_blocks", "zero_dirty_blocks",
+        "loading_blocks", "evicted_blocks_total", "backing_reads_total",
+        "backing_read_bytes_total", "uncached_reads_total",
+        "unmap_bytes_total", "zero_bytes_total", "hard_limit_rejections",
+        "commit_failures", "decommit_failures",
+        "synchronous_pressure_passes_total",
+        "synchronous_pressure_waits_total",
+        "synchronous_pressure_no_progress_total",
+        "synchronous_pressure_cancellations_total",
+        "synchronous_pressure_deadlines_total",
+        "commit_reservation_rollbacks_total", "snapshot_records_total",
+        "snapshot_version_conflicts", "backing_generation",
+        "backing_view_installs_total", "backing_generation_conflicts",
+        "stale_backing_load_retries", "os_memory_samples",
+        "captured_utc", "memory_sample_point", "memory_phase_id",
+        "provider_process_id", "elapsed_ms", "working_set_bytes",
+        "private_bytes", "commit_bytes",
+        "performance", "methodology_id", "operation", "queue_depth",
+        "region_offset", "region_bytes", "sequential_io_bytes",
+        "random_io_bytes", "random_seed", "sequential_warmup_operations",
+        "random_warmup_operations", "policy", "machine_fingerprint",
+        "build_fingerprint", "process_policy", "raw_io_flags",
+        "sequential", "random",
+        "elapsed_ticks", "clock_frequency_hz", "bytes_per_second",
+        "operations_per_second", "comparison",
+        "sequential_ratio_basis_points", "random_ratio_basis_points",
+        "sequential_threshold_basis_points", "random_threshold_basis_points",
+        "sequential_pass", "random_pass", "overall_pass", "gate_status",
+        "device_identity", "provider_session_id", "native_object_path",
+        "device_id_raw", "path_id", "target_id", "lun", "create_flags",
+        "query_flags", "confirmed_by_query_device", "physical_drive_number",
+        "physical_drive_path", "disk_length_bytes", "bus_type", "vendor_id",
+        "product_id", "serial_number", "disk_unique_id", "volume_guids",
+        "mount_points", "cleanup_actions",
+        "cleanup_action_id", "cleanup_attempted", "cleanup_result", "cleanup_error",
+        "final_baseline_comparison", "comparison", "exact_match",
+        "resources_within_tolerance", "private_bytes_tolerance",
+        "before_fingerprint", "after_fingerprint", "before", "after", "diff",
+        "physical_disks", "volumes", "m2_device_ids", "service_start_type",
+        "process_handle_count", "process_thread_count", "process_private_bytes",
+        "added", "removed", "changed", "failures", "verdict"};
     for (const auto key : once) {
         require_invalid(omit_nth_key(json, key, 0));
     }
 
-    for (const auto key : {"driver_state", "service_name", "service_state"}) {
+    for (const auto key : {
+             "driver_state", "service_name", "service_state",
+             "service_start_type", "driver_file_path", "driver_file_version",
+             "driver_sha256"}) {
         require_invalid(omit_nth_key(json, key, 0));
         require_invalid(omit_nth_key(json, key, 1));
     }
-    for (const auto key : {"fixed", "dynamic", "operations", "bytes",
-                           "elapsed_us"}) {
+    for (const auto key : {"fixed", "dynamic", "operations", "bytes"}) {
         require_invalid(omit_nth_key(json, key, 0));
         if (key == std::string_view("operations") ||
-            key == std::string_view("bytes") ||
-            key == std::string_view("elapsed_us")) {
+            key == std::string_view("bytes")) {
             require_invalid(omit_nth_key(json, key, 1));
         }
     }
@@ -312,18 +620,33 @@ TEST_CASE(m2_report_validator_rejects_every_inconsistent_go_verdict) {
 TEST_CASE(m2_report_validator_rejects_go_when_match_fingerprints_differ) {
     const auto json = myrd::serialize_m2_report(complete_report());
     require_invalid(replace_once(
-        json, "\"after_fingerprint\": \"before-hash\"",
-        "\"after_fingerprint\": \"different-hash\""));
+        json,
+        "\"after_fingerprint\": \"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"",
+        "\"after_fingerprint\": \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\""));
 }
 
 TEST_CASE(m2_report_validator_cross_checks_performance_gate_and_ratio) {
     const auto json = myrd::serialize_m2_report(complete_report());
     require_invalid(replace_once(
-        json, "\"ratio_basis_points\": 11000",
-        "\"ratio_basis_points\": 9999"));
+        json, "\"sequential_ratio_basis_points\": 7000",
+        "\"sequential_ratio_basis_points\": 6999"));
     require_invalid(replace_once(
-        json, "\"minimum_ratio_basis_points\": 10000",
-        "\"minimum_ratio_basis_points\": 12000"));
+        json, "\"random_threshold_basis_points\": 6000",
+        "\"random_threshold_basis_points\": 6001"));
+    require_invalid(replace_once(
+        json,
+        "\"machine_fingerprint\": \"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+        "\"machine_fingerprint\": \"0000000000000000000000000000000000000000000000000000000000000000\""));
+    require_invalid(replace_once(
+        json, "\"methodology_id\": \"m2-raw-qd1-v1\"",
+        "\"methodology_id\": \"noncanonical\""));
+    require_invalid(replace_once(
+        json, "\"overall_pass\": true", "\"overall_pass\": false"));
+
+    auto different_flags = complete_report();
+    different_flags.performance.dynamic.policy.raw_io_flags =
+        "FILE_FLAG_NO_BUFFERING";
+    require_invalid(myrd::serialize_m2_report(different_flags));
 
     auto failed_above_threshold = complete_report();
     failed_above_threshold.performance.gate_status =
@@ -334,11 +657,276 @@ TEST_CASE(m2_report_validator_cross_checks_performance_gate_and_ratio) {
     require_invalid(myrd::serialize_m2_report(failed_above_threshold));
 }
 
+TEST_CASE(m2_report_validator_cross_checks_store_samples_and_backing_state) {
+    auto report = complete_report();
+    std::swap(report.store_stats_samples[0], report.store_stats_samples[1]);
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.store_stats_samples.pop_back();
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.store_stats_samples[2].stats.backing_generation = 1;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.store_stats_samples[1].stats.committed_bytes =
+        report.geometry_options.hard_limit_bytes + 1;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.state.current_backing_generation = 1;
+    for (auto& sample : report.store_stats_samples) {
+        sample.stats.backing_generation = 1;
+    }
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.state.durable_successor_installed = true;
+    report.state.durable_successor_generation_present = true;
+    report.state.durable_successor_generation = 1;
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_requires_exact_phase_and_cleanup_order) {
+    auto report = complete_report();
+    std::swap(report.phases[0], report.phases[1]);
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.phases[1].id = report.phases[0].id;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.phases.pop_back();
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    std::swap(report.cleanup_actions[0], report.cleanup_actions[1]);
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.cleanup_actions.pop_back();
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.phases[0].error = "success cannot carry an error";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.cleanup_actions[0].error = "success cannot carry an error";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.phases[0].status = myrd::M2PhaseStatus::not_run;
+    report.phases[0].started_utc.clear();
+    report.phases[0].ended_utc.clear();
+    report.phases[0].elapsed_ms = 0;
+    report.phases[0].error = "not-run cannot carry an error";
+    report.failures.push_back({"test", 1, "failure"});
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.cleanup_actions[0] = {
+        myrd::M2CleanupActionId::remove_mounts, false,
+        myrd::M2CleanupResult::not_attempted,
+        "not-attempted cannot carry an error"};
+    report.failures.push_back({"test", 1, "failure"});
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_cross_checks_exact_device_identity) {
+    auto report = complete_report();
+    report.device_identity.device_id_raw = "197122";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.path_id = 2;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.query_flags ^= 1;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.confirmed_by_query_device = false;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.physical_drive_number = 0;
+    report.device_identity.physical_drive_path = R"(\\.\PhysicalDrive0)";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.disk_length_bytes += 512;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.provider_session_id.clear();
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.volume_guids.clear();
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_cross_checks_structured_final_inventory) {
+    auto report = complete_report();
+    report.final_baseline_comparison.after.physical_disks.push_back("99");
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.final_baseline_comparison.exact_match = false;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.final_baseline_comparison.diff.added.push_back("PhysicalDrive99");
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.final_baseline_comparison.after.process_handle_count++;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.final_baseline_comparison.before.physical_disks = {"1", "0"};
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.final_baseline_comparison.comparison =
+        myrd::M2BaselineComparison::mismatch;
+    report.final_baseline_comparison.exact_match = false;
+    report.final_baseline_comparison.after_fingerprint =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    report.final_baseline_comparison.diff.changed.push_back("service_state");
+    report.failures.push_back({"compare-baseline", 55, "inventory differs"});
+    report.verdict = myrd::M2Verdict::no_go;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
+TEST_CASE(m2_report_validator_cross_checks_memory_sample_semantics) {
+    auto report = complete_report();
+    report.os_memory_samples.pop_back();
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    std::swap(report.os_memory_samples[0], report.os_memory_samples[1]);
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.os_memory_samples[1].phase_id = myrd::M2PhaseId::setup_write;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.os_memory_samples[2].provider_process_id++;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.os_memory_samples[2].captured_utc = "2026-08-04T01:02:39Z";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.os_memory_samples[2].elapsed_ms = 11'001;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.os_memory_samples[2].private_bytes = (74ULL << 20U) + 1;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.os_memory_samples[2].commit_bytes = (74ULL << 20U) + 1;
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_rejects_untrusted_environment_and_hash_evidence) {
+    auto report = complete_report();
+    report.build_toolchain.executable_sha256 = "short";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.accepted_m1_baseline.report_sha256 = "short";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.machine_os.machine_fingerprint = "short";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.state_after.service_state = "stopped";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.io.read_sha256 =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.io.write_sha256 = "not-a-hash";
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_requires_ordered_rfc3339_utc_timestamps) {
+    auto report = complete_report();
+    report.run.started_utc = "yesterday";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.run.ended_utc = "2026-08-04T01:02:02Z";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.phases[0].started_utc = "2026-02-30T01:02:04Z";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.phases[0].ended_utc = "2026-08-04T01:02:03Z";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.store_stats_samples[0].captured_utc = "2026-08-04 01:02:30";
+    report.os_memory_samples[0].captured_utc =
+        report.store_stats_samples[0].captured_utc;
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_enforces_real_geometry_and_zero_backing) {
+    auto report = complete_report();
+    report.run.mode = myrd::M2RunMode::real;
+    report.geometry_options.disk_size_bytes = 64ULL << 30U;
+    report.geometry_options.backing_kind = "zero";
+    report.device_identity.disk_length_bytes = 64ULL << 30U;
+    for (auto& sample : report.store_stats_samples) {
+        sample.stats.logical_size_bytes = 64ULL << 30U;
+        sample.stats.reserved_bytes = 64ULL << 30U;
+    }
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+
+    report.geometry_options.backing_kind = "fake";
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report.geometry_options.backing_kind = "zero";
+    report.geometry_options.disk_size_bytes = 32ULL << 30U;
+    report.device_identity.disk_length_bytes = 32ULL << 30U;
+    for (auto& sample : report.store_stats_samples) {
+        sample.stats.logical_size_bytes = 32ULL << 30U;
+        sample.stats.reserved_bytes = 32ULL << 30U;
+    }
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
 TEST_CASE(m2_report_failure_forces_no_go_even_if_other_work_is_incomplete) {
     auto report = complete_report();
     report.phases.front().status = myrd::M2PhaseStatus::not_run;
+    report.phases.front().started_utc.clear();
+    report.phases.front().ended_utc.clear();
+    report.phases.front().elapsed_ms = 0;
     report.cleanup_actions.front() = {
-        "remove-device", true, myrd::M2CleanupResult::failed,
+        myrd::M2CleanupActionId::remove_mounts, true,
+        myrd::M2CleanupResult::failed,
         "cleanup failed"};
     report.failures.push_back({"cleanup", 31, "cleanup failed"});
     report.verdict = myrd::M2Verdict::no_go;
@@ -349,8 +937,12 @@ TEST_CASE(m2_report_failure_forces_no_go_even_if_other_work_is_incomplete) {
 TEST_CASE(m2_report_validator_accepts_consistent_incomplete_and_no_go_reports) {
     auto incomplete = complete_report();
     incomplete.phases.front().status = myrd::M2PhaseStatus::not_run;
+    incomplete.phases.front().started_utc.clear();
+    incomplete.phases.front().ended_utc.clear();
+    incomplete.phases.front().elapsed_ms = 0;
     incomplete.cleanup_actions.front() = {
-        "remove-device", false, myrd::M2CleanupResult::not_attempted, ""};
+        myrd::M2CleanupActionId::remove_mounts, false,
+        myrd::M2CleanupResult::not_attempted, ""};
     incomplete.performance.gate_status =
         myrd::M2PerformanceGateStatus::not_evaluated;
     incomplete.final_baseline_comparison.comparison =
@@ -369,6 +961,54 @@ TEST_CASE(m2_report_validator_accepts_consistent_incomplete_and_no_go_reports) {
     REQUIRE(no_go_json.find("\"verdict\": \"NO-GO\"") !=
             std::string::npos);
     REQUIRE(myrd::validate_m2_report_json(no_go_json).ok());
+}
+
+TEST_CASE(m2_report_validator_accepts_fail_closed_early_failure_evidence) {
+    auto report = complete_report();
+    report.state_before = {};
+    report.state_after = {};
+    report.phases[0].status = myrd::M2PhaseStatus::failed;
+    report.phases[0].error = "baseline capture failed";
+    for (std::size_t index = 1; index < report.phases.size(); ++index) {
+        report.phases[index].started_utc.clear();
+        report.phases[index].ended_utc.clear();
+        report.phases[index].status = myrd::M2PhaseStatus::not_run;
+        report.phases[index].elapsed_ms = 0;
+    }
+    report.io = {};
+    report.store_stats_samples.clear();
+    report.os_memory_samples.clear();
+    report.performance = {};
+    report.device_identity = {};
+    report.cleanup_actions = {
+        {myrd::M2CleanupActionId::remove_mounts, false,
+         myrd::M2CleanupResult::not_attempted, ""},
+        {myrd::M2CleanupActionId::remove_device, false,
+         myrd::M2CleanupResult::not_attempted, ""},
+        {myrd::M2CleanupActionId::stop_provider, false,
+         myrd::M2CleanupResult::not_attempted, ""},
+        {myrd::M2CleanupActionId::restore_service, false,
+         myrd::M2CleanupResult::not_attempted, ""}};
+    report.final_baseline_comparison = {};
+    report.failures = {{"capture-baseline", 57, "baseline capture failed"}};
+    report.verdict = myrd::M2Verdict::no_go;
+
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
+TEST_CASE(m2_report_validator_requires_complete_failure_records) {
+    auto report = complete_report();
+    mark_performance_failed(report);
+    report.failures = {{"", 23, "threshold missed"}};
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    mark_performance_failed(report);
+    report.failures = {{"performance", 23, ""}};
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
 }
 
 TEST_CASE(m2_report_paths_are_unique_and_require_an_existing_evidence_directory) {

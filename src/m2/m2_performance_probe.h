@@ -45,6 +45,7 @@ struct M2PerformancePolicy {
     std::string machine_fingerprint;
     std::string build_fingerprint;
     std::string process_policy;
+    std::string raw_io_flags;
 
     bool operator==(const M2PerformancePolicy&) const = default;
 };

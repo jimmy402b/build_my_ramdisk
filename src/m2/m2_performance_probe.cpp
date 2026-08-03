@@ -126,7 +126,8 @@ Result<std::uint64_t> ratio_basis_points(
 bool complete_policy(const M2PerformancePolicy& policy) noexcept {
     return !policy.machine_fingerprint.empty() &&
            !policy.build_fingerprint.empty() &&
-           !policy.process_policy.empty();
+           !policy.process_policy.empty() &&
+           !policy.raw_io_flags.empty();
 }
 
 bool valid_operation(M2RawOperation operation) noexcept {
@@ -346,7 +347,8 @@ Result<M2PerformanceComparison> compare_m2_performance(
         !complete_policy(dynamic_sample.policy) ||
         fixed_baseline.policy != dynamic_sample.policy) {
         return comparison_error(
-            0xB110, L"machine/build/process policies do not match");
+            0xB110,
+            L"machine/build/process/raw-I/O policies do not match");
     }
     if (!canonical_result(fixed_baseline) ||
         !canonical_result(dynamic_sample) ||

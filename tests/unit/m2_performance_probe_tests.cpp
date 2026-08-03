@@ -119,7 +119,8 @@ private:
 
 myrd::M2PerformancePolicy policy(std::string suffix = {}) {
     return {"machine" + suffix, "build" + suffix,
-            "single-thread-normal-priority" + suffix};
+            "single-thread-normal-priority" + suffix,
+            "FILE_FLAG_NO_BUFFERING|FILE_FLAG_WRITE_THROUGH" + suffix};
 }
 
 myrd::M2ProbeConfig config() {
@@ -188,6 +189,9 @@ TEST_CASE(m2_performance_uses_exact_qd1_methodology_and_excludes_warmup) {
                std::string(myrd::kM2PerformanceMethodologyId));
     REQUIRE_EQ(result.value().operation, myrd::M2RawOperation::Write);
     REQUIRE_EQ(result.value().queue_depth, std::uint32_t{1});
+    REQUIRE_EQ(
+        result.value().policy.raw_io_flags,
+        std::string("FILE_FLAG_NO_BUFFERING|FILE_FLAG_WRITE_THROUGH"));
     REQUIRE_EQ(result.value().sequential.bytes,
                myrd::kM2SequentialRegionBytes);
     REQUIRE_EQ(result.value().sequential.operations,
@@ -407,6 +411,12 @@ TEST_CASE(m2_performance_thresholds_are_exact_and_fail_closed) {
     REQUIRE(myrd::compare_m2_performance(
                 sample(1'000'000, 10'000),
                 sample(700'000, 6'000, policy("-other"))).has_error());
+
+    auto different_flags_policy = policy();
+    different_flags_policy.raw_io_flags = "FILE_FLAG_NO_BUFFERING";
+    REQUIRE(myrd::compare_m2_performance(
+                sample(1'000'000, 10'000),
+                sample(700'000, 6'000, different_flags_policy)).has_error());
 
     auto wrong_method = sample(700'000, 6'000);
     wrong_method.methodology_id = "different-method";

@@ -1,6 +1,8 @@
 #pragma once
 
+#include "m2_performance_probe.h"
 #include "src/common/result.h"
+#include "src/storage/dynamic_block_types.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -15,8 +17,38 @@ inline constexpr std::uint32_t kM2ReportSchemaVersion = 1;
 inline constexpr std::string_view kM2NoDurableSuccessorStatement =
     "M2 has no durable backing successor; all backing generations end with this run.";
 
-enum class M2RunMode : std::uint8_t { fake };
+enum class M2RunMode : std::uint8_t { fake, real };
 enum class M2InitialState : std::uint8_t { empty, seeded };
+enum class M2StoreSamplePoint : std::uint8_t {
+    ready,
+    after_write,
+    after_retrim,
+    final
+};
+enum class M2PhaseId : std::uint8_t {
+    capture_baseline,
+    construct_provider,
+    start_provider,
+    create_device,
+    wait_for_disk,
+    setup_write,
+    sample_after_write,
+    delete_retrim,
+    sample_after_retrim,
+    performance,
+    remove_mounts,
+    remove_device,
+    stop_provider,
+    restore_service,
+    compare_baseline,
+    publish_report
+};
+enum class M2CleanupActionId : std::uint8_t {
+    remove_mounts,
+    remove_device,
+    stop_provider,
+    restore_service
+};
 enum class M2PhaseStatus : std::uint8_t { not_run, passed, failed };
 enum class M2CleanupResult : std::uint8_t {
     not_attempted,
@@ -37,6 +69,9 @@ enum class M2Verdict : std::uint8_t { incomplete, go, no_go };
 
 std::string_view to_string(M2RunMode value) noexcept;
 std::string_view to_string(M2InitialState value) noexcept;
+std::string_view to_string(M2StoreSamplePoint value) noexcept;
+std::string_view to_string(M2PhaseId value) noexcept;
+std::string_view to_string(M2CleanupActionId value) noexcept;
 std::string_view to_string(M2PhaseStatus value) noexcept;
 std::string_view to_string(M2CleanupResult value) noexcept;
 std::string_view to_string(M2PerformanceGateStatus value) noexcept;
@@ -45,6 +80,11 @@ std::string_view to_string(M2Verdict value) noexcept;
 
 std::optional<M2RunMode> parse_m2_run_mode(std::string_view value) noexcept;
 std::optional<M2InitialState> parse_m2_initial_state(
+    std::string_view value) noexcept;
+std::optional<M2StoreSamplePoint> parse_m2_store_sample_point(
+    std::string_view value) noexcept;
+std::optional<M2PhaseId> parse_m2_phase_id(std::string_view value) noexcept;
+std::optional<M2CleanupActionId> parse_m2_cleanup_action_id(
     std::string_view value) noexcept;
 std::optional<M2PhaseStatus> parse_m2_phase_status(
     std::string_view value) noexcept;
@@ -70,6 +110,9 @@ struct M2BuildToolchain {
     std::string compiler;
     std::string compiler_version;
     std::string cmake_version;
+    std::string executable_path;
+    std::string executable_sha256;
+    std::string build_fingerprint;
 };
 
 struct M2AcceptedM1Baseline {
@@ -85,31 +128,50 @@ struct M2MachineOs {
     std::string os_name;
     std::string os_version;
     std::string architecture;
+    std::string windows_build;
+    std::string cpu_model;
+    std::uint64_t logical_processor_count = 0;
+    std::uint64_t physical_memory_bytes = 0;
+    std::string machine_fingerprint;
 };
 
 struct M2DriverServiceState {
     std::string driver_state;
     std::string service_name;
     std::string service_state;
+    std::string service_start_type;
+    std::string driver_file_path;
+    std::string driver_file_version;
+    std::string driver_sha256;
 };
 
 struct M2GeometryOptions {
     std::uint64_t disk_size_bytes = 0;
+    std::uint64_t sector_size_bytes = 0;
     std::uint64_t block_size_bytes = 0;
-    std::uint64_t memory_limit_bytes = 0;
-    bool fake_backing = true;
+    std::uint64_t soft_limit_bytes = 0;
+    std::uint64_t hard_limit_bytes = 0;
+    std::uint64_t eviction_low_watermark_bytes = 0;
+    std::uint64_t max_snapshot_batch_bytes = 0;
+    std::uint64_t max_snapshot_batch_records = 0;
+    std::uint64_t lock_stripe_count = 0;
+    bool test_policy_selected = false;
+    std::string backing_kind;
 };
 
 struct M2BackingState {
     M2InitialState initial_state = M2InitialState::empty;
     std::uint64_t initial_backing_generation = 0;
     std::uint64_t current_backing_generation = 0;
+    bool durable_successor_installed = false;
+    bool durable_successor_generation_present = false;
+    std::uint64_t durable_successor_generation = 0;
     std::string durability_scope_statement =
         std::string(kM2NoDurableSuccessorStatement);
 };
 
 struct M2Phase {
-    std::string name;
+    M2PhaseId id = M2PhaseId::capture_baseline;
     std::string started_utc;
     std::string ended_utc;
     M2PhaseStatus status = M2PhaseStatus::not_run;
@@ -125,66 +187,88 @@ struct M2IoEvidence {
     std::uint64_t bytes_deleted = 0;
 };
 
-struct M2StoreStats {
-    std::uint64_t view_install_count = 0;
-    std::uint64_t generation_conflict_count = 0;
-    std::uint64_t stale_load_count = 0;
-    std::uint64_t stale_load_retry_count = 0;
+struct M2StoreStatsSample {
+    M2StoreSamplePoint point = M2StoreSamplePoint::ready;
+    std::string captured_utc;
+    DynamicBlockStoreStats stats;
 };
 
 struct M2OsMemorySample {
+    M2StoreSamplePoint point = M2StoreSamplePoint::ready;
+    M2PhaseId phase_id = M2PhaseId::start_provider;
     std::string captured_utc;
+    std::uint64_t provider_process_id = 0;
+    std::uint64_t elapsed_ms = 0;
     std::uint64_t working_set_bytes = 0;
     std::uint64_t private_bytes = 0;
     std::uint64_t commit_bytes = 0;
 };
 
-struct M2PerformanceRaw {
-    std::uint64_t operations = 0;
-    std::uint64_t bytes = 0;
-    std::uint64_t elapsed_us = 0;
-};
-
-struct M2ComparablePolicy {
-    std::string policy_name;
-    bool same_workload = false;
-    std::string notes;
-};
-
 struct M2PerformanceEvidence {
-    M2PerformanceRaw fixed;
-    M2PerformanceRaw dynamic;
-    // The ratio is exact numerator/denominator evidence. basis_points is the
-    // deterministically rounded-down integer representation used by the gate.
-    std::uint64_t ratio_numerator = 0;
-    std::uint64_t ratio_denominator = 0;
-    std::uint64_t ratio_basis_points = 0;
-    std::uint64_t minimum_ratio_basis_points = 0;
+    M2PerformanceProbeResult fixed;
+    M2PerformanceProbeResult dynamic;
+    M2PerformanceComparison comparison;
     M2PerformanceGateStatus gate_status =
         M2PerformanceGateStatus::not_evaluated;
-    M2ComparablePolicy comparable_policy;
 };
 
 struct M2DeviceIdentity {
-    std::string device_id;
+    std::string provider_session_id;
+    std::string native_object_path;
+    std::string device_id_raw;
     std::uint64_t path_id = 0;
     std::uint64_t target_id = 0;
     std::uint64_t lun = 0;
+    std::uint64_t create_flags = 0;
+    std::uint64_t query_flags = 0;
+    bool confirmed_by_query_device = false;
     std::uint64_t physical_drive_number = 0;
     std::string physical_drive_path;
+    std::uint64_t disk_length_bytes = 0;
+    std::string bus_type;
+    std::string vendor_id;
+    std::string product_id;
+    std::string serial_number;
+    std::string disk_unique_id;
+    std::vector<std::string> volume_guids;
+    std::vector<std::string> mount_points;
 };
 
 struct M2CleanupAction {
-    std::string name;
+    M2CleanupActionId id = M2CleanupActionId::remove_mounts;
     bool attempted = false;
     M2CleanupResult result = M2CleanupResult::not_attempted;
     std::string error;
 };
 
+struct M2InventorySnapshot {
+    std::vector<std::string> physical_disks;
+    std::vector<std::string> volumes;
+    std::vector<std::string> mount_points;
+    std::vector<std::string> m2_device_ids;
+    std::string service_state;
+    std::string service_start_type;
+    std::uint64_t process_handle_count = 0;
+    std::uint64_t process_thread_count = 0;
+    std::uint64_t process_private_bytes = 0;
+};
+
+struct M2InventoryDiff {
+    std::vector<std::string> added;
+    std::vector<std::string> removed;
+    std::vector<std::string> changed;
+};
+
 struct M2FinalBaselineComparison {
     M2BaselineComparison comparison = M2BaselineComparison::not_compared;
+    bool exact_match = false;
+    bool resources_within_tolerance = false;
+    std::uint64_t private_bytes_tolerance = 0;
     std::string before_fingerprint;
     std::string after_fingerprint;
+    M2InventorySnapshot before;
+    M2InventorySnapshot after;
+    M2InventoryDiff diff;
 };
 
 struct M2Failure {
@@ -205,7 +289,7 @@ struct M2Report {
     M2BackingState state;
     std::vector<M2Phase> phases;
     M2IoEvidence io;
-    M2StoreStats store_stats;
+    std::vector<M2StoreStatsSample> store_stats_samples;
     std::vector<M2OsMemorySample> os_memory_samples;
     M2PerformanceEvidence performance;
     M2DeviceIdentity device_identity;
