@@ -397,6 +397,26 @@ myrd_enable_warnings(myrd_m2_block_math_tests)
 add_test(NAME unit.m2.block_math COMMAND myrd_m2_block_math_tests)
 set_tests_properties(unit.m2.block_math PROPERTIES LABELS "m2-v1")
 
+add_executable(myrd_m2_provider_tests
+    unit/m2_provider_tests.cpp
+)
+target_link_libraries(myrd_m2_provider_tests PRIVATE
+    myrd_test_support myrd_m2)
+target_include_directories(myrd_m2_provider_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_provider_tests)
+add_test(NAME unit.m2.provider COMMAND myrd_m2_provider_tests)
+set_tests_properties(unit.m2.provider PROPERTIES LABELS "m2-v4" TIMEOUT 30)
+
+add_executable(myrd_m2_shm_proxy_tests
+    integration/m2_shm_proxy_tests.cpp
+)
+target_link_libraries(myrd_m2_shm_proxy_tests PRIVATE
+    myrd_test_support myrd_m2)
+target_include_directories(myrd_m2_shm_proxy_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_shm_proxy_tests)
+add_test(NAME integration.m2.shm COMMAND myrd_m2_shm_proxy_tests)
+set_tests_properties(integration.m2.shm PROPERTIES LABELS "m2-v4" TIMEOUT 60)
+
 add_executable(myrd_m2_backing_store_tests
     unit/backing_store_tests.cpp
     support/fake_backing_store.h

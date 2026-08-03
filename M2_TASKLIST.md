@@ -857,34 +857,34 @@ Executor / timestamp:
 
 ### 红灯测试
 
-- [ ] fake store creation fail 时 provider 不启动 transport。
-- [ ] transport start fail 时 store/资源正确销毁。
-- [ ] Ready 只在 store + proxy transport 都成功后发布。
-- [ ] stop 顺序：拒绝新工作 → stop transport/session → quiesce → destroy store。
-- [ ] double stop/idempotent cleanup 行为明确。
-- [ ] local SHM cross-block read/write byte-correct。
-- [ ] local SHM ZERO/UNMAP 返回正确并读回零。
-- [ ] cancellation/deadline 穿过 protocol 到 store。
-- [ ] malformed request 在 storage mutation 前被 M1 拒绝。
-- [ ] disconnect/restart 不泄漏 session/store。
+- [x] fake store creation fail 时 provider 不启动 transport。
+- [x] transport start fail 时 store/资源正确销毁。
+- [x] Ready 只在 store + proxy transport 都成功后发布。
+- [x] stop 顺序：拒绝新工作 → stop transport/session → quiesce → destroy store。
+- [x] double stop/idempotent cleanup 行为明确。
+- [x] local SHM cross-block read/write byte-correct。
+- [x] local SHM ZERO/UNMAP 返回正确并读回零。
+- [x] cancellation/deadline 穿过 protocol 到 store。
+- [x] malformed request 在 storage mutation 前被 M1 拒绝。
+- [x] disconnect/restart 不泄漏 session/store。
 
 ### 实现
 
-- [ ] `M2Provider` 仅组合 store、M1 proxy/session、transport。
-- [ ] store 通过 `IBlockDevice` 注入，无 downcast。
-- [ ] 一个 owner 管理生命周期，不使用 detached thread/global singleton。
-- [ ] `src/proxy` 不 include `src/storage` concrete headers。
-- [ ] `src/storage` 不 include driver/AIM headers。
-- [ ] local integration stats 只由测试 owner 读取作佐证，不改变 protocol。
+- [x] `M2Provider` 仅组合 store、M1 proxy/session、transport。
+- [x] store 通过 `IBlockDevice` 注入，无 downcast。
+- [x] 一个 owner 管理生命周期，不使用 detached thread/global singleton。
+- [x] `src/proxy` 不 include `src/storage` concrete headers。
+- [x] `src/storage` 不 include driver/AIM headers。
+- [x] local integration stats 只由测试 owner 读取作佐证，不改变 protocol。
 
 ### 验证与验收
 
-- [ ] `unit.m2.provider` 与 `integration.m2.shm` 通过。
-- [ ] 所有 M1 protocol/transport/local tests 原样通过。
-- [ ] M2-V4 通过。
-- [ ] 用 include/dependency 检查证明架构方向。
-- [ ] 回读 Plan Task 17 和 Architecture；确认无“为了方便”泄漏 internals。
-- [ ] 建议提交：`feat(m2): connect dynamic store to proxy provider`。
+- [x] `unit.m2.provider` 与 `integration.m2.shm` 通过。
+- [x] 所有 M1 protocol/transport/local tests 原样通过。
+- [x] M2-V4 通过。
+- [x] 用 include/dependency 检查证明架构方向。
+- [x] 回读 Plan Task 17 和 Architecture；确认无“为了方便”泄漏 internals。
+- [x] 建议提交：`feat(m2): connect dynamic store to proxy provider`。
 
 ---
 
@@ -1472,3 +1472,17 @@ Evidence paths: `tests/unit/dynamic_block_store_stress_tests.cpp`, `tests/CMakeL
 Plan drift audit: Task 16 test/CMake/evidence only; M2-B-owned concurrency/resource evidence is complete, while the formal ordered M2-B verdict is deferred to Task 21 until Task 18 closes the preceding real-VM M2-V2/M2-A requirement. No proxy, driver, real NTFS, filesystem backing, M3, M4 or product behavior was introduced.
 Open risks: real 64 GiB/1 TiB VM behavior remains Task 18; proxy integration remains Task 17; formal staged M2-A/B and M2-C execution remain Tasks 21–22
 Executor / timestamp: Codex / `2026-08-04T01:48:07+08:00`
+
+Task: 17 — Store-to-M1 proxy and local SHM integration
+Status: DONE
+Start commit / end commit: `190cf92` / pending commit `feat(m2): connect dynamic store to proxy provider`
+Files changed: `src/m2/m2_provider.h`, `src/m2/m2_provider.cpp`, `src/CMakeLists.txt`, `tests/unit/m2_provider_tests.cpp`, `tests/integration/m2_shm_proxy_tests.cpp`, `tests/CMakeLists.txt`, and this Task 17 checklist/status/record in `M2_TASKLIST.md`
+Red test and observed failure: registering both new test targets before adding provider production files failed compilation with MSVC `C1083` for missing `src/m2/m2_provider.h`; the cleanup exception test then timed out on the old noexcept destruction path; the final start-exception test failed with an uncaught exception before `M2Provider::start` gained exception containment and rollback
+Focused verification command / exit code: Debug and Release exact `^(unit\.m2\.provider|integration\.m2\.shm)$` CTest gates exit 0 (2/2); the start-exception regression independently completed a Debug red/green cycle
+Cumulative verification command / exit code: clean-first Debug build 140/140 and full CTest 44/44; clean-first Release build 140/140 and full CTest 44/44; each full run includes M2-V4 29/29 and all unchanged M1 protocol/transport/local tests
+Coverage evidence: fake lifecycle failures and exception containment; Ready publication and idempotent stop ordering; real local-SHM INFO, cross-block READ/WRITE, ZERO, UNMAP, malformed-before-mutation, deadline, cancellation, client disconnect/reconnect, provider restart, exact data/zero readback, and native-object cleanup
+Review findings and resolution: specification re-review returned `COMPLIANT`; quality review findings for exception-safe cleanup, real reconnect traffic, and strict native-object absence checks were fixed; transport-start exception rollback was added test-first; final independent quality re-review returned `APPROVED`
+Architecture evidence: production transport receives only `IBlockDevice&`; `src/proxy` remains independent from concrete storage headers; `src/storage` remains independent from driver/AIM headers; no downcast, detached thread, global singleton, or protocol extension was introduced
+Plan drift audit: Task 17 only; the M1 proxy remains unchanged and unaware of VirtualAlloc/cache/metadata; no real large-VM acceptance, M2 CLI/report/performance probe, real device lifecycle, filesystem backing, M3, or M4 behavior was introduced
+Open risks: real 64 GiB/1 TiB VirtualAlloc and OS-memory evidence remain assigned to Task 18; formal M2 lifecycle/CLI and real-device staged verdicts remain Tasks 19–22
+Executor / timestamp: Codex / `2026-08-04T02:40:48+08:00`
