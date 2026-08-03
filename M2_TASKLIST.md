@@ -1245,3 +1245,15 @@ Evidence paths: `tests/unit/block_math_tests.cpp`; Task 01 public headers under 
 Plan drift audit: Task 01 only; `IBackingStore` is forward-declared and held as `shared_ptr<const IBackingStore>`; no Task 02 interface/implementation, AIM/driver dependency, M1 behavior change, durable persistence, or hidden product defaults
 Open risks: backing normalization is intentionally only an explicit validation result until Task 02 supplies `ZeroBackingStore`; concurrent coherent stats production belongs to later store implementation, while the public stats snapshot remains a plain copyable value
 Executor / timestamp: Codex / `2026-08-03T12:23:52+08:00`
+
+Task: 01 — 规格审查测试覆盖修复
+Status: DONE
+Start commit / end commit: `70fc9c1bd5f14b3823c21e58fc5ee217fd830b19` / this Task 01 review-fix commit
+Files changed: `tests/unit/block_math_tests.cpp` and this appended `M2_TASKLIST.md` record only
+Review finding and resolution: added independent assertions for sector-aligned offset with misaligned length, `soft_limit_bytes > hard_limit_bytes`, an independently misaligned low watermark, and an independently misaligned hard limit; retained the existing `soft == hard` and misaligned-soft cases
+Focused verification command / exit code: Release test target build exit 0; `ctest --preset release --output-on-failure -R '^unit\.m2\.block_math$'` exit 0 (1/1)
+Cumulative verification command / exit code: Release build exit 0; `ctest --preset release --output-on-failure -L m2-v1` exit 0 (5/5); full Release CTest exit 0 (28/28); `git diff --check` exit 0
+Evidence paths: `tests/unit/block_math_tests.cpp`; console transcript for all requested Release gates
+Plan drift audit: test coverage and immutable execution record only; no production semantics, CMake, Task 02, M1, proxy, driver, or acceptance document changes
+Open risks: none introduced; Task 01 remains DONE pending independent re-review
+Executor / timestamp: Codex / `2026-08-03T12:34:04+08:00`

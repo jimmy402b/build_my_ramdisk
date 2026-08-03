@@ -196,6 +196,13 @@ TEST_CASE(m2_range_validation_rejects_full_request_before_splitting) {
     REQUIRE(wrong_buffer.segments.empty());
 }
 
+TEST_CASE(m2_range_validation_rejects_sector_misaligned_length) {
+    const auto result = myrd::validate_and_split_block_range(
+        65'536, 512, 512, 768, 768);
+    REQUIRE_EQ(result.error, myrd::BlockMathError::Misaligned);
+    REQUIRE(result.segments.empty());
+}
+
 TEST_CASE(m2_options_require_order_alignment_snapshot_limits_and_stripes) {
     auto options = valid_options();
     REQUIRE(myrd::validate_dynamic_block_store_options(options).ok());
@@ -240,6 +247,28 @@ TEST_CASE(m2_options_require_order_alignment_snapshot_limits_and_stripes) {
     options = valid_options();
     options.eviction_low_watermark_bytes = options.soft_limit_bytes;
     REQUIRE(myrd::validate_dynamic_block_store_options(options).ok());
+}
+
+TEST_CASE(m2_options_reject_soft_limit_greater_than_hard_limit) {
+    auto options = valid_options();
+    options.soft_limit_bytes =
+        options.hard_limit_bytes + myrd::kBlockSizeBytes;
+    REQUIRE_EQ(myrd::validate_dynamic_block_store_options(options).error,
+               myrd::DynamicBlockStoreOptionsError::InvalidLimitOrder);
+}
+
+TEST_CASE(m2_options_reject_misaligned_low_watermark) {
+    auto options = valid_options();
+    options.eviction_low_watermark_bytes += 512;
+    REQUIRE_EQ(myrd::validate_dynamic_block_store_options(options).error,
+               myrd::DynamicBlockStoreOptionsError::LimitNotBlockAligned);
+}
+
+TEST_CASE(m2_options_reject_misaligned_hard_limit) {
+    auto options = valid_options();
+    options.hard_limit_bytes += 512;
+    REQUIRE_EQ(myrd::validate_dynamic_block_store_options(options).error,
+               myrd::DynamicBlockStoreOptionsError::LimitNotBlockAligned);
 }
 
 TEST_CASE(m2_create_validation_identifies_backing_normalization) {
