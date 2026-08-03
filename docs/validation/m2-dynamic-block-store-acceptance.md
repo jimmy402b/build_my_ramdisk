@@ -170,23 +170,31 @@ The post-change Release CTest label summary was deterministic:
 
 These are CTest labels on existing deterministic tests, not artificial tests
 created to make a label pass. Future M2 tasks must add their actual tests to
-the appropriate labels before claiming a tier.
+the appropriate labels before claiming a tier. The M2-V4 baseline is captured
+from CMake's complete registered-test directory property after all accepted
+M1/legacy `add_test` calls, rather than duplicated as a hand-maintained name
+list; the structural probe is then appended explicitly.
 
 The storage boundary is also enforced continuously by
 `structural.m2.storage_independent_build`. CMake configuration fails if
-`myrd_storage` directly names `myrd_proxy` or `myrd_driver`. The CTest gate
-then removes only the exact ignored
-`out/build/storage-boundary-probe` directory, configures a fresh isolated
-build with tests disabled, and builds only `myrd_storage`. It rejects the
-resolved build whenever build output or produced artifacts contain the proxy
-or driver implementation targets, so intermediate targets, generator
+`myrd_storage` properties mention `myrd_proxy` or `myrd_driver`, including
+inside generator expressions or manually added dependencies. The CTest gate
+creates a PID/GUID-unique child below the exact ignored
+`out/build/storage-boundary-probes` base, configures a fresh isolated build
+with tests disabled, and builds only `myrd_storage`. It rejects the resolved
+build whenever target-specific build paths or produced artifacts contain the
+proxy or driver implementation targets, so intermediate targets, generator
 expressions, and `add_dependencies()` edges are covered by the actual
-generator-resolved dependency closure. Its PowerShell body is generated into
-the build tree by `tests/CMakeLists.txt`, keeping Task 00 inside its exact
-source-file allowlist. The probe was fault-tested by
+generator-resolved dependency closure. Each run removes only its own verified
+non-reparse-point child in `finally`; two simultaneous CTest processes were
+run successfully and left the probe base empty. Its PowerShell body is
+generated into the build tree by `tests/CMakeLists.txt`, keeping Task 00
+inside its exact source-file allowlist. The probe was fault-tested by
 temporarily injecting `add_dependencies(myrd_storage myrd_driver)`: the old
 gate incorrectly passed, while the isolated gate failed after observing the
-driver build; the injection was then removed before the canonical green run.
+driver build. A Debug-only generator-expression dependency was also rejected
+at configure time. Both injections were removed before the canonical green
+run.
 
 The Release Ninja dependency query used for the initial audit was:
 

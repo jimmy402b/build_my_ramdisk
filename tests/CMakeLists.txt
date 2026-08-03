@@ -210,39 +210,15 @@ target_include_directories(myrd_lifecycle_runner_tests PRIVATE "${CMAKE_SOURCE_D
 myrd_enable_warnings(myrd_lifecycle_runner_tests)
 add_test(NAME unit.lifecycle_runner COMMAND myrd_lifecycle_runner_tests)
 
-# M2-V4 always includes the complete accepted local M1 regression baseline.
-# The three shared storage-contract tests are real prerequisites reserved in
-# every local M2 tier; later tasks append their own behavior tests per tier.
-set(_myrd_m2_v4_m1_regression_tests
-    unit.common
-    unit.protocol
-    unit.m1.operation_context
-    unit.m1.block_device_contract
-    unit.m1.protocol
-    unit.m1.proxy_error
-    unit.m1.range_normalizer
-    unit.m1.request_processor
-    unit.m1.protocol_fuzz
-    unit.m1.namespace_policy
-    unit.m1.raw_protocol_io
-    integration.m1.shm
-    unit.m1.provider
-    unit.m1.cli
-    unit.m1.lifecycle_runner
-    unit.m1.report
-    unit.m1.verification_script
-    unit.storage
-    unit.request_processor
-    unit.object_names
-    integration.shm
-    unit.srb_codec
-    unit.direct_aim_adapter
-    unit.physical_drive_locator
-    unit.report
-    unit.lifecycle_runner
-)
-set_tests_properties(${_myrd_m2_v4_m1_regression_tests}
-    PROPERTIES LABELS "m2-v4")
+# Keep this snapshot after every accepted M1/legacy add_test call. It makes
+# M2-V4 inherit the complete local regression baseline without a hand-maintained
+# name list that can silently omit a newly registered M1 test.
+get_property(_myrd_m2_v4_m1_regression_tests DIRECTORY PROPERTY TESTS)
+if(NOT _myrd_m2_v4_m1_regression_tests)
+    message(FATAL_ERROR "M2-V4 requires a non-empty accepted local test baseline")
+endif()
+set_property(TEST ${_myrd_m2_v4_m1_regression_tests}
+    APPEND PROPERTY LABELS m2-v4)
 set_property(TEST
     unit.m1.operation_context
     unit.m1.block_device_contract
@@ -253,14 +229,24 @@ set_property(TEST
 # This test builds only the existing storage target (and its declared common
 # dependency), so adding a proxy/driver dependency cannot hide behind the full
 # product build.
-foreach(_myrd_storage_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+foreach(_myrd_storage_link_property IN ITEMS
+        LINK_LIBRARIES
+        INTERFACE_LINK_LIBRARIES
+        INTERFACE_LINK_LIBRARIES_DIRECT
+        INTERFACE_LINK_LIBRARIES_DIRECT_EXCLUDE
+        MANUALLY_ADDED_DEPENDENCIES)
     get_target_property(_myrd_storage_link_items myrd_storage ${_myrd_storage_link_property})
     if(_myrd_storage_link_items)
-        foreach(_myrd_forbidden_storage_dependency IN ITEMS myrd_proxy myrd_driver)
-            if(_myrd_forbidden_storage_dependency IN_LIST _myrd_storage_link_items)
-                message(FATAL_ERROR
-                    "myrd_storage must not depend on ${_myrd_forbidden_storage_dependency}")
-            endif()
+        foreach(_myrd_storage_link_item IN LISTS _myrd_storage_link_items)
+            foreach(_myrd_forbidden_storage_dependency IN ITEMS myrd_proxy myrd_driver)
+                string(FIND "${_myrd_storage_link_item}"
+                    "${_myrd_forbidden_storage_dependency}"
+                    _myrd_forbidden_storage_dependency_index)
+                if(NOT _myrd_forbidden_storage_dependency_index EQUAL -1)
+                    message(FATAL_ERROR
+                        "myrd_storage ${_myrd_storage_link_property} contains forbidden dependency ${_myrd_forbidden_storage_dependency}: ${_myrd_storage_link_item}")
+                endif()
+            endforeach()
         endforeach()
     endif()
 endforeach()
@@ -274,7 +260,7 @@ param(
     [string]$SourceDirectory,
 
     [Parameter(Mandatory = $true)]
-    [string]$ProbeDirectory,
+    [string]$ProbeBaseDirectory,
 
     [Parameter(Mandatory = $true)]
     [string]$Configuration,
@@ -289,21 +275,38 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $sourceRoot = [System.IO.Path]::GetFullPath($SourceDirectory)
-$probeRoot = [System.IO.Path]::GetFullPath($ProbeDirectory)
-$expectedProbeRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $sourceRoot 'out\build\storage-boundary-probe'))
+$probeBaseRoot = [System.IO.Path]::GetFullPath($ProbeBaseDirectory)
+$expectedProbeBaseRoot = [System.IO.Path]::GetFullPath(
+    (Join-Path $sourceRoot 'out\build\storage-boundary-probes'))
 
-if (-not $probeRoot.Equals(
-        $expectedProbeRoot,
+if (-not $probeBaseRoot.Equals(
+        $expectedProbeBaseRoot,
         [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to clean unexpected storage-boundary probe path: $probeRoot"
+    throw "Refusing to use unexpected storage-boundary probe base: $probeBaseRoot"
 }
 
-if (Test-Path -LiteralPath $probeRoot) {
-    Remove-Item -LiteralPath $probeRoot -Recurse -Force
+if (-not (Test-Path -LiteralPath $probeBaseRoot)) {
+    New-Item -ItemType Directory -Path $probeBaseRoot -Force | Out-Null
 }
 
-. (Join-Path $sourceRoot 'tools\Enter-MsvcEnvironment.ps1')
+$probeBaseItem = Get-Item -LiteralPath $probeBaseRoot -Force
+if (($probeBaseItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing to use reparse-point storage-boundary probe base: $probeBaseRoot"
+}
+
+$probeRunName = 'run-{0}-{1}' -f $PID, ([System.Guid]::NewGuid().ToString('N'))
+$probeRoot = [System.IO.Path]::GetFullPath((Join-Path $probeBaseRoot $probeRunName))
+$probePrefix = $probeBaseRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+if (-not $probeRoot.StartsWith(
+        $probePrefix,
+        [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Generated storage-boundary probe path escaped its base: $probeRoot"
+}
+
+New-Item -ItemType Directory -Path $probeRoot | Out-Null
+
+try {
+    . (Join-Path $sourceRoot 'tools\Enter-MsvcEnvironment.ps1')
 
 $savedErrorPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -340,7 +343,8 @@ if ($buildExitCode -ne 0) {
 }
 
 $renderedBuildOutput = ($buildOutput | Out-String)
-if ($renderedBuildOutput -match '(?i)myrd_(proxy|driver)') {
+$forbiddenBuildPattern = '(?i)(CMakeFiles[\\/]myrd_(proxy|driver)\.dir|myrd_(proxy|driver)\.(lib|dll|exe))'
+if ($renderedBuildOutput -match $forbiddenBuildPattern) {
     throw 'myrd_storage build traversed a forbidden proxy/driver target'
 }
 
@@ -357,7 +361,17 @@ if ($storageArtifacts.Count -ne 1) {
     throw "Expected exactly one myrd_storage.lib, found $($storageArtifacts.Count)"
 }
 
-Write-Output 'Storage boundary probe PASS: isolated build produced only the storage dependency closure.'
+    Write-Output 'Storage boundary probe PASS: isolated build produced only the storage dependency closure.'
+}
+finally {
+    if (Test-Path -LiteralPath $probeRoot) {
+        $probeItem = Get-Item -LiteralPath $probeRoot -Force
+        if (($probeItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to recursively remove reparse-point probe run: $probeRoot"
+        }
+        Remove-Item -LiteralPath $probeRoot -Recurse -Force
+    }
+}
 ]=])
 
 add_test(
@@ -365,7 +379,7 @@ add_test(
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${_myrd_storage_boundary_script}"
             -SourceDirectory "${CMAKE_SOURCE_DIR}"
-            -ProbeDirectory "${CMAKE_SOURCE_DIR}/out/build/storage-boundary-probe"
+            -ProbeBaseDirectory "${CMAKE_SOURCE_DIR}/out/build/storage-boundary-probes"
             -Configuration "$<CONFIG>"
             -Generator "${CMAKE_GENERATOR}"
             -Compiler "${CMAKE_CXX_COMPILER}")

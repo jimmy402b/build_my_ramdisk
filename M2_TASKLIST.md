@@ -1207,3 +1207,15 @@ Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`
 Plan drift audit: final source changes return to the Task 00 allowlist; generated probe remains under ignored `out/`; no Task 01 code
 Open risks: repeated specification review remains
 Executor / timestamp: Codex / `2026-08-03T11:49:24+08:00`
+
+Task: 00 — 代码质量审查修复记录
+Status: DONE
+Start commit / end commit: `d8f4e46` / quality-fix commit with the requested message
+Files changed: only `tests/CMakeLists.txt`, `docs/validation/m2-dynamic-block-store-acceptance.md`, and this appended record
+Red test and observed failure: review identified config-expression, cross-process probe-directory, and hand-maintained M2-V4 baseline risks; a temporary Debug-only `myrd_driver` generator-expression dependency exercised the guard and was removed
+Focused verification command / exit code: generator-expression dependency rejected at configure exit 1; normal structural CTest 1/1; two concurrent structural CTest processes both exit 0 and leave no unique run directories
+Cumulative verification command / exit code: fresh configure exit 0; Release build exit 0; full CTest 27/27; M2-V1/V2/V3 4/4 each; M2-V4 27/27; fresh M1-V2 Debug PASS (14/14, fuzz 1/1, SHM 50/50)
+Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`; generated unique probes under ignored `out/build/storage-boundary-probes`
+Plan drift audit: Task 00 build/test shell only; no Task 01 product code and no retained fault injection
+Open risks: repeated code-quality review remains
+Executor / timestamp: Codex / `2026-08-03T12:05:44+08:00`
