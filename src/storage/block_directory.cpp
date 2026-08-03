@@ -215,6 +215,14 @@ const BlockEntry* BlockDirectory::find(
         block_entry_index(block_index))];
 }
 
+const BlockLeaf* BlockDirectory::allocated_leaf_at(
+    std::uint64_t leaf_index) const noexcept {
+    if (leaf_index >= top_level_slot_count_) {
+        return nullptr;
+    }
+    return load_leaf(leaf_index);
+}
+
 BlockDirectory::AccessResult BlockDirectory::get_or_create(
     std::uint64_t block_index) noexcept {
     if (block_index >= block_count_) {

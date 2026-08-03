@@ -18,6 +18,8 @@ add_library(myrd_storage STATIC
     storage/block_math.h
     storage/dynamic_block_types.h
     storage/dynamic_block_store_internal.h
+    storage/dynamic_block_store_core.cpp
+    storage/dynamic_block_store.h
     storage/block_directory.cpp
     storage/block_directory.h
     storage/virtual_memory_arena.cpp

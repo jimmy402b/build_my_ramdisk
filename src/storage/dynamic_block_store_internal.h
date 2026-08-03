@@ -12,6 +12,9 @@
 
 namespace myrd {
 
+class IVirtualMemoryApi;
+class VirtualMemoryCleanupTracker;
+
 // BlockEntry deliberately contains only scalar metadata. Synchronization is
 // supplied by LockStripeSet, never by one mutex/condition variable per block.
 struct BlockEntry {
@@ -133,6 +136,39 @@ private:
 
     std::unique_ptr<LockStripe[]> stripes_;
     std::size_t stripe_count_{};
+};
+
+enum class DynamicBlockStoreFactoryStage : std::uint8_t {
+    None = 0,
+    CreateStripes = 1,
+    AllocateDirectory = 2,
+    StartWorker = 3,
+    AfterWorkerStarted = 4,
+};
+
+enum class DynamicBlockStoreLifecycleEvent : std::uint8_t {
+    WorkerStarted = 0,
+    RejectNewRequests = 1,
+    WaitersNotified = 2,
+    WorkerStopped = 3,
+    Quiesced = 4,
+    DirectoryReleased = 5,
+    StripesReleased = 6,
+    ArenaReleased = 7,
+};
+
+class IDynamicBlockStoreLifecycleObserver {
+public:
+    virtual ~IDynamicBlockStoreLifecycleObserver() = default;
+    virtual void on_event(DynamicBlockStoreLifecycleEvent event) noexcept = 0;
+};
+
+struct DynamicBlockStoreTestDependencies {
+    std::shared_ptr<IVirtualMemoryApi> virtual_memory_api;
+    std::shared_ptr<VirtualMemoryCleanupTracker> cleanup_tracker;
+    std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer;
+    DynamicBlockStoreFactoryStage fail_stage{
+        DynamicBlockStoreFactoryStage::None};
 };
 
 } // namespace myrd

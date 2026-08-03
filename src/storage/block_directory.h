@@ -74,6 +74,12 @@ public:
     const BlockEntry* find(std::uint64_t block_index) const noexcept;
     AccessResult get_or_create(std::uint64_t block_index) noexcept;
 
+    // Leaves never move or disappear before directory destruction. Scanning
+    // the top-level slots therefore visits only materialized metadata instead
+    // of walking every logical block in a sparse store.
+    const BlockLeaf* allocated_leaf_at(
+        std::uint64_t leaf_index) const noexcept;
+
     std::uint64_t block_count() const noexcept { return block_count_; }
     std::uint64_t top_level_slot_count() const noexcept {
         return top_level_slot_count_;

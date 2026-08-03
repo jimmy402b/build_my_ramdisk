@@ -398,6 +398,8 @@ struct DynamicBlockStoreStats {
     std::uint64_t backing_view_installs_total{};
     std::uint64_t backing_generation_conflicts{};
     std::uint64_t stale_backing_load_retries{};
+
+    bool operator==(const DynamicBlockStoreStats&) const = default;
 };
 
 } // namespace myrd

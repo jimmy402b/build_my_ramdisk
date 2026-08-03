@@ -437,3 +437,16 @@ add_test(NAME unit.m2.block_directory COMMAND myrd_m2_block_directory_tests)
 set_tests_properties(unit.m2.block_directory PROPERTIES
     LABELS "m2-v1"
     TIMEOUT 20)
+
+add_executable(myrd_m2_store_core_tests
+    unit/dynamic_block_store_core_tests.cpp
+)
+target_link_libraries(myrd_m2_store_core_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_store_core_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_store_core_tests)
+add_test(NAME unit.m2.store_core COMMAND myrd_m2_store_core_tests)
+set_tests_properties(unit.m2.store_core PROPERTIES
+    LABELS "m2-v1"
+    TIMEOUT 20)

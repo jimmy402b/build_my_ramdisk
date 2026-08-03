@@ -338,38 +338,40 @@ Executor / timestamp:
 
 ### 红灯测试
 
-- [ ] 每条 create args validation 的成功和失败。
-- [ ] public logical size 保持原值，reservation size 向 64 KiB 对齐。
-- [ ] CleanZero implicit block 无 leaf/commit/backing load。
-- [ ] BackingUnresident implicit block 需要 backing。
-- [ ] CleanZero null backing 被统一 normalize 为 ZeroBackingStore。
-- [ ] 新空盘显式 initial generation `0`；恢复场景允许显式非零 generation，stats/API 精确返回。
-- [ ] implicit CleanZero 逻辑使用 initial generation，但不得仅为记录该值创建 leaf。
-- [ ] initial pointer/generation 作为一个 coherent pair 发布；null pointer 或 generation 回绕原子失败。
-- [ ] reserve/stripe/directory/worker 各阶段失败都无泄漏。
-- [ ] 初始 stats、geometry、options snapshot 精确。
-- [ ] close 后新请求被拒绝。
-- [ ] 析构顺序可通过 fake 验证：拒绝新请求→唤醒→停 worker→quiesce→释放 arena。
-- [ ] 通过 M1 interface compile test，无 proxy downcast。
+- [x] 每条 create args validation 的成功和失败。
+- [x] public logical size 保持原值，reservation size 向 64 KiB 对齐。
+- [x] CleanZero implicit block 无 leaf/commit/backing load。
+- [x] BackingUnresident implicit block 需要 backing。
+- [x] CleanZero null backing 被统一 normalize 为 ZeroBackingStore。
+- [x] 新空盘显式 initial generation `0`；恢复场景允许显式非零 generation，stats/API 精确返回。
+- [x] implicit CleanZero 逻辑使用 initial generation，但不得仅为记录该值创建 leaf。
+- [x] initial pointer/generation 作为一个 coherent pair 发布；null pointer 或 generation 回绕原子失败。
+- [x] reserve/stripe/directory/worker 各阶段失败都无泄漏。
+- [x] 初始 stats、geometry、options snapshot 精确。
+- [x] close 后新请求被拒绝。
+- [x] 析构顺序可通过 fake 验证：拒绝新请求→唤醒→停 worker→quiesce→释放 arena。
+- [x] 通过 M1 interface compile test，无 proxy downcast。
 
 ### 实现
 
-- [ ] 使用 fallible `create` factory；构造函数不发布半成品。
-- [ ] `DynamicBlockStore` 直接实现真实 M1 `IBlockDevice`。
-- [ ] 若 ABI 强制 adapter，记录原因、路径和依赖方向；adapter 不能泄露 internals。
-- [ ] `shared_ptr<const IBackingStore>` 生命周期覆盖所有 load；factory 建立唯一初始 `BackingView`。
-- [ ] factory 严格按 Plan 顺序拥有资源。
-- [ ] closing flag 与 worker/waiter 通知由单一 lifecycle owner 管理。
-- [ ] stats snapshot race-free，但 stats 不参与正确性判断。
-- [ ] 公开 `backing_generation`、`install_backing_view`、snapshot/ack/invariant test hook 的最小接口；mutable internals 私有。
+- [x] 使用 fallible `create` factory；构造函数不发布半成品。
+- [x] `DynamicBlockStore` 直接实现真实 M1 `IBlockDevice`。
+- [x] 若 ABI 强制 adapter，记录原因、路径和依赖方向；adapter 不能泄露 internals。
+- [x] `shared_ptr<const IBackingStore>` 生命周期覆盖所有 load；factory 建立唯一初始 `BackingView`。
+- [x] factory 严格按 Plan 顺序拥有资源。
+- [x] closing flag 与 worker/waiter 通知由单一 lifecycle owner 管理。
+- [x] stats snapshot race-free，但 stats 不参与正确性判断。
+- [x] 公开 `backing_generation`、`install_backing_view`、snapshot/ack/invariant test hook 的最小接口；mutable internals 私有。
 
 ### 验证与验收
 
-- [ ] `unit.m2.store_core` 通过。
-- [ ] M1 interface/protocol 编译测试通过。
-- [ ] 构造失败矩阵无 reservation/thread/handle 泄漏。
-- [ ] 回读 Plan Task 5、1.2、1.4；确认 store 不知道 driver/SCSI。
-- [ ] 建议提交：`feat(storage): create dynamic block store lifecycle`。
+- [x] `unit.m2.store_core` 通过。
+- [x] M1 interface/protocol 编译测试通过。
+- [x] 构造失败矩阵无 reservation/thread/handle 泄漏。
+- [x] 回读 Plan Task 5、1.2、1.4；确认 store 不知道 driver/SCSI。
+- [x] 建议提交：`feat(storage): create dynamic block store lifecycle`。
+
+验收记录（2026-08-03）：`unit.m2.store_core` 15/15 通过并连续重复 100 次；M2-V1 9/9、Release 全量 32/32 通过。构造失败覆盖 reserve、stripe、directory、worker 启动前和启动后回滚；真实 waiter 关闭唤醒、observer 重入、coherent backing view 与锁外 backing 析构均有回归测试。规格审查 COMPLIANT，质量审查 APPROVED。
 
 ---
 
