@@ -56,6 +56,13 @@ myrd::M2Report complete_report() {
     return report;
 }
 
+void mark_performance_failed(myrd::M2Report& report) {
+    report.performance.ratio_numerator = 1;
+    report.performance.ratio_denominator = 2;
+    report.performance.ratio_basis_points = 5'000;
+    report.performance.gate_status = myrd::M2PerformanceGateStatus::failed;
+}
+
 std::string replace_once(
     std::string input, std::string_view from, std::string_view to) {
     const auto position = input.find(from);
@@ -136,8 +143,7 @@ TEST_CASE(m2_report_enum_strings_are_stable_and_unknown_values_are_rejected) {
 TEST_CASE(m2_report_serializes_and_schema_names_every_required_field) {
     const auto json = myrd::serialize_m2_report(complete_report());
     auto no_go_report = complete_report();
-    no_go_report.performance.gate_status =
-        myrd::M2PerformanceGateStatus::failed;
+    mark_performance_failed(no_go_report);
     no_go_report.failures.push_back({"performance", 23, "threshold missed"});
     no_go_report.verdict = myrd::M2Verdict::no_go;
     const auto serialized_examples =
@@ -242,7 +248,7 @@ TEST_CASE(m2_report_validator_rejects_each_missing_required_member) {
     }
 
     auto no_go = complete_report();
-    no_go.performance.gate_status = myrd::M2PerformanceGateStatus::failed;
+    mark_performance_failed(no_go);
     no_go.failures.push_back({"performance", 23, "threshold missed"});
     no_go.verdict = myrd::M2Verdict::no_go;
     const auto no_go_json = myrd::serialize_m2_report(no_go);
@@ -310,6 +316,36 @@ TEST_CASE(m2_report_validator_rejects_go_when_match_fingerprints_differ) {
         "\"after_fingerprint\": \"different-hash\""));
 }
 
+TEST_CASE(m2_report_validator_cross_checks_performance_gate_and_ratio) {
+    const auto json = myrd::serialize_m2_report(complete_report());
+    require_invalid(replace_once(
+        json, "\"ratio_basis_points\": 11000",
+        "\"ratio_basis_points\": 9999"));
+    require_invalid(replace_once(
+        json, "\"minimum_ratio_basis_points\": 10000",
+        "\"minimum_ratio_basis_points\": 12000"));
+
+    auto failed_above_threshold = complete_report();
+    failed_above_threshold.performance.gate_status =
+        myrd::M2PerformanceGateStatus::failed;
+    failed_above_threshold.failures.push_back(
+        {"performance", 23, "threshold missed"});
+    failed_above_threshold.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(failed_above_threshold));
+}
+
+TEST_CASE(m2_report_failure_forces_no_go_even_if_other_work_is_incomplete) {
+    auto report = complete_report();
+    report.phases.front().status = myrd::M2PhaseStatus::not_run;
+    report.cleanup_actions.front() = {
+        "remove-device", true, myrd::M2CleanupResult::failed,
+        "cleanup failed"};
+    report.failures.push_back({"cleanup", 31, "cleanup failed"});
+    report.verdict = myrd::M2Verdict::no_go;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
 TEST_CASE(m2_report_validator_accepts_consistent_incomplete_and_no_go_reports) {
     auto incomplete = complete_report();
     incomplete.phases.front().status = myrd::M2PhaseStatus::not_run;
@@ -326,7 +362,7 @@ TEST_CASE(m2_report_validator_accepts_consistent_incomplete_and_no_go_reports) {
     REQUIRE(myrd::validate_m2_report_json(incomplete_json).ok());
 
     auto no_go = complete_report();
-    no_go.performance.gate_status = myrd::M2PerformanceGateStatus::failed;
+    mark_performance_failed(no_go);
     no_go.failures.push_back({"performance", 23, "threshold missed"});
     no_go.verdict = myrd::M2Verdict::no_go;
     const auto no_go_json = myrd::serialize_m2_report(no_go);

@@ -542,11 +542,11 @@ public:
         if (!valid_ || !verdict) {
             return false;
         }
-        if (incomplete_) {
-            return *verdict == M2Verdict::incomplete;
-        }
         if (failure_) {
             return *verdict == M2Verdict::no_go;
+        }
+        if (incomplete_) {
+            return *verdict == M2Verdict::incomplete;
         }
         return *verdict == M2Verdict::go;
     }
@@ -708,10 +708,11 @@ private:
         if (performance == nullptr) return;
         validate_performance_raw(*performance, "fixed");
         validate_performance_raw(*performance, "dynamic");
-        uint_member(*performance, "ratio_numerator");
+        const auto numerator = uint_member(*performance, "ratio_numerator");
         const auto denominator = uint_member(*performance, "ratio_denominator");
-        uint_member(*performance, "ratio_basis_points");
-        uint_member(*performance, "minimum_ratio_basis_points");
+        const auto ratio = uint_member(*performance, "ratio_basis_points");
+        const auto minimum =
+            uint_member(*performance, "minimum_ratio_basis_points");
         const auto gate_text = string_member(*performance, "gate_status");
         const auto gate = gate_text
                               ? parse_m2_performance_gate_status(*gate_text)
@@ -723,14 +724,56 @@ private:
         } else if (*gate == M2PerformanceGateStatus::failed) {
             failure_ = true;
         }
-        if (!denominator || *denominator == 0) incomplete_ = true;
+        if (numerator && denominator && ratio) {
+            if (*denominator == 0) {
+                if (!gate || *gate != M2PerformanceGateStatus::failed ||
+                    *ratio != 0) {
+                    fail();
+                } else {
+                    failure_ = true;
+                }
+            } else {
+                const auto quotient = *numerator / *denominator;
+                const auto remainder = *numerator % *denominator;
+                if (quotient >
+                    (std::numeric_limits<std::uint64_t>::max)() / 10'000) {
+                    fail();
+                } else {
+                    std::uint64_t fraction_basis_points = 0;
+                    std::uint64_t accumulated_remainder = 0;
+                    for (std::uint64_t index = 0; index < 10'000; ++index) {
+                        if (accumulated_remainder >=
+                            *denominator - remainder) {
+                            accumulated_remainder -=
+                                *denominator - remainder;
+                            ++fraction_basis_points;
+                        } else {
+                            accumulated_remainder += remainder;
+                        }
+                    }
+                    const auto expected =
+                        quotient * 10'000 + fraction_basis_points;
+                    if (*ratio != expected) fail();
+                }
+            }
+        }
+        if (gate && ratio && minimum && denominator && *denominator != 0) {
+            if (*gate == M2PerformanceGateStatus::passed &&
+                *ratio < *minimum) {
+                fail();
+            }
+            if (*gate == M2PerformanceGateStatus::failed &&
+                *ratio >= *minimum) {
+                fail();
+            }
+        }
 
         const JsonValue* policy =
             object_member(*performance, "comparable_policy");
         if (policy != nullptr) {
             string_member(*policy, "policy_name");
             const auto same = bool_member(*policy, "same_workload");
-            if (!same || !*same) incomplete_ = true;
+            if (!same || !*same) failure_ = true;
             string_member(*policy, "notes");
         }
     }
@@ -799,8 +842,18 @@ private:
         } else if (*comparison == M2BaselineComparison::mismatch) {
             failure_ = true;
         }
-        string_member(*baseline, "before_fingerprint");
-        string_member(*baseline, "after_fingerprint");
+        const auto before = string_member(*baseline, "before_fingerprint");
+        const auto after = string_member(*baseline, "after_fingerprint");
+        if (comparison && before && after) {
+            if (*comparison == M2BaselineComparison::match &&
+                (before->empty() || *before != *after)) {
+                fail();
+            }
+            if (*comparison == M2BaselineComparison::mismatch &&
+                (before->empty() || after->empty() || *before == *after)) {
+                fail();
+            }
+        }
     }
 
     void validate_failures(const JsonValue& root) {
