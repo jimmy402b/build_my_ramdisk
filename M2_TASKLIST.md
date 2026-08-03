@@ -73,7 +73,7 @@
 | 10 | Backing generation、脏快照与 persisted ack | DONE | 09 | M2-V1 |
 | 11 | Clean CLOCK eviction | DONE | 10 | M2-V1 |
 | 12 | Hard limit、预算和失败回滚 | DONE | 11 | M2-V1 |
-| 13 | 100,000 次参考模型 | TODO | 12 | M2-V2 / M2-A |
+| 13 | 100,000 次参考模型 | DONE | 12 | M2-V2 / M2-A |
 | 14 | 单飞加载与同块并发 | TODO | 12 | M2-V3 |
 | 15 | 快照/变更/淘汰/关闭竞态 | TODO | 14 | M2-V3 |
 | 16 | 长压测、不变量、资源核算 | TODO | 13,15 | M2-V3 / M2-B |
@@ -704,43 +704,45 @@ Executor / timestamp:
 
 ## Task 13 — 确定性 100,000 操作 reference model
 
+**状态：DONE（2026-08-03）**
+
 **目标：** 用与产品实现无共享逻辑的模型验证 byte content、dirty meaning 和状态结果。
 
 **文件：** `tests/support/reference_block_model.h`、`dynamic_block_store_model_tests.cpp`、CMake。
 
 ### 模型建设
 
-- [ ] 模型使用普通 byte vectors/maps，不 include production block math/state helpers。
-- [ ] 模型定义 read/write/ZERO/UNMAP/snapshot/view-install/ack/evict-reload 的独立语义。
-- [ ] 模型 logical disk 足够小以便频繁全量比较，但含稀疏远端 block。
-- [ ] canonical fixed seed 写死且失败时打印。
-- [ ] 支持环境/参数 override seed 仅用于诊断。
-- [ ] operation log 含 index、type、range、snapshot version/kind/base generation、installed generation、ack generation。
+- [x] 模型使用普通 byte vectors/maps，不 include production block math/state helpers。
+- [x] 模型定义 read/write/ZERO/UNMAP/snapshot/view-install/ack/evict-reload 的独立语义。
+- [x] 模型 logical disk 足够小以便频繁全量比较，但含稀疏远端 block。
+- [x] canonical fixed seed 写死且失败时打印。
+- [x] 支持环境/参数 override seed 仅用于诊断。
+- [x] operation log 含 index、type、range、snapshot version/kind/base generation、installed generation、ack generation。
 
 ### 100,000 操作内容
 
-- [ ] aligned reads/writes，含块内、跨块、末 sector。
-- [ ] full/partial ZERO。
-- [ ] full/partial UNMAP。
-- [ ] dirty scans with cursor/batch limits and base generations。
-- [ ] successor view install、ack-before-install conflict、exact/stale generation acknowledgements。
-- [ ] force pressure/clean eviction/read-through。
-- [ ] exact ack 后强制 clean eviction/reload，并将 Store 与模型比较。
-- [ ] repeated same block 和 sparse distant blocks。
-- [ ] 至少每 N 次做 sampled/full byte comparison。
-- [ ] 至少每 N 次做 dirty records semantic comparison。
-- [ ] 至少每 N 次做 invariants/accounting check。
-- [ ] 最终输出恰好 `100000` completed operations。
+- [x] aligned reads/writes，含块内、跨块、末 sector。
+- [x] full/partial ZERO。
+- [x] full/partial UNMAP。
+- [x] dirty scans with cursor/batch limits and base generations。
+- [x] successor view install、ack-before-install conflict、exact/stale generation acknowledgements。
+- [x] force pressure/clean eviction/read-through。
+- [x] exact ack 后强制 clean eviction/reload，并将 Store 与模型比较。
+- [x] repeated same block 和 sparse distant blocks。
+- [x] 至少每 N 次做 sampled/full byte comparison。
+- [x] 至少每 N 次做 dirty records semantic comparison。
+- [x] 至少每 N 次做 invariants/accounting check。
+- [x] 最终输出恰好 `100000` completed operations。
 
 ### 验证与验收
 
-- [ ] 先故意注入一个测试模型差异，确认 harness 会红，再移除注入。
-- [ ] `unit.m2.model` Release 通过。
-- [ ] 同 seed 连续两次结果一致。
-- [ ] 记录 seed、耗时、操作数和证据。
-- [ ] M2-V1 + M2-V2 当前层通过，形成 M2-A 核心证据草案。
-- [ ] 回读 Plan Task 13；确认模型没有复制 production bug。
-- [ ] 建议提交：`test(storage): add deterministic block store model`。
+- [x] 先故意注入一个测试模型差异，确认 harness 会红，再移除注入。
+- [x] `unit.m2.model` Release 通过。
+- [x] 同 seed 连续两次结果一致。
+- [x] 记录 seed、耗时、操作数和证据。
+- [x] M2-V1 + M2-V2 当前层通过，形成 M2-A 核心证据草案。
+- [x] 回读 Plan Task 13；确认模型没有复制 production bug。
+- [x] 建议提交：`test(storage): add deterministic block store model`。
 
 ---
 
@@ -1405,3 +1407,17 @@ Review findings and resolution: correctness-owned `committed_bytes_` is separate
 Plan drift audit: implementation remains inside Plan Task 12 and M2-V1; existing read-through semantics are retained only when no clean capacity can be reclaimed, resident overwrite avoids a new reservation, and no reference model, broader concurrency suite, proxy, driver, filesystem backing, M3, or M4 behavior was introduced
 Open risks: active-transition stress and whole-store reconciliation under broader races remain intentionally assigned to Tasks 14–16; no open Task 12 correctness finding remains
 Executor / timestamp: Codex / `2026-08-03T21:12:14+08:00`
+
+Task: 13 — 确定性 100,000 操作 reference model
+Status: DONE
+Start commit / end commit: `4234651` / pending commit `test(storage): add deterministic block store model`
+Files changed: `tests/support/reference_block_model.h`, `tests/unit/dynamic_block_store_model_tests.cpp`, `tests/CMakeLists.txt`, and this Task 13 checklist/status/record
+Red test and observed failure: 在完整 harness 中故意注入单字节差异后，Release `unit.m2.model` 于 operation 17 确定性失败，并打印 seed、operation index、模型状态和最近操作；随后完整移除注入。首次真实 100,000 步运行于 operation 4368 暴露测试 fixture 将全零 Data backing 错误折叠成 AllZero，修正 builder 保留 Data record provenance。独立审查修补后的首个 pressure probe 还以 `observed=3` 红灯揭示“一次拒绝等于一个 rejection event”的错误测试假设，改为验证拒绝写确实推进且后续不回退的单调计数；全程未修改产品代码
+Focused verification command / exit code: 当前提交态 Debug/Release `unit.m2.model` 均 exit 0 (4/4)；规范 seed `0x4D5952444D324131` 完成恰好 100,000 步，固定 digest `0xDD89B58C508C5E36`，Release 约 2.2–2.7 秒、Debug 约 6.3–7.2 秒；Release 连续两次及十连测结果一致；诊断 seed `0x123456789ABCDEF0` 在不替换规范运行的前提下得到固定 digest `0x32C3FA633C73A2D8`；溢出和负数诊断 seed 均以 exit 1 明确拒绝
+Cumulative verification command / exit code: final Debug/Release full CTest exit 0 (40/40); Release M2-V1 exit 0 (16/16); Release M2-V2 exit 0 (5/5); `git diff --check` exit 0
+Coverage evidence: 规范运行顶层覆盖 reads 35052、writes 30077、ZERO 14809、UNMAP 14934、dirty scans 3056、实际 rejected acks 958、zero-length rejections 1014、checkpoints 98、hard pressure probe 1、跨 sparse leaf distant probe 1，合计恰好 100,000；细分命中 full/partial ZERO 3344/11465、full/partial UNMAP 3345/11589、cross-block 14927、last-sector 10703、repeated-hot-block 21958；另有 partial-final-block zero-padding 回归
+Evidence paths: `tests/support/reference_block_model.h`, `tests/unit/dynamic_block_store_model_tests.cpp`, test output transcripts, Plan Task 13, SPEC reference-model requirements, and this immutable execution record
+Review findings and resolution: reference model 只 include STL 并独立重述几何、block metadata、dirty/snapshot/install/ack/evict/reload 语义。独立审查发现 pressure 未进入 100,000 计数、远端未跨 1024-block leaf、generation/error oracle 偏弱、mutation 后字节比较窗口、partial-final-block 越界风险及三个诊断缺口；现已加入计数内 pressure/cross-leaf probes、mutation 后立即回读、全局 generation 与具体错误码/PersistResult 比对、64 KiB 尾部补零、逐子步骤日志、细分覆盖和严格 seed 解析；最终独立复审返回 `APPROVED`；确认无故意差异、TODO/FIXME 或生产 block math/state helper 复用
+Plan drift audit: Task 13 test/evidence only；未修改产品实现，未引入文件系统 backing、持久化、proxy、driver、M3 或 M4 行为；M2-A 仅形成核心证据草案，仍不宣称完整 M2 GO
+Open risks: wider transition concurrency, cancellation/close and long stress remain assigned to Tasks 14–16; real 64 GiB/1 TiB VM integration remains assigned to Task 18
+Executor / timestamp: Codex / `2026-08-03T23:24:56+08:00`
