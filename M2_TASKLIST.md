@@ -896,36 +896,36 @@ Executor / timestamp:
 
 ### 测试准备
 
-- [ ] 确认测试进程为 x64 Release。
-- [ ] 选定并记录 OS 指标 API：process commit/private bytes/working set 与 store counters。
-- [ ] 记录 allocator noise tolerance，不能把 arena stats 当作唯一 OS 证据。
-- [ ] 测量 empty test-process baseline 多次，选择有说明的统计方式。
+- [x] 确认测试进程为 x64 Release。
+- [x] 选定并记录 OS 指标 API：process commit/private bytes/working set 与 store counters。
+- [x] 记录 allocator noise tolerance，不能把 arena stats 当作唯一 OS 证据。
+- [x] 测量 empty test-process baseline 多次，选择有说明的统计方式。
 
 ### 64 GiB 流程
 
-- [ ] construct empty clean-zero 64 GiB store。
-- [ ] Ready 时 committed memory `<=128 MiB`，记录固定 metadata delta。
-- [ ] sparse zero reads 不增加 data commits。
-- [ ] 写入 1 GiB unique blocks，新增 `<=1.10 GiB + fixed metadata`。
-- [ ] 校验写入 bytes。
-- [ ] 通过 clean eviction/适用的 unmap 释放 1 GiB。
-- [ ] 10 秒内回收至少 90%，同时看 store 与 OS samples。
-- [ ] destroy 后 reservation/thread/handle 回 baseline tolerance。
+- [x] construct empty clean-zero 64 GiB store。
+- [x] Ready 时 committed memory `<=128 MiB`，记录固定 metadata delta。
+- [x] sparse zero reads 不增加 data commits。
+- [x] 写入 1 GiB unique blocks，新增 `<=1.10 GiB + fixed metadata`。
+- [x] 校验写入 bytes。
+- [x] 通过 clean eviction/适用的 unmap 释放 1 GiB。
+- [x] 10 秒内回收至少 90%，同时看 store 与 OS samples。
+- [x] destroy 后 reservation/thread/handle 回 baseline tolerance。
 
 ### 1 TiB 流程
 
-- [ ] construct empty 1 TiB store 成功且 initial entries/leaves 非线性分配。
-- [ ] 访问低、中、高 sparse block，地址和内容正确。
-- [ ] 只 commit 被访问/写入 block。
-- [ ] destroy 释放整个 reservation。
+- [x] construct empty 1 TiB store 成功且 initial entries/leaves 非线性分配。
+- [x] 访问低、中、高 sparse block，地址和内容正确。
+- [x] 只 commit 被访问/写入 block。
+- [x] destroy 释放整个 reservation。
 
 ### 验证与验收
 
-- [ ] `integration.m2.virtual_memory` 通过。
-- [ ] M2-V2（含 100,000 model）通过。
-- [ ] 证据包含每个采样值、时间点、阈值和 pass/fail。
-- [ ] 回读 Plan Task 18 和 performance limits；不能只说“代码用了 MEM_RESERVE 所以动态”。
-- [ ] 建议提交：`test(m2): validate large virtual memory behavior`。
+- [x] `integration.m2.virtual_memory` 通过。
+- [x] M2-V2（含 100,000 model）通过。
+- [x] 证据包含每个采样值、时间点、阈值和 pass/fail。
+- [x] 回读 Plan Task 18 和 performance limits；不能只说“代码用了 MEM_RESERVE 所以动态”。
+- [x] 建议提交：`test(m2): validate large virtual memory behavior`。
 
 ---
 
@@ -1486,3 +1486,18 @@ Architecture evidence: production transport receives only `IBlockDevice&`; `src/
 Plan drift audit: Task 17 only; the M1 proxy remains unchanged and unaware of VirtualAlloc/cache/metadata; no real large-VM acceptance, M2 CLI/report/performance probe, real device lifecycle, filesystem backing, M3, or M4 behavior was introduced
 Open risks: real 64 GiB/1 TiB VirtualAlloc and OS-memory evidence remain assigned to Task 18; formal M2 lifecycle/CLI and real-device staged verdicts remain Tasks 19–22
 Executor / timestamp: Codex / `2026-08-04T02:40:48+08:00`
+
+Task: 18 — Real 64 GiB/1 TiB VirtualAlloc integration
+Status: DONE
+Start commit / end commit: `14a2762` / pending commit `test(m2): validate large virtual memory behavior`
+Files changed: `tests/integration/m2_virtual_memory_tests.cpp`, `tests/CMakeLists.txt`, and only this Task 18 checklist/status/record in `M2_TASKLIST.md`; no product source changed
+Red test and observed failure: after registering `integration.m2.virtual_memory` first, CMake generation exited 1 because `tests/integration/m2_virtual_memory_tests.cpp` did not exist; the completed proof then exercised the already implemented real store without manufacturing a product failure
+Focused verification command / exit code: Release exact `integration.m2.virtual_memory` exits 0 (1/1, two internal flows); five consecutive pre-review runs and three consecutive final-threshold runs all pass; CTest inventory exposes the gate only for Release, with label `m2-v2`, `RUN_SERIAL=true`, and timeout 180 seconds
+Cumulative verification command / exit code: Release `ctest --preset release -L m2-v2 --output-on-failure` exits 0 (6/6), including the deterministic 100,000-operation model and the real VM integration; final clean/full gates are recorded after this documentation update
+64 GiB evidence: x64 Release and available-commit preflight pass; empty store reserves 68,719,476,736 bytes as `MEM_RESERVE/PAGE_NOACCESS`, store commit is 0, leaves are 0, and process PrivateUsage delta is 110,592 bytes versus the 134,217,728-byte ceiling; clean-zero low/middle/high reads retain zero commit; 16,384 distinct 64 KiB blocks are written and every byte is read back; store commit is exactly 1,073,741,824 bytes, OS data delta is 1,079,083,008 bytes, and total delta 1,079,193,600 is below fixed metadata plus the 1.10 GiB ceiling; full-range UNMAP makes every sampled page reserved again, store commit becomes 0, and OS PrivateUsage reclaims 1,076,424,704 bytes versus the 966,367,641-byte minimum within the immediate sample, under the 10-second bound
+1 TiB evidence: empty store reserves 1,099,511,627,776 bytes with 0 committed bytes and 0 allocated leaves; construction PrivateUsage delta is 212,992 bytes; clean-zero low/middle/high reads retain zero commit; writes at the same three distant addresses produce exactly three leaves and 196,608 committed bytes, with exact readback; destruction changes the captured reservation base to `MEM_FREE`
+Resource/baseline evidence: each phase records `PROCESS_MEMORY_COUNTERS_EX` PrivateUsage/PagefileUsage/WorkingSet/PeakWorkingSet, Toolhelp thread count, Win32 handle count, store gauges/counters, and allocated leaves; baseline uses seven samples and the median while reporting min/max noise; the independently documented CRT allowance is 1 MiB, matching Task 16; both flows return PrivateUsage, PagefileUsage, and WorkingSet within baseline plus measured noise/allowance, with exact handle/thread counts and exact reservation release
+Review findings and resolution: initial specification review required Release-only enforcement, complete stage-by-stage store/OS sampling, and PagefileUsage/WorkingSet cleanup gates; all were added, handle/thread cleanup became exact, and the CRT allowance was tightened from 8 MiB to 1 MiB; final specification re-review returned `COMPLIANT`; independent code-quality review returned `APPROVED`
+Plan drift audit: Task 18 test/CMake/evidence only; no product semantics, threshold lowering, retry-to-pass, skip-as-pass, proxy/driver/device access, filesystem backing, M3, or M4 behavior was introduced
+Open risks: Task 19 still owns M2 CLI/lifecycle/report/performance-probe fakes; Tasks 20–22 own the real-device harness, staged M2-A/B/C execution, NTFS workload, performance/fault gate, 20-cycle soak, and final M2 verdict
+Executor / timestamp: Codex / `2026-08-04T03:10:19+08:00`

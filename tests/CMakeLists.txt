@@ -417,6 +417,22 @@ myrd_enable_warnings(myrd_m2_shm_proxy_tests)
 add_test(NAME integration.m2.shm COMMAND myrd_m2_shm_proxy_tests)
 set_tests_properties(integration.m2.shm PROPERTIES LABELS "m2-v4" TIMEOUT 60)
 
+add_executable(myrd_m2_virtual_memory_integration_tests
+    integration/m2_virtual_memory_tests.cpp
+)
+target_link_libraries(myrd_m2_virtual_memory_integration_tests PRIVATE
+    myrd_test_support myrd_storage Psapi)
+target_include_directories(myrd_m2_virtual_memory_integration_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_virtual_memory_integration_tests)
+add_test(NAME integration.m2.virtual_memory
+    COMMAND myrd_m2_virtual_memory_integration_tests
+    CONFIGURATIONS Release)
+set_tests_properties(integration.m2.virtual_memory PROPERTIES
+    LABELS "m2-v2"
+    RUN_SERIAL TRUE
+    TIMEOUT 180)
+
 add_executable(myrd_m2_backing_store_tests
     unit/backing_store_tests.cpp
     support/fake_backing_store.h
