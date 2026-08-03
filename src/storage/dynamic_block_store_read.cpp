@@ -958,6 +958,7 @@ Result<void> DynamicBlockStore::read(
         auto destination = output.subspan(
             static_cast<std::size_t>(segment.buffer_offset_bytes),
             static_cast<std::size_t>(segment.length_bytes));
+        const auto committed_before = stats().committed_bytes;
         const auto result = read_one_segment(
             context,
             segment.block_index,
@@ -972,6 +973,11 @@ Result<void> DynamicBlockStore::read(
         }
         if (read_observer_) {
             read_observer_->after_segment(segment.block_index);
+        }
+        const auto committed_after = stats().committed_bytes;
+        if (committed_before <= options_.soft_limit_bytes &&
+            committed_after > options_.soft_limit_bytes) {
+            signal_eviction_worker_if_needed();
         }
     }
     return Result<void>::success();

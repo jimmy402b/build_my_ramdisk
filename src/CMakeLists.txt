@@ -25,6 +25,8 @@ add_library(myrd_storage STATIC
     storage/dynamic_block_store_snapshot.cpp
     storage/dynamic_block_store_backing.cpp
     storage/dynamic_block_store.h
+    storage/eviction_manager.cpp
+    storage/eviction_manager.h
     storage/block_directory.cpp
     storage/block_directory.h
     storage/virtual_memory_arena.cpp

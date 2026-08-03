@@ -2,6 +2,7 @@
 
 #include "block_directory.h"
 #include "dynamic_block_store_internal.h"
+#include "eviction_manager.h"
 #include "virtual_memory_arena.h"
 #include "zero_backing_store.h"
 #include "src/common/scope_exit.h"
@@ -173,6 +174,13 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
                                L"failed to allocate store object"));
     }
 
+    store->eviction_manager_ = EvictionManager::create(*store);
+    if (!store->eviction_manager_) {
+        return Result<std::unique_ptr<DynamicBlockStore>>::failure(
+            make_factory_error(L"DynamicBlockStore::create/eviction",
+                               L"failed to allocate eviction manager"));
+    }
+
     if (dependencies.fail_stage ==
         DynamicBlockStoreFactoryStage::StartWorker) {
         return Result<std::unique_ptr<DynamicBlockStore>>::failure(
@@ -248,6 +256,7 @@ DynamicBlockStore::~DynamicBlockStore() noexcept {
         std::terminate();
     }
 
+    eviction_manager_.reset();
     directory_.reset();
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::DirectoryReleased));
@@ -281,10 +290,29 @@ void DynamicBlockStore::worker_main() noexcept {
     try {
         std::unique_lock lock(lifecycle_mutex_);
         worker_running_ = true;
+        eviction_worker_waiting_ = true;
         lifecycle_condition_.notify_all();
-        lifecycle_condition_.wait(lock, [this] {
-            return lifecycle_state_ != LifecycleState::Open;
-        });
+        for (;;) {
+            lifecycle_condition_.wait(lock, [this] {
+                return lifecycle_state_ != LifecycleState::Open ||
+                       eviction_requested_;
+            });
+            if (lifecycle_state_ != LifecycleState::Open) {
+                break;
+            }
+
+            eviction_requested_ = false;
+            eviction_worker_waiting_ = false;
+            ++eviction_worker_wakeups_;
+            lock.unlock();
+            eviction_manager_->reclaim_to(
+                options_.eviction_low_watermark_bytes);
+            lock.lock();
+            ++eviction_worker_passes_;
+            eviction_worker_waiting_ = true;
+            lifecycle_condition_.notify_all();
+        }
+        eviction_worker_waiting_ = false;
         worker_running_ = false;
         lifecycle_condition_.notify_all();
     } catch (...) {
@@ -293,6 +321,27 @@ void DynamicBlockStore::worker_main() noexcept {
         // instead of risking use-after-free during later destruction.
         std::terminate();
     }
+}
+
+bool DynamicBlockStore::signal_eviction_worker_if_needed() {
+    bool pressure = false;
+    {
+        std::scoped_lock state_lock(state_mutex_);
+        pressure = stats_.committed_bytes > options_.soft_limit_bytes;
+    }
+    if (!pressure) {
+        return false;
+    }
+
+    {
+        std::scoped_lock lifecycle_lock(lifecycle_mutex_);
+        if (lifecycle_state_ != LifecycleState::Open) {
+            return false;
+        }
+        eviction_requested_ = true;
+    }
+    lifecycle_condition_.notify_one();
+    return true;
 }
 
 void DynamicBlockStore::close() {

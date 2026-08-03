@@ -18,6 +18,7 @@
 namespace myrd {
 
 class BlockDirectory;
+class EvictionManager;
 class LockStripeSet;
 class VirtualMemoryArena;
 struct DynamicBlockStoreTestDependencies;
@@ -96,6 +97,7 @@ public:
     std::uint64_t backing_install_waiter_count_for_test() const noexcept;
 
 private:
+    friend class EvictionManager;
     friend class DynamicBlockStoreTestAccess;
 
     struct RequestToken {
@@ -135,6 +137,7 @@ private:
 
     bool start_worker();
     void worker_main() noexcept;
+    bool signal_eviction_worker_if_needed();
     bool try_enter_request(RequestToken& token);
     void leave_request(RequestToken& token) noexcept;
     bool current_thread_has_active_request() const noexcept;
@@ -184,6 +187,10 @@ private:
     std::stop_source close_stop_source_{};
     std::uint64_t active_requests_{};
     bool worker_running_{};
+    bool eviction_requested_{};
+    bool eviction_worker_waiting_{};
+    std::uint64_t eviction_worker_passes_{};
+    std::uint64_t eviction_worker_wakeups_{};
     bool deferred_close_ready_{};
     std::thread::id close_owner_{};
     std::thread worker_;
@@ -196,6 +203,7 @@ private:
     std::unique_ptr<VirtualMemoryArena> arena_;
     std::unique_ptr<LockStripeSet> stripes_;
     std::unique_ptr<BlockDirectory> directory_;
+    std::unique_ptr<EvictionManager> eviction_manager_;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer_;
     std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer_;
     bool fail_snapshot_allocation_{};

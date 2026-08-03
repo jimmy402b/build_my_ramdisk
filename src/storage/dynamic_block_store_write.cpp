@@ -573,6 +573,7 @@ Result<void> DynamicBlockStore::write(
         const auto source = input.subspan(
             static_cast<std::size_t>(segment.buffer_offset_bytes),
             static_cast<std::size_t>(segment.length_bytes));
+        const auto committed_before = stats().committed_bytes;
         const auto result = write_one_segment(
             context,
             segment.block_index,
@@ -581,6 +582,11 @@ Result<void> DynamicBlockStore::write(
             false);
         if (!result.ok()) {
             return result;
+        }
+        const auto committed_after = stats().committed_bytes;
+        if (committed_before <= options_.soft_limit_bytes &&
+            committed_after > options_.soft_limit_bytes) {
+            signal_eviction_worker_if_needed();
         }
     }
     return Result<void>::success();

@@ -3,6 +3,7 @@
 #include "dynamic_block_types.h"
 
 #include <condition_variable>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -16,6 +17,7 @@ namespace myrd {
 class IVirtualMemoryApi;
 class VirtualMemoryCleanupTracker;
 class DynamicBlockStore;
+struct EvictionPassResult;
 
 // BlockEntry deliberately contains only scalar metadata. Synchronization is
 // supplied by LockStripeSet, never by one mutex/condition variable per block.
@@ -217,6 +219,32 @@ public:
     static bool snapshot_pin_gap_reached(
         const DynamicBlockStore& store) noexcept;
     static bool release_snapshot_pin_gap(DynamicBlockStore& store) noexcept;
+    static EvictionPassResult run_eviction_sweep(
+        DynamicBlockStore& store,
+        std::uint64_t target_bytes);
+    static EvictionPassResult reclaim_clean_to(
+        DynamicBlockStore& store,
+        std::uint64_t target_bytes);
+    static bool configure_eviction_entry(
+        DynamicBlockStore& store,
+        std::uint64_t block_index,
+        BlockState state,
+        std::uint64_t pin_count,
+        bool reference_bit,
+        BackingGeneration clean_generation);
+    static std::uint64_t eviction_cursor(DynamicBlockStore& store);
+    static bool signal_eviction_if_needed(DynamicBlockStore& store);
+    static bool signal_eviction_many_for_test(
+        DynamicBlockStore& store,
+        std::uint64_t request_count);
+    static std::uint64_t eviction_worker_passes(
+        DynamicBlockStore& store);
+    static std::uint64_t eviction_worker_wakeups(
+        DynamicBlockStore& store);
+    static bool wait_for_eviction_worker_idle(
+        DynamicBlockStore& store,
+        std::uint64_t minimum_passes,
+        std::chrono::steady_clock::time_point deadline);
 };
 
 struct DynamicBlockStoreTestDependencies {

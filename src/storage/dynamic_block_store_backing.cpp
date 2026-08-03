@@ -183,6 +183,12 @@ Result<void> DynamicBlockStore::mark_persisted(
     }
     block_lock.unlock();
     stripe.condition.notify_all();
+    if (resident_dirty) {
+        // Pressure can previously have had no victim because every committed
+        // block was dirty. A successful persisted acknowledgement creates a
+        // newly eligible clean victim without committing another block.
+        signal_eviction_worker_if_needed();
+    }
     return Result<void>::success();
 }
 

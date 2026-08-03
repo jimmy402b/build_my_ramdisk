@@ -71,7 +71,7 @@
 | 08 | WRITE 与内容版本 | DONE | 07 | M2-V1 |
 | 09 | UNMAP/ZERO 与零覆盖 | DONE | 08 | M2-V1 |
 | 10 | Backing generation、脏快照与 persisted ack | DONE | 09 | M2-V1 |
-| 11 | Clean CLOCK eviction | TODO | 10 | M2-V1 |
+| 11 | Clean CLOCK eviction | DONE | 10 | M2-V1 |
 | 12 | Hard limit、预算和失败回滚 | TODO | 11 | M2-V1 |
 | 13 | 100,000 次参考模型 | TODO | 12 | M2-V2 / M2-A |
 | 14 | 单飞加载与同块并发 | TODO | 12 | M2-V3 |
@@ -618,42 +618,44 @@ Executor / timestamp:
 
 ## Task 11 — Clean-only CLOCK/second-chance eviction
 
+**状态：DONE（2026-08-03）**
+
 **目标：** soft limit 后后台释放 `ResidentClean`，绝不触碰 dirty/pinned/transient block。
 
 **文件：** `eviction_manager.*`、core/internal、`dynamic_block_store_eviction_tests.cpp`、CMake。
 
 ### 红灯测试
 
-- [ ] reference bit 第一次扫描清除、第二次才成为 victim。
-- [ ] `ResidentClean` 且 pins=0 才可选。
-- [ ] `ResidentClean.clean_generation <= backing_generation()` 才可选；反例 fail closed，不 decommit。
-- [ ] ResidentDirty、ZeroClean、ZeroDirty、Loading、Committing、Evicting、pinned 全部 skip。
-- [ ] victim transition 与 owner epoch 唯一。
-- [ ] 成功 decommit 后 `ResidentClean -> Unresident`，accounting 精确。
-- [ ] decommit failure 恢复 ResidentClean 并 notify waiter。
-- [ ] cursor 跨 pass wrap，远端 leaf 不饥饿。
-- [ ] 低于/equal soft 时不启动无用 eviction。
-- [ ] 超 soft 后 coalesced wake，降到 low watermark。
-- [ ] 无 victim 时 bounded no-progress 返回，不 busy spin。
-- [ ] close 唤醒并 join worker。
+- [x] reference bit 第一次扫描清除、第二次才成为 victim。
+- [x] `ResidentClean` 且 pins=0 才可选。
+- [x] `ResidentClean.clean_generation <= backing_generation()` 才可选；反例 fail closed，不 decommit。
+- [x] ResidentDirty、ZeroClean、ZeroDirty、Loading、Committing、Evicting、pinned 全部 skip。
+- [x] victim transition 与 owner epoch 唯一。
+- [x] 成功 decommit 后 `ResidentClean -> Unresident`，accounting 精确。
+- [x] decommit failure 恢复 ResidentClean 并 notify waiter。
+- [x] cursor 跨 pass wrap，远端 leaf 不饥饿。
+- [x] 低于/equal soft 时不启动无用 eviction。
+- [x] 超 soft 后 coalesced wake，降到 low watermark。
+- [x] 无 victim 时 bounded no-progress 返回，不 busy spin。
+- [x] close 唤醒并 join worker。
 
 ### 实现
 
-- [ ] CLOCK 只扫描已有 sparse leaves。
-- [ ] cursor 为 manager 持久状态。
-- [ ] 选 victim 在 stripe lock 下，decommit 时释放 metadata lock。
-- [ ] decommit 后复锁验证 owner/epoch 再 publish。
-- [ ] victim 选择和 publish 都保留 clean-generation invariant；不得靠 stats 判断 reload 是否安全。
-- [ ] 一个 background worker，仅 factory 完成后启动。
-- [ ] CV predicate 包含 pressure/close，不使用 polling sleep。
-- [ ] worker 停止先于 arena release。
+- [x] CLOCK 只扫描已有 sparse leaves。
+- [x] cursor 为 manager 持久状态。
+- [x] 选 victim 在 stripe lock 下，decommit 时释放 metadata lock。
+- [x] decommit 后复锁验证 owner/epoch 再 publish。
+- [x] victim 选择和 publish 都保留 clean-generation invariant；不得靠 stats 判断 reload 是否安全。
+- [x] 一个 background worker，仅 factory 完成后启动。
+- [x] CV predicate 包含 pressure/close，不使用 polling sleep。
+- [x] worker 停止先于 arena release。
 
 ### 验证与验收
 
-- [ ] `unit.m2.eviction` 通过。
-- [ ] dirty victim attempts 为零；skip counters 合理。
-- [ ] 回读 Plan Task 11、1.3、1.4、state table；确认 eviction 不做持久化，并能证明每个 victim 可从当前完整 view reload。
-- [ ] 建议提交：`feat(storage): add clean block eviction`。
+- [x] `unit.m2.eviction` 通过。
+- [x] dirty victim attempts 为零；skip counters 合理。
+- [x] 回读 Plan Task 11、1.3、1.4、state table；确认 eviction 不做持久化，并能证明每个 victim 可从当前完整 view reload。
+- [x] 建议提交：`feat(storage): add clean block eviction`。
 
 ---
 
@@ -1376,3 +1378,15 @@ Review findings and resolution: specification re-review returned `COMPLIANT`; co
 Plan drift audit: Task 10 only; coherent monotonic backing generation, owned dirty snapshots, exact install-before-ack, and resurrection-safe metadata are implemented; no filesystem I/O, file format, checkpoint/journal, durability claim, eviction worker, proxy, driver, M3, or M4 behavior was introduced
 Open risks: Task 11 still owns clean-only CLOCK eviction; Task 12 still owns hard-limit synchronous pressure and complete reservation reconciliation; broader snapshot/eviction/close stress belongs to Tasks 14–16
 Executor / timestamp: Codex / `2026-08-03T19:48:34+08:00`
+
+Task: 11 — Clean-only CLOCK/second-chance eviction
+Status: DONE
+Start commit / end commit: `36e26bd` / pending commit `feat(storage): add clean block eviction`
+Files changed: `src/storage/eviction_manager.h`, `src/storage/eviction_manager.cpp`, `src/storage/dynamic_block_store.h`, `src/storage/dynamic_block_store_core.cpp`, `src/storage/dynamic_block_store_internal.h`, `src/storage/dynamic_block_store_read.cpp`, `src/storage/dynamic_block_store_write.cpp`, `src/storage/dynamic_block_store_backing.cpp`, `src/CMakeLists.txt`, `tests/unit/dynamic_block_store_eviction_tests.cpp`, `tests/CMakeLists.txt`, and this Task 11 status/record
+Red test and observed failure: after registering `unit.m2.eviction` first, Debug compilation failed with MSVC `C1083` because `src/storage/eviction_manager.h` did not exist; the completed deterministic suite then drove CLOCK second chance, exact eligibility, generation fail-closed, owner-epoch publication, waiter wakeup, decommit rollback, sparse cursor wrap, worker coalescing/no-progress, automatic soft crossing, persisted-ack wakeup, and close/join behavior
+Focused verification command / exit code: Debug and Release `ctest --test-dir out/build/msvc -C <config> -R '^unit\.m2\.eviction$'` exit 0; the exact test passed `--repeat until-fail:100` in both configurations
+Cumulative verification command / exit code: clean-first Debug build exit 0 and full CTest 39/39; clean-first Release build exit 0 and full CTest 39/39; both configurations report M2-V1 16/16; `git diff --check` exit 0
+Evidence paths: `src/storage/eviction_manager.cpp`, `tests/unit/dynamic_block_store_eviction_tests.cpp`, Plan Task 11 and SPEC sections 11/15/16, plus console transcripts for red, focused, repeat, and full gates
+Plan drift audit: Task 11 only; the manager scans only allocated sparse leaves, serializes a persistent CLOCK cursor, decommits only unpinned `ResidentClean` with `clean_generation <= current backing generation`, preserves version/generation metadata, and uses one CV-driven worker; it performs no backing I/O, file write, persistence, swap, proxy, driver, M3, or M4 behavior
+Open risks: Task 12 still owns synchronous hard-pressure eviction and full concurrent budget reconciliation; Tasks 14–16 still own wider background/synchronous, snapshot, close, and long-stress race matrices
+Executor / timestamp: Codex / `2026-08-03T20:42:00+08:00`
