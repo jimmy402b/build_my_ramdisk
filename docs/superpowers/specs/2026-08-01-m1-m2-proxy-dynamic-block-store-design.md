@@ -2,7 +2,9 @@
 
 日期：2026-08-01
 
-状态：设计已批准；M0/M1 已最终 GO；M2 generation-safe 设计已确认
+最后修订：2026-08-03
+
+状态：设计已批准；M0/M1 已最终 GO；M2 SPEC/PLAN/TASKLIST 已按 generation-safe 方案就绪
 
 目标平台：Windows x64、MSVC、C++20
 
@@ -453,6 +455,8 @@ Store 默认块来源：
 
 `ZeroBackingStore` 使用 `CleanZero`；未来 M3 已有镜像使用 `BackingUnresident`。
 
+未实例化的 implicit `CleanZero` 块逻辑上使用 Store 的 initial backing generation 作为 `clean_generation`，但不得仅为保存该值创建 leaf；显式 metadata 只在状态偏离默认值或进入 transition 时创建。
+
 每个已实例化块至少记录：
 
 ```text
@@ -722,7 +726,7 @@ M3 必须遵守以下唯一顺序：
 3. 调用 `install_backing_view()` 原子安装完整后继 view。
 4. 对确实包含在该 view 中的每条记录调用 `mark_persisted(..., persisted_generation)`。
 
-不得在第 3 步之前执行第 4 步。批处理中某块在第 1 步之后再次变化时，第 4 步必须因 version/kind 不匹配失败；新 Dirty 继续覆盖已安装 view，等待下一 generation。
+不得在第 3 步之前执行第 4 步；`ack-before-install` 是明确的协议错误。批处理中某块在第 1 步之后再次变化时，第 4 步必须因 version/kind 不匹配失败；新 Dirty 继续覆盖已安装 view，等待下一 generation。
 
 ## 18. 会话生命周期
 
@@ -1010,7 +1014,7 @@ mark_persisted
 
 ## 25. 真实驱动 E2E
 
-本章节只能在 M0 最终 GO 后执行。
+本章节只能在 M0 与 M1 最终 GO、且 Task 00 的新鲜 M1 回归通过后执行。
 
 ### 25.1 M1 gate
 
