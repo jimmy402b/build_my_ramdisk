@@ -388,6 +388,12 @@ struct DynamicBlockStoreStats {
     std::uint64_t hard_limit_rejections{};
     std::uint64_t commit_failures{};
     std::uint64_t decommit_failures{};
+    std::uint64_t synchronous_pressure_passes_total{};
+    std::uint64_t synchronous_pressure_waits_total{};
+    std::uint64_t synchronous_pressure_no_progress_total{};
+    std::uint64_t synchronous_pressure_cancellations_total{};
+    std::uint64_t synchronous_pressure_deadlines_total{};
+    std::uint64_t commit_reservation_rollbacks_total{};
     std::uint64_t snapshot_records_total{};
     std::uint64_t snapshot_version_conflicts{};
 

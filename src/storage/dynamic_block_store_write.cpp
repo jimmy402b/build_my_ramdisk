@@ -424,25 +424,39 @@ Result<void> DynamicBlockStore::write_one_segment(
             return write_invariant(L"dirty epoch wrapped");
         }
 
+        const auto original_version = entry->version;
+        block_lock.unlock();
+        const auto budget = reserve_commit_budget(context);
+        if (!budget.ok()) {
+            return Result<void>::failure(budget.error());
+        }
+        block_lock.lock();
+        const bool source_changed =
+            entry->state != original_state ||
+            entry->version != original_version ||
+            entry->transition_owner != 0 ||
+            entry->transition_epoch != 0;
+        if (source_changed) {
+            if (budget.value() == CommitBudgetOutcome::Reserved) {
+                release_commit_reservation(true);
+            }
+            block_lock.unlock();
+            continue;
+        }
+        if (budget.value() == CommitBudgetOutcome::NoCapacity) {
+            {
+                std::scoped_lock state_lock(state_mutex_);
+                ++stats_.hard_limit_rejections;
+            }
+            return Result<void>::failure(write_error(
+                OperationErrorCode::memory_hard_limit,
+                L"DynamicBlockStore::write/budget",
+                L"hard limit prevents a new committed block"));
+        }
+
         BackingView captured_view;
         {
             std::scoped_lock state_lock(state_mutex_);
-            const bool reservation_invalid =
-                commit_reservation_bytes_ > options_.hard_limit_bytes ||
-                stats_.committed_bytes >
-                    options_.hard_limit_bytes - commit_reservation_bytes_;
-            const auto accounted = reservation_invalid
-                ? options_.hard_limit_bytes
-                : stats_.committed_bytes + commit_reservation_bytes_;
-            if (reservation_invalid ||
-                options_.hard_limit_bytes - accounted < kBlockSizeBytes) {
-                ++stats_.hard_limit_rejections;
-                return Result<void>::failure(write_error(
-                    OperationErrorCode::memory_hard_limit,
-                    L"DynamicBlockStore::write/budget",
-                    L"hard limit prevents a new committed block"));
-            }
-            commit_reservation_bytes_ += kBlockSizeBytes;
             ++backing_publications_in_progress_;
             captured_view = backing_view_;
             decrement_state_gauge(stats_, original_state);
@@ -471,6 +485,7 @@ Result<void> DynamicBlockStore::write_one_segment(
                 commit_reservation_bytes_ -= kBlockSizeBytes;
                 --backing_publications_in_progress_;
                 ++stats_.commit_failures;
+                ++stats_.commit_reservation_rollbacks_total;
                 increment_state_gauge(stats_, original_state);
             }
             entry->state = original_state;
@@ -509,6 +524,7 @@ Result<void> DynamicBlockStore::write_one_segment(
             }
             commit_reservation_bytes_ -= kBlockSizeBytes;
             --backing_publications_in_progress_;
+            committed_bytes_ += kBlockSizeBytes;
             stats_.committed_bytes += kBlockSizeBytes;
             increment_state_gauge(stats_, BlockState::ResidentDirty);
             entry->state = BlockState::ResidentDirty;

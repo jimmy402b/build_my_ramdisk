@@ -233,6 +233,8 @@ public:
         bool reference_bit,
         BackingGeneration clean_generation);
     static std::uint64_t eviction_cursor(DynamicBlockStore& store);
+    static std::uint64_t synchronous_eviction_waiters(
+        DynamicBlockStore& store) noexcept;
     static bool signal_eviction_if_needed(DynamicBlockStore& store);
     static bool signal_eviction_many_for_test(
         DynamicBlockStore& store,

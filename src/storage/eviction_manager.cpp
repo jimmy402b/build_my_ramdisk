@@ -4,8 +4,10 @@
 #include "dynamic_block_store.h"
 #include "dynamic_block_store_internal.h"
 #include "virtual_memory_arena.h"
+#include "src/common/operation_context.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <new>
 
@@ -44,6 +46,10 @@ void merge_report(EvictionPassResult& aggregate,
         aggregate.target_reached || pass.target_reached;
     aggregate.closing_observed =
         aggregate.closing_observed || pass.closing_observed;
+    aggregate.waited_for_scan =
+        aggregate.waited_for_scan || pass.waited_for_scan;
+    aggregate.request_interrupted =
+        aggregate.request_interrupted || pass.request_interrupted;
 }
 
 bool contributes_resident_gauge(BlockState state) noexcept {
@@ -80,26 +86,55 @@ std::unique_ptr<EvictionManager> EvictionManager::create(
 bool EvictionManager::committed_at_or_below(
     std::uint64_t target_bytes) const {
     std::scoped_lock lock(store_.state_mutex_);
-    return store_.stats_.committed_bytes <= target_bytes;
+    return store_.committed_bytes_ <= target_bytes;
 }
 
 EvictionPassResult EvictionManager::sweep_once(
     std::uint64_t target_bytes) {
     std::scoped_lock scan_lock(scan_mutex_);
-    return sweep_once_locked(target_bytes);
+    return sweep_once_locked(target_bytes, nullptr);
 }
 
 EvictionPassResult EvictionManager::reclaim_to(
-    std::uint64_t target_bytes) {
-    std::scoped_lock scan_lock(scan_mutex_);
+    std::uint64_t target_bytes,
+    const OperationContext* context) {
+    std::unique_lock<std::timed_mutex> scan_lock(
+        scan_mutex_, std::defer_lock);
     EvictionPassResult aggregate{};
+
+    if (context == nullptr) {
+        scan_lock.lock();
+    } else if (!scan_lock.try_lock()) {
+        aggregate.waited_for_scan = true;
+        synchronous_waiters_.fetch_add(1, std::memory_order_release);
+        for (;;) {
+            if (!check_operation_context(*context).ok()) {
+                synchronous_waiters_.fetch_sub(
+                    1, std::memory_order_release);
+                aggregate.request_interrupted = true;
+                return aggregate;
+            }
+            if (store_.closing_requested()) {
+                synchronous_waiters_.fetch_sub(
+                    1, std::memory_order_release);
+                aggregate.closing_observed = true;
+                return aggregate;
+            }
+            if (scan_lock.try_lock_for(std::chrono::milliseconds(1))) {
+                synchronous_waiters_.fetch_sub(
+                    1, std::memory_order_release);
+                break;
+            }
+        }
+    }
 
     // Two complete sparse sweeps are sufficient for CLOCK: the first clears
     // every observed reference bit, and the second can reclaim those blocks.
     for (std::uint32_t sweep = 0; sweep < 2; ++sweep) {
-        auto pass = sweep_once_locked(target_bytes);
+        auto pass = sweep_once_locked(target_bytes, context);
         merge_report(aggregate, pass);
-        if (pass.target_reached || pass.closing_observed) {
+        if (pass.target_reached || pass.closing_observed ||
+            pass.request_interrupted) {
             break;
         }
         if (pass.cleared_reference_bits == 0) {
@@ -113,7 +148,8 @@ EvictionPassResult EvictionManager::reclaim_to(
 }
 
 EvictionPassResult EvictionManager::sweep_once_locked(
-    std::uint64_t target_bytes) {
+    std::uint64_t target_bytes,
+    const OperationContext* context) {
     EvictionPassResult report{};
     const auto block_count = store_.directory_->block_count();
     if (block_count == 0) {
@@ -137,6 +173,11 @@ EvictionPassResult EvictionManager::sweep_once_locked(
         for (auto leaf_index = first_leaf;
              leaf_index <= last_leaf;
              ++leaf_index) {
+            if (context != nullptr &&
+                !check_operation_context(*context).ok()) {
+                report.request_interrupted = true;
+                return true;
+            }
             if (store_.closing_requested()) {
                 report.closing_observed = true;
                 return true;
@@ -152,6 +193,11 @@ EvictionPassResult EvictionManager::sweep_once_locked(
             for (auto block_index = entry_first;
                  block_index < entry_last;
                  ++block_index) {
+                if (context != nullptr &&
+                    !check_operation_context(*context).ok()) {
+                    report.request_interrupted = true;
+                    return true;
+                }
                 next_block_index_ = block_index + 1 == block_count
                     ? 0
                     : block_index + 1;
@@ -200,6 +246,7 @@ EvictionPassResult EvictionManager::sweep_once_locked(
                     }
                     metadata_accounting_valid =
                         store_.stats_.resident_clean_blocks != 0 &&
+                        store_.committed_bytes_ >= kBlockSizeBytes &&
                         store_.stats_.committed_bytes >= kBlockSizeBytes;
                 }
                 if (!metadata_accounting_valid ||
@@ -257,9 +304,11 @@ EvictionPassResult EvictionManager::sweep_once_locked(
 
                 {
                     std::scoped_lock state_lock(store_.state_mutex_);
-                    if (store_.stats_.committed_bytes < kBlockSizeBytes) {
+                    if (store_.committed_bytes_ < kBlockSizeBytes ||
+                        store_.stats_.committed_bytes < kBlockSizeBytes) {
                         std::terminate();
                     }
+                    store_.committed_bytes_ -= kBlockSizeBytes;
                     store_.stats_.committed_bytes -= kBlockSizeBytes;
                     ++store_.stats_.evicted_blocks_total;
                 }
@@ -296,6 +345,10 @@ EvictionPassResult EvictionManager::sweep_once_locked(
 std::uint64_t EvictionManager::cursor() const {
     std::scoped_lock lock(scan_mutex_);
     return next_block_index_;
+}
+
+std::uint64_t EvictionManager::synchronous_waiters() const noexcept {
+    return synchronous_waiters_.load(std::memory_order_acquire);
 }
 
 EvictionPassResult DynamicBlockStoreTestAccess::run_eviction_sweep(
@@ -362,6 +415,11 @@ bool DynamicBlockStoreTestAccess::configure_eviction_entry(
 std::uint64_t DynamicBlockStoreTestAccess::eviction_cursor(
     DynamicBlockStore& store) {
     return store.eviction_manager_->cursor();
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::synchronous_eviction_waiters(
+    DynamicBlockStore& store) noexcept {
+    return store.eviction_manager_->synchronous_waiters();
 }
 
 bool DynamicBlockStoreTestAccess::signal_eviction_if_needed(

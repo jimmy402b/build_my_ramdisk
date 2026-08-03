@@ -116,6 +116,11 @@ private:
         ApplyMutation = 1,
     };
 
+    enum class CommitBudgetOutcome : std::uint8_t {
+        Reserved = 0,
+        NoCapacity = 1,
+    };
+
     DynamicBlockStore(
         DynamicBlockStoreCreateArgs args,
         BlockGeometry geometry,
@@ -138,6 +143,11 @@ private:
     bool start_worker();
     void worker_main() noexcept;
     bool signal_eviction_worker_if_needed();
+    // Must be called without a block stripe. A failed immediate reservation
+    // may synchronously run one bounded, cancellation-aware clean reclaim.
+    Result<CommitBudgetOutcome> reserve_commit_budget(
+        const OperationContext& context);
+    void release_commit_reservation(bool rollback) noexcept;
     bool try_enter_request(RequestToken& token);
     void leave_request(RequestToken& token) noexcept;
     bool current_thread_has_active_request() const noexcept;
@@ -177,6 +187,9 @@ private:
     std::condition_variable backing_view_condition_;
     BackingView backing_view_{};
     DynamicBlockStoreStats stats_{};
+    // Correctness-owned commit accounting. stats_.committed_bytes is only
+    // its observable mirror and is never consulted for admission decisions.
+    std::uint64_t committed_bytes_{};
     std::uint64_t commit_reservation_bytes_{};
     std::uint64_t backing_publications_in_progress_{};
 

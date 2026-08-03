@@ -341,10 +341,12 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
             if (backing_view_.generation != captured_view.generation ||
                 backing_view_.store != captured_view.store ||
                 backing_publications_in_progress_ == 0 ||
+                committed_bytes_ < kBlockSizeBytes ||
                 stats_.committed_bytes < kBlockSizeBytes) {
                 std::terminate();
             }
             --backing_publications_in_progress_;
+            committed_bytes_ -= kBlockSizeBytes;
             stats_.committed_bytes -= kBlockSizeBytes;
             increment_state_gauge(stats_, BlockState::ZeroDirty);
             entry->state = BlockState::ZeroDirty;

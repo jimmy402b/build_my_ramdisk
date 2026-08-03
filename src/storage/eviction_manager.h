@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -7,6 +8,7 @@
 namespace myrd {
 
 class DynamicBlockStore;
+struct OperationContext;
 
 struct EvictionPassResult {
     std::uint64_t scanned_blocks{};
@@ -21,6 +23,8 @@ struct EvictionPassResult {
     std::uint64_t invariant_failures{};
     bool target_reached{};
     bool closing_observed{};
+    bool waited_for_scan{};
+    bool request_interrupted{};
 };
 
 // Owns the persistent CLOCK cursor and serializes all eviction passes. It
@@ -35,18 +39,24 @@ public:
     EvictionManager& operator=(const EvictionManager&) = delete;
 
     EvictionPassResult sweep_once(std::uint64_t target_bytes);
-    EvictionPassResult reclaim_to(std::uint64_t target_bytes);
+    EvictionPassResult reclaim_to(
+        std::uint64_t target_bytes,
+        const OperationContext* context = nullptr);
     std::uint64_t cursor() const;
+    std::uint64_t synchronous_waiters() const noexcept;
 
 private:
     explicit EvictionManager(DynamicBlockStore& store) noexcept
         : store_(store) {}
 
-    EvictionPassResult sweep_once_locked(std::uint64_t target_bytes);
+    EvictionPassResult sweep_once_locked(
+        std::uint64_t target_bytes,
+        const OperationContext* context);
     bool committed_at_or_below(std::uint64_t target_bytes) const;
 
     DynamicBlockStore& store_;
-    mutable std::mutex scan_mutex_;
+    mutable std::timed_mutex scan_mutex_;
+    std::atomic<std::uint64_t> synchronous_waiters_{0};
     std::uint64_t next_block_index_{};
 };
 

@@ -72,7 +72,7 @@
 | 09 | UNMAP/ZERO 与零覆盖 | DONE | 08 | M2-V1 |
 | 10 | Backing generation、脏快照与 persisted ack | DONE | 09 | M2-V1 |
 | 11 | Clean CLOCK eviction | DONE | 10 | M2-V1 |
-| 12 | Hard limit、预算和失败回滚 | TODO | 11 | M2-V1 |
+| 12 | Hard limit、预算和失败回滚 | DONE | 11 | M2-V1 |
 | 13 | 100,000 次参考模型 | TODO | 12 | M2-V2 / M2-A |
 | 14 | 单飞加载与同块并发 | TODO | 12 | M2-V3 |
 | 15 | 快照/变更/淘汰/关闭竞态 | TODO | 14 | M2-V3 |
@@ -661,42 +661,44 @@ Executor / timestamp:
 
 ## Task 12 — Hard limit、commit budget 与全失败回滚
 
+**状态：DONE（2026-08-03）**
+
 **目标：** 多线程 commit 也不能突破 hard limit；不能取得空间时 read 可 uncached，mutation 必须安全失败。
 
 **文件：** core/read/write/ranges/eviction、`dynamic_block_store_limit_tests.cpp`。
 
 ### 红灯测试
 
-- [ ] tiny limits 下 low/soft/hard exact boundary。
-- [ ] 两个/多个并发 committer 的 reserved budget 总和不越 hard。
-- [ ] commit 前预算预留，commit 成功后转换 accounting。
-- [ ] commit failure 释放 reservation，不增加 committed。
-- [ ] soft crossing 唤醒 worker。
-- [ ] hard crossing 触发 bounded synchronous eviction。
-- [ ] clean victim 足够时 mutation 成功并降压。
-- [ ] 无 victim时 Data read-through 成功且不 cache。
-- [ ] 无 victim时 write/partial ZERO/partial UNMAP 在修改前 resource-exhausted。
-- [ ] 无 victim且 committed 已到 hard limit 时，对现有 Resident block 的 overwrite 因不需新 commit而成功。
-- [ ] decommit 成功只减一次；失败不减。
-- [ ] background 与 synchronous 同时 eviction 不 double-decommit。
-- [ ] debug reconciliation：budget + committed + state 一致。
+- [x] tiny limits 下 low/soft/hard exact boundary。
+- [x] 两个/多个并发 committer 的 reserved budget 总和不越 hard。
+- [x] commit 前预算预留，commit 成功后转换 accounting。
+- [x] commit failure 释放 reservation，不增加 committed。
+- [x] soft crossing 唤醒 worker。
+- [x] hard crossing 触发 bounded synchronous eviction。
+- [x] clean victim 足够时 mutation 成功并降压。
+- [x] 无 victim时 Data read-through 成功且不 cache。
+- [x] 无 victim时 write/partial ZERO/partial UNMAP 在修改前 resource-exhausted。
+- [x] 无 victim且 committed 已到 hard limit 时，对现有 Resident block 的 overwrite 因不需新 commit而成功。
+- [x] decommit 成功只减一次；失败不减。
+- [x] background 与 synchronous 同时 eviction 不 double-decommit。
+- [x] debug reconciliation：budget + committed + state 一致。
 
 ### 实现
 
-- [ ] 设计独立的 `reserved_commit_bytes` 与 `committed_bytes`。
-- [ ] budget CAS/lock 逻辑支持并发且有 overflow check。
-- [ ] synchronous pressure pass 有 deadline/cancel/no-progress bound。
-- [ ] read-through 使用 private loaded buffer 并返回 `Unresident`。
-- [ ] 需要新 commit 的 mutation 不用 read-through 绕过 hard limit；已 Resident 的原位 mutation 不错误申请新 budget。
-- [ ] 所有 early return 用 RAII 释放 reservation/pin/transition owner。
-- [ ] stats 不用来决定是否能 commit，正确性使用受保护 state。
+- [x] 设计独立的 `reserved_commit_bytes` 与 `committed_bytes`。
+- [x] budget CAS/lock 逻辑支持并发且有 overflow check。
+- [x] synchronous pressure pass 有 deadline/cancel/no-progress bound。
+- [x] read-through 使用 private loaded buffer 并返回 `Unresident`。
+- [x] 需要新 commit 的 mutation 不用 read-through 绕过 hard limit；已 Resident 的原位 mutation 不错误申请新 budget。
+- [x] 所有 early return 用 RAII 释放 reservation/pin/transition owner。
+- [x] stats 不用来决定是否能 commit，正确性使用受保护 state。
 
 ### 验证与验收
 
-- [ ] `unit.m2.limits|eviction|read|write|ranges` 全通过。
-- [ ] 失败注入矩阵后 invariant checker 全通过。
-- [ ] 回读 Plan Task 12；逐条审查每个 reserve/commit/decommit return path。
-- [ ] 建议提交：`feat(storage): enforce bounded commit pressure`。
+- [x] `unit.m2.limits|eviction|read|write|ranges` 全通过。
+- [x] 失败注入矩阵后 invariant checker 全通过。
+- [x] 回读 Plan Task 12；逐条审查每个 reserve/commit/decommit return path。
+- [x] 建议提交：`feat(storage): enforce bounded commit pressure`。
 
 ---
 
@@ -1390,3 +1392,16 @@ Evidence paths: `src/storage/eviction_manager.cpp`, `tests/unit/dynamic_block_st
 Plan drift audit: Task 11 only; the manager scans only allocated sparse leaves, serializes a persistent CLOCK cursor, decommits only unpinned `ResidentClean` with `clean_generation <= current backing generation`, preserves version/generation metadata, and uses one CV-driven worker; it performs no backing I/O, file write, persistence, swap, proxy, driver, M3, or M4 behavior
 Open risks: Task 12 still owns synchronous hard-pressure eviction and full concurrent budget reconciliation; Tasks 14–16 still own wider background/synchronous, snapshot, close, and long-stress race matrices
 Executor / timestamp: Codex / `2026-08-03T20:42:00+08:00`
+
+Task: 12 — Hard limit、commit budget 与全失败回滚
+Status: DONE
+Start commit / end commit: `e589f40` / pending commit `feat(storage): enforce bounded commit pressure`
+Files changed: `src/storage/dynamic_block_store.h`, `src/storage/dynamic_block_store_core.cpp`, `src/storage/dynamic_block_store_internal.h`, `src/storage/dynamic_block_store_read.cpp`, `src/storage/dynamic_block_store_write.cpp`, `src/storage/dynamic_block_store_ranges.cpp`, `src/storage/dynamic_block_types.h`, `src/storage/eviction_manager.h`, `src/storage/eviction_manager.cpp`, `tests/unit/dynamic_block_store_limit_tests.cpp`, and this Task 12 checklist/status/record
+Red test and observed failure: the first new synchronous-pressure read test failed because the old path immediately selected uncached read-through at hard limit instead of reclaiming an eligible clean victim; the first Release 100-run loop later exposed a test synchronization race at iteration 34, where the invariant checker ran after releasing a gated background decommit but before the background worker published its stable accounting/state, and the test now waits for the exact worker pass to become idle before quiescent reconciliation
+Focused verification command / exit code: Debug and Release `ctest --test-dir out/build/msvc -C <config> -R '^unit\.m2\.(limits|eviction|read|write|ranges)$'` exit 0 (5/5); exact `unit.m2.limits` passed `--repeat until-fail:100` in both configurations after the deterministic synchronization fix
+Cumulative verification command / exit code: clean-first Debug build and full CTest exit 0 (39/39); clean-first Release build and full CTest exit 0 (39/39); final Debug and Release M2-V1 gates exit 0 (16/16); `git diff --check` exit 0
+Evidence paths: Task 12 production files, `tests/unit/dynamic_block_store_limit_tests.cpp`, Plan Task 12, and console transcripts for deterministic red, focused gates, both 100-run loops, clean builds, full gates, and M2-V1 gates
+Review findings and resolution: correctness-owned `committed_bytes_` is separate from the observable stats mirror; every new commit reserves exact protected budget before VM commit, converts only after successful publication, and rolls back on stale-view/owner/VM failure; background and synchronous reclaim share one scan owner; cancellation/deadline/no-progress paths are bounded and counted; successful decommit updates arena/state/stats exactly once; all reserve/commit/decommit paths and stats decision sites were manually re-read with no remaining Task 12 finding
+Plan drift audit: implementation remains inside Plan Task 12 and M2-V1; existing read-through semantics are retained only when no clean capacity can be reclaimed, resident overwrite avoids a new reservation, and no reference model, broader concurrency suite, proxy, driver, filesystem backing, M3, or M4 behavior was introduced
+Open risks: active-transition stress and whole-store reconciliation under broader races remain intentionally assigned to Tasks 14–16; no open Task 12 correctness finding remains
+Executor / timestamp: Codex / `2026-08-03T21:12:14+08:00`

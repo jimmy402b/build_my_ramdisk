@@ -523,6 +523,7 @@ Result<void> DynamicBlockStore::read_one_segment(
                         std::terminate();
                     }
                     commit_reservation_bytes_ -= kBlockSizeBytes;
+                    ++stats_.commit_reservation_rollbacks_total;
                 }
                 if (release_publication) {
                     if (backing_publications_in_progress_ == 0) {
@@ -707,29 +708,38 @@ Result<void> DynamicBlockStore::read_one_segment(
 
             bool use_read_through = false;
             bool resident_required_but_unavailable = false;
+            const auto budget = reserve_commit_budget(context);
+            if (!budget.ok()) {
+                return finish_failure(
+                    budget.error(), false, false, false);
+            }
+            const bool budget_reserved =
+                budget.value() == CommitBudgetOutcome::Reserved;
             {
                 std::unique_lock reserve_lock(stripe.mutex);
                 if (entry->state != BlockState::Loading ||
                     entry->transition_epoch != owner_epoch ||
                     entry->transition_owner != owner_epoch) {
+                    if (budget_reserved) {
+                        release_commit_reservation(true);
+                    }
                     return read_invariant(
                         L"load owner changed before commit reservation");
                 }
                 std::scoped_lock state_lock(state_mutex_);
                 if (backing_view_.generation != captured_view.generation ||
                     backing_view_.store != captured_view.store) {
+                    if (budget_reserved) {
+                        if (commit_reservation_bytes_ < kBlockSizeBytes) {
+                            std::terminate();
+                        }
+                        commit_reservation_bytes_ -= kBlockSizeBytes;
+                        ++stats_.commit_reservation_rollbacks_total;
+                    }
                     ++stats_.stale_backing_load_retries;
                     continue;
                 }
-                const bool reservation_invalid =
-                    commit_reservation_bytes_ > options_.hard_limit_bytes ||
-                    stats_.committed_bytes >
-                        options_.hard_limit_bytes - commit_reservation_bytes_;
-                const auto accounted = reservation_invalid
-                    ? options_.hard_limit_bytes
-                    : stats_.committed_bytes + commit_reservation_bytes_;
-                if (reservation_invalid ||
-                    options_.hard_limit_bytes - accounted < kBlockSizeBytes) {
+                if (!budget_reserved) {
                     ++stats_.hard_limit_rejections;
                     use_read_through = true;
                     ++backing_publications_in_progress_;
@@ -737,7 +747,6 @@ Result<void> DynamicBlockStore::read_one_segment(
                         resident_required_but_unavailable = true;
                     }
                 } else {
-                    commit_reservation_bytes_ += kBlockSizeBytes;
                     ++backing_publications_in_progress_;
                 }
             }
@@ -871,6 +880,7 @@ Result<void> DynamicBlockStore::read_one_segment(
                 }
                 commit_reservation_bytes_ -= kBlockSizeBytes;
                 --backing_publications_in_progress_;
+                committed_bytes_ += kBlockSizeBytes;
                 stats_.committed_bytes += kBlockSizeBytes;
                 decrement_state_gauge(stats_, BlockState::Loading);
                 const auto published_state = mutation_requested
@@ -1051,6 +1061,7 @@ bool DynamicBlockStoreTestAccess::seed_resident(
         std::scoped_lock state_lock(store.state_mutex_);
         decrement_state_gauge(store.stats_, entry->state);
         increment_state_gauge(store.stats_, state);
+        store.committed_bytes_ += kBlockSizeBytes;
         store.stats_.committed_bytes += kBlockSizeBytes;
     }
     BlockEntry replacement{};
@@ -1158,6 +1169,7 @@ bool DynamicBlockStoreTestAccess::try_decommit_resident_clean(
     {
         std::scoped_lock state_lock(store.state_mutex_);
         --store.stats_.resident_clean_blocks;
+        store.committed_bytes_ -= kBlockSizeBytes;
         store.stats_.committed_bytes -= kBlockSizeBytes;
     }
     BlockEntry replacement{};

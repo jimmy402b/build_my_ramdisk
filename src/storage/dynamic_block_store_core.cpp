@@ -327,7 +327,7 @@ bool DynamicBlockStore::signal_eviction_worker_if_needed() {
     bool pressure = false;
     {
         std::scoped_lock state_lock(state_mutex_);
-        pressure = stats_.committed_bytes > options_.soft_limit_bytes;
+        pressure = committed_bytes_ > options_.soft_limit_bytes;
     }
     if (!pressure) {
         return false;
@@ -535,6 +535,109 @@ DynamicBlockStoreStats DynamicBlockStore::stats() const {
     return stats_;
 }
 
+Result<DynamicBlockStore::CommitBudgetOutcome>
+DynamicBlockStore::reserve_commit_budget(
+    const OperationContext& context) {
+    const auto try_reserve = [this]() {
+        std::scoped_lock lock(state_mutex_);
+        if (commit_reservation_bytes_ > options_.hard_limit_bytes ||
+            committed_bytes_ >
+                options_.hard_limit_bytes - commit_reservation_bytes_) {
+            return false;
+        }
+        const auto accounted =
+            committed_bytes_ + commit_reservation_bytes_;
+        if (options_.hard_limit_bytes - accounted < kBlockSizeBytes) {
+            return false;
+        }
+        commit_reservation_bytes_ += kBlockSizeBytes;
+        return true;
+    };
+
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<CommitBudgetOutcome>::failure(live.error());
+    }
+    if (closing_requested()) {
+        return Result<CommitBudgetOutcome>::failure(
+            make_session_closed_error(
+                L"DynamicBlockStore::reserve_commit_budget"));
+    }
+    if (try_reserve()) {
+        return Result<CommitBudgetOutcome>::success(
+            CommitBudgetOutcome::Reserved);
+    }
+
+    live = check_operation_context(context);
+    if (!live.ok()) {
+        std::scoped_lock lock(state_mutex_);
+        if (live.error().code == static_cast<std::uint32_t>(
+                OperationErrorCode::cancelled)) {
+            ++stats_.synchronous_pressure_cancellations_total;
+        } else if (live.error().code == static_cast<std::uint32_t>(
+                       OperationErrorCode::timed_out)) {
+            ++stats_.synchronous_pressure_deadlines_total;
+        }
+        return Result<CommitBudgetOutcome>::failure(live.error());
+    }
+    if (closing_requested()) {
+        return Result<CommitBudgetOutcome>::failure(
+            make_session_closed_error(
+                L"DynamicBlockStore::reserve_commit_budget"));
+    }
+
+    const auto pressure = eviction_manager_->reclaim_to(
+        options_.eviction_low_watermark_bytes, &context);
+    {
+        std::scoped_lock lock(state_mutex_);
+        ++stats_.synchronous_pressure_passes_total;
+        if (pressure.waited_for_scan) {
+            ++stats_.synchronous_pressure_waits_total;
+        }
+    }
+
+    live = check_operation_context(context);
+    if (!live.ok()) {
+        std::scoped_lock lock(state_mutex_);
+        if (live.error().code == static_cast<std::uint32_t>(
+                OperationErrorCode::cancelled)) {
+            ++stats_.synchronous_pressure_cancellations_total;
+        } else if (live.error().code == static_cast<std::uint32_t>(
+                       OperationErrorCode::timed_out)) {
+            ++stats_.synchronous_pressure_deadlines_total;
+        }
+        return Result<CommitBudgetOutcome>::failure(live.error());
+    }
+    if (closing_requested()) {
+        return Result<CommitBudgetOutcome>::failure(
+            make_session_closed_error(
+                L"DynamicBlockStore::reserve_commit_budget"));
+    }
+    if (try_reserve()) {
+        return Result<CommitBudgetOutcome>::success(
+            CommitBudgetOutcome::Reserved);
+    }
+
+    {
+        std::scoped_lock lock(state_mutex_);
+        ++stats_.synchronous_pressure_no_progress_total;
+    }
+    return Result<CommitBudgetOutcome>::success(
+        CommitBudgetOutcome::NoCapacity);
+}
+
+void DynamicBlockStore::release_commit_reservation(
+    bool rollback) noexcept {
+    std::scoped_lock lock(state_mutex_);
+    if (commit_reservation_bytes_ < kBlockSizeBytes) {
+        std::terminate();
+    }
+    commit_reservation_bytes_ -= kBlockSizeBytes;
+    if (rollback) {
+        ++stats_.commit_reservation_rollbacks_total;
+    }
+}
+
 std::uint64_t DynamicBlockStore::reservation_size_bytes() const noexcept {
     return geometry_.reservation_size_bytes;
 }
@@ -565,10 +668,14 @@ Result<void> DynamicBlockStore::validate_invariants_for_test() {
          ++attempt) {
         BackingView view_before;
         DynamicBlockStoreStats stats_before;
+        std::uint64_t state_committed_before = 0;
+        std::uint64_t reservation_before = 0;
         {
             std::scoped_lock lock(state_mutex_);
             view_before = backing_view_;
             stats_before = stats_;
+            state_committed_before = committed_bytes_;
+            reservation_before = commit_reservation_bytes_;
         }
         const auto committed_before = arena_->committed_bytes();
         const auto leaves_before = directory_->allocated_leaf_count();
@@ -601,10 +708,14 @@ Result<void> DynamicBlockStore::validate_invariants_for_test() {
 
         BackingView view_after;
         DynamicBlockStoreStats stats_after;
+        std::uint64_t state_committed_after = 0;
+        std::uint64_t reservation_after = 0;
         {
             std::scoped_lock lock(state_mutex_);
             view_after = backing_view_;
             stats_after = stats_;
+            state_committed_after = committed_bytes_;
+            reservation_after = commit_reservation_bytes_;
         }
         const auto committed_after = arena_->committed_bytes();
         const auto leaves_after = directory_->allocated_leaf_count();
@@ -613,6 +724,8 @@ Result<void> DynamicBlockStore::validate_invariants_for_test() {
             view_before.generation == view_after.generation &&
             view_before.store == view_after.store &&
             stats_before == stats_after &&
+            state_committed_before == state_committed_after &&
+            reservation_before == reservation_after &&
             committed_before == committed_after &&
             leaves_before == leaves_after;
         if (!stable) {
@@ -623,7 +736,11 @@ Result<void> DynamicBlockStore::validate_invariants_for_test() {
             stats_before.logical_size_bytes != geometry_.logical_size_bytes ||
             stats_before.reserved_bytes != geometry_.reservation_size_bytes ||
             arena_->reserved_bytes() != geometry_.reservation_size_bytes ||
-            committed_before != stats_before.committed_bytes ||
+            state_committed_before != stats_before.committed_bytes ||
+            reservation_before > options_.hard_limit_bytes ||
+            state_committed_before >
+                options_.hard_limit_bytes - reservation_before ||
+            committed_before != state_committed_before ||
             block_invariant_failed) {
             return Result<void>::failure(make_store_error(
                 static_cast<std::uint32_t>(
