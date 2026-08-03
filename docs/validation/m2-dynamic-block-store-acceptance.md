@@ -1,13 +1,15 @@
-# M2 Dynamic Block Store Acceptance — Task 00 / M2-V0
+# M2 Dynamic Block Store Acceptance — M2-V0 and M2-B Evidence
 
-Date: 2026-08-03 (Asia/Shanghai)
+Date: 2026-08-04 (Asia/Shanghai)
 
 ## Verdict
 
-**M2-V0 PASS for the build shell and baseline only.** M1 is demonstrably GO on
-this worktree, the Release build is green, and `myrd-m2-e2e` is present and
-buildable. M2 product implementation has not started; this document does not
-claim M2-V1, M2-V2, M2-V3, M2-V4 behavior, M2-A/B/C, or an M2 GO verdict.
+**M2-V0 remains PASS. The Task 14–16 concurrency/resource evidence owned by
+M2-B is PASS.** The fixed-seed long stress, deterministic concurrency suite,
+invariant audits, and repeated lifecycle resource checks are green without
+retrying away a failure. The formal ordered M2-B stage verdict remains pending
+Task 21 because Task 18 must first close the remaining real-VM portion of
+M2-V2/M2-A. This document does not claim M2-C or an M2 GO verdict.
 
 ## Reproducible environment facts
 
@@ -229,5 +231,103 @@ which the unchanged verifier passed and its four normative files were hashed.
 - The CTest labels are reservations with real prerequisite coverage; their passing counts do not claim M2 behavior.
 - No CodeGraph initialization was performed.
 
-M2 product implementation has not started. The next task may begin only after
-this M2-V0 build-shell evidence and the existing M1 GO baseline remain intact.
+The preceding statements describe the Task 00 baseline at the time it was
+captured. They are retained as historical evidence; the current implementation
+and gate status are recorded below.
+
+## Task 16 — M2-B concurrency and resource evidence
+
+Task 16 adds `unit.m2.stress` beside the 22-case deterministic
+`unit.m2.concurrency` suite. It changes no product implementation. The new
+target has a 120-second outer CTest timeout; each storage operation uses a
+five-second deadline, and the source contains no timing sleep.
+
+### Fixed-seed multi-role stress
+
+The canonical seed is `0x4D59524453545231`. Three rounds each launch two
+writers, one ZERO caller, one UNMAP caller, two readers, one dirty
+snapshot/successor/install/exact-ack role, and one forced clean-pressure role.
+Each data role executes exactly 192 operations across 20 selected blocks in
+three sparse metadata leaves of a 2,050-block store. Mutations to one block are
+sequenced only by an independent shadow operation lock; readers overlap them
+and accept only a complete historical version, never torn bytes. Operations
+on different blocks, snapshot/install/ack, the eviction worker, and explicit
+pressure remain concurrent.
+
+The shadow owns its bytes, versions, dirty kinds, per-version digests, and the
+generation interval observed around each mutation. It does not read product
+data to construct expected bytes. Snapshot records must match the shadow's
+version, kind, payload digest, and dirty-base interval before they may be
+applied to an immutable fake successor. Generation-bound acknowledgements are
+checked as exact success or `VersionChanged` according to the independently
+serialized shadow state.
+
+Every round has two quiescent audits. The pre-drain audit proves active dirty
+state and dirty-base generation intervals before acknowledgement can hide a
+discrepancy. The post-drain audit performs clean pressure, full byte-by-byte
+comparison, and reload validation. Both audits reconcile stable state,
+`prior_state`, owner/transition epoch, pins, version, dirty kind, clean/dirty
+generation bounds, all state gauges, commit reservations, arena committed
+bytes, the installed generation, and the three allocated sparse leaves.
+
+One submitted-state Release evidence run reported:
+
+```text
+M2_STRESS_SUMMARY seed=0x4d59524453545231 reads=1152 writes=951
+zeroes=576 unmaps=576 pressure_rejections=201 pressure_passes=768
+pressure_scanned=3138 pressure_evicted=7 installs=82 exact_acks=163
+stale_acks=270 generation=83
+```
+
+The exact interleaving-dependent counters may vary, but the seed, role counts,
+operation bounds, invariants, byte comparisons, and non-zero coverage gates do
+not. On failure the test prints the seed, first failure, the last 16 operations,
+all role/pressure counters, and persistence counters.
+
+### Resource accounting
+
+The resource test warms up once, captures five process baseline samples, then
+creates, exercises, closes, and destroys 20 stores. A real Win32 VM wrapper
+tracks every reservation, commit, decommit, and release. Each cycle separately
+requires zero active reservation, zero committed arena bytes, zero backing
+objects, zero cleanup release failures, and a stopped/joined store worker.
+Process handle and thread counts must return exactly to baseline. Private bytes
+must remain within measured baseline noise plus a documented 1 MiB allocator
+allowance; exact arena accounting remains the correctness gate.
+
+The submitted-state Release sample was:
+
+```text
+M2_RESOURCE_SUMMARY cycles=20 handles_before=61 handles_after=61
+threads_before=4 threads_after=4 private_before=1929216
+private_after=1929216 private_growth=0 baseline_noise=0
+private_tolerance=1048576 reserves=21 releases=21
+```
+
+### Reproducible verification
+
+| Gate | Result |
+|---|---|
+| Debug exact `unit.m2.stress` repeat-until-fail 20 | 20/20, exit 0 |
+| Release exact `unit.m2.stress` repeat-until-fail 20 | 20/20, exit 0 |
+| Clean-first Debug build and full CTest | build 134/134; tests 42/42 |
+| Clean-first Release build and full CTest | build 134/134; tests 42/42 |
+| Release M2-V1 cumulative label | 16/16 in the final full run |
+| Release M2-V2 cumulative label | 5/5 in the final full run |
+| Release M2-V3 consecutive run 1 | 6/6, exit 0 |
+| Release M2-V3 consecutive run 2 | 6/6, exit 0 |
+
+An independent strict read-only review initially found five Important issues
+and one Minor diagnostic gap: shadow locks covering store calls, no active-dirty
+pre-drain audit, weak pressure evidence, unhandled helper-thread exceptions, an
+overly broad private-byte tolerance, and insufficient failure history. All six
+were corrected. The final independent re-review returned `APPROVED` with no
+remaining Critical, Important, or Minor finding.
+
+### Gate boundary
+
+The M2-B-owned concurrency/resource evidence is complete. Formal ordered M2-B
+acceptance is intentionally deferred to Task 21 until Task 18 completes the
+real 64 GiB/1 TiB VM integration required by the preceding M2-A/M2-V2 gate.
+Proxy injection, real driver/NTFS behavior, persistence, performance, M2-C, and
+the overall M2 GO verdict are outside Task 16 and remain unclaimed.

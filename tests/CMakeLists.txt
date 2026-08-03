@@ -578,3 +578,17 @@ add_test(NAME unit.m2.concurrency COMMAND myrd_m2_concurrency_tests)
 set_tests_properties(unit.m2.concurrency PROPERTIES
     LABELS "m2-v3"
     TIMEOUT 30)
+
+add_executable(myrd_m2_stress_tests
+    unit/dynamic_block_store_stress_tests.cpp
+    support/fake_backing_store.h
+)
+target_link_libraries(myrd_m2_stress_tests PRIVATE
+    myrd_test_support myrd_storage Psapi)
+target_include_directories(myrd_m2_stress_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_stress_tests)
+add_test(NAME unit.m2.stress COMMAND myrd_m2_stress_tests)
+set_tests_properties(unit.m2.stress PROPERTIES
+    LABELS "m2-v3"
+    TIMEOUT 120)

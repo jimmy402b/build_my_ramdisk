@@ -76,7 +76,7 @@
 | 13 | 100,000 次参考模型 | DONE | 12 | M2-V2 / M2-A |
 | 14 | 单飞加载与同块并发 | DONE | 12 | M2-V3 |
 | 15 | 快照/变更/淘汰/关闭竞态 | DONE | 14 | M2-V3 |
-| 16 | 长压测、不变量、资源核算 | TODO | 13,15 | M2-V3 / M2-B |
+| 16 | 长压测、不变量、资源核算 | DONE | 13,15 | M2-V3 / M2-B |
 | 17 | 注入 M1 Proxy 与本地 SHM | TODO | 16 | M2-V4 |
 | 18 | 64 GiB/1 TiB 真实 VM 集成 | TODO | 16 | M2-V2 |
 | 19 | CLI、生命周期、报告、性能探针 | TODO | 17,18 | 本地假验收 |
@@ -819,31 +819,33 @@ Executor / timestamp:
 
 ## Task 16 — 长并发压力、不变量与资源核算
 
+**状态：DONE（2026-08-04）**
+
 **目标：** 在多角色长期操作中证明无数据漂移、无挂死、无资源累积，形成 M2-B。
 
 **文件：** concurrency/stress tests、CMake，按缺陷最小修改产品文件。
 
 ### 压力场景
 
-- [ ] 固定 seed 和固定 operation/time bound。
-- [ ] readers、writers、ZERO、UNMAP、snapshot、immutable successor installer、generation-bound ack、pressure 并发角色齐全。
-- [ ] shadow model 受独立同步保护，不共享 production state。
-- [ ] 周期性 quiescent sampled/full byte check。
-- [ ] 周期性 invariant check：state、prior、owner、pins、version、dirty base/clean/current generation。
-- [ ] accounting check：reserved、committed、dirty、arena fake/real counters。
-- [ ] repeated create/destroy 前后 handle/thread/private bytes/reservation/backing object lifetime baseline。
-- [ ] 每个 wait/test 有 timeout；failure 打印 seed/counters/last operations。
-- [ ] 无 crash-only pass：必须有 correctness comparison。
+- [x] 固定 seed 和固定 operation/time bound。
+- [x] readers、writers、ZERO、UNMAP、snapshot、immutable successor installer、generation-bound ack、pressure 并发角色齐全。
+- [x] shadow model 受独立同步保护，不共享 production state。
+- [x] 周期性 quiescent sampled/full byte check。
+- [x] 周期性 invariant check：state、prior、owner、pins、version、dirty base/clean/current generation。
+- [x] accounting check：reserved、committed、dirty、arena fake/real counters。
+- [x] repeated create/destroy 前后 handle/thread/private bytes/reservation/backing object lifetime baseline。
+- [x] 每个 wait/test 有 timeout；failure 打印 seed/counters/last operations。
+- [x] 无 crash-only pass：必须有 correctness comparison。
 
 ### 验证与验收
 
-- [ ] M2-V3 完整跑两次，均一次通过，不能失败后靠重跑选成功。
-- [ ] 零 store-owned thread/handle/reservation 泄漏。
-- [ ] 无 invariant failure、hang、counter underflow/overflow。
-- [ ] M2-V1/V2 累计回归通过。
-- [ ] 在 acceptance 文档标记 M2-B 及证据；未齐全不得标记。
-- [ ] 回读 Plan Task 16 与 verification tier M2-V3。
-- [ ] 建议提交：`test(storage): add concurrent stress and resource audits`。
+- [x] M2-V3 完整跑两次，均一次通过，不能失败后靠重跑选成功。
+- [x] 零 store-owned thread/handle/reservation 泄漏。
+- [x] 无 invariant failure、hang、counter underflow/overflow。
+- [x] M2-V1/V2 累计回归通过。
+- [x] 在 acceptance 文档标记 M2-B 及证据；未齐全不得标记。
+- [x] 回读 Plan Task 16 与 verification tier M2-V3。
+- [x] 建议提交：`test(storage): add concurrent stress and resource audits`。
 
 ---
 
@@ -1454,3 +1456,19 @@ Evidence paths: `tests/unit/dynamic_block_store_concurrency_tests.cpp`, the pers
 Plan drift audit: Task 15 only; the added seam is private and test-only, no Task 16 long stress/resource audit, proxy, driver, filesystem backing, M3, or M4 behavior was introduced
 Open risks: long multi-role stress, repeated create/destroy resource accounting, and the final M2-B evidence remain assigned to Task 16
 Executor / timestamp: Codex / `2026-08-04T01:09:27+08:00`
+
+Task: 16 — 长并发压力、不变量与资源核算
+Status: DONE
+Start commit / end commit: `91be89c` / pending commit `test(storage): add concurrent stress and resource audits`
+Files changed: `tests/unit/dynamic_block_store_stress_tests.cpp`, `tests/CMakeLists.txt`, `docs/validation/m2-dynamic-block-store-acceptance.md`, and this Task 16 checklist/status/record in `M2_TASKLIST.md`; no product source changed
+Red test and observed failure: after registering `unit.m2.stress` first, CMake generation exited 1 because `unit/dynamic_block_store_stress_tests.cpp` did not exist. The first complete harness passed, but strict review exposed six proof gaps. Their remediation produced a legitimate Release red at the stronger exact clean-generation oracle; analysis showed reload from a newer backing may legally advance clean generation, so the independent shadow now enforces the last exact ack as a lower bound and current generation as the upper bound. A later Release repeat exposed another test-oracle mismatch because product `hard_limit_rejections` includes read materialization while the shadow counts writer-returned rejections; the final assertion requires the product global count to cover, not equal, the writer count.
+Focused verification command / exit code: final Debug and Release direct binaries each report 2/2; exact `unit.m2.stress` passed `ctest --repeat until-fail:20` in both configurations after all review fixes
+Cumulative verification command / exit code: clean-first Debug build 134/134 and full CTest 42/42; clean-first Release build 134/134 and full CTest 42/42; final Release M2-V1 16 tests and M2-V2 5 tests are green in the full run; two consecutive post-clean Release M2-V3 runs each passed 6/6 without retry
+Coverage evidence: fixed seed `0x4D59524453545231`; three rounds with two writers, ZERO, UNMAP, two readers, concurrent snapshot/successor/install/generation-bound ack, background eviction and explicit pressure across 20 blocks/three sparse leaves; submitted Release evidence reports 1,152 reads, 951 successful writes, 576 ZERO, 576 UNMAP, 201 writer pressure rejections, 3,138 explicitly scanned blocks, seven explicit evictions, 82 view installs, 163 exact acks and 270 stale acks. Active-dirty pre-drain and full-byte post-drain checkpoints reconcile every selected entry plus whole-store invariant/gauge/arena accounting.
+Resource evidence: one warmup plus 20 measured create/exercise/close/destroy cycles; submitted Release sample returned handles 61→61, threads 4→4, private bytes 1,929,216→1,929,216, zero measured growth, reserve/release 21/21, zero active reservation/commit, zero backing lifetime and cleanup failure. Private-byte allowance is measured baseline noise plus 1 MiB; exact VM/store counters remain mandatory.
+Review findings and resolution: initial independent review found five Important and one Minor issue. Shadow mutation guards no longer hold the shadow mutex across store calls; readers accept only a complete version from the independently recorded overlap interval. A pre-drain dirty/base audit was added. Pressure now requires non-zero scans, explicit evictions and real decommits. Persistence/pressure threads catch and report exceptions. Private-byte tolerance was reduced from 32 MiB to measured noise plus 1 MiB. Failure output now includes seed, counters and the last 16 operations. Final independent re-review returned `APPROVED` with no remaining Critical, Important, or Minor finding.
+Synchronization and diagnostics: no `Sleep`, `sleep_for`, or `sleep_until`; product operations have five-second deadlines, quiescent waits have five-second bounds, CTest has a 120-second outer timeout, and failure output includes reproducible seed/role/round/operation/history/counters
+Evidence paths: `tests/unit/dynamic_block_store_stress_tests.cpp`, `tests/CMakeLists.txt`, `docs/validation/m2-dynamic-block-store-acceptance.md`, Plan Task 16 and verification tier M2-V3, plus console transcripts for red, focused, repeat, clean-build, full, consecutive-tier and review gates
+Plan drift audit: Task 16 test/CMake/evidence only; M2-B-owned concurrency/resource evidence is complete, while the formal ordered M2-B verdict is deferred to Task 21 until Task 18 closes the preceding real-VM M2-V2/M2-A requirement. No proxy, driver, real NTFS, filesystem backing, M3, M4 or product behavior was introduced.
+Open risks: real 64 GiB/1 TiB VM behavior remains Task 18; proxy integration remains Task 17; formal staged M2-A/B and M2-C execution remain Tasks 21–22
+Executor / timestamp: Codex / `2026-08-04T01:48:07+08:00`
