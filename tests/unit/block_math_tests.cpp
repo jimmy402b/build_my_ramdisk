@@ -126,36 +126,61 @@ TEST_CASE(m2_geometry_rounds_reservation_and_preserves_partial_last_block) {
         std::numeric_limits<std::uint64_t>::max()).ok());
 }
 
+TEST_CASE(m2_range_split_descriptor_is_noexcept_and_allocation_free) {
+    static_assert(noexcept(myrd::validate_and_split_block_range(
+        65'536, 512, 0, 512, 512)));
+    static_assert(std::is_trivially_copyable_v<myrd::BlockRangeSplitResult>);
+    static_assert(std::is_standard_layout_v<myrd::BlockRangeSplitResult>);
+
+    const auto descriptor = myrd::validate_and_split_block_range(
+        65'536, 512, 0, 512, 512);
+    static_assert(noexcept(descriptor.segment_at(0)));
+    REQUIRE(descriptor.ok());
+    REQUIRE_EQ(descriptor.segment_count, 1ULL);
+}
+
 TEST_CASE(m2_range_split_handles_within_two_and_three_blocks) {
     const auto within = myrd::validate_and_split_block_range(
         3 * myrd::kBlockSizeBytes, 512, 4'096, 1'024, 1'024);
     REQUIRE(within.ok());
-    REQUIRE_EQ(within.segments.size(), static_cast<std::size_t>(1));
-    REQUIRE_EQ(within.segments[0].block_index, 0ULL);
-    REQUIRE_EQ(within.segments[0].block_offset_bytes, 4'096ULL);
-    REQUIRE_EQ(within.segments[0].length_bytes, 1'024ULL);
-    REQUIRE_EQ(within.segments[0].buffer_offset_bytes, 0ULL);
+    REQUIRE_EQ(within.segment_count, 1ULL);
+    const auto within_segment = within.segment_at(0);
+    REQUIRE(within_segment.ok());
+    REQUIRE_EQ(within_segment.value.block_index, 0ULL);
+    REQUIRE_EQ(within_segment.value.block_offset_bytes, 4'096ULL);
+    REQUIRE_EQ(within_segment.value.length_bytes, 1'024ULL);
+    REQUIRE_EQ(within_segment.value.buffer_offset_bytes, 0ULL);
 
     const auto two = myrd::validate_and_split_block_range(
         3 * myrd::kBlockSizeBytes, 512,
         myrd::kBlockSizeBytes - 512, 1'024, 1'024);
     REQUIRE(two.ok());
-    REQUIRE_EQ(two.segments.size(), static_cast<std::size_t>(2));
-    REQUIRE_EQ(two.segments[0].length_bytes, 512ULL);
-    REQUIRE_EQ(two.segments[1].block_index, 1ULL);
-    REQUIRE_EQ(two.segments[1].block_offset_bytes, 0ULL);
-    REQUIRE_EQ(two.segments[1].buffer_offset_bytes, 512ULL);
+    REQUIRE_EQ(two.segment_count, 2ULL);
+    const auto two_first = two.segment_at(0);
+    const auto two_second = two.segment_at(1);
+    REQUIRE(two_first.ok());
+    REQUIRE(two_second.ok());
+    REQUIRE_EQ(two_first.value.length_bytes, 512ULL);
+    REQUIRE_EQ(two_second.value.block_index, 1ULL);
+    REQUIRE_EQ(two_second.value.block_offset_bytes, 0ULL);
+    REQUIRE_EQ(two_second.value.buffer_offset_bytes, 512ULL);
 
     const std::uint64_t three_length = 1'024 + myrd::kBlockSizeBytes + 2'048;
     const auto three = myrd::validate_and_split_block_range(
         3 * myrd::kBlockSizeBytes, 512,
         myrd::kBlockSizeBytes - 1'024, three_length, three_length);
     REQUIRE(three.ok());
-    REQUIRE_EQ(three.segments.size(), static_cast<std::size_t>(3));
-    REQUIRE_EQ(three.segments[0].length_bytes, 1'024ULL);
-    REQUIRE_EQ(three.segments[1].length_bytes, myrd::kBlockSizeBytes);
-    REQUIRE_EQ(three.segments[2].length_bytes, 2'048ULL);
-    REQUIRE_EQ(three.segments[2].buffer_offset_bytes,
+    REQUIRE_EQ(three.segment_count, 3ULL);
+    const auto three_first = three.segment_at(0);
+    const auto three_middle = three.segment_at(1);
+    const auto three_last = three.segment_at(2);
+    REQUIRE(three_first.ok());
+    REQUIRE(three_middle.ok());
+    REQUIRE(three_last.ok());
+    REQUIRE_EQ(three_first.value.length_bytes, 1'024ULL);
+    REQUIRE_EQ(three_middle.value.length_bytes, myrd::kBlockSizeBytes);
+    REQUIRE_EQ(three_last.value.length_bytes, 2'048ULL);
+    REQUIRE_EQ(three_last.value.buffer_offset_bytes,
                1'024 + myrd::kBlockSizeBytes);
 }
 
@@ -164,43 +189,84 @@ TEST_CASE(m2_range_split_supports_partial_logical_last_block) {
         myrd::kBlockSizeBytes + 512, 512,
         myrd::kBlockSizeBytes - 512, 1'024, 1'024);
     REQUIRE(split.ok());
-    REQUIRE_EQ(split.segments.size(), static_cast<std::size_t>(2));
-    REQUIRE_EQ(split.segments[1].block_index, 1ULL);
-    REQUIRE_EQ(split.segments[1].length_bytes, 512ULL);
+    REQUIRE_EQ(split.segment_count, 2ULL);
+    const auto last = split.segment_at(1);
+    REQUIRE(last.ok());
+    REQUIRE_EQ(last.value.block_index, 1ULL);
+    REQUIRE_EQ(last.value.length_bytes, 512ULL);
+}
+
+TEST_CASE(m2_range_split_describes_full_1_tib_without_allocation) {
+    const auto split = myrd::validate_and_split_block_range(
+        kTiB, 512, 0, kTiB, kTiB);
+    REQUIRE(split.ok());
+    REQUIRE_EQ(split.segment_count, 16'777'216ULL);
+
+    const auto first = split.segment_at(0);
+    REQUIRE(first.ok());
+    REQUIRE_EQ(first.value.block_index, 0ULL);
+    REQUIRE_EQ(first.value.block_offset_bytes, 0ULL);
+    REQUIRE_EQ(first.value.length_bytes, myrd::kBlockSizeBytes);
+    REQUIRE_EQ(first.value.buffer_offset_bytes, 0ULL);
+
+    const std::uint64_t middle_index = split.segment_count / 2;
+    const auto middle = split.segment_at(middle_index);
+    REQUIRE(middle.ok());
+    REQUIRE_EQ(middle.value.block_index, middle_index);
+    REQUIRE_EQ(middle.value.block_offset_bytes, 0ULL);
+    REQUIRE_EQ(middle.value.length_bytes, myrd::kBlockSizeBytes);
+    REQUIRE_EQ(middle.value.buffer_offset_bytes,
+               middle_index * myrd::kBlockSizeBytes);
+
+    const std::uint64_t last_index = split.segment_count - 1;
+    const auto last = split.segment_at(last_index);
+    REQUIRE(last.ok());
+    REQUIRE_EQ(last.value.block_index, last_index);
+    REQUIRE_EQ(last.value.block_offset_bytes, 0ULL);
+    REQUIRE_EQ(last.value.length_bytes, myrd::kBlockSizeBytes);
+    REQUIRE_EQ(last.value.buffer_offset_bytes,
+               last_index * myrd::kBlockSizeBytes);
+
+    const auto past_end = split.segment_at(split.segment_count);
+    REQUIRE(!past_end.ok());
+    REQUIRE_EQ(past_end.error,
+               myrd::BlockMathError::SegmentIndexOutOfRange);
+    REQUIRE_EQ(myrd::to_string(past_end.error),
+               std::string_view("SegmentIndexOutOfRange"));
 }
 
 TEST_CASE(m2_range_validation_rejects_full_request_before_splitting) {
     const auto zero = myrd::validate_and_split_block_range(65'536, 512, 0, 0, 0);
     REQUIRE_EQ(zero.error, myrd::BlockMathError::ZeroLength);
-    REQUIRE(zero.segments.empty());
+    REQUIRE_EQ(zero.segment_count, 0ULL);
 
     const auto misaligned = myrd::validate_and_split_block_range(
         65'536, 512, 1, 512, 512);
     REQUIRE_EQ(misaligned.error, myrd::BlockMathError::Misaligned);
-    REQUIRE(misaligned.segments.empty());
+    REQUIRE_EQ(misaligned.segment_count, 0ULL);
 
     const auto overflow = myrd::validate_and_split_block_range(
         std::numeric_limits<std::uint64_t>::max() - 511, 512,
         std::numeric_limits<std::uint64_t>::max() - 511, 1'024, 1'024);
     REQUIRE_EQ(overflow.error, myrd::BlockMathError::Overflow);
-    REQUIRE(overflow.segments.empty());
+    REQUIRE_EQ(overflow.segment_count, 0ULL);
 
     const auto out_of_range = myrd::validate_and_split_block_range(
         65'536, 512, 65'024, 1'024, 1'024);
     REQUIRE_EQ(out_of_range.error, myrd::BlockMathError::OutOfRange);
-    REQUIRE(out_of_range.segments.empty());
+    REQUIRE_EQ(out_of_range.segment_count, 0ULL);
 
     const auto wrong_buffer = myrd::validate_and_split_block_range(
         65'536, 512, 0, 512, 256);
     REQUIRE_EQ(wrong_buffer.error, myrd::BlockMathError::BufferLengthMismatch);
-    REQUIRE(wrong_buffer.segments.empty());
+    REQUIRE_EQ(wrong_buffer.segment_count, 0ULL);
 }
 
 TEST_CASE(m2_range_validation_rejects_sector_misaligned_length) {
     const auto result = myrd::validate_and_split_block_range(
         65'536, 512, 512, 768, 768);
     REQUIRE_EQ(result.error, myrd::BlockMathError::Misaligned);
-    REQUIRE(result.segments.empty());
+    REQUIRE_EQ(result.segment_count, 0ULL);
 }
 
 TEST_CASE(m2_options_require_order_alignment_snapshot_limits_and_stripes) {

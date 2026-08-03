@@ -1257,3 +1257,16 @@ Evidence paths: `tests/unit/block_math_tests.cpp`; console transcript for all re
 Plan drift audit: test coverage and immutable execution record only; no production semantics, CMake, Task 02, M1, proxy, driver, or acceptance document changes
 Open risks: none introduced; Task 01 remains DONE pending independent re-review
 Executor / timestamp: Codex / `2026-08-03T12:34:04+08:00`
+
+Task: 01 — 代码质量审查 allocation-free range descriptor 修复
+Status: DONE
+Start commit / end commit: `8a1cea266062b1b565a2dd40c8db196a4f684239` / this Task 01 quality-fix commit
+Files changed: `src/storage/block_math.h`, comments only in the existing `DynamicBlockStoreStats` fields in `src/storage/dynamic_block_types.h`, `tests/unit/block_math_tests.cpp`, and this appended `M2_TASKLIST.md` record
+Red test and observed failure: after changing only tests to require the descriptor API, `cmake --build --preset release --target myrd_m2_block_math_tests` exited 1; Ninja compilation failed with code 2 because the old result was not `noexcept`/trivially-copyable and lacked `segment_count`, `segment_at`, and `BlockMathError::SegmentIndexOutOfRange`
+API resolution: `validate_and_split_block_range(...) noexcept` now returns an allocation-free O(1) `BlockRangeSplitResult`; `segment_at(index) noexcept` computes one `BlockRangeSegment` with checked addition/multiplication and returns stable `SegmentIndexOutOfRange` for an invalid index; invalid requests retain `segment_count == 0`; no request-size cap was added
+Focused verification command / exit code: Release test target build exit 0; `ctest --preset release --output-on-failure -R '^unit\.m2\.block_math$'` exit 0 (1/1), including a full 1 TiB descriptor with 16,777,216 addressable segments and first/middle/last O(1) lookup
+Cumulative verification command / exit code: Release build exit 0; `ctest --preset release --output-on-failure -L m2-v1` exit 0 (5/5); full Release CTest exit 0 (28/28); `git diff --check` exit 0
+Evidence paths: `src/storage/block_math.h`, `tests/unit/block_math_tests.cpp`; console transcript for red and all requested green gates
+Plan drift audit: Task 01 quality fix only; no vector, range-length loop, invented max request, changed stripe rule, renamed stats field, Task 02 implementation, M1/proxy/driver change, or SPEC change
+Open risks: downstream Task 05 request execution must iterate the validated descriptor deliberately and retain its own bounded cancellation/deadline checks; no downstream consumer exists yet in Task 01
+Executor / timestamp: Codex / `2026-08-03T12:52:06+08:00`

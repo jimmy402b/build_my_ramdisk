@@ -368,6 +368,7 @@ validate_dynamic_block_store_create_args(
 }
 
 struct DynamicBlockStoreStats {
+    // Coherent gauges: capture these from one logical store snapshot.
     std::uint64_t logical_size_bytes{};
     std::uint64_t reserved_bytes{};
     std::uint64_t committed_bytes{};
@@ -376,6 +377,8 @@ struct DynamicBlockStoreStats {
     std::uint64_t zero_clean_blocks{};
     std::uint64_t zero_dirty_blocks{};
     std::uint64_t loading_blocks{};
+
+    // Lifetime monotonic counters: these never decrease for a store instance.
     std::uint64_t evicted_blocks_total{};
     std::uint64_t backing_reads_total{};
     std::uint64_t backing_read_bytes_total{};
@@ -387,7 +390,11 @@ struct DynamicBlockStoreStats {
     std::uint64_t decommit_failures{};
     std::uint64_t snapshot_records_total{};
     std::uint64_t snapshot_version_conflicts{};
+
+    // Coherent gauge: generation belonging to the same snapshot as gauges above.
     BackingGeneration backing_generation{};
+
+    // Lifetime monotonic counters, continued after the generation gauge.
     std::uint64_t backing_view_installs_total{};
     std::uint64_t backing_generation_conflicts{};
     std::uint64_t stale_backing_load_retries{};
