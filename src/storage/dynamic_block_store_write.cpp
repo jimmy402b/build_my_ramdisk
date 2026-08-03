@@ -124,7 +124,8 @@ Result<void> DynamicBlockStore::write_one_segment(
     const OperationContext& context,
     std::uint64_t block_index,
     std::uint64_t block_offset_bytes,
-    std::span<const std::byte> source) {
+    std::span<const std::byte> source,
+    bool explicit_zero_is_noop) {
     for (;;) {
         const auto live = check_operation_context(context);
         if (!live.ok()) {
@@ -239,6 +240,12 @@ Result<void> DynamicBlockStore::write_one_segment(
                 return wait_live;
             }
             continue;
+        }
+
+        if (explicit_zero_is_noop &&
+            (entry->state == BlockState::ZeroClean ||
+             entry->state == BlockState::ZeroDirty)) {
+            return Result<void>::success();
         }
 
         if (entry->state == BlockState::Unresident &&
@@ -570,7 +577,8 @@ Result<void> DynamicBlockStore::write(
             context,
             segment.block_index,
             segment.block_offset_bytes,
-            source);
+            source,
+            false);
         if (!result.ok()) {
             return result;
         }

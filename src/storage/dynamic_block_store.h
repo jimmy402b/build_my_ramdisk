@@ -151,7 +151,16 @@ private:
         const OperationContext& context,
         std::uint64_t block_index,
         std::uint64_t block_offset_bytes,
-        std::span<const std::byte> source);
+        std::span<const std::byte> source,
+        bool explicit_zero_is_noop);
+    Result<void> publish_full_zero_segment(
+        const OperationContext& context,
+        std::uint64_t block_index,
+        DirtyRecordKind kind);
+    Result<void> apply_zero_ranges(
+        const OperationContext& context,
+        std::span<const DataRange> ranges,
+        DirtyRecordKind kind);
 
     BlockGeometry geometry_{};
     DynamicBlockStoreOptions options_{};

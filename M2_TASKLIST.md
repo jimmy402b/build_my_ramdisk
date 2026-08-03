@@ -69,7 +69,7 @@
 | 06 | Zero/Resident READ | DONE | 05 | M2-V1 |
 | 07 | Backing 懒加载与 Read-through | DONE | 06 | M2-V1 |
 | 08 | WRITE 与内容版本 | DONE | 07 | M2-V1 |
-| 09 | UNMAP/ZERO 与零覆盖 | TODO | 08 | M2-V1 |
+| 09 | UNMAP/ZERO 与零覆盖 | DONE | 08 | M2-V1 |
 | 10 | Backing generation、脏快照与 persisted ack | TODO | 09 | M2-V1 |
 | 11 | Clean CLOCK eviction | TODO | 10 | M2-V1 |
 | 12 | Hard limit、预算和失败回滚 | TODO | 11 | M2-V1 |
@@ -507,46 +507,50 @@ Executor / timestamp:
 
 ## Task 09 — UNMAP/ZERO 与 backing resurrection 防护
 
+**状态：DONE**
+
 **目标：** 释放可释放内存，同时明确记住“这里必须为零”，使旧 backing 永远不会复活。
 
 **文件：** `dynamic_block_store_ranges.cpp`、internal header、`dynamic_block_store_range_tests.cpp`、CMake。
 
 ### 红灯矩阵
 
-- [ ] 为 5 个 stable states × full ZERO 写测试。
-- [ ] 为 5 个 stable states × full UNMAP 写测试。
-- [ ] 为 5 个 stable states × partial ZERO 写测试。
-- [ ] 为 5 个 stable states × partial UNMAP 写测试。
-- [ ] 每组分别使用 ZeroBacking 与 non-zero FakeBacking。
-- [ ] full operation 不 load old backing。
-- [ ] full ZERO 在 non-zero/unknown backing 上得到 `ZeroDirty(Zero)`。
-- [ ] full UNMAP 在 non-zero/unknown backing 上得到 `ZeroDirty(Discard)`。
-- [ ] partial operation 对 Unresident/Resident 生成完整 `ResidentDirty Data` image。
-- [ ] partial operation 对 ZeroClean/ZeroDirty 是 no-op，不 commit、不增 version。
-- [ ] resident full operation 安全 decommit，commit accounting 下降。
-- [ ] decommit failure 保持原 resident 内容/状态。
-- [ ] repeated ZERO/UNMAP 按“最后一次操作 kind + 新 version”规则。
-- [ ] 每次成功产生新 version 时，`dirty_base_generation` 等于该线性化点的 installed generation。
-- [ ] 随后 read 永远为零，且 `ZeroDirty` 不触发 backing load。
-- [ ] cancellation/invalid range/close race 无半个 range 的虚假 full success。
+- [x] 为 5 个 stable states × full ZERO 写测试。
+- [x] 为 5 个 stable states × full UNMAP 写测试。
+- [x] 为 5 个 stable states × partial ZERO 写测试。
+- [x] 为 5 个 stable states × partial UNMAP 写测试。
+- [x] 每组分别使用 ZeroBacking 与 non-zero FakeBacking。
+- [x] full operation 不 load old backing。
+- [x] full ZERO 在 non-zero/unknown backing 上得到 `ZeroDirty(Zero)`。
+- [x] full UNMAP 在 non-zero/unknown backing 上得到 `ZeroDirty(Discard)`。
+- [x] partial operation 对 Unresident/Resident 生成完整 `ResidentDirty Data` image。
+- [x] partial operation 对 ZeroClean/ZeroDirty 是 no-op，不 commit、不增 version。
+- [x] resident full operation 安全 decommit，commit accounting 下降。
+- [x] decommit failure 保持原 resident 内容/状态。
+- [x] repeated ZERO/UNMAP 按“最后一次操作 kind + 新 version”规则。
+- [x] 每次成功产生新 version 时，`dirty_base_generation` 等于该线性化点的 installed generation。
+- [x] 随后 read 永远为零，且 `ZeroDirty` 不触发 backing load。
+- [x] cancellation/invalid range/close race 无半个 range 的虚假 full success。
 
 ### 实现
 
-- [ ] range validation 在 mutation 前完成。
-- [ ] full operation 以 block transition 排他，等 pins 清零。
-- [ ] 先保证 zero override metadata 可发布，再进行安全 decommit/state publish。
-- [ ] 所有成功 full ZERO/UNMAP（包括 CleanZero）都发布 `ZeroDirty`，分别记录 Zero/Discard，并增加 version。
-- [ ] partial operation 对 zero state 直接 no-op；其他 state 复用 load/read-modify-write helper。
-- [ ] version 和 DirtyRecordKind 与最新成功请求一致。
-- [ ] version、DirtyRecordKind 和 `dirty_base_generation` 在同一 publish 中一致。
-- [ ] Dirty zero state 不占 committed data memory但计入 dirty metadata/stat。
+- [x] range validation 在 mutation 前完成。
+- [x] full operation 以 block transition 排他，等 pins 清零。
+- [x] 先保证 zero override metadata 可发布，再进行安全 decommit/state publish。
+- [x] 所有成功 full ZERO/UNMAP（包括 CleanZero）都发布 `ZeroDirty`，分别记录 Zero/Discard，并增加 version。
+- [x] partial operation 对 zero state 直接 no-op；其他 state 复用 load/read-modify-write helper。
+- [x] version 和 DirtyRecordKind 与最新成功请求一致。
+- [x] version、DirtyRecordKind 和 `dirty_base_generation` 在同一 publish 中一致。
+- [x] Dirty zero state 不占 committed data memory但计入 dirty metadata/stat。
 
 ### 验证与验收
 
-- [ ] `unit.m2.ranges` 通过完整矩阵。
-- [ ] read/write/limits regressions 通过。
-- [ ] 回读 Plan Task 9 和 state table，明确回答为何 backing 不会复活。
-- [ ] 建议提交：`feat(storage): implement unmap and zero ranges`。
+- [x] `unit.m2.ranges` 通过完整矩阵。
+- [x] read/write/limits regressions 通过。
+- [x] 回读 Plan Task 9 和 state table，明确回答为何 backing 不会复活。
+- [x] 建议提交：`feat(storage): implement unmap and zero ranges`。
+
+验收记录（2026-08-03）：`unit.m2.ranges` Debug 连续重复 100 次通过；Debug/Release focused read/write/limits/ranges 4/4，通过全量回归各 36/36，M2-V1 13/13。状态矩阵覆盖 5 个 stable states、ZERO/UNMAP、full/partial、ZeroBacking/non-zero backing；跨块用例证明仅 partial 首尾加载旧 backing，full 段不加载。resident decommit 失败与后续块失败分别证明精确回滚和已完成前缀语义，close 等待 pin 时恢复原状态。`ZeroDirty` 是显式 dirty override，read 直接返回零且不接触 backing，因此旧 backing 无法复活；Plan Task 9、SPEC 状态表与第 14 节已回读核对。
 
 ---
 

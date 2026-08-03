@@ -459,42 +459,6 @@ DeviceFeatures DynamicBlockStore::features() const noexcept {
     return DeviceFeatures{false, true, true};
 }
 
-Result<void> DynamicBlockStore::unmap(
-    const OperationContext& context,
-    std::span<const DataRange> ranges) {
-    RequestToken request;
-    if (!try_enter_request(request)) {
-        return Result<void>::failure(
-            make_session_closed_error(L"DynamicBlockStore::unmap"));
-    }
-    ScopeExit leave([this, &request]() { leave_request(request); });
-    (void)ranges;
-    const auto live = check_operation_context(context);
-    if (!live.ok()) {
-        return live;
-    }
-    return Result<void>::failure(
-        make_not_implemented_error(L"DynamicBlockStore::unmap"));
-}
-
-Result<void> DynamicBlockStore::zero(
-    const OperationContext& context,
-    std::span<const DataRange> ranges) {
-    RequestToken request;
-    if (!try_enter_request(request)) {
-        return Result<void>::failure(
-            make_session_closed_error(L"DynamicBlockStore::zero"));
-    }
-    ScopeExit leave([this, &request]() { leave_request(request); });
-    (void)ranges;
-    const auto live = check_operation_context(context);
-    if (!live.ok()) {
-        return live;
-    }
-    return Result<void>::failure(
-        make_not_implemented_error(L"DynamicBlockStore::zero"));
-}
-
 BackingGeneration DynamicBlockStore::backing_generation() const {
     std::scoped_lock lock(state_mutex_);
     return backing_view_.generation;
