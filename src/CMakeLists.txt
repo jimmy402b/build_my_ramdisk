@@ -12,10 +12,13 @@ myrd_enable_warnings(myrd_common)
 add_library(myrd_storage STATIC
     storage/memory_block_device.cpp
     storage/memory_block_device.h
+    storage/backing_store.h
     storage/block_device.h
     storage/block_constants.h
     storage/block_math.h
     storage/dynamic_block_types.h
+    storage/zero_backing_store.cpp
+    storage/zero_backing_store.h
 )
 target_include_directories(myrd_storage PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_storage PUBLIC myrd_common)

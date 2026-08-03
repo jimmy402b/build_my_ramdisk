@@ -221,33 +221,33 @@ Executor / timestamp:
 
 ### 红灯测试
 
-- [ ] destination 不是恰好 64 KiB 时失败。
-- [ ] ZeroBackingStore 返回 `AllZero`，不依赖 destination 初始内容。
-- [ ] Fake 根据 `(seed, block_index)` 产生稳定 Data。
-- [ ] Fake 可把指定 block 标为 `AllZero`。
-- [ ] 多线程并发加载不同块正确。
-- [ ] per-block/total load count 精确。
-- [ ] 可用 barrier/gate 暂停和释放加载，不使用 sleep 猜时序。
-- [ ] 可注入指定 block/第 N 次失败。
-- [ ] cancellation/deadline 在接口结果中保留。
-- [ ] `load_block` 可通过 `shared_ptr<const IBackingStore>` 调用。
-- [ ] Fake 的块内容发布后不可修改；下一 generation 必须构造新 Fake 对象。
-- [ ] 旧 Fake 在 in-flight load 持有引用时不会析构，调用完成后可释放。
+- [x] destination 不是恰好 64 KiB 时失败。
+- [x] ZeroBackingStore 返回 `AllZero`，不依赖 destination 初始内容。
+- [x] Fake 根据 `(seed, block_index)` 产生稳定 Data。
+- [x] Fake 可把指定 block 标为 `AllZero`。
+- [x] 多线程并发加载不同块正确。
+- [x] per-block/total load count 精确。
+- [x] 可用 barrier/gate 暂停和释放加载，不使用 sleep 猜时序。
+- [x] 可注入指定 block/第 N 次失败。
+- [x] cancellation/deadline 在接口结果中保留。
+- [x] `load_block` 可通过 `shared_ptr<const IBackingStore>` 调用。
+- [x] Fake 的块内容发布后不可修改；下一 generation 必须构造新 Fake 对象。
+- [x] 旧 Fake 在 in-flight load 持有引用时不会析构，调用完成后可释放。
 
 ### 实现
 
-- [ ] `IBackingStore::load_block` 是 `const`，签名与 SPEC 完全一致。
-- [ ] 接口析构为 virtual；没有文件/VHD/driver 概念。
-- [ ] Zero 实现无状态、线程安全，不将 64 KiB 清零工作错误放入 backing。
-- [ ] Fake 只链接测试 target，不进入 production library。
-- [ ] Fake 的 gate、mutable 计数和故障注入自身线程安全；测试 builder 能由旧完整内容加 patch 产生新的完整不可变 Fake。
+- [x] `IBackingStore::load_block` 是 `const`，签名与 SPEC 完全一致。
+- [x] 接口析构为 virtual；没有文件/VHD/driver 概念。
+- [x] Zero 实现无状态、线程安全，不将 64 KiB 清零工作错误放入 backing。
+- [x] Fake 只链接测试 target，不进入 production library。
+- [x] Fake 的 gate、mutable 计数和故障注入自身线程安全；测试 builder 能由旧完整内容加 patch 产生新的完整不可变 Fake。
 
 ### 验证与验收
 
-- [ ] `unit.m2.backing_store` 通过。
-- [ ] TSAN 不可用时至少用并发测试和锁审查证明 fake 自身无竞态。
-- [ ] 回读 Plan Task 2 与 1.3；确认未提前实现 M3 file backing。
-- [ ] 建议提交：`feat(storage): add immutable block backing contract`。
+- [x] `unit.m2.backing_store` 通过。
+- [x] TSAN 不可用时至少用并发测试和锁审查证明 fake 自身无竞态。
+- [x] 回读 Plan Task 2 与 1.3；确认未提前实现 M3 file backing。
+- [x] 建议提交：`feat(storage): add immutable block backing contract`。
 
 ---
 
@@ -1295,3 +1295,15 @@ Evidence paths: Task 01 source/tests; commits `70fc9c1`, `8a1cea2`, `0c3fa9a`, `
 Plan drift audit: Task 01 is closed; no Task 02 interface or implementation exists yet
 Open risks: none for Task 01; coherent live stats production and ZeroBacking construction remain correctly assigned to later tasks
 Executor / timestamp: Codex / `2026-08-03T13:05:49+08:00`
+
+Task: 02 — 不可变 backing contract、Zero/Fake 与审查修复
+Status: DONE
+Start commit / end commit: `4c47538360751f483ce9fe35d3b82ca7a78f6edd` / this Task 02 implementation commit
+Files changed: `src/storage/backing_store.h`, `src/storage/zero_backing_store.h`, `src/storage/zero_backing_store.cpp`, `tests/support/fake_backing_store.h`, `tests/unit/backing_store_tests.cpp`, `src/CMakeLists.txt`, `tests/CMakeLists.txt`, and only this Task 02 checklist/record in `M2_TASKLIST.md`
+Red test and observed failure: the takeover retained an uncommitted test-first patch whose initial red transcript was not returned by the interrupted implementer; the independently reviewed remediation was test-first and its Release target build exited 1 with MSVC `C2039` because the newly required distinct `fail_block` and global `fail_on_load` APIs did not yet exist
+Focused verification command / exit code: CTest JSON inventory confirmed effective `TIMEOUT = 15`; `ctest --preset release --output-on-failure -R '^unit\.m2\.backing_store$'` exit 0 (1/1)
+Cumulative verification command / exit code: `ctest --preset release --output-on-failure -L m2-v1` exit 0 (6/6); full Release CTest exit 0 (29/29); `git diff --check` exit 0
+Evidence paths: Task 02 source/tests; console transcript for focused/cumulative gates; independent specification review returned COMPLIANT and independent quality re-review returned APPROVED with no Critical, Important, or Minor findings
+Plan drift audit: Task 02 only; Fake remains test-only, published content is immutable, and no filesystem, VHD/VHDX, proxy, AIM/driver, persistence, or M3 implementation was introduced
+Open risks: TSAN is unavailable in the accepted Windows/MSVC toolchain; synchronized counters, condition-variable predicates, concurrent const-load tests, cancellation/deadline tests, lifetime tests, and a 15-second outer CTest timeout provide the required Task 02 evidence
+Executor / timestamp: Codex / `2026-08-03T13:58:56+08:00`
