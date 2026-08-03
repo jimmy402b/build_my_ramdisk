@@ -259,33 +259,33 @@ Executor / timestamp:
 
 ### 红灯测试
 
-- [ ] reserve 调用参数为 `MEM_RESERVE | PAGE_NOACCESS`。
-- [ ] 64 GiB 和 1 TiB reservation 的 checked 大小。
-- [ ] block index 到稳定地址的计算，含首块、末块和越界。
-- [ ] commit 仅用 `MEM_COMMIT | PAGE_READWRITE` 且恰好 64 KiB。
-- [ ] decommit 仅用 `MEM_DECOMMIT` 且恰好 64 KiB。
-- [ ] 整体销毁只对 base 使用一次 `MEM_RELEASE`，size 参数符合 Win32 要求。
-- [ ] reserve/commit/decommit/release/VirtualQuery 分别可注入失败且错误码可见。
-- [ ] double commit/decommit 或越界 transition 被拒绝/捕获。
-- [ ] partial construction、move/lifetime 不 double release。
-- [ ] committed accounting 仅在真正成功时变化。
-- [ ] VirtualQuery 可交叉验证 committed/decommitted page state。
+- [x] reserve 调用参数为 `MEM_RESERVE | PAGE_NOACCESS`。
+- [x] 64 GiB 和 1 TiB reservation 的 checked 大小。
+- [x] block index 到稳定地址的计算，含首块、末块和越界。
+- [x] commit 仅用 `MEM_COMMIT | PAGE_READWRITE` 且恰好 64 KiB。
+- [x] decommit 仅用 `MEM_DECOMMIT` 且恰好 64 KiB。
+- [x] 整体销毁只对 base 使用一次 `MEM_RELEASE`，size 参数符合 Win32 要求。
+- [x] reserve/commit/decommit/release/VirtualQuery 分别可注入失败且错误码可见。
+- [x] double commit/decommit 或越界 transition 被拒绝/捕获。
+- [x] partial construction、move/lifetime 不 double release。
+- [x] committed accounting 仅在真正成功时变化。
+- [x] VirtualQuery 可交叉验证 committed/decommitted page state。
 
 ### 实现
 
-- [ ] 建立窄 VM seam；不得把 fake 条件编译散落到产品逻辑。
-- [ ] factory reserve 成功后立刻由 RAII 对象拥有。
-- [ ] 地址运算全部 checked，返回 pointer 前验证 block index。
-- [ ] block release 使用 decommit，不得 `MEM_RELEASE` 子区间。
-- [ ] decommit 失败时向上返回，不把 metadata 假装成 unresident。
-- [ ] 析构不抛异常；release 错误进入可观测 fatal/cleanup 路径。
+- [x] 建立窄 VM seam；不得把 fake 条件编译散落到产品逻辑。
+- [x] factory reserve 成功后立刻由 RAII 对象拥有。
+- [x] 地址运算全部 checked，返回 pointer 前验证 block index。
+- [x] block release 使用 decommit，不得 `MEM_RELEASE` 子区间。
+- [x] decommit 失败时向上返回，不把 metadata 假装成 unresident。
+- [x] 析构不抛异常；release 错误进入可观测 fatal/cleanup 路径。
 
 ### 验证与验收
 
-- [ ] `unit.m2.virtual_memory` 通过。
-- [ ] Application Verifier/guard page 如已有配置则通过。
-- [ ] 回读 Plan Task 3 与 1.1，核对每个 flag/size。
-- [ ] 建议提交：`feat(storage): add reserved virtual memory arena`。
+- [x] `unit.m2.virtual_memory` 通过。
+- [x] Application Verifier/guard page 如已有配置则通过。
+- [x] 回读 Plan Task 3 与 1.1，核对每个 flag/size。
+- [x] 建议提交：`feat(storage): add reserved virtual memory arena`。
 
 ---
 
@@ -1307,3 +1307,15 @@ Evidence paths: Task 02 source/tests; console transcript for focused/cumulative 
 Plan drift audit: Task 02 only; Fake remains test-only, published content is immutable, and no filesystem, VHD/VHDX, proxy, AIM/driver, persistence, or M3 implementation was introduced
 Open risks: TSAN is unavailable in the accepted Windows/MSVC toolchain; synchronized counters, condition-variable predicates, concurrent const-load tests, cancellation/deadline tests, lifetime tests, and a 15-second outer CTest timeout provide the required Task 02 evidence
 Executor / timestamp: Codex / `2026-08-03T13:58:56+08:00`
+
+Task: 03 — Windows VirtualMemoryArena 与故障注入
+Status: DONE
+Start commit / end commit: `0ccc14f4f9fc4a0e6b5bb94bd9f0694f727ee54d` / this Task 03 implementation commit
+Files changed: `src/storage/virtual_memory_arena.h`, `src/storage/virtual_memory_arena.cpp`, `tests/support/fake_virtual_memory_api.h`, `tests/unit/virtual_memory_arena_tests.cpp`, `src/CMakeLists.txt`, `tests/CMakeLists.txt`, and only this Task 03 checklist/record in `M2_TASKLIST.md`
+Red test and observed failure: after registering the complete test-first target, Release compilation exited 1 with MSVC `C1083` because `src/storage/virtual_memory_arena.h` did not exist; the first production pass also exposed and fixed a missing test-support constant include before green
+Focused verification command / exit code: clean Release target rebuild exit 0; `ctest --preset release --output-on-failure -R '^unit\.m2\.virtual_memory$'` exit 0 (1/1)
+Cumulative verification command / exit code: pre-review `ctest --preset release --output-on-failure -L m2-v1` exit 0 (7/7); full Release CTest exit 0 (30/30); final submitted-state cumulative gates are run after this commit
+Evidence paths: Task 03 source/tests and console transcript; specification review returned COMPLIANT with zero gaps; no existing Application Verifier/guard-page configuration was found; quality review found one geometry-read/move data race, the synchronized-helper fix was rebuilt cleanly, and final quality re-review returned APPROVED with no Critical, Important, or Minor findings
+Plan drift audit: Task 03 only; the 1 TiB arena creates no per-block metadata, Fake remains test-only, and no sparse directory, store state machine, proxy, driver, persistence, or Task 04 behavior was introduced
+Open risks: real 64 GiB/1 TiB `VirtualAlloc` and `VirtualQuery` integration remains intentionally assigned to Task 18; Task 03 proves exact calls and failure semantics through the injectable seam
+Executor / timestamp: Codex / `2026-08-03T14:48:31+08:00`
