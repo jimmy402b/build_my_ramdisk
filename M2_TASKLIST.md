@@ -60,7 +60,7 @@
 
 | ID | 任务 | 状态 | 依赖 | 主要门禁 |
 |---|---|---|---|---|
-| 00 | M1 基线与 M2 构建壳 | TODO | 无 | M2-V0 |
+| 00 | M1 基线与 M2 构建壳 | DONE | 无 | M2-V0 |
 | 01 | 几何、选项、状态与统计类型 | TODO | 00 | M2-V1 |
 | 02 | 不可变 Backing 接口、Zero 与 Fake | TODO | 01 | M2-V1 |
 | 03 | Windows 虚拟内存 Arena | TODO | 01 | M2-V1 |
@@ -135,34 +135,34 @@ Executor / timestamp:
 
 ### 前置与事实检查
 
-- [ ] M0 acceptance 证据明确写出最终 `M0 GO`，namespace/driver-only contract 已关闭。
-- [ ] `docs/validation/m1-proxy-acceptance.md` 存在且明确写出 `M1 GO`，不是草稿或条件通过。
-- [ ] 记录 M1 功能验收提交 `3eac4f7` 和 merged planning baseline `2adf84a`；确认当前历史包含二者或明确当前 worktree 与它们的关系。
-- [ ] 记录当前 `git status --short`，特别保护用户已有修改和未跟踪诊断文件。
-- [ ] 记录 `cl`/MSVC、Windows SDK、CMake、CTest、PowerShell、架构均为预期版本。
-- [ ] 确认进程为 64 位构建目标。
-- [ ] 阅读 M1 `IBlockDevice`、`OperationContext`、结果类型、provider 生命周期、报告和 cleanup API。
-- [ ] 记录这些真实路径和 target 名；若与 Plan 示例不同，写出唯一映射。
-- [ ] 执行 M1 Plan 规定的 fresh local gate 并保留输出。
-- [ ] 若任一项失败：标记 `BLOCKED`，停止；不得进入 Task 01。
+- [x] M0 acceptance 证据明确写出最终 `M0 GO`，namespace/driver-only contract 已关闭。
+- [x] `docs/validation/m1-proxy-acceptance.md` 存在且明确写出 `M1 GO`，不是草稿或条件通过。
+- [x] 记录 M1 功能验收提交 `3eac4f7` 和 merged planning baseline `2adf84a`；确认当前历史包含二者或明确当前 worktree 与它们的关系。
+- [x] 记录当前 `git status --short`，特别保护用户已有修改和未跟踪诊断文件。
+- [x] 记录 `cl`/MSVC、Windows SDK、CMake、CTest、PowerShell、架构均为预期版本。
+- [x] 确认进程为 64 位构建目标。
+- [x] 阅读 M1 `IBlockDevice`、`OperationContext`、结果类型、provider 生命周期、报告和 cleanup API。
+- [x] 记录这些真实路径和 target 名；若与 Plan 示例不同，写出唯一映射。
+- [x] 执行 M1 Plan 规定的 fresh local gate 并保留输出。
+- [x] 若任一项失败：标记 `BLOCKED`，停止；不得进入 Task 01。
 
 ### 测试与实现
 
-- [ ] 先添加一个配置/链接测试，证明现有 `myrd_storage` 可继续独立于 driver/proxy 实现 target 构建；不得创建第二个 storage library。
-- [ ] 添加 `myrd-m2-e2e` executable target，但不伪造存储行为。
-- [ ] 添加/预留 `m2-v1`、`m2-v2`、`m2-v3`、`m2-v4` CTest labels。
-- [ ] 沿用 M1 的 warnings、runtime library、Unicode、异常/RTTI策略；记录任何差异。
-- [ ] 新建 acceptance 文档，写入机器、工具链、基线 commit、工作树、M1 证据、命令和结果。
-- [ ] Release configure/build 成功。
-- [ ] 再跑 M1 local gate，证明 CMake 改动未回归。
+- [x] 先添加一个配置/链接测试，证明现有 `myrd_storage` 可继续独立于 driver/proxy 实现 target 构建；不得创建第二个 storage library。
+- [x] 添加 `myrd-m2-e2e` executable target，但不伪造存储行为。
+- [x] 添加/预留 `m2-v1`、`m2-v2`、`m2-v3`、`m2-v4` CTest labels。
+- [x] 沿用 M1 的 warnings、runtime library、Unicode、异常/RTTI策略；记录任何差异。
+- [x] 新建 acceptance 文档，写入机器、工具链、基线 commit、工作树、M1 证据、命令和结果。
+- [x] Release configure/build 成功。
+- [x] 再跑 M1 local gate，证明 CMake 改动未回归。
 
 ### 任务验收
 
-- [ ] M2-V0 所有事实可通过文件和命令重现。
-- [ ] `myrd_storage` 不依赖 driver/proxy 实现；`myrd-m2-e2e` 可以依赖已验收的 M1/driver targets。
-- [ ] M1 源码行为未变化。
-- [ ] 回读 Plan Task 0 与第 0 节，完成偏航检查。
-- [ ] 建议提交：`build(m2): establish dynamic store targets and baseline`。
+- [x] M2-V0 所有事实可通过文件和命令重现。
+- [x] `myrd_storage` 不依赖 driver/proxy 实现；`myrd-m2-e2e` 可以依赖已验收的 M1/driver targets。
+- [x] M1 源码行为未变化。
+- [x] 回读 Plan Task 0 与第 0 节，完成偏航检查。
+- [x] 建议提交：`build(m2): establish dynamic store targets and baseline`。
 
 ---
 
@@ -1147,3 +1147,27 @@ Executor / timestamp:
 Agent 从 Task 00 开始在下方追加，不删除旧记录。每次会话恢复时，先用记录、Git 和证据三方交叉确认状态；对话中的“已完成”不能单独作为依据。
 
 <!-- Append immutable task execution records below this line. -->
+
+Task: 00 — M1 基线与 M2 构建壳（开始记录）
+Status: DOING
+Start commit / end commit: `724a00e2cf22e65de0eab18f0a6423f8194156be` / pending Task 00 commit
+Files changed: limited to the Task 00 allowlist
+Red test and observed failure: `cmake --build --preset release --target myrd-m2-e2e` exited 1 with `ninja: error: unknown target 'myrd-m2-e2e'`
+Focused verification command / exit code: pending green verification
+Cumulative verification command / exit code: pre-change Release CTest 26/26 and M1-V2 PASS
+Evidence paths: console transcript; canonical facts will be recorded in `docs/validation/m2-dynamic-block-store-acceptance.md`
+Plan drift audit: build shell only; no M2 product behavior and no Task 01 work
+Open risks: post-change verification and final self-review remain
+Executor / timestamp: Codex / `2026-08-03T11:10:32+08:00`
+
+Task: 00 — M1 基线与 M2 构建壳（完成记录）
+Status: DONE
+Start commit / end commit: `724a00e2cf22e65de0eab18f0a6423f8194156be` / Task 00 commit with the requested message
+Files changed: `src/CMakeLists.txt`, `tests/CMakeLists.txt`, `src/m2/main.cpp`, `docs/validation/m2-dynamic-block-store-acceptance.md`, and this Task 00 status/checklist/record
+Red test and observed failure: exit 1, `ninja: error: unknown target 'myrd-m2-e2e'`; green target build exit 0, 2/2 steps
+Focused verification command / exit code: `cmake --build --preset release --target myrd_storage --clean-first` exit 0 (6/6); label discovery 3/3/3/26; post-change M1-V2 exit 0 (14/14, fuzz 1/1, SHM 50/50)
+Cumulative verification command / exit code: fresh post-change `cmake --preset msvc --fresh` exit 0; `cmake --build --preset release --clean-first` exit 0 (94/94); `ctest --preset release --output-on-failure` exit 0 (26/26)
+Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`; pinned reference `out/reference/aim` is ignored
+Plan drift audit: Task 00 only; no M1 behavior source, no duplicate storage target, no Task 01/M2 behavior, no CodeGraph initialization
+Open risks: M2-V1..V4 behavior is intentionally unimplemented and must not be inferred from reserved prerequisite labels
+Executor / timestamp: Codex / `2026-08-03T11:14:58+08:00`

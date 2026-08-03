@@ -209,3 +209,42 @@ target_link_libraries(myrd_lifecycle_runner_tests PRIVATE myrd_test_support myrd
 target_include_directories(myrd_lifecycle_runner_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_lifecycle_runner_tests)
 add_test(NAME unit.lifecycle_runner COMMAND myrd_lifecycle_runner_tests)
+
+# M2-V4 always includes the complete accepted local M1 regression baseline.
+# The three shared storage-contract tests are real prerequisites reserved in
+# every local M2 tier; later tasks append their own behavior tests per tier.
+set(_myrd_m2_v4_m1_regression_tests
+    unit.common
+    unit.protocol
+    unit.m1.operation_context
+    unit.m1.block_device_contract
+    unit.m1.protocol
+    unit.m1.proxy_error
+    unit.m1.range_normalizer
+    unit.m1.request_processor
+    unit.m1.protocol_fuzz
+    unit.m1.namespace_policy
+    unit.m1.raw_protocol_io
+    integration.m1.shm
+    unit.m1.provider
+    unit.m1.cli
+    unit.m1.lifecycle_runner
+    unit.m1.report
+    unit.m1.verification_script
+    unit.storage
+    unit.request_processor
+    unit.object_names
+    integration.shm
+    unit.srb_codec
+    unit.direct_aim_adapter
+    unit.physical_drive_locator
+    unit.report
+    unit.lifecycle_runner
+)
+set_tests_properties(${_myrd_m2_v4_m1_regression_tests}
+    PROPERTIES LABELS "m2-v4")
+set_property(TEST
+    unit.m1.operation_context
+    unit.m1.block_device_contract
+    unit.storage
+    APPEND PROPERTY LABELS m2-v1 m2-v2 m2-v3)
