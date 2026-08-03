@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -14,6 +15,7 @@ namespace myrd {
 
 class IVirtualMemoryApi;
 class VirtualMemoryCleanupTracker;
+class DynamicBlockStore;
 
 // BlockEntry deliberately contains only scalar metadata. Synchronization is
 // supplied by LockStripeSet, never by one mutex/condition variable per block.
@@ -163,10 +165,43 @@ public:
     virtual void on_event(DynamicBlockStoreLifecycleEvent event) noexcept = 0;
 };
 
+class IDynamicBlockStoreReadObserver {
+public:
+    virtual ~IDynamicBlockStoreReadObserver() = default;
+    virtual void after_resident_pin(std::uint64_t block_index) noexcept = 0;
+    virtual void after_segment(std::uint64_t block_index) noexcept = 0;
+};
+
+// Mutating access is intentionally confined to tests that need to establish
+// states owned by later M2 tasks. Product code cannot reach these helpers
+// through DynamicBlockStore's public API.
+class DynamicBlockStoreTestAccess final {
+public:
+    static bool seed_zero(DynamicBlockStore& store,
+                          std::uint64_t block_index,
+                          BlockState state,
+                          BackingGeneration generation);
+    static bool seed_resident(DynamicBlockStore& store,
+                              std::uint64_t block_index,
+                              BlockState state,
+                              std::span<const std::byte> data,
+                              BackingGeneration generation);
+    static bool seed_uncommitted_resident(DynamicBlockStore& store,
+                                          std::uint64_t block_index,
+                                          BlockState state,
+                                          BackingGeneration generation);
+    static bool snapshot_entry(DynamicBlockStore& store,
+                               std::uint64_t block_index,
+                               BlockEntry& output);
+    static bool try_decommit_resident_clean(DynamicBlockStore& store,
+                                            std::uint64_t block_index);
+};
+
 struct DynamicBlockStoreTestDependencies {
     std::shared_ptr<IVirtualMemoryApi> virtual_memory_api;
     std::shared_ptr<VirtualMemoryCleanupTracker> cleanup_tracker;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer;
+    std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer;
     DynamicBlockStoreFactoryStage fail_stage{
         DynamicBlockStoreFactoryStage::None};
 };

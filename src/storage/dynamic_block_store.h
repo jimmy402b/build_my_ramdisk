@@ -21,6 +21,8 @@ class LockStripeSet;
 class VirtualMemoryArena;
 struct DynamicBlockStoreTestDependencies;
 class IDynamicBlockStoreLifecycleObserver;
+class IDynamicBlockStoreReadObserver;
+class DynamicBlockStoreTestAccess;
 
 struct BackingView {
     BackingGeneration generation{};
@@ -92,6 +94,13 @@ public:
     std::uint64_t stripe_waiter_count_for_test() const noexcept;
 
 private:
+    friend class DynamicBlockStoreTestAccess;
+
+    struct RequestToken {
+        DynamicBlockStore* store{};
+        RequestToken* previous{};
+    };
+
     enum class LifecycleState : std::uint8_t {
         Open = 0,
         Closing = 1,
@@ -106,7 +115,9 @@ private:
         std::unique_ptr<LockStripeSet> stripes,
         std::unique_ptr<BlockDirectory> directory,
         std::shared_ptr<IDynamicBlockStoreLifecycleObserver>
-            lifecycle_observer) noexcept;
+            lifecycle_observer,
+        std::shared_ptr<IDynamicBlockStoreReadObserver>
+            read_observer) noexcept;
 
     static Result<std::unique_ptr<DynamicBlockStore>> create_impl(
         DynamicBlockStoreCreateArgs args,
@@ -114,8 +125,10 @@ private:
 
     bool start_worker();
     void worker_main() noexcept;
-    bool try_enter_request();
-    void leave_request();
+    bool try_enter_request(RequestToken& token);
+    void leave_request(RequestToken& token) noexcept;
+    bool current_thread_has_active_request() const noexcept;
+    void finish_close();
     bool closing_requested() const noexcept;
     void notify_lifecycle_event(std::uint8_t event) noexcept;
     void notify_all_waiters();
@@ -134,14 +147,19 @@ private:
     std::atomic<bool> closing_requested_{false};
     std::uint64_t active_requests_{};
     bool worker_running_{};
+    bool deferred_close_ready_{};
     std::thread::id close_owner_{};
     std::thread worker_;
     std::atomic<std::uint64_t> stripe_waiter_count_{0};
+    std::atomic<std::uint64_t> access_epoch_{0};
 
     std::unique_ptr<VirtualMemoryArena> arena_;
     std::unique_ptr<LockStripeSet> stripes_;
     std::unique_ptr<BlockDirectory> directory_;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer_;
+    std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer_;
+
+    static thread_local RequestToken* current_request_token_;
 };
 
 } // namespace myrd

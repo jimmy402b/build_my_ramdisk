@@ -65,6 +65,9 @@ Error make_validation_error(
 
 } // namespace
 
+thread_local DynamicBlockStore::RequestToken*
+    DynamicBlockStore::current_request_token_ = nullptr;
+
 Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create(
     DynamicBlockStoreCreateArgs args) {
     return create_impl(std::move(args), {});
@@ -166,7 +169,8 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
                           std::move(arena),
                           std::move(stripes),
                           std::move(directory),
-                          std::move(dependencies.lifecycle_observer)));
+                          std::move(dependencies.lifecycle_observer),
+                          std::move(dependencies.read_observer)));
     if (!store) {
         return Result<std::unique_ptr<DynamicBlockStore>>::failure(
             make_factory_error(L"DynamicBlockStore::create/object",
@@ -211,7 +215,9 @@ DynamicBlockStore::DynamicBlockStore(
     std::unique_ptr<LockStripeSet> stripes,
     std::unique_ptr<BlockDirectory> directory,
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver>
-        lifecycle_observer) noexcept
+        lifecycle_observer,
+    std::shared_ptr<IDynamicBlockStoreReadObserver>
+        read_observer) noexcept
     : geometry_(geometry),
       options_(args.options),
       sector_size_bytes_(args.sector_size_bytes),
@@ -219,7 +225,8 @@ DynamicBlockStore::DynamicBlockStore(
       arena_(std::move(arena)),
       stripes_(std::move(stripes)),
       directory_(std::move(directory)),
-      lifecycle_observer_(std::move(lifecycle_observer)) {
+      lifecycle_observer_(std::move(lifecycle_observer)),
+      read_observer_(std::move(read_observer)) {
     stats_.logical_size_bytes = geometry_.logical_size_bytes;
     stats_.reserved_bytes = geometry_.reservation_size_bytes;
     stats_.zero_clean_blocks =
@@ -287,15 +294,17 @@ void DynamicBlockStore::worker_main() noexcept {
 }
 
 void DynamicBlockStore::close() {
+    const bool called_from_request = current_thread_has_active_request();
     {
         std::unique_lock lock(lifecycle_mutex_);
         if (lifecycle_state_ == LifecycleState::Closed) {
             return;
         }
         if (lifecycle_state_ == LifecycleState::Closing) {
-            if (close_owner_ == std::this_thread::get_id()) {
-                // A synchronous lifecycle observer may reenter close(). The
-                // outer invocation remains the single owner of shutdown.
+            if (close_owner_ == std::this_thread::get_id() ||
+                called_from_request) {
+                // A synchronous observer or an in-flight request must not
+                // wait for itself to leave the active-request set.
                 return;
             }
             lifecycle_condition_.wait(lock, [this] {
@@ -321,40 +330,93 @@ void DynamicBlockStore::close() {
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::WorkerStopped));
 
+    if (called_from_request) {
+        // The request that initiated close still owns store resources. Its
+        // final leave_request() publishes Quiesced/Closed after every active
+        // request has drained.
+        std::scoped_lock lock(lifecycle_mutex_);
+        deferred_close_ready_ = true;
+        return;
+    }
+
     {
         std::unique_lock lock(lifecycle_mutex_);
         lifecycle_condition_.wait(lock, [this] {
             return active_requests_ == 0;
         });
     }
+    finish_close();
+}
+
+void DynamicBlockStore::finish_close() {
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::Quiesced));
 
     {
         std::scoped_lock lock(lifecycle_mutex_);
         lifecycle_state_ = LifecycleState::Closed;
+        deferred_close_ready_ = false;
         close_owner_ = {};
     }
     lifecycle_condition_.notify_all();
 }
 
-bool DynamicBlockStore::try_enter_request() {
+bool DynamicBlockStore::try_enter_request(RequestToken& token) {
     std::scoped_lock lock(lifecycle_mutex_);
     if (lifecycle_state_ != LifecycleState::Open) {
         return false;
     }
+    token.store = this;
+    token.previous = current_request_token_;
+    current_request_token_ = &token;
     ++active_requests_;
     return true;
 }
 
-void DynamicBlockStore::leave_request() {
-    std::scoped_lock lock(lifecycle_mutex_);
-    if (active_requests_ != 0) {
-        --active_requests_;
+void DynamicBlockStore::leave_request(RequestToken& token) noexcept {
+    try {
+        if (current_request_token_ != &token || token.store != this) {
+            std::terminate();
+        }
+        current_request_token_ = token.previous;
+        token = {};
+
+        bool finish_deferred_close = false;
+        {
+            std::scoped_lock lock(lifecycle_mutex_);
+            if (active_requests_ == 0) {
+                std::terminate();
+            }
+            --active_requests_;
+            if (active_requests_ == 0) {
+                lifecycle_condition_.notify_all();
+                if (lifecycle_state_ == LifecycleState::Closing &&
+                    deferred_close_ready_) {
+                    deferred_close_ready_ = false;
+                    close_owner_ = std::this_thread::get_id();
+                    finish_deferred_close = true;
+                }
+            }
+        }
+        if (finish_deferred_close) {
+            finish_close();
+        }
+    } catch (...) {
+        // A failed synchronization operation leaves request lifetime and
+        // shutdown ownership unknowable; continuing could free live state.
+        std::terminate();
     }
-    if (active_requests_ == 0) {
-        lifecycle_condition_.notify_all();
+}
+
+bool DynamicBlockStore::current_thread_has_active_request() const noexcept {
+    for (auto* token = current_request_token_;
+         token != nullptr;
+         token = token->previous) {
+        if (token->store == this) {
+            return true;
+        }
     }
+    return false;
 }
 
 bool DynamicBlockStore::closing_requested() const noexcept {
@@ -396,34 +458,16 @@ DeviceFeatures DynamicBlockStore::features() const noexcept {
     return DeviceFeatures{false, true, true};
 }
 
-Result<void> DynamicBlockStore::read(
-    const OperationContext& context,
-    std::uint64_t offset,
-    std::span<std::byte> output) {
-    if (!try_enter_request()) {
-        return Result<void>::failure(
-            make_session_closed_error(L"DynamicBlockStore::read"));
-    }
-    ScopeExit leave([this]() { leave_request(); });
-    (void)offset;
-    (void)output;
-    const auto live = check_operation_context(context);
-    if (!live.ok()) {
-        return live;
-    }
-    return Result<void>::failure(
-        make_not_implemented_error(L"DynamicBlockStore::read"));
-}
-
 Result<void> DynamicBlockStore::write(
     const OperationContext& context,
     std::uint64_t offset,
     std::span<const std::byte> input) {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(
             make_session_closed_error(L"DynamicBlockStore::write"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
     (void)offset;
     (void)input;
     const auto live = check_operation_context(context);
@@ -437,11 +481,12 @@ Result<void> DynamicBlockStore::write(
 Result<void> DynamicBlockStore::unmap(
     const OperationContext& context,
     std::span<const DataRange> ranges) {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(
             make_session_closed_error(L"DynamicBlockStore::unmap"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
     (void)ranges;
     const auto live = check_operation_context(context);
     if (!live.ok()) {
@@ -454,11 +499,12 @@ Result<void> DynamicBlockStore::unmap(
 Result<void> DynamicBlockStore::zero(
     const OperationContext& context,
     std::span<const DataRange> ranges) {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(
             make_session_closed_error(L"DynamicBlockStore::zero"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
     (void)ranges;
     const auto live = check_operation_context(context);
     if (!live.ok()) {
@@ -475,11 +521,12 @@ BackingGeneration DynamicBlockStore::backing_generation() const {
 
 Result<void> DynamicBlockStore::install_backing_view(
     BackingView next_view) {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(make_session_closed_error(
             L"DynamicBlockStore::install_backing_view"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
 
     BackingView retired_view;
     {
@@ -510,12 +557,13 @@ DynamicBlockStore::copy_dirty_batch(
     const OperationContext& context,
     DirtyScanCursor& cursor,
     std::size_t max_bytes) {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<std::vector<DirtyBlockSnapshot>>::failure(
             make_session_closed_error(
                 L"DynamicBlockStore::copy_dirty_batch"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
     (void)cursor;
     (void)max_bytes;
     const auto live = check_operation_context(context);
@@ -532,11 +580,12 @@ Result<void> DynamicBlockStore::mark_persisted(
     std::uint64_t expected_version,
     DirtyRecordKind expected_kind,
     BackingGeneration persisted_generation) {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(make_session_closed_error(
             L"DynamicBlockStore::mark_persisted"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
     (void)block_index;
     (void)expected_version;
     (void)expected_kind;
@@ -575,11 +624,12 @@ bool DynamicBlockStore::is_closed() const noexcept {
 }
 
 Result<void> DynamicBlockStore::validate_invariants_for_test() {
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(make_session_closed_error(
             L"DynamicBlockStore::validate_invariants_for_test"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
 
     constexpr std::uint32_t kMaxSnapshotAttempts = 8;
     for (std::uint32_t attempt = 0;
@@ -694,11 +744,12 @@ Result<void> DynamicBlockStore::wait_for_close_for_test(
             L"DynamicBlockStore::wait_for_close_for_test",
             L"block index is outside the store"));
     }
-    if (!try_enter_request()) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
         return Result<void>::failure(make_session_closed_error(
             L"DynamicBlockStore::wait_for_close_for_test"));
     }
-    ScopeExit leave([this]() { leave_request(); });
+    ScopeExit leave([this, &request]() { leave_request(request); });
 
     auto& stripe = stripes_->stripe_for(block_index);
     std::unique_lock lock(stripe.mutex);

@@ -383,31 +383,33 @@ Executor / timestamp:
 
 ### 红灯测试
 
-- [ ] implicit CleanZero 全块、部分、跨块读取全零且不创建 leaf。
-- [ ] explicit `ZeroClean`/`ZeroDirty` 返回零且不 commit/load。
-- [ ] `ResidentClean`/`ResidentDirty` 全块和部分读取字节精确。
-- [ ] 跨 2/3 block 读取正确拼接。
-- [ ] 最后 partial logical block 边界正确。
-- [ ] 非对齐、overflow、越界、buffer mismatch 在任何 copy 前失败。
-- [ ] cancellation/deadline 在开始和块间被观察。
-- [ ] pin 阻止测试中的 decommit/transition；copy 后 pin 归零。
-- [ ] reference bit 在成功 resident read 后设置。
+- [x] implicit CleanZero 全块、部分、跨块读取全零且不创建 leaf。
+- [x] explicit `ZeroClean`/`ZeroDirty` 返回零且不 commit/load。
+- [x] `ResidentClean`/`ResidentDirty` 全块和部分读取字节精确。
+- [x] 跨 2/3 block 读取正确拼接。
+- [x] 最后 partial logical block 边界正确。
+- [x] 非对齐、overflow、越界、buffer mismatch 在任何 copy 前失败。
+- [x] cancellation/deadline 在开始和块间被观察。
+- [x] pin 阻止测试中的 decommit/transition；copy 后 pin 归零。
+- [x] reference bit 在成功 resident read 后设置。
 
 ### 实现
 
-- [ ] 共用 Task 01 checked range splitter。
-- [ ] zero read 只填请求 destination span。
-- [ ] resident path：锁内确认并 pin → 解锁 copy → 加锁 unpin/reference/wake。
-- [ ] 不在 metadata lock 下复制大 buffer。
-- [ ] 不读取未 commit arena 地址。
-- [ ] `Result<void>` 不报告 transferred-byte success；后续块取消/失败时返回错误，已经复制的 destination prefix 可以保留。
+- [x] 共用 Task 01 checked range splitter。
+- [x] zero read 只填请求 destination span。
+- [x] resident path：锁内确认并 pin → 解锁 copy → 加锁 unpin/reference/wake。
+- [x] 不在 metadata lock 下复制大 buffer。
+- [x] 不读取未 commit arena 地址。
+- [x] `Result<void>` 不报告 transferred-byte success；后续块取消/失败时返回错误，已经复制的 destination prefix 可以保留。
 
 ### 验证与验收
 
-- [ ] `unit.m2.read` 通过。
-- [ ] zero reads 的 leaf/commit/load counters 保持零。
-- [ ] 回读 Plan Task 6 与 1.5；核对 range 和 cancellation。
-- [ ] 建议提交：`feat(storage): implement zero and resident reads`。
+- [x] `unit.m2.read` 通过。
+- [x] zero reads 的 leaf/commit/load counters 保持零。
+- [x] 回读 Plan Task 6 与 1.5；核对 range 和 cancellation。
+- [x] 建议提交：`feat(storage): implement zero and resident reads`。
+
+验收记录（2026-08-03）：`unit.m2.read` 11/11 通过并连续重复 100 次；覆盖 implicit/explicit zero、ResidentClean/Dirty、2/3-block 拼接、最后 partial block、全量预校验、取消/deadline 前缀语义、pin/reference、未 commit Resident 防护与 observer 重入关闭。Resident copy 使用 RAII pin，测试 decommit 使用 `ResidentClean -> Evicting -> Unresident` 且在 stripe 锁外释放内存。规格复验 COMPLIANT，质量复验 APPROVED。
 
 ---
 
