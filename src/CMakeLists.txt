@@ -112,6 +112,8 @@ myrd_enable_warnings(myrd_m2)
 add_library(myrd_m2_report STATIC
     m2/m2_report.cpp m2/m2_report.h
     m2/m2_lifecycle_runner.cpp m2/m2_lifecycle_runner.h
+    m2/m2_cli.cpp m2/m2_cli.h
+    m2/m2_local_fake.cpp m2/m2_local_fake.h
 )
 target_include_directories(myrd_m2_report PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m2_report PUBLIC myrd_m2 myrd_poc)
@@ -127,7 +129,7 @@ myrd_enable_warnings(myrd-m1-e2e)
 add_executable(myrd-m2-e2e
     m2/main.cpp
 )
-target_link_libraries(myrd-m2-e2e PRIVATE myrd_m2)
+target_link_libraries(myrd-m2-e2e PRIVATE myrd_m2_report)
 myrd_enable_warnings(myrd-m2-e2e)
 
 add_executable(myrd-m0-poc

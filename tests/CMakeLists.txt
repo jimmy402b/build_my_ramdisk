@@ -667,3 +667,38 @@ add_test(NAME unit.m2.lifecycle COMMAND myrd_m2_lifecycle_runner_tests)
 set_tests_properties(unit.m2.lifecycle PROPERTIES
     LABELS "m2-v4"
     TIMEOUT 30)
+
+add_executable(myrd_m2_cli_tests
+    unit/m2_cli_tests.cpp
+)
+target_link_libraries(myrd_m2_cli_tests PRIVATE
+    myrd_test_support myrd_m2_report)
+target_include_directories(myrd_m2_cli_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_cli_tests)
+add_test(NAME unit.m2.cli COMMAND myrd_m2_cli_tests)
+set_tests_properties(unit.m2.cli PROPERTIES
+    LABELS "m2-v4"
+    TIMEOUT 30)
+
+add_executable(myrd_m2_local_fake_tests
+    unit/m2_local_fake_tests.cpp
+)
+target_link_libraries(myrd_m2_local_fake_tests PRIVATE
+    myrd_test_support myrd_m2_report)
+target_include_directories(myrd_m2_local_fake_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_local_fake_tests)
+add_test(NAME unit.m2.local_fake COMMAND myrd_m2_local_fake_tests)
+set_tests_properties(unit.m2.local_fake PROPERTIES
+    LABELS "m2-v4"
+    TIMEOUT 30)
+
+add_test(
+    NAME integration.m2.cli_smoke
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/integration/m2_cli_smoke.ps1"
+            -Executable "$<TARGET_FILE:myrd-m2-e2e>")
+set_tests_properties(integration.m2.cli_smoke PROPERTIES
+    LABELS "m2-v4"
+    TIMEOUT 30)

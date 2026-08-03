@@ -77,9 +77,9 @@
 | 14 | 单飞加载与同块并发 | DONE | 12 | M2-V3 |
 | 15 | 快照/变更/淘汰/关闭竞态 | DONE | 14 | M2-V3 |
 | 16 | 长压测、不变量、资源核算 | DONE | 13,15 | M2-V3 / M2-B |
-| 17 | 注入 M1 Proxy 与本地 SHM | TODO | 16 | M2-V4 |
-| 18 | 64 GiB/1 TiB 真实 VM 集成 | TODO | 16 | M2-V2 |
-| 19 | CLI、生命周期、报告、性能探针 | TODO | 17,18 | 本地假验收 |
+| 17 | 注入 M1 Proxy 与本地 SHM | DONE | 16 | M2-V4 |
+| 18 | 64 GiB/1 TiB 真实 VM 集成 | DONE | 16 | M2-V2 |
+| 19 | CLI、生命周期、报告、性能探针 | DONE | 17,18 | 本地假验收 |
 | 20 | 安全 NTFS 脚本与总编排 | TODO | 19 | Preflight |
 | 21 | 执行 M2-A/B 与 M2-C 功能门 | TODO | 20 | M2-V1..V5 |
 | 22 | 性能、故障、20 轮与最终判定 | TODO | 21 | M2-V6..V7 |
@@ -937,60 +937,60 @@ Executor / timestamp:
 
 ### JSON schema 红灯测试
 
-- [ ] schema version 与 run ID 必填且稳定。
-- [ ] build/toolchain、M1 baseline、machine/OS 必填。
-- [ ] driver/service before/after 必填。
-- [ ] geometry/options/initial state/initial and current backing generation 必填。
-- [ ] 每 phase start/end/status/error/elapsed 必填。
-- [ ] checksum/bytes written/read/deleted 必填。
-- [ ] store stats、view install/generation conflict/stale-load counters 与 OS memory samples 必填。
-- [ ] baseline/dynamic perf raw values、ratio、threshold 必填。
-- [ ] exact device identity、cleanup actions、final inventory diff 必填。
-- [ ] failure list 与唯一 verdict 必填。
-- [ ] missing field、overflow/narrow integer、unknown enum 使验证失败。
-- [ ] report 用 temp + atomic rename 发布；路径 run-unique，不覆盖旧报告。
+- [x] schema version 与 run ID 必填且稳定。
+- [x] build/toolchain、M1 baseline、machine/OS 必填。
+- [x] driver/service before/after 必填。
+- [x] geometry/options/initial state/initial and current backing generation 必填。
+- [x] 每 phase start/end/status/error/elapsed 必填。
+- [x] checksum/bytes written/read/deleted 必填。
+- [x] store stats、view install/generation conflict/stale-load counters 与 OS memory samples 必填。
+- [x] baseline/dynamic perf raw values、ratio、threshold 必填。
+- [x] exact device identity、cleanup actions、final inventory diff 必填。
+- [x] failure list 与唯一 verdict 必填。
+- [x] missing field、overflow/narrow integer、unknown enum 使验证失败。
+- [x] report 用 temp + atomic rename 发布；路径 run-unique，不覆盖旧报告。
 
 ### Lifecycle 红灯测试
 
-- [ ] baseline capture fail：无 mutation。
-- [ ] provider construct/start fail：按已拥有资源 rollback。
-- [ ] device create fail/wait timeout：stop provider、恢复 service。
-- [ ] setup/write fail、delete/retrim fail、perf fail：仍执行全部适用 cleanup。
-- [ ] mount removal fail/device removal fail/service restore fail：最终 NO-GO。
-- [ ] cleanup action 每项记录 attempted/result/error。
-- [ ] phase deadline/cancellation 生效，无无限等待。
-- [ ] fake success order 与 Plan Task 19 完全一致。
+- [x] baseline capture fail：无 mutation。
+- [x] provider construct/start fail：按已拥有资源 rollback。
+- [x] device create fail/wait timeout：stop provider、恢复 service。
+- [x] setup/write fail、delete/retrim fail、perf fail：仍执行全部适用 cleanup。
+- [x] mount removal fail/device removal fail/service restore fail：最终 NO-GO。
+- [x] cleanup action 每项记录 attempted/result/error。
+- [x] phase deadline/cancellation 生效，无无限等待。
+- [x] fake success order 与 Plan Task 19 完全一致。
 
 ### Performance probe 红灯测试
 
-- [ ] warmup 数据不进入计时。
-- [ ] sequential region 恰好 32 MiB且对齐。
-- [ ] random 恰好 10,000 次 4 KiB QD1，固定 seed/对齐。
-- [ ] short I/O/error 使 probe 失败。
-- [ ] fixed 和 dynamic 方法完全相同。
-- [ ] seq ratio 70% 边界；random 60% 边界。
-- [ ] division by zero/无 baseline 明确失败。
+- [x] warmup 数据不进入计时。
+- [x] sequential region 恰好 32 MiB且对齐。
+- [x] random 恰好 10,000 次 4 KiB QD1，固定 seed/对齐。
+- [x] short I/O/error 使 probe 失败。
+- [x] fixed 和 dynamic 方法完全相同。
+- [x] seq ratio 70% 边界；random 60% 边界。
+- [x] division by zero/无 baseline 明确失败。
 
 ### 实现与 CLI
 
-- [ ] 定义可注入 `IM2VolumeWorkload` phase API。
-- [ ] lifecycle 每次 mutation 后立即注册 exact rollback guard。
-- [ ] real M2 lifecycle 显式使用 generation `0` 或记录恢复 generation，并明确报告“未安装 durable successor backing”。
-- [ ] 实现 report writer/reader semantic validator。
-- [ ] 实现 raw QD1 probe，不用 filesystem cache 结果冒充 block device 结果；记录 flags。
-- [ ] `--help`、`--print-schema`、`--local-fake`、real acceptance mode。
-- [ ] real mode 无隐式默认目标；要求 evidence dir、expected driver/device、64 GiB、safety acknowledgement。
-- [ ] real mode 要求显式 store options，或显式选择并记录 SPEC 允许的 test policy：soft=物理 RAM 25%、hard=50%、low=soft 的 80%，全部向 64 KiB 安全对齐。
-- [ ] unknown options/不安全组合 fail closed。
+- [x] 定义可注入 `IM2VolumeWorkload` phase API。
+- [x] lifecycle 每次 mutation 后立即注册 exact rollback guard。
+- [x] real M2 lifecycle 显式使用 generation `0` 或记录恢复 generation，并明确报告“未安装 durable successor backing”。
+- [x] 实现 report writer/reader semantic validator。
+- [x] 实现 raw QD1 probe，不用 filesystem cache 结果冒充 block device 结果；记录 flags。
+- [x] `--help`、`--print-schema`、`--local-fake`、real acceptance mode。
+- [x] real mode 无隐式默认目标；要求 evidence dir、expected driver/device、64 GiB、safety acknowledgement。
+- [x] real mode 要求显式 store options，或显式选择并记录 SPEC 允许的 test policy：soft=物理 RAM 25%、hard=50%、low=soft 的 80%，全部向 64 KiB 安全对齐。
+- [x] unknown options/不安全组合 fail closed。
 
 ### 验证与验收
 
-- [ ] `unit.m2.lifecycle|report|performance` 通过。
-- [ ] `m2 --help` 和 `--print-schema` 成功。
-- [ ] `m2 --local-fake --evidence-dir <unique-temp>` 成功，JSON validator 通过。
-- [ ] 所有 fake failure points 产生 NO-GO 且 baseline restored。
-- [ ] 回读 Plan Task 19；确认报告不会因 cleanup fail 仍写 GO。
-- [ ] 建议提交：`feat(m2): add acceptance lifecycle and evidence model`。
+- [x] `unit.m2.lifecycle|report|performance` 通过。
+- [x] `m2 --help` 和 `--print-schema` 成功。
+- [x] `m2 --local-fake --evidence-dir <unique-temp>` 成功，JSON validator 通过。
+- [x] 所有 fake failure points 产生 NO-GO 且 baseline restored。
+- [x] 回读 Plan Task 19；确认报告不会因 cleanup fail 仍写 GO。
+- [x] 建议提交：`feat(m2): add acceptance lifecycle and evidence model`。
 
 ---
 
@@ -1501,3 +1501,17 @@ Review findings and resolution: initial specification review required Release-on
 Plan drift audit: Task 18 test/CMake/evidence only; no product semantics, threshold lowering, retry-to-pass, skip-as-pass, proxy/driver/device access, filesystem backing, M3, or M4 behavior was introduced
 Open risks: Task 19 still owns M2 CLI/lifecycle/report/performance-probe fakes; Tasks 20–22 own the real-device harness, staged M2-A/B/C execution, NTFS workload, performance/fault gate, 20-cycle soak, and final M2 verdict
 Executor / timestamp: Codex / `2026-08-04T03:10:19+08:00`
+
+Task: 19 — M2 CLI, lifecycle, report schema, performance probe, and local-fake acceptance
+Status: DONE
+Start commit / end commit: `5ee5a00` / pending commit `feat(m2): complete acceptance CLI and local fake`
+Implementation commits: `d43b1a2`, `4db53f8`, `b8e2400`, `60b27cf`, `3ba5b67`, `1b7d1ed`, `225e332`, `43d2fe2`, plus the pending CLI/local-fake commit
+Files changed: `src/m2/m2_performance_probe.*`, `src/m2/m2_volume_workload.*`, `src/m2/m2_report.*`, `src/m2/m2_lifecycle_runner.*`, `src/m2/m2_cli.*`, `src/m2/m2_local_fake.*`, `src/m2/main.cpp`, `src/CMakeLists.txt`, the matching unit/process integration tests, `tests/CMakeLists.txt`, and this Task 19 checklist/status/record
+Red tests and observed failures: report/performance/lifecycle work used their deterministic semantic and failure-path red tests; Task 19D first failed compilation because `m2_cli.h` did not exist, local-fake first failed because `m2_local_fake.h` did not exist, and the process smoke test then failed because the executable returned no help output; each failure was resolved at the smallest owning layer
+Focused verification command / exit code: Debug and Release builds include `unit.m2.performance`, `unit.m2.report`, `unit.m2.lifecycle`, `unit.m2.cli`, `unit.m2.local_fake`, and `integration.m2.cli_smoke`; every listed gate exits 0 in the final full runs
+Cumulative verification command / exit code: Debug full CTest exits 0 with 50/50; Release full CTest exits 0 with 51/51, including the Release-only real virtual-memory gate; `git diff --check` exits 0 before documentation closeout
+Acceptance evidence: the schema/semantic validator rejects missing, malformed, overflowed, contradictory, unsafe-device, and verdict-incoherent evidence; lifecycle tests cover all acquisition, cancellation, deadline, cleanup, publication, and baseline-restore paths; the deterministic raw QD1 probe enforces warmup exclusion, 32 MiB sequential, 10,000 aligned 4 KiB random operations, comparable policy, and 70%/60% gates; the local-fake process executes the production lifecycle runner, atomically publishes a GO report, and validates it through the executable readback mode
+Review findings and resolution: report validation was tightened to cross-check verdict, AIM flags, sample ordering, generations, memory, and performance; lifecycle ownership now survives late acquisition, null providers fail closed, successful publication is the final commit point, and cleanup failures cannot yield GO; the final CLI parser requires one explicit mode, canonical existing input paths, exact 64 GiB real geometry, explicit trusted identities/store policy, and the destructive acknowledgement
+Plan drift audit: implementation matches Plan Task 19 and stops before real-disk mutation; `--real` parses only the complete fail-closed contract and then refuses execution until Task 20 installs the elevated Windows device/NTFS adapters; local-fake never touches AIM, disks, partitions, volumes, or services; no filesystem backing, M3 durability, M4 recovery, threshold reduction, hidden skip, or retry-to-pass behavior was introduced
+Open risks: Tasks 20–22 still own elevated preflight, exact real-device discovery and NTFS mutation, staged M2-A/B/C evidence, real fixed-versus-dynamic performance, fault injection, 20-cycle soak, and the final M2 verdict
+Executor / timestamp: Codex / `2026-08-04T05:35:45+08:00`
