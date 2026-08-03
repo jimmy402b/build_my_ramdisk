@@ -168,46 +168,48 @@ Executor / timestamp:
 
 ## Task 01 — 定义 checked geometry、options、状态和 stats
 
+**状态：DONE**
+
 **目标：** 先固定所有数字、边界和公开类型，避免后续模块各自解释 64 KiB、limit 或版本。
 
 **文件：** `src/storage/block_constants.h`、`block_math.h`、`dynamic_block_types.h`、`tests/unit/block_math_tests.cpp`、CMake。
 
 ### 红灯测试
 
-- [ ] 64 KiB 常量、1,024 blocks/leaf、64 MiB/leaf。
-- [ ] checked add 正常、`UINT64_MAX` 溢出。
-- [ ] 向 64 KiB 上取整正常、已对齐、零和溢出。
-- [ ] request 切分：块内、跨 2/3 块、末尾 partial logical block。
-- [ ] offset+length 溢出、超 logical size、非 sector 对齐、buffer 长度错误。
-- [ ] 64 GiB 和 1 TiB 的 block/leaf/reservation 数值。
-- [ ] option：`0 < low <= soft < hard` 每个反例。
-- [ ] limits 必须块对齐。
-- [ ] snapshot bytes 至少 64 KiB且块对齐，records > 0。
-- [ ] stripes 为 2 的幂且 >=64。
-- [ ] `BackingGeneration` 使用 `uint64_t`；generation 回绕被识别为 fatal invariant。
-- [ ] `DirtyBlockSnapshot` 精确包含 `base_generation`；stats 包含 current generation、view installs、generation conflicts、stale-load retries。
-- [ ] `BackingUnresident` 缺 backing 失败；`CleanZero` null backing 的规范化行为。
-- [ ] version increment 溢出被识别为 fatal invariant。
+- [x] 64 KiB 常量、1,024 blocks/leaf、64 MiB/leaf。
+- [x] checked add 正常、`UINT64_MAX` 溢出。
+- [x] 向 64 KiB 上取整正常、已对齐、零和溢出。
+- [x] request 切分：块内、跨 2/3 块、末尾 partial logical block。
+- [x] offset+length 溢出、超 logical size、非 sector 对齐、buffer 长度错误。
+- [x] 64 GiB 和 1 TiB 的 block/leaf/reservation 数值。
+- [x] option：`0 < low <= soft < hard` 每个反例。
+- [x] limits 必须块对齐。
+- [x] snapshot bytes 至少 64 KiB且块对齐，records > 0。
+- [x] stripes 为 2 的幂且 >=64。
+- [x] `BackingGeneration` 使用 `uint64_t`；generation 回绕被识别为 fatal invariant。
+- [x] `DirtyBlockSnapshot` 精确包含 `base_generation`；stats 包含 current generation、view installs、generation conflicts、stale-load retries。
+- [x] `BackingUnresident` 缺 backing 失败；`CleanZero` null backing 的规范化行为。
+- [x] version increment 溢出被识别为 fatal invariant。
 
 ### 实现
 
-- [ ] 只使用固定宽度无符号整数和 checked helpers，不允许隐式 narrowing。
-- [ ] 定义 `kBlockSizeBytes`、`kBlocksPerLeaf`。
-- [ ] 定义 `InitialBlockState`、稳定/瞬态 state、options、create args。
-- [ ] 定义 `BackingGeneration`、`DirtyRecordKind`、带 `base_generation` 的 `DirtyBlockSnapshot`、`DirtyScanCursor` 和 `BackingGenerationConflict`。
-- [ ] 定义 SPEC 的完整 stats 字段：logical/reserved/committed，四种 resident/zero block counts、loading、evicted、backing reads/bytes、uncached reads、unmap/zero bytes、hard rejects、commit/decommit failures、snapshot records/conflicts、current generation、view installs/generation conflicts、stale-load retries。
-- [ ] `CleanZero` 的 implicit zero blocks 通过总块数减去偏离默认状态的块计算，统计不得创建 leaves。
-- [ ] library 不提供隐藏 product defaults；create caller 必须显式传全部 options。
-- [ ] 为所有公开 enum 提供稳定的报告字符串，不依赖 ordinal。
-- [ ] 编译失败检查：production header 不包含 AIM/driver header。
+- [x] 只使用固定宽度无符号整数和 checked helpers，不允许隐式 narrowing。
+- [x] 定义 `kBlockSizeBytes`、`kBlocksPerLeaf`。
+- [x] 定义 `InitialBlockState`、稳定/瞬态 state、options、create args。
+- [x] 定义 `BackingGeneration`、`DirtyRecordKind`、带 `base_generation` 的 `DirtyBlockSnapshot`、`DirtyScanCursor` 和 `BackingGenerationConflict`。
+- [x] 定义 SPEC 的完整 stats 字段：logical/reserved/committed，四种 resident/zero block counts、loading、evicted、backing reads/bytes、uncached reads、unmap/zero bytes、hard rejects、commit/decommit failures、snapshot records/conflicts、current generation、view installs/generation conflicts、stale-load retries。
+- [x] `CleanZero` 的 implicit zero blocks 通过总块数减去偏离默认状态的块计算，统计不得创建 leaves。
+- [x] library 不提供隐藏 product defaults；create caller 必须显式传全部 options。
+- [x] 为所有公开 enum 提供稳定的报告字符串，不依赖 ordinal。
+- [x] 编译失败检查：production header 不包含 AIM/driver header。
 
 ### 验证与验收
 
-- [ ] `unit.m2.block_math` 通过。
-- [ ] M2-V1 当前可用测试通过。
-- [ ] `git diff --check` 通过。
-- [ ] 回读 Plan Task 1、1.1、1.2、1.6；确认没有发明新 block size 或 limit。
-- [ ] 建议提交：`feat(storage): define dynamic block geometry and options`。
+- [x] `unit.m2.block_math` 通过。
+- [x] M2-V1 当前可用测试通过。
+- [x] `git diff --check` 通过。
+- [x] 回读 Plan Task 1、1.1、1.2、1.6；确认没有发明新 block size 或 limit。
+- [x] 建议提交：`feat(storage): define dynamic block geometry and options`。
 
 ---
 
@@ -1231,3 +1233,15 @@ Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`; Git comm
 Plan drift audit: Task 00 is closed within its final source-file allowlist; no Task 01 implementation is present
 Open risks: none for Task 00; later M2 tiers remain intentionally unimplemented
 Executor / timestamp: Codex / `2026-08-03T12:09:23+08:00`
+
+Task: 01 — checked geometry、options、状态和 stats
+Status: DONE
+Start commit / end commit: `bb33c444a253aca5b8223de4af612da875bfba51` / this Task 01 commit
+Files changed: `src/storage/block_constants.h`, `src/storage/block_math.h`, `src/storage/dynamic_block_types.h`, `tests/unit/block_math_tests.cpp`, `src/CMakeLists.txt`, `tests/CMakeLists.txt`, and only this Task 01 checklist/status/record in `M2_TASKLIST.md`
+Red test and observed failure: after registering `unit.m2.block_math`, `cmake --build --preset release --target myrd_m2_block_math_tests` failed in Ninja compilation with code 2 and MSVC `C1083` because `src/storage/block_constants.h` did not exist; the exact focused CTest was consequently Not Run and failed because its executable was absent
+Focused verification command / exit code: `ctest --preset release --output-on-failure -R '^unit\.m2\.block_math$'` exit 0 (1/1)
+Cumulative verification command / exit code: `ctest --preset release --output-on-failure -L m2-v1` exit 0 (5/5); full Release CTest exit 0 (28/28); `git diff --check` exit 0
+Evidence paths: `tests/unit/block_math_tests.cpp`; Task 01 public headers under `src/storage/`; console transcript for the red/green commands
+Plan drift audit: Task 01 only; `IBackingStore` is forward-declared and held as `shared_ptr<const IBackingStore>`; no Task 02 interface/implementation, AIM/driver dependency, M1 behavior change, durable persistence, or hidden product defaults
+Open risks: backing normalization is intentionally only an explicit validation result until Task 02 supplies `ZeroBackingStore`; concurrent coherent stats production belongs to later store implementation, while the public stats snapshot remains a plain copyable value
+Executor / timestamp: Codex / `2026-08-03T12:23:52+08:00`

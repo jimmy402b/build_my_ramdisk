@@ -386,3 +386,13 @@ add_test(
 set_tests_properties(structural.m2.storage_independent_build PROPERTIES
     LABELS "m2-v1;m2-v2;m2-v3;m2-v4"
     RUN_SERIAL TRUE)
+
+add_executable(myrd_m2_block_math_tests
+    unit/block_math_tests.cpp
+)
+target_link_libraries(myrd_m2_block_math_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_block_math_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_block_math_tests)
+add_test(NAME unit.m2.block_math COMMAND myrd_m2_block_math_tests)
+set_tests_properties(unit.m2.block_math PROPERTIES LABELS "m2-v1")
