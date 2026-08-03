@@ -202,6 +202,9 @@ public:
     static bool snapshot_entry(DynamicBlockStore& store,
                                std::uint64_t block_index,
                                BlockEntry& output);
+    static bool set_version(DynamicBlockStore& store,
+                            std::uint64_t block_index,
+                            std::uint64_t version);
     static bool try_decommit_resident_clean(DynamicBlockStore& store,
                                             std::uint64_t block_index);
     static std::uint64_t commit_reservation_bytes(

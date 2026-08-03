@@ -61,6 +61,16 @@ Result<void> read_invariant(std::wstring message) {
         std::move(message)));
 }
 
+Error mutation_invariant_error(std::wstring message) {
+    return Error{
+        ErrorDomain::storage,
+        static_cast<std::uint32_t>(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant),
+        L"DynamicBlockStore::write/materialize",
+        std::move(message),
+    };
+}
+
 std::uint64_t next_epoch(std::atomic<std::uint64_t>& sequence) noexcept {
     auto current = sequence.load(std::memory_order_relaxed);
     for (;;) {
@@ -139,8 +149,29 @@ Result<void> DynamicBlockStore::read_one_segment(
     const OperationContext& context,
     std::uint64_t block_index,
     std::uint64_t block_offset_bytes,
-    std::span<std::byte> destination) {
+    std::span<std::byte> destination,
+    ReadMaterializationPolicy materialization_policy,
+    std::uint64_t mutation_offset_bytes,
+    std::span<const std::byte> mutation_source,
+    bool* mutation_applied) {
     constexpr std::uint32_t kMaxGenerationRetries = 16;
+    const bool mutation_requested =
+        materialization_policy == ReadMaterializationPolicy::ApplyMutation;
+    if (mutation_applied != nullptr) {
+        *mutation_applied = false;
+    }
+    if (mutation_requested) {
+        if (mutation_applied == nullptr || mutation_source.empty() ||
+            mutation_offset_bytes > kBlockSizeBytes ||
+            mutation_source.size() >
+                kBlockSizeBytes - mutation_offset_bytes) {
+            return Result<void>::failure(mutation_invariant_error(
+                L"invalid private-buffer mutation request"));
+        }
+    } else if (mutation_applied != nullptr || !mutation_source.empty() ||
+               mutation_offset_bytes != 0) {
+        return read_invariant(L"unexpected mutation arguments on read");
+    }
 
     for (;;) {
         const auto live = check_operation_context(context);
@@ -161,6 +192,9 @@ Result<void> DynamicBlockStore::read_one_segment(
                 }
                 entry = created.value();
             } else {
+                if (mutation_requested) {
+                    return Result<void>::success();
+                }
                 std::fill(destination.begin(), destination.end(), std::byte{0});
                 return Result<void>::success();
             }
@@ -171,12 +205,18 @@ Result<void> DynamicBlockStore::read_one_segment(
         if (entry->state == BlockState::ZeroClean ||
             entry->state == BlockState::ZeroDirty) {
             block_lock.unlock();
+            if (mutation_requested) {
+                return Result<void>::success();
+            }
             std::fill(destination.begin(), destination.end(), std::byte{0});
             return Result<void>::success();
         }
 
         if (entry->state == BlockState::ResidentClean ||
             entry->state == BlockState::ResidentDirty) {
+            if (mutation_requested) {
+                return Result<void>::success();
+            }
             if (entry->pin_count ==
                     (std::numeric_limits<std::uint64_t>::max)() ||
                 !arena_->is_block_committed(block_index)) {
@@ -216,10 +256,15 @@ Result<void> DynamicBlockStore::read_one_segment(
                         destination.size());
 
             block_lock.lock();
+            const bool resident_write_waiting_for_pins =
+                entry->state == BlockState::Committing &&
+                (entry->prior_state == BlockState::ResidentClean ||
+                 entry->prior_state == BlockState::ResidentDirty);
             const bool pinned_state_is_valid =
                 entry->pin_count != 0 &&
                 (entry->state == BlockState::ResidentClean ||
-                 entry->state == BlockState::ResidentDirty);
+                 entry->state == BlockState::ResidentDirty ||
+                 resident_write_waiting_for_pins);
             if (!pinned_state_is_valid) {
                 return read_invariant(L"resident block changed while pinned");
             }
@@ -313,6 +358,12 @@ Result<void> DynamicBlockStore::read_one_segment(
             if (entry->state == BlockState::Loading &&
                 entry->transition_epoch == observed_epoch &&
                 entry->read_through_ready) {
+                if (mutation_requested) {
+                    return Result<void>::failure(read_error(
+                        OperationErrorCode::memory_hard_limit,
+                        L"DynamicBlockStore::write/materialize",
+                        L"hard limit prevents mutation materialization"));
+                }
                 const auto* read_through_buffer =
                     entry->read_through_buffer;
                 if (read_through_buffer == nullptr) {
@@ -338,6 +389,42 @@ Result<void> DynamicBlockStore::read_one_segment(
                 return Result<void>::success();
             }
             block_lock.unlock();
+            continue;
+        }
+
+        if (entry->state == BlockState::Committing ||
+            entry->state == BlockState::Evicting) {
+            const auto observed_state = entry->state;
+            const auto observed_epoch = entry->transition_epoch;
+            stripe_waiter_count_.fetch_add(1, std::memory_order_release);
+            ScopeExit remove_waiter_count([this]() noexcept {
+                stripe_waiter_count_.fetch_sub(1, std::memory_order_release);
+            });
+            auto notify_waiter = [&stripe]() noexcept {
+                stripe.condition.notify_all();
+            };
+            std::stop_callback cancellation_callback(
+                context.stop_token, notify_waiter);
+            while (entry->state == observed_state &&
+                   entry->transition_epoch == observed_epoch &&
+                   !closing_requested() &&
+                   !context.stop_token.stop_requested() &&
+                   std::chrono::steady_clock::now() < context.deadline) {
+                if (context.deadline ==
+                    std::chrono::steady_clock::time_point::max()) {
+                    stripe.condition.wait(block_lock);
+                } else {
+                    stripe.condition.wait_until(block_lock, context.deadline);
+                }
+            }
+            block_lock.unlock();
+            if (closing_requested()) {
+                return closed_read();
+            }
+            const auto wait_live = check_operation_context(context);
+            if (!wait_live.ok()) {
+                return wait_live;
+            }
             continue;
         }
 
@@ -377,6 +464,15 @@ Result<void> DynamicBlockStore::read_one_segment(
             continue;
         }
 
+        std::uint64_t mutation_next_version = 0;
+        if (mutation_requested) {
+            const auto next_version = checked_increment_version(entry->version);
+            if (!next_version.ok()) {
+                return Result<void>::failure(mutation_invariant_error(
+                    L"content version wrapped"));
+            }
+            mutation_next_version = next_version.value;
+        }
         const auto owner_epoch = next_epoch(transition_epoch_);
         if (owner_epoch == 0) {
             return read_invariant(L"transition epoch wrapped");
@@ -407,6 +503,11 @@ Result<void> DynamicBlockStore::read_one_segment(
                 bool release_budget,
                 bool release_publication,
                 bool commit_failure) -> Result<void> {
+            const bool owner_scoped_failure =
+                error.code == static_cast<std::uint32_t>(
+                    OperationErrorCode::cancelled) ||
+                error.code == static_cast<std::uint32_t>(
+                    OperationErrorCode::timed_out);
             bool notify_view = false;
             {
                 std::unique_lock failure_lock(stripe.mutex);
@@ -443,10 +544,15 @@ Result<void> DynamicBlockStore::read_one_segment(
                 entry->read_through_buffer = nullptr;
                 entry->read_through_generation = 0;
                 entry->read_through_ready = false;
-                entry->completed_load_error_code = error.code;
-                entry->completed_load_native_code = error.native_code;
-                entry->completed_load_error_domain =
-                    static_cast<std::uint8_t>(error.domain);
+                entry->completed_load_error_code = owner_scoped_failure
+                    ? 0
+                    : error.code;
+                entry->completed_load_native_code = owner_scoped_failure
+                    ? 0
+                    : error.native_code;
+                entry->completed_load_error_domain = owner_scoped_failure
+                    ? 0
+                    : static_cast<std::uint8_t>(error.domain);
             }
             if (notify_view) {
                 backing_view_condition_.notify_all();
@@ -527,7 +633,12 @@ Result<void> DynamicBlockStore::read_one_segment(
                     loaded.error(), false, false, false);
             }
 
-            if (loaded.value().kind == BlockLoadKind::AllZero) {
+            if (loaded.value().kind == BlockLoadKind::AllZero &&
+                mutation_requested) {
+                std::fill(scratch_span.begin(), scratch_span.end(), std::byte{0});
+            }
+            if (loaded.value().kind == BlockLoadKind::AllZero &&
+                !mutation_requested) {
                 {
                     std::unique_lock reserve_publish_lock(stripe.mutex);
                     if (entry->state != BlockState::Loading ||
@@ -582,7 +693,9 @@ Result<void> DynamicBlockStore::read_one_segment(
                 stripe.condition.notify_all();
                 return Result<void>::success();
             }
-            if (loaded.value().kind != BlockLoadKind::Data) {
+            if (loaded.value().kind != BlockLoadKind::Data &&
+                !(mutation_requested &&
+                  loaded.value().kind == BlockLoadKind::AllZero)) {
                 return finish_failure(
                     read_error(OperationErrorCode::internal_invariant,
                                L"DynamicBlockStore::read/backing",
@@ -593,6 +706,7 @@ Result<void> DynamicBlockStore::read_one_segment(
             }
 
             bool use_read_through = false;
+            bool resident_required_but_unavailable = false;
             {
                 std::unique_lock reserve_lock(stripe.mutex);
                 if (entry->state != BlockState::Loading ||
@@ -619,6 +733,9 @@ Result<void> DynamicBlockStore::read_one_segment(
                     ++stats_.hard_limit_rejections;
                     use_read_through = true;
                     ++backing_publications_in_progress_;
+                    if (mutation_requested) {
+                        resident_required_but_unavailable = true;
+                    }
                 } else {
                     commit_reservation_bytes_ += kBlockSizeBytes;
                     ++backing_publications_in_progress_;
@@ -626,9 +743,11 @@ Result<void> DynamicBlockStore::read_one_segment(
             }
 
             if (use_read_through) {
-                std::memcpy(destination.data(),
-                            scratch.get() + block_offset_bytes,
-                            destination.size());
+                if (!resident_required_but_unavailable) {
+                    std::memcpy(destination.data(),
+                                scratch.get() + block_offset_bytes,
+                                destination.size());
+                }
                 bool read_through_pointer_published = false;
                 ScopeExit protect_published_pointer([&]() noexcept {
                     if (read_through_pointer_published) {
@@ -650,7 +769,9 @@ Result<void> DynamicBlockStore::read_one_segment(
                             backing_publications_in_progress_ == 0) {
                             std::terminate();
                         }
-                        ++stats_.uncached_reads_total;
+                        if (!resident_required_but_unavailable) {
+                            ++stats_.uncached_reads_total;
+                        }
                         entry->read_through_buffer = scratch.get();
                         entry->read_through_generation =
                             captured_view.generation;
@@ -693,7 +814,37 @@ Result<void> DynamicBlockStore::read_one_segment(
                 }
                 backing_view_condition_.notify_all();
                 stripe.condition.notify_all();
+                if (resident_required_but_unavailable) {
+                    return Result<void>::failure(read_error(
+                        OperationErrorCode::memory_hard_limit,
+                        L"DynamicBlockStore::write/materialize",
+                        L"hard limit prevents mutation materialization"));
+                }
                 return Result<void>::success();
+            }
+
+            std::uint64_t mutation_dirty_epoch = 0;
+            if (mutation_requested) {
+                mutation_dirty_epoch = next_epoch(dirty_epoch_);
+                if (mutation_dirty_epoch == 0) {
+                    return finish_failure(
+                        mutation_invariant_error(L"dirty epoch wrapped"),
+                        true,
+                        true,
+                        false);
+                }
+                if (block_index + 1 == geometry_.total_blocks &&
+                    geometry_.last_block_size_bytes != kBlockSizeBytes) {
+                    std::fill(
+                        scratch_span.begin() + static_cast<std::size_t>(
+                            geometry_.last_block_size_bytes),
+                        scratch_span.end(),
+                        std::byte{0});
+                }
+                std::memcpy(
+                    scratch.get() + mutation_offset_bytes,
+                    mutation_source.data(),
+                    mutation_source.size());
             }
 
             const auto committed = arena_->commit_block(block_index);
@@ -722,13 +873,23 @@ Result<void> DynamicBlockStore::read_one_segment(
                 --backing_publications_in_progress_;
                 stats_.committed_bytes += kBlockSizeBytes;
                 decrement_state_gauge(stats_, BlockState::Loading);
-                increment_state_gauge(stats_, BlockState::ResidentClean);
-                entry->state = BlockState::ResidentClean;
-                entry->prior_state = BlockState::ResidentClean;
+                const auto published_state = mutation_requested
+                    ? BlockState::ResidentDirty
+                    : BlockState::ResidentClean;
+                increment_state_gauge(stats_, published_state);
+                entry->state = published_state;
+                entry->prior_state = published_state;
                 entry->transition_owner = 0;
                 entry->transition_epoch = 0;
-                entry->clean_generation = captured_view.generation;
                 entry->dirty_kind = DirtyRecordKind::Data;
+                if (mutation_requested) {
+                    entry->version = mutation_next_version;
+                    entry->dirty_epoch = mutation_dirty_epoch;
+                    entry->dirty_base_generation = captured_view.generation;
+                    entry->reference_bit = true;
+                } else {
+                    entry->clean_generation = captured_view.generation;
+                }
                 entry->load_waiter_count = 0;
                 entry->completed_load_epoch = 0;
                 entry->completed_load_waiters = 0;
@@ -741,6 +902,10 @@ Result<void> DynamicBlockStore::read_one_segment(
             }
             backing_view_condition_.notify_all();
             stripe.condition.notify_all();
+            if (mutation_requested) {
+                *mutation_applied = true;
+                return Result<void>::success();
+            }
             resident_published = true;
             break;
         }
@@ -797,7 +962,11 @@ Result<void> DynamicBlockStore::read(
             context,
             segment.block_index,
             segment.block_offset_bytes,
-            destination);
+            destination,
+            ReadMaterializationPolicy::AllowReadThrough,
+            0,
+            {},
+            nullptr);
         if (!result.ok()) {
             return result;
         }
@@ -935,6 +1104,23 @@ bool DynamicBlockStoreTestAccess::snapshot_entry(
     auto& stripe = store.stripes_->stripe_for(block_index);
     std::scoped_lock lock(stripe.mutex);
     output = *entry;
+    return true;
+}
+
+bool DynamicBlockStoreTestAccess::set_version(
+    DynamicBlockStore& store,
+    std::uint64_t block_index,
+    std::uint64_t version) {
+    auto* entry = store.directory_->find(block_index);
+    if (entry == nullptr) {
+        return false;
+    }
+    auto& stripe = store.stripes_->stripe_for(block_index);
+    std::scoped_lock lock(stripe.mutex);
+    if (!is_stable_block_state(entry->state) || entry->pin_count != 0) {
+        return false;
+    }
+    entry->version = version;
     return true;
 }
 

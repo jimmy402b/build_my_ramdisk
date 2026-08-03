@@ -20,6 +20,7 @@ add_library(myrd_storage STATIC
     storage/dynamic_block_store_internal.h
     storage/dynamic_block_store_core.cpp
     storage/dynamic_block_store_read.cpp
+    storage/dynamic_block_store_write.cpp
     storage/dynamic_block_store.h
     storage/block_directory.cpp
     storage/block_directory.h

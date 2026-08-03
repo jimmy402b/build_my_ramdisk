@@ -459,26 +459,6 @@ DeviceFeatures DynamicBlockStore::features() const noexcept {
     return DeviceFeatures{false, true, true};
 }
 
-Result<void> DynamicBlockStore::write(
-    const OperationContext& context,
-    std::uint64_t offset,
-    std::span<const std::byte> input) {
-    RequestToken request;
-    if (!try_enter_request(request)) {
-        return Result<void>::failure(
-            make_session_closed_error(L"DynamicBlockStore::write"));
-    }
-    ScopeExit leave([this, &request]() { leave_request(request); });
-    (void)offset;
-    (void)input;
-    const auto live = check_operation_context(context);
-    if (!live.ok()) {
-        return live;
-    }
-    return Result<void>::failure(
-        make_not_implemented_error(L"DynamicBlockStore::write"));
-}
-
 Result<void> DynamicBlockStore::unmap(
     const OperationContext& context,
     std::span<const DataRange> ranges) {

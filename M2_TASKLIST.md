@@ -68,7 +68,7 @@
 | 05 | Store 工厂、生命周期、默认状态 | DONE | 02,03,04 | M2-V1 |
 | 06 | Zero/Resident READ | DONE | 05 | M2-V1 |
 | 07 | Backing 懒加载与 Read-through | DONE | 06 | M2-V1 |
-| 08 | WRITE 与内容版本 | TODO | 07 | M2-V1 |
+| 08 | WRITE 与内容版本 | DONE | 07 | M2-V1 |
 | 09 | UNMAP/ZERO 与零覆盖 | TODO | 08 | M2-V1 |
 | 10 | Backing generation、脏快照与 persisted ack | TODO | 09 | M2-V1 |
 | 11 | Clean CLOCK eviction | TODO | 10 | M2-V1 |
@@ -462,44 +462,46 @@ Executor / timestamp:
 
 ## Task 08 — WRITE、copy-on-load 与内容版本
 
+**状态：DONE**
+
 **目标：** 写入发布完整块镜像和新版本；任何 reader/snapshot 都看不到 torn content。
 
 **文件：** `dynamic_block_store_write.cpp`、internal header、`dynamic_block_store_write_tests.cpp`、CMake。
 
 ### 红灯测试
 
-- [ ] full-block write 覆盖 implicit zero、ZeroClean、ZeroDirty、Unresident、ResidentClean、ResidentDirty。
-- [ ] full-block write 对 Unresident 不调用 backing。
-- [ ] partial write 对 Unresident 恰好 load 一次并保留未覆盖旧 bytes。
-- [ ] partial write 对 AllZero/zero states 从完整零块开始。
-- [ ] partial resident write 只改变目标 bytes。
-- [ ] 跨块 write 与末块边界。
-- [ ] invalid range 在任何 state/version/commit 改变前失败。
-- [ ] hard limit 无空间且需要新 commit 时 write 返回 `MemoryHardLimit`，旧内容不变。
-- [ ] 已 Resident block 的 overwrite 不需要新 commit，即使 committed bytes 已到 hard limit也可继续。
-- [ ] backing/commit/cancel/deadline failure 均保留当前块旧内容；跨块请求已完成前缀可保留但整体 `Result<void>` 返回错误。
-- [ ] 每个成功变更 block 的 version 只增加一次；溢出 fatal。
-- [ ] 每个成功新 version 同时捕获当前 installed generation 为 `dirty_base_generation`；失败/no-op 不改变该值。
-- [ ] reader 并发时只观察旧块或新块，不能观察半块。
+- [x] full-block write 覆盖 implicit zero、ZeroClean、ZeroDirty、Unresident、ResidentClean、ResidentDirty。
+- [x] full-block write 对 Unresident 不调用 backing。
+- [x] partial write 对 Unresident 恰好 load 一次并保留未覆盖旧 bytes。
+- [x] partial write 对 AllZero/zero states 从完整零块开始。
+- [x] partial resident write 只改变目标 bytes。
+- [x] 跨块 write 与末块边界。
+- [x] invalid range 在任何 state/version/commit 改变前失败。
+- [x] hard limit 无空间且需要新 commit 时 write 返回 `MemoryHardLimit`，旧内容不变。
+- [x] 已 Resident block 的 overwrite 不需要新 commit，即使 committed bytes 已到 hard limit也可继续。
+- [x] backing/commit/cancel/deadline failure 均保留当前块旧内容；跨块请求已完成前缀可保留但整体 `Result<void>` 返回错误。
+- [x] 每个成功变更 block 的 version 只增加一次；溢出 fatal。
+- [x] 每个成功新 version 同时捕获当前 installed generation 为 `dirty_base_generation`；失败/no-op 不改变该值。
+- [x] reader 并发时只观察旧块或新块，不能观察半块。
 
 ### 实现
 
-- [ ] full write 直接建立 64 KiB image，不 load backing。
-- [ ] partial Unresident 用 Task 07 的 single-flight/private buffer 逻辑，不复制出第二套状态机。
-- [ ] zero partial image 先完整清零再 patch。
-- [ ] resident mutation 使用明确排他 transition/pin 协议。
-- [ ] 先取得 commit budget，成功 commit/copy 后才 publish `ResidentDirty`。
-- [ ] copy-then-publish，避免失败后半写状态。
-- [ ] version、bytes、Dirty state 和 `dirty_base_generation` 在同一 publish 线性化点生效。
-- [ ] multi-block partial-completion 与 M1 byte count/error 语义一致。
-- [ ] stats 只在对应 block 成功 publish 后更新。
+- [x] full write 直接建立 64 KiB image，不 load backing。
+- [x] partial Unresident 用 Task 07 的 single-flight/private buffer 逻辑，不复制出第二套状态机。
+- [x] zero partial image 先完整清零再 patch。
+- [x] resident mutation 使用明确排他 transition/pin 协议。
+- [x] 先取得 commit budget，成功 commit/copy 后才 publish `ResidentDirty`。
+- [x] copy-then-publish，避免失败后半写状态。
+- [x] version、bytes、Dirty state 和 `dirty_base_generation` 在同一 publish 线性化点生效。
+- [x] multi-block partial-completion 与 M1 byte count/error 语义一致。
+- [x] stats 只在对应 block 成功 publish 后更新。
 
 ### 验证与验收
 
-- [ ] `unit.m2.write` 通过。
-- [ ] read tests 和 limit tests 仍通过。
-- [ ] 回读 Plan Task 8 与 state table；确认 full write 不 load backing。
-- [ ] 建议提交：`feat(storage): implement versioned dynamic writes`。
+- [x] `unit.m2.write` 通过。
+- [x] read tests 和 limit tests 仍通过。
+- [x] 回读 Plan Task 8 与 state table；确认 full write 不 load backing。
+- [x] 建议提交：`feat(storage): implement versioned dynamic writes`。
 
 ---
 
@@ -1344,3 +1346,16 @@ Plan drift audit: implementation remains inside Plan Task 7 and sections 1.3/1.4
 Status table normalization: rows 01–06 were corrected from stale TODO values to DONE to match their already accepted commits `70fc9c1`, `0ccc14f`, `bc1619c`, `309239d`, `58ac6ee`, and `dddc8db`; no earlier implementation was changed by this documentation correction
 Open risks: Task 12 must extend global invariant/accounting checks over all reservation/publication counters; Task 07 itself has no open Critical, Important, or Minor review findings
 Executor / timestamp: Codex / `2026-08-03T17:32:37+08:00`
+
+Task: 08 — WRITE、copy-on-load 与内容版本
+Status: DONE
+Start commit / end commit: `e55fc5b4b96709831b7da81c03f56dfb2de5b68e` / this Task 08 commit
+Files changed: `src/CMakeLists.txt`, `src/storage/dynamic_block_store.h`, `src/storage/dynamic_block_store_core.cpp`, `src/storage/dynamic_block_store_internal.h`, `src/storage/dynamic_block_store_read.cpp`, `src/storage/dynamic_block_store_write.cpp`, `tests/CMakeLists.txt`, `tests/unit/dynamic_block_store_read_tests.cpp`, `tests/unit/dynamic_block_store_write_tests.cpp`, and this Task 08 checklist/status/record in `M2_TASKLIST.md`
+Red test and observed failure: the first Debug `unit.m2.write` run failed because the previous WRITE stub returned not-implemented; deterministic follow-up red tests exposed an old reader falsely rejecting `Committing`, a mutation owner incorrectly failing ordinary hard-limit read waiters, the inverse owner order issuing a second backing load, and owner-scoped cancellation leaking to an independent waiter
+Focused verification command / exit code: current-layout Debug and Release builds exit 0; exact `unit.m2.write|unit.m2.read|unit.m2.limits` 3/3 in both configurations; final submitted-state Debug and Release focused groups each passed 100 consecutive iterations
+Cumulative verification command / exit code: final Debug full CTest 35/35; final Release full CTest 35/35; both report M2-V1 12 tests; `git diff --check` exit 0
+Evidence paths: `src/storage/dynamic_block_store_write.cpp`, the shared load/mutation path in `src/storage/dynamic_block_store_read.cpp`, `tests/unit/dynamic_block_store_write_tests.cpp`, the tightened owner-cancellation case in `tests/unit/dynamic_block_store_read_tests.cpp`, and console transcripts for the red tests, focused gates, two 100-run loops, full gates, and reviewer rechecks
+Review findings and resolution: partial Unresident mutation now patches the Task 07 private 64 KiB scratch and publishes `ResidentDirty` once instead of exposing an intermediate `ResidentClean`; hard-pressure read and mutation participants interpret one shared load according to their own policy in both owner orders; owner-only cancellation/timeout is no longer broadcast to valid waiters, while shared backing/commit errors remain epoch-scoped; both original reviewers returned `RESOLVED`
+Plan drift audit: implementation remains inside Plan Task 8 and the approved state table; full writes never load backing, partial writes reuse the Task 07 single-flight state machine, M1 multi-block prefix/error semantics are unchanged, and no UNMAP/ZERO, dirty snapshot/ack, eviction, file backing, proxy, driver, M3, or M4 behavior was introduced
+Open risks: synchronous clean eviction under hard pressure remains intentionally assigned to Task 12; snapshot/mutation and broader write/write race matrices remain assigned to Tasks 10, 14, and 15; Task 08 has no open review finding
+Executor / timestamp: Codex / `2026-08-03T18:26:34+08:00`

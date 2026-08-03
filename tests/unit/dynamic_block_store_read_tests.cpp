@@ -759,23 +759,22 @@ TEST_CASE(m2_read_owner_cancellation_rolls_back_and_allows_retry) {
     }
     owner_stop.request_stop();
     owner.join();
+    gate->open();
     waiter.join();
     REQUIRE(waiter_registered);
     REQUIRE_EQ(owner_code.load(std::memory_order_acquire),
                static_cast<std::uint32_t>(
                    myrd::OperationErrorCode::cancelled));
-    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire),
-               static_cast<std::uint32_t>(
-                   myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire), 0u);
     REQUIRE(all_equal(cancelled_output, std::byte{0xA5}));
-    REQUIRE(all_equal(waiter_output, std::byte{0x5A}));
+    REQUIRE(std::equal(
+        waiter_output.begin(), waiter_output.end(), expected.begin()));
     myrd::BlockEntry entry{};
     REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
         *store, 0, entry));
-    REQUIRE_EQ(entry.state, myrd::BlockState::Unresident);
+    REQUIRE_EQ(entry.state, myrd::BlockState::ResidentClean);
     REQUIRE_EQ(store->stats().loading_blocks, 0ull);
 
-    gate->open();
     std::vector<std::byte> retry_output(kBlock, std::byte{0});
     REQUIRE(store->read(
         myrd::OperationContext{}, 0, retry_output).ok());

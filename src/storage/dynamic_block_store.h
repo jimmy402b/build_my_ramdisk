@@ -108,6 +108,11 @@ private:
         Closed = 2,
     };
 
+    enum class ReadMaterializationPolicy : std::uint8_t {
+        AllowReadThrough = 0,
+        ApplyMutation = 1,
+    };
+
     DynamicBlockStore(
         DynamicBlockStoreCreateArgs args,
         BlockGeometry geometry,
@@ -137,7 +142,16 @@ private:
         const OperationContext& context,
         std::uint64_t block_index,
         std::uint64_t block_offset_bytes,
-        std::span<std::byte> destination);
+        std::span<std::byte> destination,
+        ReadMaterializationPolicy materialization_policy,
+        std::uint64_t mutation_offset_bytes,
+        std::span<const std::byte> mutation_source,
+        bool* mutation_applied);
+    Result<void> write_one_segment(
+        const OperationContext& context,
+        std::uint64_t block_index,
+        std::uint64_t block_offset_bytes,
+        std::span<const std::byte> source);
 
     BlockGeometry geometry_{};
     DynamicBlockStoreOptions options_{};
@@ -162,6 +176,7 @@ private:
     std::thread worker_;
     std::atomic<std::uint64_t> stripe_waiter_count_{0};
     std::atomic<std::uint64_t> access_epoch_{0};
+    std::atomic<std::uint64_t> dirty_epoch_{0};
     std::atomic<std::uint64_t> transition_epoch_{0};
 
     std::unique_ptr<VirtualMemoryArena> arena_;
