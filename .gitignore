@@ -1,5 +1,6 @@
 # Build output
 /out/
+/.worktrees/
 
 # Reports (test output, diagnostics, evidence reports)
 /reports/
