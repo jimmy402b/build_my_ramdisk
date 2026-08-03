@@ -231,7 +231,7 @@ constexpr BlockRangeSplitResult validate_and_split_block_range(
     if (logical_size_bytes == 0) {
         return failed_block_range_split(BlockMathError::InvalidLogicalSize);
     }
-    if (sector_size_bytes == 0) {
+    if (!is_supported_sector_size(sector_size_bytes)) {
         return failed_block_range_split(BlockMathError::InvalidSectorSize);
     }
     if (length_bytes == 0) {

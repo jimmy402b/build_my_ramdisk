@@ -332,7 +332,7 @@ validate_dynamic_block_store_create_args(
     if (args.logical_size_bytes == 0) {
         return {DynamicBlockStoreCreateError::InvalidLogicalSize};
     }
-    if (args.sector_size_bytes == 0) {
+    if (!is_supported_sector_size(args.sector_size_bytes)) {
         return {DynamicBlockStoreCreateError::InvalidSectorSize};
     }
     if ((args.logical_size_bytes % args.sector_size_bytes) != 0) {

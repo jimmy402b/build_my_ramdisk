@@ -49,6 +49,16 @@ TEST_CASE(m2_block_constants_are_exact_and_fixed_width) {
     REQUIRE_EQ(myrd::kLeafSizeBytes, 64ULL * 1024ULL * 1024ULL);
 }
 
+TEST_CASE(m2_supported_sector_size_contract_is_exact_and_noexcept) {
+    static_assert(noexcept(myrd::is_supported_sector_size(512)));
+    static_assert(myrd::is_supported_sector_size(512));
+    static_assert(myrd::is_supported_sector_size(4'096));
+    static_assert(!myrd::is_supported_sector_size(0));
+    static_assert(!myrd::is_supported_sector_size(1));
+    static_assert(!myrd::is_supported_sector_size(1'024));
+    static_assert(!myrd::is_supported_sector_size(65'536));
+}
+
 TEST_CASE(m2_checked_add_and_multiply_reject_overflow) {
     const auto sum = myrd::checked_add_u64(17, 25);
     REQUIRE(sum.ok());
@@ -269,6 +279,35 @@ TEST_CASE(m2_range_validation_rejects_sector_misaligned_length) {
     REQUIRE_EQ(result.segment_count, 0ULL);
 }
 
+TEST_CASE(m2_range_validation_rejects_unsupported_nonzero_sector_sizes) {
+    const auto sector_1024 = myrd::validate_and_split_block_range(
+        65'536, 1'024, 0, 1'024, 1'024);
+    REQUIRE_EQ(sector_1024.error, myrd::BlockMathError::InvalidSectorSize);
+    REQUIRE_EQ(sector_1024.segment_count, 0ULL);
+
+    const auto sector_1 = myrd::validate_and_split_block_range(
+        65'536, 1, 0, 512, 512);
+    REQUIRE_EQ(sector_1.error, myrd::BlockMathError::InvalidSectorSize);
+    REQUIRE_EQ(sector_1.segment_count, 0ULL);
+
+    const auto sector_65536 = myrd::validate_and_split_block_range(
+        65'536, 65'536, 0, 65'536, 65'536);
+    REQUIRE_EQ(sector_65536.error, myrd::BlockMathError::InvalidSectorSize);
+    REQUIRE_EQ(sector_65536.segment_count, 0ULL);
+}
+
+TEST_CASE(m2_range_validation_accepts_512_and_4096_sector_sizes) {
+    const auto sector_512 = myrd::validate_and_split_block_range(
+        65'536, 512, 0, 512, 512);
+    REQUIRE(sector_512.ok());
+    REQUIRE_EQ(sector_512.segment_count, 1ULL);
+
+    const auto sector_4096 = myrd::validate_and_split_block_range(
+        65'536, 4'096, 0, 4'096, 4'096);
+    REQUIRE(sector_4096.ok());
+    REQUIRE_EQ(sector_4096.segment_count, 1ULL);
+}
+
 TEST_CASE(m2_options_require_order_alignment_snapshot_limits_and_stripes) {
     auto options = valid_options();
     REQUIRE(myrd::validate_dynamic_block_store_options(options).ok());
@@ -363,6 +402,24 @@ TEST_CASE(m2_create_validation_identifies_backing_normalization) {
     args.logical_size_bytes += 1;
     REQUIRE_EQ(myrd::validate_dynamic_block_store_create_args(args).error,
                myrd::DynamicBlockStoreCreateError::LogicalSizeNotSectorAligned);
+}
+
+TEST_CASE(m2_create_validation_rejects_unsupported_nonzero_sector_size) {
+    auto args = clean_zero_args();
+    args.sector_size_bytes = 1'024;
+    const auto result = myrd::validate_dynamic_block_store_create_args(args);
+    REQUIRE_EQ(result.error,
+               myrd::DynamicBlockStoreCreateError::InvalidSectorSize);
+}
+
+TEST_CASE(m2_create_validation_accepts_512_and_4096_sector_sizes) {
+    auto sector_512 = clean_zero_args();
+    sector_512.sector_size_bytes = 512;
+    REQUIRE(myrd::validate_dynamic_block_store_create_args(sector_512).ok());
+
+    auto sector_4096 = clean_zero_args();
+    sector_4096.sector_size_bytes = 4'096;
+    REQUIRE(myrd::validate_dynamic_block_store_create_args(sector_4096).ok());
 }
 
 TEST_CASE(m2_public_states_errors_and_records_have_stable_names) {

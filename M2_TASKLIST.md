@@ -1270,3 +1270,16 @@ Evidence paths: `src/storage/block_math.h`, `tests/unit/block_math_tests.cpp`; c
 Plan drift audit: Task 01 quality fix only; no vector, range-length loop, invented max request, changed stripe rule, renamed stats field, Task 02 implementation, M1/proxy/driver change, or SPEC change
 Open risks: downstream Task 05 request execution must iterate the validated descriptor deliberately and retain its own bounded cancellation/deadline checks; no downstream consumer exists yet in Task 01
 Executor / timestamp: Codex / `2026-08-03T12:52:06+08:00`
+
+Task: 01 — 质量复审 logical sector allowlist 修复
+Status: DONE
+Start commit / end commit: `0c3fa9a9f817fdd411a94fe445ad1f0cd2d3f84d` / this Task 01 sector-size fix commit
+Files changed: `src/storage/block_constants.h`, `src/storage/block_math.h`, `src/storage/dynamic_block_types.h`, `tests/unit/block_math_tests.cpp`, and this appended `M2_TASKLIST.md` record
+Red test and observed failure: with validator tests added before production changes, the Release target compiled but exact CTest exited 1 because a validly aligned `sector_size_bytes = 1024` request returned success instead of `BlockMathError::InvalidSectorSize`; a second test-first build exited 1/Ninja code 2 because the required constexpr/noexcept `is_supported_sector_size` helper did not yet exist
+API resolution: centralized `constexpr bool is_supported_sector_size(std::uint32_t) noexcept` accepts exactly 512 and 4096; range splitting and create-argument validation both call it, so zero and every unsupported nonzero sector size map to their existing `InvalidSectorSize` errors without changing later alignment semantics
+Focused verification command / exit code: Release test target build exit 0; `ctest --preset release --output-on-failure -R '^unit\.m2\.block_math$'` exit 0 (1/1), including 512/4096 success and 0/1/1024/65536 rejection coverage
+Cumulative verification command / exit code: Release build exit 0; `ctest --preset release --output-on-failure -L m2-v1` exit 0 (5/5); full Release CTest exit 0 (28/28); `git diff --check` exit 0
+Evidence paths: `src/storage/block_constants.h`, `tests/unit/block_math_tests.cpp`; console transcript for runtime red, compile red, and requested green gates
+Plan drift audit: Task 01 sector contract only; no new request/stripe limit, Task 02, M1/proxy/driver behavior, CMake, stats schema, or SPEC change
+Open risks: none introduced; Task 01 remains DONE pending independent re-review
+Executor / timestamp: Codex / `2026-08-03T13:00:50+08:00`
