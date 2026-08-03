@@ -75,7 +75,7 @@
 | 12 | Hard limit、预算和失败回滚 | DONE | 11 | M2-V1 |
 | 13 | 100,000 次参考模型 | DONE | 12 | M2-V2 / M2-A |
 | 14 | 单飞加载与同块并发 | DONE | 12 | M2-V3 |
-| 15 | 快照/变更/淘汰/关闭竞态 | TODO | 14 | M2-V3 |
+| 15 | 快照/变更/淘汰/关闭竞态 | DONE | 14 | M2-V3 |
 | 16 | 长压测、不变量、资源核算 | TODO | 13,15 | M2-V3 / M2-B |
 | 17 | 注入 M1 Proxy 与本地 SHM | TODO | 16 | M2-V4 |
 | 18 | 64 GiB/1 TiB 真实 VM 集成 | TODO | 16 | M2-V2 |
@@ -784,34 +784,36 @@ Executor / timestamp:
 
 ## Task 15 — Snapshot/mutation/eviction/cancel/close 竞态
 
+**状态：DONE（2026-08-04）**
+
 **目标：** 证明版本、pins、owner epoch 和 shutdown 在最危险交叉点仍正确。
 
 **文件：** concurrency tests；只按失败测试修改产品代码。
 
 ### 确定性竞态用例
 
-- [ ] snapshot copy vs write 只能得到 `(old version, old bytes)` 或 `(new,new)`。
-- [ ] ack-before-install 返回 `BackingGenerationConflict`，block 保持 Dirty。
-- [ ] install old snapshot 的 successor 后，若已发生后续 mutation，old persisted ack 返回 `VersionChanged`，block 保持 Dirty。
-- [ ] exact install/ack 与并发新写只允许一个明确线性化顺序；不能把新版本误标 Clean。
-- [ ] exact ack 后与 eviction/reload 竞态，任何 reader 都不能看到 predecessor view 的旧 bytes。
-- [ ] eviction select vs reader pin，不能在 copy 中 decommit。
-- [ ] eviction select vs writer transition，无 double ownership。
-- [ ] background vs synchronous eviction，无 double-decommit/accounting underflow。
-- [ ] waiter 在 Loading 上 cancel/deadline。
-- [ ] waiter 在 mutation/pin 上 cancel/deadline。
-- [ ] pressure wait cancel/deadline。
-- [ ] shutdown 唤醒所有上述 waiters。
-- [ ] blocked backing 观察 cooperative cancel，owner 可退出。
-- [ ] worker join 和 arena release 恰好一次。
+- [x] snapshot copy vs write 只能得到 `(old version, old bytes)` 或 `(new,new)`。
+- [x] ack-before-install 返回 `BackingGenerationConflict`，block 保持 Dirty。
+- [x] install old snapshot 的 successor 后，若已发生后续 mutation，old persisted ack 返回 `VersionChanged`，block 保持 Dirty。
+- [x] exact install/ack 与并发新写只允许一个明确线性化顺序；不能把新版本误标 Clean。
+- [x] exact ack 后与 eviction/reload 竞态，任何 reader 都不能看到 predecessor view 的旧 bytes。
+- [x] eviction select vs reader pin，不能在 copy 中 decommit。
+- [x] eviction select vs writer transition，无 double ownership。
+- [x] background vs synchronous eviction，无 double-decommit/accounting underflow。
+- [x] waiter 在 Loading 上 cancel/deadline。
+- [x] waiter 在 mutation/pin 上 cancel/deadline。
+- [x] pressure wait cancel/deadline。
+- [x] shutdown 唤醒所有上述 waiters。
+- [x] blocked backing 观察 cooperative cancel，owner 可退出。
+- [x] worker join 和 arena release 恰好一次。
 
 ### 验证与验收
 
-- [ ] focused tests 使用外层 timeout，失败可打印阶段。
-- [ ] `unit.m2.concurrency` until-fail 100 次通过。
-- [ ] 所有 earlier unit/model tests 通过。
-- [ ] 回读 Plan Task 15；审查 view install、generation-bound ack、pin、owner epoch 四类线性化点。
-- [ ] 建议提交：`test(storage): cover snapshot eviction and shutdown races`。
+- [x] focused tests 使用外层 timeout，失败可打印阶段。
+- [x] `unit.m2.concurrency` until-fail 100 次通过。
+- [x] 所有 earlier unit/model tests 通过。
+- [x] 回读 Plan Task 15；审查 view install、generation-bound ack、pin、owner epoch 四类线性化点。
+- [x] 建议提交：`test(storage): cover snapshot eviction and shutdown races`。
 
 ---
 
@@ -1437,3 +1439,18 @@ Evidence paths: `tests/unit/dynamic_block_store_concurrency_tests.cpp`, Plan Tas
 Plan drift audit: Task 14 test/evidence only; no production behavior, new test hook, snapshot/ack/eviction-pressure race matrix assigned to Task 15, long stress assigned to Task 16, proxy, driver, filesystem backing, M3, or M4 behavior was introduced
 Open risks: broader snapshot/mutation/eviction/cancellation/destruction races remain assigned to Task 15; long multi-thread stress and resource accounting remain assigned to Task 16
 Executor / timestamp: Codex / `2026-08-03T23:55:48+08:00`
+
+Task: 15 — Snapshot/mutation/eviction/cancel/close 竞态
+Status: DONE
+Start commit / end commit: `171fafc` / pending commit `test(storage): cover snapshot eviction and shutdown races`
+Files changed: `src/storage/dynamic_block_store.h`, `src/storage/dynamic_block_store_core.cpp`, `src/storage/dynamic_block_store_internal.h`, `src/storage/dynamic_block_store_backing.cpp`, `tests/unit/dynamic_block_store_concurrency_tests.cpp`, and this Task 15 checklist/status/record in `M2_TASKLIST.md`
+Red test and observed failure: Task 15 primarily strengthens proof over the existing state machine. The first product run found no product defect; an initial test compile exposed only a missing `eviction_manager.h` include in the test. Independent review then required a private test-only pause after persisted-ack validation so the ack-first overlap, rollback-on-close, and transition accounting could be forced deterministically. The seam is available only through `create_for_testing`; normal construction and product behavior are unchanged except for the tested close-safe notification path.
+Focused verification command / exit code: Debug and Release direct `unit.m2.concurrency` binaries each report 22/22; exact `unit.m2.concurrency` passed in both configurations and each configuration passed `ctest --repeat until-fail:100` with 100/100 iterations and exit 0
+Cumulative verification command / exit code: sequential clean-first Debug and Release builds exit 0; full Debug CTest 41/41 and full Release CTest 41/41; both include M2-V1 16 tests, M2-V2 5 tests, and M2-V3 5 tests; `git diff --check` exit 0 before final staging
+Coverage evidence: snapshot copy/write returns coherent old/old or new/new views; ack-before-install conflicts without cleaning; both ack-first and writer-first exact-ack races preserve newer dirty bytes; ack/evict/reload never resurrects predecessor bytes; reader pins prevent decommit; invalid generations cannot acquire an owner epoch; writer/eviction and background/synchronous eviction have one owner and exact accounting; Loading, mutation/pin, and pressure waits cover cancellation and deadline; close drains a blocked backing owner, three stripe waiters, a pressure waiter, an active blocked eviction worker, old/new backing references, and releases the arena exactly once
+Review findings and resolution: three strict read-only rounds requested a real ack-first overlap, writer-first eviction ordering, bounded close proof, exact Committing/prior/owner/gauge assertions, close rollback coverage, and validation-before-owner-epoch allocation. Each item was added with deterministic gates and join-before-assert cleanup. The final independent review returned `APPROVED` with no Critical, Important, or Minor findings.
+Synchronization evidence: the suite contains no `Sleep`, `sleep_for`, or `sleep_until`; all forced interleavings use gates, exact state/waiter predicates, finite deadlines, and a 30-second outer CTest timeout
+Evidence paths: `tests/unit/dynamic_block_store_concurrency_tests.cpp`, the persisted-ack transition in `src/storage/dynamic_block_store_backing.cpp`, test dependency/access declarations in the dynamic store headers/core, Plan Task 15, and console transcripts for focused, repeat, clean-build, full, and review gates
+Plan drift audit: Task 15 only; the added seam is private and test-only, no Task 16 long stress/resource audit, proxy, driver, filesystem backing, M3, or M4 behavior was introduced
+Open risks: long multi-role stress, repeated create/destroy resource accounting, and the final M2-B evidence remain assigned to Task 16
+Executor / timestamp: Codex / `2026-08-04T01:09:27+08:00`

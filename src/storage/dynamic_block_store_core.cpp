@@ -167,7 +167,8 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
                           std::move(dependencies.read_observer),
                           dependencies.fail_snapshot_allocation,
                           dependencies.pause_before_snapshot_wait,
-                          dependencies.pause_after_snapshot_pin));
+                          dependencies.pause_after_snapshot_pin,
+                          dependencies.pause_after_persisted_validation));
     if (!store) {
         return Result<std::unique_ptr<DynamicBlockStore>>::failure(
             make_factory_error(L"DynamicBlockStore::create/object",
@@ -224,7 +225,8 @@ DynamicBlockStore::DynamicBlockStore(
         read_observer,
     bool fail_snapshot_allocation,
     bool pause_before_snapshot_wait,
-    bool pause_after_snapshot_pin) noexcept
+    bool pause_after_snapshot_pin,
+    bool pause_after_persisted_validation) noexcept
     : geometry_(geometry),
       options_(args.options),
       sector_size_bytes_(args.sector_size_bytes),
@@ -236,7 +238,8 @@ DynamicBlockStore::DynamicBlockStore(
       read_observer_(std::move(read_observer)),
       fail_snapshot_allocation_(fail_snapshot_allocation),
       snapshot_wait_pause_for_test_(pause_before_snapshot_wait),
-      snapshot_pin_pause_for_test_(pause_after_snapshot_pin) {
+      snapshot_pin_pause_for_test_(pause_after_snapshot_pin),
+      persisted_ack_pause_for_test_(pause_after_persisted_validation) {
     stats_.logical_size_bytes = geometry_.logical_size_bytes;
     stats_.reserved_bytes = geometry_.reservation_size_bytes;
     stats_.zero_clean_blocks =
@@ -487,6 +490,8 @@ void DynamicBlockStore::notify_all_waiters() {
     snapshot_wait_pause_for_test_.notify_all();
     snapshot_pin_pause_for_test_.store(false, std::memory_order_release);
     snapshot_pin_pause_for_test_.notify_all();
+    persisted_ack_pause_for_test_.store(false, std::memory_order_release);
+    persisted_ack_pause_for_test_.notify_all();
     {
         // Synchronize with install_backing_view's predicate check before
         // notifying it. Without taking state_mutex_, close could publish the

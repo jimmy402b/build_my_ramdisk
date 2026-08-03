@@ -219,6 +219,10 @@ public:
     static bool snapshot_pin_gap_reached(
         const DynamicBlockStore& store) noexcept;
     static bool release_snapshot_pin_gap(DynamicBlockStore& store) noexcept;
+    static bool persisted_ack_gap_reached(
+        const DynamicBlockStore& store) noexcept;
+    static bool release_persisted_ack_gap(
+        DynamicBlockStore& store) noexcept;
     static EvictionPassResult run_eviction_sweep(
         DynamicBlockStore& store,
         std::uint64_t target_bytes);
@@ -259,6 +263,7 @@ struct DynamicBlockStoreTestDependencies {
     bool fail_snapshot_allocation{};
     bool pause_before_snapshot_wait{};
     bool pause_after_snapshot_pin{};
+    bool pause_after_persisted_validation{};
 };
 
 } // namespace myrd

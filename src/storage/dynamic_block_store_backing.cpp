@@ -44,6 +44,22 @@ Error version_conflict(std::wstring message) {
         std::move(message));
 }
 
+std::uint64_t next_epoch(std::atomic<std::uint64_t>& sequence) noexcept {
+    auto current = sequence.load(std::memory_order_relaxed);
+    for (;;) {
+        if (current == (std::numeric_limits<std::uint64_t>::max)()) {
+            return 0;
+        }
+        if (sequence.compare_exchange_weak(
+                current,
+                current + 1,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return current + 1;
+        }
+    }
+}
+
 } // namespace
 
 BackingGeneration DynamicBlockStore::backing_generation() const {
@@ -158,29 +174,125 @@ Result<void> DynamicBlockStore::mark_persisted(
             L"dirty state, version, or record kind changed"));
     }
 
+    bool test_transition_active = false;
+    const auto original_state = entry->state;
+    const bool pause_after_validation =
+        persisted_ack_pause_for_test_.load(std::memory_order_acquire);
+    if (pause_after_validation) {
+        {
+            std::scoped_lock state_lock(state_mutex_);
+            if (persisted_generation <= entry->dirty_base_generation ||
+                persisted_generation > backing_view_.generation) {
+                ++stats_.backing_generation_conflicts;
+                return Result<void>::failure(generation_conflict(
+                    L"DynamicBlockStore::mark_persisted",
+                    L"persisted generation is not an installed successor"));
+            }
+        }
+        const auto owner = next_epoch(transition_epoch_);
+        if (owner == 0) {
+            return Result<void>::failure(backing_error(
+                static_cast<std::uint32_t>(
+                    DynamicBlockStoreErrorCode::FatalInternalInvariant),
+                L"DynamicBlockStore::mark_persisted/test-gate",
+                L"transition epoch wrapped"));
+        }
+        {
+            std::scoped_lock state_lock(state_mutex_);
+            if (resident_dirty) {
+                --stats_.resident_dirty_blocks;
+            } else {
+                --stats_.zero_dirty_blocks;
+            }
+        }
+        entry->state = BlockState::Committing;
+        entry->prior_state = original_state;
+        entry->transition_owner = owner;
+        entry->transition_epoch = owner;
+        test_transition_active = true;
+        block_lock.unlock();
+        persisted_ack_gap_reached_for_test_.store(
+            true, std::memory_order_release);
+        persisted_ack_gap_reached_for_test_.notify_all();
+        persisted_ack_pause_for_test_.wait(
+            true, std::memory_order_acquire);
+        block_lock.lock();
+        if (entry->state != BlockState::Committing ||
+            entry->prior_state != original_state ||
+            entry->transition_owner != owner ||
+            entry->transition_epoch != owner) {
+            std::terminate();
+        }
+        if (closing_requested()) {
+            {
+                std::scoped_lock state_lock(state_mutex_);
+                if (resident_dirty) {
+                    ++stats_.resident_dirty_blocks;
+                } else {
+                    ++stats_.zero_dirty_blocks;
+                }
+            }
+            entry->state = original_state;
+            entry->prior_state = original_state;
+            entry->transition_owner = 0;
+            entry->transition_epoch = 0;
+            test_transition_active = false;
+            block_lock.unlock();
+            stripe.condition.notify_all();
+            return Result<void>::failure(closed_backing(
+                L"DynamicBlockStore::mark_persisted"));
+        }
+    }
+
+    bool generation_conflicted = false;
     {
         std::scoped_lock state_lock(state_mutex_);
         if (persisted_generation <= entry->dirty_base_generation ||
             persisted_generation > backing_view_.generation) {
             ++stats_.backing_generation_conflicts;
-            return Result<void>::failure(generation_conflict(
-                L"DynamicBlockStore::mark_persisted",
-                L"persisted generation is not an installed successor"));
-        }
-
-        if (resident_dirty) {
-            --stats_.resident_dirty_blocks;
+            generation_conflicted = true;
+            if (test_transition_active) {
+                if (resident_dirty) {
+                    ++stats_.resident_dirty_blocks;
+                } else {
+                    ++stats_.zero_dirty_blocks;
+                }
+            }
+        } else if (resident_dirty) {
+            if (!test_transition_active) {
+                --stats_.resident_dirty_blocks;
+            }
             ++stats_.resident_clean_blocks;
             entry->state = BlockState::ResidentClean;
             entry->prior_state = BlockState::ResidentClean;
         } else {
-            --stats_.zero_dirty_blocks;
+            if (!test_transition_active) {
+                --stats_.zero_dirty_blocks;
+            }
             ++stats_.zero_clean_blocks;
             entry->state = BlockState::ZeroClean;
             entry->prior_state = BlockState::ZeroClean;
         }
-        entry->clean_generation = persisted_generation;
+        if (!generation_conflicted) {
+            entry->clean_generation = persisted_generation;
+        }
     }
+    if (generation_conflicted) {
+        if (test_transition_active) {
+            entry->state = original_state;
+            entry->prior_state = original_state;
+            entry->transition_owner = 0;
+            entry->transition_epoch = 0;
+            block_lock.unlock();
+            stripe.condition.notify_all();
+        }
+        return Result<void>::failure(generation_conflict(
+            L"DynamicBlockStore::mark_persisted",
+            L"persisted generation is not an installed successor"));
+    }
+    entry->transition_owner = 0;
+    entry->transition_epoch = 0;
+    test_transition_active = false;
     block_lock.unlock();
     stripe.condition.notify_all();
     if (resident_dirty) {
@@ -190,6 +302,20 @@ Result<void> DynamicBlockStore::mark_persisted(
         signal_eviction_worker_if_needed();
     }
     return Result<void>::success();
+}
+
+bool DynamicBlockStoreTestAccess::persisted_ack_gap_reached(
+    const DynamicBlockStore& store) noexcept {
+    return store.persisted_ack_gap_reached_for_test_.load(
+        std::memory_order_acquire);
+}
+
+bool DynamicBlockStoreTestAccess::release_persisted_ack_gap(
+    DynamicBlockStore& store) noexcept {
+    const bool paused = store.persisted_ack_pause_for_test_.exchange(
+        false, std::memory_order_acq_rel);
+    store.persisted_ack_pause_for_test_.notify_all();
+    return paused;
 }
 
 bool DynamicBlockStoreTestAccess::begin_backing_publication(

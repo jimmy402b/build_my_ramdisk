@@ -134,7 +134,8 @@ private:
             read_observer,
         bool fail_snapshot_allocation,
         bool pause_before_snapshot_wait,
-        bool pause_after_snapshot_pin) noexcept;
+        bool pause_after_snapshot_pin,
+        bool pause_after_persisted_validation) noexcept;
 
     static Result<std::unique_ptr<DynamicBlockStore>> create_impl(
         DynamicBlockStoreCreateArgs args,
@@ -224,6 +225,8 @@ private:
     std::atomic<bool> snapshot_wait_gap_reached_for_test_{};
     std::atomic<bool> snapshot_pin_pause_for_test_{};
     std::atomic<bool> snapshot_pin_gap_reached_for_test_{};
+    std::atomic<bool> persisted_ack_pause_for_test_{};
+    std::atomic<bool> persisted_ack_gap_reached_for_test_{};
 
     static thread_local RequestToken* current_request_token_;
 };
