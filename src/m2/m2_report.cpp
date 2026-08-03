@@ -1176,9 +1176,11 @@ private:
         }
         std::optional<std::uint64_t> provider_process_id;
         std::optional<std::uint64_t> previous_elapsed;
+        std::optional<std::size_t> previous_point_index;
         std::array<std::optional<std::uint64_t>, 4> private_bytes{};
         std::array<std::optional<std::uint64_t>, 4> commit_bytes{};
         std::array<std::optional<std::uint64_t>, 4> elapsed_ms{};
+        std::array<bool, 4> memory_sample_present{};
         for (std::size_t index = 0; index < samples->array.size(); ++index) {
             const auto& sample = samples->array[index];
             if (sample.type != JsonType::object) {
@@ -1215,16 +1217,21 @@ private:
                 fail();
                 continue;
             }
-            if (index >= std::size(required_points)) {
+            const auto point_index = static_cast<std::size_t>(*point);
+            if (point_index >= std::size(required_points)) {
                 fail();
                 continue;
             }
-            if (*point != required_points[index] ||
-                *phase != required_phases[index]) {
+            if (*point != required_points[point_index] ||
+                *phase != required_phases[point_index] ||
+                (previous_point_index &&
+                 point_index <= *previous_point_index)) {
                 fail();
             }
-            if (store_sample_timestamps_[index] &&
-                *captured != *store_sample_timestamps_[index]) {
+            previous_point_index = point_index;
+            memory_sample_present[point_index] = true;
+            if (store_sample_timestamps_[point_index] &&
+                *captured != *store_sample_timestamps_[point_index]) {
                 fail();
             }
             if (provider_process_id &&
@@ -1234,9 +1241,16 @@ private:
             provider_process_id = *process_id;
             if (previous_elapsed && *elapsed <= *previous_elapsed) fail();
             previous_elapsed = *elapsed;
-            private_bytes[index] = *private_value;
-            commit_bytes[index] = *commit_value;
-            elapsed_ms[index] = *elapsed;
+            private_bytes[point_index] = *private_value;
+            commit_bytes[point_index] = *commit_value;
+            elapsed_ms[point_index] = *elapsed;
+        }
+        for (std::size_t index = 0;
+             index < memory_sample_present.size(); ++index) {
+            if (memory_sample_present[index] !=
+                store_sample_timestamps_[index].has_value()) {
+                fail();
+            }
         }
         if (std::all_of(
                 private_bytes.begin(), private_bytes.end(),
@@ -1313,6 +1327,7 @@ private:
         std::optional<std::uint64_t> write_committed;
         std::optional<std::uint64_t> retrim_committed;
         std::optional<std::int64_t> previous_captured_seconds;
+        std::optional<std::size_t> previous_point_index;
         for (std::size_t index = 0; index < samples->array.size(); ++index) {
             const auto& sample = samples->array[index];
             if (sample.type != JsonType::object) {
@@ -1341,12 +1356,16 @@ private:
                 continue;
             }
             previous_captured_seconds = *captured_seconds;
-            if (index >= std::size(required_points) ||
-                *point != required_points[index]) {
+            const auto point_index = static_cast<std::size_t>(*point);
+            if (point_index >= std::size(required_points) ||
+                *point != required_points[point_index] ||
+                (previous_point_index &&
+                 point_index <= *previous_point_index)) {
                 fail();
             }
-            if (index < store_sample_timestamps_.size()) {
-                store_sample_timestamps_[index] = *captured;
+            previous_point_index = point_index;
+            if (point_index < store_sample_timestamps_.size()) {
+                store_sample_timestamps_[point_index] = *captured;
             }
             const auto logical = uint_member(*stats, "logical_size_bytes");
             const auto reserved = uint_member(*stats, "reserved_bytes");
@@ -1640,21 +1659,13 @@ private:
             incomplete_ = true;
             return;
         }
-        if (session->empty() || native_path->empty() || raw_text->empty() ||
-            bus_type->empty() || vendor->empty() || product->empty() ||
-            serial->empty() || unique_id->empty() || volume_guids->empty() ||
-            mount_points->empty() || *path > 0xFF || *target > 0xFF ||
-            *lun > 0xFF || *create_flags != aim::kM0CreateFlags ||
-            *query_flags != aim::kM1QueryFlags || !*confirmed ||
-            *physical_number == 0 || !disk_size_bytes_ ||
-            *disk_length != *disk_size_bytes_) {
-            fail();
-            return;
-        }
         std::uint32_t raw_id = 0;
         const auto parsed = std::from_chars(
             raw_text->data(), raw_text->data() + raw_text->size(), raw_id);
-        if (parsed.ec != std::errc{} ||
+        if (session->empty() || native_path->empty() || raw_text->empty() ||
+            *path > 0xFF || *target > 0xFF || *lun > 0xFF ||
+            *create_flags != aim::kM0CreateFlags ||
+            parsed.ec != std::errc{} ||
             parsed.ptr != raw_text->data() + raw_text->size() ||
             raw_id == 0 || raw_id == aim::kAllDevices) {
             fail();
@@ -1662,10 +1673,39 @@ private:
         }
         const auto decoded = aim::decode_device_address({raw_id});
         if (decoded.path_id != *path || decoded.target_id != *target ||
-            decoded.lun != *lun ||
+            decoded.lun != *lun) {
+            fail();
+            return;
+        }
+
+        const bool no_disk_identity =
+            *query_flags == 0 && !*confirmed && *physical_number == 0 &&
+            physical_path->empty() && *disk_length == 0 &&
+            bus_type->empty() && vendor->empty() && product->empty() &&
+            serial->empty() && unique_id->empty() &&
+            volume_guids->empty() && mount_points->empty();
+        if (no_disk_identity) {
+            incomplete_ = true;
+            return;
+        }
+
+        if (*query_flags != aim::kM1QueryFlags || !*confirmed ||
+            *physical_number == 0 || !disk_size_bytes_ ||
+            *disk_length != *disk_size_bytes_ || bus_type->empty() ||
+            vendor->empty() || product->empty() || serial->empty() ||
+            unique_id->empty() ||
             *physical_path !=
                 std::string(R"(\\.\PhysicalDrive)") +
                     std::to_string(*physical_number)) {
+            fail();
+            return;
+        }
+
+        if (volume_guids->empty() && mount_points->empty()) {
+            incomplete_ = true;
+            return;
+        }
+        if (volume_guids->empty() || mount_points->empty()) {
             fail();
         }
     }

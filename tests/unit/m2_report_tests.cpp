@@ -774,6 +774,54 @@ TEST_CASE(m2_report_validator_cross_checks_exact_device_identity) {
     require_invalid(myrd::serialize_m2_report(report));
 }
 
+TEST_CASE(m2_report_validator_accepts_only_coherent_staged_failure_identity) {
+    auto report = complete_report();
+    report.device_identity.query_flags = 0;
+    report.device_identity.confirmed_by_query_device = false;
+    report.device_identity.physical_drive_number = 0;
+    report.device_identity.physical_drive_path.clear();
+    report.device_identity.disk_length_bytes = 0;
+    report.device_identity.bus_type.clear();
+    report.device_identity.vendor_id.clear();
+    report.device_identity.product_id.clear();
+    report.device_identity.serial_number.clear();
+    report.device_identity.disk_unique_id.clear();
+    report.device_identity.volume_guids.clear();
+    report.device_identity.mount_points.clear();
+    report.failures.push_back(
+        {"WAIT-FOR-DISK", 1, "disk discovery failed after CREATE"});
+    report.verdict = myrd::M2Verdict::no_go;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+
+    report = complete_report();
+    report.device_identity.volume_guids.clear();
+    report.device_identity.mount_points.clear();
+    report.failures.push_back(
+        {"SETUP-WRITE", 1, "filesystem setup failed before mount"});
+    report.verdict = myrd::M2Verdict::no_go;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+
+    report = complete_report();
+    report.device_identity.query_flags = 0;
+    report.device_identity.confirmed_by_query_device = false;
+    report.device_identity.physical_drive_number = 42;
+    report.device_identity.physical_drive_path =
+        R"(\\.\PhysicalDrive42)";
+    report.failures.push_back(
+        {"WAIT-FOR-DISK", 1, "mixed identity stage"});
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    report.device_identity.volume_guids.clear();
+    report.failures.push_back(
+        {"SETUP-WRITE", 1, "only one mount identity array present"});
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
 TEST_CASE(m2_report_validator_cross_checks_structured_final_inventory) {
     auto report = complete_report();
     report.final_baseline_comparison.after.physical_disks.push_back("99");
@@ -839,6 +887,45 @@ TEST_CASE(m2_report_validator_cross_checks_memory_sample_semantics) {
 
     report = complete_report();
     report.os_memory_samples[2].commit_bytes = (74ULL << 20U) + 1;
+    require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_requires_matching_ordered_partial_sample_sets) {
+    auto report = complete_report();
+    report.store_stats_samples = {
+        report.store_stats_samples[0], report.store_stats_samples[3]};
+    report.os_memory_samples = {
+        report.os_memory_samples[0], report.os_memory_samples[3]};
+    report.failures.push_back(
+        {"SAMPLE-AFTER-WRITE", 41, "sampling stopped early"});
+    report.verdict = myrd::M2Verdict::no_go;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+
+    report = complete_report();
+    report.store_stats_samples = {
+        report.store_stats_samples[0], report.store_stats_samples[3]};
+    report.os_memory_samples = {
+        report.os_memory_samples[0], report.os_memory_samples[2]};
+    report.failures.push_back(
+        {"SAMPLE-AFTER-WRITE", 42, "sample sets disagree"});
+    report.verdict = myrd::M2Verdict::no_go;
+    require_invalid(myrd::serialize_m2_report(report));
+
+    report = complete_report();
+    std::swap(report.store_stats_samples[0], report.store_stats_samples[3]);
+    std::swap(report.os_memory_samples[0], report.os_memory_samples[3]);
+    report.store_stats_samples.resize(2);
+    report.os_memory_samples.resize(2);
+    report.store_stats_samples[0].captured_utc = "2026-08-04T01:02:30Z";
+    report.store_stats_samples[1].captured_utc = "2026-08-04T01:02:41Z";
+    report.os_memory_samples[0].captured_utc = "2026-08-04T01:02:30Z";
+    report.os_memory_samples[1].captured_utc = "2026-08-04T01:02:41Z";
+    report.os_memory_samples[0].elapsed_ms = 0;
+    report.os_memory_samples[1].elapsed_ms = 1'000;
+    report.failures.push_back(
+        {"SAMPLE-AFTER-WRITE", 43, "partial samples out of order"});
+    report.verdict = myrd::M2Verdict::no_go;
     require_invalid(myrd::serialize_m2_report(report));
 }
 

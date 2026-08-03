@@ -103,6 +103,7 @@ myrd_enable_warnings(myrd_m1_report)
 add_library(myrd_m2 STATIC
     m2/m2_provider.cpp m2/m2_provider.h
     m2/m2_performance_probe.cpp m2/m2_performance_probe.h
+    m2/m2_volume_workload.cpp m2/m2_volume_workload.h
 )
 target_include_directories(myrd_m2 PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m2 PUBLIC myrd_proxy myrd_storage myrd_common)
@@ -110,9 +111,10 @@ myrd_enable_warnings(myrd_m2)
 
 add_library(myrd_m2_report STATIC
     m2/m2_report.cpp m2/m2_report.h
+    m2/m2_lifecycle_runner.cpp m2/m2_lifecycle_runner.h
 )
 target_include_directories(myrd_m2_report PUBLIC "${CMAKE_SOURCE_DIR}")
-target_link_libraries(myrd_m2_report PUBLIC myrd_poc)
+target_link_libraries(myrd_m2_report PUBLIC myrd_m2 myrd_poc)
 myrd_enable_warnings(myrd_m2_report)
 
 add_executable(myrd-m1-e2e
