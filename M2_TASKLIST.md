@@ -74,7 +74,7 @@
 | 11 | Clean CLOCK eviction | DONE | 10 | M2-V1 |
 | 12 | Hard limit、预算和失败回滚 | DONE | 11 | M2-V1 |
 | 13 | 100,000 次参考模型 | DONE | 12 | M2-V2 / M2-A |
-| 14 | 单飞加载与同块并发 | TODO | 12 | M2-V3 |
+| 14 | 单飞加载与同块并发 | DONE | 12 | M2-V3 |
 | 15 | 快照/变更/淘汰/关闭竞态 | TODO | 14 | M2-V3 |
 | 16 | 长压测、不变量、资源核算 | TODO | 13,15 | M2-V3 / M2-B |
 | 17 | 注入 M1 Proxy 与本地 SHM | TODO | 16 | M2-V4 |
@@ -748,35 +748,37 @@ Executor / timestamp:
 
 ## Task 14 — 单飞加载与同 block 并发证明
 
+**状态：DONE（2026-08-03）**
+
 **目标：** 用确定性调度测试而非“跑起来没崩”证明 transition/waiter 正确。
 
 **文件：** `dynamic_block_store_concurrency_tests.cpp`，仅按红灯结果修产品文件。
 
 ### 确定性并发用例
 
-- [ ] barriers/latches 控制 2 readers 同时进入同块 Loading。
-- [ ] 扩展到 8/32 readers，backing count 仍为 1。
-- [ ] 所有成功 reader bytes 相同。
-- [ ] 一个 waiter cancel，其他 waiter/owner 不受污染。
-- [ ] owner fail，所有 waiters 被唤醒且 state 可重试。
-- [ ] retry 成功且 epoch 不复用旧结果。
-- [ ] generation G load 被 gate 阻塞时安装 G+1；旧结果返回后不得 publish，必须从 G+1 重试。
-- [ ] 上述竞态只允许每个 generation 一个 owner load，所有 waiter 最终看到 G+1，旧 backing 生命周期安全。
-- [ ] 同块 read vs full write 的结果可序列化。
-- [ ] read vs partial write 不 torn。
-- [ ] write vs write 最终为一个完整版本。
-- [ ] full ZERO/UNMAP vs read 不 resurrection。
-- [ ] close vs load 在 deadline 内结束。
-- [ ] 同 stripe 不同 blocks 正确；不同 stripes 可并行。
+- [x] barriers/latches 控制 2 readers 同时进入同块 Loading。
+- [x] 扩展到 8/32 readers，backing count 仍为 1。
+- [x] 所有成功 reader bytes 相同。
+- [x] 一个 waiter cancel，其他 waiter/owner 不受污染。
+- [x] owner fail，所有 waiters 被唤醒且 state 可重试。
+- [x] retry 成功且 epoch 不复用旧结果。
+- [x] generation G load 被 gate 阻塞时安装 G+1；旧结果返回后不得 publish，必须从 G+1 重试。
+- [x] 上述竞态只允许每个 generation 一个 owner load，所有 waiter 最终看到 G+1，旧 backing 生命周期安全。
+- [x] 同块 read vs full write 的结果可序列化。
+- [x] read vs partial write 不 torn。
+- [x] write vs write 最终为一个完整版本。
+- [x] full ZERO/UNMAP vs read 不 resurrection。
+- [x] close vs load 在 deadline 内结束。
+- [x] 同 stripe 不同 blocks 正确；不同 stripes 可并行。
 
 ### 验证与验收
 
-- [ ] 不使用任意 `Sleep` 决定竞态顺序。
-- [ ] 需要 hook 时保持 private/test-only，并记录为何必要。
-- [ ] focused concurrency subset 连续 100 次通过。
-- [ ] M2-V1/V2 回归通过。
-- [ ] 回读 Plan Task 14、1.3 和 1.4；检查所有 wait 都是 predicate loop + notify，并核对 generation retry 的有界进度。
-- [ ] 建议提交：`test(storage): prove dynamic store transition concurrency`。
+- [x] 不使用任意 `Sleep` 决定竞态顺序。
+- [x] 需要 hook 时保持 private/test-only，并记录为何必要。
+- [x] focused concurrency subset 连续 100 次通过。
+- [x] M2-V1/V2 回归通过。
+- [x] 回读 Plan Task 14、1.3 和 1.4；检查所有 wait 都是 predicate loop + notify，并核对 generation retry 的有界进度。
+- [x] 建议提交：`test(storage): prove dynamic store transition concurrency`。
 
 ---
 
@@ -1421,3 +1423,17 @@ Review findings and resolution: reference model 只 include STL 并独立重述�
 Plan drift audit: Task 13 test/evidence only；未修改产品实现，未引入文件系统 backing、持久化、proxy、driver、M3 或 M4 行为；M2-A 仅形成核心证据草案，仍不宣称完整 M2 GO
 Open risks: wider transition concurrency, cancellation/close and long stress remain assigned to Tasks 14–16; real 64 GiB/1 TiB VM integration remains assigned to Task 18
 Executor / timestamp: Codex / `2026-08-03T23:24:56+08:00`
+
+Task: 14 — 单飞加载与同 block 并发证明
+Status: DONE
+Start commit / end commit: `477352d` / pending commit `test(storage): prove dynamic store transition concurrency`
+Files changed: `tests/unit/dynamic_block_store_concurrency_tests.cpp`, `tests/CMakeLists.txt`, and this Task 14 checklist/status/record in `M2_TASKLIST.md`; no production file changed
+Red test and observed failure: Task 14 is a proof-only gate over the already implemented Task 07/08/10–12 state machine; the complete deterministic suite passed on its first product run, so no product defect or legitimate red production failure was manufactured. The tests force every required interleaving with barriers, fake backing gates, exact waiter/state predicates, a private pre-existing read observer, and finite deadlines rather than timing sleeps
+Focused verification command / exit code: Debug and Release direct test binaries each report 9/9; exact `unit.m2.concurrency` passes in both configurations and each configuration passed `ctest --repeat until-fail:100` with 100/100 iterations and exit 0
+Cumulative verification command / exit code: complete Debug and Release builds exit 0; full Debug CTest 41/41 and full Release CTest 41/41; both include M2-V1 16 tests, M2-V2 5 tests, and M2-V3 5 tests; `git diff --check` exit 0 before final staging
+Coverage evidence: 2/8/32 same-block readers issue exactly one backing load and receive exact bytes; one cancelled waiter does not affect the owner or peer; owner failure wakes eight waiters with one stable error and a successor epoch retries successfully; 32 old-generation waiters discard G, retain its backing lifetime through I/O, issue exactly one G+1 load, and all receive G+1; same-block read/full-write, read/partial-write, read/ZERO, read/UNMAP, and two full writes are serializable without torn data or resurrection; close interrupts a blocked load within two seconds; blocks 0/64 on one stripe and 0/1 on different stripes both overlap backing I/O
+Review findings and resolution: no new hook was required; the suite contains no `Sleep`/`sleep_for`. Manual audit confirmed all relevant Loading/Committing/Evicting/pin waits use predicate loops with cancellation/close notifications and finite-deadline paths, while backing-generation retry is capped by `kMaxGenerationRetries`. Independent read-only review returned `APPROVED` with no Critical, Important, or Minor findings and independently confirmed Debug/Release 9/9 plus 100-repeat stability
+Evidence paths: `tests/unit/dynamic_block_store_concurrency_tests.cpp`, Plan Task 14 and sections 1.3/1.4, Task 07/08/10–12 production state-machine files, and console transcripts for focused, repeat, full, and review gates
+Plan drift audit: Task 14 test/evidence only; no production behavior, new test hook, snapshot/ack/eviction-pressure race matrix assigned to Task 15, long stress assigned to Task 16, proxy, driver, filesystem backing, M3, or M4 behavior was introduced
+Open risks: broader snapshot/mutation/eviction/cancellation/destruction races remain assigned to Task 15; long multi-thread stress and resource accounting remain assigned to Task 16
+Executor / timestamp: Codex / `2026-08-03T23:55:48+08:00`

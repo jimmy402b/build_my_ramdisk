@@ -564,3 +564,17 @@ add_test(NAME unit.m2.model COMMAND myrd_m2_model_tests)
 set_tests_properties(unit.m2.model PROPERTIES
     LABELS "m2-v2;m2-a"
     TIMEOUT 180)
+
+add_executable(myrd_m2_concurrency_tests
+    unit/dynamic_block_store_concurrency_tests.cpp
+    support/fake_backing_store.h
+)
+target_link_libraries(myrd_m2_concurrency_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_concurrency_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_concurrency_tests)
+add_test(NAME unit.m2.concurrency COMMAND myrd_m2_concurrency_tests)
+set_tests_properties(unit.m2.concurrency PROPERTIES
+    LABELS "m2-v3"
+    TIMEOUT 30)
