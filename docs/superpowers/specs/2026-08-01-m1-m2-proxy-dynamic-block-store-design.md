@@ -2,7 +2,7 @@
 
 日期：2026-08-01
 
-状态：设计已确认，等待用户复核
+状态：设计已批准；M0/M1 已最终 GO；M2 generation-safe 设计已确认
 
 目标平台：Windows x64、MSVC、C++20
 
@@ -15,11 +15,11 @@
 - M1 将 M0 的 Shared Memory Proxy PoC 产品化。
 - M2 实现真正按访问量提交物理内存的动态块存储。
 - M1/M2 不实现 VHD、journal、checkpoint 或定时写回。
-- M1/M2 为 M3 提供稳定的按需读取和版本化 Dirty 快照接口。
+- M1/M2 为 M3 提供稳定的按需读取、版本化 Dirty 快照和 backing generation 交接接口。
 
-本文是一份共同架构规格，但执行时必须拆成独立的 M1 实施计划和 M2 实施计划。M1-C 未通过前，不得进入 M2 的真实驱动工作。
+本文是一份共同架构规格，但执行时必须拆成独立的 M1 实施计划和 M2 实施计划。M2 必须建立在已验收的 M1-C 基线上，不得在 M2 内复制或绕过 M1 Proxy 生命周期。
 
-本规格批准的是设计，不代表当前真实驱动链路已经通过。本文编写时，仓库已通过 M0 V3 只读查询和 Task 24 harness，但真实 CREATE 生命周期仍在 Task 25 排查内核命名空间解析问题。M1/M2 的真实驱动实施和验收必须等待 M0 最终 GO。
+本规格的设计已经批准。M0 Driver-only 真实驱动链路已通过最终 GO，并在提交 `0e2b3b3` 完成命名对象释放竞态的闭环验证。M1 验收文档已给出最终 `M1 GO`；功能验收提交为 `3eac4f7`，合入 `master` 后的 M2 规划基线为 `2adf84a`。M2 执行仍须在 Task 00 对当前提交重新运行 M1 本地回归，历史结论不能替代新鲜证据。
 
 规范词：
 
@@ -43,6 +43,8 @@
 11. 同时实现并公布 UNMAP 和 ZERO。
 12. 完整块 UNMAP/ZERO 必须释放对应 committed memory。
 13. 采用分层块引擎，不采用单体 Provider 或完整异步分页系统。
+14. 每个 `IBackingStore` 实例在发布后不可变；Store 只能原子切换到单调递增的完整后继 generation。
+15. `mark_persisted` 必须绑定 dirty version、kind 和已安装 generation；未先安装后继 view 时不得把 Dirty 标为 Clean。
 
 ## 3. 范围
 
@@ -82,6 +84,7 @@ M2 负责：
 - 软、硬内存限制。
 - 并发访问、取消和超时。
 - 版本化 Dirty 数据与零覆盖快照。
+- 不可变 backing view 的 generation 安装、加载隔离和 persisted acknowledgement。
 - Fake/Zero backing、模型测试和故障注入。
 - M0 GO 后的真实 NTFS 动态内存盘验收。
 
@@ -90,6 +93,7 @@ M2 不负责：
 - 永久保存 Dirty 数据。
 - 临时交换文件。
 - VHD、VHDX、journal 或 checkpoint。
+- 生成、写入或原子替换真实磁盘 backing 文件。
 - 压缩、去重、加密或网络 backing。
 
 ### 3.3 第一版明确不做
@@ -153,7 +157,10 @@ DynamicBlockStore
         v
 ZeroBackingStore / FakeBackingStore
 
-M3 将增加：CompositeVhdJournalBackingStore + CheckpointEngine
+M3 将增加：CheckpointEngine -> immutable successor BackingView
+                  | install generation, then exact ack
+                  v
+        CompositeVhdJournalBackingStore
 ```
 
 依赖必须单向：
@@ -161,6 +168,7 @@ M3 将增加：CompositeVhdJournalBackingStore + CheckpointEngine
 ```text
 proxy -> IBlockDevice <- storage
 storage -> IBackingStore
+checkpoint(M3) -> copy_dirty_batch / install_backing_view / mark_persisted
 driver lifecycle -> proxy session
 ```
 
@@ -202,9 +210,10 @@ driver lifecycle -> proxy session
 - 实现 `IBlockDevice`。
 - 管理预留地址、块 commit 和 decommit。
 - 管理状态、版本、pin 和统计。
-- 调用 `IBackingStore` 加载未驻留块。
+- 管理当前不可变 `BackingView`，原子安装单调递增的后继 generation。
+- 从捕获的 `BackingView` 加载未驻留块，并阻止旧 generation 的晚到结果覆盖新 view。
 - 执行 Clean eviction。
-- 提供 Dirty 快照和条件式 `mark_persisted`。
+- 提供包含 base generation 的 Dirty 快照和 version/kind/generation 条件式 `mark_persisted`。
 
 ### 6.4 `VirtualMemoryArena`
 
@@ -227,9 +236,9 @@ driver lifecycle -> proxy session
 - 回收到 low watermark。
 - 新 commit 接近硬上限时提供同步回收尝试。
 
-### 6.7 `IBackingStore`
+### 6.7 `IBackingStore` 与 `BackingView`
 
-M1/M2 中 backing 是只读块来源，不是保存目标。
+M1/M2 中 backing 是只读块来源，不是保存目标。单个 `IBackingStore` 对象一经发布便不可变；generation 更新通过替换整个 view 完成，不允许原地修改已发布对象。
 
 ```cpp
 enum class BlockLoadKind {
@@ -248,7 +257,14 @@ public:
     virtual Result<BlockLoadResult> load_block(
         const OperationContext& context,
         std::uint64_t block_index,
-        std::span<std::byte> destination) = 0;
+        std::span<std::byte> destination) const = 0;
+};
+
+using BackingGeneration = std::uint64_t;
+
+struct BackingView {
+    BackingGeneration generation;
+    std::shared_ptr<const IBackingStore> store;
 };
 ```
 
@@ -260,8 +276,21 @@ public:
 - `ZeroBackingStore` 对所有块返回 `AllZero`。
 - `FakeBackingStore` 支持确定性内容、延迟、取消、超时和指定块失败。
 - M3 的 VHD/journal 分层读取实现此接口。
-- 一个 Session 看到的 backing 视图必须保持不可变；M3 只有在新的持久化 generation 已原子发布后才能更新读取视图。
+- `BackingView::store` 不得为空；初始 generation 可以是任意已恢复的持久化 generation，新空盘默认使用 generation `0`。
+- Store 同一时刻只发布一个完整 `{generation, store}` 对；`install_backing_view()` 只接受严格大于当前 generation 的完整后继 view。
+- 后继 view 必须表示整个逻辑磁盘，并包含所有更早已确认的持久化内容；它不是增量 patch，也不得回退或跳回旧视图。
+- view 安装只替换 Store 的只读来源，不执行文件 I/O、durability barrier 或 checkpoint；这些属于 M3。
 - `AllZero` 成功返回后，Store 可以把该块发布为 `ZeroClean`，避免重复读取 backing。
+
+Store 提供以下不属于 `IBlockDevice` 的 M3 管理接口：
+
+```cpp
+BackingGeneration backing_generation() const noexcept;
+
+Result<void> install_backing_view(BackingView next_view);
+```
+
+`install_backing_view()` 必须原子发布 pointer 与 generation。相同或更小 generation、空 store、已关闭 Store 和 generation 回绕均失败且保持旧 view 不变。M2 使用 `FakeBackingStore` 验证交接协议，但不创建真实 successor 文件。
 
 ## 7. 公共块设备接口
 
@@ -432,20 +461,25 @@ version
 pin_count
 last_access_epoch
 dirty_epoch
+dirty_base_generation
+clean_generation
 reference_bit
 last_zero_operation_kind
 ```
 
 `version` 为 64 位。发生回绕时 Store 进入不可恢复内部错误。
 
+- `dirty_base_generation` 是产生当前 Dirty version 时 Store 已安装的 generation；每次成功 WRITE、UNMAP 或 ZERO 产生新 version 时都重新捕获。
+- `clean_generation` 是当前 clean 内容已被某个 backing view 覆盖的最小 generation。由 backing load 产生 Clean 时取本次 load 捕获的 generation；由 persisted ack 产生 Clean 时取 `persisted_generation`。
+
 ## 11. 块状态机
 
 | 状态 | RAM | 数据来源 | Dirty | 可淘汰 |
 |---|---:|---|---:|---:|
-| `Unresident` | 否 | backing | 否 | 不适用 |
-| `ResidentClean` | 是 | RAM，与 backing 一致 | 否 | 是 |
+| `Unresident` | 否 | 当前 backing view | 否 | 不适用 |
+| `ResidentClean` | 是 | RAM，已被 `clean_generation` 及其后继 view 覆盖 | 否 | 条件式是 |
 | `ResidentDirty` | 是 | RAM | 是 | 否 |
-| `ZeroClean` | 否 | 已提交零覆盖或新盘默认零 | 否 | 不适用 |
+| `ZeroClean` | 否 | 已被 `clean_generation` 及其后继 view 覆盖的零 | 否 | 不适用 |
 | `ZeroDirty` | 否 | 尚未提交的零覆盖 | 是 | 不适用 |
 
 内部允许短暂使用 `Loading`、`Committing` 和 `Evicting`，但必须有 owner、取消路径和唤醒行为。
@@ -462,16 +496,18 @@ ResidentClean --写入--> ResidentDirty
 ResidentClean --eviction--> Unresident
 ResidentClean --完整 UNMAP/ZERO--> ZeroDirty
 
-ResidentDirty --同版本保存成功--> ResidentClean
+ResidentDirty --后继 view 已安装且同版本确认--> ResidentClean
 ResidentDirty --完整 UNMAP/ZERO--> ZeroDirty
 
 ZeroClean/ZeroDirty --读取--> 直接返回零
 ZeroClean/ZeroDirty --完整写入--> ResidentDirty
 ZeroClean/ZeroDirty --部分写入--> commit zero block -> ResidentDirty
-ZeroDirty --同版本零记录保存成功--> ZeroClean
+ZeroDirty --后继 view 已安装且同版本确认--> ZeroClean
 ```
 
 `ZeroClean` 和 `ZeroDirty` 都覆盖 backing。任何读取路径都不得让旧数据复活。
+
+`ResidentClean` 只有在 `clean_generation <= backing_generation()` 时才可淘汰。该条件正常情况下恒成立，但必须作为断言和测试不变量保留，禁止在 generation 状态损坏时 decommit 后退回无法证明的数据源。
 
 ## 12. READ 数据流
 
@@ -494,11 +530,13 @@ Unresident 正常缓存路径：
 
 1. 标记 `Loading`。
 2. 释放锁。
-3. backing 读取到临时 64 KiB scratch buffer。
-4. 重新加锁并验证 owner、取消和 deadline。
+3. 原子捕获当前 `BackingView`，从该不可变 view 读取到临时 64 KiB scratch buffer。
+4. 重新加锁并验证 owner、取消、deadline 和捕获的 generation。
 5. `AllZero` 时不 commit，直接返回零。
-6. `Data` 时 commit、复制并发布 `ResidentClean`。
+6. 当前 generation 与捕获值相同才允许发布；`Data` 时 commit、复制并发布带该 `clean_generation` 的 `ResidentClean`，`AllZero` 发布带该 generation 的 `ZeroClean`。
 7. 唤醒等待者。
+
+如果 backing I/O 返回前 generation 已推进，旧结果不得发布；释放临时结果并从当前 view 重试。安装发生在旧结果已经合法发布之后是安全的，因为后继 view 必须包含所有旧 generation 的 clean 内容。重试必须受取消、deadline 和有界进度控制，并计入 `stale_backing_load_retries`。
 
 硬上限且无法回收时，READ 可以使用 uncached read-through：读取到固定 64 KiB scratch buffer，服务本次请求但不 commit、不改变稳定状态。
 
@@ -510,6 +548,7 @@ Unresident 正常缓存路径：
 - 如未 committed，先做预算检查和 commit。
 - 锁内复制完整块。
 - 递增 version/dirty epoch。
+- 捕获当前 backing generation 为 `dirty_base_generation`。
 - 发布 `ResidentDirty`。
 
 部分覆盖：
@@ -517,7 +556,7 @@ Unresident 正常缓存路径：
 - `Unresident` 先加载旧内容。
 - Zero 状态 commit 后先清零整块。
 - Resident 状态锁内修改。
-- 修改后递增 version，成为 `ResidentDirty`。
+- 修改后递增 version，捕获当前 backing generation，成为 `ResidentDirty`。
 
 预计超过 hard limit 时，先同步 Clean eviction；仍无法满足则返回 `MemoryHardLimit`，不得修改块状态。覆盖已有 Resident 块且不新增 commit 时可以继续。
 
@@ -529,7 +568,7 @@ Unresident 正常缓存路径：
 - 获取块锁并等待 pin 为零。
 - 如 committed，执行 decommit。
 - 递增 version。
-- 设置 `ZeroDirty` 并记录 UNMAP 或 ZERO 来源。
+- 捕获当前 backing generation，设置 `ZeroDirty` 并记录 UNMAP 或 ZERO 来源。
 
 如果 decommit 失败，必须保留原状态、原 version 和原数据并返回 `DecommitFailed`，不得发布已经释放或已经清零的假状态。
 
@@ -538,7 +577,7 @@ Unresident 正常缓存路径：
 - 当前已为 Zero 时是 no-op。
 - `Unresident` 先加载 backing，以保留未覆盖字节。
 - Resident 状态锁内清零目标范围。
-- 设置 `ResidentDirty` 并递增 version。
+- 设置 `ResidentDirty`、递增 version，并捕获当前 backing generation。
 
 大范围操作最多保留起始和结尾两个部分块；中间完整块逐块 decommit，不得预先 commit。取消后已完成前缀可以保持生效，响应必须失败。
 
@@ -551,6 +590,8 @@ Unresident 正常缓存路径：
 - 不在 backing I/O 期间持有全局 metadata lock。
 - 不在等待 Event/deadline 时持有块锁。
 - 多块请求默认一次只持有一个块锁。
+- 当前 `BackingView` 的 pointer 与 generation 必须作为一个整体发布；读取者持有 `shared_ptr`，所以 view 切换后旧对象可安全完成在途调用。
+- `install_backing_view()` 不持有块锁执行外部 I/O，也不等待块 transition；加载结果发布时用 generation 检查解决竞态。
 
 同块首次加载只有一个 Loading owner；其他线程在 stripe condition variable 上等待并用 predicate 重查。成功、失败、取消和超时都必须唤醒等待者。
 
@@ -593,7 +634,7 @@ M1/M2 库要求调用方显式传入配置。M4 再定义产品默认值。测�
 - 唤醒后台 eviction worker。
 - 使用近似 CLOCK/second-chance。
 - 第一次扫描清除 reference bit。
-- 再次扫描未被访问、未 pin 的 `ResidentClean`。
+- 再次扫描未被访问、未 pin 且 `clean_generation <= backing_generation()` 的 `ResidentClean`。
 - 回收到 low watermark 后停止。
 
 不得淘汰 `ResidentDirty`、瞬态块或 pin 非零块。Zero 状态不占 committed RAM。
@@ -626,6 +667,7 @@ struct DirtyBlockSnapshot {
     std::uint64_t block_index;
     std::uint64_t version;
     DirtyRecordKind kind;
+    BackingGeneration base_generation;
     std::vector<std::byte> data;
 };
 
@@ -641,13 +683,14 @@ Result<std::vector<DirtyBlockSnapshot>> copy_dirty_batch(
 Result<void> mark_persisted(
     std::uint64_t block_index,
     std::uint64_t expected_version,
-    DirtyRecordKind expected_kind);
+    DirtyRecordKind expected_kind,
+    BackingGeneration persisted_generation);
 ```
 
 数据快照规则：
 
 - `ResidentDirty` 生成 `Data`，data 必须恰好 64 KiB。
-- 在块锁内复制到调用方拥有的稳定缓冲区。
+- 在块锁内复制到调用方拥有的稳定缓冲区，并原子捕获该 version 的 `dirty_base_generation`。
 - 复制完成立即释放块锁。
 - batch 总 data bytes 不得超过配置上限。
 
@@ -658,12 +701,28 @@ Result<void> mark_persisted(
 - kind 由产生当前 version 的完整块操作决定。
 - Data 和零覆盖记录的总数都受 `max_snapshot_batch_records` 限制，零记录不得绕过 byte limit 形成无界 batch。
 
-`mark_persisted` 只有在当前块仍然 Dirty、version 相同、kind 相同时成功：
+`mark_persisted` 只有在以下条件同时成立时成功：
 
-- `ResidentDirty -> ResidentClean`
-- `ZeroDirty -> ZeroClean`
+- 当前块仍然 Dirty、version 相同、kind 相同。
+- `persisted_generation > dirty_base_generation`，因此不可能确认到产生该 Dirty 之前的 view。
+- `persisted_generation <= backing_generation()`，因此包含该记录的完整后继 view 已经安装。
+- 调用方保证 `persisted_generation` 对应的已安装 view 已包含这条 snapshot 的完整内容；Store 通过 version/kind/generation 校验协议顺序，但不重新读取并逐字节验证 M3 的持久化文件。
 
-保存期间发生新写入或 UNMAP/ZERO 时返回 `VersionChanged`，当前块继续 Dirty。
+成功转换：
+
+- `ResidentDirty -> ResidentClean`，并设置 `clean_generation = persisted_generation`
+- `ZeroDirty -> ZeroClean`，并设置 `clean_generation = persisted_generation`
+
+保存期间发生新写入或 UNMAP/ZERO 时返回 `VersionChanged`，当前块继续 Dirty。generation 未安装、相同/回退 generation、generation 不晚于当前 Dirty base 时返回 `BackingGenerationConflict`，当前块同样继续 Dirty。任何失败都不得改变 state、version、kind、bytes 或淘汰资格。
+
+M3 必须遵守以下唯一顺序：
+
+1. 调用 `copy_dirty_batch()` 取得包含 `(block, version, kind, base_generation, data)` 的不可变记录。
+2. 将记录写入一个完整的后继 backing view，执行所需 durability barrier，并为其分配严格递增 generation。
+3. 调用 `install_backing_view()` 原子安装完整后继 view。
+4. 对确实包含在该 view 中的每条记录调用 `mark_persisted(..., persisted_generation)`。
+
+不得在第 3 步之前执行第 4 步。批处理中某块在第 1 步之后再次变化时，第 4 步必须因 version/kind 不匹配失败；新 Dirty 继续覆盖已安装 view，等待下一 generation。
 
 ## 18. 会话生命周期
 
@@ -753,6 +812,7 @@ Cancelled
 TimedOut
 SessionClosed
 VersionChanged
+BackingGenerationConflict
 InternalInvariant
 ```
 
@@ -776,6 +836,9 @@ Session-fatal 错误：
 - 非法状态转换。
 - metadata、pin 或 committed counter 不变量损坏。
 - version 回绕。
+- backing generation 回绕、pointer/generation 撕裂或 clean generation 晚于当前 view。
+
+`BackingGenerationConflict` 是 `DynamicBlockStore` 的 M3 管理接口错误，不从正常 `IBlockDevice` 请求映射到 Proxy。它表示 view 安装或 persisted ack 的 generation 顺序不成立，必须保留旧 view 或当前 Dirty 状态。
 
 固定 Proxy `errorno` 映射：
 
@@ -842,6 +905,10 @@ commit_failures
 decommit_failures
 snapshot_records_total
 snapshot_version_conflicts
+backing_generation
+backing_view_installs_total
+backing_generation_conflicts
+stale_backing_load_retries
 ```
 
 当 Store 使用 `CleanZero` 作为默认状态时，`zero_clean_blocks` 包含尚未实例化 metadata 的隐式零块，必须通过总块数减去偏离默认状态的块数计算，不得为了统计创建叶节点。
@@ -877,6 +944,9 @@ M1 fuzz 至少执行 10,000 个随机合法/非法请求；不得越界、崩溃
 - Dirty 不淘汰。
 - Zero 不从 backing 复活。
 - stale snapshot 不清除新 Dirty。
+- 未安装 generation、回退 generation 或不晚于 dirty base 的 ack 不清 Dirty。
+- 安装完整后继 view 后，exact version/kind/generation ack 才能清 Dirty。
+- ack 后 Clean 被淘汰并重新加载时，必须得到已保存内容，不能从旧 view 复活。
 - ZeroDirty 快照不分配 data buffer。
 - commit/decommit 失败不产生幽灵状态。
 
@@ -891,6 +961,7 @@ unmap
 zero
 evict
 copy_dirty_batch
+install_backing_view
 mark_persisted
 ```
 
@@ -934,6 +1005,8 @@ mark_persisted
 - 取消和 deadline。
 - 同块并发只执行一次 load。
 - hard limit 下 uncached read-through。
+- 被 gate 阻塞的旧-generation load 与 `install_backing_view()` 竞态时，旧结果不发布并从新 view 重试。
+- exact ack 前后执行 eviction/reload，读取结果始终等于已安装 successor view。
 
 ## 25. 真实驱动 E2E
 
@@ -1005,6 +1078,7 @@ M1/M2 没有持久化，卸载后数据丢失符合预期。
 ### M2-B：并发与资源压力
 
 - 并发、eviction、hard limit、snapshot 和故障注入通过。
+- backing generation install、ack、evict/reload 和 stale-load 竞态通过。
 
 ### M2-C：真实 NTFS 动态盘
 
@@ -1030,6 +1104,7 @@ M2 GO 必须同时满足：
 - NTFS 动态盘可正常使用。
 - UNMAP/ZERO 确实释放 committed memory。
 - Dirty 不因压力或竞态丢失。
+- persisted ack 后淘汰/重载不出现旧 backing resurrection。
 - 达到最低性能指标。
 
 停止条件：
@@ -1039,6 +1114,7 @@ M2 GO 必须同时满足：
 - 无法精确清理自己的设备：NO-GO。
 - Dirty 在压力下丢失：NO-GO。
 - UNMAP 后 backing 旧数据复活：NO-GO。
+- generation 未安装即清 Dirty，或 ack 后 eviction/reload 读回旧 generation：NO-GO。
 - 仅性能未达标但正确性完整：记录偏差并进入性能根因分析，不得宣称 M2 GO。
 
 不得以“M3 会解决”为理由忽略 M1/M2 的协议、内存和数据正确性失败。
@@ -1050,7 +1126,8 @@ M3 可以新增：
 - `CompositeVhdJournalBackingStore`，实现 `IBackingStore`。
 - `CheckpointEngine`，消费 `copy_dirty_batch()`。
 - journal durability barrier。
-- 成功 barrier 后调用 `mark_persisted()`。
+- barrier 成功后构造完整不可变 successor view，并调用 `install_backing_view()`。
+- successor view 安装成功后，使用同一 generation 调用 `mark_persisted()`。
 
 M3 不应要求修改：
 
@@ -1059,6 +1136,7 @@ M3 不应要求修改：
 - 64 KiB 块大小。
 - ZeroOverride 防旧数据复活规则。
 - version 条件式 Dirty 清理。
+- backing generation 严格递增、完整 view 原子安装和 generation-bound acknowledgement 顺序。
 - 内存软、硬限制语义。
 
 如果 M3 无法在这些边界内实现，应先修订设计，不得在实现中绕过 version 和 Dirty 安全规则。
