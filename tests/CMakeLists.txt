@@ -267,8 +267,13 @@ endforeach()
 
 add_test(
     NAME structural.m2.storage_independent_build
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
-            --config "$<CONFIG>" --target myrd_storage)
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/support/verify_storage_boundary.ps1"
+            -SourceDirectory "${CMAKE_SOURCE_DIR}"
+            -ProbeDirectory "${CMAKE_SOURCE_DIR}/out/build/storage-boundary-probe"
+            -Configuration "$<CONFIG>"
+            -Generator "${CMAKE_GENERATOR}"
+            -Compiler "${CMAKE_CXX_COMPILER}")
 set_tests_properties(structural.m2.storage_independent_build PROPERTIES
     LABELS "m2-v1;m2-v2;m2-v3;m2-v4"
     RUN_SERIAL TRUE)

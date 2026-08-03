@@ -1183,3 +1183,15 @@ Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`
 Plan drift audit: closes the Task 00 continuous storage-boundary gate only; no Task 01 or product behavior
 Open risks: repeated specification review remains
 Executor / timestamp: Codex / `2026-08-03T11:29:32+08:00`
+
+Task: 00 — 完整依赖闭包审查修复记录
+Status: DONE
+Start commit / end commit: `5fc8977` / closure-fix commit with the requested message
+Files changed: `tests/CMakeLists.txt`, `tests/support/verify_storage_boundary.ps1`, `docs/validation/m2-dynamic-block-store-acceptance.md`, and this appended record
+Red test and observed failure: temporarily injected `add_dependencies(myrd_storage myrd_driver)`; the prior structural CTest still passed, and the wrapper failed with `RED: storage boundary gate accepted ...`
+Focused verification command / exit code: isolated probe passed normally; with the same temporary fault injected it rejected the resolved build after observing `myrd_driver`, CTest exit 8; fault injection removed afterward
+Cumulative verification command / exit code: fresh configure exit 0; Release build exit 0; full CTest 27/27; M2-V1/V2/V3 4/4 each; M2-V4 27/27; fresh M1-V2 Debug PASS (14/14, fuzz 1/1, SHM 50/50)
+Evidence paths: `docs/validation/m2-dynamic-block-store-acceptance.md`; isolated build under ignored `out/build/storage-boundary-probe`
+Plan drift audit: strengthens only the Task 00 storage target boundary; no product behavior, Task 01 code, or persistent fault injection
+Open risks: repeated specification review remains
+Executor / timestamp: Codex / `2026-08-03T11:39:25+08:00`

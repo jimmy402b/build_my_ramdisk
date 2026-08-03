@@ -128,9 +128,19 @@ the appropriate labels before claiming a tier.
 
 The storage boundary is also enforced continuously by
 `structural.m2.storage_independent_build`. CMake configuration fails if
-`myrd_storage` directly names `myrd_proxy` or `myrd_driver`, and the CTest gate
-builds only `myrd_storage` on every selected M2 tier. The Release Ninja
-dependency query used for the initial audit was:
+`myrd_storage` directly names `myrd_proxy` or `myrd_driver`. The CTest gate
+then removes only the exact ignored
+`out/build/storage-boundary-probe` directory, configures a fresh isolated
+build with tests disabled, and builds only `myrd_storage`. It rejects the
+resolved build whenever build output or produced artifacts contain the proxy
+or driver implementation targets, so intermediate targets, generator
+expressions, and `add_dependencies()` edges are covered by the actual
+generator-resolved dependency closure. The probe was fault-tested by
+temporarily injecting `add_dependencies(myrd_storage myrd_driver)`: the old
+gate incorrectly passed, while the isolated gate failed after observing the
+driver build; the injection was then removed before the canonical green run.
+
+The Release Ninja dependency query used for the initial audit was:
 
 ```powershell
 . .\tools\Enter-MsvcEnvironment.ps1
@@ -139,8 +149,9 @@ ninja.exe -C out/build/msvc -f build-Release.ninja -t query src/Release/myrd_sto
 
 Its build inputs were `memory_block_device.cpp.obj` and order-only
 `src/Release/myrd_common.lib`; `myrd_proxy` and `myrd_driver` appeared only as
-downstream outputs/consumers. This proves `myrd_storage` remains independently
-buildable without proxy or driver implementation dependencies.
+downstream outputs/consumers. Together with the isolated CTest probe, this
+proves `myrd_storage` remains independently buildable without proxy or driver
+implementation dependencies.
 
 ## Bootstrap attempts retained as audit facts
 
