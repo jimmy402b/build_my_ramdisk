@@ -84,3 +84,79 @@ ctest --preset release --output-on-failure
 
 Task 00 and Task 01 verdict: **DONE**. Task 02 may start on the isolated logic
 branch; this is not an M3 GO verdict.
+
+## Task 02 logic-owner evidence — 2026-08-04
+
+| Item | Value |
+|---|---|
+| Implementation commit | `ca1b744` |
+| Logic-owner branch | `feature/m3-m2.1-logic` |
+| Independent review | PASS; no remaining Task 02 correctness finding |
+
+### Red gate
+
+The deterministic tests were added before production admission state. The
+focused target failed to compile specifically because
+`DynamicBlockStoreTestAccess::{active_mutations,mutation_gate_closed,
+mutation_waiters}` and the corresponding implementation did not exist. This
+established the expected Task 02 red state without weakening an existing test.
+
+### Implemented cut
+
+- One request-independent mutation token covers the complete public
+  `write()`, `zero()` or `unmap()` operation after validation and before the
+  first block change. Reads never enter mutation admission.
+- `begin_consistent_snapshot()` exclusively closes admission, drains all
+  already-admitted mutations, captures backing generation and dirty epoch,
+  activates one nonzero token, then reopens admission.
+- Cancellation, deadline and close all leave through one RAII rollback that
+  reopens admission and wakes queued mutations. A second begin receives the
+  stable `SnapshotBusy` error.
+- Lifecycle/admission state is never held across a stripe operation. The short
+  cut acquires only lifecycle/admission then state; no stripe or future
+  coordinator mutex is held. Native C++20 stop-token waits remove the
+  notify-only callback lost-wakeup window.
+
+### Deterministic coverage
+
+- A 64 KiB write starting at byte 512 crosses two blocks. Two independent
+  backing gates prove that begin cannot return in the gap between its first
+  and second segment.
+- A post-cut write is observed in the admission waiter count, while an
+  unrelated read completes with the gate closed.
+- While the first begin is still draining, a second begin is forced through
+  the same overlap window and returns `SnapshotBusy`; this is distinct from
+  merely observing an already-published active token.
+- Test access probes acquire lifecycle/admission, state and every stripe while
+  begin is draining, proving that the cut wait owns none of them. Task 02 has
+  no coordinator mutex; the coordinator-to-stripe reverse-order gate belongs
+  to Task 03 where that mutex is introduced.
+- Separate tests cover cancelled begin, timed-out begin, cancelled mutation,
+  timed-out zero, close waking both cut and mutation waiters, and two
+  concurrent begin calls.
+- Gate, active-mutation and waiter gauges are checked back at zero on rollback
+  and close paths; cancelled/timed-out begin leaves no active snapshot id.
+
+```powershell
+# Focused executable, repeated after the final implementation
+1..20 | % { .\out\build\msvc\tests\Release\myrd_m2_consistent_snapshot_tests.exe }
+# 20/20 passed
+
+ctest --preset release -R '^unit\.m2\.(concurrency|write|ranges)$' --output-on-failure
+# 3/3 passed
+
+ctest --preset release -L m2-v3 --output-on-failure
+# 6/6 passed
+
+ctest --preset release --output-on-failure
+# 59/59 passed
+```
+
+The independent concurrency re-review closed its three original findings:
+multi-range ZERO/UNMAP token coverage, overlapping begin exclusivity, and
+Task-02 lock-availability instrumentation. Residual coordinator-to-stripe and
+full token-lifecycle risks are explicitly owned by Tasks 03 and 06 because no
+snapshot coordinator exists in Task 02.
+
+Task 02 verdict: **DONE**. This is not an M2.1 or M3 GO verdict; Tasks 03–09
+remain required.

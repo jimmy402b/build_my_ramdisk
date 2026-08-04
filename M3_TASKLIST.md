@@ -141,7 +141,7 @@ Suggested commit:
 |---:|---|---|---|---|---|
 | 00 | 冻结 M2 GO 与建立 M3 targets | C | DONE | 无 | M3-V0 |
 | 01 | M2.1 类型、选项、错误、统计 | C | DONE | 00 | M3-V3 / m2.1-v0 |
-| 02 | Mutation admission 与一致切点 | O | PENDING | 01 | M3-V3 / m2.1-v1 |
+| 02 | Mutation admission 与一致切点 | O | DONE | 01 | M3-V3 / m2.1-v1 |
 | 03 | 有界 snapshot coordinator 与元数据 COW | S | PENDING | 02 | M3-V3 / m2.1-v1,v3 |
 | 04 | DATA pre-image | O | PENDING | 03 | M3-V3 / m2.1-v2 |
 | 05 | ZERO/DISCARD pre-image | O | PENDING | 04 | M3-V3 / m2.1-v2 |
@@ -214,12 +214,12 @@ Suggested commit:
 
 **类别：O。允许文件：** `dynamic_block_store.h/.cpp`、新的 mutation admission helper、并发测试；不改 persistence。
 
-- [ ] 独立红灯证明 write/zero/unmap 的整个多块操作持有 mutation token，reads 不持有。
-- [ ] 红灯覆盖 begin 与已进入/排队 mutation 的交错、取消、deadline、close 和两个并发 begin。
-- [ ] 逻辑负责人实现 admission close → drain active mutations → capture generation/epoch → activate → reopen 的唯一切点。
-- [ ] 用 lock-order instrumentation 证明未持有所有 stripes，且没有 coordinator → stripe 反向获取。
-- [ ] 跑 TSAN 不可用时的确定性 barrier tests、`m2.1-v1` 和全部 M2 并发回归。
-- [ ] 建议提交 `feat(storage): linearize consistent snapshot admission`。
+- [x] 独立红灯证明 write/zero/unmap 的整个多块操作持有 mutation token，reads 不持有。
+- [x] 红灯覆盖 begin 与已进入/排队 mutation 的交错、取消、deadline、close 和两个并发 begin。
+- [x] 逻辑负责人实现 admission close → drain active mutations → capture generation/epoch → activate → reopen 的唯一切点。
+- [x] 用 lock-order instrumentation 证明 drain 阶段 lifecycle/state/全部 stripes 均未被切点持有；Task 02 尚无 coordinator，coordinator → stripe 反向获取门禁随 Task 03 coordinator 一并执行。
+- [x] 跑 TSAN 不可用时的确定性 barrier tests、`m2.1-v1` 和全部 M2 并发回归。
+- [x] 已提交 `ca1b744 feat(storage): establish consistent mutation cut`。
 
 ## Task 03 — 有界 snapshot coordinator 与元数据 COW
 
