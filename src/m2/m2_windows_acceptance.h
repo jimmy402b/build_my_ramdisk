@@ -17,6 +17,12 @@ bool m2_service_restoration_required(
     std::uint32_t baseline_state,
     std::uint32_t baseline_start_type) noexcept;
 
+bool m2_should_retry_process_resource_sample(
+    const M2InventorySnapshot& before,
+    const M2InventorySnapshot& after,
+    std::uint64_t private_bytes_tolerance,
+    std::uint32_t retry_index) noexcept;
+
 Result<std::string> normalize_m2_aim_descriptor_bus_type(
     std::uint32_t raw_bus_type,
     std::string_view vendor_id,

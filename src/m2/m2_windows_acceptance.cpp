@@ -435,6 +435,17 @@ bool m2_service_restoration_required(
         current_start_type != baseline_start_type;
 }
 
+bool m2_should_retry_process_resource_sample(
+    const M2InventorySnapshot& before,
+    const M2InventorySnapshot& after,
+    std::uint64_t private_bytes_tolerance,
+    std::uint32_t retry_index) noexcept {
+    constexpr std::uint32_t kMaximumRetries = 20;
+    return retry_index < kMaximumRetries &&
+        !m2_process_resources_within_tolerance(
+            before, after, private_bytes_tolerance);
+}
+
 Result<std::uint64_t> validate_m2_delete_retrim_state(
     std::string_view json) {
     const auto phase = json_string(json, "phase");
@@ -1742,6 +1753,29 @@ public:
             return Result<M2BaselineComparisonEvidence>::failure(
                 after.error());
         }
+        constexpr std::uint64_t private_tolerance = 1ull << 20;
+        for (std::uint32_t retry = 0;
+             same_structural_inventory(before.inventory, after.value()) &&
+             m2_should_retry_process_resource_sample(
+                 before.inventory, after.value(), private_tolerance, retry);
+             ++retry) {
+            auto checked = check_operation_context(context);
+            if (!checked) {
+                return Result<M2BaselineComparisonEvidence>::failure(
+                    checked.error());
+            }
+            std::this_thread::sleep_for(50ms);
+            checked = check_operation_context(context);
+            if (!checked) {
+                return Result<M2BaselineComparisonEvidence>::failure(
+                    checked.error());
+            }
+            after = capture_inventory(aim_, context, service.value());
+            if (!after) {
+                return Result<M2BaselineComparisonEvidence>::failure(
+                    after.error());
+            }
+        }
         M2FinalBaselineComparison comparison;
         comparison.before = before.inventory;
         comparison.after = after.value();
@@ -1750,7 +1784,6 @@ public:
         comparison.diff = inventory_diff(before.inventory, after.value());
         comparison.exact_match = same_structural_inventory(
             before.inventory, after.value());
-        constexpr std::uint64_t private_tolerance = 1ull << 20;
         comparison.private_bytes_tolerance = private_tolerance;
         comparison.resources_within_tolerance =
             m2_process_resources_within_tolerance(

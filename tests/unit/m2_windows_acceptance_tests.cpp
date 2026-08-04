@@ -125,6 +125,30 @@ TEST_CASE(m2_service_restore_is_a_no_op_when_native_state_already_matches) {
         SERVICE_AUTO_START));
 }
 
+TEST_CASE(m2_final_resource_sampling_retries_only_bounded_growth) {
+    myrd::M2InventorySnapshot before;
+    before.process_handle_count = 119;
+    before.process_thread_count = 4;
+    before.process_private_bytes = 2ULL << 20U;
+    auto after = before;
+
+    REQUIRE(!myrd::m2_should_retry_process_resource_sample(
+        before, after, 1ULL << 20U, 0));
+
+    after.process_handle_count += 1;
+    REQUIRE(myrd::m2_should_retry_process_resource_sample(
+        before, after, 1ULL << 20U, 0));
+    REQUIRE(myrd::m2_should_retry_process_resource_sample(
+        before, after, 1ULL << 20U, 19));
+    REQUIRE(!myrd::m2_should_retry_process_resource_sample(
+        before, after, 1ULL << 20U, 20));
+
+    after = before;
+    after.process_thread_count -= 1;
+    REQUIRE(!myrd::m2_should_retry_process_resource_sample(
+        before, after, 1ULL << 20U, 0));
+}
+
 TEST_CASE(m2_real_normalizes_only_the_pinned_aim_descriptor_identity) {
     auto aim = myrd::normalize_m2_aim_descriptor_bus_type(
         6u, "Arsenal", "Virtual");
