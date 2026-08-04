@@ -310,15 +310,15 @@ $faultReport = Get-Content -Raw -LiteralPath $reportPath -Encoding utf8 | Conver
 $expectedPhase = $FailurePoint.ToUpperInvariant()
 Assert-M2Condition ([string]$faultReport.verdict -eq 'NO-GO') 'injected failure report did not fail closed'
 $matchingFailures = @($faultReport.failures | Where-Object {
-    [string]$_.phase -eq $expectedPhase -and
-    [string]$_.message -match 'injected acceptance failure'
+    [string]$_.failure_phase -eq $expectedPhase -and
+    [string]$_.failure_message -match 'injected acceptance failure'
 })
 Assert-M2Condition ($matchingFailures.Count -eq 1) 'injected failure was not observed at the requested phase'
 $matchingPhase = @($faultReport.phases | Where-Object {
     [string]$_.phase_id -eq $expectedPhase -and
-    [string]$_.phase_status -eq 'FAILED'
+    [string]$_.phase_status -eq 'FAIL'
 })
-Assert-M2Condition ($matchingPhase.Count -eq 1) 'requested injected phase was not recorded as FAILED'
+Assert-M2Condition ($matchingPhase.Count -eq 1) 'requested injected phase was not recorded as FAIL'
 
 $requiredCleanup = switch ($FailurePoint) {
     'capture-baseline' { @('RESTORE-SERVICE') }

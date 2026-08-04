@@ -105,15 +105,15 @@ function Assert-FaultCleanup {
     $expectedPhase = $FailurePoint.ToUpperInvariant()
     Require ([string]$Report.verdict -eq 'NO-GO') "fault report did not fail closed: $FailurePoint"
     $failures = @($Report.failures | Where-Object {
-        [string]$_.phase -eq $expectedPhase -and
-        [string]$_.message -match 'injected acceptance failure'
+        [string]$_.failure_phase -eq $expectedPhase -and
+        [string]$_.failure_message -match 'injected acceptance failure'
     })
     Require ($failures.Count -eq 1) "fault report does not prove the requested injection: $FailurePoint"
     $failedPhases = @($Report.phases | Where-Object {
         [string]$_.phase_id -eq $expectedPhase -and
-        [string]$_.phase_status -eq 'FAILED'
+        [string]$_.phase_status -eq 'FAIL'
     })
-    Require ($failedPhases.Count -eq 1) "fault phase is not FAILED: $FailurePoint"
+    Require ($failedPhases.Count -eq 1) "fault phase is not FAIL: $FailurePoint"
     $required = switch ($FailurePoint) {
         'capture-baseline' { @('RESTORE-SERVICE') }
         'construct-provider' { @('STOP-PROVIDER', 'RESTORE-SERVICE') }
