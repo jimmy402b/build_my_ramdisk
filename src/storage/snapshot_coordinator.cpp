@@ -619,9 +619,19 @@ SnapshotCoordinator::reserve_before_mutation(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 L"metadata-only pre-image unexpectedly owns payload bytes"));
     }
-    if (metadata.dirty_epoch == 0 ||
-        metadata.dirty_epoch > token.cutoff_dirty_epoch ||
-        metadata.base_generation > token.source_backing_generation) {
+    if (metadata.dirty_epoch == 0) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"snapshot member dirty epoch must be nonzero"));
+    }
+    if (metadata.base_generation > token.source_backing_generation) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"snapshot member base generation exceeds the cut"));
+    }
+    if (metadata.dirty_epoch > token.cutoff_dirty_epoch) {
         return Result<SnapshotMetadataReservation>::success(
             SnapshotMetadataReservation{
                 SnapshotPreimageDisposition::NotMember,

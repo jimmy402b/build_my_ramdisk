@@ -219,6 +219,11 @@ public:
         DynamicBlockStore& store,
         std::uint64_t block_index,
         DirtyRecordKind kind);
+    static bool set_dirty_snapshot_identity(
+        DynamicBlockStore& store,
+        std::uint64_t block_index,
+        std::uint64_t dirty_epoch,
+        BackingGeneration base_generation);
     static bool set_version(DynamicBlockStore& store,
                             std::uint64_t block_index,
                             std::uint64_t version);

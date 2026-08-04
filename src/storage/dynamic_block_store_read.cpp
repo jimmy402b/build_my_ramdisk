@@ -1138,6 +1138,27 @@ bool DynamicBlockStoreTestAccess::set_dirty_kind(
     return true;
 }
 
+bool DynamicBlockStoreTestAccess::set_dirty_snapshot_identity(
+    DynamicBlockStore& store,
+    std::uint64_t block_index,
+    std::uint64_t dirty_epoch,
+    BackingGeneration base_generation) {
+    auto* entry = store.directory_->find(block_index);
+    if (entry == nullptr) {
+        return false;
+    }
+    auto& stripe = store.stripes_->stripe_for(block_index);
+    std::scoped_lock lock(stripe.mutex);
+    if (entry->state != BlockState::ResidentDirty ||
+        entry->dirty_kind != DirtyRecordKind::Data ||
+        entry->pin_count != 0) {
+        return false;
+    }
+    entry->dirty_epoch = dirty_epoch;
+    entry->dirty_base_generation = base_generation;
+    return true;
+}
+
 bool DynamicBlockStoreTestAccess::set_version(
     DynamicBlockStore& store,
     std::uint64_t block_index,
