@@ -330,3 +330,65 @@ git diff --check
 
 Task 03 verdict: **DONE**. This is not an M2.1 or M3 GO verdict; Tasks 04–09
 remain required.
+
+## Task 04 DATA pre-image evidence — 2026-08-04
+
+| Item | Value |
+|---|---|
+| Implementation commits | `3e8b858`, `0ba4be5`, `e24cf89` |
+| Branch | `feature/m3-task04` |
+| Independent specification review | GO after one NO-GO repair cycle; P0=0, P1=0 |
+| Independent code-quality review | GO after test-cleanup repair; P0=0, P1=0 |
+
+### Accepted behavior
+
+- The first post-cut mutation of a member DATA block preserves exactly one
+  complete 64 KiB payload plus its 256-byte coordinator record before bytes,
+  version or dirty identity are published.
+- Resident partial/full writes, duplicate writes, a single cross-block write,
+  consumed members, clean backing-at-cut load/mutate, hard-limit rejection and
+  the short final logical block have deterministic reference-byte/hash tests.
+- A late cross-block budget failure preserves the existing M2 non-atomic write
+  contract: the completed first-block prefix has its correct pre-image, while
+  the rejected second block remains unchanged and the snapshot stays complete.
+- Zero dirty epochs and future backing generations fail closed as fatal
+  invariants. Budget exhaustion and cancellation during DATA reservation erase
+  the record and payload, restore accounting, and leave the foreground block
+  unchanged.
+- Concurrency tests unconditionally release barriers and join threads before
+  assertions, so a failed assertion cannot terminate or hang the test process.
+
+### Verification
+
+```powershell
+. .\tools\Enter-MsvcEnvironment.ps1
+cmake --build --preset release
+# passed
+
+1..100 | % { .\out\build\msvc\tests\Release\myrd_m2_consistent_snapshot_tests.exe }
+# 100/100 passed
+
+ctest --preset release -L m2.1-v2 --output-on-failure
+# 1/1 passed
+
+ctest --preset release -R '^unit\.m2\.(backing_store|read|limits|write|backing_generation|concurrency)$' --output-on-failure
+# 6/6 passed
+
+ctest --preset release --output-on-failure
+# 60/60 passed
+
+git diff --check
+# passed
+```
+
+### Recorded follow-up obligations
+
+- Task 05 owns the ZERO/DISCARD transition matrix.
+- Task 06 owns public bounded batch consumption and token completion.
+- Task 07 owns deterministic real `bad_alloc`, COW-full waiting, stripe release
+  and retry, stall timeout and automatic snapshot abort.
+- Copying 64 KiB while holding the coordinator mutex serializes first writes to
+  distinct member blocks; benchmark and optimize only after correctness gates.
+
+Task 04 verdict: **DONE**. This is not an M2.1 or M3 GO verdict; Tasks 05–09
+remain required.
