@@ -2807,15 +2807,18 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
         REQUIRE(cut_record.data.empty());
 
         myrd::DirtyScanCursor cursor{};
-        const auto copied = store->copy_dirty_batch(
-            bounded_context(), cursor, myrd::kBlockSizeBytes);
+        const auto copied = store->copy_consistent_snapshot_batch(
+            bounded_context(),
+            begun.value(),
+            cursor,
+            myrd::kBlockSizeBytes);
         REQUIRE(copied.ok());
         REQUIRE_EQ(copied.value().size(), 1ull);
         const auto record = copied.value().front();
-        REQUIRE_EQ(record.kind, kind);
+        REQUIRE_EQ(record.kind, cut_record.kind);
+        REQUIRE_EQ(record.version, cut_record.version);
         REQUIRE(record.data.empty());
-        REQUIRE(myrd::DynamicBlockStoreTestAccess::advance_snapshot_frontier(
-            *store, begun.value(), store->total_blocks()));
+        REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
 
         auto successor = myrd::test::FakeBackingStoreBuilder::successor_of(
                              *predecessor)
@@ -2835,18 +2838,8 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
         REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
             *store, 0, still_dirty));
         REQUIRE_EQ(still_dirty.state, myrd::BlockState::ZeroDirty);
-        REQUIRE_EQ(still_dirty.version, record.version);
-        REQUIRE_EQ(still_dirty.dirty_kind, record.kind);
-        REQUIRE(store->mark_persisted(
-            record.block_index,
-            record.version,
-            record.kind,
-            8).ok());
-        myrd::BlockEntry clean{};
-        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
-            *store, 0, clean));
-        REQUIRE_EQ(clean.state, myrd::BlockState::ZeroClean);
-        REQUIRE_EQ(clean.clean_generation, 8ull);
+        REQUIRE(still_dirty.version != record.version);
+        REQUIRE_EQ(still_dirty.dirty_kind, kind);
         const auto eviction =
             myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(*store, 0);
         REQUIRE_EQ(eviction.evicted_blocks, 0ull);
@@ -2861,5 +2854,432 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
                             }));
         REQUIRE_EQ(predecessor->total_load_count(), 0ull);
         REQUIRE_EQ(successor->total_load_count(), 0ull);
+        REQUIRE(store->finish_consistent_snapshot(begun.value()).ok());
     }
+}
+
+TEST_CASE(m2_1_task06_streams_one_exact_cut_in_ascending_batches) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 6, 7);
+    args.options.snapshot_cow_max_bytes =
+        2 * myrd::kMinimumSnapshotCowBytes;
+    auto store = require_store(std::move(args));
+    const auto cut_data = block_data(0x31);
+    publish_logical_kind(*store, LogicalDirtyKind::Data, 0, cut_data);
+    publish_logical_kind(*store, LogicalDirtyKind::Zero, 1, {});
+    publish_logical_kind(*store, LogicalDirtyKind::Discard, 2, {});
+
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 0, block_data(0x42));
+    publish_logical_kind(*store, LogicalDirtyKind::Zero, 2, {});
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 4, block_data(0x53));
+
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(copied.value().size(), 3ull);
+    REQUIRE_EQ(copied.value()[0].block_index, 0ull);
+    REQUIRE_EQ(copied.value()[0].kind, myrd::DirtyRecordKind::Data);
+    REQUIRE_EQ(copied.value()[0].data, as_vector(cut_data));
+    REQUIRE_EQ(copied.value()[1].block_index, 1ull);
+    REQUIRE_EQ(copied.value()[1].kind, myrd::DirtyRecordKind::Zero);
+    REQUIRE(copied.value()[1].data.empty());
+    REQUIRE_EQ(copied.value()[2].block_index, 2ull);
+    REQUIRE_EQ(copied.value()[2].kind, myrd::DirtyRecordKind::Discard);
+    REQUIRE(copied.value()[2].data.empty());
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+
+    const auto status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state,
+               myrd::ConsistentSnapshotState::FullyScanned);
+    REQUIRE_EQ(status.value().cow_bytes, 0ull);
+    REQUIRE_EQ(status.value().cow_records, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_consistent_batches_total, 1ull);
+    REQUIRE_EQ(store->stats().snapshot_consistent_records_total, 3ull);
+    REQUIRE(store->finish_consistent_snapshot(begun.value()).ok());
+
+    const auto stale_copy = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(!stale_copy.ok());
+    REQUIRE_EQ(error_code(stale_copy.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
+}
+
+TEST_CASE(m2_1_task06_cursor_and_payload_limits_never_duplicate_or_skip) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 4, 7));
+    const auto first_data = block_data(0x61);
+    const auto second_data = block_data(0x72);
+    publish_logical_kind(*store, LogicalDirtyKind::Data, 0, first_data);
+    publish_logical_kind(*store, LogicalDirtyKind::Data, 2, second_data);
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+
+    myrd::DirtyScanCursor wrong_cursor{1};
+    const auto rejected = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        wrong_cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(!rejected.ok());
+    REQUIRE_EQ(error_code(rejected.error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::invalid_range));
+    REQUIRE_EQ(wrong_cursor.next_block_index, 1ull);
+
+    myrd::DirtyScanCursor cursor{};
+    const auto first = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(first.ok());
+    REQUIRE_EQ(first.value().size(), 1ull);
+    REQUIRE_EQ(first.value().front().block_index, 0ull);
+    REQUIRE_EQ(first.value().front().data, as_vector(first_data));
+    REQUIRE_EQ(cursor.next_block_index, 2ull);
+
+    const auto second = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(second.ok());
+    REQUIRE_EQ(second.value().size(), 1ull);
+    REQUIRE_EQ(second.value().front().block_index, 2ull);
+    REQUIRE_EQ(second.value().front().data, as_vector(second_data));
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+    REQUIRE(store->finish_consistent_snapshot(begun.value()).ok());
+}
+
+TEST_CASE(m2_1_task06_final_short_data_block_is_zero_padded) {
+    auto options = valid_options();
+    auto store = require_store(myrd::DynamicBlockStoreCreateArgs{
+        myrd::kBlockSizeBytes + 512,
+        512,
+        options,
+        myrd::InitialBlockState::CleanZero,
+        {},
+        7,
+    });
+    std::array<std::byte, 512> tail{};
+    std::fill(tail.begin(), tail.end(), std::byte{0xA7});
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, tail).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(copied.value().size(), 1ull);
+    REQUIRE_EQ(copied.value().front().block_index, 1ull);
+    REQUIRE_EQ(copied.value().front().data.size(),
+               static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(std::all_of(
+        copied.value().front().data.begin(),
+        copied.value().front().data.begin() + 512,
+        [](std::byte value) { return value == std::byte{0xA7}; }));
+    REQUIRE(std::all_of(
+        copied.value().front().data.begin() + 512,
+        copied.value().front().data.end(),
+        [](std::byte value) { return value == std::byte{0}; }));
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+}
+
+TEST_CASE(m2_1_task06_returns_safe_partial_then_surfaces_cancellation) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 4, 7));
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 0, block_data(0x81));
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 1, block_data(0x92));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        pause_consistent_snapshot_after_first_record(*store));
+
+    std::stop_source stop;
+    myrd::DirtyScanCursor cursor{};
+    std::optional<myrd::Result<std::vector<myrd::DirtyBlockSnapshot>>> copied;
+    std::thread reader([&] {
+        copied.emplace(store->copy_consistent_snapshot_batch(
+            {stop.get_token(),
+             std::chrono::steady_clock::now() + std::chrono::seconds(5)},
+            begun.value(),
+            cursor,
+            2 * myrd::kBlockSizeBytes));
+    });
+    REQUIRE(wait_until([&] {
+        return myrd::DynamicBlockStoreTestAccess::
+            consistent_snapshot_record_staged(*store);
+    }));
+    stop.request_stop();
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        release_consistent_snapshot_record_pause(*store));
+    reader.join();
+
+    REQUIRE(copied.has_value());
+    REQUIRE(copied->ok());
+    REQUIRE_EQ(copied->value().size(), 1ull);
+    REQUIRE_EQ(copied->value().front().block_index, 0ull);
+    REQUIRE_EQ(cursor.next_block_index, 1ull);
+    const auto before_retry = cursor.next_block_index;
+    const auto cancelled = store->copy_consistent_snapshot_batch(
+        {stop.get_token(),
+         std::chrono::steady_clock::now() + std::chrono::seconds(5)},
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(!cancelled.ok());
+    REQUIRE_EQ(error_code(cancelled.error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(cursor.next_block_index, before_retry);
+}
+
+TEST_CASE(m2_1_task06_pre_first_record_cancellation_has_zero_progress) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 3, 7));
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 2, block_data(0xA3));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    std::stop_source stop;
+    stop.request_stop();
+    myrd::DirtyScanCursor cursor{};
+
+    const auto cancelled = store->copy_consistent_snapshot_batch(
+        {stop.get_token(),
+         std::chrono::steady_clock::now() + std::chrono::seconds(5)},
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(!cancelled.ok());
+    REQUIRE_EQ(error_code(cancelled.error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(cursor.next_block_index, 0ull);
+    const auto status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state, myrd::ConsistentSnapshotState::Active);
+}
+
+TEST_CASE(m2_1_task06_record_limit_and_public_abort_are_exact) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 3, 7);
+    args.options.max_snapshot_batch_records = 1;
+    auto store = require_store(std::move(args));
+    publish_logical_kind(*store, LogicalDirtyKind::Zero, 0, {});
+    publish_logical_kind(*store, LogicalDirtyKind::Discard, 1, {});
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+
+    myrd::DirtyScanCursor cursor{};
+    const auto first = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(first.ok());
+    REQUIRE_EQ(first.value().size(), 1ull);
+    REQUIRE_EQ(first.value().front().block_index, 0ull);
+    REQUIRE_EQ(cursor.next_block_index, 1ull);
+    REQUIRE(store->abort_consistent_snapshot(begun.value()).ok());
+
+    const auto duplicate = store->abort_consistent_snapshot(begun.value());
+    REQUIRE(!duplicate.ok());
+    REQUIRE_EQ(error_code(duplicate.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
+    const auto stale_status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(!stale_status.ok());
+    REQUIRE_EQ(error_code(stale_status.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
+
+    const auto second_begin =
+        store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(second_begin.ok());
+    REQUIRE(second_begin.value().snapshot_id > begun.value().snapshot_id);
+}
+
+TEST_CASE(m2_1_task06_blocks_publication_until_the_cut_is_fully_scanned) {
+    auto predecessor = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(predecessor, 2, 7));
+    publish_logical_kind(*store, LogicalDirtyKind::Zero, 0, {});
+    myrd::BlockEntry cut{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, cut));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+
+    const auto early_ack = store->mark_persisted(
+        0, cut.version, cut.dirty_kind, 8);
+    REQUIRE(!early_ack.ok());
+    REQUIRE_EQ(error_code(early_ack.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+    auto successor = myrd::test::FakeBackingStoreBuilder::successor_of(
+                         *predecessor)
+                         .all_zero_block(0)
+                         .build();
+    const auto early_install = store->install_backing_view({8, successor});
+    REQUIRE(!early_install.ok());
+    REQUIRE_EQ(error_code(early_install.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+
+    const auto early_finish = store->finish_consistent_snapshot(begun.value());
+    REQUIRE(!early_finish.ok());
+    REQUIRE_EQ(error_code(early_finish.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       SnapshotNotFullyScanned));
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(copied.value().size(), 1ull);
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+    REQUIRE(store->install_backing_view({8, successor}).ok());
+    REQUIRE(store->mark_persisted(
+        copied.value().front().block_index,
+        copied.value().front().version,
+        copied.value().front().kind,
+        8).ok());
+    REQUIRE(store->finish_consistent_snapshot(begun.value()).ok());
+    const auto duplicate_abort = store->abort_consistent_snapshot(begun.value());
+    REQUIRE(!duplicate_abort.ok());
+    REQUIRE_EQ(error_code(duplicate_abort.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
+}
+
+TEST_CASE(m2_1_task06_ack_rechecks_the_cutoff_dirty_epoch) {
+    auto predecessor = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(predecessor, 2, 7));
+    publish_logical_kind(*store, LogicalDirtyKind::Zero, 0, {});
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(copied.value().size(), 1ull);
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::set_dirty_snapshot_identity(
+        *store,
+        0,
+        begun.value().cutoff_dirty_epoch + 1,
+        copied.value().front().base_generation));
+
+    auto successor = myrd::test::FakeBackingStoreBuilder::successor_of(
+                         *predecessor)
+                         .all_zero_block(0)
+                         .build();
+    REQUIRE(store->install_backing_view({8, successor}).ok());
+    const auto rejected = store->mark_persisted(
+        copied.value().front().block_index,
+        copied.value().front().version,
+        copied.value().front().kind,
+        8);
+    REQUIRE(!rejected.ok());
+    REQUIRE_EQ(error_code(rejected.error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::version_changed));
+    myrd::BlockEntry still_dirty{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, still_dirty));
+    REQUIRE_EQ(still_dirty.state, myrd::BlockState::ZeroDirty);
+}
+
+TEST_CASE(m2_1_task06_scan_fails_closed_on_invalid_dirty_identity) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    publish_logical_kind(*store, LogicalDirtyKind::Zero, 0, {});
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::set_dirty_snapshot_identity(
+        *store, 0, 0, 7));
+    myrd::DirtyScanCursor cursor{};
+
+    const auto rejected = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(!rejected.ok());
+    REQUIRE_EQ(error_code(rejected.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       FatalInternalInvariant));
+    REQUIRE_EQ(cursor.next_block_index, 0ull);
+    const auto status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state, myrd::ConsistentSnapshotState::Active);
+}
+
+TEST_CASE(m2_1_task06_sparse_scan_does_not_walk_one_tibibyte_of_blocks) {
+    constexpr std::uint64_t kLogicalBytes = 1ull << 40;
+    auto options = valid_options();
+    auto store = require_store(myrd::DynamicBlockStoreCreateArgs{
+        kLogicalBytes,
+        512,
+        options,
+        myrd::InitialBlockState::CleanZero,
+        {},
+        7,
+    });
+    const auto dirty_block = store->total_blocks() - 1;
+    const auto dirty_offset = dirty_block * myrd::kBlockSizeBytes;
+    REQUIRE(store->write(
+        bounded_context(), dirty_offset, block_data(0xB4)).ok());
+    const auto leaves_before = myrd::DynamicBlockStoreTestAccess::
+        allocated_leaf_count(*store);
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    myrd::DynamicBlockStoreTestAccess::reset_consistent_snapshot_scan_visits(
+        *store);
+
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(copied.value().size(), 1ull);
+    REQUIRE_EQ(copied.value().front().block_index, dirty_block);
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+    REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::allocated_leaf_count(*store),
+               leaves_before);
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        consistent_snapshot_entry_visits(*store) <=
+        myrd::kBlocksPerLeaf);
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        consistent_snapshot_leaf_slot_visits(*store) <
+        store->total_blocks() / 100);
 }

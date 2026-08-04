@@ -2,8 +2,10 @@
 
 #include "block_directory.h"
 #include "dynamic_block_store_internal.h"
+#include "snapshot_coordinator.h"
 #include "src/common/scope_exit.h"
 
+#include <chrono>
 #include <limits>
 #include <string>
 #include <utility>
@@ -76,6 +78,29 @@ Result<void> DynamicBlockStore::install_backing_view(
     }
     ScopeExit leave([this, &request]() { leave_request(request); });
 
+    MutationToken snapshot_sensitive_operation;
+    const auto admitted = enter_mutation(
+        OperationContext{
+            close_stop_source_.get_token(),
+            std::chrono::steady_clock::time_point::max()},
+        snapshot_sensitive_operation);
+    if (!admitted.ok()) {
+        return admitted;
+    }
+    ScopeExit leave_snapshot_sensitive_operation(
+        [this, &snapshot_sensitive_operation]() noexcept {
+            leave_mutation(snapshot_sensitive_operation);
+        });
+    const auto snapshot = snapshot_coordinator_->snapshot();
+    if (snapshot.active_token.has_value() &&
+        snapshot.active_state != ConsistentSnapshotState::FullyScanned) {
+        return Result<void>::failure(backing_error(
+            static_cast<std::uint32_t>(
+                DynamicBlockStoreErrorCode::SnapshotBusy),
+            L"DynamicBlockStore::install_backing_view",
+            L"backing publication is blocked until the snapshot is fully scanned"));
+    }
+
     BackingView retired_view;
     {
         std::unique_lock lock(state_mutex_);
@@ -124,6 +149,29 @@ Result<void> DynamicBlockStore::mark_persisted(
     }
     ScopeExit leave([this, &request]() { leave_request(request); });
 
+    MutationToken snapshot_sensitive_operation;
+    const auto admitted = enter_mutation(
+        OperationContext{
+            close_stop_source_.get_token(),
+            std::chrono::steady_clock::time_point::max()},
+        snapshot_sensitive_operation);
+    if (!admitted.ok()) {
+        return admitted;
+    }
+    ScopeExit leave_snapshot_sensitive_operation(
+        [this, &snapshot_sensitive_operation]() noexcept {
+            leave_mutation(snapshot_sensitive_operation);
+        });
+    const auto snapshot = snapshot_coordinator_->snapshot();
+    if (snapshot.active_token.has_value() &&
+        snapshot.active_state != ConsistentSnapshotState::FullyScanned) {
+        return Result<void>::failure(backing_error(
+            static_cast<std::uint32_t>(
+                DynamicBlockStoreErrorCode::SnapshotBusy),
+            L"DynamicBlockStore::mark_persisted",
+            L"acknowledgement is blocked until the snapshot is fully scanned"));
+    }
+
     if (block_index >= geometry_.total_blocks) {
         return Result<void>::failure(backing_error(
             static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
@@ -165,13 +213,18 @@ Result<void> DynamicBlockStore::mark_persisted(
 
     const bool resident_dirty = entry->state == BlockState::ResidentDirty;
     const bool zero_dirty = entry->state == BlockState::ZeroDirty;
+    const bool snapshot_epoch_changed =
+        snapshot.active_token.has_value() &&
+        entry->dirty_epoch >
+            snapshot.active_token->cutoff_dirty_epoch;
     if ((!resident_dirty && !zero_dirty) ||
         entry->version != expected_version ||
-        entry->dirty_kind != expected_kind) {
+        entry->dirty_kind != expected_kind ||
+        snapshot_epoch_changed) {
         std::scoped_lock state_lock(state_mutex_);
         ++stats_.snapshot_version_conflicts;
         return Result<void>::failure(version_conflict(
-            L"dirty state, version, or record kind changed"));
+            L"dirty state, version, record kind, or snapshot epoch changed"));
     }
 
     bool test_transition_active = false;

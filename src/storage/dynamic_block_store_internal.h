@@ -245,6 +245,20 @@ public:
         const DynamicBlockStore& store) noexcept;
     static bool release_persisted_ack_gap(
         DynamicBlockStore& store) noexcept;
+    static bool pause_consistent_snapshot_after_first_record(
+        DynamicBlockStore& store) noexcept;
+    static bool consistent_snapshot_record_staged(
+        const DynamicBlockStore& store) noexcept;
+    static bool release_consistent_snapshot_record_pause(
+        DynamicBlockStore& store) noexcept;
+    static void reset_consistent_snapshot_scan_visits(
+        DynamicBlockStore& store) noexcept;
+    static std::uint64_t consistent_snapshot_entry_visits(
+        const DynamicBlockStore& store) noexcept;
+    static std::uint64_t consistent_snapshot_leaf_slot_visits(
+        const DynamicBlockStore& store) noexcept;
+    static std::uint64_t allocated_leaf_count(
+        const DynamicBlockStore& store) noexcept;
     static EvictionPassResult run_eviction_sweep(
         DynamicBlockStore& store,
         std::uint64_t target_bytes);

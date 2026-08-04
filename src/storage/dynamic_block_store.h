@@ -283,6 +283,11 @@ private:
     std::atomic<bool> snapshot_pin_gap_reached_for_test_{};
     std::atomic<bool> persisted_ack_pause_for_test_{};
     std::atomic<bool> persisted_ack_gap_reached_for_test_{};
+    std::atomic<bool> consistent_snapshot_record_pause_for_test_{};
+    std::atomic<bool> consistent_snapshot_record_staged_for_test_{};
+    std::atomic<bool> consistent_snapshot_scan_counting_for_test_{};
+    std::atomic<std::uint64_t> consistent_snapshot_entry_visits_for_test_{};
+    std::atomic<std::uint64_t> consistent_snapshot_leaf_slot_visits_for_test_{};
 
     static thread_local RequestToken* current_request_token_;
 };
