@@ -188,7 +188,10 @@ Require ([IO.File]::Exists($script:ExecutableFull)) "M2 executable not found: $s
 $evidenceBaseFull = [IO.Path]::GetFullPath($EvidenceBase)
 Require ([IO.Directory]::Exists($evidenceBaseFull)) 'EvidenceBase must already exist'
 Require (((Get-Item -LiteralPath $evidenceBaseFull -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'EvidenceBase must not be a reparse point'
-$script:RunDirectory = [IO.Path]::GetFullPath((Join-Path $evidenceBaseFull ("$($Tier.ToLower())-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fffffff') + '-' + [Guid]::NewGuid().ToString('N'))))
+$runSuffix = [Guid]::NewGuid().ToString('N').Substring(0, 12)
+$runName = "$($Tier.ToLower())-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$runSuffix"
+$script:RunDirectory = [IO.Path]::GetFullPath((Join-Path $evidenceBaseFull $runName))
+Require (-not [IO.Directory]::Exists($script:RunDirectory)) 'generated Task 22 evidence directory already exists'
 [IO.Directory]::CreateDirectory($script:RunDirectory) | Out-Null
 $candidateHash = (Get-FileHash -LiteralPath $script:ExecutableFull -Algorithm SHA256).Hash
 $gitCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -237,7 +240,7 @@ if ($Tier -eq 'M2-V6') {
     $index = 0
     foreach ($point in $faultPoints) {
         $index++
-        $childDirectory = Join-Path $script:RunDirectory ('fault-{0:D2}-{1}' -f $index, $point)
+        $childDirectory = Join-Path $script:RunDirectory ('f{0:D2}' -f $index)
         $entry = Invoke-M2Child -ChildDirectory $childDirectory -FailurePoint $point
         $entry | Add-Member -NotePropertyName failure_point -NotePropertyValue $point
         $faults += $entry
@@ -264,7 +267,7 @@ if ($Tier -eq 'M2-V6') {
 $cycles = @()
 for ($index = 1; $index -le 20; $index++) {
     Write-Output "--- M2-V7 cycle $index/20 ---"
-    $childDirectory = Join-Path $script:RunDirectory ('cycle-{0:D2}' -f $index)
+    $childDirectory = Join-Path $script:RunDirectory ('c{0:D2}' -f $index)
     $entry = Invoke-M2Child -ChildDirectory $childDirectory
     $entry | Add-Member -NotePropertyName cycle_index -NotePropertyValue $index
     $cycles += $entry
