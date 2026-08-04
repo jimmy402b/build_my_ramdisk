@@ -1,11 +1,19 @@
 #include "block_directory.h"
 
+#include <algorithm>
 #include <limits>
 #include <new>
 
 namespace myrd {
 
 namespace {
+
+BlockLeaf* publishing_leaf_marker() noexcept {
+    // A real BlockLeaf is naturally aligned and can never equal address 1.
+    // The marker prevents a caller from observing a published slot before
+    // the same leaf is visible in the ordered sparse index.
+    return reinterpret_cast<BlockLeaf*>(static_cast<std::uintptr_t>(1));
+}
 
 bool is_known_block_state(BlockState state) noexcept {
     switch (state) {
@@ -123,6 +131,7 @@ BlockDirectory::BlockDirectory(
     InitialBlockState initial_state,
     BackingGeneration initial_generation,
     std::unique_ptr<std::atomic<BlockLeaf*>[]> slots,
+    std::vector<std::uint64_t> allocated_leaf_indices,
     std::shared_ptr<IBlockLeafPublicationObserver>
         publication_observer) noexcept
     : block_count_(block_count),
@@ -132,6 +141,7 @@ BlockDirectory::BlockDirectory(
       initial_entry_(make_validated_initial_block_entry(
           initial_state, initial_generation)),
       slots_(std::move(slots)),
+      allocated_leaf_indices_(std::move(allocated_leaf_indices)),
       publication_observer_(std::move(publication_observer)) {}
 
 BlockDirectory::CreateResult BlockDirectory::create(
@@ -152,8 +162,13 @@ BlockDirectory::CreateResult BlockDirectory::create(
         (block_count / kBlocksPerLeaf) +
         ((block_count % kBlocksPerLeaf) == 0 ? 0ull : 1ull);
     constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
+    constexpr auto kMetadataBytesPerSlot =
+        sizeof(std::atomic<BlockLeaf*>) + sizeof(std::uint64_t);
     if (slot_count > kMaxSize ||
-        slot_count > kMaxSize / sizeof(std::atomic<BlockLeaf*>)) {
+        slot_count > kMaxSize / sizeof(std::atomic<BlockLeaf*>) ||
+        slot_count > kMaxSize / sizeof(std::uint64_t) ||
+        slot_count > (std::numeric_limits<std::uint64_t>::max)() /
+                         kMetadataBytesPerSlot) {
         return CreateResult::failure(BlockDirectoryError::AllocationFailed);
     }
 
@@ -168,6 +183,12 @@ BlockDirectory::CreateResult BlockDirectory::create(
             slots[static_cast<std::size_t>(index)].store(
                 nullptr, std::memory_order_relaxed);
         }
+        std::vector<std::uint64_t> allocated_leaf_indices;
+        // Reserve the exact upper bound before any leaf can be published.
+        // Ordered index insertion is then non-allocating and cannot strand a
+        // publication marker after the leaf slot has been claimed.
+        allocated_leaf_indices.reserve(
+            static_cast<std::size_t>(slot_count));
 
         auto directory = std::unique_ptr<BlockDirectory>(new (std::nothrow)
             BlockDirectory(block_count,
@@ -175,6 +196,7 @@ BlockDirectory::CreateResult BlockDirectory::create(
                            initial_state,
                            initial_generation,
                            std::move(slots),
+                           std::move(allocated_leaf_indices),
                            std::move(publication_observer)));
         if (!directory) {
             return CreateResult::failure(BlockDirectoryError::AllocationFailed);
@@ -193,8 +215,13 @@ BlockDirectory::~BlockDirectory() {
 }
 
 BlockLeaf* BlockDirectory::load_leaf(std::uint64_t leaf_index) const noexcept {
-    return slots_[static_cast<std::size_t>(leaf_index)].load(
-        std::memory_order_acquire);
+    auto& slot = slots_[static_cast<std::size_t>(leaf_index)];
+    auto* leaf = slot.load(std::memory_order_acquire);
+    while (leaf == publishing_leaf_marker()) {
+        slot.wait(leaf, std::memory_order_acquire);
+        leaf = slot.load(std::memory_order_acquire);
+    }
+    return leaf;
 }
 
 BlockEntry* BlockDirectory::find(std::uint64_t block_index) noexcept {
@@ -223,6 +250,24 @@ const BlockLeaf* BlockDirectory::allocated_leaf_at(
     return load_leaf(leaf_index);
 }
 
+std::optional<AllocatedBlockLeaf>
+BlockDirectory::next_allocated_leaf_at_or_after(
+    std::uint64_t leaf_index) const noexcept {
+    std::scoped_lock lock(allocated_leaves_mutex_);
+    const auto found = std::lower_bound(
+        allocated_leaf_indices_.begin(),
+        allocated_leaf_indices_.end(),
+        leaf_index);
+    if (found == allocated_leaf_indices_.end()) {
+        return std::nullopt;
+    }
+    auto* const leaf = load_leaf(*found);
+    if (leaf == nullptr) {
+        std::terminate();
+    }
+    return AllocatedBlockLeaf{*found, leaf};
+}
+
 BlockDirectory::AccessResult BlockDirectory::get_or_create(
     std::uint64_t block_index) noexcept {
     if (block_index >= block_count_) {
@@ -239,18 +284,36 @@ BlockDirectory::AccessResult BlockDirectory::get_or_create(
         }
 
         BlockLeaf* expected = nullptr;
+        auto& slot = slots_[static_cast<std::size_t>(leaf_index)];
+        auto* const publishing = publishing_leaf_marker();
+        const bool owns_publication = slot.compare_exchange_strong(
+            expected,
+            publishing,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire);
+        if (owns_publication) {
+            leaf = candidate.release();
+        }
         if (publication_observer_) {
             publication_observer_->before_publish(leaf_index);
         }
-        if (slots_[static_cast<std::size_t>(leaf_index)]
-                .compare_exchange_strong(expected,
-                                         candidate.get(),
-                                         std::memory_order_release,
-                                         std::memory_order_acquire)) {
-            leaf = candidate.release();
-            allocated_leaf_count_.fetch_add(1, std::memory_order_relaxed);
+        if (owns_publication) {
+            {
+                std::scoped_lock lock(allocated_leaves_mutex_);
+                const auto insertion = std::lower_bound(
+                    allocated_leaf_indices_.begin(),
+                    allocated_leaf_indices_.end(),
+                    leaf_index);
+                allocated_leaf_indices_.insert(insertion, leaf_index);
+                allocated_leaf_count_.fetch_add(
+                    1, std::memory_order_relaxed);
+                slot.store(leaf, std::memory_order_release);
+            }
+            slot.notify_all();
         } else {
-            leaf = expected;
+            leaf = expected == publishing
+                ? load_leaf(leaf_index)
+                : expected;
         }
         if (publication_observer_) {
             publication_observer_->after_publish(leaf_index);

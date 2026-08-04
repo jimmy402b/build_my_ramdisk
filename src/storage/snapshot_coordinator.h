@@ -133,9 +133,12 @@ public:
 
     std::optional<SnapshotPreimage> peek_preimage(
         std::uint64_t block_index) const;
+    std::optional<SnapshotPreimage> peek_preimage_metadata(
+        std::uint64_t block_index) const;
 
     Result<void> advance_scan_frontier(
         const ConsistentSnapshotToken& token,
+        std::uint64_t expected_scan_block,
         std::uint64_t next_scan_block,
         std::uint64_t total_blocks);
 

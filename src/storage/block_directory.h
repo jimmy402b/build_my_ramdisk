@@ -8,6 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <vector>
 
 namespace myrd {
 
@@ -39,6 +42,11 @@ struct BlockLeaf final {
     }
 
     std::array<BlockEntry, kBlocksPerLeaf> entries;
+};
+
+struct AllocatedBlockLeaf final {
+    std::uint64_t leaf_index{};
+    BlockLeaf* leaf{};
 };
 
 enum class BlockDirectoryError : std::uint8_t {
@@ -79,6 +87,11 @@ public:
     // of walking every logical block in a sparse store.
     const BlockLeaf* allocated_leaf_at(
         std::uint64_t leaf_index) const noexcept;
+    // Returns a stable leaf pointer after releasing the index mutex. Leaves
+    // never disappear, so callers must not hold this mutex while taking a
+    // block stripe.
+    std::optional<AllocatedBlockLeaf> next_allocated_leaf_at_or_after(
+        std::uint64_t leaf_index) const noexcept;
 
     std::uint64_t block_count() const noexcept { return block_count_; }
     std::uint64_t top_level_slot_count() const noexcept {
@@ -88,7 +101,8 @@ public:
         return allocated_leaf_count_.load(std::memory_order_relaxed);
     }
     std::uint64_t initial_metadata_bytes() const noexcept {
-        return top_level_slot_count_ * sizeof(std::atomic<BlockLeaf*>);
+        return top_level_slot_count_ *
+               (sizeof(std::atomic<BlockLeaf*>) + sizeof(std::uint64_t));
     }
     InitialBlockState initial_state() const noexcept { return initial_state_; }
     BackingGeneration initial_generation() const noexcept {
@@ -102,6 +116,7 @@ private:
         InitialBlockState initial_state,
         BackingGeneration initial_generation,
         std::unique_ptr<std::atomic<BlockLeaf*>[]> slots,
+        std::vector<std::uint64_t> allocated_leaf_indices,
         std::shared_ptr<IBlockLeafPublicationObserver>
             publication_observer) noexcept;
 
@@ -113,6 +128,8 @@ private:
     BackingGeneration initial_generation_{};
     BlockEntry initial_entry_{};
     std::unique_ptr<std::atomic<BlockLeaf*>[]> slots_;
+    mutable std::mutex allocated_leaves_mutex_;
+    std::vector<std::uint64_t> allocated_leaf_indices_;
     std::shared_ptr<IBlockLeafPublicationObserver> publication_observer_;
     std::atomic<std::uint64_t> allocated_leaf_count_{0};
 };

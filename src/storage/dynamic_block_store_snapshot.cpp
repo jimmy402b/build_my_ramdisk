@@ -440,6 +440,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 operation,
                 L"snapshot was aborted"));
     }
+    const auto expected_frontier = coordinator.next_scan_block;
 
     const auto configured_bytes = static_cast<std::size_t>(
         (std::min)(options_.max_snapshot_batch_bytes,
@@ -450,15 +451,18 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
     auto scan_index = cursor.next_block_index;
     std::size_t payload_bytes = 0;
     std::vector<DirtyBlockSnapshot> records;
+    std::uint64_t cached_leaf_index =
+        (std::numeric_limits<std::uint64_t>::max)();
+    BlockLeaf* cached_leaf = nullptr;
 
     const auto pause_after_staging = [this]() noexcept {
         if (!consistent_snapshot_record_pause_for_test_.load(
                 std::memory_order_acquire)) {
             return;
         }
-        consistent_snapshot_record_staged_for_test_.store(
-            true, std::memory_order_release);
-        consistent_snapshot_record_staged_for_test_.notify_all();
+        consistent_snapshot_records_staged_for_test_.fetch_add(
+            1, std::memory_order_release);
+        consistent_snapshot_records_staged_for_test_.notify_all();
         consistent_snapshot_record_pause_for_test_.wait(
             true, std::memory_order_acquire);
     };
@@ -489,23 +493,30 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
             const bool count_scan_visits =
                 consistent_snapshot_scan_counting_for_test_.load(
                     std::memory_order_relaxed);
-            if (count_scan_visits) {
-                consistent_snapshot_leaf_slot_visits_for_test_.fetch_add(
-                    1, std::memory_order_relaxed);
-            }
-            if (directory_->allocated_leaf_at(leaf_index) == nullptr) {
+            if (cached_leaf == nullptr ||
+                cached_leaf_index != leaf_index) {
+                if (count_scan_visits) {
+                    consistent_snapshot_leaf_slot_visits_for_test_.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
                 const auto next_leaf =
-                    (leaf_index + 1) * kBlocksPerLeaf;
-                scan_index = (std::min)(geometry_.total_blocks, next_leaf);
-                continue;
+                    directory_->next_allocated_leaf_at_or_after(leaf_index);
+                if (!next_leaf.has_value()) {
+                    scan_index = geometry_.total_blocks;
+                    continue;
+                }
+                cached_leaf_index = next_leaf->leaf_index;
+                cached_leaf = next_leaf->leaf;
+                if (cached_leaf_index != leaf_index) {
+                    scan_index = (std::min)(
+                        geometry_.total_blocks,
+                        cached_leaf_index * kBlocksPerLeaf);
+                    continue;
+                }
             }
 
-            auto* entry = directory_->find(scan_index);
-            if (entry == nullptr) {
-                return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    consistent_snapshot_invariant(
-                        L"allocated leaf disappeared during consistent scan"));
-            }
+            auto* entry = &cached_leaf->entries[static_cast<std::size_t>(
+                block_entry_index(scan_index))];
             if (count_scan_visits) {
                 consistent_snapshot_entry_visits_for_test_.fetch_add(
                     1, std::memory_order_relaxed);
@@ -566,8 +577,31 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     consistent_snapshot_invariant(L"unknown block state"));
             }
 
-            auto preimage = snapshot_coordinator_->peek_preimage(scan_index);
+            const auto preimage_metadata =
+                snapshot_coordinator_->peek_preimage_metadata(scan_index);
+            if (preimage_metadata.has_value() &&
+                preimage_metadata->kind == DirtyRecordKind::Data &&
+                payload_limit - payload_bytes < kBlockSizeBytes) {
+                break;
+            }
+            auto preimage = preimage_metadata.has_value()
+                ? snapshot_coordinator_->peek_preimage(scan_index)
+                : std::nullopt;
+            if (preimage_metadata.has_value() && !preimage.has_value()) {
+                return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
+                    consistent_snapshot_error(
+                        DynamicBlockStoreErrorCode::SnapshotBusy,
+                        operation,
+                        L"snapshot frontier changed while a pre-image was staged"));
+            }
             if (preimage.has_value()) {
+                if (!preimage->data.empty() &&
+                    consistent_snapshot_payload_copy_counting_for_test_.load(
+                        std::memory_order_relaxed)) {
+                    consistent_snapshot_payload_copy_bytes_for_test_.fetch_add(
+                        static_cast<std::uint64_t>(preimage->data.size()),
+                        std::memory_order_relaxed);
+                }
                 const bool valid_kind =
                     preimage->kind == DirtyRecordKind::Data ||
                     preimage->kind == DirtyRecordKind::Zero ||
@@ -587,10 +621,6 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                         std::vector<DirtyBlockSnapshot>>(
                         consistent_snapshot_invariant(
                             L"snapshot pre-image has an invalid payload"));
-                }
-                if (preimage->kind == DirtyRecordKind::Data &&
-                    payload_limit - payload_bytes < kBlockSizeBytes) {
-                    break;
                 }
                 DirtyBlockSnapshot record{
                     preimage->block_index,
@@ -758,7 +788,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 L"dynamic block store is closing"));
     }
     const auto advanced = snapshot_coordinator_->advance_scan_frontier(
-        token, scan_index, geometry_.total_blocks);
+        token, expected_frontier, scan_index, geometry_.total_blocks);
     if (!advanced.ok()) {
         return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
             advanced.error());
@@ -844,15 +874,21 @@ bool DynamicBlockStoreTestAccess::release_snapshot_pin_gap(
 bool DynamicBlockStoreTestAccess::
 pause_consistent_snapshot_after_first_record(
     DynamicBlockStore& store) noexcept {
-    store.consistent_snapshot_record_staged_for_test_.store(
-        false, std::memory_order_release);
+    store.consistent_snapshot_records_staged_for_test_.store(
+        0, std::memory_order_release);
     return !store.consistent_snapshot_record_pause_for_test_.exchange(
         true, std::memory_order_acq_rel);
 }
 
 bool DynamicBlockStoreTestAccess::consistent_snapshot_record_staged(
     const DynamicBlockStore& store) noexcept {
-    return store.consistent_snapshot_record_staged_for_test_.load(
+    return consistent_snapshot_records_staged(store) != 0;
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::
+consistent_snapshot_records_staged(
+    const DynamicBlockStore& store) noexcept {
+    return store.consistent_snapshot_records_staged_for_test_.load(
         std::memory_order_acquire);
 }
 
@@ -890,6 +926,22 @@ consistent_snapshot_leaf_slot_visits(
         std::memory_order_relaxed);
 }
 
+void DynamicBlockStoreTestAccess::
+reset_consistent_snapshot_payload_copy_bytes(
+    DynamicBlockStore& store) noexcept {
+    store.consistent_snapshot_payload_copy_bytes_for_test_.store(
+        0, std::memory_order_relaxed);
+    store.consistent_snapshot_payload_copy_counting_for_test_.store(
+        true, std::memory_order_relaxed);
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::
+consistent_snapshot_payload_copy_bytes(
+    const DynamicBlockStore& store) noexcept {
+    return store.consistent_snapshot_payload_copy_bytes_for_test_.load(
+        std::memory_order_relaxed);
+}
+
 std::uint64_t DynamicBlockStoreTestAccess::allocated_leaf_count(
     const DynamicBlockStore& store) noexcept {
     return store.directory_->allocated_leaf_count();
@@ -917,8 +969,10 @@ bool DynamicBlockStoreTestAccess::advance_snapshot_frontier(
     DynamicBlockStore& store,
     const ConsistentSnapshotToken& token,
     std::uint64_t next_scan_block) {
+    const auto expected =
+        store.snapshot_coordinator_->snapshot().next_scan_block;
     return store.snapshot_coordinator_->advance_scan_frontier(
-        token, next_scan_block, store.geometry_.total_blocks).ok();
+        token, expected, next_scan_block, store.geometry_.total_blocks).ok();
 }
 
 } // namespace myrd

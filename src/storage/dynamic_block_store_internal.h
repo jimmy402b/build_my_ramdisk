@@ -249,6 +249,8 @@ public:
         DynamicBlockStore& store) noexcept;
     static bool consistent_snapshot_record_staged(
         const DynamicBlockStore& store) noexcept;
+    static std::uint64_t consistent_snapshot_records_staged(
+        const DynamicBlockStore& store) noexcept;
     static bool release_consistent_snapshot_record_pause(
         DynamicBlockStore& store) noexcept;
     static void reset_consistent_snapshot_scan_visits(
@@ -256,6 +258,10 @@ public:
     static std::uint64_t consistent_snapshot_entry_visits(
         const DynamicBlockStore& store) noexcept;
     static std::uint64_t consistent_snapshot_leaf_slot_visits(
+        const DynamicBlockStore& store) noexcept;
+    static void reset_consistent_snapshot_payload_copy_bytes(
+        DynamicBlockStore& store) noexcept;
+    static std::uint64_t consistent_snapshot_payload_copy_bytes(
         const DynamicBlockStore& store) noexcept;
     static std::uint64_t allocated_leaf_count(
         const DynamicBlockStore& store) noexcept;

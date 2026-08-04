@@ -230,6 +230,25 @@ TEST_CASE(m2_block_directory_published_entry_addresses_are_stable) {
     REQUIRE_EQ(directory->allocated_leaf_count(), 512ull);
 }
 
+TEST_CASE(m2_block_directory_enumerates_only_allocated_leaves_in_order) {
+    auto directory = require_directory(5 * myrd::kBlocksPerLeaf);
+    REQUIRE(directory->get_or_create(
+        4 * myrd::kBlocksPerLeaf + 7).ok());
+    REQUIRE(directory->get_or_create(
+        myrd::kBlocksPerLeaf + 9).ok());
+
+    const auto first = directory->next_allocated_leaf_at_or_after(0);
+    REQUIRE(first.has_value());
+    REQUIRE_EQ(first->leaf_index, 1ull);
+    REQUIRE(first->leaf != nullptr);
+    const auto second = directory->next_allocated_leaf_at_or_after(2);
+    REQUIRE(second.has_value());
+    REQUIRE_EQ(second->leaf_index, 4ull);
+    REQUIRE(second->leaf != nullptr);
+    REQUIRE(!directory->next_allocated_leaf_at_or_after(5).has_value());
+    REQUIRE_EQ(directory->allocated_leaf_count(), 2ull);
+}
+
 TEST_CASE(m2_block_directory_rejects_invalid_construction_and_range) {
     const auto zero = myrd::BlockDirectory::create(
         0, myrd::InitialBlockState::CleanZero, 0);
@@ -275,8 +294,10 @@ TEST_CASE(m2_block_directory_large_initial_metadata_is_sparse) {
     auto directory64 = require_directory(blocks64);
     auto directory1t = require_directory(blocks1t);
 
-    const auto expected64 = 1024ull * sizeof(std::atomic<myrd::BlockLeaf*>);
-    const auto expected1t = 16384ull * sizeof(std::atomic<myrd::BlockLeaf*>);
+    const auto expected64 = 1024ull *
+        (sizeof(std::atomic<myrd::BlockLeaf*>) + sizeof(std::uint64_t));
+    const auto expected1t = 16384ull *
+        (sizeof(std::atomic<myrd::BlockLeaf*>) + sizeof(std::uint64_t));
     REQUIRE_EQ(directory64->initial_metadata_bytes(), expected64);
     REQUIRE_EQ(directory1t->initial_metadata_bytes(), expected1t);
     REQUIRE_EQ(directory64->allocated_leaf_count(), 0ull);

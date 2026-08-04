@@ -662,6 +662,15 @@ SnapshotCoordinator::reserve_before_mutation(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 L"snapshot member base generation exceeds the cut"));
     }
+    if (metadata.dirty_epoch > token.cutoff_dirty_epoch) {
+        return Result<SnapshotMetadataReservation>::success(
+            SnapshotMetadataReservation{
+                SnapshotPreimageDisposition::NotMember,
+                {},
+                0,
+                0,
+                0});
+    }
     if (state_->active_state ==
         ConsistentSnapshotState::FullyScanned) {
         if (metadata.block_index >= state_->next_scan_block) {
@@ -683,15 +692,6 @@ SnapshotCoordinator::reserve_before_mutation(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotAborted,
                 L"snapshot is not active"));
-    }
-    if (metadata.dirty_epoch > token.cutoff_dirty_epoch) {
-        return Result<SnapshotMetadataReservation>::success(
-            SnapshotMetadataReservation{
-                SnapshotPreimageDisposition::NotMember,
-                {},
-                0,
-                0,
-                0});
     }
     if (metadata.block_index < state_->next_scan_block) {
         return Result<SnapshotMetadataReservation>::success(
@@ -865,8 +865,22 @@ std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
     return result;
 }
 
+std::optional<SnapshotPreimage>
+SnapshotCoordinator::peek_preimage_metadata(
+    std::uint64_t block_index) const {
+    std::scoped_lock lock(state_->mutex);
+    const auto* record = state_->find_record(block_index);
+    if (record == nullptr ||
+        !record->committed ||
+        block_index < state_->next_scan_block) {
+        return std::nullopt;
+    }
+    return record->preimage;
+}
+
 Result<void> SnapshotCoordinator::advance_scan_frontier(
     const ConsistentSnapshotToken& token,
+    std::uint64_t expected_scan_block,
     std::uint64_t next_scan_block,
     std::uint64_t total_blocks) {
     std::scoped_lock lock(state_->mutex);
@@ -874,6 +888,11 @@ Result<void> SnapshotCoordinator::advance_scan_frontier(
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
+    }
+    if (state_->next_scan_block != expected_scan_block) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotBusy,
+            L"snapshot frontier changed while a batch was staged"));
     }
     if (next_scan_block < state_->next_scan_block ||
         next_scan_block > total_blocks) {
