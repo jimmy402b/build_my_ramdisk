@@ -3351,6 +3351,43 @@ TEST_CASE(m2_1_task06_mutation_continues_while_token_is_fully_scanned) {
                myrd::ConsistentSnapshotState::FullyScanned);
 }
 
+TEST_CASE(m2_1_task06_post_cut_successor_block_can_be_written_twice) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 0, block_data(0xB7));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(), begun.value(), cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder::successor_of(
+                         *backing)
+                         .all_zero_block(1)
+                         .build();
+    REQUIRE(store->install_backing_view({8, successor}).ok());
+    const auto first = block_data(0xC8);
+    const auto second = block_data(0xD9);
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, first).ok());
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, second).ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
+    REQUIRE_EQ(store->consistent_snapshot_status(begun.value()).value().state,
+               myrd::ConsistentSnapshotState::FullyScanned);
+
+    std::vector<std::byte> actual(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(
+        bounded_context(), myrd::kBlockSizeBytes, actual).ok());
+    REQUIRE_EQ(actual, as_vector(second));
+}
+
 TEST_CASE(m2_1_task06_scan_fails_closed_on_invalid_dirty_identity) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto store = require_store(backing_args(backing, 2, 7));
