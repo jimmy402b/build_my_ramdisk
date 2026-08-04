@@ -38,6 +38,9 @@ enum class FaultFileAction : std::uint8_t {
 
 struct FaultFileRule {
     FaultFilePhase phase{};
+    // Rules without byte_offset target exactly this phase call. Byte-addressed
+    // rules arm on this call and remain pending until a later half-open request
+    // range actually contains byte_offset.
     std::uint64_t occurrence{1};
     std::optional<std::uint64_t> byte_offset;
     FaultFileAction action{};

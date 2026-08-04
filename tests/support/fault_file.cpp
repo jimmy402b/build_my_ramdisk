@@ -169,8 +169,9 @@ public:
         auto* rule = matching_rule(
             FaultFilePhase::Write, call, offset, requested_end);
         if (rule != nullptr &&
-            (rule->action == FaultFileAction::DiskFull ||
-             rule->action == FaultFileAction::NativeError)) {
+            (rule->action == FaultFileAction::NativeError ||
+             (rule->action == FaultFileAction::DiskFull &&
+              !rule->byte_offset.has_value()))) {
             const auto code = rule_error(*rule);
             consume(rule);
             observe(FaultFilePhase::Write, call);
@@ -186,6 +187,7 @@ public:
         auto transfer = source.size();
         if (rule != nullptr &&
             (rule->action == FaultFileAction::ShortWrite ||
+             rule->action == FaultFileAction::DiskFull ||
              rule->action == FaultFileAction::TornWrite)) {
             transfer = bytes_before_rule(*rule, offset, source.size());
         }
@@ -196,7 +198,8 @@ public:
             return write_result;
         }
         if (rule != nullptr &&
-            rule->action == FaultFileAction::TornWrite) {
+            (rule->action == FaultFileAction::DiskFull ||
+             rule->action == FaultFileAction::TornWrite)) {
             const auto code = rule_error(*rule);
             consume(rule);
             observe(FaultFilePhase::Write, call);
@@ -326,12 +329,20 @@ private:
                 continue;
             }
             auto& rule = state_->rules_[i];
-            if (rule.phase != phase || rule.occurrence != call) {
+            if (rule.phase != phase) {
                 continue;
             }
-            if (rule.byte_offset.has_value() &&
-                (*rule.byte_offset < begin_offset ||
-                 *rule.byte_offset > end_offset)) {
+            if (rule.byte_offset.has_value()) {
+                // A byte-addressed rule becomes armed on its requested call
+                // and remains pending until a later half-open request range
+                // actually contains that byte. Merely touching the right
+                // endpoint must neither match nor consume the rule.
+                if (rule.occurrence > call ||
+                    *rule.byte_offset < begin_offset ||
+                    *rule.byte_offset >= end_offset) {
+                    continue;
+                }
+            } else if (rule.occurrence != call) {
                 continue;
             }
             return &rule;
@@ -367,6 +378,9 @@ private:
     [[nodiscard]] Result<std::size_t> write_prefix(
         const std::uint64_t offset,
         const std::span<const std::byte> source) {
+        if (source.empty()) {
+            return Result<std::size_t>::success(0);
+        }
         try {
             std::uint64_t position = offset;
             std::size_t copied = 0;

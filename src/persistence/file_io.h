@@ -66,6 +66,9 @@ public:
         const OperationContext& context,
         std::uint64_t offset,
         std::span<const std::byte> source) = 0;
+    // Windows FlushFileBuffers is synchronous. The context is honored before
+    // entering it (including time spent waiting for active transfers), but an
+    // already-entered native flush cannot be preempted by stop or deadline.
     virtual Result<void> flush(const OperationContext& context) = 0;
     virtual Result<std::uint64_t> length(
         const OperationContext& context) const = 0;

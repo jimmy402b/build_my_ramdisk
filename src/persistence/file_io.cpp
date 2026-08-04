@@ -8,6 +8,7 @@
 #include <chrono>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
 #include <stop_token>
 #include <string>
@@ -67,6 +68,7 @@ public:
         : backend_(std::move(backend)) {}
 
     ~ExactPersistenceFile() noexcept override {
+        std::unique_lock lock(operation_mutex_);
         if (backend_ != nullptr && !closed_) {
             static_cast<void>(backend_->close());
         }
@@ -103,6 +105,7 @@ public:
         if (!valid_range(offset, destination.size())) {
             return range_error(L"file_io.read");
         }
+        std::shared_lock lock(operation_mutex_);
         auto ready = ready_for_io(context, L"file_io.read");
         if (!ready.ok()) {
             return ready;
@@ -152,6 +155,7 @@ public:
         if (!valid_range(offset, source.size())) {
             return range_error(L"file_io.write");
         }
+        std::shared_lock lock(operation_mutex_);
         auto ready = ready_for_io(context, L"file_io.write");
         if (!ready.ok()) {
             return ready;
@@ -195,6 +199,7 @@ public:
     }
 
     Result<void> flush(const OperationContext& context) override {
+        std::unique_lock lock(operation_mutex_);
         auto ready = ready_for_io(context, L"file_io.flush");
         if (!ready.ok()) {
             return ready;
@@ -204,6 +209,7 @@ public:
 
     Result<std::uint64_t> length(
         const OperationContext& context) const override {
+        std::shared_lock lock(operation_mutex_);
         auto ready = ready_for_io(context, L"file_io.length");
         if (!ready.ok()) {
             return Result<std::uint64_t>::failure(std::move(ready.error()));
@@ -227,6 +233,7 @@ public:
         if (new_length > kMaximumFileOffset) {
             return range_error(L"file_io.truncate");
         }
+        std::unique_lock lock(operation_mutex_);
         auto ready = ready_for_io(context, L"file_io.truncate");
         if (!ready.ok()) {
             return ready;
@@ -235,6 +242,7 @@ public:
     }
 
     Result<void> close() override {
+        std::unique_lock lock(operation_mutex_);
         if (closed_) {
             return Result<void>::success();
         }
@@ -250,6 +258,7 @@ public:
 
 private:
     std::unique_ptr<IFileIoBackend> backend_;
+    mutable std::shared_mutex operation_mutex_;
     bool closed_{};
 
     [[nodiscard]] Result<void> ready_for_io(
@@ -284,6 +293,12 @@ public:
     ScopedHandle& operator=(const ScopedHandle&) = delete;
 
     [[nodiscard]] HANDLE get() const noexcept { return handle_; }
+
+    [[nodiscard]] HANDLE release() noexcept {
+        const auto handle = handle_;
+        handle_ = INVALID_HANDLE_VALUE;
+        return handle;
+    }
 
 private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
@@ -405,7 +420,7 @@ public:
         if (!context_result.ok()) {
             return context_result;
         }
-        std::shared_lock lock(handle_mutex_);
+        std::unique_lock lock(handle_mutex_);
         if (handle_ == INVALID_HANDLE_VALUE) {
             return win32_failure<void>(
                 ERROR_INVALID_HANDLE, L"file_io.flush", L"file is closed");
@@ -454,7 +469,7 @@ public:
         if (new_length > kMaximumFileOffset) {
             return range_error(L"file_io.truncate");
         }
-        std::shared_lock lock(handle_mutex_);
+        std::unique_lock lock(handle_mutex_);
         if (handle_ == INVALID_HANDLE_VALUE) {
             return win32_failure<void>(
                 ERROR_INVALID_HANDLE, L"file_io.truncate", L"file is closed");
@@ -575,22 +590,31 @@ Result<std::unique_ptr<IPersistenceFile>> open_windows_persistence_file(
                 L"unknown file open mode"));
     }
 
-    const auto handle = CreateFileW(
+    ScopedHandle handle(CreateFileW(
         path.c_str(),
         access,
         sharing,
         nullptr,
         creation,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
-        nullptr);
-    if (handle == INVALID_HANDLE_VALUE) {
+        nullptr));
+    if (handle.get() == INVALID_HANDLE_VALUE) {
         return Result<std::unique_ptr<IPersistenceFile>>::failure(
             win32_error(
                 GetLastError(), L"file_io.open", L"CreateFileW failed"));
     }
-    return Result<std::unique_ptr<IPersistenceFile>>::success(
-        make_exact_persistence_file(
-            std::make_unique<WindowsFileIoBackend>(handle)));
+    try {
+        auto backend = std::make_unique<WindowsFileIoBackend>(handle.get());
+        static_cast<void>(handle.release());
+        return Result<std::unique_ptr<IPersistenceFile>>::success(
+            make_exact_persistence_file(std::move(backend)));
+    } catch (const std::bad_alloc&) {
+        return Result<std::unique_ptr<IPersistenceFile>>::failure(
+            win32_error(
+                ERROR_NOT_ENOUGH_MEMORY,
+                L"file_io.open",
+                L"allocating the persistence file wrapper failed"));
+    }
 }
 
 } // namespace myrd::persistence
