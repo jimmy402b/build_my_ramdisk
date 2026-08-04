@@ -3186,6 +3186,121 @@ TEST_CASE(m2_1_task06_pre_first_record_cancellation_has_zero_progress) {
     REQUIRE_EQ(status.value().state, myrd::ConsistentSnapshotState::Active);
 }
 
+TEST_CASE(m2_1_task06_cancellation_wakes_transient_wait_with_infinite_deadline) {
+    auto gate = std::make_shared<myrd::test::FakeBackingStoreGate>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0xB4))
+                       .gate_block(0, gate)
+                       .build();
+    auto store = require_store(backing_args(backing, 1, 7));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+
+    std::vector<std::byte> patch(512, std::byte{0xC5});
+    std::atomic<std::uint32_t> writer_code{kNoResult};
+    std::thread writer([&] {
+        const auto result = store->write(bounded_context(), 0, patch);
+        writer_code.store(result.ok() ? 0 : error_code(result.error()),
+                          std::memory_order_release);
+    });
+    REQUIRE(gate->wait_until_entered(
+        1, std::chrono::steady_clock::now() + kWaitBound));
+
+    std::stop_source stop;
+    myrd::DirtyScanCursor cursor{};
+    std::optional<myrd::Result<std::vector<myrd::DirtyBlockSnapshot>>> copied;
+    std::atomic<bool> reader_done{};
+    std::thread reader([&] {
+        copied.emplace(store->copy_consistent_snapshot_batch(
+            {stop.get_token(),
+             std::chrono::steady_clock::time_point::max()},
+            begun.value(),
+            cursor,
+            myrd::kBlockSizeBytes));
+        reader_done.store(true, std::memory_order_release);
+    });
+    const bool transient_wait_reached = wait_until([&] {
+        return store->stripe_waiter_count_for_test() == 1;
+    });
+    stop.request_stop();
+    const bool cancellation_woke_reader = wait_until([&] {
+        return reader_done.load(std::memory_order_acquire);
+    });
+
+    // Always release the backing load before asserting so a failing red test
+    // cannot strand either worker in the test process.
+    gate->open();
+    writer.join();
+    reader.join();
+
+    REQUIRE(transient_wait_reached);
+    REQUIRE(cancellation_woke_reader);
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
+    REQUIRE(copied.has_value());
+    REQUIRE(!copied->ok());
+    REQUIRE_EQ(error_code(copied->error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(cursor.next_block_index, 0ull);
+    const auto status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state, myrd::ConsistentSnapshotState::Active);
+    const auto retry = store->copy_consistent_snapshot_batch(
+        bounded_context(), begun.value(), cursor, myrd::kBlockSizeBytes);
+    REQUIRE(retry.ok());
+    REQUIRE(retry.value().empty());
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+}
+
+TEST_CASE(m2_1_task06_close_releases_consistent_snapshot_record_pause) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 1, 7));
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 0, block_data(0xD6));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        pause_consistent_snapshot_after_first_record(*store));
+
+    myrd::DirtyScanCursor cursor{};
+    std::optional<myrd::Result<std::vector<myrd::DirtyBlockSnapshot>>> copied;
+    std::thread reader([&] {
+        copied.emplace(store->copy_consistent_snapshot_batch(
+            myrd::OperationContext{},
+            begun.value(),
+            cursor,
+            myrd::kBlockSizeBytes));
+    });
+    REQUIRE(wait_until([&] {
+        return myrd::DynamicBlockStoreTestAccess::
+            consistent_snapshot_record_staged(*store);
+    }));
+
+    std::atomic<bool> close_done{};
+    std::thread closer([&] {
+        store->close();
+        close_done.store(true, std::memory_order_release);
+    });
+    const bool close_released_pause = wait_until([&] {
+        return close_done.load(std::memory_order_acquire);
+    });
+
+    // On the old implementation this is the cleanup path. On the fixed
+    // implementation close already cleared the pause and this is a no-op.
+    (void)myrd::DynamicBlockStoreTestAccess::
+        release_consistent_snapshot_record_pause(*store);
+    reader.join();
+    closer.join();
+
+    REQUIRE(close_released_pause);
+    REQUIRE(copied.has_value());
+    REQUIRE(!copied->ok());
+    REQUIRE_EQ(error_code(copied->error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::session_closed));
+    REQUIRE_EQ(cursor.next_block_index, 0ull);
+}
+
 TEST_CASE(m2_1_task06_record_limit_and_public_abort_are_exact) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto args = backing_args(backing, 3, 7);

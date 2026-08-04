@@ -522,6 +522,14 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     1, std::memory_order_relaxed);
             }
             auto& stripe = stripes_->stripe_for(scan_index);
+            auto notify_waiter = [&stripe]() noexcept {
+                {
+                    std::scoped_lock callback_lock(stripe.mutex);
+                }
+                stripe.condition.notify_all();
+            };
+            std::stop_callback cancellation_callback(
+                context.stop_token, notify_waiter);
             std::unique_lock block_lock(stripe.mutex);
 
             while (is_transient_block_state(entry->state) &&
