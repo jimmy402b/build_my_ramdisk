@@ -265,6 +265,16 @@ private:
             std::string(to_string(id)), error.code, value.error});
     }
 
+    bool inject_failure_after(M2PhaseId id) {
+        if (!config_.injected_failure_after ||
+            *config_.injected_failure_after != id) {
+            return false;
+        }
+        replace_pass_with_evidence_failure(
+            id, L"injected acceptance failure after successful phase");
+        return true;
+    }
+
     template <typename T, typename Function>
     std::optional<T> execute_value(
         M2PhaseId id,
@@ -391,6 +401,7 @@ private:
         report_.final_baseline_comparison.before_fingerprint =
             baseline_snapshot_->fingerprint;
         restore_service_owned_ = true;
+        if (inject_failure_after(M2PhaseId::capture_baseline)) return;
 
         auto provider = execute_acquisition<
             std::unique_ptr<IM2LifecycleProvider>>(
@@ -411,6 +422,7 @@ private:
         provider_ = std::move(provider->value);
         provider_owned_ = true;
         if (!provider->phase_succeeded) return;
+        if (inject_failure_after(M2PhaseId::construct_provider)) return;
 
         auto ready_sample = execute_value<M2ProviderSample>(
             M2PhaseId::start_provider, false,
@@ -428,6 +440,7 @@ private:
             M2StoreSamplePoint::ready,
             M2PhaseId::start_provider,
             std::move(*ready_sample));
+        if (inject_failure_after(M2PhaseId::start_provider)) return;
 
         auto owned = execute_acquisition<M2OwnedDevice>(
             M2PhaseId::create_device,
@@ -450,6 +463,7 @@ private:
         device_owned_ = true;
         report_.device_identity = owned_device_->identity;
         if (!owned->phase_succeeded) return;
+        if (inject_failure_after(M2PhaseId::create_device)) return;
 
         auto identity = execute_value<M2DeviceIdentity>(
             M2PhaseId::wait_for_disk, false,
@@ -458,6 +472,7 @@ private:
             });
         if (!identity) return;
         report_.device_identity = std::move(*identity);
+        if (inject_failure_after(M2PhaseId::wait_for_disk)) return;
 
         auto io = execute_value<M2IoEvidence>(
             M2PhaseId::setup_write, false,
@@ -480,6 +495,7 @@ private:
             });
         if (!io) return;
         report_.io = std::move(*io);
+        if (inject_failure_after(M2PhaseId::setup_write)) return;
 
         auto after_write = execute_value<M2ProviderSample>(
             M2PhaseId::sample_after_write, false,
@@ -492,6 +508,7 @@ private:
             M2StoreSamplePoint::after_write,
             M2PhaseId::sample_after_write,
             std::move(*after_write));
+        if (inject_failure_after(M2PhaseId::sample_after_write)) return;
 
         auto deleted = execute_value<std::uint64_t>(
             M2PhaseId::delete_retrim, false,
@@ -501,6 +518,7 @@ private:
             });
         if (!deleted) return;
         report_.io.bytes_deleted = *deleted;
+        if (inject_failure_after(M2PhaseId::delete_retrim)) return;
 
         auto after_retrim = execute_value<M2ProviderSample>(
             M2PhaseId::sample_after_retrim, false,
@@ -513,6 +531,7 @@ private:
             M2StoreSamplePoint::after_retrim,
             M2PhaseId::sample_after_retrim,
             std::move(*after_retrim));
+        if (inject_failure_after(M2PhaseId::sample_after_retrim)) return;
 
         auto performance = execute_value<M2PerformanceEvidence>(
             M2PhaseId::performance, false,
@@ -534,6 +553,7 @@ private:
             });
         if (!performance) return;
         report_.performance = std::move(*performance);
+        (void)inject_failure_after(M2PhaseId::performance);
     }
 
     void set_cleanup_result(

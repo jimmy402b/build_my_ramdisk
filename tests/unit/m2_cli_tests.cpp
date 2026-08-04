@@ -6,6 +6,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -309,6 +311,50 @@ TEST_CASE(m2_cli_numeric_inputs_reject_zero_overflow_and_bad_shape) {
     REQUIRE(stripes != values.end());
     *(stripes + 1) = L"63";
     REQUIRE(parse_storage(values).has_error());
+}
+
+TEST_CASE(m2_cli_real_accepts_only_explicit_main_path_failure_injection_points) {
+    TempInputTree tree;
+    const std::pair<std::wstring, myrd::M2PhaseId> accepted[] = {
+        {L"capture-baseline", myrd::M2PhaseId::capture_baseline},
+        {L"construct-provider", myrd::M2PhaseId::construct_provider},
+        {L"start-provider", myrd::M2PhaseId::start_provider},
+        {L"create-device", myrd::M2PhaseId::create_device},
+        {L"wait-for-disk", myrd::M2PhaseId::wait_for_disk},
+        {L"setup-write", myrd::M2PhaseId::setup_write},
+        {L"sample-after-write", myrd::M2PhaseId::sample_after_write},
+        {L"delete-retrim", myrd::M2PhaseId::delete_retrim},
+        {L"sample-after-retrim", myrd::M2PhaseId::sample_after_retrim},
+        {L"performance", myrd::M2PhaseId::performance},
+    };
+
+    for (const auto& [name, phase] : accepted) {
+        auto values = real_test_policy_args(tree);
+        values.insert(
+            values.end() - 1,
+            {L"--inject-failure-after", name});
+        const auto parsed = parse_storage(values);
+        REQUIRE(parsed.ok());
+        REQUIRE(parsed.value().injected_failure_after.has_value());
+        REQUIRE_EQ(*parsed.value().injected_failure_after, phase);
+    }
+
+    auto invalid = real_test_policy_args(tree);
+    invalid.insert(
+        invalid.end() - 1,
+        {L"--inject-failure-after", L"remove-device"});
+    REQUIRE(parse_storage(invalid).has_error());
+
+    invalid = real_test_policy_args(tree);
+    invalid.insert(
+        invalid.end() - 1,
+        {L"--inject-failure-after", L"setup-write",
+         L"--inject-failure-after", L"performance"});
+    REQUIRE(parse_storage(invalid).has_error());
+
+    REQUIRE(parse({L"--local-fake", L"--evidence-dir",
+                   tree.evidence().wstring(), L"--inject-failure-after",
+                   L"setup-write"}).has_error());
 }
 
 int main() {

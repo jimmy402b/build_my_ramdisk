@@ -77,15 +77,13 @@ try {
         Require ([IO.File]::Exists((Join-Path $runs[0].FullName $name))) "missing orchestrator evidence file: $name"
     }
 
-    $unimplementedEvidenceBase = Join-Path $root 'unimplemented-evidence'
-    [IO.Directory]::CreateDirectory($unimplementedEvidenceBase) | Out-Null
-    $savedErrorPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $unimplementedOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Orchestrator -Tier M2-V7 -WhatIf -EvidenceBase $unimplementedEvidenceBase -Executable $Executable -ExpectedDriverSha256 ('A' * 64) -TestStaticInputPath $staticPath -TestAfterInventoryPath $afterInventoryPath 2>&1)
-    $unimplementedExitCode = $LASTEXITCODE
-    $ErrorActionPreference = $savedErrorPreference
-    Require ($unimplementedExitCode -ne 0) 'orchestrator falsely accepted unimplemented M2-V7'
-    Require (($unimplementedOutput -join [Environment]::NewLine) -match 'not implemented') 'orchestrator did not identify unimplemented M2-V7'
+    foreach ($tier in @('M2-V6', 'M2-V7')) {
+        $task22EvidenceBase = Join-Path $root ("$tier-evidence")
+        [IO.Directory]::CreateDirectory($task22EvidenceBase) | Out-Null
+        $task22Output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Orchestrator -Tier $tier -WhatIf -EvidenceBase $task22EvidenceBase -Executable $Executable -ExpectedDriverSha256 ('A' * 64) -TestStaticInputPath $staticPath -TestAfterInventoryPath $afterInventoryPath 2>&1)
+        Require ($LASTEXITCODE -eq 0) "$tier WhatIf failed: $($task22Output -join [Environment]::NewLine)"
+        Require (($task22Output -join [Environment]::NewLine) -match "$tier WHATIF PASS") "$tier WhatIf did not emit PASS"
+    }
 
     $mutatedInventoryPath = Join-Path $root 'mutated-inventory.json'
     [pscustomobject]@{

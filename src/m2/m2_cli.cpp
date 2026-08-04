@@ -146,6 +146,7 @@ struct Seen {
     bool snapshot_bytes{};
     bool snapshot_records{};
     bool stripes{};
+    bool injected_failure{};
     bool safety{};
 };
 
@@ -154,7 +155,27 @@ bool any_real_option(const Seen& seen) {
         seen.bus || seen.vendor || seen.product || seen.disk_size ||
         seen.test_policy || seen.soft || seen.hard || seen.low ||
         seen.snapshot_bytes || seen.snapshot_records || seen.stripes ||
-        seen.safety;
+        seen.injected_failure || seen.safety;
+}
+
+std::optional<M2PhaseId> parse_injected_main_phase(
+    std::wstring_view value) noexcept {
+    constexpr std::pair<std::wstring_view, M2PhaseId> phases[] = {
+        {L"capture-baseline", M2PhaseId::capture_baseline},
+        {L"construct-provider", M2PhaseId::construct_provider},
+        {L"start-provider", M2PhaseId::start_provider},
+        {L"create-device", M2PhaseId::create_device},
+        {L"wait-for-disk", M2PhaseId::wait_for_disk},
+        {L"setup-write", M2PhaseId::setup_write},
+        {L"sample-after-write", M2PhaseId::sample_after_write},
+        {L"delete-retrim", M2PhaseId::delete_retrim},
+        {L"sample-after-retrim", M2PhaseId::sample_after_retrim},
+        {L"performance", M2PhaseId::performance},
+    };
+    for (const auto& [name, phase] : phases) {
+        if (value == name) return phase;
+    }
+    return std::nullopt;
 }
 
 template <typename Setter>
@@ -354,6 +375,19 @@ Result<M2CliConfig> parse_m2_cli(
             if (seen.test_policy) return usage_error(L"duplicate --test-policy");
             seen.test_policy = true;
             result.geometry.test_policy_selected = true;
+        } else if (argument == L"--inject-failure-after") {
+            parsed = parse_value_option(
+                args, index, seen.injected_failure, argument,
+                [&result](std::wstring_view value) {
+                    const auto phase = parse_injected_main_phase(value);
+                    if (!phase) {
+                        return Result<void>::failure({
+                            ErrorDomain::usage, 2, L"parse_m2_cli",
+                            L"unknown or unsafe M2 failure injection phase"});
+                    }
+                    result.injected_failure_after = *phase;
+                    return Result<void>::success();
+                });
         } else if (argument ==
                    L"--i-understand-this-test-initializes-a-new-disk") {
             if (seen.safety) return usage_error(L"duplicate safety acknowledgement");
@@ -462,6 +496,9 @@ std::wstring_view m2_cli_usage() noexcept {
        --low-watermark-bytes <n>)
       --max-snapshot-batch-bytes <n> --max-snapshot-batch-records <n>
       --lock-stripe-count <n>
+      [--inject-failure-after <capture-baseline|construct-provider|
+       start-provider|create-device|wait-for-disk|setup-write|
+       sample-after-write|delete-retrim|sample-after-retrim|performance>]
       --i-understand-this-test-initializes-a-new-disk
 )usage";
 }

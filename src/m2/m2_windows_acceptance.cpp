@@ -2443,6 +2443,7 @@ Result<M2RealRun> run_m2_windows_acceptance(
     M2LifecycleConfig lifecycle;
     lifecycle.report = report.move_value();
     lifecycle.phase_timeout = 30min;
+    lifecycle.injected_failure_after = config.injected_failure_after;
     auto completed = run_m2_lifecycle(
         baseline,
         providers,

@@ -23,6 +23,11 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'M2Verification.Common.ps1')
 
+if ($Tier -in @('M2-V6', 'M2-V7')) {
+    & (Join-Path $PSScriptRoot 'Invoke-M2Task22.ps1') @PSBoundParameters
+    exit $LASTEXITCODE
+}
+
 function Require([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
@@ -36,7 +41,7 @@ if ($ListCommands) {
     exit 0
 }
 
-Require ($Tier -eq 'M2-V5') 'M2-V6 and M2-V7 are not implemented; Task 22 evidence is required'
+Require ($Tier -eq 'M2-V5') 'unsupported M2 verification tier'
 if ([string]::IsNullOrWhiteSpace($Executable)) {
     $Executable = Join-Path $repoRoot "out\build\msvc\src\$Configuration\myrd-m2-e2e.exe"
 }

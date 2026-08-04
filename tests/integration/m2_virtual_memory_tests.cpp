@@ -532,8 +532,11 @@ TEST_CASE(real_virtual_memory_64_gib_commit_decommit_and_process_metrics) {
         allocation_base + (kOneGiBBlocks / 2) * kBlock, allocation_base);
     require_reserved_noaccess(
         allocation_base + (kOneGiBBlocks - 1) * kBlock, allocation_base);
+    const auto reclaim_started = std::chrono::steady_clock::now();
     const auto after_unmap =
         wait_for_private_reclaim(peak_private, kRequiredReclaim);
+    const auto reclaim_elapsed =
+        std::chrono::steady_clock::now() - reclaim_started;
     const auto reclaimed = saturating_subtract(
         peak_private, after_unmap.private_usage);
     std::cout << "VM_RECLAIM_GATE reclaimed=" << reclaimed
@@ -541,6 +544,9 @@ TEST_CASE(real_virtual_memory_64_gib_commit_decommit_and_process_metrics) {
               << " deadline_ms="
               << std::chrono::duration_cast<std::chrono::milliseconds>(
                      kReclaimDeadline).count()
+              << " actual_elapsed_ms="
+              << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     reclaim_elapsed).count()
               << '\n';
     REQUIRE(reclaimed >= kRequiredReclaim);
     REQUIRE(store->validate_invariants_for_test().ok());

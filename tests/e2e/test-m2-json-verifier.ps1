@@ -58,8 +58,8 @@ try {
     Invoke-ExpectedFailure -Arguments @('-Path', $missingRetrimUnmapPath, '-Tier', 'M2-V4', '-Executable', $Executable) -Expected 'UNMAP bytes did not increase during Delete/ReTrim'
 
     Invoke-ExpectedFailure -Arguments @('-Path', $reportPath, '-Tier', 'M2-V5', '-Executable', $Executable) -Expected 'REAL'
-    Invoke-ExpectedFailure -Arguments @('-Path', $reportPath, '-Tier', 'M2-V6', '-Executable', $Executable) -Expected 'not implemented'
-    Invoke-ExpectedFailure -Arguments @('-Path', $reportPath, '-Tier', 'M2-V7', '-Executable', $Executable) -Expected 'not implemented'
+    Invoke-ExpectedFailure -Arguments @('-Path', $reportPath, '-Tier', 'M2-V6', '-Executable', $Executable) -Expected 'required property missing: configuration'
+    Invoke-ExpectedFailure -Arguments @('-Path', $reportPath, '-Tier', 'M2-V7', '-Executable', $Executable) -Expected 'required property missing: configuration'
 }
 finally {
     if ([IO.Directory]::Exists($root)) {

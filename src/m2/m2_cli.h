@@ -4,6 +4,7 @@
 #include "src/common/result.h"
 
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,6 +30,7 @@ struct M2CliConfig {
     std::string expected_vendor_id;
     std::string expected_product_id;
     M2GeometryOptions geometry;
+    std::optional<M2PhaseId> injected_failure_after;
     bool safety_acknowledged{};
 };
 

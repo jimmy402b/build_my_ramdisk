@@ -124,6 +124,7 @@ struct M2LifecycleConfig {
     M2Report report;
     std::chrono::milliseconds phase_timeout{30000};
     std::stop_token stop_token{};
+    std::optional<M2PhaseId> injected_failure_after;
 };
 
 M2Report run_m2_lifecycle(

@@ -11,6 +11,19 @@ param(
     [string]$ExpectedProductId = 'Virtual',
     [string]$TestStaticInputPath = '',
     [string]$TestAfterInventoryPath = '',
+    [ValidateSet(
+        'none',
+        'capture-baseline',
+        'construct-provider',
+        'start-provider',
+        'create-device',
+        'wait-for-disk',
+        'setup-write',
+        'sample-after-write',
+        'delete-retrim',
+        'sample-after-retrim',
+        'performance')]
+    [string]$FailurePoint = 'none',
     [switch]$SafetyAcknowledged,
     [switch]$WhatIf
 )
@@ -258,10 +271,15 @@ $arguments = @(
     '--lock-stripe-count', '64',
     '--i-understand-this-test-initializes-a-new-disk'
 )
-$child = Invoke-M2NativeProcess -FilePath $script:ExecutableFull -Arguments $arguments
-if ([int]$child.ExitCode -ne 0) {
-    throw "real M2 process failed (exit=$($child.ExitCode)): $($child.StandardError)$([Environment]::NewLine)$($child.StandardOutput)"
+if ($FailurePoint -ne 'none') {
+    $arguments += @('--inject-failure-after', $FailurePoint)
 }
+$child = Invoke-M2NativeProcess -FilePath $script:ExecutableFull -Arguments $arguments
+[ordered]@{
+    schema_version = 1
+    failure_point = $FailurePoint
+    exit_code = [int]$child.ExitCode
+} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $script:EvidenceFull 'native-process.json') -Encoding utf8
 $afterInventory = Get-ActualInventory -Label 'after'
 $beforeStructuralJson = ConvertTo-StructuralInventory $beforeInventory | ConvertTo-Json -Depth 12 -Compress
 $afterStructuralJson = ConvertTo-StructuralInventory $afterInventory | ConvertTo-Json -Depth 12 -Compress
@@ -273,8 +291,55 @@ $structuralEqual = $beforeStructuralJson -eq $afterStructuralJson
     structural_equal = $structuralEqual
 } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $script:EvidenceFull 'outer-inventory.json') -Encoding utf8
 Assert-M2Condition $structuralEqual 'real M2 changed structural system inventory'
+$expectedExitCode = if ($FailurePoint -eq 'none') { 0 } else { 8 }
+Assert-M2Condition ([int]$child.ExitCode -eq $expectedExitCode) "real M2 process returned unexpected exit code: expected=$expectedExitCode actual=$($child.ExitCode) stderr=$($child.StandardError) stdout=$($child.StandardOutput)"
 $match = [regex]::Match([string]$child.StandardOutput, 'M2 real report:\s*(.+\.json)\s*$')
 Assert-M2Condition $match.Success 'real M2 process did not print a report path'
-$reportPath = $match.Groups[1].Value.Trim()
-& (Join-Path $repoRoot 'tools\Verify-M2Json.ps1') -Path $reportPath -Tier M2-V5 -Executable $script:ExecutableFull
-Write-Output "M2 dynamic-disk REAL PASS: $reportPath"
+$reportPath = [IO.Path]::GetFullPath($match.Groups[1].Value.Trim())
+Assert-M2Condition ([IO.File]::Exists($reportPath)) 'real M2 report is missing'
+
+if ($FailurePoint -eq 'none') {
+    & (Join-Path $repoRoot 'tools\Verify-M2Json.ps1') -Path $reportPath -Tier M2-V5 -Executable $script:ExecutableFull
+    Write-Output "M2 dynamic-disk REAL PASS: $reportPath"
+    exit 0
+}
+
+$nativeValidation = Invoke-M2NativeProcess -FilePath $script:ExecutableFull -Arguments @('--validate-report', $reportPath)
+Assert-M2Condition ([int]$nativeValidation.ExitCode -eq 0) "native validation rejected the injected-failure report: $($nativeValidation.StandardError)$($nativeValidation.StandardOutput)"
+$faultReport = Get-Content -Raw -LiteralPath $reportPath -Encoding utf8 | ConvertFrom-Json
+$expectedPhase = $FailurePoint.ToUpperInvariant()
+Assert-M2Condition ([string]$faultReport.verdict -eq 'NO-GO') 'injected failure report did not fail closed'
+$matchingFailures = @($faultReport.failures | Where-Object {
+    [string]$_.phase -eq $expectedPhase -and
+    [string]$_.message -match 'injected acceptance failure'
+})
+Assert-M2Condition ($matchingFailures.Count -eq 1) 'injected failure was not observed at the requested phase'
+$matchingPhase = @($faultReport.phases | Where-Object {
+    [string]$_.phase_id -eq $expectedPhase -and
+    [string]$_.phase_status -eq 'FAILED'
+})
+Assert-M2Condition ($matchingPhase.Count -eq 1) 'requested injected phase was not recorded as FAILED'
+
+$requiredCleanup = switch ($FailurePoint) {
+    'capture-baseline' { @('RESTORE-SERVICE') }
+    'construct-provider' { @('STOP-PROVIDER', 'RESTORE-SERVICE') }
+    'start-provider' { @('STOP-PROVIDER', 'RESTORE-SERVICE') }
+    'create-device' { @('REMOVE-DEVICE', 'STOP-PROVIDER', 'RESTORE-SERVICE') }
+    'wait-for-disk' { @('REMOVE-DEVICE', 'STOP-PROVIDER', 'RESTORE-SERVICE') }
+    default { @('REMOVE-MOUNTS', 'REMOVE-DEVICE', 'STOP-PROVIDER', 'RESTORE-SERVICE') }
+}
+foreach ($action in @($faultReport.cleanup_actions)) {
+    $isRequired = $requiredCleanup -contains [string]$action.cleanup_action_id
+    if ($isRequired) {
+        Assert-M2Condition ([bool]$action.cleanup_attempted) "required fault cleanup was not attempted: $($action.cleanup_action_id)"
+        Assert-M2Condition ([string]$action.cleanup_result -eq 'SUCCEEDED') "required fault cleanup failed: $($action.cleanup_action_id)"
+    }
+    else {
+        Assert-M2Condition (-not [bool]$action.cleanup_attempted) "unowned resource cleanup was unexpectedly attempted: $($action.cleanup_action_id)"
+        Assert-M2Condition ([string]$action.cleanup_result -eq 'NOT-ATTEMPTED') "unowned resource cleanup has an invalid result: $($action.cleanup_action_id)"
+    }
+}
+Assert-M2Condition ([string]$faultReport.final_baseline_comparison.comparison -eq 'MATCH') 'fault run baseline comparison is not MATCH'
+Assert-M2Condition ([bool]$faultReport.final_baseline_comparison.exact_match) 'fault run final inventory is not an exact match'
+Assert-M2Condition ([bool]$faultReport.final_baseline_comparison.resources_within_tolerance) 'fault run resource counters exceed tolerance'
+Write-Output "M2 dynamic-disk EXPECTED FAULT PASS [$FailurePoint]: $reportPath"

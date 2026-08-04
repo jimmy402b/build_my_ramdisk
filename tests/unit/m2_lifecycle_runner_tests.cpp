@@ -560,7 +560,9 @@ struct Fixture {
 
     myrd::M2Report run(
         std::stop_token stop_token = {},
-        std::chrono::milliseconds phase_timeout = 5s) {
+        std::chrono::milliseconds phase_timeout = 5s,
+        std::optional<myrd::M2PhaseId> injected_failure_after =
+            std::nullopt) {
         myrd::M2LifecycleConfig config;
         config.report = report_template();
         if (probe.invalid_report_template) {
@@ -568,6 +570,7 @@ struct Fixture {
         }
         config.phase_timeout = phase_timeout;
         config.stop_token = stop_token;
+        config.injected_failure_after = injected_failure_after;
         return myrd::run_m2_lifecycle(
             baseline, providers, devices, workload, publisher, clock,
             std::move(config));
@@ -773,6 +776,59 @@ TEST_CASE(m2_lifecycle_every_main_failure_point_publishes_valid_no_go_and_exact_
             phase(report, myrd::M2PhaseId::publish_report).status,
             myrd::M2PhaseStatus::passed);
         REQUIRE_EQ(fixture.probe.publish_calls, 1u);
+        REQUIRE(myrd::validate_m2_report_json(
+                    myrd::serialize_m2_report(report)).ok());
+    }
+}
+
+TEST_CASE(m2_lifecycle_every_injected_main_phase_uses_owned_resource_cleanup) {
+    struct Case {
+        myrd::M2PhaseId phase;
+        bool mounts;
+        bool device;
+        bool provider;
+        bool service;
+    };
+    const Case cases[] = {
+        {myrd::M2PhaseId::capture_baseline, false, false, false, true},
+        {myrd::M2PhaseId::construct_provider, false, false, true, true},
+        {myrd::M2PhaseId::start_provider, false, false, true, true},
+        {myrd::M2PhaseId::create_device, false, true, true, true},
+        {myrd::M2PhaseId::wait_for_disk, false, true, true, true},
+        {myrd::M2PhaseId::setup_write, true, true, true, true},
+        {myrd::M2PhaseId::sample_after_write, true, true, true, true},
+        {myrd::M2PhaseId::delete_retrim, true, true, true, true},
+        {myrd::M2PhaseId::sample_after_retrim, true, true, true, true},
+        {myrd::M2PhaseId::performance, true, true, true, true},
+    };
+
+    for (const auto& item : cases) {
+        Fixture fixture;
+        const auto report = fixture.run({}, 5s, item.phase);
+
+        REQUIRE_EQ(report.verdict, myrd::M2Verdict::no_go);
+        REQUIRE_EQ(
+            phase(report, item.phase).status,
+            myrd::M2PhaseStatus::failed);
+        REQUIRE(
+            phase(report, item.phase).error.find(
+                "injected acceptance failure") != std::string::npos);
+        REQUIRE_EQ(
+            cleanup(report, myrd::M2CleanupActionId::remove_mounts)
+                .attempted,
+            item.mounts);
+        REQUIRE_EQ(
+            cleanup(report, myrd::M2CleanupActionId::remove_device)
+                .attempted,
+            item.device);
+        REQUIRE_EQ(
+            cleanup(report, myrd::M2CleanupActionId::stop_provider)
+                .attempted,
+            item.provider);
+        REQUIRE_EQ(
+            cleanup(report, myrd::M2CleanupActionId::restore_service)
+                .attempted,
+            item.service);
         REQUIRE(myrd::validate_m2_report_json(
                     myrd::serialize_m2_report(report)).ok());
     }
