@@ -3,6 +3,7 @@
 #include "block_directory.h"
 #include "dynamic_block_store_internal.h"
 #include "eviction_manager.h"
+#include "snapshot_coordinator.h"
 #include "virtual_memory_arena.h"
 #include "zero_backing_store.h"
 #include "src/common/scope_exit.h"
@@ -166,6 +167,18 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
     }
     auto directory = directory_result.move_value();
 
+    std::unique_ptr<SnapshotCoordinator> snapshot_coordinator;
+    try {
+        snapshot_coordinator = std::make_unique<SnapshotCoordinator>(
+            args.options.snapshot_cow_max_bytes,
+            dependencies.snapshot_coordinator_observer);
+    } catch (...) {
+        return Result<std::unique_ptr<DynamicBlockStore>>::failure(
+            make_factory_error(
+                L"DynamicBlockStore::create/snapshot-coordinator",
+                L"failed to allocate snapshot coordinator"));
+    }
+
     auto store = std::unique_ptr<DynamicBlockStore>(new (std::nothrow)
         DynamicBlockStore(std::move(args),
                           geometry,
@@ -173,6 +186,7 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
                           std::move(arena),
                           std::move(stripes),
                           std::move(directory),
+                          std::move(snapshot_coordinator),
                           std::move(dependencies.lifecycle_observer),
                           std::move(dependencies.read_observer),
                           dependencies.fail_snapshot_allocation,
@@ -229,6 +243,7 @@ DynamicBlockStore::DynamicBlockStore(
     std::unique_ptr<VirtualMemoryArena> arena,
     std::unique_ptr<LockStripeSet> stripes,
     std::unique_ptr<BlockDirectory> directory,
+    std::unique_ptr<SnapshotCoordinator> snapshot_coordinator,
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver>
         lifecycle_observer,
     std::shared_ptr<IDynamicBlockStoreReadObserver>
@@ -244,6 +259,7 @@ DynamicBlockStore::DynamicBlockStore(
       arena_(std::move(arena)),
       stripes_(std::move(stripes)),
       directory_(std::move(directory)),
+      snapshot_coordinator_(std::move(snapshot_coordinator)),
       lifecycle_observer_(std::move(lifecycle_observer)),
       read_observer_(std::move(read_observer)),
       fail_snapshot_allocation_(fail_snapshot_allocation),
@@ -591,7 +607,8 @@ DynamicBlockStore::begin_consistent_snapshot(
             make_session_closed_error(
                 L"DynamicBlockStore::begin_consistent_snapshot"));
     }
-    if (mutation_gate_closed_ || active_snapshot_token_.has_value()) {
+    if (mutation_gate_closed_ ||
+        snapshot_coordinator_->snapshot().active_token.has_value()) {
         return Result<ConsistentSnapshotToken>::failure(
             make_snapshot_error(
                 DynamicBlockStoreErrorCode::SnapshotBusy,
@@ -642,29 +659,32 @@ DynamicBlockStore::begin_consistent_snapshot(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 L"consistency cut completed with active mutations"));
     }
-    if (next_snapshot_id_ == 0 ||
-        next_snapshot_id_ ==
-            (std::numeric_limits<std::uint64_t>::max)()) {
-        return Result<ConsistentSnapshotToken>::failure(
-            make_snapshot_error(
-                DynamicBlockStoreErrorCode::FatalInternalInvariant,
-                L"consistent snapshot id exhausted"));
-    }
-
-    ConsistentSnapshotToken token{};
-    token.snapshot_id = next_snapshot_id_++;
-    // Required order: admission/lifecycle -> state. No block stripe or
-    // snapshot-coordinator mutex is held at this short linearization point.
+    BackingGeneration source_backing_generation{};
+    std::uint64_t cutoff_dirty_epoch{};
+    // No block stripe is held. The state lock is released before entering the
+    // coordinator, so no state -> coordinator edge exists.
     {
         std::scoped_lock state_lock(state_mutex_);
-        token.source_backing_generation = backing_view_.generation;
-        token.cutoff_dirty_epoch =
+        source_backing_generation = backing_view_.generation;
+        cutoff_dirty_epoch =
             dirty_epoch_.load(std::memory_order_acquire);
+    }
+    auto activated = snapshot_coordinator_->activate(
+        source_backing_generation, cutoff_dirty_epoch);
+    if (!activated.ok()) {
+        return Result<ConsistentSnapshotToken>::failure(
+            activated.error());
+    }
+    const auto token = activated.value();
+    // Required order: admission/lifecycle -> coordinator -> state. activate()
+    // has published the token and released its mutex before this short stats
+    // mirror update; SnapshotCoordinator itself has no stripe reference.
+    {
+        std::scoped_lock state_lock(state_mutex_);
         stats_.snapshot_active_id = token.snapshot_id;
         stats_.snapshot_active_state =
             ConsistentSnapshotState::Active;
     }
-    active_snapshot_token_ = token;
     return Result<ConsistentSnapshotToken>::success(token);
 }
 
@@ -741,8 +761,17 @@ const DynamicBlockStoreOptions& DynamicBlockStore::options() const noexcept {
 }
 
 DynamicBlockStoreStats DynamicBlockStore::stats() const {
+    const auto coordinator = snapshot_coordinator_->snapshot();
     std::scoped_lock lock(state_mutex_);
-    return stats_;
+    auto result = stats_;
+    result.snapshot_active_id = coordinator.active_token.has_value()
+        ? coordinator.active_token->snapshot_id
+        : 0;
+    result.snapshot_active_state = coordinator.active_state;
+    result.snapshot_cow_current_bytes = coordinator.cow_current_bytes;
+    result.snapshot_cow_peak_bytes = coordinator.cow_peak_bytes;
+    result.snapshot_cow_records = coordinator.cow_records;
+    return result;
 }
 
 bool DynamicBlockStoreTestAccess::mutation_gate_closed(

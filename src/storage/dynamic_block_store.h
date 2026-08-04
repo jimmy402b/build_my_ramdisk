@@ -22,6 +22,7 @@ namespace myrd {
 class BlockDirectory;
 class EvictionManager;
 class LockStripeSet;
+class SnapshotCoordinator;
 class VirtualMemoryArena;
 struct DynamicBlockStoreTestDependencies;
 class IDynamicBlockStoreLifecycleObserver;
@@ -159,6 +160,7 @@ private:
         std::unique_ptr<VirtualMemoryArena> arena,
         std::unique_ptr<LockStripeSet> stripes,
         std::unique_ptr<BlockDirectory> directory,
+        std::unique_ptr<SnapshotCoordinator> snapshot_coordinator,
         std::shared_ptr<IDynamicBlockStoreLifecycleObserver>
             lifecycle_observer,
         std::shared_ptr<IDynamicBlockStoreReadObserver>
@@ -245,8 +247,6 @@ private:
     bool mutation_gate_closed_{};
     std::uint64_t active_mutations_{};
     std::uint64_t mutation_waiters_{};
-    std::optional<ConsistentSnapshotToken> active_snapshot_token_{};
-    std::uint64_t next_snapshot_id_{1};
     bool worker_running_{};
     bool eviction_requested_{};
     bool eviction_worker_waiting_{};
@@ -264,6 +264,7 @@ private:
     std::unique_ptr<VirtualMemoryArena> arena_;
     std::unique_ptr<LockStripeSet> stripes_;
     std::unique_ptr<BlockDirectory> directory_;
+    std::unique_ptr<SnapshotCoordinator> snapshot_coordinator_;
     std::unique_ptr<EvictionManager> eviction_manager_;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer_;
     std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer_;

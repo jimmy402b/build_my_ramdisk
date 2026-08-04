@@ -26,6 +26,8 @@ add_library(myrd_storage STATIC
     storage/dynamic_block_store_write.cpp
     storage/dynamic_block_store_ranges.cpp
     storage/dynamic_block_store_snapshot.cpp
+    storage/snapshot_coordinator.cpp
+    storage/snapshot_coordinator.h
     storage/dynamic_block_store_backing.cpp
     storage/dynamic_block_store.h
     storage/eviction_manager.cpp
