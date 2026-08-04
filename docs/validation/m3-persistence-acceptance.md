@@ -392,3 +392,67 @@ git diff --check
 
 Task 04 verdict: **DONE**. This is not an M2.1 or M3 GO verdict; Tasks 05–09
 remain required.
+
+## Task 11 exact file I/O evidence — 2026-08-04
+
+| Item | Value |
+|---|---|
+| Implementation branch | `feature/m3-task11` |
+| Implementation commits | `700649d`, `9cb520c`, `b3cf454`, `237dd0d` |
+| Independent specification review | GO; P0=0, P1=0 |
+| Independent code-quality review | GO; P0=0, P1=0 |
+
+### Red gates and accepted behavior
+
+- Native and fake tests exposed missing `ERROR_IO_PENDING` handling, unchecked
+  end offsets, short/zero-progress ambiguity, fail-open over-reporting, and an
+  allocation-path handle leak before the exact-I/O wrapper was accepted.
+- Windows random access uses OVERLAPPED I/O and drains pending operations after
+  cancellation or deadline. Exact reads and writes retry partial transfers,
+  reject backend over-reporting and zero progress, and keep stable error
+  operation/domain/native-code context.
+- Transfer operations share a lifetime lock; flush, truncate and close are
+  exclusive. Close waits for in-flight transfers and remains idempotent.
+- The sparse fault backend supports phase, occurrence and half-open byte-range
+  injection for disk-full, torn-write, flush, corruption and close failures.
+  State and occurrence selection are linearized by one mutex, while observers
+  run after that mutex is released.
+- Named-pipe tests exercise real pending read/write cancellation, deadlines,
+  late-stop completion and close ordering. Failure cleanup has a four-second
+  process boundary, so a `std::async` future cannot hang the test executable in
+  its destructor.
+- Fault injection and the allocation-failure override are linked only into the
+  Task 11 test executable; the production persistence library has no driver or
+  proxy dependency.
+
+### Verification
+
+```powershell
+.\out\build\msvc\tests\Release\myrd_m3_file_io_tests.exe
+# 25/25 passed
+
+1..20 | % { .\out\build\msvc\tests\Release\myrd_m3_file_io_tests.exe }
+# 20/20 processes passed
+
+.\out\build\msvc\tests\Debug\myrd_m3_file_io_tests.exe
+# 25/25 passed; an additional 10/10 process repeat passed
+
+ctest --preset release -L m3-v1 --output-on-failure
+# 2/2 passed
+
+ctest --preset release --output-on-failure
+# 61/61 passed
+
+git diff --check
+# passed
+```
+
+### Recorded non-blocking debt
+
+- `FlushFileBuffers` is synchronous on Windows; Task 11 can only honor a
+  cancellation/deadline observed before entering that native call.
+- Bundle containment, file identity and single-writer ownership deliberately
+  remain Task 12 scope.
+
+Task 11 verdict: **DONE**. This is not an M3 GO verdict; Tasks 12–44 and the
+real AIM/NTFS, native VHDX, crash and soak acceptance gates remain required.

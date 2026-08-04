@@ -150,7 +150,7 @@ Suggested commit:
 | 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
 | 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
 | 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
-| 11 | Exact file I/O 与 sparse fake | C | READY_FOR_REVIEW | 10 | M3-V1 |
+| 11 | Exact file I/O 与 sparse fake | C | DONE | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | PENDING | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | PENDING | 13 | M3-V1 |
