@@ -139,8 +139,8 @@ Suggested commit:
 
 | ID | 任务 | 类别 | 状态 | 依赖 | 门禁 |
 |---:|---|---|---|---|---|
-| 00 | 冻结 M2 GO 与建立 M3 targets | C | READY_FOR_REVIEW | 无 | M3-V0 |
-| 01 | M2.1 类型、选项、错误、统计 | C | READY_FOR_REVIEW | 00 | M3-V3 / m2.1-v0 |
+| 00 | 冻结 M2 GO 与建立 M3 targets | C | DONE | 无 | M3-V0 |
+| 01 | M2.1 类型、选项、错误、统计 | C | DONE | 00 | M3-V3 / m2.1-v0 |
 | 02 | Mutation admission 与一致切点 | O | PENDING | 01 | M3-V3 / m2.1-v1 |
 | 03 | 有界 snapshot coordinator 与元数据 COW | S | PENDING | 02 | M3-V3 / m2.1-v1,v3 |
 | 04 | DATA pre-image | O | PENDING | 03 | M3-V3 / m2.1-v2 |
@@ -193,22 +193,22 @@ Suggested commit:
 
 **类别：C。允许文件：** `src/CMakeLists.txt`、`tests/CMakeLists.txt`、M3 空 target 入口、`docs/validation/m3-persistence-acceptance.md`。
 
-- [ ] 证明当前历史包含 `a37ce86` 和 M2 GO 证据；记录工具链、架构、工作树和 57-test 基线预期。
-- [ ] 运行 configure、Release build、完整 CTest，红灯只来自尚未存在的 M3 target/label，不得改 M2 使基线通过。
-- [ ] 添加独立 `myrd_persistence` library、M3 test/e2e target 和 `m3-v0..v5`/`m2.1-v0..v5` CTest 标签骨架；真实 M3-V6/V7 后续由 verification wrapper 驱动，不伪造为本地标签。
-- [ ] 用 link/header 检查证明 `myrd_persistence` 不依赖 driver/proxy，`myrd_storage` 不包含 persistence/VHDX 类型。
-- [ ] 复跑完整 Release CTest；预期原有 57 项全部通过，新空壳测试不伪造功能成功。
-- [ ] 回读 PLAN Task 00 和边界；建议提交 `build(m3): establish persistence targets and baseline`。
+- [x] 证明当前历史包含 `a37ce86` 和 M2 GO 证据；记录工具链、架构、工作树和 57-test 基线预期。
+- [x] 运行 configure、Release build、完整 CTest，红灯只来自尚未存在的 M3 target/label，不得改 M2 使基线通过。
+- [x] 添加独立 `myrd_persistence` library、M3 test/e2e target 和 `m3-v0..v5`/`m2.1-v0..v5` CTest 标签骨架；真实 M3-V6/V7 后续由 verification wrapper 驱动，不伪造为本地标签。
+- [x] 用 link/header 检查证明 `myrd_persistence` 不依赖 driver/proxy，`myrd_storage` 不包含 persistence/VHDX 类型。
+- [x] 复跑完整 Release CTest；预期原有 57 项全部通过，新空壳测试不伪造功能成功。
+- [x] 回读 PLAN Task 00 和边界；建议提交 `build(m3): establish persistence targets and baseline`。
 
 ## Task 01 — 冻结 M2.1 公开合同
 
 **类别：C。允许文件：** `src/storage/consistent_snapshot.h`、M2 options/error/stats/report 文件、类型测试和 CMake。
 
-- [ ] 红灯覆盖 token/status enum、五个稳定错误、两个 option 的全部边界、stats JSON fail-closed 和 enum stable strings。
-- [ ] 实现 PLAN 1.1 的精确字段/签名；复用现有 `dirty_epoch`，禁止建立第二套同义 epoch。
-- [ ] `snapshot_cow_max_bytes` 必须容纳一个由预算 allocator 计费的完整 DATA record + 64 KiB payload；不发明块对齐约束。ZERO/DISCARD metadata、map/set node 和 payload 都计入同一硬上限；stall limit 为 `(0,5s]`。
-- [ ] 运行 `m2.1-v0` 和全部 M2 类型/JSON 回归。
-- [ ] 偏航审计公开 ABI、错误字符串、M4 边界；建议提交 `feat(storage): define consistent snapshot contracts`。
+- [x] 红灯覆盖 token/status enum、五个稳定错误、两个 option 的全部边界、stats JSON fail-closed 和 enum stable strings。
+- [x] 实现 PLAN 1.1 的精确字段/签名；复用现有 `dirty_epoch`，禁止建立第二套同义 epoch。
+- [x] `snapshot_cow_max_bytes` 必须容纳一个由预算 allocator 计费的完整 DATA record + 64 KiB payload；不发明块对齐约束。ZERO/DISCARD metadata、map/set node 和 payload 都计入同一硬上限；stall limit 为 `(0,5s]`。
+- [x] 运行 `m2.1-v0` 和全部 M2 类型/JSON 回归。
+- [x] 偏航审计公开 ABI、错误字符串、M4 边界；建议提交 `feat(storage): define consistent snapshot contracts`。
 
 ## Task 02 — 建立 mutation admission 与线性化切点
 
