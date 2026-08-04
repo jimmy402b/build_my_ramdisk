@@ -80,7 +80,7 @@
 | 17 | 注入 M1 Proxy 与本地 SHM | DONE | 16 | M2-V4 |
 | 18 | 64 GiB/1 TiB 真实 VM 集成 | DONE | 16 | M2-V2 |
 | 19 | CLI、生命周期、报告、性能探针 | DONE | 17,18 | 本地假验收 |
-| 20 | 安全 NTFS 脚本与总编排 | TODO | 19 | Preflight |
+| 20 | 安全 NTFS 脚本与总编排 | DONE | 19 | Preflight |
 | 21 | 执行 M2-A/B 与 M2-C 功能门 | TODO | 20 | M2-V1..V5 |
 | 22 | 性能、故障、20 轮与最终判定 | TODO | 21 | M2-V6..V7 |
 
@@ -1002,53 +1002,53 @@ Executor / timestamp:
 
 ### Mock/preflight 红灯测试
 
-- [ ] 非管理员拒绝 real mode。
-- [ ] 缺 binary/driver/service/PowerShell cmdlet 拒绝。
-- [ ] baseline 已有一个 candidate 或 create 后出现 0/2 个 candidates 拒绝。
-- [ ] candidate 是 Disk 0 拒绝。
-- [ ] boot/system/pagefile/clustered disk 拒绝。
-- [ ] size 非精确 64 GiB 拒绝。
-- [ ] bus/vendor/product/device identity 不匹配拒绝。
-- [ ] 发现 `aimapi.dll`、`aim_ll`、AIM GUI 或 RamDyn 被加载/作为依赖时拒绝。
-- [ ] candidate 已有 partition/volume 拒绝。
-- [ ] mount directory 非空/冲突拒绝。
-- [ ] service baseline 不可读取/恢复拒绝。
-- [ ] evidence dir 不可写或会覆盖旧 run 拒绝。
-- [ ] `-WhatIf` 不调用 Initialize-Disk/Format/RemoveDevice/Set-Service。
+- [x] 非管理员拒绝 real mode。
+- [x] 缺 binary/driver/service/PowerShell cmdlet 拒绝。
+- [x] baseline 已有一个 candidate 或 create 后出现 0/2 个 candidates 拒绝。
+- [x] candidate 是 Disk 0 拒绝。
+- [x] boot/system/pagefile/clustered disk 拒绝。
+- [x] size 非精确 64 GiB 拒绝。
+- [x] bus/vendor/product/device identity 不匹配拒绝。
+- [x] 发现 `aimapi.dll`、`aim_ll`、AIM GUI 或 RamDyn 被加载/作为依赖时拒绝。
+- [x] candidate 已有 partition/volume 拒绝。
+- [x] mount directory 非空/冲突拒绝。
+- [x] service baseline 不可读取/恢复拒绝。
+- [x] evidence dir 不可写或会覆盖旧 run 拒绝。
+- [x] `-WhatIf` 不调用 Initialize-Disk/Format/RemoveDevice/Set-Service。
 
 ### Orchestrator 实现
 
-- [ ] before inventory：physical disks、volumes、mounts、M2 devices、service state/start type、resources。
-- [ ] 启动 C++ provider/lifecycle process 并等结构化 Ready，期间进程保持存活。
-- [ ] 记录模块/依赖检查，真实 device path 只使用本项目二进制和 accepted `phdskmnt.sys`。
-- [ ] new disk = before/after set difference + exact identity；必须恰好一个。
-- [ ] 通过全部 safety predicate 后才允许 initialize。
-- [ ] GPT → one partition → NTFS quick format → run-unique empty mount dir。
-- [ ] 写 deterministic files 总计至少 4 GiB，flush/close/read/hash verify。
-- [ ] 修改、rename 文件与目录，再 read/hash verify。
-- [ ] 确认 NTFS DeleteNotify enabled。
-- [ ] 删除 deterministic subset、flush、执行 ReTrim。
-- [ ] 有限等待 store UNMAP count/bytes 增加。
-- [ ] cleanup：close handles→remove mount/letter→exact device remove→provider stop→service exact restore→inventory compare。
-- [ ] 任一失败仍执行已注册 cleanup；永不按宽泛名称批量删除设备。
+- [x] before inventory：physical disks、volumes、mounts、M2 devices、service state/start type、resources。
+- [x] 启动 C++ provider/lifecycle process 并等结构化 Ready，期间进程保持存活。
+- [x] 记录模块/依赖检查，真实 device path 只使用本项目二进制和 accepted `phdskmnt.sys`。
+- [x] new disk = before/after set difference + exact identity；必须恰好一个。
+- [x] 通过全部 safety predicate 后才允许 initialize。
+- [x] GPT → one partition → NTFS quick format → run-unique empty mount dir。
+- [x] 写 deterministic files 总计至少 4 GiB，flush/close/read/hash verify。
+- [x] 修改、rename 文件与目录，再 read/hash verify。
+- [x] 确认 NTFS DeleteNotify enabled。
+- [x] 删除 deterministic subset、flush、执行 ReTrim。
+- [x] 有限等待 store UNMAP count/bytes 增加。
+- [x] cleanup：close handles→remove mount/letter→exact device remove→provider stop→service exact restore→inventory compare。
+- [x] 任一失败仍执行已注册 cleanup；永不按宽泛名称批量删除设备。
 
 ### JSON/runner 实现
 
-- [ ] validator 检查 schema + semantic gates，不只检查 JSON 可解析。
-- [ ] 缺少 4 GiB、hash、UNMAP、memory、perf、cycle、cleanup 任一证据即 fail。
-- [ ] runner 为每次调用建 timestamp+GUID evidence dir。
-- [ ] stdout/stderr/exit code/command line/environment 摘要全部保存。
-- [ ] Tier M2-V5/V6/V7 映射固定且输出唯一 terminal verdict。
-- [ ] 不允许 `ContinueOnError` 把 required phase 变成 skip/pass。
+- [x] validator 检查 schema + semantic gates，不只检查 JSON 可解析。
+- [x] 缺少 4 GiB、hash、UNMAP、memory、perf、cycle、cleanup 任一证据即 fail；V6/V7 在 Task 22 完成前显式 fail-closed。
+- [x] runner 为每次调用建 timestamp+GUID evidence dir。
+- [x] stdout/stderr/exit code/command line/environment 摘要全部保存。
+- [x] Tier M2-V5/V6/V7 映射固定；当前仅 V5 可执行，V6/V7 明确返回 not implemented，且不存在 skip-as-pass。
+- [x] 不允许 `ContinueOnError` 把 required phase 变成 skip/pass。
 
 ### 验证与验收
 
-- [ ] 全部 mocked preflight tests 通过。
-- [ ] `Invoke-M2Verification.ps1 -Tier M2-V5 -WhatIf` 通过。
-- [ ] before/after inventory 证明 WhatIf 零 mutation。
-- [ ] 人工审查每个 destructive cmdlet 前都有 exact guard。
-- [ ] 回读 Plan Task 20 和 Stop conditions；确认 cleanup target 不是模糊查询结果。
-- [ ] 建议提交：`test(m2): add safe NTFS acceptance harness`。
+- [x] 全部 mocked preflight tests 通过。
+- [x] `Invoke-M2Verification.ps1 -Tier M2-V5 -WhatIf` 通过。
+- [x] before/after inventory 证明 WhatIf 零 mutation。
+- [x] 人工审查每个 destructive cmdlet 前都有 exact guard。
+- [x] 回读 Plan Task 20 和 Stop conditions；确认 cleanup target 不是模糊查询结果。
+- [x] 建议提交：`test(m2): add safe NTFS acceptance harness`。
 
 ---
 
@@ -1515,3 +1515,17 @@ Review findings and resolution: report validation was tightened to cross-check v
 Plan drift audit: implementation matches Plan Task 19 and stops before real-disk mutation; `--real` parses only the complete fail-closed contract and then refuses execution until Task 20 installs the elevated Windows device/NTFS adapters; local-fake never touches AIM, disks, partitions, volumes, or services; no filesystem backing, M3 durability, M4 recovery, threshold reduction, hidden skip, or retry-to-pass behavior was introduced
 Open risks: Tasks 20–22 still own elevated preflight, exact real-device discovery and NTFS mutation, staged M2-A/B/C evidence, real fixed-versus-dynamic performance, fault injection, 20-cycle soak, and the final M2 verdict
 Executor / timestamp: Codex / `2026-08-04T05:35:45+08:00`
+
+Task: 20 — fail-closed NTFS workload and verification orchestrator
+Status: DONE
+Start commit / end commit: `1b39810` / pending commit `test(m2): add safe NTFS acceptance harness`
+Files changed: Windows M2 acceptance adapters and lifecycle/report/CLI integration under `src/m2`, 64 GiB-aware physical-drive location and long-path atomic report publication, the elevated NTFS/outer orchestration/independent verification PowerShell scripts, matching C++ and PowerShell tests/CMake registration, and this Task 20 checklist/record
+Red tests and observed failures: implementation began from Task 19's deliberate real-mode refusal. Focused reds covered malformed CLI identity, late device ownership and cleanup, invalid reports, long report paths, missing DeleteNotify/ReTrim booleans, duplicate/tampered reports, unimplemented V6/V7 false-pass prevention, required Windows commands, and the read-only inventory probe. The first real V5 attempts exposed an incorrectly hard-coded 1.1 GiB OS-memory ceiling for the 4 GiB V5 workload and Win32 `MAX_PATH` failure in report publication; both were corrected at their owning layers. Review then caught an AFTER-READY rather than AFTER-WRITE UNMAP comparison, synchronous outer stdout/stderr draining, absent post-run outer inventory, and a placeholder empty AIM-device list; each received a regression test or an independently observable real-run gate.
+Focused verification command / exit code: `ctest --test-dir out/build/msvc -C Debug -L m2-v5 --output-on-failure` exits 0 with 6/6; mocked static/destructive safety preflight reports 48/48; current actual `Invoke-M2Verification.ps1 -Tier M2-V5 -WhatIf` exits 0 and records equal physical disk, volume, mount, AIM device, and service inventories with no mutation
+Cumulative verification command / exit code: clean-first Debug and Release builds exit 0; fresh full Debug CTest exits 0 with 56/56 and full Release CTest exits 0 with 57/57, including the Release-only 64 GiB/1 TiB VirtualAlloc integration; `git diff --check` is required again after this record before commit
+Canonical real V5 evidence: current Release candidate SHA-256 `BAB718C1869362AC0FD5B16180B498136DEE007E4BDAF205245DD180D7B84F68`; run `out/m2-orchestrated/m2-v5-20260804-083614-0508885-b0cf8db215ff4719b60e349ddd343996`; immutable report `m2-report-7547a8e8141e6539ff32a73cac4ad652-4168801f9437efb58d60d5584f7267fb.json`, SHA-256 `B00214C056CBC47C4D3A31458AF257729A2A703D816C410FF8ADF01FBAAFA1D2`; outer and native independent validators both PASS
+Observed real gates: exact 64 GiB device ID 0 was separately confirmed by QUERY_DEVICE and PhysicalDrive identity; GPT initialization, one NTFS partition, run-unique directory mount, deterministic modify/rename, flush/close/read/hash verification all passed; written/read bytes are each 4,294,967,296 and deleted bytes are 2,147,483,648; committed bytes move 0 → 4,365,287,424 → 2,217,934,848; cumulative UNMAP moves 68,786,388,992 after write → 73,355,886,592 after Delete/ReTrim; sequential/random ratios are 11,335/9,374 basis points against 7,000/6,000 thresholds
+Safety and cleanup evidence: every destructive cmdlet revalidates exact non-Disk-0 number, 64 GiB size, bus/vendor/product, provider session/device ID, serial/unique ID, partition and volume identity before mutation. Cleanup uses only the owned partition access path and exact AIM device ID; no broad disk clear/remove exists. Native and outer before/after inventories both MATCH, AIM device IDs return empty, only physical Disk 0 remains, and `phdskmnt` returns Running/Automatic. V6/V7 explicitly fail closed as not implemented until Task 22; they cannot be counted as PASS.
+Plan drift audit: Task 20 only; the implementation provides the safe real NTFS/V5 acceptance path and proof tooling. It does not claim Task 21's formal staged M2-A/B/C verdicts, Task 22's V6 fault/performance package or 20-cycle V7 soak, filesystem backing, durable persistence, M3, or M4.
+Open risks: Task 21 must execute and publish one ordered candidate-build acceptance set for M2-A/B and M2-C functional/cleanup. Task 22 must implement V6/V7 evidence, fault injection, resource/performance thresholds, 20 full cycles, final regressions, and the only valid final `M2 GO` decision.
+Executor / timestamp: Codex / `2026-08-04T08:37:00+08:00`

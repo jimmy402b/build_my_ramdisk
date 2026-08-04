@@ -119,6 +119,32 @@ TEST_CASE(report_publisher_creates_parent_and_rejects_overwrite) {
 
 // ── CLI tests (Task 18) ────────────────────────────────────────
 
+TEST_CASE(report_publisher_supports_a_temporary_path_beyond_max_path) {
+    const auto unique_suffix = std::to_string(
+        std::chrono::high_resolution_clock::now()
+            .time_since_epoch().count());
+    const auto root = std::filesystem::temp_directory_path() /
+        ("myrd-report-long-path-test-" + unique_suffix);
+    auto target = root;
+    for (int index = 0; index < 6; ++index) {
+        target /= "forty-character-directory-component-000000";
+    }
+    target /= "report.json";
+    REQUIRE(target.wstring().size() > 260);
+
+    const auto first =
+        myrd::poc::publish_report_atomic("{\"long\":true}\n", target);
+    REQUIRE(first.ok());
+    const auto second =
+        myrd::poc::publish_report_atomic("{\"long\":false}\n", target);
+    REQUIRE(second.has_error());
+
+    std::error_code filesystem_error;
+    const auto extended_root = std::filesystem::path(
+        L"\\\\?\\" + std::filesystem::absolute(root).wstring());
+    std::filesystem::remove_all(extended_root, filesystem_error);
+}
+
 #include "src/poc/cli.h"
 
 static std::vector<std::wstring_view> mk(std::initializer_list<const wchar_t*> il) {

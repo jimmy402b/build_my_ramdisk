@@ -694,6 +694,20 @@ set_tests_properties(unit.m2.local_fake PROPERTIES
     LABELS "m2-v4"
     TIMEOUT 30)
 
+add_executable(myrd_m2_windows_acceptance_tests
+    unit/m2_windows_acceptance_tests.cpp
+)
+target_link_libraries(myrd_m2_windows_acceptance_tests PRIVATE
+    myrd_test_support myrd_m2_windows)
+target_include_directories(myrd_m2_windows_acceptance_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_windows_acceptance_tests)
+add_test(NAME unit.m2.windows_acceptance
+    COMMAND myrd_m2_windows_acceptance_tests)
+set_tests_properties(unit.m2.windows_acceptance PROPERTIES
+    LABELS "m2-v5"
+    TIMEOUT 30)
+
 add_test(
     NAME integration.m2.cli_smoke
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
@@ -701,4 +715,51 @@ add_test(
             -Executable "$<TARGET_FILE:myrd-m2-e2e>")
 set_tests_properties(integration.m2.cli_smoke PROPERTIES
     LABELS "m2-v4"
+    TIMEOUT 30)
+
+add_test(
+    NAME unit.m2.harness_preflight
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-harness-preflight.ps1")
+set_tests_properties(unit.m2.harness_preflight PROPERTIES
+    LABELS "m2-v5"
+    TIMEOUT 30)
+
+add_test(
+    NAME unit.m2.native_process
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-native-process.ps1")
+set_tests_properties(unit.m2.native_process PROPERTIES
+    LABELS "m2-v5"
+    TIMEOUT 30)
+
+add_test(
+    NAME unit.m2.json_verifier
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-json-verifier.ps1"
+            -Executable "$<TARGET_FILE:myrd-m2-e2e>"
+            -Verifier "${CMAKE_SOURCE_DIR}/tools/Verify-M2Json.ps1")
+set_tests_properties(unit.m2.json_verifier PROPERTIES
+    LABELS "m2-v5"
+    TIMEOUT 30)
+
+add_test(
+    NAME integration.m2.orchestrator_whatif
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-orchestrator-whatif.ps1"
+            -Executable "$<TARGET_FILE:myrd-m2-e2e>"
+            -Orchestrator "${CMAKE_SOURCE_DIR}/tools/Invoke-M2Verification.ps1")
+set_tests_properties(integration.m2.orchestrator_whatif PROPERTIES
+    LABELS "m2-v5"
+    TIMEOUT 30)
+
+add_test(
+    NAME unit.m2.orchestrator_report_gate
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-orchestrator-report-gate.ps1"
+            -Executable "$<TARGET_FILE:myrd-m2-e2e>"
+            -Common "${CMAKE_SOURCE_DIR}/tools/M2Verification.Common.ps1"
+            -Verifier "${CMAKE_SOURCE_DIR}/tools/Verify-M2Json.ps1")
+set_tests_properties(unit.m2.orchestrator_report_gate PROPERTIES
+    LABELS "m2-v5"
     TIMEOUT 30)

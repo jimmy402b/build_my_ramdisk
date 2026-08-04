@@ -1,11 +1,13 @@
 #include "m2_cli.h"
 #include "m2_local_fake.h"
 #include "m2_report.h"
+#include "m2_windows_acceptance.h"
 
 #include "src/proxy/object_names.h"
 
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -82,12 +84,24 @@ int wmain(int argc, wchar_t* argv[]) {
             return 0;
         }
 
-        case myrd::M2CliMode::real:
-            std::fwprintf(
-                stderr,
-                L"M2 real mode is fail-closed until the Task 20 Windows "
-                L"device and NTFS acceptance adapters are installed.\n");
-            return 6;
+        case myrd::M2CliMode::real: {
+            std::error_code path_error;
+            const auto executable = std::filesystem::canonical(
+                std::filesystem::path(argv[0]), path_error);
+            if (path_error) {
+                std::fwprintf(
+                    stderr, L"M2 could not resolve its executable path.\n");
+                return 6;
+            }
+            auto run = myrd::run_m2_windows_acceptance(
+                parsed.value(), executable);
+            if (!run) return print_error(run.error(), 7);
+            std::wprintf(
+                L"M2 real report: %ls\n",
+                run.value().report_path.c_str());
+            return run.value().report.verdict == myrd::M2Verdict::go
+                ? 0 : 8;
+        }
         }
     } catch (const std::exception&) {
         std::fwprintf(stderr, L"M2 failed with an unexpected exception.\n");

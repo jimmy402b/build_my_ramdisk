@@ -470,6 +470,21 @@ TEST_CASE(m2_report_preserves_uint64_max_as_an_unquoted_decimal_integer) {
     REQUIRE(myrd::validate_m2_report_json(json).ok());
 }
 
+TEST_CASE(m2_report_validator_identifies_the_first_invalid_section) {
+    auto json = myrd::serialize_m2_report(complete_report());
+    json = replace_once(
+        std::move(json),
+        "\"block_size_bytes\": 65536",
+        "\"block_size_bytes\": 32768");
+
+    const auto validation = myrd::validate_m2_report_json(json);
+
+    REQUIRE(validation.has_error());
+    REQUIRE(
+        validation.error().message.find(L"geometry_options") !=
+        std::wstring::npos);
+}
+
 TEST_CASE(m2_report_validator_rejects_each_missing_required_member) {
     const auto json = myrd::serialize_m2_report(complete_report());
     const std::vector<std::string_view> once = {
@@ -774,6 +789,16 @@ TEST_CASE(m2_report_validator_cross_checks_exact_device_identity) {
     require_invalid(myrd::serialize_m2_report(report));
 }
 
+TEST_CASE(m2_report_validator_accepts_valid_zero_scsi_address) {
+    auto report = complete_report();
+    report.device_identity.device_id_raw = "0";
+    report.device_identity.path_id = 0;
+    report.device_identity.target_id = 0;
+    report.device_identity.lun = 0;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
 TEST_CASE(m2_report_validator_accepts_only_coherent_staged_failure_identity) {
     auto report = complete_report();
     report.device_identity.query_flags = 0;
@@ -888,6 +913,39 @@ TEST_CASE(m2_report_validator_cross_checks_memory_sample_semantics) {
     report = complete_report();
     report.os_memory_samples[2].commit_bytes = (74ULL << 20U) + 1;
     require_invalid(myrd::serialize_m2_report(report));
+}
+
+TEST_CASE(m2_report_validator_identifies_the_memory_gate_that_failed) {
+    auto report = complete_report();
+    report.os_memory_samples[2].private_bytes = (74ULL << 20U) + 1;
+
+    const auto validation = myrd::validate_m2_report_json(
+        myrd::serialize_m2_report(report));
+
+    REQUIRE(validation.has_error());
+    REQUIRE(
+        validation.error().message.find(
+            L"os_memory_samples.retrim_private_bytes") !=
+        std::wstring::npos);
+}
+
+TEST_CASE(m2_report_memory_gate_scales_with_observed_store_commit) {
+    auto report = complete_report();
+    report.geometry_options.soft_limit_bytes = 6ULL << 30U;
+    report.geometry_options.hard_limit_bytes = 8ULL << 30U;
+    report.geometry_options.eviction_low_watermark_bytes = 4ULL << 30U;
+    report.store_stats_samples[1].stats.committed_bytes = 4ULL << 30U;
+    report.store_stats_samples[2].stats.committed_bytes = 2ULL << 30U;
+    report.store_stats_samples[3].stats.committed_bytes = 0;
+
+    constexpr std::uint64_t ready = 64ULL << 20U;
+    report.os_memory_samples[1].private_bytes = ready + (4ULL << 30U);
+    report.os_memory_samples[1].commit_bytes = ready + (4ULL << 30U);
+    report.os_memory_samples[2].private_bytes = ready + (2ULL << 30U);
+    report.os_memory_samples[2].commit_bytes = ready + (2ULL << 30U);
+
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
 }
 
 TEST_CASE(m2_report_validator_requires_matching_ordered_partial_sample_sets) {

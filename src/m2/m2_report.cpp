@@ -622,16 +622,19 @@ private:
 class ReportValidator {
 public:
     bool validate(const JsonValue& root) {
+        enter_section("root");
         if (root.type != JsonType::object) {
             fail();
             return false;
         }
 
+        enter_section("schema_version");
         const auto schema_version = uint_member(root, "schema_version");
         if (!schema_version || *schema_version != kM2ReportSchemaVersion) {
             fail();
         }
 
+        enter_section("run");
         const JsonValue* run = object_member(root, "run");
         if (run != nullptr) {
             const auto run_id = string_member(*run, "run_id");
@@ -654,6 +657,7 @@ public:
             }
         }
 
+        enter_section("build_toolchain");
         const JsonValue* build = object_member(root, "build_toolchain");
         if (build != nullptr) {
             for (const auto name : {
@@ -675,6 +679,7 @@ public:
             }
         }
 
+        enter_section("accepted_m1_baseline");
         const JsonValue* baseline =
             object_member(root, "accepted_m1_baseline");
         if (baseline != nullptr) {
@@ -690,9 +695,10 @@ public:
             const auto m1_verdict = string_member(*baseline, "m1_verdict");
             if (!m1_verdict || *m1_verdict != "GO") fail();
             const auto accepted = bool_member(*baseline, "accepted");
-            if (!accepted || !*accepted) failure_ = true;
+            if (!accepted || !*accepted) mark_failure();
         }
 
+        enter_section("machine_os");
         const JsonValue* machine = object_member(root, "machine_os");
         if (machine != nullptr) {
             for (const auto name : {
@@ -713,12 +719,15 @@ public:
                 machine_fingerprint_ = *fingerprint;
             }
         }
+        enter_section("state_before");
         const auto before_driver = validate_driver_state(root, "state_before");
+        enter_section("state_after");
         const auto after_driver = validate_driver_state(root, "state_after");
         if (before_driver && after_driver && *before_driver != *after_driver) {
-            failure_ = true;
+            mark_failure();
         }
 
+        enter_section("geometry_options");
         const JsonValue* geometry = object_member(root, "geometry_options");
         if (geometry != nullptr) {
             const auto disk = uint_member(*geometry, "disk_size_bytes");
@@ -760,6 +769,7 @@ public:
             }
         }
 
+        enter_section("state");
         const JsonValue* state = object_member(root, "state");
         if (state != nullptr) {
             const auto initial = string_member(*state, "initial_state");
@@ -791,8 +801,10 @@ public:
             }
         }
 
+        enter_section("phases");
         validate_phases(root);
 
+        enter_section("io");
         const JsonValue* io = object_member(root, "io");
         if (io != nullptr) {
             const auto write_hash = string_member(*io, "write_sha256");
@@ -802,7 +814,7 @@ public:
             uint_member(*io, "bytes_deleted");
             if (write_hash && read_hash) {
                 if (write_hash->empty() && read_hash->empty()) {
-                    incomplete_ = true;
+                    mark_incomplete();
                 } else if (!is_sha256(*write_hash) ||
                            !is_sha256(*read_hash) ||
                            *write_hash != *read_hash) {
@@ -810,19 +822,27 @@ public:
                 }
             }
             if (written && read && (*written == 0 || *read == 0)) {
-                incomplete_ = true;
+                mark_incomplete();
             }
         }
 
+        enter_section("store_stats_samples");
         validate_store_samples(root);
 
+        enter_section("os_memory_samples");
         validate_memory_samples(root);
+        enter_section("performance");
         validate_performance(root);
+        enter_section("device_identity");
         validate_device(root);
+        enter_section("cleanup_actions");
         validate_cleanup(root);
+        enter_section("final_baseline_comparison");
         validate_final_baseline(root);
+        enter_section("failures");
         validate_failures(root);
 
+        enter_section("verdict");
         const auto verdict_text = string_member(root, "verdict");
         const auto verdict = verdict_text ? parse_m2_verdict(*verdict_text)
                                           : std::nullopt;
@@ -834,16 +854,69 @@ public:
             return false;
         }
         if (failure_) {
-            return *verdict == M2Verdict::no_go;
+            if (*verdict != M2Verdict::no_go) {
+                fail_from_semantic_source(first_failure_section_);
+                return false;
+            }
+            return true;
         }
         if (incomplete_) {
-            return *verdict == M2Verdict::incomplete;
+            if (*verdict != M2Verdict::incomplete) {
+                fail_from_semantic_source(first_incomplete_section_);
+                return false;
+            }
+            return true;
         }
-        return *verdict == M2Verdict::go;
+        if (*verdict != M2Verdict::go) {
+            fail();
+            return false;
+        }
+        return true;
+    }
+
+    std::string_view first_invalid_section() const noexcept {
+        return first_invalid_section_;
     }
 
 private:
-    void fail() noexcept { valid_ = false; }
+    void enter_section(std::string_view section) noexcept {
+        current_section_ = section;
+    }
+
+    void fail() noexcept {
+        if (valid_) first_invalid_section_ = current_section_;
+        valid_ = false;
+    }
+
+    void fail_from_semantic_source(std::string_view section) noexcept {
+        if (!section.empty()) current_section_ = section;
+        fail();
+    }
+
+    void fail_at(std::string_view section) noexcept {
+        current_section_ = section;
+        fail();
+    }
+
+    void mark_failure() noexcept {
+        if (!failure_) first_failure_section_ = current_section_;
+        failure_ = true;
+    }
+
+    void mark_failure_at(std::string_view section) noexcept {
+        current_section_ = section;
+        mark_failure();
+    }
+
+    void mark_incomplete() noexcept {
+        if (!incomplete_) first_incomplete_section_ = current_section_;
+        incomplete_ = true;
+    }
+
+    void mark_incomplete_at(std::string_view section) noexcept {
+        current_section_ = section;
+        mark_incomplete();
+    }
 
     const JsonValue* required_member(
         const JsonValue& object, std::string_view name) {
@@ -1057,7 +1130,7 @@ private:
             service_state->empty() && start_type->empty() &&
             file_path->empty() && file_version->empty() &&
             file_hash->empty()) {
-            incomplete_ = true;
+            mark_incomplete();
             return std::nullopt;
         }
         if (!driver_state || !service_name || !service_state || !start_type ||
@@ -1094,7 +1167,7 @@ private:
             M2PhaseId::compare_baseline,
             M2PhaseId::publish_report};
         if (phases->array.size() != std::size(required_ids)) {
-            incomplete_ = true;
+            mark_incomplete();
         }
         for (std::size_t index = 0; index < phases->array.size(); ++index) {
             const auto& phase = phases->array[index];
@@ -1118,9 +1191,9 @@ private:
             if (!status) {
                 fail();
             } else if (*status == M2PhaseStatus::not_run) {
-                incomplete_ = true;
+                mark_incomplete();
             } else if (*status == M2PhaseStatus::failed) {
-                failure_ = true;
+                mark_failure();
             }
             const auto error = string_member(phase, "phase_error");
             if (status && *status == M2PhaseStatus::passed &&
@@ -1172,7 +1245,7 @@ private:
             M2PhaseId::sample_after_retrim,
             M2PhaseId::stop_provider};
         if (samples->array.size() != std::size(required_points)) {
-            incomplete_ = true;
+            mark_incomplete_at("os_memory_samples.count");
         }
         std::optional<std::uint64_t> provider_process_id;
         std::optional<std::uint64_t> previous_elapsed;
@@ -1184,7 +1257,7 @@ private:
         for (std::size_t index = 0; index < samples->array.size(); ++index) {
             const auto& sample = samples->array[index];
             if (sample.type != JsonType::object) {
-                fail();
+                fail_at("os_memory_samples.item_type");
                 continue;
             }
             const auto point_text =
@@ -1205,7 +1278,7 @@ private:
             if (!point || !phase || !captured || captured->empty() ||
                 !process_id || *process_id == 0 || !elapsed ||
                 !private_value || !commit_value) {
-                fail();
+                fail_at("os_memory_samples.required_fields");
                 continue;
             }
             const auto captured_seconds = parse_utc_seconds(*captured);
@@ -1214,32 +1287,34 @@ private:
                  *captured_seconds < *run_started_seconds_) ||
                 (run_ended_seconds_ &&
                  *captured_seconds > *run_ended_seconds_)) {
-                fail();
+                fail_at("os_memory_samples.captured_utc");
                 continue;
             }
             const auto point_index = static_cast<std::size_t>(*point);
             if (point_index >= std::size(required_points)) {
-                fail();
+                fail_at("os_memory_samples.sample_point");
                 continue;
             }
             if (*point != required_points[point_index] ||
                 *phase != required_phases[point_index] ||
                 (previous_point_index &&
                  point_index <= *previous_point_index)) {
-                fail();
+                fail_at("os_memory_samples.order_or_phase");
             }
             previous_point_index = point_index;
             memory_sample_present[point_index] = true;
             if (store_sample_timestamps_[point_index] &&
                 *captured != *store_sample_timestamps_[point_index]) {
-                fail();
+                fail_at("os_memory_samples.store_timestamp_alignment");
             }
             if (provider_process_id &&
                 *process_id != *provider_process_id) {
-                fail();
+                fail_at("os_memory_samples.provider_process_id");
             }
             provider_process_id = *process_id;
-            if (previous_elapsed && *elapsed <= *previous_elapsed) fail();
+            if (previous_elapsed && *elapsed <= *previous_elapsed) {
+                fail_at("os_memory_samples.elapsed_order");
+            }
             previous_elapsed = *elapsed;
             private_bytes[point_index] = *private_value;
             commit_bytes[point_index] = *commit_value;
@@ -1249,7 +1324,7 @@ private:
              index < memory_sample_present.size(); ++index) {
             if (memory_sample_present[index] !=
                 store_sample_timestamps_[index].has_value()) {
-                fail();
+                fail_at("os_memory_samples.store_sample_presence");
             }
         }
         if (std::all_of(
@@ -1262,31 +1337,96 @@ private:
                 elapsed_ms.begin(), elapsed_ms.end(),
                 [](const auto& value) { return value.has_value(); })) {
             constexpr std::uint64_t ready_limit = 128ULL << 20U;
-            constexpr std::uint64_t write_growth_limit =
-                (11ULL << 30U) / 10U;
-            if (*private_bytes[0] > ready_limit ||
-                *commit_bytes[0] > ready_limit ||
-                *private_bytes[1] <= *private_bytes[0] ||
-                *commit_bytes[1] <= *commit_bytes[0] ||
-                *private_bytes[1] - *private_bytes[0] > write_growth_limit ||
-                *commit_bytes[1] - *commit_bytes[0] > write_growth_limit ||
-                *elapsed_ms[2] - *elapsed_ms[1] > 10'000) {
-                failure_ = true;
+            if (*private_bytes[0] > ready_limit) {
+                mark_failure_at("os_memory_samples.ready_private_bytes");
             }
-            const auto private_growth =
-                *private_bytes[1] - *private_bytes[0];
-            const auto commit_growth = *commit_bytes[1] - *commit_bytes[0];
-            const auto private_remaining = *private_bytes[2] > *private_bytes[0]
-                                               ? *private_bytes[2] -
-                                                     *private_bytes[0]
-                                               : 0;
-            const auto commit_remaining = *commit_bytes[2] > *commit_bytes[0]
-                                              ? *commit_bytes[2] -
-                                                    *commit_bytes[0]
-                                              : 0;
-            if (private_remaining > private_growth / 10U ||
-                commit_remaining > commit_growth / 10U) {
-                failure_ = true;
+            if (*commit_bytes[0] > ready_limit) {
+                mark_failure_at("os_memory_samples.ready_commit_bytes");
+            }
+            const bool private_grew =
+                *private_bytes[1] > *private_bytes[0];
+            const bool commit_grew =
+                *commit_bytes[1] > *commit_bytes[0];
+            if (!private_grew) {
+                mark_failure_at("os_memory_samples.write_private_growth");
+            }
+            if (!commit_grew) {
+                mark_failure_at("os_memory_samples.write_commit_growth");
+            }
+            const auto private_growth = private_grew
+                ? *private_bytes[1] - *private_bytes[0]
+                : 0;
+            const auto commit_growth = commit_grew
+                ? *commit_bytes[1] - *commit_bytes[0]
+                : 0;
+            const bool store_samples_present =
+                store_committed_bytes_[0] &&
+                store_committed_bytes_[1] &&
+                store_committed_bytes_[2];
+            std::uint64_t store_growth = 0;
+            std::uint64_t store_reclaimed = 0;
+            if (store_samples_present &&
+                *store_committed_bytes_[1] > *store_committed_bytes_[0]) {
+                store_growth =
+                    *store_committed_bytes_[1] - *store_committed_bytes_[0];
+                store_reclaimed = *store_committed_bytes_[1] >
+                        *store_committed_bytes_[2]
+                    ? *store_committed_bytes_[1] -
+                          *store_committed_bytes_[2]
+                    : 0;
+                const auto growth_allowance = store_growth / 10U;
+                const auto growth_limit = store_growth <=
+                        (std::numeric_limits<std::uint64_t>::max)() -
+                            growth_allowance
+                    ? store_growth + growth_allowance
+                    : (std::numeric_limits<std::uint64_t>::max)();
+                if (private_growth > growth_limit) {
+                    mark_failure_at(
+                        "os_memory_samples.write_private_limit");
+                }
+                if (commit_growth > growth_limit) {
+                    mark_failure_at(
+                        "os_memory_samples.write_commit_limit");
+                }
+            }
+            if (*elapsed_ms[2] > *elapsed_ms[1] &&
+                *elapsed_ms[2] - *elapsed_ms[1] > 10'000) {
+                mark_failure_at("os_memory_samples.retrim_elapsed");
+            }
+            if (store_growth != 0 && store_reclaimed != 0) {
+                const auto store_reclaim_basis_points =
+                    basis_points(store_reclaimed, store_growth);
+                const auto check_reclaim = [this, store_reclaim_basis_points](
+                    std::uint64_t ready_value,
+                    std::uint64_t write_value,
+                    std::uint64_t retrim_value,
+                    std::string_view failure_section) {
+                    if (!store_reclaim_basis_points ||
+                        write_value <= ready_value) {
+                        return;
+                    }
+                    const auto os_growth = write_value - ready_value;
+                    const auto os_reclaimed = write_value > retrim_value
+                        ? write_value - retrim_value
+                        : 0;
+                    const auto os_reclaim_basis_points =
+                        basis_points(os_reclaimed, os_growth);
+                    const auto capped_store_reclaim = (std::min)(
+                        *store_reclaim_basis_points,
+                        std::uint64_t{10'000});
+                    const auto required_os_reclaim =
+                        (capped_store_reclaim * 9'000U) / 10'000U;
+                    if (!os_reclaim_basis_points ||
+                        *os_reclaim_basis_points < required_os_reclaim) {
+                        mark_failure_at(failure_section);
+                    }
+                };
+                check_reclaim(
+                    *private_bytes[0], *private_bytes[1], *private_bytes[2],
+                    "os_memory_samples.retrim_private_bytes");
+                check_reclaim(
+                    *commit_bytes[0], *commit_bytes[1], *commit_bytes[2],
+                    "os_memory_samples.retrim_commit_bytes");
             }
         }
     }
@@ -1321,7 +1461,7 @@ private:
             M2StoreSamplePoint::after_retrim,
             M2StoreSamplePoint::final};
         if (samples->array.size() != std::size(required_points)) {
-            incomplete_ = true;
+            mark_incomplete();
         }
         std::optional<std::uint64_t> ready_committed;
         std::optional<std::uint64_t> write_committed;
@@ -1370,6 +1510,9 @@ private:
             const auto logical = uint_member(*stats, "logical_size_bytes");
             const auto reserved = uint_member(*stats, "reserved_bytes");
             const auto committed = uint_member(*stats, "committed_bytes");
+            if (point_index < store_committed_bytes_.size() && committed) {
+                store_committed_bytes_[point_index] = *committed;
+            }
             for (const auto name : {
                      "resident_clean_blocks", "resident_dirty_blocks",
                      "zero_clean_blocks", "zero_dirty_blocks",
@@ -1418,7 +1561,7 @@ private:
         if (ready_committed && write_committed && retrim_committed &&
             (*write_committed <= *ready_committed ||
              *retrim_committed >= *write_committed)) {
-            failure_ = true;
+            mark_failure();
         }
     }
 
@@ -1570,7 +1713,7 @@ private:
         const auto overall_pass = bool_member(*comparison, "overall_pass");
 
         if (!measured) {
-            incomplete_ = true;
+            mark_incomplete();
             return;
         }
         if (!fixed || !dynamic || !sequential_ratio || !random_ratio ||
@@ -1613,7 +1756,7 @@ private:
             (*gate == M2PerformanceGateStatus::failed && expected_overall)) {
             fail();
         }
-        if (*gate == M2PerformanceGateStatus::failed) failure_ = true;
+        if (*gate == M2PerformanceGateStatus::failed) mark_failure();
     }
 
     void validate_device(const JsonValue& root) {
@@ -1656,7 +1799,7 @@ private:
             unique_id->empty() && volume_guids->empty() &&
             mount_points->empty();
         if (no_identity_captured) {
-            incomplete_ = true;
+            mark_incomplete();
             return;
         }
         std::uint32_t raw_id = 0;
@@ -1667,7 +1810,7 @@ private:
             *create_flags != aim::kM0CreateFlags ||
             parsed.ec != std::errc{} ||
             parsed.ptr != raw_text->data() + raw_text->size() ||
-            raw_id == 0 || raw_id == aim::kAllDevices) {
+            raw_id == aim::kAllDevices) {
             fail();
             return;
         }
@@ -1685,7 +1828,7 @@ private:
             serial->empty() && unique_id->empty() &&
             volume_guids->empty() && mount_points->empty();
         if (no_disk_identity) {
-            incomplete_ = true;
+            mark_incomplete();
             return;
         }
 
@@ -1702,7 +1845,7 @@ private:
         }
 
         if (volume_guids->empty() && mount_points->empty()) {
-            incomplete_ = true;
+            mark_incomplete();
             return;
         }
         if (volume_guids->empty() || mount_points->empty()) {
@@ -1719,7 +1862,7 @@ private:
             M2CleanupActionId::stop_provider,
             M2CleanupActionId::restore_service};
         if (actions->array.size() != std::size(required_ids)) {
-            incomplete_ = true;
+            mark_incomplete();
         }
         for (std::size_t index = 0; index < actions->array.size(); ++index) {
             const auto& action = actions->array[index];
@@ -1746,11 +1889,11 @@ private:
             }
             if (!attempted || !*attempted ||
                 *result == M2CleanupResult::not_attempted) {
-                incomplete_ = true;
+                mark_incomplete();
             }
             if (*result == M2CleanupResult::failed ||
                 (error && !error->empty())) {
-                failure_ = true;
+                mark_failure();
             }
             if (attempted && ((*attempted &&
                                *result == M2CleanupResult::not_attempted) ||
@@ -1821,7 +1964,7 @@ private:
             return;
         }
         if (not_compared) {
-            incomplete_ = true;
+            mark_incomplete();
             return;
         }
         const bool inventory_matches =
@@ -1848,7 +1991,7 @@ private:
             }
             return;
         }
-        failure_ = true;
+        mark_failure();
         if (*exact_match || before->empty() || after->empty() ||
             (*before == *after && inventory_matches && diff_empty)) {
             fail();
@@ -1858,7 +2001,7 @@ private:
     void validate_failures(const JsonValue& root) {
         const JsonValue* failures = array_member(root, "failures");
         if (failures == nullptr) return;
-        if (!failures->array.empty()) failure_ = true;
+        if (!failures->array.empty()) mark_failure();
         for (const auto& failure : failures->array) {
             if (failure.type != JsonType::object) {
                 fail();
@@ -1876,6 +2019,10 @@ private:
     bool valid_ = true;
     bool incomplete_ = false;
     bool failure_ = false;
+    std::string_view current_section_ = "root";
+    std::string_view first_invalid_section_;
+    std::string_view first_incomplete_section_;
+    std::string_view first_failure_section_;
     std::optional<M2RunMode> run_mode_;
     std::optional<std::uint64_t> disk_size_bytes_;
     std::optional<std::uint64_t> hard_limit_bytes_;
@@ -1887,6 +2034,8 @@ private:
     std::optional<std::int64_t> run_ended_seconds_;
     std::array<std::optional<std::string_view>, 4>
         store_sample_timestamps_{};
+    std::array<std::optional<std::uint64_t>, 4>
+        store_committed_bytes_{};
 };
 
 std::string sanitize_run_id(std::string_view run_id) {
@@ -2446,7 +2595,14 @@ Result<void> validate_m2_report_json(std::string_view json) {
     }
     ReportValidator validator;
     if (!validator.validate(root)) {
-        return report_error(L"report violates the M2 v1 schema or semantics");
+        std::wstring message =
+            L"report violates the M2 v1 schema or semantics";
+        const auto section = validator.first_invalid_section();
+        if (!section.empty()) {
+            message += L"; first invalid section: ";
+            message.append(section.begin(), section.end());
+        }
+        return report_error(std::move(message));
     }
     return Result<void>::success();
 }

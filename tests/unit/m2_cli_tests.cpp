@@ -55,7 +55,7 @@ std::vector<std::wstring> real_test_policy_args(const TempInputTree& tree) {
         L"--expected-driver-service", L"phdskmnt",
         L"--expected-driver-sha256",
         L"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-        L"--expected-bus-type", L"SCSI",
+        L"--expected-bus-type", L"Fibre Channel",
         L"--expected-vendor-id", L"MYRD",
         L"--expected-product-id", L"DynamicDisk",
         L"--disk-size-bytes", L"68719476736",
@@ -148,8 +148,15 @@ TEST_CASE(m2_cli_real_test_policy_requires_every_identity_and_safety_input) {
     REQUIRE_EQ(parsed.value().geometry.disk_size_bytes, 64ull << 30);
     REQUIRE_EQ(parsed.value().geometry.sector_size_bytes, 512u);
     REQUIRE_EQ(parsed.value().geometry.block_size_bytes, 64ull << 10);
+    REQUIRE(parsed.value().geometry.soft_limit_bytes > 0);
+    REQUIRE(
+        parsed.value().geometry.eviction_low_watermark_bytes <=
+        parsed.value().geometry.soft_limit_bytes);
+    REQUIRE(
+        parsed.value().geometry.soft_limit_bytes <
+        parsed.value().geometry.hard_limit_bytes);
     REQUIRE_EQ(parsed.value().expected_driver_service, "phdskmnt");
-    REQUIRE_EQ(parsed.value().expected_bus_type, "SCSI");
+    REQUIRE_EQ(parsed.value().expected_bus_type, "Fibre Channel");
 
     struct RequiredOption {
         const wchar_t* name;
@@ -177,6 +184,23 @@ TEST_CASE(m2_cli_real_test_policy_requires_every_identity_and_safety_input) {
     }
 }
 
+TEST_CASE(m2_cli_test_policy_derives_spec_ram_percentages_and_alignment) {
+    constexpr std::uint64_t physical = 64ull << 30;
+    constexpr std::uint64_t alignment = 64ull << 10;
+    const auto aligned_down = [](std::uint64_t value) {
+        return value - (value % alignment);
+    };
+
+    auto limits = myrd::derive_m2_test_policy_limits(physical);
+    REQUIRE(limits.ok());
+    REQUIRE_EQ(limits.value().soft_limit_bytes, aligned_down(physical / 4));
+    REQUIRE_EQ(limits.value().hard_limit_bytes, aligned_down(physical / 2));
+    REQUIRE_EQ(
+        limits.value().eviction_low_watermark_bytes,
+        aligned_down((physical / 4) * 4 / 5));
+    REQUIRE(myrd::derive_m2_test_policy_limits(128ull << 10).has_error());
+}
+
 TEST_CASE(m2_cli_real_rejects_wrong_geometry_identity_and_ambiguous_policy) {
     TempInputTree tree;
 
@@ -192,6 +216,20 @@ TEST_CASE(m2_cli_real_rejects_wrong_geometry_identity_and_ambiguous_policy) {
         values.begin(), values.end(), L"--expected-driver-sha256");
     REQUIRE(hash != values.end());
     *(hash + 1) = L"not-a-sha256";
+    REQUIRE(parse_storage(values).has_error());
+
+    values = real_test_policy_args(tree);
+    const auto bus = std::find(
+        values.begin(), values.end(), L"--expected-bus-type");
+    REQUIRE(bus != values.end());
+    *(bus + 1) = L" Fibre Channel";
+    REQUIRE(parse_storage(values).has_error());
+
+    values = real_test_policy_args(tree);
+    const auto product = std::find(
+        values.begin(), values.end(), L"--expected-product-id");
+    REQUIRE(product != values.end());
+    *(product + 1) = L"Virtual\nDisk";
     REQUIRE(parse_storage(values).has_error());
 
     values = real_test_policy_args(tree);

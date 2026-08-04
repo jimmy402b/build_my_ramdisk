@@ -53,6 +53,21 @@ TEST_CASE(locator_rejects_length_not_64_mib) {
     REQUIRE(r.has_error());
 }
 
+TEST_CASE(locator_matches_an_explicit_64_gib_m2_capacity) {
+    constexpr std::uint64_t m2_size = 64ull * 1024ull * 1024ull * 1024ull;
+    std::vector<myrd::aim::DiskCandidate> cands;
+    cands.push_back({0x01, 0x02, 0x03, 42, m2_size, false});
+    myrd::aim::DeviceId id{0x00030201u};
+
+    auto matched = myrd::aim::match_created_disk(id, cands, m2_size);
+    REQUIRE(matched.ok());
+    REQUIRE_EQ(matched.value().length_bytes, m2_size);
+
+    auto wrong = myrd::aim::match_created_disk(
+        id, cands, 32ull * 1024ull * 1024ull * 1024ull);
+    REQUIRE(wrong.has_error());
+}
+
 TEST_CASE(locator_builds_exact_decimal_physicaldrive_path) {
     std::vector<myrd::aim::DiskCandidate> cands;
     cands.push_back({0x01, 0x00, 0x00, 42, 64ull*1024*1024, false});

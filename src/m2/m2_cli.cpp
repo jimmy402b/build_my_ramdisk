@@ -2,6 +2,10 @@
 
 #include "src/storage/dynamic_block_types.h"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <cctype>
 #include <limits>
@@ -83,13 +87,18 @@ Result<std::string> parse_ascii_identity(std::wstring_view text) {
             ErrorDomain::usage, 2, L"parse_m2_cli",
             L"identity argument is empty or too long"});
     }
+    if (text.front() == L' ' || text.back() == L' ') {
+        return Result<std::string>::failure({
+            ErrorDomain::usage, 2, L"parse_m2_cli",
+            L"identity argument must not have leading or trailing spaces"});
+    }
     std::string result;
     result.reserve(text.size());
     for (const auto current : text) {
-        if (current < 0x21 || current > 0x7e) {
+        if (current < 0x20 || current > 0x7e) {
             return Result<std::string>::failure({
                 ErrorDomain::usage, 2, L"parse_m2_cli",
-                L"identity argument must be printable ASCII without spaces"});
+                L"identity argument must contain only printable ASCII"});
         }
         result.push_back(static_cast<char>(current));
     }
@@ -172,6 +181,30 @@ Result<void> parse_value_option(
 }
 
 } // namespace
+
+Result<DynamicBlockStoreOptions> derive_m2_test_policy_limits(
+    std::uint64_t physical_memory_bytes) {
+    const auto align_down = [](std::uint64_t value) noexcept {
+        return value - (value % kBlockSizeBytes);
+    };
+
+    DynamicBlockStoreOptions options{};
+    options.soft_limit_bytes = align_down(physical_memory_bytes / 4);
+    options.hard_limit_bytes = align_down(physical_memory_bytes / 2);
+    options.eviction_low_watermark_bytes = align_down(
+        options.soft_limit_bytes - options.soft_limit_bytes / 5);
+    options.max_snapshot_batch_bytes = kBlockSizeBytes;
+    options.max_snapshot_batch_records = 1;
+    options.lock_stripe_count = 64;
+    if (!validate_dynamic_block_store_options(options).ok()) {
+        return Result<DynamicBlockStoreOptions>::failure({
+            ErrorDomain::preflight,
+            ERROR_NOT_ENOUGH_MEMORY,
+            L"derive_m2_test_policy_limits",
+            L"physical memory is too small for the M2 test policy"});
+    }
+    return Result<DynamicBlockStoreOptions>::success(options);
+}
 
 Result<M2CliConfig> parse_m2_cli(
     std::span<const std::wstring_view> args) {
@@ -375,15 +408,25 @@ Result<M2CliConfig> parse_m2_cli(
     }
 
     DynamicBlockStoreOptions options{};
-    options.soft_limit_bytes = seen.test_policy
-        ? 2 * kBlockSizeBytes
-        : result.geometry.soft_limit_bytes;
-    options.hard_limit_bytes = seen.test_policy
-        ? 3 * kBlockSizeBytes
-        : result.geometry.hard_limit_bytes;
-    options.eviction_low_watermark_bytes = seen.test_policy
-        ? kBlockSizeBytes
-        : result.geometry.eviction_low_watermark_bytes;
+    if (seen.test_policy) {
+        MEMORYSTATUSEX memory{};
+        memory.dwLength = sizeof(memory);
+        if (!GlobalMemoryStatusEx(&memory)) {
+            return usage_error(L"failed to query physical memory for test policy");
+        }
+        auto derived = derive_m2_test_policy_limits(memory.ullTotalPhys);
+        if (!derived) return usage_error(derived.error().message);
+        options = derived.value();
+        result.geometry.soft_limit_bytes = options.soft_limit_bytes;
+        result.geometry.hard_limit_bytes = options.hard_limit_bytes;
+        result.geometry.eviction_low_watermark_bytes =
+            options.eviction_low_watermark_bytes;
+    } else {
+        options.soft_limit_bytes = result.geometry.soft_limit_bytes;
+        options.hard_limit_bytes = result.geometry.hard_limit_bytes;
+        options.eviction_low_watermark_bytes =
+            result.geometry.eviction_low_watermark_bytes;
+    }
     options.max_snapshot_batch_bytes =
         result.geometry.max_snapshot_batch_bytes;
     if (result.geometry.max_snapshot_batch_records >

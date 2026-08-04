@@ -79,7 +79,8 @@ public:
     virtual ~IM2DeviceControl() = default;
 
     // Failure creates no device. Success must return the exact, removable
-    // device id and may not return zero or any AIM wildcard/auto sentinel.
+    // device id. AIM address 0 (Path 0, Target 0, LUN 0) is valid; only the
+    // wildcard/auto sentinel is forbidden.
     virtual Result<M2OwnedDevice> create(
         const OperationContext& context,
         std::wstring_view native_object_path,

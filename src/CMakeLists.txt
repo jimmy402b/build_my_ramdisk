@@ -119,6 +119,14 @@ target_include_directories(myrd_m2_report PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m2_report PUBLIC myrd_m2 myrd_poc)
 myrd_enable_warnings(myrd_m2_report)
 
+add_library(myrd_m2_windows STATIC
+    m2/m2_windows_acceptance.cpp m2/m2_windows_acceptance.h
+)
+target_include_directories(myrd_m2_windows PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_m2_windows PUBLIC
+    myrd_m2_report myrd_driver myrd_m1 Psapi Version Advapi32)
+myrd_enable_warnings(myrd_m2_windows)
+
 add_executable(myrd-m1-e2e
     m1/main.cpp
 )
@@ -129,7 +137,7 @@ myrd_enable_warnings(myrd-m1-e2e)
 add_executable(myrd-m2-e2e
     m2/main.cpp
 )
-target_link_libraries(myrd-m2-e2e PRIVATE myrd_m2_report)
+target_link_libraries(myrd-m2-e2e PRIVATE myrd_m2_windows)
 myrd_enable_warnings(myrd-m2-e2e)
 
 add_executable(myrd-m0-poc

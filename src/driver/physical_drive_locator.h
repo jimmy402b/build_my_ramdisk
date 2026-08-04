@@ -37,10 +37,19 @@ bool same_located_disk_identity(
 Result<LocatedDisk> match_created_disk(
     DeviceId created, std::span<const DiskCandidate> candidates);
 
+Result<LocatedDisk> match_created_disk(
+    DeviceId created, std::span<const DiskCandidate> candidates,
+    std::uint64_t expected_size_bytes);
+
 Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers();
 
 Result<LocatedDisk> wait_for_created_physical_drive(
     DeviceId created, std::span<const std::uint32_t> baseline,
+    std::chrono::milliseconds timeout);
+
+Result<LocatedDisk> wait_for_created_physical_drive(
+    DeviceId created, std::span<const std::uint32_t> baseline,
+    std::uint64_t expected_size_bytes,
     std::chrono::milliseconds timeout);
 
 } // namespace myrd::aim

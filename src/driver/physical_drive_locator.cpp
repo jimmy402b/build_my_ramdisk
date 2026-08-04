@@ -15,6 +15,12 @@
 
 namespace myrd::aim {
 
+namespace {
+
+constexpr std::uint64_t kM0DiskSizeBytes = 64ull * 1024ull * 1024ull;
+
+} // anonymous namespace
+
 std::uint32_t disk_candidate_open_access() noexcept {
     return GENERIC_READ;
 }
@@ -24,8 +30,21 @@ std::uint32_t disk_candidate_open_access() noexcept {
 Result<LocatedDisk> match_created_disk(
     DeviceId created, std::span<const DiskCandidate> candidates) {
 
+    return match_created_disk(created, candidates, kM0DiskSizeBytes);
+}
+
+Result<LocatedDisk> match_created_disk(
+    DeviceId created, std::span<const DiskCandidate> candidates,
+    std::uint64_t expected_size_bytes) {
+
+    if (expected_size_bytes == 0) {
+        return Result<LocatedDisk>::failure(
+            {ErrorDomain::evidence, ERROR_INVALID_PARAMETER,
+             L"match_created_disk",
+             L"expected disk size must be non-zero"});
+    }
+
     auto addr = decode_device_address(created);
-    constexpr std::uint64_t kExpectedSize = 64ull * 1024ull * 1024ull;
 
     const DiskCandidate* match = nullptr;
     bool matching_address_seen = false;
@@ -35,7 +54,7 @@ Result<LocatedDisk> match_created_disk(
         if (c.lun != addr.lun) continue;
         matching_address_seen = true;
         if (c.existed_before) continue;
-        if (c.length_bytes != kExpectedSize) continue;
+        if (c.length_bytes != expected_size_bytes) continue;
         if (match != nullptr) {
             return Result<LocatedDisk>::failure(
                 {ErrorDomain::evidence, ERROR_DUP_NAME,
@@ -229,6 +248,22 @@ Result<LocatedDisk> wait_for_created_physical_drive(
     DeviceId created, std::span<const std::uint32_t> baseline,
     std::chrono::milliseconds timeout) {
 
+    return wait_for_created_physical_drive(
+        created, baseline, kM0DiskSizeBytes, timeout);
+}
+
+Result<LocatedDisk> wait_for_created_physical_drive(
+    DeviceId created, std::span<const std::uint32_t> baseline,
+    std::uint64_t expected_size_bytes,
+    std::chrono::milliseconds timeout) {
+
+    if (expected_size_bytes == 0) {
+        return Result<LocatedDisk>::failure(
+            {ErrorDomain::evidence, ERROR_INVALID_PARAMETER,
+             L"wait_for_created_physical_drive",
+             L"expected disk size must be non-zero"});
+    }
+
     auto deadline = std::chrono::steady_clock::now() + timeout;
     constexpr auto kInterval = std::chrono::milliseconds(250);
     constexpr auto kConfirmationDelay = std::chrono::milliseconds(100);
@@ -252,7 +287,8 @@ Result<LocatedDisk> wait_for_created_physical_drive(
 
         mark_existed_before(cand.value());
 
-        auto first = match_created_disk(created, cand.value());
+        auto first = match_created_disk(
+            created, cand.value(), expected_size_bytes);
         if (!first) {
             if (first.error().code != ERROR_NOT_FOUND) {
                 return Result<LocatedDisk>::failure(first.error());
@@ -269,7 +305,7 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         }
         mark_existed_before(confirmed_candidates.value());
         auto confirmed = match_created_disk(
-            created, confirmed_candidates.value());
+            created, confirmed_candidates.value(), expected_size_bytes);
         if (!confirmed ||
             !same_located_disk_identity(first.value(), confirmed.value())) {
             return Result<LocatedDisk>::failure(

@@ -48,6 +48,8 @@ struct Probe {
     std::string advance_on_event;
     std::function<void()> advance_clock;
     bool invalid_report_template{};
+    bool provider_destroyed{};
+    bool provider_destroyed_at_compare{};
 
     void observe(std::string event, const myrd::OperationContext& context) {
         events.push_back(std::move(event));
@@ -226,6 +228,7 @@ public:
         const myrd::OperationContext& context,
         const myrd::M2BaselineSnapshot& before) override {
         probe_.observe("compare_baseline", context);
+        probe_.provider_destroyed_at_compare = probe_.provider_destroyed;
         if (probe_.fail_at == FailAt::compare_baseline) {
             return injected_failure<myrd::M2BaselineComparisonEvidence>(
                 "compare_baseline");
@@ -239,9 +242,24 @@ public:
         comparison.after_fingerprint = before.fingerprint;
         comparison.before = before.inventory;
         comparison.after = before.inventory;
+        if (return_mismatch) {
+            comparison.comparison = myrd::M2BaselineComparison::mismatch;
+            comparison.exact_match = false;
+            comparison.resources_within_tolerance = false;
+            comparison.after_fingerprint =
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+            comparison.after.process_handle_count += 2;
+            comparison.after.process_thread_count += 1;
+            comparison.after.process_private_bytes +=
+                comparison.private_bytes_tolerance + 4096;
+            comparison.diff.added.push_back("volume:stale-volume");
+            comparison.diff.changed.push_back("service_state");
+        }
         return myrd::Result<myrd::M2BaselineComparisonEvidence>::success(
             {before.driver_service, std::move(comparison)});
     }
+
+    bool return_mismatch = false;
 
 private:
     Probe& probe_;
@@ -251,6 +269,8 @@ class FakeProvider final : public myrd::IM2LifecycleProvider {
 public:
     FakeProvider(Probe& probe, std::uint64_t logical_size)
         : probe_(probe), logical_size_(logical_size) {}
+
+    ~FakeProvider() override { probe_.provider_destroyed = true; }
 
     myrd::Result<void> start(
         const myrd::OperationContext& context) override {
@@ -382,6 +402,8 @@ class FakeDevices final : public myrd::IM2DeviceControl {
 public:
     explicit FakeDevices(Probe& probe) : probe_(probe) {}
 
+    std::uint32_t created_id = 197121u;
+
     myrd::Result<myrd::M2OwnedDevice> create(
         const myrd::OperationContext& context,
         std::wstring_view native_object_path,
@@ -404,8 +426,13 @@ public:
         identity.product_id.clear();
         identity.serial_number.clear();
         identity.disk_unique_id.clear();
+        identity.device_id_raw = std::to_string(created_id);
+        const auto address = myrd::aim::decode_device_address({created_id});
+        identity.path_id = address.path_id;
+        identity.target_id = address.target_id;
+        identity.lun = address.lun;
         return myrd::Result<myrd::M2OwnedDevice>::success(
-            {{197121u}, std::move(identity)});
+            {{created_id}, std::move(identity)});
     }
 
     myrd::Result<myrd::M2DeviceIdentity> wait_for_disk(
@@ -415,15 +442,21 @@ public:
         if (probe_.fail_at == FailAt::wait_for_disk) {
             return injected_failure<myrd::M2DeviceIdentity>("wait_for_disk");
         }
+        auto identity = complete_disk_identity(1ull << 40);
+        identity.device_id_raw = std::to_string(created_id);
+        const auto address = myrd::aim::decode_device_address({created_id});
+        identity.path_id = address.path_id;
+        identity.target_id = address.target_id;
+        identity.lun = address.lun;
         return myrd::Result<myrd::M2DeviceIdentity>::success(
-            complete_disk_identity(1ull << 40));
+            std::move(identity));
     }
 
     myrd::Result<void> remove(
         const myrd::OperationContext& context,
         myrd::aim::DeviceId id) override {
         probe_.observe("remove_device", context);
-        REQUIRE_EQ(id.value, 197121u);
+        REQUIRE_EQ(id.value, created_id);
         if (probe_.fail_at == FailAt::remove_device) {
             return injected_void_failure("remove_device");
         }
@@ -878,6 +911,25 @@ TEST_CASE(m2_lifecycle_late_device_acquisition_is_still_owned_and_removed) {
                 "remove_device") != fixture.probe.events.end());
 }
 
+TEST_CASE(m2_lifecycle_accepts_and_cleans_up_valid_zero_scsi_address) {
+    Fixture fixture;
+    fixture.devices.created_id = 0;
+    const auto report = fixture.run();
+
+    REQUIRE_EQ(report.verdict, myrd::M2Verdict::go);
+    REQUIRE_EQ(report.device_identity.device_id_raw, std::string("0"));
+    REQUIRE_EQ(report.device_identity.path_id, 0u);
+    REQUIRE_EQ(report.device_identity.target_id, 0u);
+    REQUIRE_EQ(report.device_identity.lun, 0u);
+    REQUIRE_EQ(
+        cleanup(
+            report,
+            myrd::M2CleanupActionId::remove_device).result,
+        myrd::M2CleanupResult::succeeded);
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
 TEST_CASE(m2_lifecycle_successful_publication_is_the_final_report_state) {
     Fixture fixture;
     fixture.probe.advance_on_event = "publish_report";
@@ -929,6 +981,29 @@ TEST_CASE(m2_lifecycle_never_hands_an_invalid_report_to_the_publisher) {
         phase(report, myrd::M2PhaseId::publish_report).status,
         myrd::M2PhaseStatus::failed);
     REQUIRE_EQ(fixture.probe.publish_calls, 0u);
+}
+
+TEST_CASE(m2_lifecycle_baseline_mismatch_reports_structural_and_resource_details) {
+    Fixture fixture;
+    fixture.baseline.return_mismatch = true;
+    const auto report = fixture.run();
+
+    REQUIRE_EQ(report.verdict, myrd::M2Verdict::no_go);
+    const auto& error = phase(
+        report, myrd::M2PhaseId::compare_baseline).error;
+    REQUIRE(error.find("volume:stale-volume") != std::string::npos);
+    REQUIRE(error.find("service_state") != std::string::npos);
+    REQUIRE(error.find("handles=") != std::string::npos);
+    REQUIRE(error.find("threads=") != std::string::npos);
+    REQUIRE(error.find("private_bytes=") != std::string::npos);
+}
+
+TEST_CASE(m2_lifecycle_destroys_stopped_provider_before_baseline_comparison) {
+    Fixture fixture;
+    const auto report = fixture.run();
+
+    REQUIRE_EQ(report.verdict, myrd::M2Verdict::go);
+    REQUIRE(fixture.probe.provider_destroyed_at_compare);
 }
 
 int main() {

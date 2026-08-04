@@ -10,12 +10,49 @@
 #include <system_error>
 
 namespace myrd::poc {
+namespace {
+
+Result<std::filesystem::path> extended_length_path(
+    const std::filesystem::path& input) {
+    std::error_code filesystem_error;
+    auto absolute = input.is_absolute()
+        ? input
+        : std::filesystem::absolute(input, filesystem_error);
+    if (filesystem_error) {
+        return Result<std::filesystem::path>::failure(
+            {ErrorDomain::evidence,
+             static_cast<std::uint32_t>(filesystem_error.value()),
+             L"absolute(report)",
+             L"failed to resolve the report path"});
+    }
+
+    std::wstring native = absolute.lexically_normal().native();
+    if (native.starts_with(L"\\\\?\\")) {
+        return Result<std::filesystem::path>::success(
+            std::filesystem::path(std::move(native)));
+    }
+    if (native.starts_with(L"\\\\")) {
+        native = L"\\\\?\\UNC\\" + native.substr(2);
+    } else {
+        native = L"\\\\?\\" + native;
+    }
+    return Result<std::filesystem::path>::success(
+        std::filesystem::path(std::move(native)));
+}
+
+} // namespace
 
 Result<void> publish_report_atomic(
     std::string_view json,
     const std::filesystem::path& final_path) {
+    auto api_path_result = extended_length_path(final_path);
+    if (!api_path_result) {
+        return Result<void>::failure(api_path_result.error());
+    }
+    const auto& api_final_path = api_path_result.value();
+
     std::error_code filesystem_error;
-    const auto parent = final_path.parent_path();
+    const auto parent = api_final_path.parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent, filesystem_error);
         if (filesystem_error) {
@@ -27,7 +64,7 @@ Result<void> publish_report_atomic(
         }
     }
 
-    if (std::filesystem::exists(final_path, filesystem_error)) {
+    if (std::filesystem::exists(api_final_path, filesystem_error)) {
         return Result<void>::failure(
             {ErrorDomain::evidence, ERROR_FILE_EXISTS,
              L"publish_report_atomic",
@@ -42,7 +79,7 @@ Result<void> publish_report_atomic(
 
     auto id = proxy::generate_session_id();
     if (!id) return Result<void>::failure(id.error());
-    auto temporary_path = final_path;
+    auto temporary_path = api_final_path;
     temporary_path += L".tmp-" + id.value();
 
     HANDLE file = CreateFileW(
@@ -85,7 +122,7 @@ Result<void> publish_report_atomic(
     }
     CloseHandle(file);
 
-    if (!MoveFileExW(temporary_path.c_str(), final_path.c_str(),
+    if (!MoveFileExW(temporary_path.c_str(), api_final_path.c_str(),
             MOVEFILE_WRITE_THROUGH)) {
         return Result<void>::failure(
             {ErrorDomain::win32,

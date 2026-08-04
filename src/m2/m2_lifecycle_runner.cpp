@@ -4,6 +4,7 @@
 #include <ctime>
 #include <exception>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -85,6 +86,39 @@ Error evidence_error(M2PhaseId phase, std::wstring message) {
         static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
         std::wstring(to_string(phase).begin(), to_string(phase).end()),
         std::move(message)};
+}
+
+std::wstring describe_baseline_mismatch(
+    const M2FinalBaselineComparison& comparison) {
+    std::wostringstream message;
+    message << L"final baseline does not match"
+            << L"; exact_match=" << std::boolalpha
+            << comparison.exact_match
+            << L"; resources_within_tolerance="
+            << comparison.resources_within_tolerance;
+    const auto append_values = [&message](
+        std::wstring_view label,
+        const std::vector<std::string>& values) {
+        message << L"; " << label << L"=[";
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            if (index != 0) message << L", ";
+            message << std::wstring(values[index].begin(), values[index].end());
+        }
+        message << L']';
+    };
+    append_values(L"added", comparison.diff.added);
+    append_values(L"removed", comparison.diff.removed);
+    append_values(L"changed", comparison.diff.changed);
+    message << L"; handles=" << comparison.before.process_handle_count
+            << L"->" << comparison.after.process_handle_count
+            << L"; threads=" << comparison.before.process_thread_count
+            << L"->" << comparison.after.process_thread_count
+            << L"; private_bytes="
+            << comparison.before.process_private_bytes << L"->"
+            << comparison.after.process_private_bytes
+            << L"; private_bytes_tolerance="
+            << comparison.private_bytes_tolerance;
+    return message.str();
 }
 
 class LifecycleRunner {
@@ -403,8 +437,7 @@ private:
                     report_.geometry_options);
             });
         if (!owned) return;
-        if (owned->value.id.value == 0 ||
-            owned->value.id.value == aim::kAllDevices ||
+        if (owned->value.id.value == aim::kAllDevices ||
             owned->value.id.value == aim::kAutoDeviceNumber) {
             if (owned->phase_succeeded) {
                 replace_pass_with_evidence_failure(
@@ -569,6 +602,11 @@ private:
                 provider_owned_ = false;
             }
         }
+        // Baseline comparison measures live process resources. A stopped
+        // provider is no longer needed after its FINAL sample, so destroy the
+        // wrapper before taking that measurement instead of retaining any
+        // implementation-owned handles until LifecycleRunner destruction.
+        provider_.reset();
 
         if (restore_service_owned_ && baseline_snapshot_) {
             const auto succeeded = execute_void(
@@ -604,7 +642,8 @@ private:
             auto& compare_phase = phase(M2PhaseId::compare_baseline);
             const auto error = evidence_error(
                 M2PhaseId::compare_baseline,
-                L"final baseline does not match");
+                describe_baseline_mismatch(
+                    report_.final_baseline_comparison));
             compare_phase.status = M2PhaseStatus::failed;
             compare_phase.error = error_message(error);
             report_.failures.push_back({
@@ -658,9 +697,14 @@ private:
         auto semantic = validate_m2_report_json(
             serialize_m2_report(report_));
         if (!semantic) {
+            std::wstring detail = L"report semantic validation failed";
+            if (!semantic.error().message.empty()) {
+                detail += L": ";
+                detail += semantic.error().message;
+            }
             const auto error = evidence_error(
                 M2PhaseId::publish_report,
-                L"report semantic validation failed");
+                std::move(detail));
             execution.phase.status = M2PhaseStatus::failed;
             execution.phase.error = error_message(error);
             report_.failures.push_back({

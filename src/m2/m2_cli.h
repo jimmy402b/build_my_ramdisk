@@ -35,6 +35,9 @@ struct M2CliConfig {
 Result<M2CliConfig> parse_m2_cli(
     std::span<const std::wstring_view> args);
 
+Result<DynamicBlockStoreOptions> derive_m2_test_policy_limits(
+    std::uint64_t physical_memory_bytes);
+
 std::wstring_view m2_cli_usage() noexcept;
 
 } // namespace myrd
