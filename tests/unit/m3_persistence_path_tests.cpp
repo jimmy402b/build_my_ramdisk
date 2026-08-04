@@ -24,6 +24,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -505,6 +506,18 @@ void swap_rename_route(void* opaque) {
     swap.ran = true;
 }
 
+struct CloseWriterAtStateSnapshot final {
+    myrd::persistence::BundleWriterLock* writer{};
+    bool hook_ran{};
+    bool close_ok{};
+};
+
+void close_writer_at_state_snapshot(void* opaque) {
+    auto& context = *static_cast<CloseWriterAtStateSnapshot*>(opaque);
+    context.hook_ran = true;
+    context.close_ok = context.writer->close().ok();
+}
+
 class ScriptedPendingRenameBackend final
     : public myrd::persistence::detail::INativeRenameBackend {
 public:
@@ -512,13 +525,18 @@ public:
         Success,
         Error,
         Deadline,
+        CancelCompletionWins,
         WriterClose,
+        WriterCloseCompletionWins,
+        NonDrainingWriterClose,
+        ThrowDuringWait,
     };
 
     ScriptedPendingRenameBackend(
         const Mode mode,
-        myrd::persistence::BundleWriterLock& writer)
-        : mode_(mode), writer_(writer) {}
+        myrd::persistence::BundleWriterLock& writer,
+        std::stop_source* stop_source = nullptr)
+        : mode_(mode), writer_(writer), stop_source_(stop_source) {}
 
     LONG begin(
         HANDLE file,
@@ -527,7 +545,9 @@ public:
         const ULONG information_size) override {
         ++begin_calls;
         io_status_ = io_status;
-        if (mode_ == Mode::Success) {
+        if (mode_ == Mode::Success ||
+            mode_ == Mode::CancelCompletionWins ||
+            mode_ == Mode::WriterCloseCompletionWins) {
             using NtSetInformationFileFunction = LONG(NTAPI*)(
                 HANDLE,
                 myrd::persistence::detail::NativeRenameIoStatus*,
@@ -562,6 +582,9 @@ public:
             }
         } else if (mode_ == Mode::Error) {
             completion_status_ = static_cast<LONG>(0xC0000022UL);
+        } else if (mode_ == Mode::NonDrainingWriterClose) {
+            completion_status_ =
+                myrd::persistence::detail::kNativeStatusPending;
         } else {
             completion_status_ = static_cast<LONG>(0xC0000120UL);
         }
@@ -572,18 +595,37 @@ public:
         const std::span<const HANDLE> handles,
         const DWORD) override {
         ++wait_calls;
+        if (mode_ == Mode::ThrowDuringWait) {
+            throw std::runtime_error("scripted pending wait failure");
+        }
         if (handles.size() == 1) {
+            if (mode_ == Mode::NonDrainingWriterClose) {
+                return WAIT_TIMEOUT;
+            }
             io_status_->status = completion_status_;
             return WAIT_OBJECT_0;
         }
 
-        probe_writer_mutex(mode_ == Mode::WriterClose);
+        probe_writer_mutex(
+            mode_ == Mode::WriterClose ||
+            mode_ == Mode::WriterCloseCompletionWins ||
+            mode_ == Mode::NonDrainingWriterClose);
         if (mode_ == Mode::Deadline) {
             Sleep(10);
             return WAIT_TIMEOUT;
         }
-        if (mode_ == Mode::WriterClose) {
+        if (mode_ == Mode::WriterClose ||
+            mode_ == Mode::WriterCloseCompletionWins ||
+            mode_ == Mode::NonDrainingWriterClose) {
             return WAIT_OBJECT_0 + 2;
+        }
+        if (mode_ == Mode::CancelCompletionWins) {
+            if (stop_source_ == nullptr) {
+                throw std::runtime_error(
+                    "cancel-completion race requires a stop source");
+            }
+            stop_source_->request_stop();
+            return WAIT_OBJECT_0 + 1;
         }
         io_status_->status = completion_status_;
         return WAIT_OBJECT_0;
@@ -622,6 +664,7 @@ public:
 private:
     Mode mode_;
     myrd::persistence::BundleWriterLock& writer_;
+    std::stop_source* stop_source_{};
     myrd::persistence::detail::NativeRenameIoStatus* io_status_{};
     LONG completion_status_{};
     bool close_writer_{};
@@ -708,6 +751,34 @@ TEST_CASE(task12_nt_relative_rename_works_when_win32_wrapper_rejects_root) {
     REQUIRE_EQ(
         read_text(sandbox.bundle() / L"nt-relative-renamed.rdj"),
         std::string("nt-relative"));
+}
+
+TEST_CASE(task12_writer_verify_survives_close_after_atomic_state_snapshot) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    write_text(manifest, std::string(8192, 'm'));
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    CloseWriterAtStateSnapshot context{&writer};
+
+    const auto verified =
+        myrd::persistence::test::verify_bundle_writer_lock_with_snapshot_hook(
+            writer,
+            close_writer_at_state_snapshot,
+            &context);
+
+    REQUIRE(context.hook_ran);
+    REQUIRE(context.close_ok);
+    REQUIRE(is_image_path_error(
+        verified, ImagePathErrorCode::WriterLockInvalid));
+    REQUIRE_EQ(writer.manifest_identity(), WindowsFileIdentity{});
+    REQUIRE(writer.close().ok());
+    auto replacement = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(replacement.ok());
 }
 
 TEST_CASE(task12_sync_metadata_reopen_is_blocked_by_validated_share_contract) {
@@ -856,6 +927,54 @@ TEST_CASE(task12_pending_rename_deadline_cancels_drains_and_fails_closed) {
         fail_closed, ImagePathErrorCode::IdentityMismatch));
 }
 
+TEST_CASE(task12_pending_rename_cancel_that_loses_to_completion_reports_success) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-cancel-race.rdj";
+    const auto destination =
+        sandbox.bundle() / L"renamed-cancel-race.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "cancel-lost-to-completion");
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-cancel-race.rdj", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    std::stop_source stop;
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::CancelCompletionWins,
+        writer,
+        &stop);
+    myrd::OperationContext context{};
+    context.stop_token = stop.get_token();
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto completed =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context,
+            writer,
+            capability,
+            "renamed-cancel-race.rdj",
+            backend);
+    REQUIRE(stop.stop_requested());
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE(completed.ok());
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE_EQ(
+        read_text(destination), std::string("cancel-lost-to-completion"));
+    REQUIRE_EQ(capability.relative_name(),
+               std::string("renamed-cancel-race.rdj"));
+    REQUIRE(writer.verify().ok());
+    REQUIRE(backend.finish_writer_probe());
+}
+
 TEST_CASE(task12_pending_rename_writer_close_cancels_drains_without_deadlock) {
     TemporarySandbox sandbox;
     const auto manifest = sandbox.bundle() / L"disk.rdm";
@@ -888,11 +1007,159 @@ TEST_CASE(task12_pending_rename_writer_close_cancels_drains_without_deadlock) {
     REQUIRE(backend.finish_writer_probe());
     REQUIRE(is_image_path_error(
         closed, ImagePathErrorCode::WriterLockInvalid));
-    REQUIRE(backend.writer_mutex_available);
+    // close() may acquire the mutex, but it must remain blocked on the
+    // registered native operation until cancellation has drained.
+    REQUIRE(!backend.writer_mutex_available);
     REQUIRE(backend.writer_close_completed);
     REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
     REQUIRE_EQ(read_text(source), std::string("pending-close-data"));
     REQUIRE(!std::filesystem::exists(destination));
+    REQUIRE_EQ(identity_of(source), before_identity);
+}
+
+TEST_CASE(task12_writer_close_that_loses_to_native_completion_reports_success) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-close-race.rdj";
+    const auto destination =
+        sandbox.bundle() / L"renamed-close-race.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "close-lost-to-completion");
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-close-race.rdj", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::WriterCloseCompletionWins,
+        writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto completed =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context,
+            writer,
+            capability,
+            "renamed-close-race.rdj",
+            backend);
+
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(!backend.writer_mutex_available);
+    REQUIRE(backend.writer_close_completed);
+    REQUIRE(completed.ok());
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE_EQ(
+        read_text(destination), std::string("close-lost-to-completion"));
+    REQUIRE_EQ(capability.relative_name(),
+               std::string("renamed-close-race.rdj"));
+    REQUIRE(is_image_path_error(
+        writer.verify(), ImagePathErrorCode::WriterLockInvalid));
+}
+
+TEST_CASE(task12_non_draining_rename_retains_writer_ownership_after_close) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-quarantine.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending-quarantine-data");
+    const auto before_identity = identity_of(source);
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-quarantine.rdj", before_identity);
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::NonDrainingWriterClose,
+        writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto quarantined =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context,
+            writer,
+            capability,
+            "renamed-quarantine.rdj",
+            backend);
+
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(is_image_path_error(
+        quarantined, ImagePathErrorCode::WriterLockInvalid));
+    REQUIRE(!backend.writer_close_completed);
+    auto replacement = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(!replacement.ok());
+    REQUIRE(is_image_path_error(
+        replacement, ImagePathErrorCode::ImageInUse));
+    REQUIRE_EQ(read_text(source), std::string("pending-quarantine-data"));
+    REQUIRE_EQ(identity_of(source), before_identity);
+}
+
+TEST_CASE(task12_throwing_pending_backend_is_quarantined_without_uaf) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-throw.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending-throw-data");
+    const auto before_identity = identity_of(source);
+    const auto slots_before =
+        myrd::persistence::test::native_rename_slots_in_use();
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-throw.rdj", before_identity);
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::ThrowDuringWait, writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto failed =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context,
+            writer,
+            capability,
+            "renamed-throw.rdj",
+            backend);
+
+    REQUIRE(is_image_path_error(failed, ImagePathErrorCode::IoError));
+    REQUIRE_EQ(failed.error().native_code,
+               static_cast<std::uint32_t>(ERROR_UNHANDLED_EXCEPTION));
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE_EQ(
+        myrd::persistence::test::native_rename_slots_in_use(),
+        slots_before + 1);
+    REQUIRE(is_image_path_error(
+        writer.verify(), ImagePathErrorCode::WriterLockInvalid));
+    auto replacement = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(is_image_path_error(
+        replacement, ImagePathErrorCode::ImageInUse));
+    REQUIRE_EQ(read_text(source), std::string("pending-throw-data"));
     REQUIRE_EQ(identity_of(source), before_identity);
 }
 
@@ -1623,6 +1890,60 @@ TEST_CASE(task12_cleanup_rejects_a_hardlink_added_after_validation) {
     REQUIRE_EQ(read_text(data), before_content);
     REQUIRE_EQ(read_text(outside_link), before_content);
     REQUIRE_EQ(identity_of(outside_link), before_identity);
+}
+
+TEST_CASE(task12_native_rename_quarantine_is_process_bounded) {
+    const auto maximum =
+        myrd::persistence::test::maximum_native_rename_slots();
+    auto in_use = myrd::persistence::test::native_rename_slots_in_use();
+    // Earlier indeterminate-completion tests retain their bounded slots.
+    REQUIRE(in_use >= std::size_t{2});
+    REQUIRE(maximum > in_use);
+    while (in_use < maximum) {
+        REQUIRE(
+            myrd::persistence::test::quarantine_empty_native_rename_for_test());
+        ++in_use;
+    }
+    REQUIRE_EQ(
+        myrd::persistence::test::native_rename_slots_in_use(), maximum);
+    REQUIRE(
+        !myrd::persistence::test::quarantine_empty_native_rename_for_test());
+
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"capacity.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "capacity-preserved");
+    const auto before_identity = identity_of(source);
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "capacity.rdj", before_identity);
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::Error, writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto rejected =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context,
+            writer,
+            capability,
+            "capacity-renamed.rdj",
+            backend);
+
+    REQUIRE(is_image_path_error(rejected, ImagePathErrorCode::IoError));
+    REQUIRE_EQ(rejected.error().native_code,
+               static_cast<std::uint32_t>(ERROR_NOT_ENOUGH_QUOTA));
+    REQUIRE_EQ(backend.begin_calls, std::size_t{0});
+    REQUIRE_EQ(read_text(source), std::string("capacity-preserved"));
+    REQUIRE_EQ(identity_of(source), before_identity);
+    REQUIRE(writer.verify().ok());
 }
 
 } // namespace

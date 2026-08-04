@@ -8,9 +8,11 @@
 #include "src/persistence/native_rename_backend.h"
 #include "src/persistence/windows_file_io_bridge.h"
 #include "src/persistence/writer_lock.h"
+#include "src/common/scope_exit.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -144,11 +146,40 @@ private:
 };
 
 struct NativeRenameOperation final {
+    ~NativeRenameOperation() noexcept;
+
     UniqueHandle metadata_file;
     UniqueHandle root_directory;
     std::vector<std::byte> information;
     detail::NativeRenameIoStatus io_status{};
+    std::shared_ptr<detail::WriterAuthorityState> writer_authority;
+    bool quarantine_slot_held{};
 };
+
+constexpr std::size_t kMaximumNativeRenameQuarantineSlots = 8;
+std::atomic<std::size_t> g_native_rename_slots{};
+
+NativeRenameOperation::~NativeRenameOperation() noexcept {
+    if (quarantine_slot_held) {
+        g_native_rename_slots.fetch_sub(1, std::memory_order_acq_rel);
+    }
+}
+
+[[nodiscard]] bool try_reserve_native_rename_slot(
+    NativeRenameOperation& operation) noexcept {
+    auto current = g_native_rename_slots.load(std::memory_order_acquire);
+    while (current < kMaximumNativeRenameQuarantineSlots) {
+        if (g_native_rename_slots.compare_exchange_weak(
+                current,
+                current + 1,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            operation.quarantine_slot_held = true;
+            return true;
+        }
+    }
+    return false;
+}
 
 [[nodiscard]] detail::INativeRenameBackend& native_rename_backend() {
     static WindowsNativeRenameBackend backend;
@@ -184,8 +215,10 @@ void quarantine_native_rename(
     // Windows may still own IO_STATUS_BLOCK and rename-buffer pointers. Keep
     // that state process-live instead of hanging the caller or allowing UAF.
     // Releasing ownership intentionally leaks this one indeterminate native
-    // operation. That is the allocation-free fail-closed quarantine: no later
-    // cleanup can invalidate storage still potentially owned by the kernel.
+    // operation. Every operation reserves one of a fixed number of process
+    // slots before begin(), so hostile repetition cannot create an unbounded
+    // leak. The retained writer authority also prevents any successor writer
+    // from overlapping this indeterminate operation.
     static_cast<void>(operation.release());
 }
 
@@ -451,7 +484,8 @@ struct OpenedBundleFile final {
     HANDLE capability_root,
     HANDLE capability_file,
     const WindowsFileIdentity& capability_root_identity,
-    const WindowsFileIdentity& capability_identity) {
+    const WindowsFileIdentity& capability_identity,
+    const bool allow_writer_close_requested = false) {
     if (poisoned) {
         return path_failure<void>(
             ImagePathErrorCode::IdentityMismatch,
@@ -472,7 +506,8 @@ struct OpenedBundleFile final {
             L"file capability belongs to a different writer lifetime");
     }
 
-    auto writer_valid = detail::verify_writer_state_locked(writer_state);
+    auto writer_valid = detail::verify_writer_state_locked(
+        writer_state, allow_writer_close_requested);
     if (!writer_valid.ok()) {
         return writer_valid;
     }
@@ -1196,20 +1231,21 @@ Result<ValidatedBundleFile> open_bundle_file_for_mutation(
     BundleWriterLock& writer_lock,
     const std::string_view relative_name,
     const std::optional<WindowsFileIdentity> expected_identity) {
-    if (writer_lock.state_ == nullptr) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
         return path_failure<ValidatedBundleFile>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.open_mutable",
             L"mutable bundle file requires a live writer lock");
     }
-    std::scoped_lock lock(writer_lock.state_->mutex);
-    auto writer_valid = detail::verify_writer_state_locked(*writer_lock.state_);
+    std::scoped_lock lock(writer_state->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*writer_state);
     if (!writer_valid.ok()) {
         return Result<ValidatedBundleFile>::failure(
             std::move(writer_valid.error()));
     }
     auto opened = open_bundle_file_handles(
-        writer_lock.state_->root_path,
+        writer_state->root_path,
         relative_name,
         expected_identity,
         true);
@@ -1228,35 +1264,36 @@ Result<ValidatedBundleFile> open_bundle_file_for_mutation(
         std::move(value.relative_name),
         true,
         true);
-    capability.writer_authority_ = writer_lock.state_;
+    capability.writer_authority_ = writer_state;
     return Result<ValidatedBundleFile>::success(std::move(capability));
 }
 
 Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
     BundleWriterLock& writer_lock) {
-    if (writer_lock.state_ == nullptr) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
         return path_failure<ValidatedBundleFile>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.open_manifest_mutable",
             L"manifest mutation requires a live writer lock");
     }
-    std::scoped_lock lock(writer_lock.state_->mutex);
+    std::scoped_lock lock(writer_state->mutex);
     auto writer_valid = detail::verify_writer_state_locked(
-        *writer_lock.state_);
+        *writer_state);
     if (!writer_valid.ok()) {
         return Result<ValidatedBundleFile>::failure(
             std::move(writer_valid.error()));
     }
 
     auto root_handle = duplicate_capability_handle(
-        writer_lock.state_->root_handle.get(),
+        writer_state->root_handle.get(),
         L"image_path.open_manifest_mutable");
     if (!root_handle.ok()) {
         return Result<ValidatedBundleFile>::failure(
             std::move(root_handle.error()));
     }
     auto manifest_handle = duplicate_capability_handle(
-        writer_lock.state_->manifest_handle.get(),
+        writer_state->manifest_handle.get(),
         L"image_path.open_manifest_mutable");
     if (!manifest_handle.ok()) {
         return Result<ValidatedBundleFile>::failure(
@@ -1267,15 +1304,15 @@ Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
         ValidatedBundleFile capability(
             root_handle.move_value(),
             manifest_handle.move_value(),
-            writer_lock.state_->root_identity,
-            writer_lock.state_->manifest_identity,
-            writer_lock.state_->root_final_path,
-            writer_lock.state_->manifest_final_path,
-            writer_lock.state_->manifest_relative_name,
+            writer_state->root_identity,
+            writer_state->manifest_identity,
+            writer_state->root_final_path,
+            writer_state->manifest_final_path,
+            writer_state->manifest_relative_name,
             true,
             false,
             true);
-        capability.writer_authority_ = writer_lock.state_;
+        capability.writer_authority_ = writer_state;
         return Result<ValidatedBundleFile>::success(std::move(capability));
     } catch (const std::bad_alloc&) {
         return path_failure<ValidatedBundleFile>(
@@ -1327,15 +1364,16 @@ Result<void> truncate_validated_bundle_file(
             L"truncate length exceeds the signed Windows file limit",
             ERROR_ARITHMETIC_OVERFLOW);
     }
-    if (writer_lock.state_ == nullptr) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.truncate",
             L"truncate requires a live writer lock");
     }
-    std::scoped_lock lock(writer_lock.state_->mutex);
+    std::scoped_lock lock(writer_state->mutex);
     auto allowed = verify_validated_capability_locked(
-        *writer_lock.state_,
+        *writer_state,
         file.writer_authority_.lock(),
         file.deleted_,
         file.poisoned_,
@@ -1395,13 +1433,13 @@ Result<void> rename_validated_bundle_file(
     if (!component.ok()) {
         return Result<void>::failure(std::move(component.error()));
     }
-    if (writer_lock.state_ == nullptr) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.rename",
             L"rename requires a live writer lock");
     }
-    auto writer_state = writer_lock.state_;
     std::unique_lock lock(writer_state->mutex);
     auto allowed = verify_validated_capability_locked(
         *writer_state,
@@ -1444,6 +1482,35 @@ Result<void> rename_validated_bundle_file(
         if (!context_valid.ok()) {
             return context_valid;
         }
+        if (!try_reserve_native_rename_slot(*operation)) {
+            return path_failure<void>(
+                ImagePathErrorCode::IoError,
+                L"image_path.rename",
+                L"native rename quarantine capacity is exhausted",
+                ERROR_NOT_ENOUGH_QUOTA);
+        }
+        operation->writer_authority = writer_state;
+        ++writer_state->active_native_renames;
+        bool native_rename_registered = true;
+        ScopeExit finish_native_rename([&]() noexcept {
+            if (!native_rename_registered) {
+                return;
+            }
+            if (lock.owns_lock()) {
+                --writer_state->active_native_renames;
+                writer_state->native_rename_condition.notify_all();
+                return;
+            }
+            std::scoped_lock state_lock(writer_state->mutex);
+            --writer_state->active_native_renames;
+            writer_state->native_rename_condition.notify_all();
+        });
+        const auto quarantine_operation = [&]() noexcept {
+            writer_state->native_rename_quarantined = true;
+            writer_state->native_rename_condition.notify_all();
+            native_rename_registered = false;
+            quarantine_native_rename(std::move(operation));
+        };
         if (g_before_native_rename_hook != nullptr) {
             g_before_native_rename_hook(g_before_native_rename_context);
         }
@@ -1452,11 +1519,26 @@ Result<void> rename_validated_bundle_file(
             ? *g_native_rename_backend_override
             : native_rename_backend();
         operation->io_status.status = detail::kNativeStatusPending;
-        auto status = backend.begin(
-            operation->metadata_file.get(),
-            &operation->io_status,
-            operation->information.data(),
-            static_cast<ULONG>(operation->information.size()));
+        LONG status{};
+        try {
+            status = backend.begin(
+                operation->metadata_file.get(),
+                &operation->io_status,
+                operation->information.data(),
+                static_cast<ULONG>(operation->information.size()));
+        } catch (...) {
+            // A backend that throws after submitting work cannot prove that
+            // Windows released the caller-owned IO_STATUS_BLOCK/buffer.
+            // Retain both the operation and writer authority fail-closed.
+            backend.cancel(operation->metadata_file.get());
+            quarantine_operation();
+            file.poisoned_ = true;
+            return path_failure<void>(
+                ImagePathErrorCode::IoError,
+                L"image_path.rename",
+                L"native rename backend threw during submission",
+                ERROR_UNHANDLED_EXCEPTION);
+        }
         if (status == detail::kNativeStatusPending) {
             std::stop_callback callback(
                 context.stop_token,
@@ -1469,28 +1551,72 @@ Result<void> rename_validated_bundle_file(
                 writer_state->close_event.get(),
             };
 
-            lock.unlock();
-            const auto waited = backend.wait(
-                wait_handles, deadline_timeout_ms(context));
-            if (waited == WAIT_OBJECT_0 &&
-                operation->io_status.status !=
-                    detail::kNativeStatusPending) {
-                status = operation->io_status.status;
-            } else {
-                backend.cancel(operation->metadata_file.get());
-                constexpr DWORD kCancelDrainTimeoutMs = 2000;
-                const std::array<HANDLE, 1> drain_handle = {
-                    operation->metadata_file.get(),
-                };
-                const auto drained = backend.wait(
-                    drain_handle, kCancelDrainTimeoutMs);
-                if (drained != WAIT_OBJECT_0 ||
-                    operation->io_status.status ==
-                        detail::kNativeStatusPending) {
-                    quarantine_native_rename(std::move(operation));
+            DWORD waited{};
+            DWORD wait_failure_code{};
+            bool completion_observed{};
+            {
+                ScopeExit relock_writer([&lock]() noexcept {
+                    if (!lock.owns_lock()) {
+                        lock.lock();
+                    }
+                });
+                lock.unlock();
+                try {
+                    waited = backend.wait(
+                        wait_handles, deadline_timeout_ms(context));
+                } catch (...) {
+                    waited = WAIT_FAILED;
+                    wait_failure_code = ERROR_UNHANDLED_EXCEPTION;
                 }
+                if (waited == WAIT_FAILED && wait_failure_code == 0) {
+                    wait_failure_code = GetLastError();
+                }
+                if (waited == WAIT_OBJECT_0 &&
+                    operation->io_status.status !=
+                        detail::kNativeStatusPending) {
+                    status = operation->io_status.status;
+                    completion_observed = true;
+                } else {
+                    backend.cancel(operation->metadata_file.get());
+                    constexpr DWORD kCancelDrainTimeoutMs = 2000;
+                    const std::array<HANDLE, 1> drain_handle = {
+                        operation->metadata_file.get(),
+                    };
+                    DWORD drained{};
+                    try {
+                        drained = backend.wait(
+                            drain_handle, kCancelDrainTimeoutMs);
+                    } catch (...) {
+                        drained = WAIT_FAILED;
+                        wait_failure_code = ERROR_UNHANDLED_EXCEPTION;
+                    }
+                    if (drained == WAIT_FAILED && wait_failure_code == 0) {
+                        wait_failure_code = GetLastError();
+                    }
+                    completion_observed = drained == WAIT_OBJECT_0 &&
+                        operation->io_status.status !=
+                            detail::kNativeStatusPending;
+                    if (completion_observed) {
+                        // Cancellation is only a request. The native operation
+                        // may have committed before CancelIoEx won. Classify
+                        // the durable native completion, not the wake event.
+                        status = operation->io_status.status;
+                    }
+                }
+            }
 
-                lock.lock();
+            if (!completion_observed) {
+                quarantine_operation();
+            }
+
+            const auto native_completion_code = completion_observed
+                ? backend.status_to_dos(status)
+                : ERROR_IO_INCOMPLETE;
+            if (completion_observed &&
+                native_completion_code != ERROR_OPERATION_ABORTED) {
+                // Success and non-cancellation native failures are handled by
+                // the common post-wait path below.
+            } else {
                 file.poisoned_ = true;
                 if (waited == WAIT_OBJECT_0 + 2) {
                     return path_failure<void>(
@@ -1524,13 +1650,14 @@ Result<void> rename_validated_bundle_file(
                     ImagePathErrorCode::IoError,
                     L"image_path.rename",
                     L"waiting for pending native rename failed",
-                    waited == WAIT_FAILED
-                        ? GetLastError()
+                    wait_failure_code != 0
+                        ? wait_failure_code
+                        : waited == WAIT_FAILED
+                            ? ERROR_GEN_FAILURE
                         : waited == WAIT_OBJECT_0
                             ? ERROR_IO_INCOMPLETE
                             : ERROR_GEN_FAILURE);
             }
-            lock.lock();
             auto still_allowed = verify_validated_capability_locked(
                 *writer_state,
                 file.writer_authority_.lock(),
@@ -1541,7 +1668,8 @@ Result<void> rename_validated_bundle_file(
                 file.root_handle_.get(),
                 file.file_handle_.get(),
                 file.root_identity_,
-                file.identity_);
+                file.identity_,
+                true);
             if (!still_allowed.ok()) {
                 file.poisoned_ = true;
                 return still_allowed;
@@ -1559,7 +1687,8 @@ Result<void> rename_validated_bundle_file(
                 file.root_handle_.get(),
                 file.file_handle_.get(),
                 file.root_identity_,
-                file.identity_);
+                file.identity_,
+                true);
             if (!still_allowed.ok()) {
                 file.poisoned_ = true;
                 return still_allowed;
@@ -1582,7 +1711,8 @@ Result<void> rename_validated_bundle_file(
             file.root_handle_.get(),
             file.file_handle_.get(),
             file.root_identity_,
-            file.identity_);
+            file.identity_,
+            true);
         if (!post_allowed.ok()) {
             file.poisoned_ = true;
             return post_allowed;
@@ -1632,15 +1762,16 @@ Result<void> rename_validated_bundle_file(
 Result<void> delete_validated_bundle_file(
     BundleWriterLock& writer_lock,
     ValidatedBundleFile& file) {
-    if (writer_lock.state_ == nullptr) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.delete",
             L"delete requires a live writer lock");
     }
-    std::scoped_lock lock(writer_lock.state_->mutex);
+    std::scoped_lock lock(writer_state->mutex);
     auto allowed = verify_validated_capability_locked(
-        *writer_lock.state_,
+        *writer_state,
         file.writer_authority_.lock(),
         file.deleted_,
         file.poisoned_,
@@ -1708,6 +1839,23 @@ Result<void> rename_validated_bundle_file_with_backend(
     const ScopedNativeRenameBackend scoped_backend(backend);
     return rename_validated_bundle_file(
         context, writer_lock, file, new_relative_name);
+}
+
+std::size_t native_rename_slots_in_use() noexcept {
+    return g_native_rename_slots.load(std::memory_order_acquire);
+}
+
+std::size_t maximum_native_rename_slots() noexcept {
+    return kMaximumNativeRenameQuarantineSlots;
+}
+
+bool quarantine_empty_native_rename_for_test() {
+    auto operation = std::make_unique<NativeRenameOperation>();
+    if (!try_reserve_native_rename_slot(*operation)) {
+        return false;
+    }
+    quarantine_native_rename(std::move(operation));
+    return true;
 }
 
 } // namespace test

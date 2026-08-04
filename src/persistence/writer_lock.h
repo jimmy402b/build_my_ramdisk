@@ -5,6 +5,8 @@
 #include "src/common/unique_handle.h"
 #include "src/persistence/file_identity.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -21,6 +23,7 @@ namespace detail {
 
 struct WriterAuthorityState final {
     mutable std::mutex mutex;
+    std::condition_variable native_rename_condition;
     UniqueHandle root_handle;
     UniqueHandle manifest_handle;
     UniqueHandle close_event;
@@ -35,16 +38,19 @@ struct WriterAuthorityState final {
     bool registry_held{};
     bool byte_lock_held{};
     bool active{};
+    std::uint64_t active_native_renames{};
+    bool native_rename_quarantined{};
 };
 
 [[nodiscard]] Result<void> verify_writer_state_locked(
-    const WriterAuthorityState& state);
+    const WriterAuthorityState& state,
+    bool allow_close_requested = false);
 
 } // namespace detail
 
 class BundleWriterLock final {
 public:
-    BundleWriterLock(BundleWriterLock&&) noexcept = default;
+    BundleWriterLock(BundleWriterLock&& other) noexcept;
     BundleWriterLock& operator=(BundleWriterLock&& other) noexcept;
     ~BundleWriterLock() noexcept;
 
@@ -57,7 +63,12 @@ public:
     [[nodiscard]] WindowsFileIdentity manifest_identity() const;
 
 private:
-    std::shared_ptr<detail::WriterAuthorityState> state_;
+    std::atomic<std::shared_ptr<detail::WriterAuthorityState>> state_;
+
+    [[nodiscard]] std::shared_ptr<detail::WriterAuthorityState>
+    snapshot_state() const noexcept {
+        return state_.load(std::memory_order_acquire);
+    }
 
     explicit BundleWriterLock(
         std::shared_ptr<detail::WriterAuthorityState> state) noexcept

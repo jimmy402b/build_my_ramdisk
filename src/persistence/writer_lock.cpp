@@ -14,6 +14,9 @@ namespace {
 
 std::mutex g_writer_registry_mutex;
 std::set<std::wstring> g_writer_registry;
+using AfterWriterStateSnapshotHook = void (*)(void* context);
+thread_local AfterWriterStateSnapshotHook g_after_writer_snapshot_hook{};
+thread_local void* g_after_writer_snapshot_context{};
 
 [[nodiscard]] Error writer_error(
     const ImagePathErrorCode code,
@@ -124,10 +127,14 @@ void release_process_writer(const std::wstring& key) noexcept {
 namespace detail {
 
 Result<void> verify_writer_state_locked(
-    const WriterAuthorityState& state) {
+    const WriterAuthorityState& state,
+    const bool allow_close_requested) {
+    const bool close_requested = state.close_event &&
+        WaitForSingleObject(state.close_event.get(), 0) != WAIT_TIMEOUT;
     if (!state.active || !state.registry_held || !state.byte_lock_held ||
+        state.native_rename_quarantined ||
         !state.root_handle || !state.manifest_handle || !state.close_event ||
-        WaitForSingleObject(state.close_event.get(), 0) != WAIT_TIMEOUT ||
+        (!allow_close_requested && close_requested) ||
         !process_writer_is_claimed(state.registry_key)) {
         return writer_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
@@ -194,6 +201,9 @@ Result<void> verify_writer_state_locked(
 
 } // namespace detail
 
+BundleWriterLock::BundleWriterLock(BundleWriterLock&& other) noexcept
+    : state_(other.state_.exchange(nullptr, std::memory_order_acq_rel)) {}
+
 BundleWriterLock& BundleWriterLock::operator=(
     BundleWriterLock&& other) noexcept {
     if (this != &other) {
@@ -201,7 +211,9 @@ BundleWriterLock& BundleWriterLock::operator=(
             static_cast<void>(close());
         } catch (...) {
         }
-        state_ = std::move(other.state_);
+        state_.store(
+            other.state_.exchange(nullptr, std::memory_order_acq_rel),
+            std::memory_order_release);
     }
     return *this;
 }
@@ -214,33 +226,57 @@ BundleWriterLock::~BundleWriterLock() noexcept {
 }
 
 Result<void> BundleWriterLock::verify() const {
-    if (state_ == nullptr) {
+    auto state = snapshot_state();
+    if (state == nullptr) {
         return writer_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
             L"writer_lock.verify",
             L"bundle writer lock is closed");
     }
-    std::scoped_lock lock(state_->mutex);
-    return detail::verify_writer_state_locked(*state_);
+    if (g_after_writer_snapshot_hook != nullptr) {
+        g_after_writer_snapshot_hook(g_after_writer_snapshot_context);
+    }
+    std::scoped_lock lock(state->mutex);
+    return detail::verify_writer_state_locked(*state);
 }
 
 Result<void> BundleWriterLock::close() {
-    if (state_ == nullptr) {
+    auto state = state_.exchange(nullptr, std::memory_order_acq_rel);
+    if (state == nullptr) {
         return Result<void>::success();
     }
-    auto state = state_;
-    std::scoped_lock lock(state->mutex);
-    auto result = release_writer_state_locked(*state);
-    state_.reset();
-    return result;
+    std::unique_lock lock(state->mutex);
+    if (state->close_event) {
+        static_cast<void>(SetEvent(state->close_event.get()));
+    }
+    state->native_rename_condition.wait(lock, [&state] {
+        return state->active_native_renames == 0 ||
+            state->native_rename_quarantined;
+    });
+    if (state->native_rename_quarantined) {
+        // A native rename still owns pointers into quarantined operation
+        // storage. Retain the byte lock, registry claim and authority handles
+        // so no successor writer can overlap that indeterminate operation.
+        return writer_failure<void>(
+            ImagePathErrorCode::WriterLockInvalid,
+            L"writer_lock.close",
+            L"writer ownership is retained by an indeterminate native rename");
+    }
+    return release_writer_state_locked(*state);
 }
 
 WindowsFileIdentity BundleWriterLock::manifest_identity() const {
-    if (state_ == nullptr) {
+    auto state = snapshot_state();
+    if (state == nullptr) {
         return {};
     }
-    std::scoped_lock lock(state_->mutex);
-    return state_->manifest_identity;
+    std::scoped_lock lock(state->mutex);
+    if (!state->active || state->native_rename_quarantined ||
+        !state->close_event ||
+        WaitForSingleObject(state->close_event.get(), 0) != WAIT_TIMEOUT) {
+        return {};
+    }
+    return state->manifest_identity;
 }
 
 Result<BundleWriterLock> acquire_bundle_writer_lock(
@@ -351,5 +387,29 @@ Result<BundleWriterLock> acquire_bundle_writer_lock(
             ERROR_NOT_ENOUGH_MEMORY);
     }
 }
+
+namespace test {
+
+Result<void> verify_bundle_writer_lock_with_snapshot_hook(
+    BundleWriterLock& writer,
+    AfterWriterStateSnapshotHook hook,
+    void* hook_context) {
+    struct ScopedHook final {
+        ScopedHook(
+            AfterWriterStateSnapshotHook new_hook,
+            void* new_context) noexcept {
+            g_after_writer_snapshot_hook = new_hook;
+            g_after_writer_snapshot_context = new_context;
+        }
+
+        ~ScopedHook() noexcept {
+            g_after_writer_snapshot_hook = nullptr;
+            g_after_writer_snapshot_context = nullptr;
+        }
+    } scoped_hook(hook, hook_context);
+    return writer.verify();
+}
+
+} // namespace test
 
 } // namespace myrd::persistence
