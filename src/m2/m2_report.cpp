@@ -1972,29 +1972,36 @@ private:
             same_inventory(*before_inventory, *after_inventory);
         const bool diff_empty =
             added->empty() && removed->empty() && changed->empty();
-        const bool private_within =
-            before_inventory->process_private_bytes <=
-                (std::numeric_limits<std::uint64_t>::max)() -
-                    *private_tolerance &&
-            after_inventory->process_private_bytes <=
-                before_inventory->process_private_bytes + *private_tolerance;
+        M2InventorySnapshot before_resources;
+        before_resources.process_handle_count =
+            before_inventory->process_handle_count;
+        before_resources.process_thread_count =
+            before_inventory->process_thread_count;
+        before_resources.process_private_bytes =
+            before_inventory->process_private_bytes;
+        M2InventorySnapshot after_resources;
+        after_resources.process_handle_count =
+            after_inventory->process_handle_count;
+        after_resources.process_thread_count =
+            after_inventory->process_thread_count;
+        after_resources.process_private_bytes =
+            after_inventory->process_private_bytes;
         const bool resources_match =
-            after_inventory->process_handle_count <=
-                before_inventory->process_handle_count &&
-            after_inventory->process_thread_count <=
-                before_inventory->process_thread_count &&
-            private_within;
+            m2_process_resources_within_tolerance(
+                before_resources, after_resources, *private_tolerance);
         if (*resources_ok != resources_match) fail();
+        const bool structural_match = before && after &&
+            !before->empty() && *before == *after &&
+            inventory_matches && diff_empty;
+        if (*exact_match != structural_match) fail();
         if (*comparison == M2BaselineComparison::match) {
-            if (!*exact_match || !*resources_ok || before->empty() ||
-                *before != *after || !inventory_matches || !diff_empty) {
+            if (!structural_match || !*resources_ok) {
                 fail();
             }
             return;
         }
         mark_failure();
-        if (*exact_match || before->empty() || after->empty() ||
-            (*before == *after && inventory_matches && diff_empty)) {
+        if (structural_match && *resources_ok) {
             fail();
         }
     }
@@ -2056,6 +2063,21 @@ std::string sanitize_run_id(std::string_view run_id) {
 }
 
 } // namespace
+
+bool m2_process_resources_within_tolerance(
+    const M2InventorySnapshot& before,
+    const M2InventorySnapshot& after,
+    std::uint64_t private_bytes_tolerance) noexcept {
+    if (before.process_private_bytes >
+        (std::numeric_limits<std::uint64_t>::max)() -
+            private_bytes_tolerance) {
+        return false;
+    }
+    return after.process_handle_count <= before.process_handle_count &&
+        after.process_thread_count <= before.process_thread_count &&
+        after.process_private_bytes <=
+            before.process_private_bytes + private_bytes_tolerance;
+}
 
 std::string_view to_string(M2RunMode value) noexcept {
     switch (value) {

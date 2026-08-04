@@ -641,6 +641,46 @@ TEST_CASE(m2_report_validator_rejects_go_when_match_fingerprints_differ) {
         "\"after_fingerprint\": \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\""));
 }
 
+TEST_CASE(m2_process_resource_policy_allows_release_but_rejects_growth) {
+    const auto before = inventory_snapshot();
+    auto after = before;
+    after.process_handle_count -= 1;
+    after.process_thread_count -= 2;
+    after.process_private_bytes += 1ULL << 20U;
+    REQUIRE(myrd::m2_process_resources_within_tolerance(
+        before, after, 1ULL << 20U));
+
+    after = before;
+    after.process_handle_count += 1;
+    REQUIRE(!myrd::m2_process_resources_within_tolerance(
+        before, after, 1ULL << 20U));
+
+    after = before;
+    after.process_thread_count += 1;
+    REQUIRE(!myrd::m2_process_resources_within_tolerance(
+        before, after, 1ULL << 20U));
+
+    after = before;
+    after.process_private_bytes += (1ULL << 20U) + 1;
+    REQUIRE(!myrd::m2_process_resources_within_tolerance(
+        before, after, 1ULL << 20U));
+}
+
+TEST_CASE(m2_report_validator_accepts_resource_only_baseline_no_go) {
+    auto report = complete_report();
+    auto& comparison = report.final_baseline_comparison;
+    comparison.comparison = myrd::M2BaselineComparison::mismatch;
+    comparison.resources_within_tolerance = false;
+    comparison.after.process_thread_count += 1;
+    report.failures.push_back({
+        "COMPARE-BASELINE", 4110,
+        "final process resource baseline grew"});
+    report.verdict = myrd::M2Verdict::no_go;
+
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
 TEST_CASE(m2_report_validator_cross_checks_performance_gate_and_ratio) {
     const auto json = myrd::serialize_m2_report(complete_report());
     require_invalid(replace_once(

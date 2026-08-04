@@ -1753,12 +1753,8 @@ public:
         constexpr std::uint64_t private_tolerance = 1ull << 20;
         comparison.private_bytes_tolerance = private_tolerance;
         comparison.resources_within_tolerance =
-            before.inventory.process_handle_count ==
-                after.value().process_handle_count &&
-            before.inventory.process_thread_count ==
-                after.value().process_thread_count &&
-            after.value().process_private_bytes <=
-                before.inventory.process_private_bytes + private_tolerance;
+            m2_process_resources_within_tolerance(
+                before.inventory, after.value(), private_tolerance);
         comparison.comparison =
             comparison.exact_match && comparison.resources_within_tolerance &&
                 comparison.before_fingerprint == comparison.after_fingerprint

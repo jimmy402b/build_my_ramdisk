@@ -271,6 +271,14 @@ struct M2FinalBaselineComparison {
     M2InventoryDiff diff;
 };
 
+// End-to-end process accounting is a leak gate: resources may be released
+// while the run is active, but handles/threads must not grow and private bytes
+// may only grow by the measured allocator tolerance.
+bool m2_process_resources_within_tolerance(
+    const M2InventorySnapshot& before,
+    const M2InventorySnapshot& after,
+    std::uint64_t private_bytes_tolerance) noexcept;
+
 struct M2Failure {
     std::string phase;
     std::uint64_t code = 0;
