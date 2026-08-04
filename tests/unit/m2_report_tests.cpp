@@ -820,6 +820,17 @@ TEST_CASE(m2_report_validator_accepts_only_coherent_staged_failure_identity) {
                 myrd::serialize_m2_report(report)).ok());
 
     report = complete_report();
+    report.device_identity.disk_unique_id.clear();
+    report.device_identity.volume_guids.clear();
+    report.device_identity.mount_points.clear();
+    report.failures.push_back(
+        {"WAIT-FOR-DISK", 1,
+         "confirmed raw disk before GPT identity exists"});
+    report.verdict = myrd::M2Verdict::no_go;
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+
+    report = complete_report();
     report.device_identity.volume_guids.clear();
     report.device_identity.mount_points.clear();
     report.failures.push_back(

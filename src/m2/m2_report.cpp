@@ -1836,7 +1836,6 @@ private:
             *physical_number == 0 || !disk_size_bytes_ ||
             *disk_length != *disk_size_bytes_ || bus_type->empty() ||
             vendor->empty() || product->empty() || serial->empty() ||
-            unique_id->empty() ||
             *physical_path !=
                 std::string(R"(\\.\PhysicalDrive)") +
                     std::to_string(*physical_number)) {
@@ -1850,7 +1849,9 @@ private:
         }
         if (volume_guids->empty() || mount_points->empty()) {
             fail();
+            return;
         }
+        if (unique_id->empty()) fail();
     }
 
     void validate_cleanup(const JsonValue& root) {
