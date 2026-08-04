@@ -547,6 +547,14 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                        !closing_requested() &&
                        !context.stop_token.stop_requested() &&
                        std::chrono::steady_clock::now() < context.deadline) {
+                    if (snapshot_wait_pause_for_test_.load(
+                            std::memory_order_acquire)) {
+                        snapshot_wait_gap_reached_for_test_.store(
+                            true, std::memory_order_release);
+                        snapshot_wait_gap_reached_for_test_.notify_all();
+                        snapshot_wait_pause_for_test_.wait(
+                            true, std::memory_order_acquire);
+                    }
                     if (context.deadline ==
                         std::chrono::steady_clock::time_point::max()) {
                         stripe.condition.wait(block_lock);

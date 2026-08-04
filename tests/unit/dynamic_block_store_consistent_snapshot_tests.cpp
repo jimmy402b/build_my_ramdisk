@@ -3192,7 +3192,12 @@ TEST_CASE(m2_1_task06_cancellation_wakes_transient_wait_with_infinite_deadline) 
                        .data_block(0, block_data(0xB4))
                        .gate_block(0, gate)
                        .build();
-    auto store = require_store(backing_args(backing, 1, 7));
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.pause_before_snapshot_wait = true;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        backing_args(backing, 1, 7), std::move(dependencies));
+    REQUIRE(created.ok());
+    auto store = created.move_value();
     const auto begun = store->begin_consistent_snapshot(bounded_context());
     REQUIRE(begun.ok());
 
@@ -3219,10 +3224,16 @@ TEST_CASE(m2_1_task06_cancellation_wakes_transient_wait_with_infinite_deadline) 
             myrd::kBlockSizeBytes));
         reader_done.store(true, std::memory_order_release);
     });
-    const bool transient_wait_reached = wait_until([&] {
-        return store->stripe_waiter_count_for_test() == 1;
+    const bool wait_gap_reached = wait_until([&] {
+        return myrd::DynamicBlockStoreTestAccess::snapshot_wait_gap_reached(
+            *store);
     });
-    stop.request_stop();
+    std::thread canceller([&] { stop.request_stop(); });
+    const bool cancellation_started = wait_until([&] {
+        return stop.stop_requested();
+    });
+    const bool wait_gap_released =
+        myrd::DynamicBlockStoreTestAccess::release_snapshot_wait_gap(*store);
     const bool cancellation_woke_reader = wait_until([&] {
         return reader_done.load(std::memory_order_acquire);
     });
@@ -3230,10 +3241,13 @@ TEST_CASE(m2_1_task06_cancellation_wakes_transient_wait_with_infinite_deadline) 
     // Always release the backing load before asserting so a failing red test
     // cannot strand either worker in the test process.
     gate->open();
+    canceller.join();
     writer.join();
     reader.join();
 
-    REQUIRE(transient_wait_reached);
+    REQUIRE(wait_gap_reached);
+    REQUIRE(cancellation_started);
+    REQUIRE(wait_gap_released);
     REQUIRE(cancellation_woke_reader);
     REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
     REQUIRE(copied.has_value());
