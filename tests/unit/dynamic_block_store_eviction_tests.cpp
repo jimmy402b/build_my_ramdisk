@@ -39,6 +39,8 @@ myrd::DynamicBlockStoreCreateArgs args_for(
             kBlock,
             8,
             64,
+            myrd::kMinimumSnapshotCowBytes,
+            std::chrono::milliseconds{250},
         },
         myrd::InitialBlockState::BackingUnresident,
         myrd::test::FakeBackingStoreBuilder(0xE71C7).build(),

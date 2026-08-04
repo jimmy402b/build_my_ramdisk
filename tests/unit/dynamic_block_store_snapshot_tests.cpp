@@ -50,6 +50,8 @@ myrd::DynamicBlockStoreCreateArgs clean_zero_args(
             max_snapshot_bytes,
             max_snapshot_records,
             64,
+            myrd::kMinimumSnapshotCowBytes,
+            std::chrono::milliseconds{250},
         },
         myrd::InitialBlockState::CleanZero,
         {},

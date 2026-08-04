@@ -434,6 +434,8 @@ myrd::DynamicBlockStoreCreateArgs stress_args(
             4 * kBlock,
             8,
             64,
+            myrd::kMinimumSnapshotCowBytes,
+            std::chrono::milliseconds{250},
         },
         myrd::InitialBlockState::BackingUnresident,
         std::move(backing),

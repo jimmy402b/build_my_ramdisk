@@ -36,6 +36,8 @@ myrd::DynamicBlockStoreCreateArgs valid_args() {
             kBlock,
             8,
             64,
+            myrd::kMinimumSnapshotCowBytes,
+            std::chrono::milliseconds{250},
         },
         myrd::InitialBlockState::CleanZero,
         {},

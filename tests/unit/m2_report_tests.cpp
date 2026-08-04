@@ -421,7 +421,12 @@ TEST_CASE(m2_report_serializes_and_schema_names_every_required_field) {
         "commit_reservation_rollbacks_total", "snapshot_records_total",
         "snapshot_version_conflicts", "backing_generation",
         "backing_view_installs_total", "backing_generation_conflicts",
-        "stale_backing_load_retries", "os_memory_samples", "captured_utc",
+        "stale_backing_load_retries", "snapshot_active_id",
+        "snapshot_active_state", "snapshot_cow_current_bytes",
+        "snapshot_cow_peak_bytes", "snapshot_cow_records",
+        "snapshot_blocked_writers", "snapshot_writer_stalls_total",
+        "snapshot_auto_aborts_total", "snapshot_consistent_batches_total",
+        "snapshot_consistent_records_total", "os_memory_samples", "captured_utc",
         "memory_sample_point", "memory_phase_id", "provider_process_id",
         "elapsed_ms", "working_set_bytes", "private_bytes", "commit_bytes",
         "performance", "fixed", "dynamic", "methodology_id", "operation",
@@ -458,6 +463,8 @@ TEST_CASE(m2_report_serializes_and_schema_names_every_required_field) {
         REQUIRE(schema.find(quoted) != std::string::npos);
     }
     REQUIRE(myrd::validate_m2_report_json(json).ok());
+    REQUIRE(json.find("\"snapshot_active_state\": \"Inactive\"") !=
+            std::string::npos);
     REQUIRE(myrd::validate_m2_report_json(
                 myrd::serialize_m2_report(no_go_report)).ok());
 }
@@ -468,6 +475,22 @@ TEST_CASE(m2_report_preserves_uint64_max_as_an_unquoted_decimal_integer) {
             std::string::npos);
     REQUIRE(json.find("\"18446744073709551615\"") == std::string::npos);
     REQUIRE(myrd::validate_m2_report_json(json).ok());
+}
+
+TEST_CASE(m2_report_rejects_incoherent_or_unknown_snapshot_state) {
+    const auto json = myrd::serialize_m2_report(complete_report());
+    require_invalid(replace_once(
+        json,
+        "\"snapshot_active_state\": \"Inactive\"",
+        "\"snapshot_active_state\": \"Active\""));
+    require_invalid(replace_once(
+        json,
+        "\"snapshot_active_id\": 0",
+        "\"snapshot_active_id\": 7"));
+    require_invalid(replace_once(
+        json,
+        "\"snapshot_active_state\": \"Inactive\"",
+        "\"snapshot_active_state\": \"Unknown\""));
 }
 
 TEST_CASE(m2_report_validator_identifies_the_first_invalid_section) {
@@ -524,7 +547,12 @@ TEST_CASE(m2_report_validator_rejects_each_missing_required_member) {
         "commit_reservation_rollbacks_total", "snapshot_records_total",
         "snapshot_version_conflicts", "backing_generation",
         "backing_view_installs_total", "backing_generation_conflicts",
-        "stale_backing_load_retries", "os_memory_samples",
+        "stale_backing_load_retries", "snapshot_active_id",
+        "snapshot_active_state", "snapshot_cow_current_bytes",
+        "snapshot_cow_peak_bytes", "snapshot_cow_records",
+        "snapshot_blocked_writers", "snapshot_writer_stalls_total",
+        "snapshot_auto_aborts_total", "snapshot_consistent_batches_total",
+        "snapshot_consistent_records_total", "os_memory_samples",
         "captured_utc", "memory_sample_point", "memory_phase_id",
         "provider_process_id", "elapsed_ms", "working_set_bytes",
         "private_bytes", "commit_bytes",

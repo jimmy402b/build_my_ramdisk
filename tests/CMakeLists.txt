@@ -395,7 +395,21 @@ target_link_libraries(myrd_m2_block_math_tests PRIVATE
 target_include_directories(myrd_m2_block_math_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m2_block_math_tests)
 add_test(NAME unit.m2.block_math COMMAND myrd_m2_block_math_tests)
-set_tests_properties(unit.m2.block_math PROPERTIES LABELS "m2-v1")
+set_tests_properties(unit.m2.block_math PROPERTIES LABELS "m2-v1;m2.1-v0")
+
+add_executable(myrd_m2_consistent_snapshot_tests
+    unit/dynamic_block_store_consistent_snapshot_tests.cpp
+)
+target_link_libraries(myrd_m2_consistent_snapshot_tests PRIVATE
+    myrd_test_support myrd_storage)
+target_include_directories(myrd_m2_consistent_snapshot_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m2_consistent_snapshot_tests)
+add_test(NAME unit.m3.m2_consistent_snapshot
+    COMMAND myrd_m2_consistent_snapshot_tests)
+set_tests_properties(unit.m3.m2_consistent_snapshot PROPERTIES
+    LABELS "m2.1-v0"
+    TIMEOUT 30)
 
 add_executable(myrd_m2_provider_tests
     unit/m2_provider_tests.cpp
@@ -652,7 +666,7 @@ target_include_directories(myrd_m2_report_tests PRIVATE
 myrd_enable_warnings(myrd_m2_report_tests)
 add_test(NAME unit.m2.report COMMAND myrd_m2_report_tests)
 set_tests_properties(unit.m2.report PROPERTIES
-    LABELS "m2-v4"
+    LABELS "m2-v4;m2.1-v0"
     TIMEOUT 30)
 
 add_executable(myrd_m2_lifecycle_runner_tests

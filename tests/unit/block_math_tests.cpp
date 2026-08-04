@@ -23,6 +23,8 @@ myrd::DynamicBlockStoreOptions valid_options() {
         2 * myrd::kBlockSizeBytes,
         8,
         64,
+        myrd::kMinimumSnapshotCowBytes,
+        std::chrono::milliseconds{250},
     };
 }
 

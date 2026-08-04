@@ -232,6 +232,8 @@ std::unique_ptr<myrd::DynamicBlockStore> make_store_with_size(
                 4 * kBlock,
                 kSnapshotRecordLimit,
                 64,
+                myrd::kMinimumSnapshotCowBytes,
+                std::chrono::milliseconds{250},
             },
             myrd::InitialBlockState::BackingUnresident,
             std::move(backing),

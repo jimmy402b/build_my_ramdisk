@@ -1,12 +1,14 @@
 #pragma once
 
 #include "block_math.h"
+#include "consistent_snapshot.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -14,7 +16,13 @@ namespace myrd {
 
 class IBackingStore;
 
-using BackingGeneration = std::uint64_t;
+// The bounded coordinator allocates one fixed-size bookkeeping slab for each
+// pre-image.  The slab includes the record, ordered-index node and allocator
+// metadata; a DATA payload is charged separately.  Later coordinator tasks
+// must use this exact charge instead of estimating STL node overhead.
+inline constexpr std::uint64_t kSnapshotCowRecordBudgetBytes = 256;
+inline constexpr std::uint64_t kMinimumSnapshotCowBytes =
+    kBlockSizeBytes + kSnapshotCowRecordBudgetBytes;
 
 enum class InitialBlockState : std::uint8_t {
     CleanZero = 0,
@@ -104,7 +112,7 @@ struct DynamicBlockStoreOptions {
     std::size_t max_snapshot_batch_records;
     std::size_t lock_stripe_count;
     // ---- M2.1 consistent snapshot options ----------------------------------
-    std::uint64_t snapshot_cow_max_bytes{2 * kBlockSizeBytes};
+    std::uint64_t snapshot_cow_max_bytes{2 * kMinimumSnapshotCowBytes};
     std::chrono::milliseconds snapshot_writer_stall_limit{250};
 };
 
@@ -217,7 +225,7 @@ enum class DynamicBlockStoreOptionsError : std::uint8_t {
     StripeCountNotPowerOfTwo = 7,
     // ---- M2.1 consistent snapshot option errors ----------------------------
     SnapshotCowBytesTooSmall = 8,
-    SnapshotCowStallZero = 9,
+    SnapshotCowStallNotPositive = 9,
     SnapshotCowStallTooLarge = 10,
 };
 
@@ -242,8 +250,8 @@ constexpr std::string_view to_string(
         return "StripeCountNotPowerOfTwo";
     case DynamicBlockStoreOptionsError::SnapshotCowBytesTooSmall:
         return "SnapshotCowBytesTooSmall";
-    case DynamicBlockStoreOptionsError::SnapshotCowStallZero:
-        return "SnapshotCowStallZero";
+    case DynamicBlockStoreOptionsError::SnapshotCowStallNotPositive:
+        return "SnapshotCowStallNotPositive";
     case DynamicBlockStoreOptionsError::SnapshotCowStallTooLarge:
         return "SnapshotCowStallTooLarge";
     }
@@ -288,11 +296,11 @@ validate_dynamic_block_store_options(
         return {DynamicBlockStoreOptionsError::StripeCountNotPowerOfTwo};
     }
     // ---- M2.1 consistent snapshot option validation ------------------------
-    if (options.snapshot_cow_max_bytes < 2 * kBlockSizeBytes) {
+    if (options.snapshot_cow_max_bytes < kMinimumSnapshotCowBytes) {
         return {DynamicBlockStoreOptionsError::SnapshotCowBytesTooSmall};
     }
-    if (options.snapshot_writer_stall_limit.count() == 0) {
-        return {DynamicBlockStoreOptionsError::SnapshotCowStallZero};
+    if (options.snapshot_writer_stall_limit.count() <= 0) {
+        return {DynamicBlockStoreOptionsError::SnapshotCowStallNotPositive};
     }
     if (options.snapshot_writer_stall_limit.count() > 5000) {
         return {DynamicBlockStoreOptionsError::SnapshotCowStallTooLarge};
@@ -447,6 +455,7 @@ struct DynamicBlockStoreStats {
 
     // ---- M2.1 consistent snapshot gauges -----------------------------------
     std::uint64_t snapshot_active_id{};
+    std::optional<ConsistentSnapshotState> snapshot_active_state{};
     // ---- M2.1 consistent snapshot lifetime counters ------------------------
     std::uint64_t snapshot_cow_current_bytes{};
     std::uint64_t snapshot_cow_peak_bytes{};

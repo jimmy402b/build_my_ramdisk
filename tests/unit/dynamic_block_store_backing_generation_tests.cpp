@@ -49,6 +49,8 @@ myrd::DynamicBlockStoreCreateArgs backing_args(
             2 * kBlock,
             8,
             64,
+            myrd::kMinimumSnapshotCowBytes,
+            std::chrono::milliseconds{250},
         },
         myrd::InitialBlockState::BackingUnresident,
         std::move(backing),
