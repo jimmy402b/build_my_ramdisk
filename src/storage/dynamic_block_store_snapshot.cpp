@@ -51,7 +51,8 @@ Error consistent_snapshot_error(
 
 Error consistent_snapshot_invariant(std::wstring message) {
     return consistent_snapshot_error(
-        DynamicBlockStoreErrorCode::FatalInternalInvariant,
+        static_cast<std::uint32_t>(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant),
         L"DynamicBlockStore::copy_consistent_snapshot_batch",
         std::move(message));
 }
