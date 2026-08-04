@@ -457,16 +457,18 @@ git diff --check
 Task 11 verdict: **DONE**. This is not an M3 GO verdict; Tasks 12–44 and the
 real AIM/NTFS, native VHDX, crash and soak acceptance gates remain required.
 
-## Task 05 ZERO/DISCARD transition candidate evidence — 2026-08-04
+## Task 05 ZERO/DISCARD transition acceptance — 2026-08-04
 
 | Item | Value |
 |---|---|
 | Baseline | `4829c743403cb08ba2e17101d7f78c53c39315cc` |
 | Branch | `feature/m3-task05` |
-| Candidate status | `READY_FOR_REVIEW`; deliberately not `DONE` |
-| Independent review | Not completed: Claude read-only review failed with API `ConnectionRefused` |
+| Accepted commits | `14daea4`, `6440409`, `170cd51` |
+| Status | `DONE` |
+| Independent specification review | GO after two NO-GO repair cycles; P0=0, P1=0 |
+| Independent code-quality review | GO; P0=0, P1=0, P2=0 |
 
-### Candidate behavior
+### Accepted behavior
 
 - The deterministic truth table covers DATA→ZERO, DATA→DISCARD,
   ZERO→DATA, DISCARD→DATA, ZERO→DISCARD and DISCARD→ZERO.
@@ -499,12 +501,24 @@ real AIM/NTFS, native VHDX, crash and soak acceptance gates remain required.
   test-seeded epoch zero without an active token. Restricting that validation to
   the active COW path restored the frozen M2 behavior.
 
-### Candidate verification
+### Acceptance verification
 
 ```powershell
 . .\tools\Enter-MsvcEnvironment.ps1
 cmake --build --preset release
 # passed
+
+cmake --build --preset debug
+# passed
+
+.\out\build\msvc\tests\Debug\myrd_m2_consistent_snapshot_tests.exe
+# 55/55 passed
+
+.\out\build\msvc\tests\Release\myrd_m2_consistent_snapshot_tests.exe
+# 55/55 passed
+
+1..20 | % { .\out\build\msvc\tests\Debug\myrd_m2_consistent_snapshot_tests.exe }
+# 20/20 passed
 
 1..100 | % { .\out\build\msvc\tests\Release\myrd_m2_consistent_snapshot_tests.exe }
 # 100/100 passed
@@ -521,25 +535,27 @@ ctest --preset release -L m2-v3 --output-on-failure
 ctest --preset release --output-on-failure
 # 60/60 passed
 
+ctest --preset debug --output-on-failure
+# 59/59 passed
+
 git diff --check
 # passed
 ```
 
-Focused executable SHA-256:
-`67F805B9436B59B01D80DBB8140FDC1B473106C8EC218AA13E7C59BEAE896B09`.
+Focused executable SHA-256: Debug
+`C9E4A68F855E0B36B1C97715E896BBF3E189E17AD3785DB3AE0B15555C33D059`;
+Release `C4BB14591DB001AF06EEAEBBA5BD9FB06952B6697734FD4DA370728625E05298`.
 
-### Review and follow-up obligations
+### Review result and follow-up obligations
 
-- Independent specification and code-quality review remain mandatory before
-  changing Task 05 to `DONE` or beginning Task 06.
+- The specification reviewer returned GO after repairs for Debug allocation
+  accounting, real snapshot no-resurrection ordering, the final short block and
+  deterministic reader/mutator overlap. A fresh code-quality reviewer returned
+  GO with no P0, P1 or P2 findings.
 - Task 06 owns public bounded-batch consumption, exact acknowledgement and the
   literal public no-resurrection proof for these consistent pre-images.
 - Task 07 owns deterministic real `bad_alloc`, COW-full waiting, stall and
   automatic-abort tests.
-- A voluntary Debug probe exposed a pre-existing Task 03 issue: the MSVC Debug
-  `std::map` container-proxy allocation is not included in the coordinator's
-  initial budget accounting. It is outside Task 05 and must be fixed and
-  accepted separately before the final M3 Debug GO.
 
-Task 05 verdict: **READY_FOR_REVIEW** only. This is not a Task 05 `DONE`, M2.1
-GO or M3 GO verdict; Tasks 06–09 remain required.
+Task 05 verdict: **DONE**. This is not an M2.1 GO or M3 GO verdict; Tasks 06–09
+remain required.

@@ -144,7 +144,7 @@ Suggested commit:
 | 02 | Mutation admission 与一致切点 | O | DONE | 01 | M3-V3 / m2.1-v1 |
 | 03 | 有界 snapshot coordinator 与元数据 COW | S | DONE | 02 | M3-V3 / m2.1-v1,v3 |
 | 04 | DATA pre-image | O | DONE | 03 | M3-V3 / m2.1-v2 |
-| 05 | ZERO/DISCARD pre-image | O | READY_FOR_REVIEW | 04 | M3-V3 / m2.1-v2 |
+| 05 | ZERO/DISCARD pre-image | O | DONE | 04 | M3-V3 / m2.1-v2 |
 | 06 | Token batch、finish、abort | O | PENDING | 05 | M3-V3 / m2.1-v2 |
 | 07 | 压力、stall、close 与资源清理 | O | PENDING | 06 | M3-V3 / m2.1-v3,v5 |
 | 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
@@ -253,18 +253,19 @@ Suggested commit:
 执行记录：
 
 ```text
-Task / status: 05 / READY_FOR_REVIEW（不得标记 DONE）
-Executor / timestamp: Codex logic owner / 2026-08-04 20:05:53–20:35:45 +08:00
-Start commit / branch / candidate commit: 4829c743403cb08ba2e17101d7f78c53c39315cc / feature/m3-task05 / 本次 Task05 提交（提交哈希以 git log 为准）
+Task / status: 05 / DONE
+Executor / timestamp: Codex logic owner / 2026-08-04 20:05:53–22:00 +08:00
+Start commit / branch / accepted commits: 4829c743403cb08ba2e17101d7f78c53c39315cc / feature/m3-task05 / 14daea4, 6440409, 170cd51
 Allowed files / actual files: zero/unmap/write 状态转换、snapshot coordinator、snapshot/range tests、Task05 控制与验收文档 / dynamic_block_store.h、dynamic_block_store_write.cpp、dynamic_block_store_ranges.cpp、dynamic_block_store_read.cpp（仅扩展 TestAccess identity seam）、consistent snapshot tests、本文件、验收文档
 Dependencies and evidence: Tasks 03/04 DONE；docs/validation/m3-persistence-acceptance.md 已记录双独立 GO
 Red test command / observed failure / exit code: Release focused 首次在 transition matrix 的 snapshot_preimage 断言失败，证明 DATA→ZERO/DISCARD 覆盖旧值却未 COW，exit 1；后续 partial ZeroDirty invalid-identity no-op 红灯在 !rejected.ok() 失败，exit 1；旧 M2 write/ranges 回归暴露“无活动 token 也验证 test-seeded epoch 0”的过宽修复，2/4 fail，收窄到 active-token COW 路径后恢复
 Implementation summary: 统一 DATA/metadata pre-image reservation+publication；接入 ResidentDirty/ZeroDirty 的 write/full ZERO/UNMAP；partial ranges 继续归一化为 DATA；active token 下 kind/epoch/generation 全路径 fail-closed；metadata 计 256 bytes、零 payload；budget/cancel/backing failure 回滚；跨 range 保留 M2 已完成前缀语义
-Focused verification / exit code: Release focused 100/100，m2.1-v2 1/1，exit 0
-Cumulative verification / exit code: unit.m2 ranges/snapshot/backing_generation/write 4/4；m2-v3 6/6；full Release 60/60，均 exit 0
-Evidence paths and hashes: tests/unit/dynamic_block_store_consistent_snapshot_tests.cpp；focused binary SHA-256 67F805B9436B59B01D80DBB8140FDC1B473106C8EC218AA13E7C59BEAE896B09；docs/validation/m3-persistence-acceptance.md
+Focused verification / exit code: Debug/Release focused 各 55/55；Debug repeat 20/20；Release repeat 100/100；m2.1-v2 1/1，均 exit 0
+Cumulative verification / exit code: unit.m2 ranges/snapshot/backing_generation/write 4/4；m2-v3 6/6；full Debug 59/59；full Release 60/60，均 exit 0
+Evidence paths and hashes: tests/unit/dynamic_block_store_consistent_snapshot_tests.cpp；Debug/Release focused binary SHA-256 C9E4A68F855E0B36B1C97715E896BBF3E189E17AD3785DB3AE0B15555C33D059 / C4BB14591DB001AF06EEAEBBA5BD9FB06952B6697734FD4DA370728625E05298；docs/validation/m3-persistence-acceptance.md
 SPEC/PLAN/TASKLIST drift audit: 未改 M1/AIM/IMDPROXY；未改 M2 外部 block、非原子跨块前缀、install-before-ack 或 generation 语义；未实现 Task06 batch/finish/abort、durability、文件格式、删除权限或 M4 调度
-Open risks / follow-up explicitly excluded: Task06 必须用公共 consistent batch 消费本任务 pre-image 后再验证 exact ack；当前仅用最窄 M2 successor/install/exact-ack/ZeroClean no-fallback 路径锁定 no-resurrection 等价语义。Claude 只读复审因 API ConnectionRefused 未产出结论。额外 Debug 聚焦暴露 Task03 的 MSVC Debug map-container 基础分配计费前置缺陷；Task05 要求的 Release 门禁不受影响，但 M3 最终 Debug GO 前必须单独修复和验收
+Independent review: 规格复审经历两轮 NO-GO 修复后 GO；独立代码质量复审 GO；P0/P1/P2 均为 0。Debug map-container 基础设施计费、真实 COW no-resurrection 顺序、final short block 与确定性 reader/mutator 交错均已修复并覆盖。
+Open risks / follow-up explicitly excluded: Task06 必须用公共 consistent batch 消费本任务 pre-image 后再验证 exact ack；当前仅用最窄 M2 successor/install/exact-ack/ZeroClean no-fallback 路径锁定 no-resurrection 等价语义。Task06–09 与 M2.1/M3 最终验收仍未完成
 Suggested commit: feat(storage): snapshot zero and discard transitions
 ```
 
