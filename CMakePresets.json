@@ -5,8 +5,12 @@
       "name": "msvc",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/out/build/msvc",
+      "environment": {
+        "VSLANG": "1033"
+      },
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "${sourceDir}/tools/msvc-utf8-launcher.cmd",
         "BUILD_TESTING": "ON"
       }
     }
