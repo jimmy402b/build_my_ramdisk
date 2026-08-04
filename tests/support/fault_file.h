@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <vector>
@@ -52,11 +53,11 @@ using FaultFileObserver =
 
 class FaultFileState final {
 public:
-    [[nodiscard]] std::uint64_t logical_length() const noexcept;
-    [[nodiscard]] std::uint64_t physical_bytes() const noexcept;
-    [[nodiscard]] std::size_t allocated_pages() const noexcept;
-    [[nodiscard]] std::uint64_t calls(FaultFilePhase phase) const noexcept;
-    [[nodiscard]] bool closed() const noexcept;
+    [[nodiscard]] std::uint64_t logical_length() const;
+    [[nodiscard]] std::uint64_t physical_bytes() const;
+    [[nodiscard]] std::size_t allocated_pages() const;
+    [[nodiscard]] std::uint64_t calls(FaultFilePhase phase) const;
+    [[nodiscard]] bool closed() const;
 
 private:
     friend class FaultFileBackend;
@@ -69,13 +70,16 @@ private:
         std::vector<FaultFileRule> rules,
         FaultFileObserver observer);
 
+    // This mutex is the single linearization boundary for every backend
+    // operation and every public state getter.
+    mutable std::mutex mutex_;
     std::uint64_t logical_length_{};
     std::map<std::uint64_t, Page> pages_;
     std::array<std::uint64_t,
         static_cast<std::size_t>(FaultFilePhase::Count)> calls_{};
     std::vector<FaultFileRule> rules_;
     std::vector<bool> consumed_rules_;
-    FaultFileObserver observer_;
+    const FaultFileObserver observer_;
     bool closed_{};
 };
 

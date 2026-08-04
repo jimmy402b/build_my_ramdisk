@@ -1,5 +1,7 @@
 #include "fault_file.h"
 
+#include "src/common/scope_exit.h"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -91,15 +93,18 @@ public:
         const OperationContext&,
         const std::uint64_t offset,
         const std::span<std::byte> destination) override {
-        const auto call = begin(FaultFilePhase::Read);
-        if (state_->closed_) {
+        std::unique_lock lock(state_->mutex_);
+        const auto call = begin_locked(FaultFilePhase::Read);
+        ScopeExit notify_observer([&] {
+            lock.unlock();
             observe(FaultFilePhase::Read, call);
+        });
+        if (state_->closed_) {
             return failed_transfer(ERROR_INVALID_HANDLE, L"file_io.read");
         }
 
         std::uint64_t requested_end = 0;
         if (!checked_end(offset, destination.size(), requested_end)) {
-            observe(FaultFilePhase::Read, call);
             return failed_transfer(
                 ERROR_ARITHMETIC_OVERFLOW, L"file_io.read");
         }
@@ -110,13 +115,11 @@ public:
             (rule->action == FaultFileAction::NativeError)) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(FaultFilePhase::Read, call);
             return failed_transfer(code, L"file_io.read");
         }
         if (rule != nullptr &&
             rule->action == FaultFileAction::ZeroProgress) {
             consume(rule);
-            observe(FaultFilePhase::Read, call);
             return Result<std::size_t>::success(0);
         }
 
@@ -133,6 +136,7 @@ public:
         std::memset(destination.data(), 0, transfer);
         copy_allocated_pages(offset, destination.first(transfer));
 
+        bool corruption_applied = false;
         if (rule != nullptr &&
             rule->action == FaultFileAction::ReadbackCorruption &&
             rule->byte_offset.has_value() &&
@@ -141,11 +145,13 @@ public:
             const auto index = static_cast<std::size_t>(
                 *rule->byte_offset - offset);
             destination[index] ^= std::byte{0x01};
+            corruption_applied = true;
         }
-        if (rule != nullptr) {
+        if (rule != nullptr &&
+            (rule->action != FaultFileAction::ReadbackCorruption ||
+             corruption_applied)) {
             consume(rule);
         }
-        observe(FaultFilePhase::Read, call);
         return Result<std::size_t>::success(transfer);
     }
 
@@ -153,15 +159,18 @@ public:
         const OperationContext&,
         const std::uint64_t offset,
         const std::span<const std::byte> source) override {
-        const auto call = begin(FaultFilePhase::Write);
-        if (state_->closed_) {
+        std::unique_lock lock(state_->mutex_);
+        const auto call = begin_locked(FaultFilePhase::Write);
+        ScopeExit notify_observer([&] {
+            lock.unlock();
             observe(FaultFilePhase::Write, call);
+        });
+        if (state_->closed_) {
             return failed_transfer(ERROR_INVALID_HANDLE, L"file_io.write");
         }
 
         std::uint64_t requested_end = 0;
         if (!checked_end(offset, source.size(), requested_end)) {
-            observe(FaultFilePhase::Write, call);
             return failed_transfer(
                 ERROR_ARITHMETIC_OVERFLOW, L"file_io.write");
         }
@@ -174,13 +183,11 @@ public:
               !rule->byte_offset.has_value()))) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(FaultFilePhase::Write, call);
             return failed_transfer(code, L"file_io.write");
         }
         if (rule != nullptr &&
             rule->action == FaultFileAction::ZeroProgress) {
             consume(rule);
-            observe(FaultFilePhase::Write, call);
             return Result<std::size_t>::success(0);
         }
 
@@ -194,7 +201,6 @@ public:
 
         auto write_result = write_prefix(offset, source.first(transfer));
         if (!write_result.ok()) {
-            observe(FaultFilePhase::Write, call);
             return write_result;
         }
         if (rule != nullptr &&
@@ -202,13 +208,11 @@ public:
              rule->action == FaultFileAction::TornWrite)) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(FaultFilePhase::Write, call);
             return failed_transfer(code, L"file_io.write");
         }
         if (rule != nullptr) {
             consume(rule);
         }
-        observe(FaultFilePhase::Write, call);
         return Result<std::size_t>::success(transfer);
     }
 
@@ -220,9 +224,13 @@ public:
     }
 
     Result<std::uint64_t> length(const OperationContext&) const override {
-        const auto call = begin(FaultFilePhase::Length);
-        if (state_->closed_) {
+        std::unique_lock lock(state_->mutex_);
+        const auto call = begin_locked(FaultFilePhase::Length);
+        ScopeExit notify_observer([&] {
+            lock.unlock();
             observe(FaultFilePhase::Length, call);
+        });
+        if (state_->closed_) {
             return Result<std::uint64_t>::failure(
                 native_error(ERROR_INVALID_HANDLE, L"file_io.length"));
         }
@@ -231,20 +239,22 @@ public:
         if (rule != nullptr && rule->action == FaultFileAction::NativeError) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(FaultFilePhase::Length, call);
             return Result<std::uint64_t>::failure(
                 native_error(code, L"file_io.length"));
         }
-        observe(FaultFilePhase::Length, call);
         return Result<std::uint64_t>::success(state_->logical_length_);
     }
 
     Result<void> truncate(
         const OperationContext&,
         const std::uint64_t new_length) override {
-        const auto call = begin(FaultFilePhase::Truncate);
-        if (state_->closed_) {
+        std::unique_lock lock(state_->mutex_);
+        const auto call = begin_locked(FaultFilePhase::Truncate);
+        ScopeExit notify_observer([&] {
+            lock.unlock();
             observe(FaultFilePhase::Truncate, call);
+        });
+        if (state_->closed_) {
             return Result<void>::failure(
                 native_error(ERROR_INVALID_HANDLE, L"file_io.truncate"));
         }
@@ -253,7 +263,6 @@ public:
         if (rule != nullptr && rule->action == FaultFileAction::NativeError) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(FaultFilePhase::Truncate, call);
             return Result<void>::failure(
                 native_error(code, L"file_io.truncate"));
         }
@@ -281,33 +290,38 @@ public:
             }
         }
         state_->logical_length_ = new_length;
-        observe(FaultFilePhase::Truncate, call);
         return Result<void>::success();
     }
 
     Result<void> close() override {
-        const auto call = begin(FaultFilePhase::Close);
-        if (state_->closed_) {
+        std::unique_lock lock(state_->mutex_);
+        const auto call = begin_locked(FaultFilePhase::Close);
+        ScopeExit notify_observer([&] {
+            lock.unlock();
             observe(FaultFilePhase::Close, call);
+        });
+        if (state_->closed_) {
             return Result<void>::success();
         }
         auto* rule = matching_rule(FaultFilePhase::Close, call, 0, 0);
         if (rule != nullptr && rule->action == FaultFileAction::CloseError) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(FaultFilePhase::Close, call);
             return Result<void>::failure(
                 native_error(code, L"file_io.close"));
         }
         state_->closed_ = true;
-        observe(FaultFilePhase::Close, call);
         return Result<void>::success();
     }
 
 private:
     std::shared_ptr<FaultFileState> state_;
 
-    [[nodiscard]] std::uint64_t begin(const FaultFilePhase phase) const {
+    // The call number is linearized by state_->mutex_: no rule can observe a
+    // duplicate occurrence and getters see the increment atomically with the
+    // operation's state transition.
+    [[nodiscard]] std::uint64_t begin_locked(
+        const FaultFilePhase phase) const {
         return ++state_->calls_[phase_index(phase)];
     }
 
@@ -445,9 +459,13 @@ private:
         const FaultFilePhase phase,
         const FaultFileAction expected_action,
         const wchar_t* operation) {
-        const auto call = begin(phase);
-        if (state_->closed_) {
+        std::unique_lock lock(state_->mutex_);
+        const auto call = begin_locked(phase);
+        ScopeExit notify_observer([&] {
+            lock.unlock();
             observe(phase, call);
+        });
+        if (state_->closed_) {
             return Result<void>::failure(
                 native_error(ERROR_INVALID_HANDLE, operation));
         }
@@ -457,10 +475,8 @@ private:
              rule->action == FaultFileAction::NativeError)) {
             const auto code = rule_error(*rule);
             consume(rule);
-            observe(phase, call);
             return Result<void>::failure(native_error(code, operation));
         }
-        observe(phase, call);
         return Result<void>::success();
     }
 };
@@ -474,24 +490,29 @@ FaultFileState::FaultFileState(
       consumed_rules_(rules_.size(), false),
       observer_(std::move(observer)) {}
 
-std::uint64_t FaultFileState::logical_length() const noexcept {
+std::uint64_t FaultFileState::logical_length() const {
+    std::lock_guard lock(mutex_);
     return logical_length_;
 }
 
-std::uint64_t FaultFileState::physical_bytes() const noexcept {
+std::uint64_t FaultFileState::physical_bytes() const {
+    std::lock_guard lock(mutex_);
     return static_cast<std::uint64_t>(pages_.size()) * kPageBytes;
 }
 
-std::size_t FaultFileState::allocated_pages() const noexcept {
+std::size_t FaultFileState::allocated_pages() const {
+    std::lock_guard lock(mutex_);
     return pages_.size();
 }
 
 std::uint64_t FaultFileState::calls(
-    const FaultFilePhase phase) const noexcept {
+    const FaultFilePhase phase) const {
+    std::lock_guard lock(mutex_);
     return calls_[phase_index(phase)];
 }
 
-bool FaultFileState::closed() const noexcept {
+bool FaultFileState::closed() const {
+    std::lock_guard lock(mutex_);
     return closed_;
 }
 

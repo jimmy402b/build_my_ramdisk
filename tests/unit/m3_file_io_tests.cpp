@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <future>
-#include <latch>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -26,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace task11_allocation_fault {
@@ -137,6 +137,14 @@ std::array<std::byte, 8> sample_bytes() {
     };
 }
 
+void require_with_unwind(
+    const bool condition,
+    const char* const message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
 enum class BackendEntry : std::uint8_t {
     Flush,
     Truncate,
@@ -235,6 +243,39 @@ private:
     bool flush_entered_{};
     bool truncate_entered_{};
     bool close_entered_{};
+};
+
+class BoundedStartGate final {
+public:
+    explicit BoundedStartGate(const std::size_t expected) noexcept
+        : expected_(expected) {}
+
+    void arrive_and_wait() {
+        std::unique_lock lock(mutex_);
+        ++arrived_;
+        condition_.notify_all();
+        condition_.wait(lock, [this] { return released_; });
+    }
+
+    [[nodiscard]] bool wait_until_ready(
+        const std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(
+            lock, timeout, [this] { return arrived_ == expected_; });
+    }
+
+    void release() noexcept {
+        std::lock_guard lock(mutex_);
+        released_ = true;
+        condition_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::size_t expected_{};
+    std::size_t arrived_{};
+    bool released_{};
 };
 
 class OverReportingBackend final : public IFileIoBackend {
@@ -363,9 +404,14 @@ public:
     }
 
     ~OverlappedNamedPipe() noexcept {
+        disconnect_server();
         file_.reset();
+    }
+
+    void disconnect_server() noexcept {
         if (server_) {
             static_cast<void>(DisconnectNamedPipe(server_.get()));
+            server_.reset();
         }
     }
 
@@ -436,23 +482,52 @@ void require_operation_waits_for_transfer(
     auto transfer = std::async(std::launch::async, [&] {
         return file->read_exact(0, byte);
     });
-    REQUIRE(backend->wait_for_transfer(std::chrono::seconds(2)));
+    std::future<Result<void>> competing;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        backend->release_transfer();
+        if (transfer.valid()) {
+            static_cast<void>(transfer.wait_for(std::chrono::seconds(2)));
+        }
+        if (competing.valid()) {
+            static_cast<void>(competing.wait_for(std::chrono::seconds(2)));
+        }
+    });
 
-    std::latch operation_started{1};
-    auto competing = std::async(std::launch::async, [&] {
-        operation_started.count_down();
+    require_with_unwind(
+        backend->wait_for_transfer(std::chrono::seconds(2)),
+        "blocking backend transfer did not enter");
+    std::promise<void> operation_started;
+    auto operation_started_future = operation_started.get_future();
+    competing = std::async(std::launch::async, [&] {
+        operation_started.set_value();
         return operation(*file);
     });
-    operation_started.wait();
+    require_with_unwind(
+        operation_started_future.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "competing operation did not start");
     const auto entered_while_transfer_pending = backend->wait_for_entry(
         expected_entry, std::chrono::milliseconds(200));
 
     backend->release_transfer();
+    require_with_unwind(
+        transfer.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "blocking transfer did not finish after release");
+    require_with_unwind(
+        competing.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "competing operation did not finish after transfer");
     const auto transfer_result = transfer.get();
     const auto competing_result = competing.get();
-    REQUIRE(transfer_result.ok());
-    REQUIRE(competing_result.ok());
-    REQUIRE(!entered_while_transfer_pending);
+    cleanup.release();
+    require_with_unwind(
+        transfer_result.ok(), "blocking transfer failed");
+    require_with_unwind(
+        competing_result.ok(), "competing operation failed");
+    require_with_unwind(
+        !entered_while_transfer_pending,
+        "competing operation entered during transfer");
 }
 
 } // namespace
@@ -562,44 +637,64 @@ TEST_CASE(m3_file_io_native_pending_pipe_read_stop_cancels_and_drains) {
     auto pending = std::async(std::launch::async, [&] {
         return pipe.file().read_exact(context, 0, output);
     });
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::milliseconds(100)),
-        std::future_status::timeout);
+    myrd::ScopeExit cleanup([&]() noexcept {
+        stop.request_stop();
+        pipe.disconnect_server();
+        if (pending.valid()) {
+            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
+        }
+    });
+    require_with_unwind(
+        pending.wait_for(std::chrono::milliseconds(100)) ==
+            std::future_status::timeout,
+        "named-pipe read did not become pending");
     stop.request_stop();
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::seconds(2)),
-        std::future_status::ready);
+    require_with_unwind(
+        pending.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "cancelled named-pipe read did not finish");
     const auto cancelled = pending.get();
-    REQUIRE(cancelled.has_error());
-    REQUIRE_EQ(
-        cancelled.error().code,
-        static_cast<std::uint32_t>(OperationErrorCode::cancelled));
+    require_with_unwind(
+        cancelled.has_error() &&
+            cancelled.error().code ==
+                static_cast<std::uint32_t>(OperationErrorCode::cancelled),
+        "named-pipe read did not report cancellation");
 
     const std::array next{std::byte{0x5A}};
     pipe.write(next);
     OperationContext reuse_context{
         {}, std::chrono::steady_clock::now() + std::chrono::seconds(2)};
-    REQUIRE(pipe.file().read_exact(reuse_context, 0, output).ok());
+    require_with_unwind(
+        pipe.file().read_exact(reuse_context, 0, output).ok(),
+        "named-pipe handle was not reusable after read cancellation");
+    cleanup.release();
     REQUIRE_EQ(output, next);
 }
 
 TEST_CASE(m3_file_io_native_pending_pipe_read_deadline_cancels_and_drains) {
     OverlappedNamedPipe pipe;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        pipe.disconnect_server();
+    });
     std::array<std::byte, 1> output{};
     OperationContext context{
         {}, std::chrono::steady_clock::now() + std::chrono::milliseconds(100)};
 
     auto result = pipe.file().read_exact(context, 0, output);
-    REQUIRE(result.has_error());
-    REQUIRE_EQ(
-        result.error().code,
-        static_cast<std::uint32_t>(OperationErrorCode::timed_out));
+    require_with_unwind(
+        result.has_error() &&
+            result.error().code ==
+                static_cast<std::uint32_t>(OperationErrorCode::timed_out),
+        "named-pipe read did not report deadline");
 
     const std::array next{std::byte{0x6B}};
     pipe.write(next);
     OperationContext reuse_context{
         {}, std::chrono::steady_clock::now() + std::chrono::seconds(2)};
-    REQUIRE(pipe.file().read_exact(reuse_context, 0, output).ok());
+    require_with_unwind(
+        pipe.file().read_exact(reuse_context, 0, output).ok(),
+        "named-pipe handle was not reusable after deadline");
+    cleanup.release();
     REQUIRE_EQ(output, next);
 }
 
@@ -615,21 +710,32 @@ TEST_CASE(m3_file_io_native_pending_pipe_write_stop_cancels_and_drains) {
     auto pending = std::async(std::launch::async, [&] {
         return pipe.file().write_exact(context, 0, input);
     });
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::milliseconds(100)),
-        std::future_status::timeout);
+    myrd::ScopeExit cleanup([&]() noexcept {
+        stop.request_stop();
+        pipe.disconnect_server();
+        if (pending.valid()) {
+            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
+        }
+    });
+    require_with_unwind(
+        pending.wait_for(std::chrono::milliseconds(100)) ==
+            std::future_status::timeout,
+        "named-pipe write did not become pending");
     stop.request_stop();
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::seconds(2)),
-        std::future_status::ready);
+    require_with_unwind(
+        pending.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "cancelled named-pipe write did not finish");
     const auto cancelled = pending.get();
-    REQUIRE(cancelled.has_error());
-    REQUIRE_EQ(
-        cancelled.error().code,
-        static_cast<std::uint32_t>(OperationErrorCode::cancelled));
+    cleanup.release();
+    require_with_unwind(
+        cancelled.has_error() &&
+            cancelled.error().code ==
+                static_cast<std::uint32_t>(OperationErrorCode::cancelled),
+        "named-pipe write did not report cancellation");
 }
 
-TEST_CASE(m3_file_io_native_pending_pipe_completion_wins_late_stop_race) {
+TEST_CASE(m3_file_io_completed_pipe_read_is_not_reclassified_by_late_stop) {
     OverlappedNamedPipe pipe;
     std::array<std::byte, 1> output{};
     std::stop_source stop;
@@ -641,16 +747,28 @@ TEST_CASE(m3_file_io_native_pending_pipe_completion_wins_late_stop_race) {
     auto pending = std::async(std::launch::async, [&] {
         return pipe.file().read_exact(context, 0, output);
     });
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::milliseconds(100)),
-        std::future_status::timeout);
+    myrd::ScopeExit cleanup([&]() noexcept {
+        stop.request_stop();
+        pipe.disconnect_server();
+        if (pending.valid()) {
+            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
+        }
+    });
+    require_with_unwind(
+        pending.wait_for(std::chrono::milliseconds(100)) ==
+            std::future_status::timeout,
+        "named-pipe read did not become pending before completion barrier");
     const std::array expected{std::byte{0x7C}};
     pipe.write(expected);
+    require_with_unwind(
+        pending.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "named-pipe read did not cross the completion barrier");
     stop.request_stop();
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::seconds(2)),
-        std::future_status::ready);
-    REQUIRE(pending.get().ok());
+    const auto completed = pending.get();
+    cleanup.release();
+    require_with_unwind(
+        completed.ok(), "late stop reclassified a completed read");
     REQUIRE_EQ(output, expected);
 }
 
@@ -663,26 +781,43 @@ TEST_CASE(m3_file_io_native_close_waits_for_pending_pipe_read) {
     auto pending = std::async(std::launch::async, [&] {
         return pipe.file().read_exact(context, 0, output);
     });
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::milliseconds(100)),
-        std::future_status::timeout);
-    auto closing = std::async(std::launch::async, [&] {
+    std::future<Result<void>> closing;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        pipe.disconnect_server();
+        if (pending.valid()) {
+            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
+        }
+        if (closing.valid()) {
+            static_cast<void>(closing.wait_for(std::chrono::seconds(4)));
+        }
+    });
+    require_with_unwind(
+        pending.wait_for(std::chrono::milliseconds(100)) ==
+            std::future_status::timeout,
+        "named-pipe read did not become pending before close");
+    closing = std::async(std::launch::async, [&] {
         return pipe.file().close();
     });
-    REQUIRE_EQ(
-        closing.wait_for(std::chrono::milliseconds(100)),
-        std::future_status::timeout);
+    require_with_unwind(
+        closing.wait_for(std::chrono::milliseconds(100)) ==
+            std::future_status::timeout,
+        "close did not wait for pending named-pipe read");
 
     const std::array expected{std::byte{0x8D}};
     pipe.write(expected);
-    REQUIRE_EQ(
-        pending.wait_for(std::chrono::seconds(2)),
-        std::future_status::ready);
-    REQUIRE_EQ(
-        closing.wait_for(std::chrono::seconds(2)),
-        std::future_status::ready);
-    REQUIRE(pending.get().ok());
-    REQUIRE(closing.get().ok());
+    require_with_unwind(
+        pending.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "pending named-pipe read did not complete");
+    require_with_unwind(
+        closing.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "close did not finish after pending read");
+    const auto read_result = pending.get();
+    const auto close_result = closing.get();
+    cleanup.release();
+    require_with_unwind(read_result.ok(), "named-pipe read failed");
+    require_with_unwind(close_result.ok(), "named-pipe close failed");
     REQUIRE_EQ(output, expected);
 }
 
@@ -925,6 +1060,250 @@ TEST_CASE(m3_file_io_faults_cover_disk_torn_flush_corruption_and_close) {
     REQUIRE(!close.state->closed());
     REQUIRE(close.file->close().ok());
     REQUIRE(close.state->closed());
+}
+
+TEST_CASE(m3_file_io_readback_corruption_waits_for_actual_transfer) {
+    auto fault = make_fault_file(4, {{
+        FaultFilePhase::Read,
+        1,
+        6,
+        FaultFileAction::ReadbackCorruption,
+        ERROR_SUCCESS,
+    }});
+    const std::array initial{
+        std::byte{0x10}, std::byte{0x20},
+        std::byte{0x30}, std::byte{0x40}};
+    REQUIRE(fault.file->write_exact(0, initial).ok());
+
+    std::array<std::byte, 8> beyond_eof{};
+    auto eof = fault.file->read_exact(0, beyond_eof);
+    require_native_error(eof, ERROR_HANDLE_EOF, L"file_io.read");
+
+    const std::array extension{
+        std::byte{0x50}, std::byte{0x60},
+        std::byte{0x70}, std::byte{0x80}};
+    REQUIRE(fault.file->write_exact(4, extension).ok());
+    std::array<std::byte, extension.size()> output{};
+    REQUIRE(fault.file->read_exact(4, output).ok());
+    REQUIRE_EQ(output[0], extension[0]);
+    REQUIRE_EQ(output[1], extension[1]);
+    REQUIRE(output[2] != extension[2]);
+    REQUIRE_EQ(output[3], extension[3]);
+    REQUIRE_EQ(fault.state->calls(FaultFilePhase::Read), 3U);
+}
+
+TEST_CASE(m3_file_io_concurrent_fault_occurrences_are_linearized) {
+    constexpr std::size_t worker_count = 32;
+    constexpr std::size_t rounds = 20;
+
+    for (std::size_t round = 0; round < rounds; ++round) {
+        std::vector<FaultFileRule> rules;
+        rules.reserve(worker_count);
+        for (std::size_t index = 0; index < worker_count; ++index) {
+            rules.push_back({
+                FaultFilePhase::Read,
+                static_cast<std::uint64_t>(index + 1),
+                std::nullopt,
+                FaultFileAction::NativeError,
+                static_cast<std::uint32_t>(1000 + index),
+            });
+        }
+        auto fault = make_fault_file(1, std::move(rules));
+        std::array<std::uint32_t, worker_count> observed_codes{};
+        BoundedStartGate start_gate(worker_count);
+        std::vector<std::jthread> workers;
+        workers.reserve(worker_count);
+        myrd::ScopeExit release_workers([&]() noexcept {
+            start_gate.release();
+        });
+        for (std::size_t index = 0; index < worker_count; ++index) {
+            workers.emplace_back([&, index] {
+                start_gate.arrive_and_wait();
+                std::array<std::byte, 1> output{};
+                auto result = fault.file->read_exact(0, output);
+                if (result.has_error()) {
+                    observed_codes[index] = result.error().native_code;
+                }
+            });
+        }
+        require_with_unwind(
+            start_gate.wait_until_ready(std::chrono::seconds(2)),
+            "fault occurrence workers did not reach the start gate");
+        start_gate.release();
+        release_workers.release();
+        workers.clear();
+
+        std::sort(observed_codes.begin(), observed_codes.end());
+        for (std::size_t index = 0; index < worker_count; ++index) {
+            REQUIRE_EQ(
+                observed_codes[index],
+                static_cast<std::uint32_t>(1000 + index));
+        }
+        REQUIRE_EQ(
+            fault.state->calls(FaultFilePhase::Read),
+            static_cast<std::uint64_t>(worker_count));
+    }
+}
+
+TEST_CASE(m3_file_io_concurrent_read_write_and_state_getters_are_safe) {
+    constexpr std::size_t page_count = 8;
+    constexpr std::size_t iterations = 100;
+    constexpr std::size_t page_bytes = 4096;
+    auto fault = make_fault_file(page_count * page_bytes);
+    std::atomic<bool> consistent{true};
+    BoundedStartGate start_gate(page_count * 2 + 1);
+    std::vector<std::jthread> workers;
+    workers.reserve(page_count * 2 + 1);
+    myrd::ScopeExit release_workers([&]() noexcept {
+        start_gate.release();
+    });
+
+    for (std::size_t page = 0; page < page_count; ++page) {
+        workers.emplace_back([&, page] {
+            start_gate.arrive_and_wait();
+            std::array<std::byte, page_bytes> data{};
+            for (std::size_t iteration = 0;
+                 iteration < iterations;
+                 ++iteration) {
+                const auto value = iteration % 2 == 0
+                    ? std::byte{0x35}
+                    : std::byte{0xCA};
+                data.fill(value);
+                if (!fault.file->write_exact(page * page_bytes, data).ok()) {
+                    consistent.store(false, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+        workers.emplace_back([&, page] {
+            start_gate.arrive_and_wait();
+            std::array<std::byte, page_bytes> data{};
+            for (std::size_t iteration = 0;
+                 iteration < iterations;
+                 ++iteration) {
+                if (!fault.file->read_exact(page * page_bytes, data).ok()) {
+                    consistent.store(false, std::memory_order_relaxed);
+                    return;
+                }
+                const auto first = data.front();
+                if (first != std::byte{0} &&
+                    first != std::byte{0x35} &&
+                    first != std::byte{0xCA}) {
+                    consistent.store(false, std::memory_order_relaxed);
+                    return;
+                }
+                if (!std::all_of(data.begin(), data.end(),
+                        [first](const std::byte value) {
+                            return value == first;
+                        })) {
+                    consistent.store(false, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+    }
+    workers.emplace_back([&] {
+        start_gate.arrive_and_wait();
+        std::uint64_t last_reads = 0;
+        std::uint64_t last_writes = 0;
+        for (std::size_t iteration = 0;
+             iteration < iterations * 4;
+             ++iteration) {
+            const auto reads = fault.state->calls(FaultFilePhase::Read);
+            const auto writes = fault.state->calls(FaultFilePhase::Write);
+            if (fault.state->logical_length() != page_count * page_bytes ||
+                fault.state->allocated_pages() > page_count ||
+                fault.state->physical_bytes() > page_count * page_bytes ||
+                fault.state->closed() ||
+                reads < last_reads || writes < last_writes) {
+                consistent.store(false, std::memory_order_relaxed);
+                return;
+            }
+            last_reads = reads;
+            last_writes = writes;
+        }
+    });
+
+    require_with_unwind(
+        start_gate.wait_until_ready(std::chrono::seconds(2)),
+        "read/write/getter workers did not reach the start gate");
+    start_gate.release();
+    release_workers.release();
+    workers.clear();
+    REQUIRE(consistent.load(std::memory_order_relaxed));
+
+    std::array<std::byte, page_bytes> final_page{};
+    for (std::size_t page = 0; page < page_count; ++page) {
+        REQUIRE(fault.file->read_exact(
+            page * page_bytes, final_page).ok());
+        REQUIRE(std::all_of(
+            final_page.begin(), final_page.end(),
+            [](const std::byte value) {
+                return value == std::byte{0xCA};
+            }));
+    }
+}
+
+TEST_CASE(m3_file_io_observer_runs_without_state_mutex) {
+    std::shared_ptr<myrd::persistence::test::FaultFileState> state;
+    std::promise<void> run_getter;
+    auto run_getter_future = run_getter.get_future();
+    std::promise<void> getter_done;
+    const auto getter_future = getter_done.get_future().share();
+    std::atomic<bool> getter_finished_during_callback{};
+    std::atomic<bool> getter_signalled{};
+
+    std::jthread getter([&] {
+        run_getter_future.wait();
+        const auto state_copy = state;
+        if (state_copy != nullptr) {
+            static_cast<void>(state_copy->logical_length());
+            static_cast<void>(state_copy->physical_bytes());
+            static_cast<void>(state_copy->allocated_pages());
+            static_cast<void>(state_copy->calls(FaultFilePhase::Read));
+            static_cast<void>(state_copy->closed());
+        }
+        getter_done.set_value();
+    });
+    myrd::ScopeExit finish_getter([&]() noexcept {
+        if (!getter_signalled.exchange(true, std::memory_order_relaxed)) {
+            try {
+                run_getter.set_value();
+            } catch (...) {
+            }
+        }
+        if (getter.joinable()) {
+            getter.join();
+        }
+    });
+
+    auto fault = make_fault_file(1, {},
+        [&](const FaultFilePhase phase, const std::uint64_t) {
+            if (phase != FaultFilePhase::Read) {
+                return;
+            }
+            if (!getter_signalled.exchange(true, std::memory_order_relaxed)) {
+                run_getter.set_value();
+            }
+            getter_finished_during_callback.store(
+                getter_future.wait_for(std::chrono::seconds(1)) ==
+                    std::future_status::ready,
+                std::memory_order_relaxed);
+        });
+    state = fault.state;
+    std::array<std::byte, 1> output{};
+    const auto read_result = fault.file->read_exact(0, output);
+    const auto getter_status = getter_future.wait_for(
+        std::chrono::seconds(2));
+    require_with_unwind(read_result.ok(), "observer read failed");
+    require_with_unwind(
+        getter_status == std::future_status::ready,
+        "observer getter did not finish within the timeout");
+    require_with_unwind(
+        getter_finished_during_callback.load(std::memory_order_relaxed),
+        "observer ran while the fault state mutex was locked");
+    getter.join();
+    finish_getter.release();
 }
 
 TEST_CASE(m3_file_io_fault_byte_ranges_are_half_open_across_requests) {
