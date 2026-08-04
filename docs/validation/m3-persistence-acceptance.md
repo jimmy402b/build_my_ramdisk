@@ -559,3 +559,103 @@ Release `C4BB14591DB001AF06EEAEBBA5BD9FB06952B6697734FD4DA370728625E05298`.
 
 Task 05 verdict: **DONE**. This is not an M2.1 GO or M3 GO verdict; Tasks 06–09
 remain required.
+
+## Task 06 bounded snapshot batch evidence — 2026-08-05
+
+| Item | Value |
+|---|---|
+| Branch / accepted HEAD | `feature/m3-task06` / `a5b919e` |
+| Independent specification review | GO after two repair cycles; P0=0, P1=0 |
+| Independent code-quality review | QUALITY GO after deterministic cancellation repair; P0=0, P1=0, P2=0 |
+
+### Accepted behavior
+
+- Consistent batches scan in deterministic ascending order, enforce caller
+  cursor/frontier equality and bounded record/byte limits, and transfer either
+  the current cut member or its exact pre-image without duplicates or omission.
+- A batch advances the coordinator and erases covered COW state only after the
+  returned object owns its payload. Cancellation before the first record makes
+  zero progress; cancellation after safe progress returns that partial batch.
+- Sparse traversal is proportional to populated leaves plus emitted records.
+  A 1 TiB geometry with one dirty block does not scan logical block count or
+  allocate absent leaves.
+- `finish`, `abort`, install and exact acknowledgement preserve the frozen
+  token lifecycle, generation and dirty-epoch rules, including post-cut
+  successor no-resurrection behavior.
+- Cancellation and close wake every transient snapshot wait. The final seam
+  pauses after the stop predicate check but before the actual condition wait,
+  so the wakeup contract is tested at the only lost-notification window.
+
+### Mutation and verification evidence
+
+- Removing the snapshot-wait stop callback makes the deterministic
+  cancellation test fail instead of depending on scheduler timing.
+- Final focused Debug/Release runs passed 71/71 tests. Debug repeat passed
+  20/20; Release repeat passed 100/100; the legacy `unit.m2.snapshot` seam
+  regression passed 1/1.
+- Fresh full Debug passed 60/60 and fresh full Release passed 61/61.
+- The independent review Release focused executable SHA-256 was
+  `C6435D7FD1C6DA66130B9ADB1CD699FC9525E3691BFEBF9D88FC5AA87C60CFB7`.
+
+Task 06 verdict: **DONE**. This is not an M2.1 GO or M3 GO verdict; Tasks 07–09
+remain required.
+
+## Task 12 path, identity and writer-ownership evidence — 2026-08-05
+
+| Item | Value |
+|---|---|
+| Implementation branch | `feature/m3-task12` |
+| Final implementation commits | `a550638`, `9da6e3e`, `cedd4d8` |
+| Independent specification review | GO; P0=0, P1=0, P2=0 |
+| Independent code-quality review | GO; P0=0, P1=0, P2=0 |
+
+### Accepted behavior
+
+- Bundle paths are single validated UTF-8 components anchored to opened root
+  and file handles. Identity, direct containment, reparse state and hard-link
+  count are revalidated at every mutation boundary.
+- The single writer is enforced by both an in-process manifest-identity
+  registry and a cross-process byte lock. State snapshots retain strong
+  ownership across concurrent `close()`.
+- Pending native rename releases the writer mutex while waiting, has a finite
+  deadline and bounded cancellation drain, and classifies the final native I/O
+  status. A completion that beats cancellation is reported as that completion.
+- An operation that cannot be proven drained remains in one of eight bounded
+  process-lifetime quarantine slots and retains the complete writer authority;
+  a successor writer cannot overlap potentially kernel-owned buffers.
+- Production and test quarantine chains are separate. Test cleanup is compiled
+  only with `BUILD_TESTING=ON`, cannot release production-provenance operations,
+  and returns every operation registration independently.
+- When a test fake is known to have stopped using retained buffers, releasing
+  the final detached registration also releases the byte lock, process registry
+  claim and authority handles. A replacement writer can then acquire normally.
+
+### Verification
+
+```powershell
+ctest --preset debug -R '^unit\.m3\.(file_io|persistence_path)$' --output-on-failure
+# 2/2 passed; Task 12 process repeat 20/20
+
+ctest --preset release -R '^unit\.m3\.(file_io|persistence_path)$' --output-on-failure
+# 2/2 passed; Task 12 process repeat 20/20
+
+ctest --preset release --output-on-failure
+# 62/62 passed
+
+cmake -S . -B out/build/msvc-no-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build out/build/msvc-no-tests --target myrd_persistence
+# passed; cleanup seam symbol absent from myrd_persistence.lib
+
+git diff --check
+# passed; final myrd-task12-* count: 0
+```
+
+### Recorded boundary
+
+M3 detects accidental namespace changes; it does not claim atomic protection
+against a malicious same-account actor racing hard-link creation. Expanding that
+threat model requires immutable copy-on-write publication for every mutation or
+kernel namespace arbitration, not another finite recheck.
+
+Task 12 verdict: **DONE**. This is not an M3 GO verdict; Tasks 13–44 and the
+real AIM/NTFS, native VHDX, crash and soak acceptance gates remain required.

@@ -156,13 +156,13 @@ Suggested commit:
 | 03 | 有界 snapshot coordinator 与元数据 COW | S | DONE | 02 | M3-V3 / m2.1-v1,v3 |
 | 04 | DATA pre-image | O | DONE | 03 | M3-V3 / m2.1-v2 |
 | 05 | ZERO/DISCARD pre-image | O | DONE | 04 | M3-V3 / m2.1-v2 |
-| 06 | Token batch、finish、abort | O | PENDING | 05 | M3-V3 / m2.1-v2 |
+| 06 | Token batch、finish、abort | O | DONE | 05 | M3-V3 / m2.1-v2 |
 | 07 | 压力、stall、close 与资源清理 | O | PENDING | 06 | M3-V3 / m2.1-v3,v5 |
 | 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
 | 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
 | 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
 | 11 | Exact file I/O 与 sparse fake | C | DONE | 10 | M3-V1 |
-| 12 | 路径、文件身份、writer lock | C | READY_FOR_REVIEW | 11 | M3-V1 |
+| 12 | 路径、文件身份、writer lock | C | DONE | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | PENDING | 13 | M3-V1 |
 | 15 | 完整双槽 candidate 选择 | O | PENDING | 14,20,22 | M3-V2 |
@@ -284,14 +284,27 @@ Suggested commit: feat(storage): snapshot zero and discard transitions
 
 **类别：O。允许文件：** consistent snapshot API 实现、cursor/batch tests。
 
-- [ ] 红灯覆盖 deterministic ascending scan、cursor 必须等于 token frontier、batch byte/record limit、partial final block、原 entry 与 pre-image 二选一、无重复/遗漏。
-- [ ] batch 先有界 staging 且不删除 COW；返回对象拥有 payload 后才原子删除覆盖的 COW、推进 caller cursor + coordinator frontier、唤醒 writer。首条前取消零进度，已有安全进度则返回 partial batch 并在下次观察取消。
-- [ ] 1 TiB geometry 仅一个 dirty block 的复杂度红灯：通过 sparse directory 跳过 absent leaves/clean ranges，不逐 logical block 扫描、不创建 leaf；访问量与 populated leaves + records 相关。
-- [ ] `finish` 仅允许 FullyScanned；提前 finish 返回 `SnapshotNotFullyScanned`，不破坏 active token。
-- [ ] token 未 FullyScanned 时 `install_backing_view()`/`mark_persisted()` 返回 `SnapshotBusy`，避免 cut member 被移除；FullyScanned 后按原有 generation/exact ack 规则允许，供 install-before-ack 流程使用。
-- [ ] abort 幂等策略、错误 token、旧 token、close token 和 cursor 复用必须有稳定结果。
-- [ ] `mark_persisted` 仍按 exact version/kind/generation/dirty_epoch 条件确认；不得因 token 存在而早确认。
-- [ ] 跑 `m2.1-v2` 和全部 snapshot/ack 回归；建议提交 `feat(storage): stream consistent snapshot batches`。
+- [x] 红灯覆盖 deterministic ascending scan、cursor 必须等于 token frontier、batch byte/record limit、partial final block、原 entry 与 pre-image 二选一、无重复/遗漏。
+- [x] batch 先有界 staging 且不删除 COW；返回对象拥有 payload 后才原子删除覆盖的 COW、推进 caller cursor + coordinator frontier、唤醒 writer。首条前取消零进度，已有安全进度则返回 partial batch 并在下次观察取消。
+- [x] 1 TiB geometry 仅一个 dirty block 的复杂度红灯：通过 sparse directory 跳过 absent leaves/clean ranges，不逐 logical block 扫描、不创建 leaf；访问量与 populated leaves + records 相关。
+- [x] `finish` 仅允许 FullyScanned；提前 finish 返回 `SnapshotNotFullyScanned`，不破坏 active token。
+- [x] token 未 FullyScanned 时 `install_backing_view()`/`mark_persisted()` 返回 `SnapshotBusy`，避免 cut member 被移除；FullyScanned 后按原有 generation/exact ack 规则允许，供 install-before-ack 流程使用。
+- [x] abort 幂等策略、错误 token、旧 token、close token 和 cursor 复用必须有稳定结果。
+- [x] `mark_persisted` 仍按 exact version/kind/generation/dirty_epoch 条件确认；不得因 token 存在而早确认。
+- [x] 跑 `m2.1-v2` 和全部 snapshot/ack 回归；候选提交 `778f6bf`。
+
+执行记录：
+
+```text
+Task / status: 06 / DONE
+Executor / timestamp: Codex logic owner / 2026-08-04 22:00–2026-08-05 +08:00
+Start commit / branch / accepted commits: 2d0b334 / feature/m3-task06 / 778f6bf + 0053f00 + e60cf64 + 42e90cf + 3ed16af + a5b919e
+Red and repair evidence: 首轮实现后，独立审查依次暴露双 reader 同 frontier、稀疏扫描退化、128 KiB 临时 DATA copy、FullyScanned post-cut 分类、successor base-generation 顺序和取消丢失唤醒窗口；每项均有确定性回归。最终取消 seam 固定在 stop predicate 检查之后、condition wait 之前，删除 stop callback 会稳定失败。
+Implementation: COW-first、stripe-pinned current dirty copy、严格 ascending cursor/frontier、payload/record bounded staging、成功拥有 payload 后统一 advance/erase/wakeup；public finish/abort/status；Active 阶段 install/ack 返回 SnapshotBusy；ack 复核 cutoff dirty_epoch；稀疏遍历只访问 allocated leaves。
+Focused verification: Debug/Release focused 71/71；Debug repeat 20/20；Release repeat 100/100；旧 unit.m2.snapshot seam 1/1。独立 reviewer Release binary SHA-256 C6435D7FD1C6DA66130B9ADB1CD699FC9525E3691BFEBF9D88FC5AA87C60CFB7。
+Cumulative verification: fresh full Debug 60/60；fresh full Release 61/61；git diff --check exit 0。
+Independent review: 最终 SPEC GO、QUALITY GO，P0/P1/P2 均为 0。未实现 Task07 stall/auto-abort/close cleanup，未改变 M1/AIM、持久化格式或 checkpoint durability。
+```
 
 ## Task 07 — 压力、stall、close 和资源清理
 
@@ -349,7 +362,7 @@ Suggested commit: feat(storage): snapshot zero and discard transitions
 
 **类别：C。允许文件：** `src/persistence/image_paths.*`、`file_identity.*`、`writer_lock.*`、tests。
 
-**执行记录（READY_FOR_REVIEW）：**
+**执行记录（DONE）：**
 
 - Executor / timestamp: Codex / 2026-08-04T20:36:56+08:00
 - Start commit / branch: `a280de5e31f485b31cef75db1d3aa76be1840a9b` / `feature/m3-task12`
@@ -391,6 +404,17 @@ Suggested commit: feat(storage): snapshot zero and discard transitions
 - Self-review / drift audit: 重点复查 hardlink-after-open、partial-I/O refresh、root/target identity、reparse/direct-child、pending IO status 生命周期、false file-handle signal、writer close race、mutex lock order、cancel drain、测试 temp-root 删除边界与 Task 13 边界；补上 `IO_STATUS_BLOCK` 初始 `STATUS_PENDING` 及“handle 已 signal 但 status 仍 pending”不得误判成功。未修改 M1/M2 语义、checkpoint 顺序、manifest codec、Task 13 types/outcomes 或 Task 36 retention 责任。
 - Open risk: 只有 native backend 在 cancel 后超过 2 秒仍无法完成时才会故意保留一个 process-lifetime quarantine object；这是防止 kernel 持有指针发生 UAF 的 fail-closed 代价。生产 backend 仍动态解析系统 `ntdll.dll`，缺失时稳定失败。独立只读 Claude review 在 180 秒内持续 API retry 后超时、未返回 verdict 且未修改工作树；不据此宣称独立 GO。本任务保持 `READY_FOR_REVIEW`，不置 `DONE`。
 - Suggested commit: `fix(persistence): revalidate mutations and bound rename waits`。
+
+**最终独立验收记录（DONE，accepted implementation `cedd4d8`）：**
+
+- Verdict: `SPEC GO`、`QUALITY GO`、`Task12 GO`；P0/P1/P2 均为 0。
+- Native ownership: active/quarantined 双计数；close 原子脱离公开 state 后等待完成或 fail-closed quarantine；取消、超时和 close 竞争按最终 `io_status` 分类，无法 drain 时继续持有 writer authority、byte lock、registry、handles 与 kernel-owned buffers。
+- Isolation: 全局 quarantine 固定上限 8；production/test operation 使用独立链表与显式 provenance，测试 cleanup 无法释放 production operation；同 writer 多个 quarantine 逐个归还。
+- Detached cleanup: 最后一个已证明安全的 test operation 会释放 detached writer 的 byte lock、进程 registry 与 handles；cleanup 后 successor writer 可重新 acquire。
+- Compile boundary: `MYRD_ENABLE_TEST_SEAMS` 只在 `BUILD_TESTING=ON` 定义；`BUILD_TESTING=OFF` Release 库构建成功且 cleanup seam 符号 absent。
+- Verification: Task 12 共 35/35；Debug/Release Task11/12 focused 2/2、各 repeat 20/20；Release full 62/62；新进程结束后 `myrd-task12-*` 为 0；`git diff --check` 通过。
+- Evidence: source `242377132F843005CA2BA444A698EDC493ADE84E5C1872A7C52F95BF4CB46CEC`；Debug exe `F7EF58FEF989CF496CF4911A979A5C2E2D1BC9F9A1740C8095854E4FF293A516`；Release exe `2783AF9C835FC7CCB627AB4436B99DF2379F4FFFD3DA6AC9349C3E0ACC84E4D3`。
+- Boundary: 当前检测意外 hardlink/reparse/namespace 变化；恶意同账户 hardlink TOCTOU 需要 immutable COW publish 或内核 namespace 仲裁，不属于当前 M3 威胁模型。
 
 - [x] 红灯覆盖相对/绝对逃逸、`..`、symlink/junction/reparse、hard link、case/Unicode、替换文件和 concurrent writer。
 - [x] 路径先 canonicalize 再验证在 bundle root；打开后以 volume serial/file ID/size 等身份复核，禁止只信文件名。
