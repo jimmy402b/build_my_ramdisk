@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
@@ -143,6 +144,33 @@ void require_with_unwind(
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+template <class T>
+void wait_for_future_or_fail_process(
+    std::future<T>& future,
+    const std::chrono::seconds timeout,
+    const char* const message) noexcept {
+    if (!future.valid()) {
+        return;
+    }
+
+    try {
+        if (future.wait_for(timeout) == std::future_status::ready) {
+            return;
+        }
+    } catch (...) {
+        std::fputs("Task11 cleanup failed while waiting for an async operation\n", stderr);
+        std::fflush(stderr);
+        std::_Exit(124);
+    }
+
+    std::fputs(message, stderr);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+    // A std::async future may block in its destructor. This test executable is
+    // the process-isolation boundary, so end it before stack unwinding can hang.
+    std::_Exit(124);
 }
 
 enum class BackendEntry : std::uint8_t {
@@ -640,9 +668,10 @@ TEST_CASE(m3_file_io_native_pending_pipe_read_stop_cancels_and_drains) {
     myrd::ScopeExit cleanup([&]() noexcept {
         stop.request_stop();
         pipe.disconnect_server();
-        if (pending.valid()) {
-            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
-        }
+        wait_for_future_or_fail_process(
+            pending,
+            std::chrono::seconds(4),
+            "Task11 named-pipe read cleanup timed out");
     });
     require_with_unwind(
         pending.wait_for(std::chrono::milliseconds(100)) ==
@@ -713,9 +742,10 @@ TEST_CASE(m3_file_io_native_pending_pipe_write_stop_cancels_and_drains) {
     myrd::ScopeExit cleanup([&]() noexcept {
         stop.request_stop();
         pipe.disconnect_server();
-        if (pending.valid()) {
-            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
-        }
+        wait_for_future_or_fail_process(
+            pending,
+            std::chrono::seconds(4),
+            "Task11 named-pipe write cleanup timed out");
     });
     require_with_unwind(
         pending.wait_for(std::chrono::milliseconds(100)) ==
@@ -750,9 +780,10 @@ TEST_CASE(m3_file_io_completed_pipe_read_is_not_reclassified_by_late_stop) {
     myrd::ScopeExit cleanup([&]() noexcept {
         stop.request_stop();
         pipe.disconnect_server();
-        if (pending.valid()) {
-            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
-        }
+        wait_for_future_or_fail_process(
+            pending,
+            std::chrono::seconds(4),
+            "Task11 late-stop read cleanup timed out");
     });
     require_with_unwind(
         pending.wait_for(std::chrono::milliseconds(100)) ==
@@ -784,12 +815,14 @@ TEST_CASE(m3_file_io_native_close_waits_for_pending_pipe_read) {
     std::future<Result<void>> closing;
     myrd::ScopeExit cleanup([&]() noexcept {
         pipe.disconnect_server();
-        if (pending.valid()) {
-            static_cast<void>(pending.wait_for(std::chrono::seconds(4)));
-        }
-        if (closing.valid()) {
-            static_cast<void>(closing.wait_for(std::chrono::seconds(4)));
-        }
+        wait_for_future_or_fail_process(
+            pending,
+            std::chrono::seconds(4),
+            "Task11 pending read cleanup timed out during close");
+        wait_for_future_or_fail_process(
+            closing,
+            std::chrono::seconds(4),
+            "Task11 close cleanup timed out");
     });
     require_with_unwind(
         pending.wait_for(std::chrono::milliseconds(100)) ==
