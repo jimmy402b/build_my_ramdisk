@@ -7,7 +7,9 @@
 #include "zero_backing_store.h"
 #include "src/common/scope_exit.h"
 
+#include <chrono>
 #include <exception>
+#include <limits>
 #include <new>
 #include <string>
 #include <utility>
@@ -38,6 +40,14 @@ Error make_factory_error(std::wstring operation, std::wstring message) {
     return make_store_error(
         static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
         std::move(operation),
+        std::move(message));
+}
+
+Error make_snapshot_error(DynamicBlockStoreErrorCode code,
+                          std::wstring message) {
+    return make_store_error(
+        static_cast<std::uint32_t>(code),
+        L"DynamicBlockStore::begin_consistent_snapshot",
         std::move(message));
 }
 
@@ -463,6 +473,201 @@ void DynamicBlockStore::leave_request(RequestToken& token) noexcept {
     }
 }
 
+Result<void> DynamicBlockStore::enter_mutation(
+    const OperationContext& context,
+    MutationToken& token) {
+    const auto initial_live = check_operation_context(context);
+    if (!initial_live.ok()) {
+        return initial_live;
+    }
+
+    std::unique_lock lock(lifecycle_mutex_);
+    if (lifecycle_state_ != LifecycleState::Open) {
+        return Result<void>::failure(make_session_closed_error(
+            L"DynamicBlockStore::enter_mutation"));
+    }
+
+    bool registered_waiter = false;
+    ScopeExit remove_waiter([this, &registered_waiter]() noexcept {
+        if (!registered_waiter) {
+            return;
+        }
+        if (mutation_waiters_ == 0) {
+            std::terminate();
+        }
+        --mutation_waiters_;
+    });
+
+    if (mutation_gate_closed_) {
+        registered_waiter = true;
+        ++mutation_waiters_;
+        {
+            // Required order: admission/lifecycle -> state. No stripe is held.
+            std::scoped_lock state_lock(state_mutex_);
+            ++stats_.snapshot_blocked_writers;
+        }
+        const auto gate_open_or_store_closing = [this]() noexcept {
+            return !mutation_gate_closed_ ||
+                   lifecycle_state_ != LifecycleState::Open;
+        };
+        if (context.deadline ==
+            std::chrono::steady_clock::time_point::max()) {
+            lifecycle_condition_.wait(
+                lock, context.stop_token, gate_open_or_store_closing);
+        } else {
+            lifecycle_condition_.wait_until(
+                lock,
+                context.stop_token,
+                context.deadline,
+                gate_open_or_store_closing);
+        }
+    }
+
+    if (lifecycle_state_ != LifecycleState::Open) {
+        return Result<void>::failure(make_session_closed_error(
+            L"DynamicBlockStore::enter_mutation"));
+    }
+    const auto wait_live = check_operation_context(context);
+    if (!wait_live.ok()) {
+        return wait_live;
+    }
+    if (mutation_gate_closed_) {
+        return Result<void>::failure(make_snapshot_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"mutation admission wait ended while gate remained closed"));
+    }
+    if (active_mutations_ ==
+        (std::numeric_limits<std::uint64_t>::max)()) {
+        return Result<void>::failure(make_snapshot_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"active mutation count wrapped"));
+    }
+
+    ++active_mutations_;
+    token.store = this;
+    token.active = true;
+    return Result<void>::success();
+}
+
+void DynamicBlockStore::leave_mutation(MutationToken& token) noexcept {
+    try {
+        if (!token.active || token.store != this) {
+            std::terminate();
+        }
+        {
+            std::scoped_lock lock(lifecycle_mutex_);
+            if (active_mutations_ == 0) {
+                std::terminate();
+            }
+            --active_mutations_;
+        }
+        token = {};
+        lifecycle_condition_.notify_all();
+    } catch (...) {
+        std::terminate();
+    }
+}
+
+Result<ConsistentSnapshotToken>
+DynamicBlockStore::begin_consistent_snapshot(
+    const OperationContext& context) {
+    RequestToken request;
+    if (!try_enter_request(request)) {
+        return Result<ConsistentSnapshotToken>::failure(
+            make_session_closed_error(
+                L"DynamicBlockStore::begin_consistent_snapshot"));
+    }
+    ScopeExit leave([this, &request]() { leave_request(request); });
+
+    const auto initial_live = check_operation_context(context);
+    if (!initial_live.ok()) {
+        return Result<ConsistentSnapshotToken>::failure(
+            initial_live.error());
+    }
+
+    std::unique_lock admission_lock(lifecycle_mutex_);
+    if (lifecycle_state_ != LifecycleState::Open) {
+        return Result<ConsistentSnapshotToken>::failure(
+            make_session_closed_error(
+                L"DynamicBlockStore::begin_consistent_snapshot"));
+    }
+    if (mutation_gate_closed_ || active_snapshot_token_.has_value()) {
+        return Result<ConsistentSnapshotToken>::failure(
+            make_snapshot_error(
+                DynamicBlockStoreErrorCode::SnapshotBusy,
+                L"another consistent snapshot owns the coordinator"));
+    }
+
+    mutation_gate_closed_ = true;
+    // Every exit after this point reopens admission. In particular,
+    // cancellation, deadline and close cannot strand queued mutations.
+    ScopeExit reopen_admission([this, &admission_lock]() noexcept {
+        mutation_gate_closed_ = false;
+        if (admission_lock.owns_lock()) {
+            admission_lock.unlock();
+        }
+        lifecycle_condition_.notify_all();
+    });
+
+    const auto drained_or_store_closing = [this]() noexcept {
+        return active_mutations_ == 0 ||
+               lifecycle_state_ != LifecycleState::Open;
+    };
+    if (context.deadline ==
+        std::chrono::steady_clock::time_point::max()) {
+        lifecycle_condition_.wait(
+            admission_lock,
+            context.stop_token,
+            drained_or_store_closing);
+    } else {
+        lifecycle_condition_.wait_until(
+            admission_lock,
+            context.stop_token,
+            context.deadline,
+            drained_or_store_closing);
+    }
+
+    if (lifecycle_state_ != LifecycleState::Open) {
+        return Result<ConsistentSnapshotToken>::failure(
+            make_session_closed_error(
+                L"DynamicBlockStore::begin_consistent_snapshot"));
+    }
+    const auto cut_live = check_operation_context(context);
+    if (!cut_live.ok()) {
+        return Result<ConsistentSnapshotToken>::failure(cut_live.error());
+    }
+    if (active_mutations_ != 0) {
+        return Result<ConsistentSnapshotToken>::failure(
+            make_snapshot_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"consistency cut completed with active mutations"));
+    }
+    if (next_snapshot_id_ == 0 ||
+        next_snapshot_id_ ==
+            (std::numeric_limits<std::uint64_t>::max)()) {
+        return Result<ConsistentSnapshotToken>::failure(
+            make_snapshot_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"consistent snapshot id exhausted"));
+    }
+
+    ConsistentSnapshotToken token{};
+    token.snapshot_id = next_snapshot_id_++;
+    // Required order: admission/lifecycle -> state. No block stripe or
+    // snapshot-coordinator mutex is held at this short linearization point.
+    {
+        std::scoped_lock state_lock(state_mutex_);
+        token.source_backing_generation = backing_view_.generation;
+        token.cutoff_dirty_epoch =
+            dirty_epoch_.load(std::memory_order_acquire);
+        stats_.snapshot_active_id = token.snapshot_id;
+        stats_.snapshot_active_state =
+            ConsistentSnapshotState::Active;
+    }
+    active_snapshot_token_ = token;
+    return Result<ConsistentSnapshotToken>::success(token);
+}
+
 bool DynamicBlockStore::current_thread_has_active_request() const noexcept {
     for (auto* token = current_request_token_;
          token != nullptr;
@@ -538,6 +743,45 @@ const DynamicBlockStoreOptions& DynamicBlockStore::options() const noexcept {
 DynamicBlockStoreStats DynamicBlockStore::stats() const {
     std::scoped_lock lock(state_mutex_);
     return stats_;
+}
+
+bool DynamicBlockStoreTestAccess::mutation_gate_closed(
+    const DynamicBlockStore& store) noexcept {
+    std::scoped_lock lock(store.lifecycle_mutex_);
+    return store.mutation_gate_closed_;
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::active_mutations(
+    const DynamicBlockStore& store) noexcept {
+    std::scoped_lock lock(store.lifecycle_mutex_);
+    return store.active_mutations_;
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::mutation_waiters(
+    const DynamicBlockStore& store) noexcept {
+    std::scoped_lock lock(store.lifecycle_mutex_);
+    return store.mutation_waiters_;
+}
+
+bool DynamicBlockStoreTestAccess::state_mutex_available(
+    DynamicBlockStore& store) noexcept {
+    if (!store.state_mutex_.try_lock()) {
+        return false;
+    }
+    store.state_mutex_.unlock();
+    return true;
+}
+
+bool DynamicBlockStoreTestAccess::all_stripes_available(
+    DynamicBlockStore& store) noexcept {
+    for (std::size_t index = 0; index < store.stripes_->count(); ++index) {
+        auto& stripe = store.stripes_->stripe_for(index);
+        if (!stripe.mutex.try_lock()) {
+            return false;
+        }
+        stripe.mutex.unlock();
+    }
+    return true;
 }
 
 Result<DynamicBlockStore::CommitBudgetOutcome>

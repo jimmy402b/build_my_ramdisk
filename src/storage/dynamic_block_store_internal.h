@@ -239,6 +239,16 @@ public:
     static std::uint64_t eviction_cursor(DynamicBlockStore& store);
     static std::uint64_t synchronous_eviction_waiters(
         DynamicBlockStore& store) noexcept;
+    static bool mutation_gate_closed(
+        const DynamicBlockStore& store) noexcept;
+    static std::uint64_t active_mutations(
+        const DynamicBlockStore& store) noexcept;
+    static std::uint64_t mutation_waiters(
+        const DynamicBlockStore& store) noexcept;
+    static bool state_mutex_available(
+        DynamicBlockStore& store) noexcept;
+    static bool all_stripes_available(
+        DynamicBlockStore& store) noexcept;
     static bool signal_eviction_if_needed(DynamicBlockStore& store);
     static bool signal_eviction_many_for_test(
         DynamicBlockStore& store,

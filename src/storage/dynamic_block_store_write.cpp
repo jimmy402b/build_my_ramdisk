@@ -574,6 +574,14 @@ Result<void> DynamicBlockStore::write(
         return invalid_write_range(split.error);
     }
 
+    MutationToken mutation;
+    const auto admitted = enter_mutation(context, mutation);
+    if (!admitted.ok()) {
+        return admitted;
+    }
+    ScopeExit leave_mutation_scope(
+        [this, &mutation]() noexcept { leave_mutation(mutation); });
+
     for (std::uint64_t segment_index = 0;
          segment_index < split.segment_count;
          ++segment_index) {

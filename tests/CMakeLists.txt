@@ -408,7 +408,7 @@ myrd_enable_warnings(myrd_m2_consistent_snapshot_tests)
 add_test(NAME unit.m3.m2_consistent_snapshot
     COMMAND myrd_m2_consistent_snapshot_tests)
 set_tests_properties(unit.m3.m2_consistent_snapshot PROPERTIES
-    LABELS "m2.1-v0"
+    LABELS "m2.1-v0;m2.1-v1"
     TIMEOUT 30)
 
 add_executable(myrd_m2_provider_tests

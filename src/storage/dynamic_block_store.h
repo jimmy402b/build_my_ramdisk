@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <thread>
@@ -126,6 +127,15 @@ private:
         RequestToken* previous{};
     };
 
+    // Request lifetime and mutation admission are separate concerns. A
+    // mutation token spans one complete public write/zero/unmap operation,
+    // including every block segment, while reads intentionally never acquire
+    // one.
+    struct MutationToken {
+        DynamicBlockStore* store{};
+        bool active{};
+    };
+
     enum class LifecycleState : std::uint8_t {
         Open = 0,
         Closing = 1,
@@ -172,6 +182,9 @@ private:
     void release_commit_reservation(bool rollback) noexcept;
     bool try_enter_request(RequestToken& token);
     void leave_request(RequestToken& token) noexcept;
+    Result<void> enter_mutation(
+        const OperationContext& context, MutationToken& token);
+    void leave_mutation(MutationToken& token) noexcept;
     bool current_thread_has_active_request() const noexcept;
     void finish_close();
     bool closing_requested() const noexcept;
@@ -216,11 +229,24 @@ private:
     std::uint64_t backing_publications_in_progress_{};
 
     mutable std::mutex lifecycle_mutex_;
-    std::condition_variable lifecycle_condition_;
+    // condition_variable_any gives mutation admission a native C++20
+    // stop-token wait. A plain condition_variable plus a notify-only stop
+    // callback has a lost-wakeup window between predicate evaluation and
+    // sleeping.
+    std::condition_variable_any lifecycle_condition_;
     LifecycleState lifecycle_state_{LifecycleState::Open};
     std::atomic<bool> closing_requested_{false};
     std::stop_source close_stop_source_{};
     std::uint64_t active_requests_{};
+    // Guarded by lifecycle_mutex_. The admission mutex is never held while a
+    // block stripe is acquired: enter_mutation() releases it before returning,
+    // and leave_mutation() runs only after the public operation has released
+    // every stripe.
+    bool mutation_gate_closed_{};
+    std::uint64_t active_mutations_{};
+    std::uint64_t mutation_waiters_{};
+    std::optional<ConsistentSnapshotToken> active_snapshot_token_{};
+    std::uint64_t next_snapshot_id_{1};
     bool worker_running_{};
     bool eviction_requested_{};
     bool eviction_worker_waiting_{};

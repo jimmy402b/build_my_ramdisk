@@ -394,6 +394,14 @@ Result<void> DynamicBlockStore::apply_zero_ranges(
         }
     }
 
+    MutationToken mutation;
+    const auto admitted = enter_mutation(context, mutation);
+    if (!admitted.ok()) {
+        return admitted;
+    }
+    ScopeExit leave_mutation_scope(
+        [this, &mutation]() noexcept { leave_mutation(mutation); });
+
     static constexpr std::array<std::byte, kBlockSizeBytes> zeros{};
     for (const auto& range : ranges) {
         const auto split = validate_and_split_block_range(
