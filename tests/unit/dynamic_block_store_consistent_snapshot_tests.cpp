@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "fake_backing_store.h"
+#include "src/common/scope_exit.h"
 #include "src/storage/dynamic_block_store.h"
 #include "src/storage/dynamic_block_store_internal.h"
 #include "src/storage/snapshot_coordinator.h"
@@ -1567,7 +1568,7 @@ TEST_CASE(m2_1_data_cow_budget_failure_keeps_second_block_unmodified) {
                myrd::kMinimumSnapshotCowBytes);
 }
 
-TEST_CASE(m2_1_snapshot_reader_observes_published_data_before_mutator_returns) {
+TEST_CASE(m2_1_published_preimage_remains_visible_across_reader_mutator_interleaving) {
     auto barrier = std::make_shared<SnapshotCoordinatorBarrier>(
         myrd::SnapshotCoordinatorBarrierEvent::PreimagePublished);
     myrd::DynamicBlockStoreTestDependencies dependencies;
@@ -1588,31 +1589,44 @@ TEST_CASE(m2_1_snapshot_reader_observes_published_data_before_mutator_returns) {
     const std::vector<std::byte> replacement(
         static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xCD});
     std::atomic<std::uint32_t> writer_code{kNoResult};
+    myrd::SnapshotPreimage observed{};
+    std::atomic<bool> reader_entered{};
+    std::atomic<bool> reader_found{};
     std::thread writer([&] {
         const auto result = store->write(
             bounded_context(), 0, replacement);
         writer_code.store(result.ok() ? 0 : error_code(result.error()),
                           std::memory_order_release);
     });
-    REQUIRE(wait_until([&] { return barrier->reached(); }));
-
-    myrd::SnapshotPreimage observed{};
-    std::atomic<bool> reader_entered{};
-    std::atomic<bool> reader_found{};
-    std::thread reader([&] {
+    std::thread reader;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        barrier->release();
+        if (reader.joinable()) {
+            reader.join();
+        }
+        if (writer.joinable()) {
+            writer.join();
+        }
+    });
+    const bool preimage_published =
+        wait_until([&] { return barrier->reached(); });
+    reader = std::thread([&] {
         reader_entered.store(true, std::memory_order_release);
         reader_found.store(
             myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
                 *store, 0, observed),
             std::memory_order_release);
     });
-    REQUIRE(wait_until([&] {
+    const bool reader_started = wait_until([&] {
         return reader_entered.load(std::memory_order_acquire);
-    }));
+    });
     barrier->release();
     reader.join();
     writer.join();
+    cleanup.release();
 
+    REQUIRE(preimage_published);
+    REQUIRE(reader_started);
     REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
     REQUIRE(reader_found.load(std::memory_order_acquire));
     REQUIRE_EQ(payload_hash(observed.data), payload_hash(reference));
@@ -1892,11 +1906,19 @@ TEST_CASE(m2_1_cancel_during_data_reservation_rolls_back_payload_and_write) {
             result.ok() ? 0 : error_code(result.error()),
             std::memory_order_release);
     });
+    myrd::ScopeExit cleanup([&]() noexcept {
+        stop.request_stop();
+        barrier->release();
+        if (writer.joinable()) {
+            writer.join();
+        }
+    });
     const bool reservation_reached =
         wait_until([&] { return barrier->reached(); });
     stop.request_stop();
     barrier->release();
     writer.join();
+    cleanup.release();
 
     REQUIRE(reservation_reached);
     REQUIRE_EQ(writer_code.load(std::memory_order_acquire),
