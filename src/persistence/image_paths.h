@@ -3,6 +3,7 @@
 #include "src/common/result.h"
 #include "src/common/unique_handle.h"
 #include "src/persistence/file_identity.h"
+#include "src/persistence/file_io.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -42,6 +43,7 @@ struct WriterAuthorityState;
 }
 
 class BundleWriterLock;
+class ValidatedPersistenceFile;
 
 // An unforgeable, handle-anchored observation of one direct bundle child.
 // final_path() is diagnostic only: later codecs must consume/adapt the held
@@ -76,6 +78,9 @@ private:
     std::string relative_name_;
     std::weak_ptr<detail::WriterAuthorityState> writer_authority_;
     bool deleted_{};
+    bool mutable_access_{};
+    bool cleanup_authorized_{};
+    bool manifest_identity_bound_{};
 
     ValidatedBundleFile(
         UniqueHandle root_handle,
@@ -84,7 +89,10 @@ private:
         WindowsFileIdentity identity,
         std::wstring root_final_path,
         std::wstring final_path,
-        std::string relative_name) noexcept;
+        std::string relative_name,
+        bool mutable_access,
+        bool cleanup_authorized,
+        bool manifest_identity_bound = false) noexcept;
 
     friend Result<ValidatedBundleFile> open_bundle_file_for_inspection(
         const std::filesystem::path&,
@@ -94,6 +102,11 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
+        BundleWriterLock&);
+    friend class ValidatedPersistenceFile;
+    friend Result<std::unique_ptr<ValidatedPersistenceFile>>
+        open_validated_persistence_file(ValidatedBundleFile&&);
     friend Result<void> truncate_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::uint64_t);
     friend Result<void> rename_validated_bundle_file(
@@ -102,6 +115,65 @@ private:
         BundleWriterLock&, ValidatedBundleFile&);
     friend Result<BundleWriterLock> acquire_bundle_writer_lock(
         const std::filesystem::path&, std::string_view);
+};
+
+// Owns both the validated capability and a DuplicateHandle-backed Task 11
+// exact-I/O view. Codecs can consume this as IPersistenceFile without ever
+// seeing a path or raw HANDLE. Mutation remains bound to one writer lifetime.
+class ValidatedPersistenceFile final : public IPersistenceFile {
+public:
+    ~ValidatedPersistenceFile() noexcept override;
+
+    ValidatedPersistenceFile(const ValidatedPersistenceFile&) = delete;
+    ValidatedPersistenceFile& operator=(const ValidatedPersistenceFile&) = delete;
+    ValidatedPersistenceFile(ValidatedPersistenceFile&&) = delete;
+    ValidatedPersistenceFile& operator=(ValidatedPersistenceFile&&) = delete;
+
+    Result<void> read_exact(
+        std::uint64_t offset,
+        std::span<std::byte> destination) override;
+    Result<void> write_exact(
+        std::uint64_t offset,
+        std::span<const std::byte> source) override;
+    Result<void> flush() override;
+    Result<std::uint64_t> length() const override;
+    Result<void> truncate(std::uint64_t new_length) override;
+
+    Result<void> read_exact(
+        const OperationContext& context,
+        std::uint64_t offset,
+        std::span<std::byte> destination) override;
+    Result<void> write_exact(
+        const OperationContext& context,
+        std::uint64_t offset,
+        std::span<const std::byte> source) override;
+    Result<void> flush(const OperationContext& context) override;
+    Result<std::uint64_t> length(
+        const OperationContext& context) const override;
+    Result<void> truncate(
+        const OperationContext& context,
+        std::uint64_t new_length) override;
+    Result<void> close() override;
+
+    [[nodiscard]] WindowsFileIdentity observed_identity() const;
+    [[nodiscard]] Result<ValidatedBundleFile>
+    release_validated_bundle_file();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    ValidatedPersistenceFile(
+        ValidatedBundleFile capability,
+        std::unique_ptr<IPersistenceFile> file);
+
+    [[nodiscard]] Result<std::shared_ptr<detail::WriterAuthorityState>>
+    writer_authority_for_mutation(const wchar_t* operation) const;
+    [[nodiscard]] Result<void> refresh_identity_after_mutation(
+        const std::shared_ptr<detail::WriterAuthorityState>& authority);
+
+    friend Result<std::unique_ptr<ValidatedPersistenceFile>>
+        open_validated_persistence_file(ValidatedBundleFile&&);
 };
 
 [[nodiscard]] Result<std::wstring>
@@ -121,6 +193,12 @@ open_bundle_file_for_mutation(
     BundleWriterLock& writer_lock,
     std::string_view relative_name,
     std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
+
+[[nodiscard]] Result<ValidatedBundleFile>
+open_locked_manifest_for_mutation(BundleWriterLock& writer_lock);
+
+[[nodiscard]] Result<std::unique_ptr<ValidatedPersistenceFile>>
+open_validated_persistence_file(ValidatedBundleFile&& capability);
 
 [[nodiscard]] Result<void> truncate_validated_bundle_file(
     BundleWriterLock& writer_lock,

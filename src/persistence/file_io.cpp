@@ -1,4 +1,5 @@
 #include "file_io.h"
+#include "windows_file_io_bridge.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -616,5 +617,51 @@ Result<std::unique_ptr<IPersistenceFile>> open_windows_persistence_file(
                 L"allocating the persistence file wrapper failed"));
     }
 }
+
+namespace detail {
+
+Result<std::unique_ptr<IPersistenceFile>>
+duplicate_windows_persistence_file(HANDLE validated_handle) {
+    if (validated_handle == nullptr ||
+        validated_handle == INVALID_HANDLE_VALUE) {
+        return Result<std::unique_ptr<IPersistenceFile>>::failure(
+            win32_error(
+                ERROR_INVALID_HANDLE,
+                L"file_io.duplicate_validated",
+                L"validated file handle is not open"));
+    }
+
+    HANDLE duplicated = INVALID_HANDLE_VALUE;
+    if (!DuplicateHandle(
+            GetCurrentProcess(),
+            validated_handle,
+            GetCurrentProcess(),
+            &duplicated,
+            0,
+            FALSE,
+            DUPLICATE_SAME_ACCESS)) {
+        return Result<std::unique_ptr<IPersistenceFile>>::failure(
+            win32_error(
+                GetLastError(),
+                L"file_io.duplicate_validated",
+                L"DuplicateHandle failed for validated file"));
+    }
+
+    ScopedHandle handle(duplicated);
+    try {
+        auto backend = std::make_unique<WindowsFileIoBackend>(handle.get());
+        static_cast<void>(handle.release());
+        return Result<std::unique_ptr<IPersistenceFile>>::success(
+            make_exact_persistence_file(std::move(backend)));
+    } catch (const std::bad_alloc&) {
+        return Result<std::unique_ptr<IPersistenceFile>>::failure(
+            win32_error(
+                ERROR_NOT_ENOUGH_MEMORY,
+                L"file_io.duplicate_validated",
+                L"allocating validated persistence wrapper failed"));
+    }
+}
+
+} // namespace detail
 
 } // namespace myrd::persistence

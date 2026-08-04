@@ -251,6 +251,35 @@ Result<BundleWriterLock> acquire_bundle_writer_lock(
     try {
         auto state = std::make_shared<detail::WriterAuthorityState>();
         auto capability = opened.move_value();
+        UniqueHandle writable_manifest(ReOpenFile(
+            capability.file_handle_.get(),
+            GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS));
+        if (!writable_manifest) {
+            const auto native_code = GetLastError();
+            return writer_failure<BundleWriterLock>(
+                native_code == ERROR_ACCESS_DENIED
+                    ? ImagePathErrorCode::AccessDenied
+                    : ImagePathErrorCode::IoError,
+                L"writer_lock.acquire",
+                L"reopening the validated manifest handle for writer I/O failed",
+                native_code);
+        }
+        auto writable_identity = query_windows_file_identity(
+            writable_manifest.get());
+        if (!writable_identity.ok() || !same_file_object(
+                capability.identity_, writable_identity.value())) {
+            return writer_failure<BundleWriterLock>(
+                ImagePathErrorCode::IdentityMismatch,
+                L"writer_lock.acquire",
+                L"writable manifest handle does not refer to the validated file",
+                writable_identity.ok()
+                    ? 0
+                    : writable_identity.error().native_code);
+        }
+        capability.file_handle_ = std::move(writable_manifest);
+        capability.identity_ = writable_identity.move_value();
         state->root_handle = std::move(capability.root_handle_);
         state->manifest_handle = std::move(capability.file_handle_);
         state->root_identity = capability.root_identity_;
@@ -261,6 +290,7 @@ Result<BundleWriterLock> acquire_bundle_writer_lock(
         // the entire writer lifetime.
         state->root_path = std::filesystem::path(state->root_final_path);
         state->manifest_final_path = std::move(capability.final_path_);
+        state->manifest_relative_name = std::move(capability.relative_name_);
         state->registry_key = writer_registry_key(state->manifest_identity);
 
         if (!claim_process_writer(state->registry_key)) {

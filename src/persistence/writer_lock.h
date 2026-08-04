@@ -27,6 +27,7 @@ struct WriterAuthorityState final {
     std::filesystem::path root_path;
     std::wstring root_final_path;
     std::wstring manifest_final_path;
+    std::string manifest_relative_name;
     std::wstring registry_key;
     OVERLAPPED lock_overlapped{};
     bool registry_held{};
@@ -66,6 +67,8 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
+        BundleWriterLock&);
     friend Result<void> truncate_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::uint64_t);
     friend Result<void> rename_validated_bundle_file(

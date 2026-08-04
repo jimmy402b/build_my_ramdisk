@@ -367,6 +367,18 @@ Suggested commit: feat(storage): snapshot zero and discard transitions
 - Open risks / excluded follow-up: Task 13 合并完整 persistence error context；后续 codec 必须消费/适配已验证 handle，禁止按 `final_path()` 重新打开；Task 36 实现引用保留策略。独立审查委派因 Claude API `ConnectionRefused` 未产出结论，因此本任务按用户要求停在 `READY_FOR_REVIEW`，不置 `DONE`。
 - Suggested commit: `feat(persistence): secure image paths and identities`。
 
+**NO-GO 规格审查修复记录（仍为 READY_FOR_REVIEW）：**
+
+- Review base / executor / date: `0fc83e0417b6a8091248c8e6d1bc81f7e82f86fa` / Codex / 2026-08-04；未开始 Task 13。
+- Reviewer verification: P1-A 成立——原实现没有从 private validated handle 进入 Task 11 `IPersistenceFile` 的通道。P1-B 的绝对路径与事后 containment 问题成立；但“仅给 root handle 增加 `FILE_ADD_FILE` 即可使用 `SetFileInformationByHandle`”不成立。本机以 read-only、`FILE_ADD_FILE`、`GENERIC_WRITE|DELETE` 三组 root access 执行 `FileRenameInfo` 均稳定返回 `ERROR_INVALID_PARAMETER (87)`；同一已打开 root handle + 单 component 通过 `NtSetInformationFile(FileRenameInformation)` 返回成功，现有 `FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES` 已足够，无需扩大权限。
+- Red evidence: P1-A 首次 Debug build 因缺少 `open_validated_persistence_file` / `open_locked_manifest_for_mutation` 以 C2039/C3861 失败；P1-B 首次 Debug link 因缺少 hidden `rename_validated_bundle_file_with_hook` 以 LNK2019/LNK1120 失败。
+- Implementation: 新增 internal-only `DuplicateHandle` Task 11 backend bridge；`ValidatedPersistenceFile` 同时持有不可伪造 capability 与 exact-I/O duplicate，inspection 写入稳定拒绝，mutation 的 write/truncate/flush 每次在 writer mutex 下复核 authority，partial failure 后也尝试刷新可变 size/attrs；manifest adapter 由 writer 持有的已验证 handle 派生，写后同步 writer manifest identity；close 后可一次性释放已刷新 capability，cleanup 仍重新精确复核 identity/containment/writer。validated file handle 使用 overlapped/random-access，inspection 允许 path replacement 但读取仍锚定原 file object。
+- Rename repair: 生产 rename 不再构造 absolute destination；它把 validated root directory handle 与已验证单 component 交给 NT `FileRenameInformation`，处理 `STATUS_PENDING` 并转换 NT error。hidden test seam 只在最终复核后、native call 前触发；junction 换向测试证明原 root 内文件被重命名，外部 manifest/data 的内容和 identity 前后不变。事后 containment 仅保留为 defense-in-depth。
+- Verification: Debug focused Task 11/12 `2/2`；Release focused `2/2`；Release 高风险 Task 12 repeat `20/20`；当前 `m3-v1` `3/3`；完整 Release build + CTest `62/62`；`git diff --check` 退出 0。
+- Self-review: 两遍审计覆盖 path reopen、handle share/overlapped flags、hardlink/reparse、rename routing、partial write identity refresh、manifest identity、writer/adapter lock order、close/release 与测试 temp-root 删除边界，未发现开放的 Critical/Important 缺陷。独立 Claude review 再次因 API `ConnectionRefused` 未产出意见且未修改工作树。
+- Evidence: `tests/unit/m3_persistence_path_tests.cpp` SHA-256 `28D62FBB8F3293F8578C3ED4FB0307418E25A7CCBFC77DC6754E4274637FB777`；Release `myrd_m3_persistence_path_tests.exe` SHA-256 `6AAC481441D8C111B3AD9D43E1F8AFFF5184F71CF7AF806ACE2F38C1BE666D41`。
+- Open risks / migration points: NT entry points 由系统 `ntdll.dll` 动态解析，缺失时 fail closed 为 `IoError`；Task 13 仍负责把最小稳定错误迁移到完整 persistence outcome，Task 36 仍负责引用保留判定。本任务保持 `READY_FOR_REVIEW`，不置 `DONE`。
+
 - [x] 红灯覆盖相对/绝对逃逸、`..`、symlink/junction/reparse、hard link、case/Unicode、替换文件和 concurrent writer。
 - [x] 路径先 canonicalize 再验证在 bundle root；打开后以 volume serial/file ID/size 等身份复核，禁止只信文件名。
 - [x] writer lock 绑定 manifest identity；读者可并发，第二 writer 返回稳定 Busy，不偷锁。

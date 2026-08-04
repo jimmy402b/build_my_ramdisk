@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include "src/persistence/persistence_types.h"
+#include "src/persistence/windows_file_io_bridge.h"
 #include "src/persistence/writer_lock.h"
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <utility>
@@ -64,6 +66,130 @@ template <class T>
         return ImagePathErrorCode::AccessDenied;
     default:
         return ImagePathErrorCode::IoError;
+    }
+}
+
+struct NtIoStatusBlock final {
+    union {
+        LONG status;
+        void* pointer;
+    };
+    ULONG_PTR information;
+};
+
+struct NtFileRenameInformation final {
+    BOOLEAN replace_if_exists;
+    HANDLE root_directory;
+    ULONG file_name_length;
+    WCHAR file_name[1];
+};
+
+using NtSetInformationFileFunction = LONG(NTAPI*)(
+    HANDLE, NtIoStatusBlock*, void*, ULONG, ULONG);
+using RtlNtStatusToDosErrorFunction = ULONG(WINAPI*)(LONG);
+using BeforeNativeRenameHook = void (*)(void* context);
+
+thread_local BeforeNativeRenameHook g_before_native_rename_hook{};
+thread_local void* g_before_native_rename_context{};
+
+class ScopedNativeRenameHook final {
+public:
+    ScopedNativeRenameHook(
+        BeforeNativeRenameHook hook,
+        void* context) noexcept {
+        g_before_native_rename_hook = hook;
+        g_before_native_rename_context = context;
+    }
+
+    ~ScopedNativeRenameHook() noexcept {
+        g_before_native_rename_hook = nullptr;
+        g_before_native_rename_context = nullptr;
+    }
+
+    ScopedNativeRenameHook(const ScopedNativeRenameHook&) = delete;
+    ScopedNativeRenameHook& operator=(const ScopedNativeRenameHook&) = delete;
+};
+
+[[nodiscard]] Result<void> nt_rename_relative_to_directory(
+    HANDLE file,
+    HANDLE root_directory,
+    const std::wstring_view new_name) {
+    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto set_information = reinterpret_cast<
+        NtSetInformationFileFunction>(
+            GetProcAddress(ntdll, "NtSetInformationFile"));
+    const auto status_to_dos = reinterpret_cast<
+        RtlNtStatusToDosErrorFunction>(
+            GetProcAddress(ntdll, "RtlNtStatusToDosError"));
+    if (set_information == nullptr || status_to_dos == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename",
+            L"required NT handle-relative rename entry points are unavailable",
+            ERROR_PROC_NOT_FOUND);
+    }
+
+    const auto name_bytes = new_name.size() * sizeof(wchar_t);
+    const auto total_bytes =
+        offsetof(NtFileRenameInformation, file_name) +
+        name_bytes + sizeof(wchar_t);
+    if (name_bytes > (std::numeric_limits<ULONG>::max)() ||
+        total_bytes > (std::numeric_limits<ULONG>::max)()) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename",
+            L"rename information exceeds the NT buffer limit",
+            ERROR_ARITHMETIC_OVERFLOW);
+    }
+
+    try {
+        std::vector<std::byte> storage(total_bytes);
+        auto* const info = reinterpret_cast<NtFileRenameInformation*>(
+            storage.data());
+        info->replace_if_exists = FALSE;
+        info->root_directory = root_directory;
+        info->file_name_length = static_cast<ULONG>(name_bytes);
+        std::memcpy(info->file_name, new_name.data(), name_bytes);
+
+        if (g_before_native_rename_hook != nullptr) {
+            g_before_native_rename_hook(g_before_native_rename_context);
+        }
+
+        NtIoStatusBlock io_status{};
+        constexpr ULONG kFileRenameInformation = 10;
+        constexpr LONG kStatusPending = 0x00000103L;
+        auto status = set_information(
+            file,
+            &io_status,
+            info,
+            static_cast<ULONG>(storage.size()),
+            kFileRenameInformation);
+        if (status == kStatusPending) {
+            const auto waited = WaitForSingleObject(file, INFINITE);
+            if (waited != WAIT_OBJECT_0) {
+                return path_failure<void>(
+                    ImagePathErrorCode::IoError,
+                    L"image_path.rename",
+                    L"waiting for NT handle-relative rename failed",
+                    waited == WAIT_FAILED ? GetLastError() : ERROR_GEN_FAILURE);
+            }
+            status = io_status.status;
+        }
+        if (status < 0) {
+            const auto native_code = status_to_dos(status);
+            return path_failure<void>(
+                native_open_error_code(native_code),
+                L"image_path.rename",
+                L"NT handle-relative rename failed",
+                native_code);
+        }
+        return Result<void>::success();
+    } catch (const std::bad_alloc&) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename",
+            L"allocating NT rename information failed",
+            ERROR_NOT_ENOUGH_MEMORY);
     }
 }
 
@@ -190,14 +316,15 @@ struct OpenedBundleFile final {
             : (GENERIC_READ | FILE_READ_ATTRIBUTES);
         const DWORD sharing = mutable_access
             ? FILE_SHARE_READ
-            : (FILE_SHARE_READ | FILE_SHARE_WRITE);
+            : (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
         UniqueHandle file_handle(CreateFileW(
             target_path.c_str(),
             access,
             sharing,
             nullptr,
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
+                FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
             nullptr));
         if (!file_handle) {
             const auto native_code = GetLastError();
@@ -284,11 +411,12 @@ struct OpenedBundleFile final {
     const detail::WriterAuthorityState& writer_state,
     const std::shared_ptr<detail::WriterAuthorityState>& authority,
     const bool deleted,
+    const bool cleanup_authorized,
     HANDLE capability_root,
     HANDLE capability_file,
     const WindowsFileIdentity& capability_root_identity,
     const WindowsFileIdentity& capability_identity) {
-    if (deleted) {
+    if (deleted || !cleanup_authorized) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.cleanup",
@@ -356,6 +484,32 @@ struct OpenedBundleFile final {
             L"bundle file left the bundle root before cleanup");
     }
     return Result<void>::success();
+}
+
+[[nodiscard]] Result<UniqueHandle> duplicate_capability_handle(
+    HANDLE source,
+    const wchar_t* operation) {
+    HANDLE duplicated = INVALID_HANDLE_VALUE;
+    if (source == nullptr || source == INVALID_HANDLE_VALUE ||
+        !DuplicateHandle(
+            GetCurrentProcess(),
+            source,
+            GetCurrentProcess(),
+            &duplicated,
+            0,
+            FALSE,
+            DUPLICATE_SAME_ACCESS)) {
+        const auto native_code = source == nullptr ||
+                source == INVALID_HANDLE_VALUE
+            ? static_cast<DWORD>(ERROR_INVALID_HANDLE)
+            : GetLastError();
+        return path_failure<UniqueHandle>(
+            native_open_error_code(native_code),
+            operation,
+            L"duplicating validated capability handle failed",
+            native_code);
+    }
+    return Result<UniqueHandle>::success(UniqueHandle(duplicated));
 }
 
 } // namespace
@@ -427,14 +581,20 @@ ValidatedBundleFile::ValidatedBundleFile(
     WindowsFileIdentity identity,
     std::wstring root_final_path,
     std::wstring final_path,
-    std::string relative_name) noexcept
+    std::string relative_name,
+    const bool mutable_access,
+    const bool cleanup_authorized,
+    const bool manifest_identity_bound) noexcept
     : root_handle_(std::move(root_handle)),
       file_handle_(std::move(file_handle)),
       root_identity_(std::move(root_identity)),
       identity_(std::move(identity)),
       root_final_path_(std::move(root_final_path)),
       final_path_(std::move(final_path)),
-      relative_name_(std::move(relative_name)) {}
+      relative_name_(std::move(relative_name)),
+      mutable_access_(mutable_access),
+      cleanup_authorized_(cleanup_authorized),
+      manifest_identity_bound_(manifest_identity_bound) {}
 
 bool ValidatedBundleFile::writer_authorized() const noexcept {
     auto authority = writer_authority_.lock();
@@ -443,6 +603,292 @@ bool ValidatedBundleFile::writer_authorized() const noexcept {
     }
     std::scoped_lock lock(authority->mutex);
     return authority->active;
+}
+
+struct ValidatedPersistenceFile::Impl final {
+    Impl(
+        ValidatedBundleFile validated_capability,
+        std::unique_ptr<IPersistenceFile> exact_file)
+        : capability(std::move(validated_capability)),
+          file(std::move(exact_file)) {}
+
+    mutable std::mutex mutex;
+    ValidatedBundleFile capability;
+    std::unique_ptr<IPersistenceFile> file;
+    bool closed{};
+    bool released{};
+};
+
+ValidatedPersistenceFile::ValidatedPersistenceFile(
+    ValidatedBundleFile capability,
+    std::unique_ptr<IPersistenceFile> file)
+    : impl_(std::make_unique<Impl>(
+          std::move(capability), std::move(file))) {}
+
+ValidatedPersistenceFile::~ValidatedPersistenceFile() noexcept = default;
+
+Result<std::shared_ptr<detail::WriterAuthorityState>>
+ValidatedPersistenceFile::writer_authority_for_mutation(
+    const wchar_t* operation) const {
+    if (impl_ == nullptr || impl_->released || impl_->file == nullptr) {
+        return path_failure<std::shared_ptr<detail::WriterAuthorityState>>(
+            ImagePathErrorCode::IoError,
+            operation,
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    if (!impl_->capability.mutable_access_) {
+        return path_failure<std::shared_ptr<detail::WriterAuthorityState>>(
+            ImagePathErrorCode::AccessDenied,
+            operation,
+            L"inspection capability cannot mutate a bundle file",
+            ERROR_ACCESS_DENIED);
+    }
+    if (impl_->closed) {
+        return path_failure<std::shared_ptr<detail::WriterAuthorityState>>(
+            ImagePathErrorCode::IoError,
+            operation,
+            L"validated persistence file is closed",
+            ERROR_INVALID_HANDLE);
+    }
+    auto authority = impl_->capability.writer_authority_.lock();
+    if (authority == nullptr) {
+        return path_failure<std::shared_ptr<detail::WriterAuthorityState>>(
+            ImagePathErrorCode::WriterLockInvalid,
+            operation,
+            L"validated mutation outlived its writer lock");
+    }
+    return Result<std::shared_ptr<detail::WriterAuthorityState>>::success(
+        std::move(authority));
+}
+
+Result<void> ValidatedPersistenceFile::refresh_identity_after_mutation(
+    const std::shared_ptr<detail::WriterAuthorityState>& authority) {
+    auto refreshed = query_windows_file_identity(
+        impl_->capability.file_handle_.get());
+    if (!refreshed.ok()) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.refresh",
+            L"refreshing validated file identity after mutation failed",
+            refreshed.error().native_code);
+    }
+    if (!same_file_object(
+            impl_->capability.identity_, refreshed.value())) {
+        return path_failure<void>(
+            ImagePathErrorCode::IdentityMismatch,
+            L"image_path.validated_io.refresh",
+            L"validated I/O no longer refers to the original file object");
+    }
+    impl_->capability.identity_ = refreshed.move_value();
+    if (impl_->capability.manifest_identity_bound_) {
+        authority->manifest_identity = impl_->capability.identity_;
+    }
+    return Result<void>::success();
+}
+
+Result<void> ValidatedPersistenceFile::read_exact(
+    const std::uint64_t offset,
+    const std::span<std::byte> destination) {
+    return read_exact(OperationContext{}, offset, destination);
+}
+
+Result<void> ValidatedPersistenceFile::write_exact(
+    const std::uint64_t offset,
+    const std::span<const std::byte> source) {
+    return write_exact(OperationContext{}, offset, source);
+}
+
+Result<void> ValidatedPersistenceFile::flush() {
+    return flush(OperationContext{});
+}
+
+Result<std::uint64_t> ValidatedPersistenceFile::length() const {
+    return length(OperationContext{});
+}
+
+Result<void> ValidatedPersistenceFile::truncate(
+    const std::uint64_t new_length) {
+    return truncate(OperationContext{}, new_length);
+}
+
+Result<void> ValidatedPersistenceFile::read_exact(
+    const OperationContext& context,
+    const std::uint64_t offset,
+    const std::span<std::byte> destination) {
+    if (impl_ == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.read",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock lock(impl_->mutex);
+    if (impl_->closed || impl_->released || impl_->file == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.read",
+            L"validated persistence file is closed",
+            ERROR_INVALID_HANDLE);
+    }
+    return impl_->file->read_exact(context, offset, destination);
+}
+
+Result<void> ValidatedPersistenceFile::write_exact(
+    const OperationContext& context,
+    const std::uint64_t offset,
+    const std::span<const std::byte> source) {
+    if (impl_ == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.write",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock operation_lock(impl_->mutex);
+    auto authority = writer_authority_for_mutation(
+        L"image_path.validated_io.write");
+    if (!authority.ok()) {
+        return Result<void>::failure(std::move(authority.error()));
+    }
+    std::scoped_lock writer_lock(authority.value()->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*authority.value());
+    if (!writer_valid.ok()) {
+        return writer_valid;
+    }
+    auto result = impl_->file->write_exact(context, offset, source);
+    auto refreshed = refresh_identity_after_mutation(authority.value());
+    if (!result.ok()) {
+        return result;
+    }
+    return refreshed;
+}
+
+Result<void> ValidatedPersistenceFile::flush(
+    const OperationContext& context) {
+    if (impl_ == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.flush",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock operation_lock(impl_->mutex);
+    auto authority = writer_authority_for_mutation(
+        L"image_path.validated_io.flush");
+    if (!authority.ok()) {
+        return Result<void>::failure(std::move(authority.error()));
+    }
+    std::scoped_lock writer_lock(authority.value()->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*authority.value());
+    if (!writer_valid.ok()) {
+        return writer_valid;
+    }
+    return impl_->file->flush(context);
+}
+
+Result<std::uint64_t> ValidatedPersistenceFile::length(
+    const OperationContext& context) const {
+    if (impl_ == nullptr) {
+        return path_failure<std::uint64_t>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.length",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock lock(impl_->mutex);
+    if (impl_->closed || impl_->released || impl_->file == nullptr) {
+        return path_failure<std::uint64_t>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.length",
+            L"validated persistence file is closed",
+            ERROR_INVALID_HANDLE);
+    }
+    return impl_->file->length(context);
+}
+
+Result<void> ValidatedPersistenceFile::truncate(
+    const OperationContext& context,
+    const std::uint64_t new_length) {
+    if (impl_ == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.truncate",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock operation_lock(impl_->mutex);
+    auto authority = writer_authority_for_mutation(
+        L"image_path.validated_io.truncate");
+    if (!authority.ok()) {
+        return Result<void>::failure(std::move(authority.error()));
+    }
+    std::scoped_lock writer_lock(authority.value()->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*authority.value());
+    if (!writer_valid.ok()) {
+        return writer_valid;
+    }
+    auto result = impl_->file->truncate(context, new_length);
+    auto refreshed = refresh_identity_after_mutation(authority.value());
+    if (!result.ok()) {
+        return result;
+    }
+    return refreshed;
+}
+
+Result<void> ValidatedPersistenceFile::close() {
+    if (impl_ == nullptr) {
+        return Result<void>::success();
+    }
+    std::scoped_lock lock(impl_->mutex);
+    if (impl_->closed) {
+        return Result<void>::success();
+    }
+    if (impl_->released || impl_->file == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.close",
+            L"validated persistence file was already released",
+            ERROR_INVALID_HANDLE);
+    }
+    auto result = impl_->file->close();
+    if (result.ok()) {
+        impl_->closed = true;
+    }
+    return result;
+}
+
+WindowsFileIdentity ValidatedPersistenceFile::observed_identity() const {
+    if (impl_ == nullptr) {
+        return {};
+    }
+    std::scoped_lock lock(impl_->mutex);
+    if (impl_->released) {
+        return {};
+    }
+    return impl_->capability.identity_;
+}
+
+Result<ValidatedBundleFile>
+ValidatedPersistenceFile::release_validated_bundle_file() {
+    if (impl_ == nullptr) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.release",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock lock(impl_->mutex);
+    if (!impl_->closed || impl_->released) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::AccessDenied,
+            L"image_path.validated_io.release",
+            L"validated capability can be released exactly once after close",
+            ERROR_ACCESS_DENIED);
+    }
+    impl_->released = true;
+    return Result<ValidatedBundleFile>::success(
+        std::move(impl_->capability));
 }
 
 Result<std::wstring> normalized_final_path(HANDLE handle) {
@@ -562,7 +1008,9 @@ Result<ValidatedBundleFile> open_bundle_file_for_inspection(
         std::move(value.file_identity),
         std::move(value.root_final_path),
         std::move(value.file_final_path),
-        std::move(value.relative_name)));
+        std::move(value.relative_name),
+        false,
+        false));
 }
 
 Result<ValidatedBundleFile> open_bundle_file_for_mutation(
@@ -598,9 +1046,94 @@ Result<ValidatedBundleFile> open_bundle_file_for_mutation(
         std::move(value.file_identity),
         std::move(value.root_final_path),
         std::move(value.file_final_path),
-        std::move(value.relative_name));
+        std::move(value.relative_name),
+        true,
+        true);
     capability.writer_authority_ = writer_lock.state_;
     return Result<ValidatedBundleFile>::success(std::move(capability));
+}
+
+Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
+    BundleWriterLock& writer_lock) {
+    if (writer_lock.state_ == nullptr) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::WriterLockInvalid,
+            L"image_path.open_manifest_mutable",
+            L"manifest mutation requires a live writer lock");
+    }
+    std::scoped_lock lock(writer_lock.state_->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(
+        *writer_lock.state_);
+    if (!writer_valid.ok()) {
+        return Result<ValidatedBundleFile>::failure(
+            std::move(writer_valid.error()));
+    }
+
+    auto root_handle = duplicate_capability_handle(
+        writer_lock.state_->root_handle.get(),
+        L"image_path.open_manifest_mutable");
+    if (!root_handle.ok()) {
+        return Result<ValidatedBundleFile>::failure(
+            std::move(root_handle.error()));
+    }
+    auto manifest_handle = duplicate_capability_handle(
+        writer_lock.state_->manifest_handle.get(),
+        L"image_path.open_manifest_mutable");
+    if (!manifest_handle.ok()) {
+        return Result<ValidatedBundleFile>::failure(
+            std::move(manifest_handle.error()));
+    }
+
+    try {
+        ValidatedBundleFile capability(
+            root_handle.move_value(),
+            manifest_handle.move_value(),
+            writer_lock.state_->root_identity,
+            writer_lock.state_->manifest_identity,
+            writer_lock.state_->root_final_path,
+            writer_lock.state_->manifest_final_path,
+            writer_lock.state_->manifest_relative_name,
+            true,
+            false,
+            true);
+        capability.writer_authority_ = writer_lock.state_;
+        return Result<ValidatedBundleFile>::success(std::move(capability));
+    } catch (const std::bad_alloc&) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::IoError,
+            L"image_path.open_manifest_mutable",
+            L"allocating manifest capability failed",
+            ERROR_NOT_ENOUGH_MEMORY);
+    }
+}
+
+Result<std::unique_ptr<ValidatedPersistenceFile>>
+open_validated_persistence_file(ValidatedBundleFile&& capability) {
+    if (!capability.file_handle_) {
+        return path_failure<std::unique_ptr<ValidatedPersistenceFile>>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.open",
+            L"validated file capability is closed",
+            ERROR_INVALID_HANDLE);
+    }
+    auto file = detail::duplicate_windows_persistence_file(
+        capability.file_handle_.get());
+    if (!file.ok()) {
+        return Result<std::unique_ptr<ValidatedPersistenceFile>>::failure(
+            std::move(file.error()));
+    }
+    try {
+        return Result<std::unique_ptr<ValidatedPersistenceFile>>::success(
+            std::unique_ptr<ValidatedPersistenceFile>(
+                new ValidatedPersistenceFile(
+                    std::move(capability), file.move_value())));
+    } catch (const std::bad_alloc&) {
+        return path_failure<std::unique_ptr<ValidatedPersistenceFile>>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.open",
+            L"allocating validated persistence adapter failed",
+            ERROR_NOT_ENOUGH_MEMORY);
+    }
 }
 
 Result<void> truncate_validated_bundle_file(
@@ -626,6 +1159,7 @@ Result<void> truncate_validated_bundle_file(
         *writer_lock.state_,
         file.writer_authority_.lock(),
         file.deleted_,
+        file.cleanup_authorized_,
         file.root_handle_.get(),
         file.file_handle_.get(),
         file.root_identity_,
@@ -675,6 +1209,7 @@ Result<void> rename_validated_bundle_file(
         *writer_lock.state_,
         file.writer_authority_.lock(),
         file.deleted_,
+        file.cleanup_authorized_,
         file.root_handle_.get(),
         file.file_handle_.get(),
         file.root_identity_,
@@ -684,47 +1219,17 @@ Result<void> rename_validated_bundle_file(
     }
 
     try {
-        // FileRenameInfo is most portable with an absolute normalized target;
-        // RootDirectory-relative names are rejected with ERROR_INVALID_PARAMETER
-        // by some SetFileInformationByHandle implementations.
-        std::wstring destination = file.root_final_path_;
-        if (!destination.empty() &&
-            destination.back() != L'\\' && destination.back() != L'/') {
-            destination.push_back(L'\\');
-        }
-        destination.append(component.value().wide_name);
-        const auto name_bytes = destination.size() * sizeof(wchar_t);
-        // SetFileInformationByHandle validates at least
-        // sizeof(FILE_RENAME_INFO), including its declared first WCHAR.
-        const auto total_bytes = sizeof(FILE_RENAME_INFO) + name_bytes;
-        if (name_bytes > (std::numeric_limits<DWORD>::max)() ||
-            total_bytes > (std::numeric_limits<DWORD>::max)()) {
-            return path_failure<void>(
-                ImagePathErrorCode::IoError,
-                L"image_path.rename",
-                L"rename information exceeds the Windows buffer limit",
-                ERROR_ARITHMETIC_OVERFLOW);
-        }
-        std::vector<std::byte> storage(total_bytes);
-        auto* const info = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
-        info->ReplaceIfExists = FALSE;
-        info->RootDirectory = nullptr;
-        info->FileNameLength = static_cast<DWORD>(name_bytes);
-        std::memcpy(
-            info->FileName,
-            destination.data(),
-            name_bytes);
-        if (!SetFileInformationByHandle(
-                file.file_handle_.get(),
-                FileRenameInfo,
-                info,
-                static_cast<DWORD>(total_bytes))) {
-            const auto native_code = GetLastError();
-            return path_failure<void>(
-                native_open_error_code(native_code),
-                L"image_path.rename",
-                L"renaming the validated bundle file failed",
-                native_code);
+        // SetFileInformationByHandle rejects a non-null RootDirectory on the
+        // supported test host even with directory mutation rights. The native
+        // FileRenameInformation contract accepts the already-validated root
+        // handle and a single component, so the destructive operation has no
+        // path string to re-resolve outside that directory.
+        auto renamed = nt_rename_relative_to_directory(
+            file.file_handle_.get(),
+            file.root_handle_.get(),
+            component.value().wide_name);
+        if (!renamed.ok()) {
+            return renamed;
         }
         auto contained = is_direct_bundle_child(
             file.root_handle_.get(), file.file_handle_.get());
@@ -779,6 +1284,7 @@ Result<void> delete_validated_bundle_file(
         *writer_lock.state_,
         file.writer_authority_.lock(),
         file.deleted_,
+        file.cleanup_authorized_,
         file.root_handle_.get(),
         file.file_handle_.get(),
         file.root_identity_,
@@ -804,5 +1310,27 @@ Result<void> delete_validated_bundle_file(
     file.file_handle_.reset();
     return Result<void>::success();
 }
+
+namespace test {
+
+Result<void> rename_validated_bundle_file_with_hook(
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    const std::string_view new_relative_name,
+    BeforeNativeRenameHook hook,
+    void* hook_context) {
+    if (hook == nullptr || g_before_native_rename_hook != nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename_test_seam",
+            L"rename test seam requires one non-nested hook",
+            ERROR_INVALID_PARAMETER);
+    }
+    const ScopedNativeRenameHook scoped_hook(hook, hook_context);
+    return rename_validated_bundle_file(
+        writer_lock, file, new_relative_name);
+}
+
+} // namespace test
 
 } // namespace myrd::persistence

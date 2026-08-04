@@ -8,6 +8,7 @@
 #include "src/persistence/writer_lock.h"
 #include "src/common/unique_handle.h"
 #include "test_framework.h"
+#include "validated_rename_test_seam.h"
 
 #include <array>
 #include <atomic>
@@ -21,6 +22,7 @@
 #include <iterator>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -295,6 +297,122 @@ void enable_case_sensitive_directory(const std::filesystem::path& path) {
     return identity.move_value();
 }
 
+[[nodiscard]] DWORD probe_handle_relative_rename(
+    const std::filesystem::path& root,
+    const std::filesystem::path& source,
+    const std::wstring_view destination_name,
+    const DWORD root_access) {
+    auto root_handle = myrd::UniqueHandle(CreateFileW(
+        root.c_str(),
+        root_access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!root_handle) {
+        return GetLastError();
+    }
+    auto source_handle = myrd::UniqueHandle(CreateFileW(
+        source.c_str(),
+        DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!source_handle) {
+        return GetLastError();
+    }
+
+    const auto name_bytes = destination_name.size() * sizeof(wchar_t);
+    std::vector<std::byte> storage(sizeof(FILE_RENAME_INFO) + name_bytes);
+    auto* const info = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
+    info->ReplaceIfExists = FALSE;
+    info->RootDirectory = root_handle.get();
+    info->FileNameLength = static_cast<DWORD>(name_bytes);
+    std::memcpy(info->FileName, destination_name.data(), name_bytes);
+    if (!SetFileInformationByHandle(
+            source_handle.get(),
+            FileRenameInfo,
+            info,
+            static_cast<DWORD>(storage.size()))) {
+        return GetLastError();
+    }
+    return ERROR_SUCCESS;
+}
+
+struct NtIoStatusBlock final {
+    union {
+        LONG status;
+        void* pointer;
+    };
+    ULONG_PTR information;
+};
+
+struct NtFileRenameInformation final {
+    BOOLEAN replace_if_exists;
+    HANDLE root_directory;
+    ULONG file_name_length;
+    WCHAR file_name[1];
+};
+
+[[nodiscard]] LONG probe_nt_handle_relative_rename(
+    const std::filesystem::path& root,
+    const std::filesystem::path& source,
+    const std::wstring_view destination_name,
+    const DWORD root_access) {
+    auto root_handle = myrd::UniqueHandle(CreateFileW(
+        root.c_str(),
+        root_access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!root_handle) {
+        return static_cast<LONG>(0xC0000001UL);
+    }
+    auto source_handle = myrd::UniqueHandle(CreateFileW(
+        source.c_str(),
+        DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!source_handle) {
+        return static_cast<LONG>(0xC0000001UL);
+    }
+
+    using NtSetInformationFileFunction = LONG(NTAPI*)(
+        HANDLE, NtIoStatusBlock*, void*, ULONG, ULONG);
+    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto function = reinterpret_cast<NtSetInformationFileFunction>(
+        GetProcAddress(ntdll, "NtSetInformationFile"));
+    if (function == nullptr) {
+        return static_cast<LONG>(0xC0000139UL);
+    }
+
+    const auto name_bytes = destination_name.size() * sizeof(wchar_t);
+    std::vector<std::byte> storage(
+        offsetof(NtFileRenameInformation, file_name) + name_bytes);
+    auto* const info = reinterpret_cast<NtFileRenameInformation*>(
+        storage.data());
+    info->replace_if_exists = FALSE;
+    info->root_directory = root_handle.get();
+    info->file_name_length = static_cast<ULONG>(name_bytes);
+    std::memcpy(info->file_name, destination_name.data(), name_bytes);
+    NtIoStatusBlock io_status{};
+    constexpr ULONG kFileRenameInformation = 10;
+    return function(
+        source_handle.get(),
+        &io_status,
+        info,
+        static_cast<ULONG>(storage.size()),
+        kFileRenameInformation);
+}
+
 struct MountPointReparseBuffer final {
     DWORD reparse_tag;
     WORD reparse_data_length;
@@ -362,6 +480,78 @@ void create_directory_junction(
             nullptr)) {
         throw std::runtime_error("failed to create directory junction");
     }
+}
+
+struct RenameRouteSwap final {
+    std::filesystem::path route;
+    std::filesystem::path replacement_target;
+    bool ran{};
+};
+
+void swap_rename_route(void* opaque) {
+    auto& swap = *static_cast<RenameRouteSwap*>(opaque);
+    if (!RemoveDirectoryW(swap.route.c_str())) {
+        throw std::runtime_error("failed to remove rename test route");
+    }
+    create_directory_junction(swap.route, swap.replacement_target);
+    swap.ran = true;
+}
+
+TEST_CASE(task12_nt_relative_rename_works_when_win32_wrapper_rejects_root) {
+    TemporarySandbox sandbox;
+    const auto read_only_source = sandbox.bundle() / L"read-only.rdj";
+    const auto add_file_source = sandbox.bundle() / L"add-file.rdj";
+    const auto generic_write_source = sandbox.bundle() / L"generic-write.rdj";
+    const auto nt_source = sandbox.bundle() / L"nt-relative.rdj";
+    const auto nt_read_only_source = sandbox.bundle() / L"nt-read-only.rdj";
+    write_text(read_only_source, "read-only");
+    write_text(add_file_source, "add-file");
+    write_text(generic_write_source, "generic-write");
+    write_text(nt_source, "nt-relative");
+    write_text(nt_read_only_source, "nt-read-only");
+
+    const auto read_only_error = probe_handle_relative_rename(
+        sandbox.bundle(),
+        read_only_source,
+        L"read-only-renamed.rdj",
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES);
+    REQUIRE(read_only_error != ERROR_SUCCESS);
+    REQUIRE(std::filesystem::exists(read_only_source));
+    REQUIRE(!std::filesystem::exists(
+        sandbox.bundle() / L"read-only-renamed.rdj"));
+
+    const auto add_file_error = probe_handle_relative_rename(
+        sandbox.bundle(),
+        add_file_source,
+        L"add-file-renamed.rdj",
+        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES);
+    const auto generic_write_error = probe_handle_relative_rename(
+        sandbox.bundle(),
+        generic_write_source,
+        L"generic-write-renamed.rdj",
+        GENERIC_READ | GENERIC_WRITE | DELETE);
+    const auto nt_status = probe_nt_handle_relative_rename(
+        sandbox.bundle(),
+        nt_source,
+        L"nt-relative-renamed.rdj",
+        FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES);
+    const auto nt_read_only_status = probe_nt_handle_relative_rename(
+        sandbox.bundle(),
+        nt_read_only_source,
+        L"nt-read-only-renamed.rdj",
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES);
+    REQUIRE_EQ(add_file_error, static_cast<DWORD>(ERROR_INVALID_PARAMETER));
+    REQUIRE_EQ(generic_write_error, static_cast<DWORD>(ERROR_INVALID_PARAMETER));
+    REQUIRE_EQ(nt_status, static_cast<LONG>(0));
+    REQUIRE_EQ(nt_read_only_status, static_cast<LONG>(0));
+    REQUIRE(!std::filesystem::exists(nt_source));
+    REQUIRE(!std::filesystem::exists(nt_read_only_source));
+    REQUIRE_EQ(
+        read_text(sandbox.bundle() / L"nt-read-only-renamed.rdj"),
+        std::string("nt-read-only"));
+    REQUIRE_EQ(
+        read_text(sandbox.bundle() / L"nt-relative-renamed.rdj"),
+        std::string("nt-relative"));
 }
 
 TEST_CASE(task12_rejects_unsafe_or_non_utf8_components) {
@@ -577,6 +767,113 @@ TEST_CASE(task12_identity_mismatch_is_distinct_from_missing_after_replacement) {
     REQUIRE(is_image_path_error(
         missing, ImagePathErrorCode::Missing));
     REQUIRE_EQ(read_text(old_path), std::string("old"));
+}
+
+TEST_CASE(task12_validated_io_stays_on_the_opened_object_after_path_replacement) {
+    TemporarySandbox sandbox;
+    const auto path = sandbox.bundle() / L"data.rdj";
+    const auto moved = sandbox.external() / L"validated-object.rdj";
+    write_text(path, "original");
+    const auto original_identity = identity_of(path);
+
+    auto capability_result = open_bundle_file_for_inspection(
+        sandbox.bundle(), "data.rdj", original_identity);
+    REQUIRE(capability_result.ok());
+    auto io_result = myrd::persistence::open_validated_persistence_file(
+        capability_result.move_value());
+    REQUIRE(io_result.ok());
+    auto io = io_result.move_value();
+
+    REQUIRE(MoveFileExW(path.c_str(), moved.c_str(), MOVEFILE_WRITE_THROUGH));
+    write_text(path, "replaced");
+    REQUIRE(!myrd::persistence::same_file_object(
+        identity_of(path), original_identity));
+
+    std::array<std::byte, 8> bytes{};
+    REQUIRE(io->read_exact(0, bytes).ok());
+    REQUIRE_EQ(
+        std::string(
+            reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+        std::string("original"));
+    REQUIRE_EQ(io->observed_identity(), original_identity);
+    const auto denied = io->write_exact(0, std::span<const std::byte>(bytes));
+    REQUIRE(is_image_path_error(denied, ImagePathErrorCode::AccessDenied));
+    REQUIRE_EQ(read_text(path), std::string("replaced"));
+    REQUIRE_EQ(read_text(moved), std::string("original"));
+
+    REQUIRE(io->close().ok());
+    const auto closed_write = io->write_exact(
+        0, std::span<const std::byte>(bytes));
+    REQUIRE(closed_write.has_error());
+}
+
+TEST_CASE(task12_validated_writer_io_refreshes_identity_for_cleanup) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto data = sandbox.bundle() / L"data.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(data, "0123");
+
+    auto lock_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(lock_result.ok());
+    auto writer = lock_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "data.rdj", identity_of(data));
+    REQUIRE(capability_result.ok());
+    auto io_result = myrd::persistence::open_validated_persistence_file(
+        capability_result.move_value());
+    REQUIRE(io_result.ok());
+    auto io = io_result.move_value();
+
+    const std::string suffix = "4567";
+    const auto suffix_bytes = std::as_bytes(std::span(suffix));
+    REQUIRE(io->write_exact(4, suffix_bytes).ok());
+    REQUIRE(io->truncate(6).ok());
+    REQUIRE_EQ(io->observed_identity().size, std::uint64_t{6});
+    REQUIRE(io->close().ok());
+
+    auto released_result = io->release_validated_bundle_file();
+    REQUIRE(released_result.ok());
+    auto released = released_result.move_value();
+    REQUIRE_EQ(released.identity().size, std::uint64_t{6});
+    REQUIRE(rename_validated_bundle_file(
+        writer, released, "written.rdj").ok());
+    REQUIRE_EQ(
+        read_text(sandbox.bundle() / L"written.rdj"),
+        std::string("012345"));
+    REQUIRE(delete_validated_bundle_file(writer, released).ok());
+}
+
+TEST_CASE(task12_locked_manifest_io_is_writable_only_for_live_writer) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    write_text(manifest, std::string(8192, 'm'));
+
+    auto lock_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(lock_result.ok());
+    auto writer = lock_result.move_value();
+    auto manifest_capability =
+        myrd::persistence::open_locked_manifest_for_mutation(writer);
+    REQUIRE(manifest_capability.ok());
+    auto io_result = myrd::persistence::open_validated_persistence_file(
+        manifest_capability.move_value());
+    REQUIRE(io_result.ok());
+    auto io = io_result.move_value();
+
+    const std::array<std::byte, 1> marker{std::byte{'x'}};
+    REQUIRE(io->write_exact(0, marker).ok());
+    std::array<std::byte, 1> read_back{};
+    REQUIRE(io->read_exact(0, read_back).ok());
+    REQUIRE_EQ(read_back, marker);
+    REQUIRE(writer.verify().ok());
+
+    REQUIRE(writer.close().ok());
+    const auto denied = io->write_exact(1, marker);
+    REQUIRE(is_image_path_error(
+        denied, ImagePathErrorCode::WriterLockInvalid));
+    REQUIRE_EQ(read_text(manifest).front(), 'x');
 }
 
 TEST_CASE(task12_writer_lock_allows_inspect_but_rejects_second_writer) {
@@ -838,6 +1135,59 @@ TEST_CASE(task12_writer_anchors_the_opened_root_across_intermediate_junction_swa
     REQUIRE_EQ(capability_result.value().identity(), first_identity);
     REQUIRE_EQ(read_text(first_bundle / L"owned.rdj"), std::string("first-data"));
     REQUIRE_EQ(read_text(second_bundle / L"owned.rdj"), std::string("second-data"));
+}
+
+TEST_CASE(task12_rename_is_anchored_after_final_check_before_native_call) {
+    TemporarySandbox sandbox;
+    const auto first_parent = sandbox.external() / L"rename-first";
+    const auto second_parent = sandbox.external() / L"rename-second";
+    const auto first_bundle = first_parent / L"bundle";
+    const auto second_bundle = second_parent / L"bundle";
+    const auto route = sandbox.root() / L"rename-route";
+    std::filesystem::create_directories(first_bundle);
+    std::filesystem::create_directories(second_bundle);
+    const auto first_manifest = first_bundle / L"disk.rdm";
+    const auto second_manifest = second_bundle / L"disk.rdm";
+    const auto first_data = first_bundle / L"owned.rdj";
+    const auto second_data = second_bundle / L"owned.rdj";
+    write_text(first_manifest, std::string(8192, 'a'));
+    write_text(second_manifest, std::string(8192, 'b'));
+    write_text(first_data, "first-owned");
+    write_text(second_data, "external-must-not-change");
+    const auto external_manifest_identity = identity_of(second_manifest);
+    const auto external_data_identity = identity_of(second_data);
+    const auto external_manifest_content = read_text(second_manifest);
+    const auto external_data_content = read_text(second_data);
+
+    create_directory_junction(route, first_parent);
+    auto lock_result = acquire_bundle_writer_lock(
+        route / L"bundle", "disk.rdm");
+    REQUIRE(lock_result.ok());
+    auto writer = lock_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "owned.rdj", identity_of(first_data));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    RenameRouteSwap swap{route, second_parent};
+
+    const auto renamed =
+        myrd::persistence::test::rename_validated_bundle_file_with_hook(
+            writer,
+            capability,
+            "renamed.rdj",
+            swap_rename_route,
+            &swap);
+    REQUIRE(renamed.ok());
+    REQUIRE(swap.ran);
+    REQUIRE(!std::filesystem::exists(first_data));
+    REQUIRE_EQ(
+        read_text(first_bundle / L"renamed.rdj"),
+        std::string("first-owned"));
+    REQUIRE_EQ(read_text(second_manifest), external_manifest_content);
+    REQUIRE_EQ(read_text(second_data), external_data_content);
+    REQUIRE_EQ(identity_of(second_manifest), external_manifest_identity);
+    REQUIRE_EQ(identity_of(second_data), external_data_identity);
+    REQUIRE(!std::filesystem::exists(second_bundle / L"renamed.rdj"));
 }
 
 TEST_CASE(task12_cleanup_rejects_a_hardlink_added_after_validation) {
