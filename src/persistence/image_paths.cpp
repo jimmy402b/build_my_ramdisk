@@ -154,12 +154,15 @@ struct NativeRenameOperation final {
     detail::NativeRenameIoStatus io_status{};
     std::shared_ptr<detail::WriterAuthorityState> writer_authority;
     bool quarantine_slot_held{};
+    bool test_releasable{};
     NativeRenameOperation* quarantine_next{};
 };
 
 constexpr std::size_t kMaximumNativeRenameQuarantineSlots = 8;
 std::atomic<std::size_t> g_native_rename_slots{};
 std::atomic<NativeRenameOperation*> g_quarantined_native_renames{};
+std::mutex g_test_quarantine_mutex;
+NativeRenameOperation* g_test_quarantined_native_renames{};
 
 NativeRenameOperation::~NativeRenameOperation() noexcept {
     if (quarantine_slot_held) {
@@ -222,6 +225,13 @@ void quarantine_native_rename(
     // leak. The retained writer authority also prevents any successor writer
     // from overlapping this indeterminate operation.
     auto* const quarantined = operation.release();
+    if (quarantined->test_releasable) {
+        std::scoped_lock lock(g_test_quarantine_mutex);
+        quarantined->quarantine_next =
+            g_test_quarantined_native_renames;
+        g_test_quarantined_native_renames = quarantined;
+        return;
+    }
     auto* head = g_quarantined_native_renames.load(
         std::memory_order_acquire);
     do {
@@ -1480,6 +1490,8 @@ Result<void> rename_validated_bundle_file(
             return Result<void>::failure(std::move(prepared.error()));
         }
         auto operation = prepared.move_value();
+        operation->test_releasable =
+            g_native_rename_backend_override != nullptr;
         UniqueHandle stop_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!stop_event) {
             return path_failure<void>(
@@ -1508,16 +1520,16 @@ Result<void> rename_validated_bundle_file(
                 return;
             }
             if (lock.owns_lock()) {
-                --writer_state->active_native_renames;
-                writer_state->native_rename_condition.notify_all();
+                detail::complete_native_rename_locked(
+                    *writer_state, false);
                 return;
             }
             std::scoped_lock state_lock(writer_state->mutex);
-            --writer_state->active_native_renames;
-            writer_state->native_rename_condition.notify_all();
+            detail::complete_native_rename_locked(
+                *writer_state, false);
         });
         const auto quarantine_operation = [&]() noexcept {
-            writer_state->native_rename_quarantined = true;
+            ++writer_state->quarantined_native_renames;
             writer_state->native_rename_condition.notify_all();
             native_rename_registered = false;
             quarantine_native_rename(std::move(operation));
@@ -1814,6 +1826,7 @@ Result<void> delete_validated_bundle_file(
     return Result<void>::success();
 }
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
 namespace test {
 
 Result<void> rename_validated_bundle_file_with_hook(
@@ -1865,6 +1878,35 @@ bool quarantine_empty_native_rename_for_test() {
     if (!try_reserve_native_rename_slot(*operation)) {
         return false;
     }
+    operation->test_releasable = true;
+    quarantine_native_rename(std::move(operation));
+    return true;
+}
+
+bool quarantine_empty_native_rename_with_production_provenance_for_test() {
+    auto operation = std::make_unique<NativeRenameOperation>();
+    if (!try_reserve_native_rename_slot(*operation)) {
+        return false;
+    }
+    quarantine_native_rename(std::move(operation));
+    return true;
+}
+
+bool quarantine_empty_native_rename_for_writer_for_test(
+    BundleWriterLock& writer) {
+    auto state = writer.snapshot_state();
+    if (state == nullptr) {
+        return false;
+    }
+    auto operation = std::make_unique<NativeRenameOperation>();
+    if (!try_reserve_native_rename_slot(*operation)) {
+        return false;
+    }
+    std::scoped_lock lock(state->mutex);
+    operation->writer_authority = state;
+    operation->test_releasable = true;
+    ++state->active_native_renames;
+    ++state->quarantined_native_renames;
     quarantine_native_rename(std::move(operation));
     return true;
 }
@@ -1874,21 +1916,19 @@ std::size_t release_quarantined_native_renames_for_test() {
     // operation can no longer access the retained buffers. Production never
     // invokes this seam: an actually indeterminate operation remains retained
     // for process lifetime.
-    auto* operation = g_quarantined_native_renames.exchange(
-        nullptr, std::memory_order_acq_rel);
+    NativeRenameOperation* operation{};
+    {
+        std::scoped_lock lock(g_test_quarantine_mutex);
+        operation = g_test_quarantined_native_renames;
+        g_test_quarantined_native_renames = nullptr;
+    }
     std::size_t released{};
     while (operation != nullptr) {
         auto* const next = operation->quarantine_next;
         if (operation->writer_authority != nullptr) {
             auto& state = *operation->writer_authority;
             std::scoped_lock lock(state.mutex);
-            if (state.native_rename_quarantined) {
-                state.native_rename_quarantined = false;
-                if (state.active_native_renames > 0) {
-                    --state.active_native_renames;
-                }
-                state.native_rename_condition.notify_all();
-            }
+            detail::complete_native_rename_locked(state, true);
         }
         delete operation;
         operation = next;
@@ -1898,5 +1938,6 @@ std::size_t release_quarantined_native_renames_for_test() {
 }
 
 } // namespace test
+#endif
 
 } // namespace myrd::persistence

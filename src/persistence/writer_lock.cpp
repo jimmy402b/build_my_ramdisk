@@ -88,8 +88,8 @@ void release_process_writer(const std::wstring& key) noexcept {
         right.data(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
 }
 
-[[nodiscard]] Result<void> release_writer_state_locked(
-    detail::WriterAuthorityState& state) {
+[[nodiscard]] std::uint32_t release_writer_resources_locked(
+    detail::WriterAuthorityState& state) noexcept {
     std::uint32_t unlock_error = 0;
     if (state.close_event) {
         static_cast<void>(SetEvent(state.close_event.get()));
@@ -112,6 +112,12 @@ void release_process_writer(const std::wstring& key) noexcept {
     state.active = false;
     state.manifest_handle.reset();
     state.root_handle.reset();
+    return unlock_error;
+}
+
+[[nodiscard]] Result<void> release_writer_state_locked(
+    detail::WriterAuthorityState& state) {
+    const auto unlock_error = release_writer_resources_locked(state);
     if (unlock_error != 0) {
         return writer_failure<void>(
             ImagePathErrorCode::IoError,
@@ -132,7 +138,7 @@ Result<void> verify_writer_state_locked(
     const bool close_requested = state.close_event &&
         WaitForSingleObject(state.close_event.get(), 0) != WAIT_TIMEOUT;
     if (!state.active || !state.registry_held || !state.byte_lock_held ||
-        state.native_rename_quarantined ||
+        state.quarantined_native_renames != 0 ||
         !state.root_handle || !state.manifest_handle || !state.close_event ||
         (!allow_close_requested && close_requested) ||
         !process_writer_is_claimed(state.registry_key)) {
@@ -199,6 +205,22 @@ Result<void> verify_writer_state_locked(
     return Result<void>::success();
 }
 
+void complete_native_rename_locked(
+    WriterAuthorityState& state,
+    const bool was_quarantined) noexcept {
+    if (state.active_native_renames > 0) {
+        --state.active_native_renames;
+    }
+    if (was_quarantined && state.quarantined_native_renames > 0) {
+        --state.quarantined_native_renames;
+    }
+    state.native_rename_condition.notify_all();
+    if (state.close_detached && state.active_native_renames == 0 &&
+        state.quarantined_native_renames == 0) {
+        static_cast<void>(release_writer_resources_locked(state));
+    }
+}
+
 } // namespace detail
 
 BundleWriterLock::BundleWriterLock(BundleWriterLock&& other) noexcept
@@ -246,14 +268,15 @@ Result<void> BundleWriterLock::close() {
         return Result<void>::success();
     }
     std::unique_lock lock(state->mutex);
+    state->close_detached = true;
     if (state->close_event) {
         static_cast<void>(SetEvent(state->close_event.get()));
     }
     state->native_rename_condition.wait(lock, [&state] {
         return state->active_native_renames == 0 ||
-            state->native_rename_quarantined;
+            state->quarantined_native_renames != 0;
     });
-    if (state->native_rename_quarantined) {
+    if (state->quarantined_native_renames != 0) {
         // A native rename still owns pointers into quarantined operation
         // storage. Retain the byte lock, registry claim and authority handles
         // so no successor writer can overlap that indeterminate operation.
@@ -271,7 +294,7 @@ WindowsFileIdentity BundleWriterLock::manifest_identity() const {
         return {};
     }
     std::scoped_lock lock(state->mutex);
-    if (!state->active || state->native_rename_quarantined ||
+    if (!state->active || state->quarantined_native_renames != 0 ||
         !state->close_event ||
         WaitForSingleObject(state->close_event.get(), 0) != WAIT_TIMEOUT) {
         return {};
@@ -388,7 +411,21 @@ Result<BundleWriterLock> acquire_bundle_writer_lock(
     }
 }
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
 namespace test {
+
+std::pair<std::uint64_t, std::uint64_t>
+native_rename_writer_counts_for_test(const BundleWriterLock& writer) {
+    auto state = writer.snapshot_state();
+    if (state == nullptr) {
+        return {};
+    }
+    std::scoped_lock lock(state->mutex);
+    return {
+        state->active_native_renames,
+        state->quarantined_native_renames,
+    };
+}
 
 Result<void> verify_bundle_writer_lock_with_snapshot_hook(
     BundleWriterLock& writer,
@@ -411,5 +448,6 @@ Result<void> verify_bundle_writer_lock_with_snapshot_hook(
 }
 
 } // namespace test
+#endif
 
 } // namespace myrd::persistence

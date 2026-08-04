@@ -169,4 +169,8 @@ add_library(myrd_persistence STATIC
 )
 target_include_directories(myrd_persistence PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_persistence PUBLIC myrd_storage myrd_common bcrypt)
+if(BUILD_TESTING)
+    # Test seams are absent from production (BUILD_TESTING=OFF) artifacts.
+    target_compile_definitions(myrd_persistence PUBLIC MYRD_ENABLE_TEST_SEAMS=1)
+endif()
 myrd_enable_warnings(myrd_persistence)

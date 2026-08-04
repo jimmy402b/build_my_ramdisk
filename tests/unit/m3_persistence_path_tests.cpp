@@ -1122,6 +1122,9 @@ TEST_CASE(task12_non_draining_rename_retains_writer_ownership_after_close) {
     REQUIRE_EQ(
         myrd::persistence::test::native_rename_slots_in_use(),
         std::size_t{0});
+    auto replacement_after_cleanup = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(replacement_after_cleanup.ok());
 }
 
 TEST_CASE(task12_throwing_pending_backend_is_quarantined_without_uaf) {
@@ -1922,8 +1925,9 @@ TEST_CASE(task12_native_rename_quarantine_is_process_bounded) {
     });
     const auto maximum =
         myrd::persistence::test::maximum_native_rename_slots();
-    auto in_use = myrd::persistence::test::native_rename_slots_in_use();
-    REQUIRE_EQ(in_use, std::size_t{0});
+    const auto slots_before =
+        myrd::persistence::test::native_rename_slots_in_use();
+    auto in_use = slots_before;
     REQUIRE(maximum > in_use);
     while (in_use < maximum) {
         REQUIRE(
@@ -1972,11 +1976,61 @@ TEST_CASE(task12_native_rename_quarantine_is_process_bounded) {
     REQUIRE(writer.verify().ok());
     REQUIRE_EQ(
         myrd::persistence::test::release_quarantined_native_renames_for_test(),
-        maximum);
+        maximum - slots_before);
     cleanup_quarantine.release();
     REQUIRE_EQ(
         myrd::persistence::test::native_rename_slots_in_use(),
+        slots_before);
+}
+
+TEST_CASE(task12_test_cleanup_releases_each_quarantine_for_the_same_writer) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    write_text(manifest, std::string(8192, 'm'));
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    REQUIRE(
+        myrd::persistence::test::quarantine_empty_native_rename_for_writer_for_test(
+            writer));
+    REQUIRE(
+        myrd::persistence::test::quarantine_empty_native_rename_for_writer_for_test(
+            writer));
+
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
+        std::size_t{2});
+    const auto counts =
+        myrd::persistence::test::native_rename_writer_counts_for_test(writer);
+    if (counts != std::pair<std::uint64_t, std::uint64_t>{0, 0}) {
+        // Preserve a deterministic RED without hanging in ~BundleWriterLock()
+        // when the old single-bool bookkeeping leaves active == 1.
+        static_cast<void>(new myrd::persistence::BundleWriterLock(
+            std::move(writer)));
+    }
+    REQUIRE_EQ(counts.first, std::uint64_t{0});
+    REQUIRE_EQ(counts.second, std::uint64_t{0});
+    REQUIRE(writer.verify().ok());
+    REQUIRE(writer.close().ok());
+
+    auto replacement = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(replacement.ok());
+}
+
+TEST_CASE(task12_test_cleanup_cannot_release_production_quarantine) {
+    const auto slots_before =
+        myrd::persistence::test::native_rename_slots_in_use();
+    REQUIRE(
+        myrd::persistence::test::quarantine_empty_native_rename_with_production_provenance_for_test());
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
         std::size_t{0});
+    REQUIRE_EQ(
+        myrd::persistence::test::native_rename_slots_in_use(),
+        slots_before + 1);
 }
 
 } // namespace

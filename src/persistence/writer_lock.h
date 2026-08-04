@@ -14,10 +14,23 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace myrd::persistence {
 
 class ValidatedBundleFile;
+class BundleWriterLock;
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+namespace test {
+
+[[nodiscard]] bool quarantine_empty_native_rename_for_writer_for_test(
+    BundleWriterLock& writer);
+[[nodiscard]] std::pair<std::uint64_t, std::uint64_t>
+native_rename_writer_counts_for_test(const BundleWriterLock& writer);
+
+} // namespace test
+#endif
 
 namespace detail {
 
@@ -38,13 +51,18 @@ struct WriterAuthorityState final {
     bool registry_held{};
     bool byte_lock_held{};
     bool active{};
+    bool close_detached{};
     std::uint64_t active_native_renames{};
-    bool native_rename_quarantined{};
+    std::uint64_t quarantined_native_renames{};
 };
 
 [[nodiscard]] Result<void> verify_writer_state_locked(
     const WriterAuthorityState& state,
     bool allow_close_requested = false);
+
+void complete_native_rename_locked(
+    WriterAuthorityState& state,
+    bool was_quarantined) noexcept;
 
 } // namespace detail
 
@@ -93,6 +111,12 @@ private:
         std::string_view);
     friend Result<void> delete_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&);
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    friend bool test::quarantine_empty_native_rename_for_writer_for_test(
+        BundleWriterLock&);
+    friend std::pair<std::uint64_t, std::uint64_t>
+    test::native_rename_writer_counts_for_test(const BundleWriterLock&);
+#endif
 };
 
 [[nodiscard]] Result<BundleWriterLock> acquire_bundle_writer_lock(
