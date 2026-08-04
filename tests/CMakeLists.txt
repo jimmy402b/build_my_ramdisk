@@ -743,6 +743,20 @@ set_tests_properties(unit.m2.json_verifier PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
 
+# ---- M3 persistence boundary test (Task 00) ----------------------------------
+add_executable(myrd_persistence_boundary_tests
+    unit/persistence_boundary_tests.cpp
+)
+target_link_libraries(myrd_persistence_boundary_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_persistence_boundary_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_persistence_boundary_tests)
+add_test(NAME unit.m3.boundary COMMAND myrd_persistence_boundary_tests)
+set_tests_properties(unit.m3.boundary PROPERTIES
+    LABELS "m3-v0"
+    TIMEOUT 20)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

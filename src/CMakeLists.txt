@@ -146,3 +146,13 @@ add_executable(myrd-m0-poc
 target_include_directories(myrd-m0-poc PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-m0-poc PRIVATE myrd_poc myrd_driver myrd_proxy myrd_storage myrd_common bcrypt wintrust crypt32 Setupapi Cfgmgr32)
 myrd_enable_warnings(myrd-m0-poc)
+
+# ---- M3 persistence library (Task 00) ---------------------------------------
+# Persistence core must not depend on driver, proxy, M1, M2 or virtdisk.
+add_library(myrd_persistence STATIC
+    persistence/persistence_types.h
+    persistence/persistence_types.cpp
+)
+target_include_directories(myrd_persistence PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_persistence PUBLIC myrd_storage myrd_common bcrypt)
+myrd_enable_warnings(myrd_persistence)
