@@ -1055,7 +1055,15 @@ M3 is complete only when:
 
 ## Execution handoff
 
-Use `M3_TASKLIST.md` as the execution control document. Give Claude Code exactly one ready task at a time, including its allowed files and acceptance commands. Claude Code is a good primary executor for Class C work and a useful test/scaffold executor for Class S work. Class O production semantics remain under logic-owner control and independent test expectations must be authored or locked before production logic changes.
+Use `M3_TASKLIST.md` as the parent status/authority document and
+`M3_MICROTASKS.md` as the mandatory remaining-work execution document. Give an
+agent exactly one ready microcard at a time, including its exact allowlist,
+frozen test discovery count, expected semantic RED and acceptance commands.
+Medium/non-SOTA agents may complete `M` cards; they may only prepare the
+explicitly allowed tests/scaffolds for `H` cards and must stop at every `X`
+card with `PAUSED_FOR_HIGH_REASONING`. Independent oracle/fixture cards are
+committed and hashed before production cards, which then treat them as
+read-only. Class O production semantics remain under logic-owner control.
 
 The recommended waves are:
 
@@ -1065,4 +1073,8 @@ The recommended waves are:
 4. Tasks 34–39: compaction, retention, reports, CLI and provider integration.
 5. Tasks 40–44: destructive-host gates, crash/soak evidence and final acceptance.
 
-Never hand an agent “the rest of M3.” Every handoff must include a frozen task ID, dependency proof, expected red test, allowed paths, verification commands, commit boundary and post-task drift audit.
+Never hand an agent “the rest of M3” or even an unsplit parent Task. Every
+handoff must include one frozen microcard ID, dependency SHAs, reasoning gate,
+expected assertion-level RED, exact allowed/forbidden paths, nonzero test
+discovery count, verification commands, commit boundary and post-card drift
+audit.

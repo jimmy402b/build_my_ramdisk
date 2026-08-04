@@ -5,7 +5,8 @@
 1. `docs/superpowers/specs/2026-08-04-m3-vhdx-journal-checkpoint-design.md`
 2. `docs/superpowers/plans/2026-08-04-m3-persistence-engine.md`
 3. 本文件
-4. 已验收的 M0/M1/M2 合同
+4. `M3_MICROTASKS.md` 中当前父任务的唯一微卡
+5. 已验收的 M0/M1/M2 合同
 
 设计基线为 `80d1ae3`，其父提交 `a37ce86` 是 M2 GO。Task 00 必须重新证明当前代码包含该基线并通过新鲜的完整 Release 回归，不能只引用旧报告。
 
@@ -19,6 +20,8 @@
 - [ ] 阅读 SPEC 的目标、排除项、对应章节和验收矩阵。
 - [ ] 阅读 PLAN 的第 0 节、当前编号任务、依赖任务和 Stop conditions。
 - [ ] 阅读本文件总状态表、当前任务全部检查项和下一任务标题。
+- [ ] 阅读 `M3_MICROTASKS.md` 的通用事务、当前微卡、推理等级和暂停条件；一次
+  只允许执行一张微卡。
 - [ ] 核实所有依赖均为 `DONE` 且证据可访问；缺失时将当前任务置为 `BLOCKED`。
 - [ ] 核实当前工作树只存在一个 `DOING`；将当前任务由 `PENDING` 改为 `DOING`。
 - [ ] 在执行记录中写明开始提交、分支、执行者、时间、允许修改路径、假设和依赖证据。
@@ -35,7 +38,9 @@
 - [ ] 明确回答：是否改变 M1 协议、AIM 合同、M2 block 语义、durability 顺序、错误分类、删除权限或 M4 边界。
 - [ ] 填写任务执行记录中的文件、红灯、实现摘要、测试、证据、风险和建议提交。
 - [ ] 所有检查满足后才把状态改为 `DONE`；失败为 `BLOCKED`，尚在处理保持 `DOING`。
-- [ ] 只提交当前任务允许的文件。一个任务一个提交；不得把下一任务一起塞入。
+- [ ] 只提交当前微卡允许的文件。一张微卡一个可审查提交；父任务可以是一组按序
+  微卡提交，但不得 squash 掉独立 oracle/fault fixture 的冻结点，也不得把下一父
+  任务一起塞入。
 
 ### A3. 发现失败或设计冲突时
 
@@ -51,6 +56,8 @@
 - `DOING`：正在执行；全表最多一个。
 - `BLOCKED`：存在具体阻塞和可审计证据。
 - `DONE`：实现、累计验证、证据、提交和偏航检查均完成。
+- `PAUSED_FOR_HIGH_REASONING`：当前微卡为 H/X 或需要高风险决策；保持工作树和
+  RED 证据，等待 High/XHigh 逻辑负责人，不得自行降级推理等级或继续下一卡。
 
 ---
 
@@ -61,6 +68,10 @@
 | C — Claude-primary | 完整实现固定格式、checked helper、fixture、CLI/parser、测试脚本等机械工作 | 逐文件审查 diff，重跑命令，确认没有扩大合同 |
 | S — Split | 写红灯测试、fake、fixture、接口壳和无争议分支 | 实现或逐行审查并发、状态、durability、损坏处理等敏感逻辑 |
 | O — Logic-owner | 只能准备测试、诊断和最小 adapter，除非负责人逐段接管 | 编写/签署线性化、恢复选择、发布、ack、删除与最终 verdict |
+
+`M3_MICROTASKS.md` 的 `M/H/X` 等级比本表更细：Medium/DeepSeek 类执行者可以完整
+执行 `M` 卡；对 `H` 卡只能准备卡片明确允许的 RED/fixture/接口壳；遇到 `X` 卡必须
+写 `PAUSED_FOR_HIGH_REASONING` 并停止。父任务类别不能覆盖微卡暂停门。
 
 Claude Code 一次只能收到一个任务。禁止提示“完成剩余 M3”“自行继续下一项”或允许跨任务改文件。推荐提示词骨架：
 

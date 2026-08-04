@@ -697,6 +697,24 @@ M3 必须防御损坏文件和意外的大输入：
 - fault injection 只能由测试构建或显式测试开关启用，生产默认关闭；
 - M3 不宣称提供加密或恶意篡改认证。
 
+### 15.1 本地文件系统威胁边界
+
+M3 防御损坏/替换文件、错误路径、已存在的 hard link、reparse escape、并发的本产品
+writer，以及在每个受控 mutation 边界能够观察到的身份变化。产品在 in-place
+write/truncate/delete/rename 前后都要复核 opened-handle identity、containment、link
+count 和 writer authority；事后发现变化时必须 poison capability，不能继续操作。
+
+M3 不承诺抵御拥有同一 Windows 账户/等价文件权限的恶意进程在“最后一次复核”与
+in-place I/O 之间抢占创建 hard link 或主动篡改 namespace。单 writer lock 只协调
+本产品 session，不是针对同权限 OS 对手的安全边界。真实 NTFS 验证已证明普通共享
+模式和 read/write/handle oplock 不能禁止 `CreateHardLinkW`，因此重复一次有限 recheck
+不能把该 check/use 窗口变成原子操作。
+
+如果未来把 hostile same-principal namespace actor 纳入目标，必须另立设计里程碑：
+要么把每次内容 mutation 改成 immutable copy-on-write file + verified atomic publish，
+要么使用经过安全审查的 filesystem minifilter/内核 enforcement。不得在当前用户态
+实现上声称已经提供这种保证。
+
 ## 16. 可观测性与证据
 
 每个 operation 生成唯一 `operation_id`，日志和最终 JSON 至少包含：
