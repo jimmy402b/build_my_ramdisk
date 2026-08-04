@@ -626,12 +626,6 @@ SnapshotCoordinator::reserve_before_mutation(
                 DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
                 L"snapshot token does not own this coordinator"));
     }
-    if (state_->active_state != ConsistentSnapshotState::Active) {
-        return Result<SnapshotMetadataReservation>::failure(
-            coordinator_error(
-                DynamicBlockStoreErrorCode::SnapshotAborted,
-                L"snapshot is not active"));
-    }
     if (data_preimage &&
         (metadata.kind != DirtyRecordKind::Data ||
          payload.size() != kBlockSizeBytes)) {
@@ -667,6 +661,28 @@ SnapshotCoordinator::reserve_before_mutation(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 L"snapshot member base generation exceeds the cut"));
+    }
+    if (state_->active_state ==
+        ConsistentSnapshotState::FullyScanned) {
+        if (metadata.block_index >= state_->next_scan_block) {
+            return Result<SnapshotMetadataReservation>::failure(
+                coordinator_error(
+                    DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                    L"fully scanned snapshot has an invalid frontier"));
+        }
+        return Result<SnapshotMetadataReservation>::success(
+            SnapshotMetadataReservation{
+                SnapshotPreimageDisposition::Consumed,
+                {},
+                0,
+                0,
+                0});
+    }
+    if (state_->active_state != ConsistentSnapshotState::Active) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotAborted,
+                L"snapshot is not active"));
     }
     if (metadata.dirty_epoch > token.cutoff_dirty_epoch) {
         return Result<SnapshotMetadataReservation>::success(

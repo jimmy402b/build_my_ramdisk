@@ -3216,6 +3216,36 @@ TEST_CASE(m2_1_task06_ack_rechecks_the_cutoff_dirty_epoch) {
     REQUIRE_EQ(still_dirty.state, myrd::BlockState::ZeroDirty);
 }
 
+TEST_CASE(m2_1_task06_mutation_continues_while_token_is_fully_scanned) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Data, 0, block_data(0xC5));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(),
+        begun.value(),
+        cursor,
+        myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+    REQUIRE_EQ(store->consistent_snapshot_status(begun.value()).value().state,
+               myrd::ConsistentSnapshotState::FullyScanned);
+
+    const auto replacement = block_data(0xD6);
+    REQUIRE(store->write(bounded_context(), 0, replacement).ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
+    std::vector<std::byte> actual(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(bounded_context(), 0, actual).ok());
+    REQUIRE_EQ(actual, as_vector(replacement));
+    REQUIRE_EQ(store->consistent_snapshot_status(begun.value()).value().state,
+               myrd::ConsistentSnapshotState::FullyScanned);
+}
+
 TEST_CASE(m2_1_task06_scan_fails_closed_on_invalid_dirty_identity) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto store = require_store(backing_args(backing, 2, 7));
