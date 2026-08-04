@@ -2606,6 +2606,11 @@ TEST_CASE(m2_1_snapshot_reader_interleaves_with_successful_metadata_publish) {
         });
         reader_started.wait(false, std::memory_order_acquire);
     }
+    const bool reader_reached_lookup = writer_reached_publish &&
+        wait_until([&] {
+            return myrd::DynamicBlockStoreTestAccess::
+                snapshot_preimage_lookup_entered(*store);
+        });
     barrier->release();
     if (writer.joinable()) {
         writer.join();
@@ -2617,6 +2622,7 @@ TEST_CASE(m2_1_snapshot_reader_interleaves_with_successful_metadata_publish) {
 
     REQUIRE(writer_reached_publish);
     REQUIRE(reader_started.load(std::memory_order_acquire));
+    REQUIRE(reader_reached_lookup);
     REQUIRE(reader_finished.load(std::memory_order_acquire));
     REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
     REQUIRE_EQ(observed.kind, myrd::DirtyRecordKind::Zero);
@@ -2808,6 +2814,8 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
         const auto record = copied.value().front();
         REQUIRE_EQ(record.kind, kind);
         REQUIRE(record.data.empty());
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::advance_snapshot_frontier(
+            *store, begun.value(), store->total_blocks()));
 
         auto successor = myrd::test::FakeBackingStoreBuilder::successor_of(
                              *predecessor)
@@ -2820,6 +2828,9 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
             cut_record.kind,
             8);
         REQUIRE(!stale_ack.ok());
+        REQUIRE_EQ(error_code(stale_ack.error()),
+                   static_cast<std::uint32_t>(
+                       myrd::OperationErrorCode::version_changed));
         myrd::BlockEntry still_dirty{};
         REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
             *store, 0, still_dirty));
@@ -2836,8 +2847,6 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
             *store, 0, clean));
         REQUIRE_EQ(clean.state, myrd::BlockState::ZeroClean);
         REQUIRE_EQ(clean.clean_generation, 8ull);
-        REQUIRE(myrd::DynamicBlockStoreTestAccess::advance_snapshot_frontier(
-            *store, begun.value(), store->total_blocks()));
         const auto eviction =
             myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(*store, 0);
         REQUIRE_EQ(eviction.evicted_blocks, 0ull);

@@ -489,6 +489,7 @@ public:
     std::uint64_t next_scan_block{};
     std::uint64_t committed_records{};
     std::uint64_t pending_reservations{};
+    std::atomic<bool> preimage_lookup_entered_for_test{};
 };
 
 SnapshotMetadataReservation::SnapshotMetadataReservation(
@@ -831,6 +832,9 @@ void SnapshotCoordinator::rollback_metadata_preimage(
 
 std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
     std::uint64_t block_index) const {
+    state_->preimage_lookup_entered_for_test.store(
+        true, std::memory_order_release);
+    state_->preimage_lookup_entered_for_test.notify_all();
     std::scoped_lock lock(state_->mutex);
     const auto* record = state_->find_record(block_index);
     if (record == nullptr ||
@@ -1089,6 +1093,11 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
 std::uint64_t SnapshotCoordinator::index_probe_count_for_test() const {
     std::scoped_lock lock(state_->mutex);
     return state_->index_probes;
+}
+
+bool SnapshotCoordinator::preimage_lookup_entered_for_test() const noexcept {
+    return state_->preimage_lookup_entered_for_test.load(
+        std::memory_order_acquire);
 }
 
 void SnapshotCoordinatorState::abandon(

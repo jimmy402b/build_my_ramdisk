@@ -148,6 +148,7 @@ public:
     SnapshotCoordinatorSnapshot snapshot() const;
     Result<void> validate_invariants_for_test() const;
     std::uint64_t index_probe_count_for_test() const;
+    bool preimage_lookup_entered_for_test() const noexcept;
 
 private:
     Result<SnapshotMetadataReservation> reserve_before_mutation(

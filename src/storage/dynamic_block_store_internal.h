@@ -211,6 +211,8 @@ public:
         DynamicBlockStore& store,
         std::uint64_t block_index,
         SnapshotPreimage& output);
+    static bool snapshot_preimage_lookup_entered(
+        const DynamicBlockStore& store) noexcept;
     static bool advance_snapshot_frontier(
         DynamicBlockStore& store,
         const ConsistentSnapshotToken& token,

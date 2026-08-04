@@ -384,6 +384,11 @@ bool DynamicBlockStoreTestAccess::snapshot_preimage(
     return true;
 }
 
+bool DynamicBlockStoreTestAccess::snapshot_preimage_lookup_entered(
+    const DynamicBlockStore& store) noexcept {
+    return store.snapshot_coordinator_->preimage_lookup_entered_for_test();
+}
+
 bool DynamicBlockStoreTestAccess::advance_snapshot_frontier(
     DynamicBlockStore& store,
     const ConsistentSnapshotToken& token,
