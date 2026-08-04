@@ -184,6 +184,7 @@ public:
 };
 
 class ISnapshotCoordinatorNonReentrantBarrier;
+struct SnapshotPreimage;
 
 // Mutating access is intentionally confined to tests that need to establish
 // states owned by later M2 tasks. Product code cannot reach these helpers
@@ -206,6 +207,18 @@ public:
     static bool snapshot_entry(DynamicBlockStore& store,
                                std::uint64_t block_index,
                                BlockEntry& output);
+    static bool snapshot_preimage(
+        DynamicBlockStore& store,
+        std::uint64_t block_index,
+        SnapshotPreimage& output);
+    static bool advance_snapshot_frontier(
+        DynamicBlockStore& store,
+        const ConsistentSnapshotToken& token,
+        std::uint64_t next_scan_block);
+    static bool set_dirty_kind(
+        DynamicBlockStore& store,
+        std::uint64_t block_index,
+        DirtyRecordKind kind);
     static bool set_version(DynamicBlockStore& store,
                             std::uint64_t block_index,
                             std::uint64_t version);

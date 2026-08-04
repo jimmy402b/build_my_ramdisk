@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace myrd {
@@ -29,6 +30,7 @@ enum class SnapshotPreimageDisposition : std::uint8_t {
 enum class SnapshotCoordinatorBarrierEvent : std::uint8_t {
     ActivateLocked = 0,
     ReservationInserted = 1,
+    PreimagePublished = 2,
 };
 
 // Test-only deterministic barrier. It is invoked while the coordinator mutex
@@ -116,6 +118,12 @@ public:
         const ConsistentSnapshotToken& token,
         const SnapshotPreimage& metadata);
 
+    Result<SnapshotMetadataReservation> reserve_data_before_mutation(
+        const OperationContext& context,
+        const ConsistentSnapshotToken& token,
+        const SnapshotPreimage& metadata,
+        std::span<const std::byte> payload);
+
     Result<void> publish_metadata_preimage(
         const OperationContext& context,
         SnapshotMetadataReservation& reservation);
@@ -142,6 +150,13 @@ public:
     std::uint64_t index_probe_count_for_test() const;
 
 private:
+    Result<SnapshotMetadataReservation> reserve_before_mutation(
+        const OperationContext& context,
+        const ConsistentSnapshotToken& token,
+        const SnapshotPreimage& metadata,
+        std::span<const std::byte> payload,
+        bool data_preimage);
+
     std::shared_ptr<SnapshotCoordinatorState> state_;
 };
 

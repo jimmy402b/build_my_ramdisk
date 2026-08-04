@@ -5,6 +5,7 @@
 #include "src/storage/dynamic_block_store_internal.h"
 #include "src/storage/snapshot_coordinator.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -88,6 +89,20 @@ bool wait_until(Predicate predicate) {
 
 std::uint32_t error_code(const myrd::Error& error) {
     return error.code;
+}
+
+std::uint64_t payload_hash(std::span<const std::byte> payload) noexcept {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const auto value : payload) {
+        hash ^= std::to_integer<std::uint8_t>(value);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::vector<std::byte> as_vector(
+    const myrd::test::FakeBackingStore::BlockData& data) {
+    return {data.begin(), data.end()};
 }
 
 constexpr auto kNoResult =
@@ -1276,4 +1291,357 @@ TEST_CASE(m2_1_only_one_concurrent_begin_can_own_the_active_snapshot) {
     REQUIRE(tokens[winner].snapshot_id != 0);
     REQUIRE_EQ(tokens[winner].source_backing_generation, 19ull);
     REQUIRE_EQ(tokens[winner].cutoff_dirty_epoch, 0ull);
+}
+
+TEST_CASE(m2_1_data_cow_preserves_resident_dirty_partial_write_preimage) {
+    const auto backing_payload = block_data(0x31);
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, backing_payload)
+                       .build();
+    auto store = require_store(backing_args(backing, 2, 7));
+
+    auto reference = as_vector(backing_payload);
+    const std::vector<std::byte> pre_cut_patch(4096, std::byte{0xA5});
+    REQUIRE(store->write(bounded_context(), 1024, pre_cut_patch).ok());
+    std::copy(pre_cut_patch.begin(), pre_cut_patch.end(),
+              reference.begin() + 1024);
+
+    myrd::BlockEntry cut_entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, cut_entry));
+    REQUIRE_EQ(cut_entry.state, myrd::BlockState::ResidentDirty);
+    REQUIRE_EQ(cut_entry.dirty_kind, myrd::DirtyRecordKind::Data);
+
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    const std::vector<std::byte> post_cut_patch(2048, std::byte{0x5A});
+    REQUIRE(store->write(bounded_context(), 2048, post_cut_patch).ok());
+
+    myrd::SnapshotPreimage preimage{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, preimage));
+    REQUIRE_EQ(preimage.block_index, 0ull);
+    REQUIRE_EQ(preimage.version, cut_entry.version);
+    REQUIRE_EQ(preimage.kind, cut_entry.dirty_kind);
+    REQUIRE_EQ(preimage.base_generation,
+               cut_entry.dirty_base_generation);
+    REQUIRE_EQ(preimage.dirty_epoch, cut_entry.dirty_epoch);
+    REQUIRE_EQ(preimage.data.size(),
+               static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE_EQ(payload_hash(preimage.data), payload_hash(reference));
+    REQUIRE(preimage.data == reference);
+}
+
+TEST_CASE(m2_1_data_cow_preserves_only_first_full_block_preimage) {
+    const auto backing_payload = block_data(0x42);
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, backing_payload)
+                       .build();
+    auto store = require_store(backing_args(backing, 2, 7));
+
+    std::vector<std::byte> reference(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x17});
+    REQUIRE(store->write(bounded_context(), 0, reference).ok());
+    myrd::BlockEntry cut_entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, cut_entry));
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+
+    std::vector<std::byte> first_replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x28});
+    REQUIRE(store->write(bounded_context(), 0, first_replacement).ok());
+    const auto bytes_after_first = store->stats().snapshot_cow_current_bytes;
+    REQUIRE_EQ(bytes_after_first, myrd::kMinimumSnapshotCowBytes);
+
+    std::vector<std::byte> second_replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x39});
+    REQUIRE(store->write(bounded_context(), 0, second_replacement).ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               bytes_after_first);
+
+    myrd::SnapshotPreimage preimage{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, preimage));
+    REQUIRE_EQ(preimage.version, cut_entry.version);
+    REQUIRE_EQ(preimage.dirty_epoch, cut_entry.dirty_epoch);
+    REQUIRE_EQ(payload_hash(preimage.data), payload_hash(reference));
+    REQUIRE(preimage.data == reference);
+}
+
+TEST_CASE(m2_1_data_cow_payload_allocation_failure_rolls_back_record) {
+    myrd::SnapshotCoordinator coordinator(
+        myrd::kSnapshotCowRecordBudgetBytes);
+    const auto begun = coordinator.activate(7, 1);
+    REQUIRE(begun.ok());
+    const auto payload = block_data(0x53);
+
+    const auto reserved = coordinator.reserve_data_before_mutation(
+        bounded_context(),
+        begun.value(),
+        metadata_preimage(
+            0, 1, myrd::DirtyRecordKind::Data, 7, 1),
+        payload);
+    REQUIRE(!reserved.ok());
+    REQUIRE_EQ(error_code(reserved.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       SnapshotResourceExhausted));
+    const auto state = coordinator.snapshot();
+    REQUIRE_EQ(state.cow_current_bytes, 0ull);
+    REQUIRE_EQ(state.cow_records, 0ull);
+    REQUIRE_EQ(state.pending_reservations, 0ull);
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+}
+
+TEST_CASE(m2_1_data_cow_preserves_each_member_of_cross_block_write) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0x61))
+                       .data_block(1, block_data(0x72))
+                       .build();
+    auto args = backing_args(backing, 3, 7);
+    args.options.snapshot_cow_max_bytes =
+        2 * myrd::kMinimumSnapshotCowBytes;
+    auto store = require_store(std::move(args));
+
+    std::vector<std::byte> first(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x18});
+    std::vector<std::byte> second(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x29});
+    REQUIRE(store->write(bounded_context(), 0, first).ok());
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, second).ok());
+    myrd::BlockEntry first_cut{};
+    myrd::BlockEntry second_cut{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, first_cut));
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 1, second_cut));
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+
+    const std::vector<std::byte> spanning(1024, std::byte{0x7B});
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes - 512, spanning).ok());
+
+    myrd::SnapshotPreimage first_preimage{};
+    myrd::SnapshotPreimage second_preimage{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, first_preimage));
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 1, second_preimage));
+    REQUIRE_EQ(first_preimage.version, first_cut.version);
+    REQUIRE_EQ(second_preimage.version, second_cut.version);
+    REQUIRE_EQ(payload_hash(first_preimage.data), payload_hash(first));
+    REQUIRE_EQ(payload_hash(second_preimage.data), payload_hash(second));
+    REQUIRE(first_preimage.data == first);
+    REQUIRE(second_preimage.data == second);
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               2 * myrd::kMinimumSnapshotCowBytes);
+}
+
+TEST_CASE(m2_1_data_cow_consumed_member_does_not_allocate) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0x83))
+                       .build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    const std::vector<std::byte> pre_cut(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x34});
+    REQUIRE(store->write(bounded_context(), 0, pre_cut).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::advance_snapshot_frontier(
+        *store, begun.value(), 1));
+
+    const std::vector<std::byte> replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x45});
+    REQUIRE(store->write(bounded_context(), 0, replacement).ok());
+    myrd::SnapshotPreimage unexpected{};
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, unexpected));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+}
+
+TEST_CASE(m2_1_clean_backing_at_cut_load_mutate_is_excluded_from_cow) {
+    const auto original = block_data(0x94);
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, original)
+                       .build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE_EQ(begun.value().cutoff_dirty_epoch, 0ull);
+
+    const std::vector<std::byte> patch(512, std::byte{0x56});
+    REQUIRE(store->write(bounded_context(), 1024, patch).ok());
+    myrd::SnapshotPreimage unexpected{};
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, unexpected));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+
+    auto reference = as_vector(original);
+    std::copy(patch.begin(), patch.end(), reference.begin() + 1024);
+    std::vector<std::byte> actual(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(bounded_context(), 0, actual).ok());
+    REQUIRE_EQ(payload_hash(actual), payload_hash(reference));
+    REQUIRE(actual == reference);
+}
+
+TEST_CASE(m2_1_backing_load_failure_publishes_neither_mutation_nor_cow) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0xA5))
+                       .fail_block(0)
+                       .build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+
+    const std::vector<std::byte> patch(512, std::byte{0x67});
+    const auto written = store->write(bounded_context(), 1024, patch);
+    REQUIRE(!written.ok());
+    REQUIRE_EQ(error_code(written.error()),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::backing_read_failed));
+    myrd::SnapshotPreimage unexpected{};
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, unexpected));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    myrd::BlockEntry entry{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, entry));
+    REQUIRE_EQ(entry.state, myrd::BlockState::Unresident);
+    REQUIRE_EQ(entry.dirty_epoch, 0ull);
+}
+
+TEST_CASE(m2_1_data_cow_budget_failure_keeps_second_block_unmodified) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0xB6))
+                       .data_block(1, block_data(0xC7))
+                       .build();
+    auto store = require_store(backing_args(backing, 3, 7));
+    const std::vector<std::byte> first(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x78});
+    const std::vector<std::byte> second(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x89});
+    REQUIRE(store->write(bounded_context(), 0, first).ok());
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, second).ok());
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+
+    const std::vector<std::byte> first_replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x9A});
+    REQUIRE(store->write(
+        bounded_context(), 0, first_replacement).ok());
+    myrd::BlockEntry second_before{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 1, second_before));
+    const std::vector<std::byte> second_replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xAB});
+    const auto rejected = store->write(
+        bounded_context(), myrd::kBlockSizeBytes, second_replacement);
+    REQUIRE(!rejected.ok());
+    REQUIRE_EQ(error_code(rejected.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       SnapshotResourceExhausted));
+    myrd::BlockEntry second_after{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 1, second_after));
+    REQUIRE_EQ(second_after.state, second_before.state);
+    REQUIRE_EQ(second_after.version, second_before.version);
+    REQUIRE_EQ(second_after.dirty_epoch, second_before.dirty_epoch);
+    REQUIRE_EQ(second_after.dirty_kind, second_before.dirty_kind);
+    REQUIRE_EQ(second_after.dirty_base_generation,
+               second_before.dirty_base_generation);
+
+    std::vector<std::byte> current_second(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(
+        bounded_context(), myrd::kBlockSizeBytes, current_second).ok());
+    REQUIRE_EQ(payload_hash(current_second), payload_hash(second));
+    REQUIRE(current_second == second);
+    myrd::SnapshotPreimage unexpected{};
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 1, unexpected));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               myrd::kMinimumSnapshotCowBytes);
+}
+
+TEST_CASE(m2_1_snapshot_reader_observes_published_data_before_mutator_returns) {
+    auto barrier = std::make_shared<SnapshotCoordinatorBarrier>(
+        myrd::SnapshotCoordinatorBarrierEvent::PreimagePublished);
+    myrd::DynamicBlockStoreTestDependencies dependencies;
+    dependencies.snapshot_coordinator_non_reentrant_barrier = barrier;
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0xD8))
+                       .build();
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        backing_args(backing, 2, 7), dependencies);
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+
+    const std::vector<std::byte> reference(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xBC});
+    REQUIRE(store->write(bounded_context(), 0, reference).ok());
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+
+    const std::vector<std::byte> replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xCD});
+    std::atomic<std::uint32_t> writer_code{kNoResult};
+    std::thread writer([&] {
+        const auto result = store->write(
+            bounded_context(), 0, replacement);
+        writer_code.store(result.ok() ? 0 : error_code(result.error()),
+                          std::memory_order_release);
+    });
+    REQUIRE(wait_until([&] { return barrier->reached(); }));
+
+    myrd::SnapshotPreimage observed{};
+    std::atomic<bool> reader_entered{};
+    std::atomic<bool> reader_found{};
+    std::thread reader([&] {
+        reader_entered.store(true, std::memory_order_release);
+        reader_found.store(
+            myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+                *store, 0, observed),
+            std::memory_order_release);
+    });
+    REQUIRE(wait_until([&] {
+        return reader_entered.load(std::memory_order_acquire);
+    }));
+    barrier->release();
+    reader.join();
+    writer.join();
+
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
+    REQUIRE(reader_found.load(std::memory_order_acquire));
+    REQUIRE_EQ(payload_hash(observed.data), payload_hash(reference));
+    REQUIRE(observed.data == reference);
+}
+
+TEST_CASE(m2_1_resident_dirty_kind_mismatch_fails_closed_before_cow) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7)
+                       .data_block(0, block_data(0xE9))
+                       .build();
+    auto store = require_store(backing_args(backing, 2, 7));
+    const std::vector<std::byte> reference(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xDE});
+    REQUIRE(store->write(bounded_context(), 0, reference).ok());
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::set_dirty_kind(
+        *store, 0, myrd::DirtyRecordKind::Zero));
+
+    const std::vector<std::byte> replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xEF});
+    const auto rejected = store->write(
+        bounded_context(), 0, replacement);
+    REQUIRE(!rejected.ok());
+    REQUIRE_EQ(error_code(rejected.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       FatalInternalInvariant));
+    std::vector<std::byte> actual(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(bounded_context(), 0, actual).ok());
+    REQUIRE_EQ(payload_hash(actual), payload_hash(reference));
+    REQUIRE(actual == reference);
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
 }

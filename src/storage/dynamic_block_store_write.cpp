@@ -2,6 +2,7 @@
 
 #include "block_directory.h"
 #include "dynamic_block_store_internal.h"
+#include "snapshot_coordinator.h"
 #include "virtual_memory_arena.h"
 #include "src/common/scope_exit.h"
 
@@ -283,6 +284,11 @@ Result<void> DynamicBlockStore::write_one_segment(
             return write_invariant(L"transition epoch wrapped");
         }
         const auto original_state = entry->state;
+        if (original_state == BlockState::ResidentDirty &&
+            entry->dirty_kind != DirtyRecordKind::Data) {
+            return write_invariant(
+                L"resident dirty block has a non-DATA record kind");
+        }
 
         if (original_state == BlockState::ResidentClean ||
             original_state == BlockState::ResidentDirty) {
@@ -366,6 +372,42 @@ Result<void> DynamicBlockStore::write_one_segment(
                     OperationErrorCode::internal_invariant,
                     L"DynamicBlockStore::write/resident",
                     L"resident block has no committed address"));
+            }
+
+            if (original_state == BlockState::ResidentDirty &&
+                entry->dirty_kind == DirtyRecordKind::Data) {
+                const auto coordinator = snapshot_coordinator_->snapshot();
+                if (coordinator.active_token.has_value()) {
+                    auto reserved =
+                        snapshot_coordinator_->reserve_data_before_mutation(
+                            context,
+                            *coordinator.active_token,
+                            SnapshotPreimage{
+                                block_index,
+                                entry->version,
+                                entry->dirty_kind,
+                                entry->dirty_base_generation,
+                                entry->dirty_epoch,
+                                {}},
+                            std::span<const std::byte>(
+                                address.value(),
+                                static_cast<std::size_t>(
+                                    kBlockSizeBytes)));
+                    if (!reserved.ok()) {
+                        return rollback(reserved.error());
+                    }
+                    auto reservation = reserved.move_value();
+                    if (reservation.disposition() ==
+                        SnapshotPreimageDisposition::Reserved) {
+                        const auto published =
+                            snapshot_coordinator_
+                                ->publish_metadata_preimage(
+                                    context, reservation);
+                        if (!published.ok()) {
+                            return rollback(published.error());
+                        }
+                    }
+                }
             }
 
             BackingView captured_view;

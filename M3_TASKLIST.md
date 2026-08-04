@@ -143,7 +143,7 @@ Suggested commit:
 | 01 | M2.1 类型、选项、错误、统计 | C | DONE | 00 | M3-V3 / m2.1-v0 |
 | 02 | Mutation admission 与一致切点 | O | DONE | 01 | M3-V3 / m2.1-v1 |
 | 03 | 有界 snapshot coordinator 与元数据 COW | S | DONE | 02 | M3-V3 / m2.1-v1,v3 |
-| 04 | DATA pre-image | O | PENDING | 03 | M3-V3 / m2.1-v2 |
+| 04 | DATA pre-image | O | READY_FOR_REVIEW | 03 | M3-V3 / m2.1-v2 |
 | 05 | ZERO/DISCARD pre-image | O | PENDING | 04 | M3-V3 / m2.1-v2 |
 | 06 | Token batch、finish、abort | O | PENDING | 05 | M3-V3 / m2.1-v2 |
 | 07 | 压力、stall、close 与资源清理 | O | PENDING | 06 | M3-V3 / m2.1-v3,v5 |
@@ -235,11 +235,11 @@ Suggested commit:
 
 **类别：O。允许文件：** write/read-load mutation 路径、snapshot coordinator、DATA COW tests。
 
-- [ ] 红灯覆盖 resident DATA、backing load 后 mutate、跨块 write、同块重复改写、snapshot reader/mutator 交错。
-- [ ] 在第一次 post-cut mutation 发布前复制恰好 64 KiB；记录原 version/kind/base_generation/dirty_epoch。
-- [ ] 已 consumed 或已保存 pre-image 的块不重复分配；分配/I/O 失败时前台 mutation 与 snapshot outcome 遵守 frozen policy。
-- [ ] 用 payload hash/reference model 验证 pre-cut 内容，不接受“最终内容也一致”的弱断言。
-- [ ] 跑 `m2.1-v2` 和 M2 write/load 回归；建议提交 `feat(storage): preserve snapshot data preimages`。
+- [x] 红灯覆盖 resident DATA、backing load 后 mutate、跨块 write、同块重复改写、snapshot reader/mutator 交错。
+- [x] 在第一次 post-cut mutation 发布前复制恰好 64 KiB；记录原 version/kind/base_generation/dirty_epoch。
+- [x] 已 consumed 或已保存 pre-image 的块不重复分配；分配/I/O 失败时前台 mutation 与 snapshot outcome 遵守 frozen policy。
+- [x] 用 payload hash/reference model 验证 pre-cut 内容，不接受“最终内容也一致”的弱断言。
+- [x] 跑 `m2.1-v2` 和 M2 write/load 回归；建议提交 `feat(storage): preserve snapshot data preimages`。
 
 ## Task 05 — 覆盖 ZERO/DISCARD 状态转换
 

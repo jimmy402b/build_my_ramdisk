@@ -1124,6 +1124,20 @@ bool DynamicBlockStoreTestAccess::snapshot_entry(
     return true;
 }
 
+bool DynamicBlockStoreTestAccess::set_dirty_kind(
+    DynamicBlockStore& store,
+    std::uint64_t block_index,
+    DirtyRecordKind kind) {
+    auto* entry = store.directory_->find(block_index);
+    if (entry == nullptr) {
+        return false;
+    }
+    auto& stripe = store.stripes_->stripe_for(block_index);
+    std::scoped_lock lock(stripe.mutex);
+    entry->dirty_kind = kind;
+    return true;
+}
+
 bool DynamicBlockStoreTestAccess::set_version(
     DynamicBlockStore& store,
     std::uint64_t block_index,

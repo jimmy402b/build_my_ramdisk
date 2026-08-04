@@ -64,34 +64,58 @@ struct SnapshotRecordBudget final {
         }
     }
 
-    void reserve(std::size_t count) {
-        if (count == 0 ||
-            count > (std::numeric_limits<std::uint64_t>::max)() /
-                        kSnapshotCowRecordBudgetBytes) {
+    void reserve_bytes(
+        std::uint64_t bytes,
+        std::uint64_t allocations) {
+        if (bytes == 0 || allocations == 0) {
             throw SnapshotBudgetExhausted{};
         }
-        const auto bytes = static_cast<std::uint64_t>(count) *
-                           kSnapshotCowRecordBudgetBytes;
         if (current_bytes > max_bytes ||
-            bytes > max_bytes - current_bytes) {
+            bytes > max_bytes - current_bytes ||
+            live_allocations >
+                (std::numeric_limits<std::uint64_t>::max)() - allocations) {
             throw SnapshotBudgetExhausted{};
         }
         current_bytes += bytes;
-        live_allocations += static_cast<std::uint64_t>(count);
+        live_allocations += allocations;
         if (peak_bytes < current_bytes) {
             peak_bytes = current_bytes;
         }
     }
 
-    void release(std::size_t count) noexcept {
-        const auto bytes = static_cast<std::uint64_t>(count) *
-                           kSnapshotCowRecordBudgetBytes;
-        if (count == 0 || current_bytes < bytes ||
-            live_allocations < static_cast<std::uint64_t>(count)) {
+    void release_bytes(
+        std::uint64_t bytes,
+        std::uint64_t allocations) noexcept {
+        if (bytes == 0 || allocations == 0 || current_bytes < bytes ||
+            live_allocations < allocations) {
             std::terminate();
         }
         current_bytes -= bytes;
-        live_allocations -= static_cast<std::uint64_t>(count);
+        live_allocations -= allocations;
+    }
+
+    void reserve_records(std::size_t count) {
+        if (count == 0 ||
+            count > (std::numeric_limits<std::uint64_t>::max)() /
+                        kSnapshotCowRecordBudgetBytes) {
+            throw SnapshotBudgetExhausted{};
+        }
+        reserve_bytes(
+            static_cast<std::uint64_t>(count) *
+                kSnapshotCowRecordBudgetBytes,
+            static_cast<std::uint64_t>(count));
+    }
+
+    void release_records(std::size_t count) noexcept {
+        if (count == 0 ||
+            count > (std::numeric_limits<std::uint64_t>::max)() /
+                        kSnapshotCowRecordBudgetBytes) {
+            std::terminate();
+        }
+        release_bytes(
+            static_cast<std::uint64_t>(count) *
+                kSnapshotCowRecordBudgetBytes,
+            static_cast<std::uint64_t>(count));
     }
 
     void* try_allocate_map_header(std::size_t count) noexcept {
@@ -159,13 +183,13 @@ public:
             header != nullptr) {
             return static_cast<T*>(header);
         }
-        budget_->reserve(count);
+        budget_->reserve_records(count);
         try {
             return static_cast<T*>(::operator new(
                 count * static_cast<std::size_t>(
                             kSnapshotCowRecordBudgetBytes)));
         } catch (...) {
-            budget_->release(count);
+            budget_->release_records(count);
             throw;
         }
     }
@@ -182,7 +206,7 @@ public:
             return;
         }
         ::operator delete(pointer);
-        budget_->release(count);
+        budget_->release_records(count);
     }
 
     SnapshotRecordBudget* budget() const noexcept { return budget_; }
@@ -204,14 +228,98 @@ private:
     SnapshotRecordBudget* budget_{};
 };
 
+template <class T>
+class SnapshotPayloadAllocator final {
+public:
+    using value_type = T;
+
+    SnapshotPayloadAllocator() noexcept = default;
+    explicit SnapshotPayloadAllocator(
+        SnapshotRecordBudget* budget) noexcept
+        : budget_(budget) {}
+
+    template <class U>
+    SnapshotPayloadAllocator(
+        const SnapshotPayloadAllocator<U>& other) noexcept
+        : budget_(other.budget()) {}
+
+    [[nodiscard]] T* allocate(std::size_t count) {
+        if (budget_ == nullptr || count == 0 ||
+            count > (std::numeric_limits<std::uint64_t>::max)() /
+                        sizeof(T)) {
+            throw std::bad_alloc{};
+        }
+        const auto bytes =
+            static_cast<std::uint64_t>(count) * sizeof(T);
+        budget_->reserve_bytes(bytes, 1);
+        try {
+            return static_cast<T*>(::operator new(
+                static_cast<std::size_t>(bytes)));
+        } catch (...) {
+            budget_->release_bytes(bytes, 1);
+            throw;
+        }
+    }
+
+    void deallocate(T* pointer, std::size_t count) noexcept {
+        if (budget_ == nullptr || pointer == nullptr || count == 0 ||
+            count > (std::numeric_limits<std::uint64_t>::max)() /
+                        sizeof(T)) {
+            std::terminate();
+        }
+        const auto bytes =
+            static_cast<std::uint64_t>(count) * sizeof(T);
+        ::operator delete(pointer);
+        budget_->release_bytes(bytes, 1);
+    }
+
+    SnapshotRecordBudget* budget() const noexcept { return budget_; }
+
+    template <class U>
+    bool operator==(
+        const SnapshotPayloadAllocator<U>& other) const noexcept {
+        return budget_ == other.budget();
+    }
+
+    template <class U>
+    bool operator!=(
+        const SnapshotPayloadAllocator<U>& other) const noexcept {
+        return !(*this == other);
+    }
+
+private:
+    template <class>
+    friend class SnapshotPayloadAllocator;
+
+    SnapshotRecordBudget* budget_{};
+};
+
 } // namespace
 
 class SnapshotCoordinatorState final {
 public:
+    using Payload = std::vector<
+        std::byte, SnapshotPayloadAllocator<std::byte>>;
+
     struct Record final {
         SnapshotPreimage preimage;
+        Payload payload;
         std::uint64_t reservation_id{};
         bool committed{};
+
+        Record(
+            const SnapshotPreimage& metadata,
+            std::uint64_t next_reservation_id,
+            SnapshotRecordBudget* budget)
+            : preimage{
+                  metadata.block_index,
+                  metadata.version,
+                  metadata.kind,
+                  metadata.base_generation,
+                  metadata.dirty_epoch,
+                  {}},
+              payload(SnapshotPayloadAllocator<std::byte>{budget}),
+              reservation_id(next_reservation_id) {}
     };
 
     struct CountingLess final {
@@ -284,16 +392,9 @@ public:
         std::uint64_t reservation_id) {
         auto [inserted, is_new] = records.try_emplace(
             metadata.block_index,
-            Record{
-                SnapshotPreimage{
-                    metadata.block_index,
-                    metadata.version,
-                    metadata.kind,
-                    metadata.base_generation,
-                    metadata.dirty_epoch,
-                    {}},
-                reservation_id,
-                false});
+            metadata,
+            reservation_id,
+            &budget);
         if (!is_new) {
             std::terminate();
         }
@@ -454,6 +555,27 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
     const OperationContext& context,
     const ConsistentSnapshotToken& token,
     const SnapshotPreimage& metadata) {
+    return reserve_before_mutation(
+        context, token, metadata, {}, false);
+}
+
+Result<SnapshotMetadataReservation>
+SnapshotCoordinator::reserve_data_before_mutation(
+    const OperationContext& context,
+    const ConsistentSnapshotToken& token,
+    const SnapshotPreimage& metadata,
+    std::span<const std::byte> payload) {
+    return reserve_before_mutation(
+        context, token, metadata, payload, true);
+}
+
+Result<SnapshotMetadataReservation>
+SnapshotCoordinator::reserve_before_mutation(
+    const OperationContext& context,
+    const ConsistentSnapshotToken& token,
+    const SnapshotPreimage& metadata,
+    std::span<const std::byte> payload,
+    bool data_preimage) {
     const auto initial_live = check_operation_context(context);
     if (!initial_live.ok()) {
         return Result<SnapshotMetadataReservation>::failure(
@@ -473,16 +595,25 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
                 DynamicBlockStoreErrorCode::SnapshotAborted,
                 L"snapshot is not active"));
     }
-    if (metadata.kind != DirtyRecordKind::Zero &&
+    if (data_preimage &&
+        (metadata.kind != DirtyRecordKind::Data ||
+         payload.size() != kBlockSizeBytes)) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"DATA pre-image must own exactly one complete block"));
+    }
+    if (!data_preimage &&
+        metadata.kind != DirtyRecordKind::Zero &&
         metadata.kind != DirtyRecordKind::Discard) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 metadata.kind == DirtyRecordKind::Data
-                    ? L"DATA pre-image payload preservation belongs to M3 Task04"
+                    ? L"DATA pre-image requires the payload reservation path"
                     : L"snapshot pre-image has an unknown dirty record kind"));
     }
-    if (!metadata.data.empty()) {
+    if (!metadata.data.empty() || (!data_preimage && !payload.empty())) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
@@ -534,32 +665,45 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
     }
 
     const auto reservation_id = state_->next_reservation_id++;
+    SnapshotCoordinatorState::Record* inserted_record = nullptr;
     try {
-        // The actual 256-byte slab contains the metadata record, reservation
-        // bookkeeping and ordered tree node. DATA payload allocation is
-        // deliberately absent until Task04.
-        auto* record = state_->insert_record(metadata, reservation_id);
+        // The 256-byte slab contains the metadata record, reservation
+        // bookkeeping and ordered tree node. DATA additionally owns one
+        // separately budgeted 64 KiB payload allocation.
+        inserted_record = state_->insert_record(metadata, reservation_id);
         ++state_->pending_reservations;
+        if (data_preimage) {
+            inserted_record->payload.assign(payload.begin(), payload.end());
+        }
         state_->pause_for_test(
             SnapshotCoordinatorBarrierEvent::ReservationInserted);
 
         const auto reserved_live = check_operation_context(context);
         if (!reserved_live.ok()) {
-            state_->erase_record(record);
+            state_->erase_record(inserted_record);
             return Result<SnapshotMetadataReservation>::failure(
                 reserved_live.error());
         }
     } catch (const SnapshotBudgetExhausted&) {
+        if (inserted_record != nullptr) {
+            state_->erase_record(inserted_record);
+        }
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
                 L"snapshot COW metadata budget is exhausted"));
     } catch (const std::bad_alloc&) {
+        if (inserted_record != nullptr) {
+            state_->erase_record(inserted_record);
+        }
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
                 L"snapshot COW metadata allocation failed"));
     } catch (...) {
+        if (inserted_record != nullptr) {
+            state_->erase_record(inserted_record);
+        }
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
@@ -624,6 +768,8 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
     --state_->pending_reservations;
     ++state_->committed_records;
     record->committed = true;
+    state_->pause_for_test(
+        SnapshotCoordinatorBarrierEvent::PreimagePublished);
     reservation.owner_state_.reset();
     state_->condition.notify_all();
     return Result<void>::success();
@@ -646,7 +792,9 @@ std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
         block_index < state_->next_scan_block) {
         return std::nullopt;
     }
-    return record->preimage;
+    auto result = record->preimage;
+    result.data.assign(record->payload.begin(), record->payload.end());
+    return result;
 }
 
 Result<void> SnapshotCoordinator::advance_scan_frontier(
@@ -814,11 +962,17 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
             return invariant_failure(
                 L"snapshot record key/frontier invariant failed");
         }
-        if ((record.preimage.kind != DirtyRecordKind::Zero &&
-             record.preimage.kind != DirtyRecordKind::Discard) ||
-            !record.preimage.data.empty()) {
+        const bool data_record =
+            record.preimage.kind == DirtyRecordKind::Data;
+        const bool metadata_record =
+            record.preimage.kind == DirtyRecordKind::Zero ||
+            record.preimage.kind == DirtyRecordKind::Discard;
+        if ((!data_record && !metadata_record) ||
+            !record.preimage.data.empty() ||
+            (data_record && record.payload.size() != kBlockSizeBytes) ||
+            (metadata_record && !record.payload.empty())) {
             return invariant_failure(
-                L"metadata-only map retained DATA or payload bytes");
+                L"snapshot record kind and payload diverged");
         }
         if (record.reservation_id == 0) {
             return invariant_failure(
@@ -849,10 +1003,31 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
             kSnapshotCowRecordBudgetBytes) {
         return invariant_failure(L"snapshot map size overflowed budget math");
     }
-    const auto expected_bytes =
+    const auto metadata_bytes =
         static_cast<std::uint64_t>(state_->records.size()) *
         kSnapshotCowRecordBudgetBytes;
-    if (state_->budget.live_allocations != state_->records.size() ||
+    std::uint64_t data_records = 0;
+    for (const auto& [block_index, record] : state_->records) {
+        (void)block_index;
+        if (record.preimage.kind == DirtyRecordKind::Data) {
+            ++data_records;
+        }
+    }
+    if (data_records >
+        (std::numeric_limits<std::uint64_t>::max)() / kBlockSizeBytes) {
+        return invariant_failure(
+            L"snapshot DATA payload count overflowed budget math");
+    }
+    const auto payload_bytes = data_records * kBlockSizeBytes;
+    if (metadata_bytes >
+        (std::numeric_limits<std::uint64_t>::max)() - payload_bytes) {
+        return invariant_failure(
+            L"snapshot total COW bytes overflowed budget math");
+    }
+    const auto expected_bytes = metadata_bytes + payload_bytes;
+    const auto expected_allocations =
+        static_cast<std::uint64_t>(state_->records.size()) + data_records;
+    if (state_->budget.live_allocations != expected_allocations ||
         state_->budget.current_bytes != expected_bytes ||
         state_->budget.current_bytes > state_->budget.max_bytes ||
         state_->budget.peak_bytes < state_->budget.current_bytes ||

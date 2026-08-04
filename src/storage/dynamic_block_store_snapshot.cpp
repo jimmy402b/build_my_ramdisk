@@ -2,6 +2,7 @@
 
 #include "block_directory.h"
 #include "dynamic_block_store_internal.h"
+#include "snapshot_coordinator.h"
 #include "virtual_memory_arena.h"
 #include "src/common/scope_exit.h"
 
@@ -368,6 +369,27 @@ bool DynamicBlockStoreTestAccess::release_snapshot_pin_gap(
         false, std::memory_order_acq_rel);
     store.snapshot_pin_pause_for_test_.notify_all();
     return paused;
+}
+
+bool DynamicBlockStoreTestAccess::snapshot_preimage(
+    DynamicBlockStore& store,
+    std::uint64_t block_index,
+    SnapshotPreimage& output) {
+    const auto preimage =
+        store.snapshot_coordinator_->peek_preimage(block_index);
+    if (!preimage.has_value()) {
+        return false;
+    }
+    output = *preimage;
+    return true;
+}
+
+bool DynamicBlockStoreTestAccess::advance_snapshot_frontier(
+    DynamicBlockStore& store,
+    const ConsistentSnapshotToken& token,
+    std::uint64_t next_scan_block) {
+    return store.snapshot_coordinator_->advance_scan_frontier(
+        token, next_scan_block, store.geometry_.total_blocks).ok();
 }
 
 } // namespace myrd
