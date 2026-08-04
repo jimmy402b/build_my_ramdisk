@@ -1,5 +1,6 @@
 #include "snapshot_coordinator.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -36,6 +37,8 @@ bool same_token(
 
 struct SnapshotBudgetExhausted final {};
 
+constexpr std::size_t kSnapshotMapInfrastructureSlabs = 8;
+
 std::atomic<std::uint64_t> global_snapshot_id{1};
 
 std::uint64_t acquire_snapshot_id() noexcept {
@@ -59,7 +62,10 @@ struct SnapshotRecordBudget final {
 
     ~SnapshotRecordBudget() noexcept {
         if (current_bytes != 0 || live_allocations != 0 ||
-            map_header_in_use) {
+            std::any_of(
+                map_infrastructure_in_use.begin(),
+                map_infrastructure_in_use.end(),
+                [](bool in_use) { return in_use; })) {
             std::terminate();
         }
     }
@@ -118,26 +124,45 @@ struct SnapshotRecordBudget final {
             static_cast<std::uint64_t>(count));
     }
 
-    void* try_allocate_map_header(std::size_t count) noexcept {
-        if (count != 1 || !map_header_available) {
+    void* try_allocate_map_infrastructure(std::size_t count) noexcept {
+        if (count != 1 || !map_infrastructure_available) {
             return nullptr;
         }
-        map_header_available = false;
-        map_header_in_use = true;
-        return map_header_slab.data();
-    }
-
-    void seal_map_header() noexcept { map_header_available = false; }
-
-    bool owns_map_header(const void* pointer) const noexcept {
-        return pointer == map_header_slab.data();
-    }
-
-    void release_map_header() noexcept {
-        if (!map_header_in_use) {
-            std::terminate();
+        for (std::size_t index = 0;
+             index < map_infrastructure_in_use.size();
+             ++index) {
+            if (!map_infrastructure_in_use[index]) {
+                map_infrastructure_in_use[index] = true;
+                return map_infrastructure_slabs[index].data();
+            }
         }
-        map_header_in_use = false;
+        return nullptr;
+    }
+
+    void seal_map_infrastructure() noexcept {
+        map_infrastructure_available = false;
+    }
+
+    bool owns_map_infrastructure(const void* pointer) const noexcept {
+        return std::any_of(
+            map_infrastructure_slabs.begin(),
+            map_infrastructure_slabs.end(),
+            [pointer](const auto& slab) { return pointer == slab.data(); });
+    }
+
+    void release_map_infrastructure(const void* pointer) noexcept {
+        for (std::size_t index = 0;
+             index < map_infrastructure_slabs.size();
+             ++index) {
+            if (pointer == map_infrastructure_slabs[index].data()) {
+                if (!map_infrastructure_in_use[index]) {
+                    std::terminate();
+                }
+                map_infrastructure_in_use[index] = false;
+                return;
+            }
+        }
+        std::terminate();
     }
 
     std::uint64_t max_bytes{};
@@ -145,10 +170,13 @@ struct SnapshotRecordBudget final {
     std::uint64_t peak_bytes{};
     std::uint64_t live_allocations{};
     alignas(std::max_align_t)
-        std::array<std::byte, kSnapshotCowRecordBudgetBytes>
-            map_header_slab{};
-    bool map_header_available{true};
-    bool map_header_in_use{};
+        std::array<
+            std::array<std::byte, kSnapshotCowRecordBudgetBytes>,
+            kSnapshotMapInfrastructureSlabs>
+            map_infrastructure_slabs{};
+    std::array<bool, kSnapshotMapInfrastructureSlabs>
+        map_infrastructure_in_use{};
+    bool map_infrastructure_available{true};
 };
 
 template <class T>
@@ -179,9 +207,10 @@ public:
                             kSnapshotCowRecordBudgetBytes)) {
             throw std::bad_alloc{};
         }
-        if (void* header = budget_->try_allocate_map_header(count);
-            header != nullptr) {
-            return static_cast<T*>(header);
+        if (void* infrastructure =
+                budget_->try_allocate_map_infrastructure(count);
+            infrastructure != nullptr) {
+            return static_cast<T*>(infrastructure);
         }
         budget_->reserve_records(count);
         try {
@@ -198,11 +227,11 @@ public:
         if (budget_ == nullptr || pointer == nullptr || count == 0) {
             std::terminate();
         }
-        if (budget_->owns_map_header(pointer)) {
+        if (budget_->owns_map_infrastructure(pointer)) {
             if (count != 1) {
                 std::terminate();
             }
-            budget_->release_map_header();
+            budget_->release_map_infrastructure(pointer);
             return;
         }
         ::operator delete(pointer);
@@ -228,78 +257,84 @@ private:
     SnapshotRecordBudget* budget_{};
 };
 
-template <class T>
-class SnapshotPayloadAllocator final {
+class SnapshotPayloadBuffer final {
 public:
-    using value_type = T;
-
-    SnapshotPayloadAllocator() noexcept = default;
-    explicit SnapshotPayloadAllocator(
+    explicit SnapshotPayloadBuffer(
         SnapshotRecordBudget* budget) noexcept
         : budget_(budget) {}
 
-    template <class U>
-    SnapshotPayloadAllocator(
-        const SnapshotPayloadAllocator<U>& other) noexcept
-        : budget_(other.budget()) {}
+    ~SnapshotPayloadBuffer() noexcept { reset(); }
 
-    [[nodiscard]] T* allocate(std::size_t count) {
-        if (budget_ == nullptr || count == 0 ||
-            count > (std::numeric_limits<std::uint64_t>::max)() /
-                        sizeof(T)) {
+    SnapshotPayloadBuffer(const SnapshotPayloadBuffer&) = delete;
+    SnapshotPayloadBuffer& operator=(const SnapshotPayloadBuffer&) = delete;
+
+    SnapshotPayloadBuffer(SnapshotPayloadBuffer&& other) noexcept
+        : budget_(other.budget_),
+          data_(std::exchange(other.data_, nullptr)),
+          size_(std::exchange(other.size_, 0)) {}
+
+    SnapshotPayloadBuffer& operator=(SnapshotPayloadBuffer&& other) noexcept {
+        if (this != &other) {
+            reset();
+            budget_ = other.budget_;
+            data_ = std::exchange(other.data_, nullptr);
+            size_ = std::exchange(other.size_, 0);
+        }
+        return *this;
+    }
+
+    void assign(std::span<const std::byte> source) {
+        if (budget_ == nullptr || data_ != nullptr || source.empty() ||
+            source.size() > (std::numeric_limits<std::uint64_t>::max)()) {
             throw std::bad_alloc{};
         }
-        const auto bytes =
-            static_cast<std::uint64_t>(count) * sizeof(T);
+        const auto bytes = static_cast<std::uint64_t>(source.size());
         budget_->reserve_bytes(bytes, 1);
         try {
-            return static_cast<T*>(::operator new(
-                static_cast<std::size_t>(bytes)));
+            data_ = static_cast<std::byte*>(
+                ::operator new(static_cast<std::size_t>(bytes)));
         } catch (...) {
             budget_->release_bytes(bytes, 1);
             throw;
         }
+        std::copy(source.begin(), source.end(), data_);
+        size_ = source.size();
     }
 
-    void deallocate(T* pointer, std::size_t count) noexcept {
-        if (budget_ == nullptr || pointer == nullptr || count == 0 ||
-            count > (std::numeric_limits<std::uint64_t>::max)() /
-                        sizeof(T)) {
-            std::terminate();
-        }
-        const auto bytes =
-            static_cast<std::uint64_t>(count) * sizeof(T);
-        ::operator delete(pointer);
-        budget_->release_bytes(bytes, 1);
+    [[nodiscard]] const std::byte* begin() const noexcept { return data_; }
+    [[nodiscard]] const std::byte* end() const noexcept {
+        return data_ == nullptr ? nullptr : data_ + size_;
     }
-
-    SnapshotRecordBudget* budget() const noexcept { return budget_; }
-
-    template <class U>
-    bool operator==(
-        const SnapshotPayloadAllocator<U>& other) const noexcept {
-        return budget_ == other.budget();
-    }
-
-    template <class U>
-    bool operator!=(
-        const SnapshotPayloadAllocator<U>& other) const noexcept {
-        return !(*this == other);
-    }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
 
 private:
-    template <class>
-    friend class SnapshotPayloadAllocator;
+    void reset() noexcept {
+        if (data_ == nullptr) {
+            if (size_ != 0) {
+                std::terminate();
+            }
+            return;
+        }
+        if (budget_ == nullptr || size_ == 0) {
+            std::terminate();
+        }
+        ::operator delete(data_);
+        budget_->release_bytes(static_cast<std::uint64_t>(size_), 1);
+        data_ = nullptr;
+        size_ = 0;
+    }
 
     SnapshotRecordBudget* budget_{};
+    std::byte* data_{};
+    std::size_t size_{};
 };
 
 } // namespace
 
 class SnapshotCoordinatorState final {
 public:
-    using Payload = std::vector<
-        std::byte, SnapshotPayloadAllocator<std::byte>>;
+    using Payload = SnapshotPayloadBuffer;
 
     struct Record final {
         SnapshotPreimage preimage;
@@ -318,7 +353,7 @@ public:
                   metadata.base_generation,
                   metadata.dirty_epoch,
                   {}},
-              payload(SnapshotPayloadAllocator<std::byte>{budget}),
+              payload(budget),
               reservation_id(next_reservation_id) {}
     };
 
@@ -352,11 +387,12 @@ public:
         : budget(max_bytes),
           records(CountingLess{&index_probes}, RecordAllocator{&budget}),
           non_reentrant_barrier(std::move(next_barrier)) {
-        // MSVC std::map allocates one sentinel node in its constructor. It is
-        // coordinator infrastructure, not a COW record, so it comes from the
-        // one embedded slab above. Sealing here guarantees that an STL which
-        // does not allocate a sentinel cannot consume the slab on first insert.
-        budget.seal_map_header();
+        // Standard-library implementations may allocate one or more sentinel
+        // and container-proxy nodes while constructing std::map (MSVC Debug
+        // uses more than Release). They are fixed coordinator infrastructure,
+        // not COW records. Seal the bounded embedded pool after construction so
+        // every later allocation is charged to the snapshot budget.
+        budget.seal_map_infrastructure();
     }
 
     ~SnapshotCoordinatorState() noexcept {
@@ -683,7 +719,7 @@ SnapshotCoordinator::reserve_before_mutation(
         inserted_record = state_->insert_record(metadata, reservation_id);
         ++state_->pending_reservations;
         if (data_preimage) {
-            inserted_record->payload.assign(payload.begin(), payload.end());
+            inserted_record->payload.assign(payload);
         }
         state_->pause_for_test(
             SnapshotCoordinatorBarrierEvent::ReservationInserted);
@@ -803,7 +839,9 @@ std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
         return std::nullopt;
     }
     auto result = record->preimage;
-    result.data.assign(record->payload.begin(), record->payload.end());
+    if (!record->payload.empty()) {
+        result.data.assign(record->payload.begin(), record->payload.end());
+    }
     return result;
 }
 

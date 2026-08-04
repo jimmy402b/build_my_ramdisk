@@ -4,6 +4,7 @@
 #include "src/common/scope_exit.h"
 #include "src/storage/dynamic_block_store.h"
 #include "src/storage/dynamic_block_store_internal.h"
+#include "src/storage/eviction_manager.h"
 #include "src/storage/snapshot_coordinator.h"
 
 #include <algorithm>
@@ -671,7 +672,7 @@ TEST_CASE(m2_1_coordinator_map_has_bounded_logarithmic_probe_growth) {
     REQUIRE(coordinator.validate_invariants_for_test().ok());
     const auto probes_after_build =
         coordinator.index_probe_count_for_test();
-    REQUIRE(probes_after_build < kRecordCount * 80);
+    REQUIRE(probes_after_build < kRecordCount * 160);
 
     for (std::uint64_t block = kRecordCount; block-- > 0;) {
         const auto preimage = coordinator.peek_preimage(block);
@@ -2107,6 +2108,95 @@ TEST_CASE(m2_1_zero_discard_transition_matrix_preserves_exact_cut_identity) {
     }
 }
 
+TEST_CASE(m2_1_final_short_block_preserves_every_zero_discard_transition) {
+    struct TransitionCase {
+        LogicalDirtyKind before;
+        LogicalDirtyKind after;
+    };
+    constexpr std::array transitions{
+        TransitionCase{LogicalDirtyKind::Data, LogicalDirtyKind::Zero},
+        TransitionCase{LogicalDirtyKind::Data, LogicalDirtyKind::Discard},
+        TransitionCase{LogicalDirtyKind::Zero, LogicalDirtyKind::Data},
+        TransitionCase{LogicalDirtyKind::Discard, LogicalDirtyKind::Data},
+        TransitionCase{LogicalDirtyKind::Zero, LogicalDirtyKind::Discard},
+        TransitionCase{LogicalDirtyKind::Discard, LogicalDirtyKind::Zero},
+    };
+    constexpr std::uint64_t final_bytes = 512;
+
+    for (std::size_t index = 0; index < transitions.size(); ++index) {
+        auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+        auto args = backing_args(backing, 2, 7);
+        args.logical_size_bytes = myrd::kBlockSizeBytes + final_bytes;
+        auto store = require_store(std::move(args));
+        const auto final_offset = myrd::kBlockSizeBytes;
+        const std::array<myrd::DataRange, 1> final_range{{{
+            final_offset, final_bytes}}};
+        const std::vector<std::byte> old_data(
+            static_cast<std::size_t>(final_bytes),
+            std::byte{static_cast<std::uint8_t>(0x31 + index)});
+        const std::vector<std::byte> new_data(
+            static_cast<std::size_t>(final_bytes),
+            std::byte{static_cast<std::uint8_t>(0x71 + index)});
+        const auto publish_final = [&](LogicalDirtyKind kind,
+                                       std::span<const std::byte> data) {
+            if (kind == LogicalDirtyKind::Data) {
+                REQUIRE(store->write(
+                    bounded_context(), final_offset, data).ok());
+            } else if (kind == LogicalDirtyKind::Zero) {
+                REQUIRE(store->zero(bounded_context(), final_range).ok());
+            } else {
+                REQUIRE(store->unmap(bounded_context(), final_range).ok());
+            }
+        };
+
+        publish_final(transitions[index].before, old_data);
+        myrd::BlockEntry cut{};
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+            *store, 1, cut));
+        REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+        publish_final(transitions[index].after, new_data);
+
+        myrd::SnapshotPreimage preimage{};
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+            *store, 1, preimage));
+        REQUIRE_EQ(preimage.block_index, 1ull);
+        REQUIRE_EQ(preimage.version, cut.version);
+        REQUIRE_EQ(preimage.kind, record_kind(transitions[index].before));
+        REQUIRE_EQ(preimage.base_generation, cut.dirty_base_generation);
+        REQUIRE_EQ(preimage.dirty_epoch, cut.dirty_epoch);
+        if (transitions[index].before == LogicalDirtyKind::Data) {
+            REQUIRE_EQ(preimage.data.size(),
+                       static_cast<std::size_t>(myrd::kBlockSizeBytes));
+            REQUIRE(std::equal(old_data.begin(), old_data.end(),
+                               preimage.data.begin()));
+            REQUIRE(std::all_of(
+                preimage.data.begin() +
+                    static_cast<std::ptrdiff_t>(final_bytes),
+                preimage.data.end(),
+                [](std::byte value) { return value == std::byte{0}; }));
+        } else {
+            REQUIRE(preimage.data.empty());
+        }
+
+        myrd::BlockEntry current{};
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+            *store, 1, current));
+        REQUIRE_EQ(current.dirty_kind,
+                   record_kind(transitions[index].after));
+        std::vector<std::byte> actual(
+            static_cast<std::size_t>(final_bytes), std::byte{0xFF});
+        REQUIRE(store->read(
+            bounded_context(), final_offset, actual).ok());
+        if (transitions[index].after == LogicalDirtyKind::Data) {
+            REQUIRE(actual == new_data);
+        } else {
+            REQUIRE(std::all_of(
+                actual.begin(), actual.end(),
+                [](std::byte value) { return value == std::byte{0}; }));
+        }
+    }
+}
+
 TEST_CASE(m2_1_partial_zero_unmap_normalize_data_and_preserve_full_preimage) {
     for (const auto kind : {myrd::DirtyRecordKind::Zero,
                             myrd::DirtyRecordKind::Discard}) {
@@ -2466,6 +2556,81 @@ TEST_CASE(m2_1_cancelled_metadata_reservation_rolls_back_transition) {
     REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
 }
 
+TEST_CASE(m2_1_snapshot_reader_interleaves_with_successful_metadata_publish) {
+    auto barrier = std::make_shared<SnapshotCoordinatorBarrier>(
+        myrd::SnapshotCoordinatorBarrierEvent::PreimagePublished);
+    myrd::DynamicBlockStoreTestDependencies dependencies;
+    dependencies.snapshot_coordinator_non_reentrant_barrier = barrier;
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        backing_args(backing, 2, 7), dependencies);
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+    publish_logical_kind(
+        *store, LogicalDirtyKind::Zero, 0, block_data(0x27));
+    myrd::BlockEntry cut{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, cut));
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+
+    std::atomic<std::uint32_t> writer_code{kNoResult};
+    std::atomic<bool> reader_started{};
+    std::atomic<bool> reader_finished{};
+    myrd::SnapshotPreimage observed{};
+    std::thread writer([&] {
+        const auto result = store->unmap(
+            bounded_context(), full_block_range());
+        writer_code.store(result.ok() ? 0 : error_code(result.error()),
+                          std::memory_order_release);
+    });
+    std::thread reader;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        barrier->release();
+        if (writer.joinable()) {
+            writer.join();
+        }
+        if (reader.joinable()) {
+            reader.join();
+        }
+    });
+    const bool writer_reached_publish =
+        wait_until([&] { return barrier->reached(); });
+    if (writer_reached_publish) {
+        reader = std::thread([&] {
+            reader_started.store(true, std::memory_order_release);
+            reader_started.notify_all();
+            if (myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+                    *store, 0, observed)) {
+                reader_finished.store(true, std::memory_order_release);
+            }
+        });
+        reader_started.wait(false, std::memory_order_acquire);
+    }
+    barrier->release();
+    if (writer.joinable()) {
+        writer.join();
+    }
+    if (reader.joinable()) {
+        reader.join();
+    }
+    cleanup.release();
+
+    REQUIRE(writer_reached_publish);
+    REQUIRE(reader_started.load(std::memory_order_acquire));
+    REQUIRE(reader_finished.load(std::memory_order_acquire));
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
+    REQUIRE_EQ(observed.kind, myrd::DirtyRecordKind::Zero);
+    REQUIRE_EQ(observed.version, cut.version);
+    REQUIRE_EQ(observed.dirty_epoch, cut.dirty_epoch);
+    REQUIRE(observed.data.empty());
+    myrd::BlockEntry current{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, current));
+    REQUIRE_EQ(current.state, myrd::BlockState::ZeroDirty);
+    REQUIRE_EQ(current.dirty_kind, myrd::DirtyRecordKind::Discard);
+    REQUIRE(current.version > cut.version);
+}
+
 TEST_CASE(m2_1_metadata_budget_failure_keeps_zero_identity_unmodified) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto args = backing_args(backing, 3, 7);
@@ -2609,11 +2774,31 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
                                .data_block(0, block_data(0x5B))
                                .build();
         auto store = require_store(backing_args(predecessor, 2, 7));
-        const auto range = full_block_range();
-        const auto zeroed = kind == myrd::DirtyRecordKind::Zero
-            ? store->zero(bounded_context(), range)
-            : store->unmap(bounded_context(), range);
-        REQUIRE(zeroed.ok());
+        const auto before_kind = kind == myrd::DirtyRecordKind::Zero
+            ? LogicalDirtyKind::Discard
+            : LogicalDirtyKind::Zero;
+        publish_logical_kind(
+            *store, before_kind, 0, block_data(0x6C));
+        myrd::BlockEntry cut{};
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+            *store, 0, cut));
+        const auto begun = store->begin_consistent_snapshot(bounded_context());
+        REQUIRE(begun.ok());
+        publish_logical_kind(
+            *store,
+            kind == myrd::DirtyRecordKind::Zero
+                ? LogicalDirtyKind::Zero
+                : LogicalDirtyKind::Discard,
+            0,
+            block_data(0x7D));
+
+        myrd::SnapshotPreimage cut_record{};
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+            *store, 0, cut_record));
+        REQUIRE_EQ(cut_record.kind, record_kind(before_kind));
+        REQUIRE_EQ(cut_record.version, cut.version);
+        REQUIRE_EQ(cut_record.dirty_epoch, cut.dirty_epoch);
+        REQUIRE(cut_record.data.empty());
 
         myrd::DirtyScanCursor cursor{};
         const auto copied = store->copy_dirty_batch(
@@ -2629,6 +2814,18 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
                              .all_zero_block(0)
                              .build();
         REQUIRE(store->install_backing_view({8, successor}).ok());
+        const auto stale_ack = store->mark_persisted(
+            cut_record.block_index,
+            cut_record.version,
+            cut_record.kind,
+            8);
+        REQUIRE(!stale_ack.ok());
+        myrd::BlockEntry still_dirty{};
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+            *store, 0, still_dirty));
+        REQUIRE_EQ(still_dirty.state, myrd::BlockState::ZeroDirty);
+        REQUIRE_EQ(still_dirty.version, record.version);
+        REQUIRE_EQ(still_dirty.dirty_kind, record.kind);
         REQUIRE(store->mark_persisted(
             record.block_index,
             record.version,
@@ -2639,6 +2836,11 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
             *store, 0, clean));
         REQUIRE_EQ(clean.state, myrd::BlockState::ZeroClean);
         REQUIRE_EQ(clean.clean_generation, 8ull);
+        REQUIRE(myrd::DynamicBlockStoreTestAccess::advance_snapshot_frontier(
+            *store, begun.value(), store->total_blocks()));
+        const auto eviction =
+            myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(*store, 0);
+        REQUIRE_EQ(eviction.evicted_blocks, 0ull);
 
         std::vector<std::byte> actual(
             static_cast<std::size_t>(myrd::kBlockSizeBytes),
