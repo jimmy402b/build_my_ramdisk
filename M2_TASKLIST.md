@@ -81,7 +81,7 @@
 | 18 | 64 GiB/1 TiB 真实 VM 集成 | DONE | 16 | M2-V2 |
 | 19 | CLI、生命周期、报告、性能探针 | DONE | 17,18 | 本地假验收 |
 | 20 | 安全 NTFS 脚本与总编排 | DONE | 19 | Preflight |
-| 21 | 执行 M2-A/B 与 M2-C 功能门 | TODO | 20 | M2-V1..V5 |
+| 21 | 执行 M2-A/B 与 M2-C 功能门 | DONE | 20 | M2-V1..V5 |
 | 22 | 性能、故障、20 轮与最终判定 | TODO | 21 | M2-V6..V7 |
 
 ---
@@ -1060,44 +1060,44 @@ Executor / timestamp:
 
 ### M2-A / V1-V2
 
-- [ ] clean Release configure/build。
-- [ ] 跑 M2-V1，全部 core unit tests 被实际选中且通过。
-- [ ] 核查 CTest 输出没有 `No tests were found` 或 required skip。
-- [ ] 跑 M2-V2，100,000 operations 完整通过。
-- [ ] 64 GiB/1 TiB VM integration 通过。
-- [ ] 记录 test list、命令、exit code、日志、seed、memory samples。
-- [ ] 只有上述齐全才在 acceptance 标记 M2-A PASS。
+- [x] clean Release configure/build。
+- [x] 跑 M2-V1，全部 core unit tests 被实际选中且通过。
+- [x] 核查 CTest 输出没有 `No tests were found` 或 required skip。
+- [x] 跑 M2-V2，100,000 operations 完整通过。
+- [x] 64 GiB/1 TiB VM integration 通过。
+- [x] 记录 test list、命令、exit code、日志、seed、memory samples。
+- [x] 只有上述齐全才在 acceptance 标记 M2-A PASS。
 
 ### M2-B / V3-V4
 
-- [ ] M2-V3 连续完整跑两次；任何一次失败都先调查，不能择优。
-- [ ] concurrency、cancel/deadline、pressure、shutdown、invariant、resource 均被选中。
-- [ ] M2-V4 local SHM 通过。
-- [ ] 完整 M1 local regression 通过。
-- [ ] 记录 handle/thread/reservation baseline before/after。
-- [ ] 只有上述齐全才标记 M2-B PASS。
+- [x] M2-V3 连续完整跑两次；任何一次失败都先调查，不能择优。
+- [x] concurrency、cancel/deadline、pressure、shutdown、invariant、resource 均被选中。
+- [x] M2-V4 local SHM 通过。
+- [x] 完整 M1 local regression 通过。
+- [x] 记录 handle/thread/reservation baseline before/after。
+- [x] 只有上述齐全才标记 M2-B PASS。
 
 ### M2-C / V5 real disk
 
-- [ ] 再次运行 real preflight/WhatIf，并人工确认机器当前磁盘基线。
-- [ ] 使用 exact 64 GiB device 与唯一 evidence dir 启动 M2-V5。
-- [ ] provider 在 GPT/NTFS/文件/trim 全流程中持续存活。
-- [ ] verified file data >=4 GiB。
-- [ ] 初始写入、读回、修改、rename 的 hashes/bytes 全一致。
-- [ ] DeleteNotify enabled，ReTrim 成功，store 观测到 UNMAP。
-- [ ] mount/device/provider/service 全部 exact cleanup。
-- [ ] after inventory 与 before baseline 一致。
-- [ ] `Verify-M2Json.ps1` 通过。
-- [ ] 只有上述齐全才标记“M2-C functional/cleanup PASS”；完整 M2-C 仍等待 Task 22 的资源与性能门，不得提前标记 M2-C PASS。
+- [x] 再次运行 real preflight/WhatIf，并人工确认机器当前磁盘基线。
+- [x] 使用 exact 64 GiB device 与唯一 evidence dir 启动 M2-V5。
+- [x] provider 在 GPT/NTFS/文件/trim 全流程中持续存活。
+- [x] verified file data >=4 GiB。
+- [x] 初始写入、读回、修改、rename 的 hashes/bytes 全一致。
+- [x] DeleteNotify enabled，ReTrim 成功，store 观测到 UNMAP。
+- [x] mount/device/provider/service 全部 exact cleanup。
+- [x] after inventory 与 before baseline 一致。
+- [x] `Verify-M2Json.ps1` 通过。
+- [x] 只有上述齐全才标记“M2-C functional/cleanup PASS”；完整 M2-C 仍等待 Task 22 的资源与性能门，不得提前标记 M2-C PASS。
 
 ### Defect 回路与验收
 
-- [ ] corruption/hang/dirty loss/resurrection/wrong device/cleanup fail 立即停止并保留 run。
-- [ ] 在最小本地层添加红灯测试后修复。
-- [ ] 从受影响 gate 开头重跑，产生新目录；失败目录继续保留。
-- [ ] M2-A、M2-B 和 M2-C functional/cleanup 都有链接到 canonical passing evidence。
-- [ ] 回读 Plan Task 21 与第 3、7 节；确认没有隐藏 skip/retry。
-- [ ] 建议提交：`test(m2): complete core concurrency and ntfs gates`。
+- [x] corruption/hang/dirty loss/resurrection/wrong device/cleanup fail 立即停止并保留 run；本任务没有触发 stop condition。
+- [x] 在最小本地层添加红灯测试后修复；本任务没有发现需修复的新 defect。
+- [x] 从受影响 gate 开头重跑，产生新目录；本任务无失败 gate 或重跑择优。
+- [x] M2-A、M2-B 和 M2-C functional/cleanup 都有链接到 canonical passing evidence。
+- [x] 回读 Plan Task 21 与第 3、7 节；确认没有隐藏 skip/retry。
+- [x] 建议提交：`test(m2): complete core concurrency and ntfs gates`。
 
 ---
 
@@ -1518,7 +1518,7 @@ Executor / timestamp: Codex / `2026-08-04T05:35:45+08:00`
 
 Task: 20 — fail-closed NTFS workload and verification orchestrator
 Status: DONE
-Start commit / end commit: `1b39810` / pending commit `test(m2): add safe NTFS acceptance harness`
+Start commit / end commit: `1b39810` / `e0ee6d2` (`test(m2): add safe NTFS acceptance harness`)
 Files changed: Windows M2 acceptance adapters and lifecycle/report/CLI integration under `src/m2`, 64 GiB-aware physical-drive location and long-path atomic report publication, the elevated NTFS/outer orchestration/independent verification PowerShell scripts, matching C++ and PowerShell tests/CMake registration, and this Task 20 checklist/record
 Red tests and observed failures: implementation began from Task 19's deliberate real-mode refusal. Focused reds covered malformed CLI identity, late device ownership and cleanup, invalid reports, long report paths, missing DeleteNotify/ReTrim booleans, duplicate/tampered reports, unimplemented V6/V7 false-pass prevention, required Windows commands, and the read-only inventory probe. The first real V5 attempts exposed an incorrectly hard-coded 1.1 GiB OS-memory ceiling for the 4 GiB V5 workload and Win32 `MAX_PATH` failure in report publication; both were corrected at their owning layers. Review then caught an AFTER-READY rather than AFTER-WRITE UNMAP comparison, synchronous outer stdout/stderr draining, absent post-run outer inventory, and a placeholder empty AIM-device list; each received a regression test or an independently observable real-run gate.
 Focused verification command / exit code: `ctest --test-dir out/build/msvc -C Debug -L m2-v5 --output-on-failure` exits 0 with 6/6; mocked static/destructive safety preflight reports 48/48; current actual `Invoke-M2Verification.ps1 -Tier M2-V5 -WhatIf` exits 0 and records equal physical disk, volume, mount, AIM device, and service inventories with no mutation
@@ -1529,3 +1529,16 @@ Safety and cleanup evidence: every destructive cmdlet revalidates exact non-Disk
 Plan drift audit: Task 20 only; the implementation provides the safe real NTFS/V5 acceptance path and proof tooling. It does not claim Task 21's formal staged M2-A/B/C verdicts, Task 22's V6 fault/performance package or 20-cycle V7 soak, filesystem backing, durable persistence, M3, or M4.
 Open risks: Task 21 must execute and publish one ordered candidate-build acceptance set for M2-A/B and M2-C functional/cleanup. Task 22 must implement V6/V7 evidence, fault injection, resource/performance thresholds, 20 full cycles, final regressions, and the only valid final `M2 GO` decision.
 Executor / timestamp: Codex / `2026-08-04T08:37:00+08:00`
+
+Task: 21 — Execute M2-A, M2-B, and M2-C functional/cleanup gates
+Status: DONE
+Start commit / end commit: `e0ee6d2` / pending commit `test(m2): complete core concurrency and ntfs gates`
+Files changed: evidence-only updates to `docs/validation/m2-dynamic-block-store-acceptance.md` and this Task 21 checklist/record; no product, test, threshold, or runner source changed
+Execution order and candidate: one clean-built Release candidate from commit `e0ee6d290dcdfb99b253824d18ff6aa627063c80`, executable SHA-256 `BAB718C1869362AC0FD5B16180B498136DEE007E4BDAF205245DD180D7B84F68`; gates ran M2-V1 → M2-V2 → M2-V3 run 1 → M2-V3 run 2 → M2-V4 → M1-V2 local regression → fresh real M2-V5
+M2-A evidence: Release M2-V1 exits 0 with 16/16 selected tests; M2-V2 exits 0 with 6/6. The model completes exactly 100,000 operations with seed `0x4D5952444D324131`; the 64 GiB flow reserves 68,719,476,736 bytes, verifies 1 GiB and reclaims 1,076,412,416 bytes versus 966,367,641 required; the 1 TiB flow commits 196,608 bytes and allocates three leaves for three distant blocks. M2-A is PASS.
+M2-B evidence: both consecutive Release M2-V3 runs exit 0 with 6/6 on first execution. Each runs the 22-case concurrency suite, fixed-seed stress, and 20 lifecycle resource audit; handles return 67→67, threads 4→4, private growth is zero, and VM reserve/release is 21/21. M2-V4 exits 0 with 35/35. M1-V2 exits 0 with 14/14 units, the 10,000-case fuzz test, and exactly 50/50 local SHM repetitions. M2-B is PASS.
+M2-C functional/cleanup evidence: fresh run `out/m2-orchestrated/m2-v5-20260804-084228-9986646-392296bc65344eecba1e9ea25ec78162`; report `m2-report-0aeeb02e4414e79cc879bef42ed1dd42-36948372f1545719273abb1ad5106018.json`, SHA-256 `BEC7A6D9CF9497CB8BB87797CA4B15961AB3F2F7B10F388485326181F6470FBC`, embedded candidate hash exact match, native and independent verifier PASS. GPT/NTFS/modify/rename/readback passes with 4,294,967,296 written/read bytes, 2,147,483,648 deleted bytes and matching SHA-256; DeleteNotify/ReTrim increases UNMAP 68,770,332,672→73,355,886,592 and reduces committed bytes 4,365,287,424→2,217,934,848. Native/outer inventories MATCH, device/mount/provider cleanup is exact, AIM devices return empty, only Disk 0 remains, and `phdskmnt` is Running/Automatic.
+Evidence paths: `reports/m2-task21/e0ee6d2/` contains V1, V2/detail, two V3, V4, and M1 stdout/stderr logs; the canonical V5 directory above contains command, stdout/stderr, exit code, workload state, independent verification, true outer AIM inventories, final outer inventory and the immutable report
+Defect/retry audit: no Task 21 gate failed and no stop condition fired. The verbose V2 selection only captured diagnostics from two already-passing tests; it was not failure recovery. No JSON, threshold, cleanup target, test label, product source, or evidence file was edited to obtain a pass.
+Plan drift audit: M2-A and M2-B are formally PASS, and only the functional/cleanup portion of M2-C is PASS. Full M2-C and `M2 GO` remain unclaimed until Task 22 implements and passes V6 memory/performance/fault evidence, V7 20-cycle Release soak, final M1/M2 regression, and canonical report validation. No M3/M4 or durable persistence work began.
+Executor / timestamp: Codex / `2026-08-04T08:45:00+08:00`

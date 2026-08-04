@@ -1,15 +1,16 @@
-# M2 Dynamic Block Store Acceptance — M2-V0 and M2-B Evidence
+# M2 Dynamic Block Store Acceptance — Task 21 Staged Evidence
 
 Date: 2026-08-04 (Asia/Shanghai)
 
 ## Verdict
 
-**M2-V0 remains PASS. The Task 14–16 concurrency/resource evidence owned by
-M2-B is PASS.** The fixed-seed long stress, deterministic concurrency suite,
-invariant audits, and repeated lifecycle resource checks are green without
-retrying away a failure. The formal ordered M2-B stage verdict remains pending
-Task 21 because Task 18 must first close the remaining real-VM portion of
-M2-V2/M2-A. This document does not claim M2-C or an M2 GO verdict.
+**M2-A PASS. M2-B PASS. M2-C functional/cleanup PASS.** Task 21 was executed
+in its required order on one Release candidate after a clean build: M2-V1,
+M2-V2, two consecutive M2-V3 runs, M2-V4, the complete M1-V2 local
+regression, and one fresh real M2-V5 run. No gate failed, no retry selected a
+preferred result, and no evidence was edited. Full **M2-C remains pending**
+Task 22's memory/performance/fault and 20-cycle soak gates. This document does
+not claim `M2 GO`.
 
 ## Reproducible environment facts
 
@@ -331,3 +332,103 @@ acceptance is intentionally deferred to Task 21 until Task 18 completes the
 real 64 GiB/1 TiB VM integration required by the preceding M2-A/M2-V2 gate.
 Proxy injection, real driver/NTFS behavior, persistence, performance, M2-C, and
 the overall M2 GO verdict are outside Task 16 and remain unclaimed.
+
+## Task 21 — Ordered M2-A, M2-B, and M2-C functional/cleanup gates
+
+### Candidate identity and execution policy
+
+All Task 21 gates used commit
+`e0ee6d290dcdfb99b253824d18ff6aa627063c80` and the same clean-built Release
+candidate. The `myrd-m2-e2e.exe` SHA-256 is
+`BAB718C1869362AC0FD5B16180B498136DEE007E4BDAF205245DD180D7B84F68`.
+The checked-in MSVC/C++20 build policy was unchanged. The commands were run
+once in the Plan order. The only extra V2 execution selected the two already
+passing tests with `-V` so successful-test diagnostics would be retained; it
+was not a retry after failure.
+
+Local CTest and M1 logs are retained under
+`reports/m2-task21/e0ee6d2/`. This directory is generated evidence and is
+ignored by Git. The real-device evidence is retained in the unique immutable
+run directory listed below.
+
+### Gate results
+
+| Gate | Command | Exit / selected tests | Canonical evidence | Result |
+|---|---|---|---|---|
+| M2-V1 core | `ctest --preset release -L m2-v1 --output-on-failure` | `0`; 16/16 | `reports/m2-task21/e0ee6d2/m2-v1.log` | PASS |
+| M2-V2 model/VM | `ctest --preset release -L m2-v2 --output-on-failure` | `0`; 6/6 | `m2-v2.log`, `m2-v2-details.log` | PASS |
+| M2-V3 run 1 | `ctest --preset release -L m2-v3 -V` | `0`; 6/6 | `m2-v3-run1.log` | PASS |
+| M2-V3 run 2 | same command, immediately after run 1 | `0`; 6/6 | `m2-v3-run2.log` | PASS |
+| M2-V4 local proxy/regression | `ctest --preset release -L m2-v4 --output-on-failure` | `0`; 35/35 | `m2-v4.log` | PASS |
+| Full required M1 local regression | `Invoke-M1Verification.ps1 -Tier M1-V2 -Configuration Release` | `0`; 14/14 M1 units, 10,000-case fuzz, 50/50 SHM | `m1-v2.stdout.log`; empty stderr | PASS |
+| M2-V5 real NTFS | `Invoke-M2Verification.ps1 -Tier M2-V5 ... -SafetyAcknowledged` | `0`; one immutable GO report and independent PASS | `out/m2-orchestrated/m2-v5-20260804-084228-9986646-392296bc65344eecba1e9ea25ec78162/` | PASS |
+
+The V1 selection includes block math, immutable backing, sparse directory,
+store state, read/write/ranges, ZERO/UNMAP, limits, snapshot, generation, and
+eviction tests. No required test was skipped and CTest did not report an empty
+selection.
+
+V2's fixed model completed exactly 100,000 operations with seed
+`0x4D5952444D324131` and digest `0xDD89B58C508C5E36`. The real 64 GiB VM flow
+reserved 68,719,476,736 bytes with zero initial committed store bytes, wrote
+and verified 16,384 blocks / 1,073,741,824 bytes, and reclaimed
+1,076,412,416 bytes versus the 966,367,641-byte minimum after UNMAP. The 1 TiB
+flow reserved 1,099,511,627,776 bytes, committed only 196,608 bytes for three
+distant blocks, allocated three sparse leaves, and returned handles/threads
+exactly to baseline after destruction.
+
+Both V3 runs passed on their first execution. Run 1 used seed
+`0x4d59524453545231`, completed 1,152 reads, 948 writes, 576 ZERO and 576
+UNMAP operations, and observed 10 real pressure evictions. Run 2 completed
+1,152 reads, 962 writes, 576 ZERO and 576 UNMAP operations, and observed five
+real pressure evictions. Each resource audit completed 20 store lifecycles,
+returned handles `67 → 67`, threads `4 → 4`, private growth `0`, and VM
+reservations/releases `21/21`. The 22-case deterministic concurrency suite,
+cancellation/deadline paths, pressure, shutdown, generation acknowledgement,
+invariants, and resource checks all ran in each V3 gate.
+
+### Canonical real NTFS evidence
+
+The Task 21 V5 report is
+`m2-report-0aeeb02e4414e79cc879bef42ed1dd42-36948372f1545719273abb1ad5106018.json`
+with SHA-256
+`BEC7A6D9CF9497CB8BB87797CA4B15961AB3F2F7B10F388485326181F6470FBC`.
+Its embedded executable hash exactly matches the candidate above. Both native
+semantic validation and the independent `Verify-M2Json.ps1` pass.
+
+The exact 64 GiB AIM device (raw device ID `0`, `PhysicalDrive1`) was confirmed
+by QUERY_DEVICE and independent physical-drive identity before mutation. GPT
+initialization, one NTFS partition, formatting, run-unique directory mount,
+deterministic writes, modification, file/directory rename, flush/close,
+readback and hash verification all passed while the provider remained alive.
+Written/read bytes are each `4,294,967,296`; deleted bytes are
+`2,147,483,648`; the aggregate write/read SHA-256 is
+`656A5FAB03096E885C879D2A19775398EEF1421A0E62348EF8EEF2BD886CD6BD`.
+NTFS DeleteNotify was explicitly enabled and ReTrim succeeded.
+
+Store committed bytes moved `0 → 4,365,287,424 → 2,217,934,848` at READY,
+AFTER-WRITE and AFTER-RETRIM. Cumulative UNMAP bytes increased from
+`68,770,332,672` after write to `73,355,886,592` after Delete/ReTrim. The
+sequential/random ratios were 11,215/8,466 basis points against the V5
+7,000/6,000 thresholds; Task 22 still owns the separate V6 performance and
+1-GiB memory proof and these V5 values do not waive it.
+
+Cleanup removed only the exact owned mount and AIM device. Native and outer
+before/after inventories both report MATCH, AIM device lists returned empty,
+only physical Disk 0 remained, and `phdskmnt` returned to Running/Automatic.
+No Task 21 attempt failed, no evidence directory was reused, and no threshold,
+JSON report, cleanup target, or test selection was changed during execution.
+
+### Stage verdicts and remaining boundary
+
+- **M2-A PASS:** V1 core and V2 model/real-VM evidence are complete.
+- **M2-B PASS:** both V3 runs, V4, and the full required M1 local regression
+  are complete without retry-to-pass or resource drift.
+- **M2-C functional/cleanup PASS:** the canonical V5 real NTFS run is complete
+  and exact cleanup is proven.
+- **Full M2-C remains pending Task 22. `M2 GO` is not issued.** V6 must still
+  prove the dedicated memory/performance/fault gates, and V7 must complete 20
+  real Release lifecycles followed by final regression and report validation.
+
+M2 still does not implement or claim durable filesystem backing, a journal,
+checkpoint/recovery, timed writeback, crash recovery, M3 persistence, or M4.
