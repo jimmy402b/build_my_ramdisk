@@ -149,7 +149,7 @@ Suggested commit:
 | 07 | 压力、stall、close 与资源清理 | O | PENDING | 06 | M3-V3 / m2.1-v3,v5 |
 | 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
 | 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
-| 10 | CRC32C、streaming SHA、byte codec | C | PENDING | 00 | M3-V1 |
+| 10 | CRC32C、streaming SHA、byte codec | C | READY_FOR_REVIEW | 00 | M3-V1 |
 | 11 | Exact file I/O 与 sparse fake | C | PENDING | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | PENDING | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |

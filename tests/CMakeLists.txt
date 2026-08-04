@@ -757,6 +757,20 @@ set_tests_properties(unit.m2.json_verifier PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
 
+# ---- M3 checksum and codec tests (Task 10) ----------------------------------
+add_executable(myrd_m3_checksum_codec_tests
+    unit/m3_checksum_codec_tests.cpp
+)
+target_link_libraries(myrd_m3_checksum_codec_tests PRIVATE
+    myrd_test_support myrd_persistence myrd_common)
+target_include_directories(myrd_m3_checksum_codec_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_checksum_codec_tests)
+add_test(NAME unit.m3.checksum_codec COMMAND myrd_m3_checksum_codec_tests)
+set_tests_properties(unit.m3.checksum_codec PROPERTIES
+    LABELS "m3-v0;m3-v1"
+    TIMEOUT 20)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp

@@ -2,6 +2,8 @@
 
 add_library(myrd_common STATIC
     common/sha256.cpp common/sha256.h
+    common/sha256_stream.cpp common/sha256_stream.h
+    common/crc32c.cpp common/crc32c.h
     common/authenticode.cpp common/authenticode.h
     common/process_snapshot.cpp common/process_snapshot.h
 )
