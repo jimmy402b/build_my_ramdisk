@@ -207,6 +207,14 @@ private:
         std::uint64_t block_offset_bytes,
         std::span<const std::byte> source,
         bool explicit_zero_is_noop);
+    Result<void> preserve_snapshot_preimage_before_mutation(
+        const OperationContext& context,
+        std::uint64_t block_index,
+        std::uint64_t version,
+        DirtyRecordKind kind,
+        BackingGeneration base_generation,
+        std::uint64_t dirty_epoch,
+        std::span<const std::byte> data);
     Result<void> publish_full_zero_segment(
         const OperationContext& context,
         std::uint64_t block_index,

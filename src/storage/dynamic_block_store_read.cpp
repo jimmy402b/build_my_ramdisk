@@ -1149,9 +1149,14 @@ bool DynamicBlockStoreTestAccess::set_dirty_snapshot_identity(
     }
     auto& stripe = store.stripes_->stripe_for(block_index);
     std::scoped_lock lock(stripe.mutex);
-    if (entry->state != BlockState::ResidentDirty ||
-        entry->dirty_kind != DirtyRecordKind::Data ||
-        entry->pin_count != 0) {
+    const bool resident_data =
+        entry->state == BlockState::ResidentDirty &&
+        entry->dirty_kind == DirtyRecordKind::Data;
+    const bool zero_override =
+        entry->state == BlockState::ZeroDirty &&
+        (entry->dirty_kind == DirtyRecordKind::Zero ||
+         entry->dirty_kind == DirtyRecordKind::Discard);
+    if ((!resident_data && !zero_override) || entry->pin_count != 0) {
         return false;
     }
     entry->dirty_epoch = dirty_epoch;

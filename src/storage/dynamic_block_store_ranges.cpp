@@ -202,6 +202,20 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
 
         if (original_state != BlockState::ResidentClean &&
             original_state != BlockState::ResidentDirty) {
+            if (original_state == BlockState::ZeroDirty) {
+                const auto preserved =
+                    preserve_snapshot_preimage_before_mutation(
+                        context,
+                        block_index,
+                        entry->version,
+                        entry->dirty_kind,
+                        entry->dirty_base_generation,
+                        entry->dirty_epoch,
+                        {});
+                if (!preserved.ok()) {
+                    return preserved;
+                }
+            }
             BackingGeneration generation{};
             {
                 std::scoped_lock state_lock(state_mutex_);
@@ -226,6 +240,11 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
         if (!arena_->is_block_committed(block_index)) {
             return range_invariant(
                 kind, L"resident block has no committed memory");
+        }
+        if (original_state == BlockState::ResidentDirty &&
+            entry->dirty_kind != DirtyRecordKind::Data) {
+            return range_invariant(
+                kind, L"resident dirty block has a non-DATA record kind");
         }
         const auto transition_owner = next_epoch(transition_epoch_);
         if (transition_owner == 0) {
@@ -294,6 +313,29 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                     ? L"DynamicBlockStore::unmap/pins"
                     : L"DynamicBlockStore::zero/pins",
                 L"resident pins did not drain"));
+        }
+
+        if (original_state == BlockState::ResidentDirty) {
+            const auto address = arena_->block_address(block_index);
+            if (!address.ok() ||
+                !arena_->is_block_committed(block_index)) {
+                return restore_before_decommit(range_invariant(
+                    kind, L"resident block has no committed address").error());
+            }
+            const auto preserved =
+                preserve_snapshot_preimage_before_mutation(
+                    context,
+                    block_index,
+                    original_entry.version,
+                    original_entry.dirty_kind,
+                    original_entry.dirty_base_generation,
+                    original_entry.dirty_epoch,
+                    std::span<const std::byte>(
+                        address.value(),
+                        static_cast<std::size_t>(kBlockSizeBytes)));
+            if (!preserved.ok()) {
+                return restore_before_decommit(preserved.error());
+            }
         }
 
         BackingView captured_view;

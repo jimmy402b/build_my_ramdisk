@@ -53,6 +53,16 @@ Result<void> write_invariant(std::wstring message) {
     });
 }
 
+Result<void> snapshot_preimage_invariant(std::wstring message) {
+    return Result<void>::failure(Error{
+        ErrorDomain::storage,
+        static_cast<std::uint32_t>(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant),
+        L"DynamicBlockStore::preserve_snapshot_preimage_before_mutation",
+        std::move(message),
+    });
+}
+
 std::uint64_t next_epoch(std::atomic<std::uint64_t>& sequence) noexcept {
     auto current = sequence.load(std::memory_order_relaxed);
     for (;;) {
@@ -120,6 +130,54 @@ void increment_state_gauge(DynamicBlockStoreStats& stats,
 }
 
 } // namespace
+
+Result<void> DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
+    const OperationContext& context,
+    std::uint64_t block_index,
+    std::uint64_t version,
+    DirtyRecordKind kind,
+    BackingGeneration base_generation,
+    std::uint64_t dirty_epoch,
+    std::span<const std::byte> data) {
+    const bool data_record = kind == DirtyRecordKind::Data;
+    const bool metadata_record = kind == DirtyRecordKind::Zero ||
+                                 kind == DirtyRecordKind::Discard;
+    if ((!data_record && !metadata_record) ||
+        (data_record && data.size() != kBlockSizeBytes) ||
+        (metadata_record && !data.empty())) {
+        return snapshot_preimage_invariant(
+            L"dirty snapshot identity or pre-image payload is invalid");
+    }
+
+    const auto coordinator = snapshot_coordinator_->snapshot();
+    if (!coordinator.active_token.has_value()) {
+        return Result<void>::success();
+    }
+
+    const SnapshotPreimage metadata{
+        block_index,
+        version,
+        kind,
+        base_generation,
+        dirty_epoch,
+        {},
+    };
+    auto reserved = data_record
+        ? snapshot_coordinator_->reserve_data_before_mutation(
+              context, *coordinator.active_token, metadata, data)
+        : snapshot_coordinator_->reserve_metadata_before_mutation(
+              context, *coordinator.active_token, metadata);
+    if (!reserved.ok()) {
+        return Result<void>::failure(reserved.error());
+    }
+    auto reservation = reserved.move_value();
+    if (reservation.disposition() !=
+        SnapshotPreimageDisposition::Reserved) {
+        return Result<void>::success();
+    }
+    return snapshot_coordinator_->publish_metadata_preimage(
+        context, reservation);
+}
 
 Result<void> DynamicBlockStore::write_one_segment(
     const OperationContext& context,
@@ -244,8 +302,24 @@ Result<void> DynamicBlockStore::write_one_segment(
         }
 
         if (explicit_zero_is_noop &&
-            (entry->state == BlockState::ZeroClean ||
-             entry->state == BlockState::ZeroDirty)) {
+            entry->state == BlockState::ZeroDirty) {
+            if (entry->dirty_kind != DirtyRecordKind::Zero &&
+                entry->dirty_kind != DirtyRecordKind::Discard) {
+                return snapshot_preimage_invariant(
+                    L"zero dirty block has an invalid record kind");
+            }
+            const auto coordinator = snapshot_coordinator_->snapshot();
+            if (coordinator.active_token.has_value() &&
+                (entry->dirty_epoch == 0 ||
+                 entry->dirty_base_generation >
+                     coordinator.active_token->source_backing_generation)) {
+                return snapshot_preimage_invariant(
+                    L"zero dirty snapshot identity is invalid");
+            }
+            return Result<void>::success();
+        }
+        if (explicit_zero_is_noop &&
+            entry->state == BlockState::ZeroClean) {
             return Result<void>::success();
         }
 
@@ -374,39 +448,20 @@ Result<void> DynamicBlockStore::write_one_segment(
                     L"resident block has no committed address"));
             }
 
-            if (original_state == BlockState::ResidentDirty &&
-                entry->dirty_kind == DirtyRecordKind::Data) {
-                const auto coordinator = snapshot_coordinator_->snapshot();
-                if (coordinator.active_token.has_value()) {
-                    auto reserved =
-                        snapshot_coordinator_->reserve_data_before_mutation(
-                            context,
-                            *coordinator.active_token,
-                            SnapshotPreimage{
-                                block_index,
-                                entry->version,
-                                entry->dirty_kind,
-                                entry->dirty_base_generation,
-                                entry->dirty_epoch,
-                                {}},
-                            std::span<const std::byte>(
-                                address.value(),
-                                static_cast<std::size_t>(
-                                    kBlockSizeBytes)));
-                    if (!reserved.ok()) {
-                        return rollback(reserved.error());
-                    }
-                    auto reservation = reserved.move_value();
-                    if (reservation.disposition() ==
-                        SnapshotPreimageDisposition::Reserved) {
-                        const auto published =
-                            snapshot_coordinator_
-                                ->publish_metadata_preimage(
-                                    context, reservation);
-                        if (!published.ok()) {
-                            return rollback(published.error());
-                        }
-                    }
+            if (original_state == BlockState::ResidentDirty) {
+                const auto preserved =
+                    preserve_snapshot_preimage_before_mutation(
+                        context,
+                        block_index,
+                        entry->version,
+                        entry->dirty_kind,
+                        entry->dirty_base_generation,
+                        entry->dirty_epoch,
+                        std::span<const std::byte>(
+                            address.value(),
+                            static_cast<std::size_t>(kBlockSizeBytes)));
+                if (!preserved.ok()) {
+                    return rollback(preserved.error());
                 }
             }
 
@@ -494,6 +549,24 @@ Result<void> DynamicBlockStore::write_one_segment(
                 OperationErrorCode::memory_hard_limit,
                 L"DynamicBlockStore::write/budget",
                 L"hard limit prevents a new committed block"));
+        }
+
+        if (original_state == BlockState::ZeroDirty) {
+            const auto preserved =
+                preserve_snapshot_preimage_before_mutation(
+                    context,
+                    block_index,
+                    entry->version,
+                    entry->dirty_kind,
+                    entry->dirty_base_generation,
+                    entry->dirty_epoch,
+                    {});
+            if (!preserved.ok()) {
+                if (budget.value() == CommitBudgetOutcome::Reserved) {
+                    release_commit_reservation(true);
+                }
+                return Result<void>::failure(preserved.error());
+            }
         }
 
         BackingView captured_view;
