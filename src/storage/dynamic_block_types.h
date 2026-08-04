@@ -2,6 +2,7 @@
 
 #include "block_math.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -102,6 +103,9 @@ struct DynamicBlockStoreOptions {
     std::uint64_t max_snapshot_batch_bytes;
     std::size_t max_snapshot_batch_records;
     std::size_t lock_stripe_count;
+    // ---- M2.1 consistent snapshot options ----------------------------------
+    std::uint64_t snapshot_cow_max_bytes{2 * kBlockSizeBytes};
+    std::chrono::milliseconds snapshot_writer_stall_limit{250};
 };
 
 struct DynamicBlockStoreCreateArgs {
@@ -147,6 +151,12 @@ enum class DynamicBlockStoreErrorCode : std::uint32_t {
     None = 0,
     BackingGenerationConflict = 0x2001,
     FatalInternalInvariant = 0x2002,
+    // ---- M2.1 consistent snapshot errors -----------------------------------
+    SnapshotBusy                = 0x2101,
+    SnapshotTokenInvalid        = 0x2102,
+    SnapshotAborted             = 0x2103,
+    SnapshotNotFullyScanned     = 0x2104,
+    SnapshotResourceExhausted   = 0x2105,
 };
 
 constexpr std::string_view to_string(
@@ -158,6 +168,16 @@ constexpr std::string_view to_string(
         return "BackingGenerationConflict";
     case DynamicBlockStoreErrorCode::FatalInternalInvariant:
         return "FatalInternalInvariant";
+    case DynamicBlockStoreErrorCode::SnapshotBusy:
+        return "SnapshotBusy";
+    case DynamicBlockStoreErrorCode::SnapshotTokenInvalid:
+        return "SnapshotTokenInvalid";
+    case DynamicBlockStoreErrorCode::SnapshotAborted:
+        return "SnapshotAborted";
+    case DynamicBlockStoreErrorCode::SnapshotNotFullyScanned:
+        return "SnapshotNotFullyScanned";
+    case DynamicBlockStoreErrorCode::SnapshotResourceExhausted:
+        return "SnapshotResourceExhausted";
     }
     return "UnknownDynamicBlockStoreErrorCode";
 }
@@ -195,6 +215,10 @@ enum class DynamicBlockStoreOptionsError : std::uint8_t {
     SnapshotRecordsZero = 5,
     StripeCountTooSmall = 6,
     StripeCountNotPowerOfTwo = 7,
+    // ---- M2.1 consistent snapshot option errors ----------------------------
+    SnapshotCowBytesTooSmall = 8,
+    SnapshotCowStallZero = 9,
+    SnapshotCowStallTooLarge = 10,
 };
 
 constexpr std::string_view to_string(
@@ -216,6 +240,12 @@ constexpr std::string_view to_string(
         return "StripeCountTooSmall";
     case DynamicBlockStoreOptionsError::StripeCountNotPowerOfTwo:
         return "StripeCountNotPowerOfTwo";
+    case DynamicBlockStoreOptionsError::SnapshotCowBytesTooSmall:
+        return "SnapshotCowBytesTooSmall";
+    case DynamicBlockStoreOptionsError::SnapshotCowStallZero:
+        return "SnapshotCowStallZero";
+    case DynamicBlockStoreOptionsError::SnapshotCowStallTooLarge:
+        return "SnapshotCowStallTooLarge";
     }
     return "UnknownDynamicBlockStoreOptionsError";
 }
@@ -256,6 +286,16 @@ validate_dynamic_block_store_options(
     }
     if ((options.lock_stripe_count & (options.lock_stripe_count - 1)) != 0) {
         return {DynamicBlockStoreOptionsError::StripeCountNotPowerOfTwo};
+    }
+    // ---- M2.1 consistent snapshot option validation ------------------------
+    if (options.snapshot_cow_max_bytes < 2 * kBlockSizeBytes) {
+        return {DynamicBlockStoreOptionsError::SnapshotCowBytesTooSmall};
+    }
+    if (options.snapshot_writer_stall_limit.count() == 0) {
+        return {DynamicBlockStoreOptionsError::SnapshotCowStallZero};
+    }
+    if (options.snapshot_writer_stall_limit.count() > 5000) {
+        return {DynamicBlockStoreOptionsError::SnapshotCowStallTooLarge};
     }
     return {};
 }
@@ -404,6 +444,18 @@ struct DynamicBlockStoreStats {
     std::uint64_t backing_view_installs_total{};
     std::uint64_t backing_generation_conflicts{};
     std::uint64_t stale_backing_load_retries{};
+
+    // ---- M2.1 consistent snapshot gauges -----------------------------------
+    std::uint64_t snapshot_active_id{};
+    // ---- M2.1 consistent snapshot lifetime counters ------------------------
+    std::uint64_t snapshot_cow_current_bytes{};
+    std::uint64_t snapshot_cow_peak_bytes{};
+    std::uint64_t snapshot_cow_records{};
+    std::uint64_t snapshot_blocked_writers{};
+    std::uint64_t snapshot_writer_stalls_total{};
+    std::uint64_t snapshot_auto_aborts_total{};
+    std::uint64_t snapshot_consistent_batches_total{};
+    std::uint64_t snapshot_consistent_records_total{};
 
     bool operator==(const DynamicBlockStoreStats&) const = default;
 };

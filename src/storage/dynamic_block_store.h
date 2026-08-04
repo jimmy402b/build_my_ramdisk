@@ -2,6 +2,7 @@
 
 #include "backing_store.h"
 #include "block_device.h"
+#include "consistent_snapshot.h"
 #include "dynamic_block_types.h"
 
 #include <atomic>
@@ -74,6 +75,26 @@ public:
         std::uint64_t expected_version,
         DirtyRecordKind expected_kind,
         BackingGeneration persisted_generation);
+
+    // ---- M2.1 consistent snapshot API --------------------------------------
+    Result<ConsistentSnapshotToken> begin_consistent_snapshot(
+        const OperationContext& context);
+
+    Result<std::vector<DirtyBlockSnapshot>>
+    copy_consistent_snapshot_batch(
+        const OperationContext& context,
+        const ConsistentSnapshotToken& token,
+        DirtyScanCursor& cursor,
+        std::size_t max_bytes);
+
+    Result<void> finish_consistent_snapshot(
+        const ConsistentSnapshotToken& token);
+
+    Result<void> abort_consistent_snapshot(
+        const ConsistentSnapshotToken& token);
+
+    Result<ConsistentSnapshotStatus> consistent_snapshot_status(
+        const ConsistentSnapshotToken& token) const;
 
     const BlockGeometry& geometry() const noexcept;
     const DynamicBlockStoreOptions& options() const noexcept;

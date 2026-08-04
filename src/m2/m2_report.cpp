@@ -201,6 +201,15 @@ void write_store_stats(JsonWriter& writer, const DynamicBlockStoreStats& value) 
     MYRD_WRITE_STAT(backing_view_installs_total);
     MYRD_WRITE_STAT(backing_generation_conflicts);
     MYRD_WRITE_STAT(stale_backing_load_retries);
+    MYRD_WRITE_STAT(snapshot_active_id);
+    MYRD_WRITE_STAT(snapshot_cow_current_bytes);
+    MYRD_WRITE_STAT(snapshot_cow_peak_bytes);
+    MYRD_WRITE_STAT(snapshot_cow_records);
+    MYRD_WRITE_STAT(snapshot_blocked_writers);
+    MYRD_WRITE_STAT(snapshot_writer_stalls_total);
+    MYRD_WRITE_STAT(snapshot_auto_aborts_total);
+    MYRD_WRITE_STAT(snapshot_consistent_batches_total);
+    MYRD_WRITE_STAT(snapshot_consistent_records_total);
 #undef MYRD_WRITE_STAT
     writer.end_object();
 }

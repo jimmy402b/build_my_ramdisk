@@ -140,7 +140,7 @@ Suggested commit:
 | ID | 任务 | 类别 | 状态 | 依赖 | 门禁 |
 |---:|---|---|---|---|---|
 | 00 | 冻结 M2 GO 与建立 M3 targets | C | READY_FOR_REVIEW | 无 | M3-V0 |
-| 01 | M2.1 类型、选项、错误、统计 | C | PENDING | 00 | M3-V3 / m2.1-v0 |
+| 01 | M2.1 类型、选项、错误、统计 | C | READY_FOR_REVIEW | 00 | M3-V3 / m2.1-v0 |
 | 02 | Mutation admission 与一致切点 | O | PENDING | 01 | M3-V3 / m2.1-v1 |
 | 03 | 有界 snapshot coordinator 与元数据 COW | S | PENDING | 02 | M3-V3 / m2.1-v1,v3 |
 | 04 | DATA pre-image | O | PENDING | 03 | M3-V3 / m2.1-v2 |
