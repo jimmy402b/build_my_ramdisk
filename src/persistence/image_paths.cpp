@@ -5,11 +5,13 @@
 #include <windows.h>
 
 #include "src/persistence/persistence_types.h"
+#include "src/persistence/native_rename_backend.h"
 #include "src/persistence/windows_file_io_bridge.h"
 #include "src/persistence/writer_lock.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -17,6 +19,8 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
+#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -69,14 +73,6 @@ template <class T>
     }
 }
 
-struct NtIoStatusBlock final {
-    union {
-        LONG status;
-        void* pointer;
-    };
-    ULONG_PTR information;
-};
-
 struct NtFileRenameInformation final {
     BOOLEAN replace_if_exists;
     HANDLE root_directory;
@@ -85,12 +81,117 @@ struct NtFileRenameInformation final {
 };
 
 using NtSetInformationFileFunction = LONG(NTAPI*)(
-    HANDLE, NtIoStatusBlock*, void*, ULONG, ULONG);
+    HANDLE, detail::NativeRenameIoStatus*, void*, ULONG, ULONG);
 using RtlNtStatusToDosErrorFunction = ULONG(WINAPI*)(LONG);
 using BeforeNativeRenameHook = void (*)(void* context);
 
+class WindowsNativeRenameBackend final
+    : public detail::INativeRenameBackend {
+public:
+    WindowsNativeRenameBackend() noexcept {
+        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        set_information_ = reinterpret_cast<NtSetInformationFileFunction>(
+            GetProcAddress(ntdll, "NtSetInformationFile"));
+        status_to_dos_ = reinterpret_cast<RtlNtStatusToDosErrorFunction>(
+            GetProcAddress(ntdll, "RtlNtStatusToDosError"));
+    }
+
+    LONG begin(
+        HANDLE file,
+        detail::NativeRenameIoStatus* io_status,
+        void* information,
+        const ULONG information_size) override {
+        if (set_information_ == nullptr) {
+            return static_cast<LONG>(0xC000007AUL); // STATUS_PROCEDURE_NOT_FOUND
+        }
+        constexpr ULONG kFileRenameInformation = 10;
+        return set_information_(
+            file,
+            io_status,
+            information,
+            information_size,
+            kFileRenameInformation);
+    }
+
+    DWORD wait(
+        const std::span<const HANDLE> handles,
+        const DWORD timeout_ms) override {
+        if (handles.empty() ||
+            handles.size() > static_cast<std::size_t>(MAXIMUM_WAIT_OBJECTS)) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return WAIT_FAILED;
+        }
+        return WaitForMultipleObjects(
+            static_cast<DWORD>(handles.size()),
+            handles.data(),
+            FALSE,
+            timeout_ms);
+    }
+
+    void cancel(HANDLE file) noexcept override {
+        static_cast<void>(CancelIoEx(file, nullptr));
+    }
+
+    ULONG status_to_dos(const LONG status) noexcept override {
+        return status_to_dos_ == nullptr
+            ? ERROR_GEN_FAILURE
+            : status_to_dos_(status);
+    }
+
+private:
+    NtSetInformationFileFunction set_information_{};
+    RtlNtStatusToDosErrorFunction status_to_dos_{};
+};
+
+struct NativeRenameOperation final {
+    UniqueHandle metadata_file;
+    UniqueHandle root_directory;
+    std::vector<std::byte> information;
+    detail::NativeRenameIoStatus io_status{};
+};
+
+[[nodiscard]] detail::INativeRenameBackend& native_rename_backend() {
+    static WindowsNativeRenameBackend backend;
+    return backend;
+}
+
+[[nodiscard]] DWORD deadline_timeout_ms(
+    const OperationContext& context) noexcept {
+    constexpr DWORD kNativeRenameMaxWaitMs = 30'000;
+    if (context.deadline ==
+        std::chrono::steady_clock::time_point::max()) {
+        return kNativeRenameMaxWaitMs;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= context.deadline) {
+        return 0;
+    }
+    const auto remaining = context.deadline - now;
+    const auto whole_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(remaining);
+    auto timeout = whole_ms.count();
+    if (whole_ms < remaining) {
+        ++timeout;
+    }
+    return static_cast<DWORD>((std::min)(
+        timeout,
+        static_cast<decltype(timeout)>(kNativeRenameMaxWaitMs)));
+}
+
+void quarantine_native_rename(
+    std::unique_ptr<NativeRenameOperation> operation) noexcept {
+    // If a broken native backend neither completes nor drains after cancel,
+    // Windows may still own IO_STATUS_BLOCK and rename-buffer pointers. Keep
+    // that state process-live instead of hanging the caller or allowing UAF.
+    // Releasing ownership intentionally leaks this one indeterminate native
+    // operation. That is the allocation-free fail-closed quarantine: no later
+    // cleanup can invalidate storage still potentially owned by the kernel.
+    static_cast<void>(operation.release());
+}
+
 thread_local BeforeNativeRenameHook g_before_native_rename_hook{};
 thread_local void* g_before_native_rename_context{};
+thread_local detail::INativeRenameBackend* g_native_rename_backend_override{};
 
 class ScopedNativeRenameHook final {
 public:
@@ -110,88 +211,21 @@ public:
     ScopedNativeRenameHook& operator=(const ScopedNativeRenameHook&) = delete;
 };
 
-[[nodiscard]] Result<void> nt_rename_relative_to_directory(
-    HANDLE file,
-    HANDLE root_directory,
-    const std::wstring_view new_name) {
-    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto set_information = reinterpret_cast<
-        NtSetInformationFileFunction>(
-            GetProcAddress(ntdll, "NtSetInformationFile"));
-    const auto status_to_dos = reinterpret_cast<
-        RtlNtStatusToDosErrorFunction>(
-            GetProcAddress(ntdll, "RtlNtStatusToDosError"));
-    if (set_information == nullptr || status_to_dos == nullptr) {
-        return path_failure<void>(
-            ImagePathErrorCode::IoError,
-            L"image_path.rename",
-            L"required NT handle-relative rename entry points are unavailable",
-            ERROR_PROC_NOT_FOUND);
+class ScopedNativeRenameBackend final {
+public:
+    explicit ScopedNativeRenameBackend(
+        detail::INativeRenameBackend& backend) noexcept {
+        g_native_rename_backend_override = &backend;
     }
 
-    const auto name_bytes = new_name.size() * sizeof(wchar_t);
-    const auto total_bytes =
-        offsetof(NtFileRenameInformation, file_name) +
-        name_bytes + sizeof(wchar_t);
-    if (name_bytes > (std::numeric_limits<ULONG>::max)() ||
-        total_bytes > (std::numeric_limits<ULONG>::max)()) {
-        return path_failure<void>(
-            ImagePathErrorCode::IoError,
-            L"image_path.rename",
-            L"rename information exceeds the NT buffer limit",
-            ERROR_ARITHMETIC_OVERFLOW);
+    ~ScopedNativeRenameBackend() noexcept {
+        g_native_rename_backend_override = nullptr;
     }
 
-    try {
-        std::vector<std::byte> storage(total_bytes);
-        auto* const info = reinterpret_cast<NtFileRenameInformation*>(
-            storage.data());
-        info->replace_if_exists = FALSE;
-        info->root_directory = root_directory;
-        info->file_name_length = static_cast<ULONG>(name_bytes);
-        std::memcpy(info->file_name, new_name.data(), name_bytes);
-
-        if (g_before_native_rename_hook != nullptr) {
-            g_before_native_rename_hook(g_before_native_rename_context);
-        }
-
-        NtIoStatusBlock io_status{};
-        constexpr ULONG kFileRenameInformation = 10;
-        constexpr LONG kStatusPending = 0x00000103L;
-        auto status = set_information(
-            file,
-            &io_status,
-            info,
-            static_cast<ULONG>(storage.size()),
-            kFileRenameInformation);
-        if (status == kStatusPending) {
-            const auto waited = WaitForSingleObject(file, INFINITE);
-            if (waited != WAIT_OBJECT_0) {
-                return path_failure<void>(
-                    ImagePathErrorCode::IoError,
-                    L"image_path.rename",
-                    L"waiting for NT handle-relative rename failed",
-                    waited == WAIT_FAILED ? GetLastError() : ERROR_GEN_FAILURE);
-            }
-            status = io_status.status;
-        }
-        if (status < 0) {
-            const auto native_code = status_to_dos(status);
-            return path_failure<void>(
-                native_open_error_code(native_code),
-                L"image_path.rename",
-                L"NT handle-relative rename failed",
-                native_code);
-        }
-        return Result<void>::success();
-    } catch (const std::bad_alloc&) {
-        return path_failure<void>(
-            ImagePathErrorCode::IoError,
-            L"image_path.rename",
-            L"allocating NT rename information failed",
-            ERROR_NOT_ENOUGH_MEMORY);
-    }
-}
+    ScopedNativeRenameBackend(const ScopedNativeRenameBackend&) = delete;
+    ScopedNativeRenameBackend& operator=(
+        const ScopedNativeRenameBackend&) = delete;
+};
 
 [[nodiscard]] bool equals_ordinal_ignore_case(
     const std::wstring_view left,
@@ -407,16 +441,25 @@ struct OpenedBundleFile final {
     }
 }
 
-[[nodiscard]] Result<void> verify_cleanup_capability_locked(
+[[nodiscard]] Result<void> verify_validated_capability_locked(
     const detail::WriterAuthorityState& writer_state,
     const std::shared_ptr<detail::WriterAuthorityState>& authority,
     const bool deleted,
+    const bool poisoned,
+    const bool require_cleanup_authority,
     const bool cleanup_authorized,
     HANDLE capability_root,
     HANDLE capability_file,
     const WindowsFileIdentity& capability_root_identity,
     const WindowsFileIdentity& capability_identity) {
-    if (deleted || !cleanup_authorized) {
+    if (poisoned) {
+        return path_failure<void>(
+            ImagePathErrorCode::IdentityMismatch,
+            L"image_path.cleanup",
+            L"validated file capability is fail-closed");
+    }
+    if (deleted ||
+        (require_cleanup_authority && !cleanup_authorized)) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
             L"image_path.cleanup",
@@ -510,6 +553,75 @@ struct OpenedBundleFile final {
             native_code);
     }
     return Result<UniqueHandle>::success(UniqueHandle(duplicated));
+}
+
+[[nodiscard]] Result<std::unique_ptr<NativeRenameOperation>>
+prepare_native_rename_operation(
+    HANDLE validated_file,
+    HANDLE validated_root,
+    const WindowsFileIdentity& expected_identity,
+    const std::wstring_view new_name) {
+    // ReOpenFile cannot request DELETE on this project's deliberately
+    // FILE_SHARE_READ-only validated handle. Relaxing that share contract
+    // would allow pathname replacement. DuplicateHandle is therefore the
+    // narrow same-file-object bridge, and STATUS_PENDING is handled below.
+    auto metadata_file = duplicate_capability_handle(
+        validated_file, L"image_path.rename");
+    if (!metadata_file.ok()) {
+        return Result<std::unique_ptr<NativeRenameOperation>>::failure(
+            std::move(metadata_file.error()));
+    }
+    auto metadata_identity = query_windows_file_identity(
+        metadata_file.value().get());
+    if (!metadata_identity.ok() ||
+        !exact_identity_match(metadata_identity.value(), expected_identity)) {
+        return path_failure<std::unique_ptr<NativeRenameOperation>>(
+            ImagePathErrorCode::IdentityMismatch,
+            L"image_path.rename",
+            L"synchronous metadata handle does not match the validated file",
+            metadata_identity.ok()
+                ? 0
+                : metadata_identity.error().native_code);
+    }
+    auto root_directory = duplicate_capability_handle(
+        validated_root, L"image_path.rename");
+    if (!root_directory.ok()) {
+        return Result<std::unique_ptr<NativeRenameOperation>>::failure(
+            std::move(root_directory.error()));
+    }
+
+    const auto name_bytes = new_name.size() * sizeof(wchar_t);
+    const auto total_bytes =
+        offsetof(NtFileRenameInformation, file_name) + name_bytes;
+    if (name_bytes > (std::numeric_limits<ULONG>::max)() ||
+        total_bytes > (std::numeric_limits<ULONG>::max)()) {
+        return path_failure<std::unique_ptr<NativeRenameOperation>>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename",
+            L"rename information exceeds the NT buffer limit",
+            ERROR_ARITHMETIC_OVERFLOW);
+    }
+
+    try {
+        auto operation = std::make_unique<NativeRenameOperation>();
+        operation->metadata_file = metadata_file.move_value();
+        operation->root_directory = root_directory.move_value();
+        operation->information.resize(total_bytes);
+        auto* const info = reinterpret_cast<NtFileRenameInformation*>(
+            operation->information.data());
+        info->replace_if_exists = FALSE;
+        info->root_directory = operation->root_directory.get();
+        info->file_name_length = static_cast<ULONG>(name_bytes);
+        std::memcpy(info->file_name, new_name.data(), name_bytes);
+        return Result<std::unique_ptr<NativeRenameOperation>>::success(
+            std::move(operation));
+    } catch (const std::bad_alloc&) {
+        return path_failure<std::unique_ptr<NativeRenameOperation>>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename",
+            L"allocating NT rename operation state failed",
+            ERROR_NOT_ENOUGH_MEMORY);
+    }
 }
 
 } // namespace
@@ -617,6 +729,7 @@ struct ValidatedPersistenceFile::Impl final {
     std::unique_ptr<IPersistenceFile> file;
     bool closed{};
     bool released{};
+    bool poisoned{};
 };
 
 ValidatedPersistenceFile::ValidatedPersistenceFile(
@@ -636,6 +749,12 @@ ValidatedPersistenceFile::writer_authority_for_mutation(
             operation,
             L"validated persistence file is unavailable",
             ERROR_INVALID_HANDLE);
+    }
+    if (impl_->poisoned) {
+        return path_failure<std::shared_ptr<detail::WriterAuthorityState>>(
+            ImagePathErrorCode::IdentityMismatch,
+            operation,
+            L"validated persistence capability is fail-closed");
     }
     if (!impl_->capability.mutable_access_) {
         return path_failure<std::shared_ptr<detail::WriterAuthorityState>>(
@@ -667,6 +786,7 @@ Result<void> ValidatedPersistenceFile::refresh_identity_after_mutation(
     auto refreshed = query_windows_file_identity(
         impl_->capability.file_handle_.get());
     if (!refreshed.ok()) {
+        impl_->poisoned = true;
         return path_failure<void>(
             ImagePathErrorCode::IoError,
             L"image_path.validated_io.refresh",
@@ -675,10 +795,39 @@ Result<void> ValidatedPersistenceFile::refresh_identity_after_mutation(
     }
     if (!same_file_object(
             impl_->capability.identity_, refreshed.value())) {
+        impl_->poisoned = true;
         return path_failure<void>(
             ImagePathErrorCode::IdentityMismatch,
             L"image_path.validated_io.refresh",
             L"validated I/O no longer refers to the original file object");
+    }
+    if ((refreshed.value().attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        refreshed.value().reparse_tag != 0) {
+        impl_->poisoned = true;
+        return path_failure<void>(
+            ImagePathErrorCode::ReparsePoint,
+            L"image_path.validated_io.refresh",
+            L"validated file became a reparse point during mutation");
+    }
+    if (refreshed.value().hard_link_count != 1) {
+        impl_->poisoned = true;
+        return path_failure<void>(
+            ImagePathErrorCode::HardLink,
+            L"image_path.validated_io.refresh",
+            L"validated file gained another hard link during mutation");
+    }
+    auto contained = is_direct_bundle_child(
+        impl_->capability.root_handle_.get(),
+        impl_->capability.file_handle_.get());
+    if (!contained.ok() || !contained.value()) {
+        impl_->poisoned = true;
+        if (!contained.ok()) {
+            return Result<void>::failure(std::move(contained.error()));
+        }
+        return path_failure<void>(
+            ImagePathErrorCode::PathEscape,
+            L"image_path.validated_io.refresh",
+            L"validated file left the bundle during mutation");
     }
     impl_->capability.identity_ = refreshed.move_value();
     if (impl_->capability.manifest_identity_bound_) {
@@ -752,16 +901,26 @@ Result<void> ValidatedPersistenceFile::write_exact(
         return Result<void>::failure(std::move(authority.error()));
     }
     std::scoped_lock writer_lock(authority.value()->mutex);
-    auto writer_valid = detail::verify_writer_state_locked(*authority.value());
-    if (!writer_valid.ok()) {
-        return writer_valid;
+    auto capability_valid = verify_validated_capability_locked(
+        *authority.value(),
+        impl_->capability.writer_authority_.lock(),
+        impl_->capability.deleted_,
+        impl_->poisoned,
+        false,
+        impl_->capability.cleanup_authorized_,
+        impl_->capability.root_handle_.get(),
+        impl_->capability.file_handle_.get(),
+        impl_->capability.root_identity_,
+        impl_->capability.identity_);
+    if (!capability_valid.ok()) {
+        return capability_valid;
     }
     auto result = impl_->file->write_exact(context, offset, source);
     auto refreshed = refresh_identity_after_mutation(authority.value());
-    if (!result.ok()) {
-        return result;
+    if (!refreshed.ok()) {
+        return refreshed;
     }
-    return refreshed;
+    return result;
 }
 
 Result<void> ValidatedPersistenceFile::flush(
@@ -780,9 +939,19 @@ Result<void> ValidatedPersistenceFile::flush(
         return Result<void>::failure(std::move(authority.error()));
     }
     std::scoped_lock writer_lock(authority.value()->mutex);
-    auto writer_valid = detail::verify_writer_state_locked(*authority.value());
-    if (!writer_valid.ok()) {
-        return writer_valid;
+    auto capability_valid = verify_validated_capability_locked(
+        *authority.value(),
+        impl_->capability.writer_authority_.lock(),
+        impl_->capability.deleted_,
+        impl_->poisoned,
+        false,
+        impl_->capability.cleanup_authorized_,
+        impl_->capability.root_handle_.get(),
+        impl_->capability.file_handle_.get(),
+        impl_->capability.root_identity_,
+        impl_->capability.identity_);
+    if (!capability_valid.ok()) {
+        return capability_valid;
     }
     return impl_->file->flush(context);
 }
@@ -824,16 +993,26 @@ Result<void> ValidatedPersistenceFile::truncate(
         return Result<void>::failure(std::move(authority.error()));
     }
     std::scoped_lock writer_lock(authority.value()->mutex);
-    auto writer_valid = detail::verify_writer_state_locked(*authority.value());
-    if (!writer_valid.ok()) {
-        return writer_valid;
+    auto capability_valid = verify_validated_capability_locked(
+        *authority.value(),
+        impl_->capability.writer_authority_.lock(),
+        impl_->capability.deleted_,
+        impl_->poisoned,
+        false,
+        impl_->capability.cleanup_authorized_,
+        impl_->capability.root_handle_.get(),
+        impl_->capability.file_handle_.get(),
+        impl_->capability.root_identity_,
+        impl_->capability.identity_);
+    if (!capability_valid.ok()) {
+        return capability_valid;
     }
     auto result = impl_->file->truncate(context, new_length);
     auto refreshed = refresh_identity_after_mutation(authority.value());
-    if (!result.ok()) {
-        return result;
+    if (!refreshed.ok()) {
+        return refreshed;
     }
-    return refreshed;
+    return result;
 }
 
 Result<void> ValidatedPersistenceFile::close() {
@@ -879,7 +1058,7 @@ ValidatedPersistenceFile::release_validated_bundle_file() {
             ERROR_INVALID_HANDLE);
     }
     std::scoped_lock lock(impl_->mutex);
-    if (!impl_->closed || impl_->released) {
+    if (!impl_->closed || impl_->released || impl_->poisoned) {
         return path_failure<ValidatedBundleFile>(
             ImagePathErrorCode::AccessDenied,
             L"image_path.validated_io.release",
@@ -1155,10 +1334,12 @@ Result<void> truncate_validated_bundle_file(
             L"truncate requires a live writer lock");
     }
     std::scoped_lock lock(writer_lock.state_->mutex);
-    auto allowed = verify_cleanup_capability_locked(
+    auto allowed = verify_validated_capability_locked(
         *writer_lock.state_,
         file.writer_authority_.lock(),
         file.deleted_,
+        file.poisoned_,
+        true,
         file.cleanup_authorized_,
         file.root_handle_.get(),
         file.file_handle_.get(),
@@ -1194,6 +1375,22 @@ Result<void> rename_validated_bundle_file(
     BundleWriterLock& writer_lock,
     ValidatedBundleFile& file,
     const std::string_view new_relative_name) {
+    OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(30);
+    return rename_validated_bundle_file(
+        context, writer_lock, file, new_relative_name);
+}
+
+Result<void> rename_validated_bundle_file(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    const std::string_view new_relative_name) {
+    auto context_valid = check_operation_context(context);
+    if (!context_valid.ok()) {
+        return context_valid;
+    }
     auto component = validate_image_component(new_relative_name);
     if (!component.ok()) {
         return Result<void>::failure(std::move(component.error()));
@@ -1204,11 +1401,14 @@ Result<void> rename_validated_bundle_file(
             L"image_path.rename",
             L"rename requires a live writer lock");
     }
-    std::scoped_lock lock(writer_lock.state_->mutex);
-    auto allowed = verify_cleanup_capability_locked(
-        *writer_lock.state_,
+    auto writer_state = writer_lock.state_;
+    std::unique_lock lock(writer_state->mutex);
+    auto allowed = verify_validated_capability_locked(
+        *writer_state,
         file.writer_authority_.lock(),
         file.deleted_,
+        file.poisoned_,
+        true,
         file.cleanup_authorized_,
         file.root_handle_.get(),
         file.file_handle_.get(),
@@ -1219,21 +1419,178 @@ Result<void> rename_validated_bundle_file(
     }
 
     try {
-        // SetFileInformationByHandle rejects a non-null RootDirectory on the
-        // supported test host even with directory mutation rights. The native
-        // FileRenameInformation contract accepts the already-validated root
-        // handle and a single component, so the destructive operation has no
-        // path string to re-resolve outside that directory.
-        auto renamed = nt_rename_relative_to_directory(
+        // Duplicate the already-validated file object without reopening a
+        // pathname. Its overlapped nature can produce STATUS_PENDING, so the
+        // bounded path below owns every native buffer through drain/quarantine.
+        auto prepared = prepare_native_rename_operation(
             file.file_handle_.get(),
             file.root_handle_.get(),
+            file.identity_,
             component.value().wide_name);
-        if (!renamed.ok()) {
-            return renamed;
+        if (!prepared.ok()) {
+            return Result<void>::failure(std::move(prepared.error()));
+        }
+        auto operation = prepared.move_value();
+        UniqueHandle stop_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!stop_event) {
+            return path_failure<void>(
+                ImagePathErrorCode::IoError,
+                L"image_path.rename",
+                L"creating the rename cancellation event failed",
+                GetLastError());
+        }
+
+        context_valid = check_operation_context(context);
+        if (!context_valid.ok()) {
+            return context_valid;
+        }
+        if (g_before_native_rename_hook != nullptr) {
+            g_before_native_rename_hook(g_before_native_rename_context);
+        }
+
+        auto& backend = g_native_rename_backend_override != nullptr
+            ? *g_native_rename_backend_override
+            : native_rename_backend();
+        operation->io_status.status = detail::kNativeStatusPending;
+        auto status = backend.begin(
+            operation->metadata_file.get(),
+            &operation->io_status,
+            operation->information.data(),
+            static_cast<ULONG>(operation->information.size()));
+        if (status == detail::kNativeStatusPending) {
+            std::stop_callback callback(
+                context.stop_token,
+                [event = stop_event.get()]() noexcept {
+                    static_cast<void>(SetEvent(event));
+                });
+            const std::array<HANDLE, 3> wait_handles = {
+                operation->metadata_file.get(),
+                stop_event.get(),
+                writer_state->close_event.get(),
+            };
+
+            lock.unlock();
+            const auto waited = backend.wait(
+                wait_handles, deadline_timeout_ms(context));
+            if (waited == WAIT_OBJECT_0 &&
+                operation->io_status.status !=
+                    detail::kNativeStatusPending) {
+                status = operation->io_status.status;
+            } else {
+                backend.cancel(operation->metadata_file.get());
+                constexpr DWORD kCancelDrainTimeoutMs = 2000;
+                const std::array<HANDLE, 1> drain_handle = {
+                    operation->metadata_file.get(),
+                };
+                const auto drained = backend.wait(
+                    drain_handle, kCancelDrainTimeoutMs);
+                if (drained != WAIT_OBJECT_0 ||
+                    operation->io_status.status ==
+                        detail::kNativeStatusPending) {
+                    quarantine_native_rename(std::move(operation));
+                }
+
+                lock.lock();
+                file.poisoned_ = true;
+                if (waited == WAIT_OBJECT_0 + 2) {
+                    return path_failure<void>(
+                        ImagePathErrorCode::WriterLockInvalid,
+                        L"image_path.rename",
+                        L"writer closed while native rename was pending");
+                }
+                if (waited == WAIT_OBJECT_0 + 1) {
+                    auto cancelled = check_operation_context(context);
+                    if (!cancelled.ok()) {
+                        return cancelled;
+                    }
+                    return Result<void>::failure({
+                        ErrorDomain::storage,
+                        static_cast<std::uint32_t>(
+                            OperationErrorCode::cancelled),
+                        L"image_path.rename",
+                        L"native rename was cancelled",
+                    });
+                }
+                if (waited == WAIT_TIMEOUT) {
+                    return Result<void>::failure({
+                        ErrorDomain::storage,
+                        static_cast<std::uint32_t>(
+                            OperationErrorCode::timed_out),
+                        L"image_path.rename",
+                        L"native rename deadline expired",
+                    });
+                }
+                return path_failure<void>(
+                    ImagePathErrorCode::IoError,
+                    L"image_path.rename",
+                    L"waiting for pending native rename failed",
+                    waited == WAIT_FAILED
+                        ? GetLastError()
+                        : waited == WAIT_OBJECT_0
+                            ? ERROR_IO_INCOMPLETE
+                            : ERROR_GEN_FAILURE);
+            }
+            lock.lock();
+            auto still_allowed = verify_validated_capability_locked(
+                *writer_state,
+                file.writer_authority_.lock(),
+                file.deleted_,
+                file.poisoned_,
+                true,
+                file.cleanup_authorized_,
+                file.root_handle_.get(),
+                file.file_handle_.get(),
+                file.root_identity_,
+                file.identity_);
+            if (!still_allowed.ok()) {
+                file.poisoned_ = true;
+                return still_allowed;
+            }
+        }
+
+        if (status < 0) {
+            auto still_allowed = verify_validated_capability_locked(
+                *writer_state,
+                file.writer_authority_.lock(),
+                file.deleted_,
+                file.poisoned_,
+                true,
+                file.cleanup_authorized_,
+                file.root_handle_.get(),
+                file.file_handle_.get(),
+                file.root_identity_,
+                file.identity_);
+            if (!still_allowed.ok()) {
+                file.poisoned_ = true;
+                return still_allowed;
+            }
+            const auto native_code = backend.status_to_dos(status);
+            return path_failure<void>(
+                native_open_error_code(native_code),
+                L"image_path.rename",
+                L"NT handle-relative rename failed",
+                native_code);
+        }
+
+        auto post_allowed = verify_validated_capability_locked(
+            *writer_state,
+            file.writer_authority_.lock(),
+            file.deleted_,
+            file.poisoned_,
+            true,
+            file.cleanup_authorized_,
+            file.root_handle_.get(),
+            file.file_handle_.get(),
+            file.root_identity_,
+            file.identity_);
+        if (!post_allowed.ok()) {
+            file.poisoned_ = true;
+            return post_allowed;
         }
         auto contained = is_direct_bundle_child(
             file.root_handle_.get(), file.file_handle_.get());
         if (!contained.ok() || !contained.value()) {
+            file.poisoned_ = true;
             return path_failure<void>(
                 ImagePathErrorCode::PathEscape,
                 L"image_path.rename",
@@ -1242,6 +1599,7 @@ Result<void> rename_validated_bundle_file(
         auto final_path = normalized_final_path(file.file_handle_.get());
         auto identity = query_windows_file_identity(file.file_handle_.get());
         if (!final_path.ok() || !identity.ok()) {
+            file.poisoned_ = true;
             const auto native_code = !final_path.ok()
                 ? final_path.error().native_code
                 : identity.error().native_code;
@@ -1252,6 +1610,7 @@ Result<void> rename_validated_bundle_file(
                 native_code);
         }
         if (!same_file_object(file.identity_, identity.value())) {
+            file.poisoned_ = true;
             return path_failure<void>(
                 ImagePathErrorCode::IdentityMismatch,
                 L"image_path.rename",
@@ -1280,10 +1639,12 @@ Result<void> delete_validated_bundle_file(
             L"delete requires a live writer lock");
     }
     std::scoped_lock lock(writer_lock.state_->mutex);
-    auto allowed = verify_cleanup_capability_locked(
+    auto allowed = verify_validated_capability_locked(
         *writer_lock.state_,
         file.writer_authority_.lock(),
         file.deleted_,
+        file.poisoned_,
+        true,
         file.cleanup_authorized_,
         file.root_handle_.get(),
         file.file_handle_.get(),
@@ -1329,6 +1690,24 @@ Result<void> rename_validated_bundle_file_with_hook(
     const ScopedNativeRenameHook scoped_hook(hook, hook_context);
     return rename_validated_bundle_file(
         writer_lock, file, new_relative_name);
+}
+
+Result<void> rename_validated_bundle_file_with_backend(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    const std::string_view new_relative_name,
+    detail::INativeRenameBackend& backend) {
+    if (g_native_rename_backend_override != nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename_test_seam",
+            L"rename backend test seam cannot be nested",
+            ERROR_INVALID_PARAMETER);
+    }
+    const ScopedNativeRenameBackend scoped_backend(backend);
+    return rename_validated_bundle_file(
+        context, writer_lock, file, new_relative_name);
 }
 
 } // namespace test

@@ -357,6 +357,38 @@ struct NtFileRenameInformation final {
     WCHAR file_name[1];
 };
 
+[[nodiscard]] LONG probe_nt_handle_relative_rename_handles(
+    HANDLE root_handle,
+    HANDLE source_handle,
+    const std::wstring_view destination_name) {
+    using NtSetInformationFileFunction = LONG(NTAPI*)(
+        HANDLE, NtIoStatusBlock*, void*, ULONG, ULONG);
+    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto function = reinterpret_cast<NtSetInformationFileFunction>(
+        GetProcAddress(ntdll, "NtSetInformationFile"));
+    if (function == nullptr) {
+        return static_cast<LONG>(0xC0000139UL);
+    }
+
+    const auto name_bytes = destination_name.size() * sizeof(wchar_t);
+    std::vector<std::byte> storage(
+        offsetof(NtFileRenameInformation, file_name) + name_bytes);
+    auto* const info = reinterpret_cast<NtFileRenameInformation*>(
+        storage.data());
+    info->replace_if_exists = FALSE;
+    info->root_directory = root_handle;
+    info->file_name_length = static_cast<ULONG>(name_bytes);
+    std::memcpy(info->file_name, destination_name.data(), name_bytes);
+    NtIoStatusBlock io_status{};
+    constexpr ULONG kFileRenameInformation = 10;
+    return function(
+        source_handle,
+        &io_status,
+        info,
+        static_cast<ULONG>(storage.size()),
+        kFileRenameInformation);
+}
+
 [[nodiscard]] LONG probe_nt_handle_relative_rename(
     const std::filesystem::path& root,
     const std::filesystem::path& source,
@@ -385,32 +417,8 @@ struct NtFileRenameInformation final {
         return static_cast<LONG>(0xC0000001UL);
     }
 
-    using NtSetInformationFileFunction = LONG(NTAPI*)(
-        HANDLE, NtIoStatusBlock*, void*, ULONG, ULONG);
-    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
-    const auto function = reinterpret_cast<NtSetInformationFileFunction>(
-        GetProcAddress(ntdll, "NtSetInformationFile"));
-    if (function == nullptr) {
-        return static_cast<LONG>(0xC0000139UL);
-    }
-
-    const auto name_bytes = destination_name.size() * sizeof(wchar_t);
-    std::vector<std::byte> storage(
-        offsetof(NtFileRenameInformation, file_name) + name_bytes);
-    auto* const info = reinterpret_cast<NtFileRenameInformation*>(
-        storage.data());
-    info->replace_if_exists = FALSE;
-    info->root_directory = root_handle.get();
-    info->file_name_length = static_cast<ULONG>(name_bytes);
-    std::memcpy(info->file_name, destination_name.data(), name_bytes);
-    NtIoStatusBlock io_status{};
-    constexpr ULONG kFileRenameInformation = 10;
-    return function(
-        source_handle.get(),
-        &io_status,
-        info,
-        static_cast<ULONG>(storage.size()),
-        kFileRenameInformation);
+    return probe_nt_handle_relative_rename_handles(
+        root_handle.get(), source_handle.get(), destination_name);
 }
 
 struct MountPointReparseBuffer final {
@@ -497,6 +505,154 @@ void swap_rename_route(void* opaque) {
     swap.ran = true;
 }
 
+class ScriptedPendingRenameBackend final
+    : public myrd::persistence::detail::INativeRenameBackend {
+public:
+    enum class Mode {
+        Success,
+        Error,
+        Deadline,
+        WriterClose,
+    };
+
+    ScriptedPendingRenameBackend(
+        const Mode mode,
+        myrd::persistence::BundleWriterLock& writer)
+        : mode_(mode), writer_(writer) {}
+
+    LONG begin(
+        HANDLE file,
+        myrd::persistence::detail::NativeRenameIoStatus* io_status,
+        void* information,
+        const ULONG information_size) override {
+        ++begin_calls;
+        io_status_ = io_status;
+        if (mode_ == Mode::Success) {
+            using NtSetInformationFileFunction = LONG(NTAPI*)(
+                HANDLE,
+                myrd::persistence::detail::NativeRenameIoStatus*,
+                void*,
+                ULONG,
+                ULONG);
+            const auto function = reinterpret_cast<NtSetInformationFileFunction>(
+                GetProcAddress(
+                    GetModuleHandleW(L"ntdll.dll"),
+                    "NtSetInformationFile"));
+            if (function == nullptr) {
+                throw std::runtime_error("NtSetInformationFile unavailable");
+            }
+            constexpr ULONG kFileRenameInformation = 10;
+            completion_status_ = function(
+                file,
+                io_status,
+                information,
+                information_size,
+                kFileRenameInformation);
+            if (completion_status_ ==
+                myrd::persistence::detail::kNativeStatusPending) {
+                const auto waited = WaitForSingleObject(file, 2000);
+                if (waited != WAIT_OBJECT_0) {
+                    throw std::runtime_error(
+                        "real async rename did not complete in pending seam");
+                }
+                completion_status_ = io_status->status;
+            }
+            if (completion_status_ != 0) {
+                throw std::runtime_error("real rename failed in pending seam");
+            }
+        } else if (mode_ == Mode::Error) {
+            completion_status_ = static_cast<LONG>(0xC0000022UL);
+        } else {
+            completion_status_ = static_cast<LONG>(0xC0000120UL);
+        }
+        return myrd::persistence::detail::kNativeStatusPending;
+    }
+
+    DWORD wait(
+        const std::span<const HANDLE> handles,
+        const DWORD) override {
+        ++wait_calls;
+        if (handles.size() == 1) {
+            io_status_->status = completion_status_;
+            return WAIT_OBJECT_0;
+        }
+
+        probe_writer_mutex(mode_ == Mode::WriterClose);
+        if (mode_ == Mode::Deadline) {
+            Sleep(10);
+            return WAIT_TIMEOUT;
+        }
+        if (mode_ == Mode::WriterClose) {
+            return WAIT_OBJECT_0 + 2;
+        }
+        io_status_->status = completion_status_;
+        return WAIT_OBJECT_0;
+    }
+
+    void cancel(HANDLE) noexcept override {
+        ++cancel_calls;
+    }
+
+    ULONG status_to_dos(const LONG status) noexcept override {
+        if (status == static_cast<LONG>(0xC0000022UL)) {
+            return ERROR_ACCESS_DENIED;
+        }
+        if (status == static_cast<LONG>(0xC0000120UL)) {
+            return ERROR_OPERATION_ABORTED;
+        }
+        return status == 0 ? ERROR_SUCCESS : ERROR_GEN_FAILURE;
+    }
+
+    std::size_t wait_calls{};
+    std::size_t cancel_calls{};
+    std::size_t begin_calls{};
+    bool writer_mutex_available{};
+    bool writer_close_completed{};
+
+    [[nodiscard]] bool finish_writer_probe() {
+        if (!probe_thread_.joinable()) {
+            return false;
+        }
+        probe_thread_.join();
+        writer_close_completed = close_writer_ &&
+            probe_operation_ok_->load(std::memory_order_acquire);
+        return probe_completed_->load(std::memory_order_acquire);
+    }
+
+private:
+    Mode mode_;
+    myrd::persistence::BundleWriterLock& writer_;
+    myrd::persistence::detail::NativeRenameIoStatus* io_status_{};
+    LONG completion_status_{};
+    bool close_writer_{};
+    std::shared_ptr<std::atomic<bool>> probe_completed_;
+    std::shared_ptr<std::atomic<bool>> probe_operation_ok_;
+    std::thread probe_thread_;
+
+    void probe_writer_mutex(const bool close_writer) {
+        close_writer_ = close_writer;
+        probe_completed_ = std::make_shared<std::atomic<bool>>(false);
+        probe_operation_ok_ = std::make_shared<std::atomic<bool>>(false);
+        auto completed = probe_completed_;
+        auto operation_ok = probe_operation_ok_;
+        auto* const writer = &writer_;
+        probe_thread_ = std::thread([=] {
+            const auto result = close_writer
+                ? writer->close()
+                : writer->verify();
+            operation_ok->store(result.ok(), std::memory_order_release);
+            completed->store(true, std::memory_order_release);
+        });
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(500);
+        while (!completed->load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            Sleep(1);
+        }
+        writer_mutex_available = completed->load(std::memory_order_acquire);
+    }
+};
+
 TEST_CASE(task12_nt_relative_rename_works_when_win32_wrapper_rejects_root) {
     TemporarySandbox sandbox;
     const auto read_only_source = sandbox.bundle() / L"read-only.rdj";
@@ -552,6 +708,192 @@ TEST_CASE(task12_nt_relative_rename_works_when_win32_wrapper_rejects_root) {
     REQUIRE_EQ(
         read_text(sandbox.bundle() / L"nt-relative-renamed.rdj"),
         std::string("nt-relative"));
+}
+
+TEST_CASE(task12_sync_metadata_reopen_is_blocked_by_validated_share_contract) {
+    TemporarySandbox sandbox;
+    const auto source = sandbox.bundle() / L"async-source.rdj";
+    write_text(source, "same-object");
+    auto async_handle = myrd::UniqueHandle(CreateFileW(
+        source.c_str(),
+        GENERIC_READ | GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
+        nullptr));
+    REQUIRE(static_cast<bool>(async_handle));
+    SetLastError(ERROR_SUCCESS);
+    auto synchronous_handle = myrd::UniqueHandle(ReOpenFile(
+        async_handle.get(),
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_RANDOM_ACCESS));
+    REQUIRE(!static_cast<bool>(synchronous_handle));
+    REQUIRE_EQ(GetLastError(), static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+    REQUIRE_EQ(read_text(source), std::string("same-object"));
+    REQUIRE(!std::filesystem::exists(
+        sandbox.bundle() / L"sync-renamed.rdj"));
+}
+
+TEST_CASE(task12_pending_rename_success_releases_writer_mutex_while_waiting) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-success.rdj";
+    const auto destination = sandbox.bundle() / L"renamed-success.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending-success-data");
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-success.rdj", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::Success, writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto renamed =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context, writer, capability, "renamed-success.rdj", backend);
+
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{1});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(renamed.ok());
+    REQUIRE(backend.writer_mutex_available);
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{0});
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE_EQ(read_text(destination), std::string("pending-success-data"));
+}
+
+TEST_CASE(task12_pending_rename_error_releases_mutex_and_preserves_file) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-error.rdj";
+    const auto destination = sandbox.bundle() / L"renamed-error.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending-error-data");
+    const auto before_identity = identity_of(source);
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-error.rdj", before_identity);
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::Error, writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto denied =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context, writer, capability, "renamed-error.rdj", backend);
+
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{1});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(is_image_path_error(denied, ImagePathErrorCode::AccessDenied));
+    REQUIRE(backend.writer_mutex_available);
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{0});
+    REQUIRE_EQ(read_text(source), std::string("pending-error-data"));
+    REQUIRE(!std::filesystem::exists(destination));
+    REQUIRE_EQ(identity_of(source), before_identity);
+}
+
+TEST_CASE(task12_pending_rename_deadline_cancels_drains_and_fails_closed) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-deadline.rdj";
+    const auto destination = sandbox.bundle() / L"renamed-deadline.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending-deadline-data");
+    const auto before_identity = identity_of(source);
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-deadline.rdj", before_identity);
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::Deadline, writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(5);
+
+    const auto timed_out =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context, writer, capability, "renamed-deadline.rdj", backend);
+
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(!timed_out.ok());
+    REQUIRE_EQ(
+        timed_out.error().code,
+        static_cast<std::uint32_t>(myrd::OperationErrorCode::timed_out));
+    REQUIRE(backend.writer_mutex_available);
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE_EQ(read_text(source), std::string("pending-deadline-data"));
+    REQUIRE(!std::filesystem::exists(destination));
+    REQUIRE_EQ(identity_of(source), before_identity);
+    const auto fail_closed = truncate_validated_bundle_file(
+        writer, capability, before_identity.size);
+    REQUIRE(is_image_path_error(
+        fail_closed, ImagePathErrorCode::IdentityMismatch));
+}
+
+TEST_CASE(task12_pending_rename_writer_close_cancels_drains_without_deadlock) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"pending-close.rdj";
+    const auto destination = sandbox.bundle() / L"renamed-close.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending-close-data");
+    const auto before_identity = identity_of(source);
+
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "pending-close.rdj", before_identity);
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::WriterClose, writer);
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    const auto closed =
+        myrd::persistence::test::rename_validated_bundle_file_with_backend(
+            context, writer, capability, "renamed-close.rdj", backend);
+
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(is_image_path_error(
+        closed, ImagePathErrorCode::WriterLockInvalid));
+    REQUIRE(backend.writer_mutex_available);
+    REQUIRE(backend.writer_close_completed);
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE_EQ(read_text(source), std::string("pending-close-data"));
+    REQUIRE(!std::filesystem::exists(destination));
+    REQUIRE_EQ(identity_of(source), before_identity);
 }
 
 TEST_CASE(task12_rejects_unsafe_or_non_utf8_components) {
@@ -843,6 +1185,72 @@ TEST_CASE(task12_validated_writer_io_refreshes_identity_for_cleanup) {
         read_text(sandbox.bundle() / L"written.rdj"),
         std::string("012345"));
     REQUIRE(delete_validated_bundle_file(writer, released).ok());
+}
+
+TEST_CASE(task12_validated_write_rejects_hardlink_added_after_adapter_open) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto data = sandbox.bundle() / L"write-target.rdj";
+    const auto external_alias = sandbox.external() / L"write-alias.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(data, "inside-must-not-change");
+
+    auto lock_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(lock_result.ok());
+    auto writer = lock_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "write-target.rdj", identity_of(data));
+    REQUIRE(capability_result.ok());
+    auto io_result = myrd::persistence::open_validated_persistence_file(
+        capability_result.move_value());
+    REQUIRE(io_result.ok());
+    auto io = io_result.move_value();
+
+    REQUIRE(CreateHardLinkW(external_alias.c_str(), data.c_str(), nullptr));
+    const auto before_content = read_text(data);
+    const auto before_identity = identity_of(external_alias);
+    const std::array<std::byte, 4> replacement{
+        std::byte{'b'}, std::byte{'a'}, std::byte{'d'}, std::byte{'!'}};
+    const auto denied = io->write_exact(0, replacement);
+
+    REQUIRE_EQ(read_text(data), before_content);
+    REQUIRE_EQ(read_text(external_alias), before_content);
+    REQUIRE(is_image_path_error(denied, ImagePathErrorCode::HardLink));
+    REQUIRE_EQ(identity_of(data), before_identity);
+    REQUIRE_EQ(identity_of(external_alias), before_identity);
+}
+
+TEST_CASE(task12_validated_truncate_rejects_hardlink_added_after_adapter_open) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto data = sandbox.bundle() / L"truncate-target.rdj";
+    const auto external_alias = sandbox.external() / L"truncate-alias.rdj";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(data, "truncate-must-not-change");
+
+    auto lock_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(lock_result.ok());
+    auto writer = lock_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "truncate-target.rdj", identity_of(data));
+    REQUIRE(capability_result.ok());
+    auto io_result = myrd::persistence::open_validated_persistence_file(
+        capability_result.move_value());
+    REQUIRE(io_result.ok());
+    auto io = io_result.move_value();
+
+    REQUIRE(CreateHardLinkW(external_alias.c_str(), data.c_str(), nullptr));
+    const auto before_content = read_text(data);
+    const auto before_identity = identity_of(external_alias);
+    const auto denied = io->truncate(4);
+
+    REQUIRE_EQ(read_text(data), before_content);
+    REQUIRE_EQ(read_text(external_alias), before_content);
+    REQUIRE(is_image_path_error(denied, ImagePathErrorCode::HardLink));
+    REQUIRE_EQ(identity_of(data), before_identity);
+    REQUIRE_EQ(identity_of(external_alias), before_identity);
 }
 
 TEST_CASE(task12_locked_manifest_io_is_writable_only_for_live_writer) {

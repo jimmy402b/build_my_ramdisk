@@ -81,6 +81,7 @@ private:
     bool mutable_access_{};
     bool cleanup_authorized_{};
     bool manifest_identity_bound_{};
+    bool poisoned_{};
 
     ValidatedBundleFile(
         UniqueHandle root_handle,
@@ -111,6 +112,11 @@ private:
         BundleWriterLock&, ValidatedBundleFile&, std::uint64_t);
     friend Result<void> rename_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::string_view);
+    friend Result<void> rename_validated_bundle_file(
+        const OperationContext&,
+        BundleWriterLock&,
+        ValidatedBundleFile&,
+        std::string_view);
     friend Result<void> delete_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&);
     friend Result<BundleWriterLock> acquire_bundle_writer_lock(
@@ -206,6 +212,12 @@ open_validated_persistence_file(ValidatedBundleFile&& capability);
     std::uint64_t new_length);
 
 [[nodiscard]] Result<void> rename_validated_bundle_file(
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    std::string_view new_relative_name);
+
+[[nodiscard]] Result<void> rename_validated_bundle_file(
+    const OperationContext& context,
     BundleWriterLock& writer_lock,
     ValidatedBundleFile& file,
     std::string_view new_relative_name);

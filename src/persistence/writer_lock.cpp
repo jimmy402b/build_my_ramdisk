@@ -88,6 +88,9 @@ void release_process_writer(const std::wstring& key) noexcept {
 [[nodiscard]] Result<void> release_writer_state_locked(
     detail::WriterAuthorityState& state) {
     std::uint32_t unlock_error = 0;
+    if (state.close_event) {
+        static_cast<void>(SetEvent(state.close_event.get()));
+    }
     if (state.byte_lock_held) {
         if (!UnlockFileEx(
                 state.manifest_handle.get(),
@@ -123,7 +126,8 @@ namespace detail {
 Result<void> verify_writer_state_locked(
     const WriterAuthorityState& state) {
     if (!state.active || !state.registry_held || !state.byte_lock_held ||
-        !state.root_handle || !state.manifest_handle ||
+        !state.root_handle || !state.manifest_handle || !state.close_event ||
+        WaitForSingleObject(state.close_event.get(), 0) != WAIT_TIMEOUT ||
         !process_writer_is_claimed(state.registry_key)) {
         return writer_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
@@ -250,6 +254,14 @@ Result<BundleWriterLock> acquire_bundle_writer_lock(
 
     try {
         auto state = std::make_shared<detail::WriterAuthorityState>();
+        state->close_event.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!state->close_event) {
+            return writer_failure<BundleWriterLock>(
+                ImagePathErrorCode::IoError,
+                L"writer_lock.acquire",
+                L"creating the writer-close event failed",
+                GetLastError());
+        }
         auto capability = opened.move_value();
         UniqueHandle writable_manifest(ReOpenFile(
             capability.file_handle_.get(),

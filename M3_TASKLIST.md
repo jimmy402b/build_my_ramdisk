@@ -379,6 +379,19 @@ Suggested commit: feat(storage): snapshot zero and discard transitions
 - Evidence: `tests/unit/m3_persistence_path_tests.cpp` SHA-256 `28D62FBB8F3293F8578C3ED4FB0307418E25A7CCBFC77DC6754E4274637FB777`；Release `myrd_m3_persistence_path_tests.exe` SHA-256 `6AAC481441D8C111B3AD9D43E1F8AFFF5184F71CF7AF806ACE2F38C1BE666D41`。
 - Open risks / migration points: NT entry points 由系统 `ntdll.dll` 动态解析，缺失时 fail closed 为 `IoError`；Task 13 仍负责把最小稳定错误迁移到完整 persistence outcome，Task 36 仍负责引用保留判定。本任务保持 `READY_FOR_REVIEW`，不置 `DONE`。
 
+**HEAD `7f67953f` 独立 NO-GO 修复记录（仍为 READY_FOR_REVIEW）：**
+
+- Review base / executor / date: `7f67953f30601410fc0e44a3ee5845e07fe09101` / Codex / 2026-08-04；只修 Task 12，未开始或修改 Task 13。
+- Reviewer verification: 两项 P1 均成立。`ValidatedPersistenceFile::write_exact/truncate` 原先只复核 writer，adapter 打开后新增外部 hardlink 会让后端修改同一外部别名；rename 的 `STATUS_PENDING` 分支原先在 writer mutex 内 `WaitForSingleObject(INFINITE)`，close/deadline 均可能永久阻塞。
+- Red evidence: hardlink-after-adapter-open 的 write 红灯实际改写了 bundle 文件与外部别名，truncate 同类用例一并先写；pending seam 首次因缺少 `native_rename_backend.h` 以 C1083 失败，补最小接口后因缺少 backend seam 以 LNK2019/LNK1120 失败。同步 metadata handle 探索同时证明：share-all 的实验 handle 可同步 reopen，但真实 validated handle 的 `FILE_SHARE_READ` 安全契约下，申请 `DELETE` 的同步 `ReOpenFile` 稳定返回 `ERROR_SHARING_VIOLATION (32)`；放宽 share 会破坏已有 pathname replacement 防护，因此采用 bounded pending fallback。
+- Implementation: adapter 的 write/truncate/flush 在调用 Task 11 backend 前、writer mutex 内重新核对 root/target file object、完整 identity、reparse、direct containment 与 `hard_link_count == 1`；write/truncate 即使后端失败也继续刷新 identity，任何 refresh/identity/containment/link 异常都会 poison capability，禁止后续 mutation/release/cleanup。rename 只 `DuplicateHandle` 同一 validated file object，并继续使用 duplicated validated root handle + 单 component；新增 writer-close event、可注入 native backend、OperationContext/30 秒硬上限、cancel + 2 秒 bounded drain。等待期间释放 writer mutex；若 cancel 后仍无法证明完成，则 allocation-free process-lifetime quarantine IO status/buffer/handles，并 poison capability，避免挂死或 UAF。
+- Deterministic pending coverage: `pending->success`、`pending->error`、finite deadline、writer close 四条 seam 均验证等待期间 writer mutex 可取得；deadline/close 均验证 cancel 与完成 drain，错误/取消路径内容和 identity 不变，deadline 后 capability fail closed。另有真实 Win32 sharing-contract 回归，避免未来以放宽 share 换取同步 handle。
+- Approved Task 11 bridge scope exception: 上一轮为把 validated handle 接入 `IPersistenceFile` 而批准触及 `src/persistence/file_io.cpp` 与新增 `src/persistence/windows_file_io_bridge.h`；本轮未再次修改这两个 Task 11 bridge 文件。作为独立回归，`unit.m3.file_io` 已在 Debug/Release 各自与 Task 12 focused tests 分开运行并通过，证明本轮安全门禁未破坏 Task 11 exact-I/O 行为。
+- Verification: Debug Task 11/12 focused `2/2`；Release Task 11/12 focused `2/2`；Release Task 12 高风险整组 repeat `20/20`；当前 `m3-v1` `3/3`；完整 Release build 与 CTest `62/62`；`git diff --check` 退出 0。
+- Self-review / drift audit: 重点复查 hardlink-after-open、partial-I/O refresh、root/target identity、reparse/direct-child、pending IO status 生命周期、false file-handle signal、writer close race、mutex lock order、cancel drain、测试 temp-root 删除边界与 Task 13 边界；补上 `IO_STATUS_BLOCK` 初始 `STATUS_PENDING` 及“handle 已 signal 但 status 仍 pending”不得误判成功。未修改 M1/M2 语义、checkpoint 顺序、manifest codec、Task 13 types/outcomes 或 Task 36 retention 责任。
+- Open risk: 只有 native backend 在 cancel 后超过 2 秒仍无法完成时才会故意保留一个 process-lifetime quarantine object；这是防止 kernel 持有指针发生 UAF 的 fail-closed 代价。生产 backend 仍动态解析系统 `ntdll.dll`，缺失时稳定失败。独立只读 Claude review 在 180 秒内持续 API retry 后超时、未返回 verdict 且未修改工作树；不据此宣称独立 GO。本任务保持 `READY_FOR_REVIEW`，不置 `DONE`。
+- Suggested commit: `fix(persistence): revalidate mutations and bound rename waits`。
+
 - [x] 红灯覆盖相对/绝对逃逸、`..`、symlink/junction/reparse、hard link、case/Unicode、替换文件和 concurrent writer。
 - [x] 路径先 canonicalize 再验证在 bundle root；打开后以 volume serial/file ID/size 等身份复核，禁止只信文件名。
 - [x] writer lock 绑定 manifest identity；读者可并发，第二 writer 返回稳定 Busy，不偷锁。

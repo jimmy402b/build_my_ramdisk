@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/common/result.h"
+#include "src/common/operation_context.h"
 #include "src/common/unique_handle.h"
 #include "src/persistence/file_identity.h"
 
@@ -22,6 +23,7 @@ struct WriterAuthorityState final {
     mutable std::mutex mutex;
     UniqueHandle root_handle;
     UniqueHandle manifest_handle;
+    UniqueHandle close_event;
     WindowsFileIdentity root_identity{};
     WindowsFileIdentity manifest_identity{};
     std::filesystem::path root_path;
@@ -73,6 +75,11 @@ private:
         BundleWriterLock&, ValidatedBundleFile&, std::uint64_t);
     friend Result<void> rename_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::string_view);
+    friend Result<void> rename_validated_bundle_file(
+        const OperationContext&,
+        BundleWriterLock&,
+        ValidatedBundleFile&,
+        std::string_view);
     friend Result<void> delete_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&);
 };
