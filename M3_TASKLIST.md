@@ -149,7 +149,7 @@ Suggested commit:
 | 07 | 压力、stall、close 与资源清理 | O | PENDING | 06 | M3-V3 / m2.1-v3,v5 |
 | 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
 | 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
-| 10 | CRC32C、streaming SHA、byte codec | C | READY_FOR_REVIEW | 00 | M3-V1 |
+| 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
 | 11 | Exact file I/O 与 sparse fake | C | PENDING | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | PENDING | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |
@@ -298,11 +298,11 @@ Suggested commit:
 
 **类别：C。允许文件：** `src/common/crc32c.*`、扩展 `sha256.*`、`src/persistence/byte_codec.*`、对应 unit tests/CMake。
 
-- [ ] 用公开标准向量和独立 golden bytes 写红灯；覆盖空输入、分段一致性、unaligned buffer 和大长度。
-- [ ] CRC32C 必须是 Castagnoli 多项式；streaming SHA 结果与现有 one-shot BCrypt 完全一致。
-- [ ] codec 只做 fixed-width little-endian、GUID、checked offset/length/alignment；无 reinterpret-cast struct serialization。
-- [ ] truncate/overflow 测试在分配前失败；reserved bytes 的 zero-check 有测试。
-- [ ] 跑 `m3-v1` 中当前可用项目和全部 common crypto 回归；建议提交 `feat(common): add persistence integrity primitives`。
+- [x] 用公开标准向量和独立 golden bytes 写红灯；覆盖空输入、分段一致性、unaligned buffer 和大长度。
+- [x] CRC32C 必须是 Castagnoli 多项式；streaming SHA 结果与现有 one-shot BCrypt 完全一致。
+- [x] codec 只做 fixed-width little-endian、GUID、checked offset/length/alignment；无 reinterpret-cast struct serialization。
+- [x] truncate/overflow 测试在分配前失败；reserved bytes 的 zero-check 有测试。
+- [x] 跑 `m3-v1` 中当前可用项目和全部 common crypto 回归；验收证据见 `docs/validation/m3-persistence-acceptance.md`。
 
 ## Task 11 — Exact Windows file I/O 与 sparse fault fake
 

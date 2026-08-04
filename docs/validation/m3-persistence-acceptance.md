@@ -203,8 +203,69 @@ as reference material only and must not be merged as accepted task work.
 
 ### Integration decision
 
-Tasks 10–24 remain `PENDING` on the accepted integration branch. Individual
-commits may be cherry-picked into isolated task branches only as untrusted
-scaffolding. Each task must independently demonstrate a deterministic red
-test, complete implementation, focused and cumulative gates, specification
-review and code-quality review before its status can become `DONE`.
+At the time of this batch audit, Tasks 10–24 remained `PENDING`. Individual
+commits could be cherry-picked into isolated task branches only as untrusted
+scaffolding. Task 10 was subsequently repaired and independently accepted as
+recorded below; Tasks 11–24 remain `PENDING`. Every task must independently
+demonstrate a deterministic red test, complete implementation, focused and
+cumulative gates, specification review and code-quality review before its
+status can become `DONE`.
+
+## Task 10 integrity primitives evidence — 2026-08-04
+
+| Item | Value |
+|---|---|
+| Implementation branch | `feature/m3-task10` |
+| Foundation commit | `1c858ac` |
+| Independent specification review | GO; P0=0, P1=0 |
+| Independent code-quality review | GO; P0=0, P1=0 |
+
+### Red gates and accepted behavior
+
+- The original SHA lifecycle test exposed an error-contract mismatch.
+- A `SIZE_MAX` codec skip was accepted and advanced the cursor before checked
+  offset arithmetic was implemented.
+- Compile-time red tests established that typed codec errors, UUID/UTF-8 and
+  alignment helpers, CRC finalization state, and the SHA error enum were absent.
+- A deterministic injected hash failure established the required sticky-error
+  behavior before the state machine was implemented.
+- CRC32C uses the Castagnoli polynomial and published vectors. SHA-256 uses
+  bounded BCrypt streaming; a partial native failure is sticky before any
+  caller-visible error copy, and finalization allocates before `BCryptFinishHash`.
+- The byte codec emits explicit fixed-width little-endian bytes and performs
+  checked offset, length and alignment arithmetic. Truncation, overflow,
+  reserved-byte, UTF-8, UUID and failure-nonmutation cases have direct tests.
+- CRC and SHA lifecycle errors occupy separate stable ranges (`0x21xx` and
+  `0x22xx`).
+
+### Verification
+
+```powershell
+ctest --preset release -R '^(unit\.common|unit\.m3\.checksum_codec)$' --output-on-failure
+# 2/2 passed
+
+ctest --preset release -L m3-v1 --output-on-failure
+# 1/1 passed
+
+1..50 | % { .\out\build\msvc\tests\Release\myrd_m3_checksum_codec_tests.exe }
+# 50/50 passed
+
+1..20 | % { .\out\build\msvc\tests\Debug\myrd_m3_checksum_codec_tests.exe }
+# 20/20 passed
+
+ctest --preset release --output-on-failure
+# 60/60 passed
+
+git diff --check
+# passed
+```
+
+### Recorded non-blocking debt
+
+- Move the internal SHA state/test adapter out of the public object layout when
+  an ABI boundary is frozen.
+- Add a test-side direct BCrypt oracle in addition to published SHA vectors.
+- Avoid the non-fail-open initialization-path `Error` copy during future cleanup.
+
+Task 10 verdict: **DONE**. This is not an M3 GO verdict; Tasks 11–44 and the
+real AIM/NTFS, crash and soak acceptance gates remain required.

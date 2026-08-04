@@ -39,17 +39,30 @@ std::uint32_t crc32c(std::span<const std::byte> data) noexcept {
 
 Crc32cStream::Crc32cStream() noexcept : crc_(0xFFFFFFFFU) {}
 
-void Crc32cStream::update(std::span<const std::byte> data) noexcept {
+Result<void> Crc32cStream::update(std::span<const std::byte> data) {
+    if (finalized_) {
+        return Result<void>::failure(
+            {ErrorDomain::internal,
+             static_cast<std::uint32_t>(Crc32cErrorCode::already_finalized),
+             L"Crc32cStream::update", L"stream already finalized"});
+    }
     for (std::size_t i = 0; i < data.size(); ++i) {
         const auto idx = static_cast<std::uint8_t>(
             (crc_ ^ static_cast<std::uint32_t>(data[i])) & 0xFFU);
         crc_ = kTable[idx] ^ (crc_ >> 8);
     }
+    return Result<void>::success();
 }
 
-std::uint32_t Crc32cStream::finalize() noexcept {
+Result<std::uint32_t> Crc32cStream::finalize() {
+    if (finalized_) {
+        return Result<std::uint32_t>::failure(
+            {ErrorDomain::internal,
+             static_cast<std::uint32_t>(Crc32cErrorCode::already_finalized),
+             L"Crc32cStream::finalize", L"stream already finalized"});
+    }
     finalized_ = true;
-    return crc_ ^ 0xFFFFFFFFU;
+    return Result<std::uint32_t>::success(crc_ ^ 0xFFFFFFFFU);
 }
 
 }  // namespace myrd
