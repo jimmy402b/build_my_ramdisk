@@ -154,10 +154,12 @@ struct NativeRenameOperation final {
     detail::NativeRenameIoStatus io_status{};
     std::shared_ptr<detail::WriterAuthorityState> writer_authority;
     bool quarantine_slot_held{};
+    NativeRenameOperation* quarantine_next{};
 };
 
 constexpr std::size_t kMaximumNativeRenameQuarantineSlots = 8;
 std::atomic<std::size_t> g_native_rename_slots{};
+std::atomic<NativeRenameOperation*> g_quarantined_native_renames{};
 
 NativeRenameOperation::~NativeRenameOperation() noexcept {
     if (quarantine_slot_held) {
@@ -219,7 +221,16 @@ void quarantine_native_rename(
     // slots before begin(), so hostile repetition cannot create an unbounded
     // leak. The retained writer authority also prevents any successor writer
     // from overlapping this indeterminate operation.
-    static_cast<void>(operation.release());
+    auto* const quarantined = operation.release();
+    auto* head = g_quarantined_native_renames.load(
+        std::memory_order_acquire);
+    do {
+        quarantined->quarantine_next = head;
+    } while (!g_quarantined_native_renames.compare_exchange_weak(
+        head,
+        quarantined,
+        std::memory_order_release,
+        std::memory_order_acquire));
 }
 
 thread_local BeforeNativeRenameHook g_before_native_rename_hook{};
@@ -1856,6 +1867,34 @@ bool quarantine_empty_native_rename_for_test() {
     }
     quarantine_native_rename(std::move(operation));
     return true;
+}
+
+std::size_t release_quarantined_native_renames_for_test() {
+    // Test fakes call this only after they have proved their simulated native
+    // operation can no longer access the retained buffers. Production never
+    // invokes this seam: an actually indeterminate operation remains retained
+    // for process lifetime.
+    auto* operation = g_quarantined_native_renames.exchange(
+        nullptr, std::memory_order_acq_rel);
+    std::size_t released{};
+    while (operation != nullptr) {
+        auto* const next = operation->quarantine_next;
+        if (operation->writer_authority != nullptr) {
+            auto& state = *operation->writer_authority;
+            std::scoped_lock lock(state.mutex);
+            if (state.native_rename_quarantined) {
+                state.native_rename_quarantined = false;
+                if (state.active_native_renames > 0) {
+                    --state.active_native_renames;
+                }
+                state.native_rename_condition.notify_all();
+            }
+        }
+        delete operation;
+        operation = next;
+        ++released;
+    }
+    return released;
 }
 
 } // namespace test

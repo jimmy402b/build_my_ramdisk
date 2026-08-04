@@ -6,6 +6,7 @@
 #include "src/persistence/file_identity.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/writer_lock.h"
+#include "src/common/scope_exit.h"
 #include "src/common/unique_handle.h"
 #include "test_framework.h"
 #include "validated_rename_test_seam.h"
@@ -1067,6 +1068,10 @@ TEST_CASE(task12_writer_close_that_loses_to_native_completion_reports_success) {
 
 TEST_CASE(task12_non_draining_rename_retains_writer_ownership_after_close) {
     TemporarySandbox sandbox;
+    myrd::ScopeExit cleanup_quarantine([]() noexcept {
+        static_cast<void>(
+            myrd::persistence::test::release_quarantined_native_renames_for_test());
+    });
     const auto manifest = sandbox.bundle() / L"disk.rdm";
     const auto source = sandbox.bundle() / L"pending-quarantine.rdj";
     write_text(manifest, std::string(8192, 'm'));
@@ -1110,10 +1115,21 @@ TEST_CASE(task12_non_draining_rename_retains_writer_ownership_after_close) {
         replacement, ImagePathErrorCode::ImageInUse));
     REQUIRE_EQ(read_text(source), std::string("pending-quarantine-data"));
     REQUIRE_EQ(identity_of(source), before_identity);
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
+        std::size_t{1});
+    cleanup_quarantine.release();
+    REQUIRE_EQ(
+        myrd::persistence::test::native_rename_slots_in_use(),
+        std::size_t{0});
 }
 
 TEST_CASE(task12_throwing_pending_backend_is_quarantined_without_uaf) {
     TemporarySandbox sandbox;
+    myrd::ScopeExit cleanup_quarantine([]() noexcept {
+        static_cast<void>(
+            myrd::persistence::test::release_quarantined_native_renames_for_test());
+    });
     const auto manifest = sandbox.bundle() / L"disk.rdm";
     const auto source = sandbox.bundle() / L"pending-throw.rdj";
     write_text(manifest, std::string(8192, 'm'));
@@ -1161,6 +1177,13 @@ TEST_CASE(task12_throwing_pending_backend_is_quarantined_without_uaf) {
         replacement, ImagePathErrorCode::ImageInUse));
     REQUIRE_EQ(read_text(source), std::string("pending-throw-data"));
     REQUIRE_EQ(identity_of(source), before_identity);
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
+        std::size_t{1});
+    cleanup_quarantine.release();
+    REQUIRE_EQ(
+        myrd::persistence::test::native_rename_slots_in_use(),
+        slots_before);
 }
 
 TEST_CASE(task12_rejects_unsafe_or_non_utf8_components) {
@@ -1893,11 +1916,14 @@ TEST_CASE(task12_cleanup_rejects_a_hardlink_added_after_validation) {
 }
 
 TEST_CASE(task12_native_rename_quarantine_is_process_bounded) {
+    myrd::ScopeExit cleanup_quarantine([]() noexcept {
+        static_cast<void>(
+            myrd::persistence::test::release_quarantined_native_renames_for_test());
+    });
     const auto maximum =
         myrd::persistence::test::maximum_native_rename_slots();
     auto in_use = myrd::persistence::test::native_rename_slots_in_use();
-    // Earlier indeterminate-completion tests retain their bounded slots.
-    REQUIRE(in_use >= std::size_t{2});
+    REQUIRE_EQ(in_use, std::size_t{0});
     REQUIRE(maximum > in_use);
     while (in_use < maximum) {
         REQUIRE(
@@ -1944,6 +1970,13 @@ TEST_CASE(task12_native_rename_quarantine_is_process_bounded) {
     REQUIRE_EQ(read_text(source), std::string("capacity-preserved"));
     REQUIRE_EQ(identity_of(source), before_identity);
     REQUIRE(writer.verify().ok());
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
+        maximum);
+    cleanup_quarantine.release();
+    REQUIRE_EQ(
+        myrd::persistence::test::native_rename_slots_in_use(),
+        std::size_t{0});
 }
 
 } // namespace

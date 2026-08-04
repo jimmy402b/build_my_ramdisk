@@ -34,5 +34,6 @@ using AfterWriterStateSnapshotHook = void (*)(void* context);
 [[nodiscard]] std::size_t native_rename_slots_in_use() noexcept;
 [[nodiscard]] std::size_t maximum_native_rename_slots() noexcept;
 [[nodiscard]] bool quarantine_empty_native_rename_for_test();
+[[nodiscard]] std::size_t release_quarantined_native_renames_for_test();
 
 } // namespace myrd::persistence::test
