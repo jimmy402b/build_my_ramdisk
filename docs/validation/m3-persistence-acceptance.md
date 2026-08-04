@@ -269,3 +269,64 @@ git diff --check
 
 Task 10 verdict: **DONE**. This is not an M3 GO verdict; Tasks 11–44 and the
 real AIM/NTFS, crash and soak acceptance gates remain required.
+
+## Task 03 bounded snapshot coordinator evidence — 2026-08-04
+
+| Item | Value |
+|---|---|
+| Implementation commits | `cf3671f`, `7858f2e` |
+| Logic-owner branch | `feature/m3-m2.1-logic` |
+| Independent specification review | GO; P0=0, P1=0 |
+| Independent code-quality review | GO; P0=0, P1=0 |
+
+### Accepted behavior
+
+- Snapshot IDs are process-wide unique nonzero values with checked CAS
+  wraparound. Reservations use weak shared-state ownership, so destroying the
+  coordinator cannot leave a use-after-free path.
+- The ordered COW map charges exactly one 256-byte record/index/accounting slab
+  per metadata pre-image. Rebind allocation, rollback and invariant checks keep
+  record and byte accounting synchronized.
+- Pending duplicate preservation returns `SnapshotBusy`; rollback permits a
+  later retry. Invalid record kinds fail the invariant rather than entering an
+  unaccounted state.
+- The coordinator records cutoff membership, one pre-image per block and a
+  monotonic scan frontier without a consumed-block set. Task 03 intentionally
+  stores ZERO/DISCARD metadata only; DATA payload belongs to Task 04.
+- Deterministic lock probes and a 10,000-record test cover lock ordering and
+  ordered-index scaling.
+
+### Verification
+
+```powershell
+. .\tools\Enter-MsvcEnvironment.ps1
+cmake --build --preset release
+# passed
+
+1..100 | % { .\out\build\msvc\tests\Release\myrd_m2_consistent_snapshot_tests.exe }
+# 100/100 passed
+
+ctest --preset release -L m2.1-v1 --output-on-failure
+# 1/1 passed
+
+ctest --preset release -L m2.1-v3 --output-on-failure
+# 1/1 passed
+
+ctest --preset release --output-on-failure
+# 59/59 passed
+
+git diff --check
+# passed
+```
+
+### Recorded follow-up obligations
+
+- Add deterministic allocation-failure injection for the real `bad_alloc`
+  catch path when Task 07 expands pressure testing.
+- Add a near-`UINT64_MAX` snapshot-ID seam if ID generation receives further
+  changes.
+- Task 06 must freeze and test whether `Aborted` plus its reason remains
+  observable through public status before coordinator state is cleared.
+
+Task 03 verdict: **DONE**. This is not an M2.1 or M3 GO verdict; Tasks 04–09
+remain required.

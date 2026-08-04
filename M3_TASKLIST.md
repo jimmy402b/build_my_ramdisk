@@ -142,7 +142,7 @@ Suggested commit:
 | 00 | 冻结 M2 GO 与建立 M3 targets | C | DONE | 无 | M3-V0 |
 | 01 | M2.1 类型、选项、错误、统计 | C | DONE | 00 | M3-V3 / m2.1-v0 |
 | 02 | Mutation admission 与一致切点 | O | DONE | 01 | M3-V3 / m2.1-v1 |
-| 03 | 有界 snapshot coordinator 与元数据 COW | S | PENDING | 02 | M3-V3 / m2.1-v1,v3 |
+| 03 | 有界 snapshot coordinator 与元数据 COW | S | DONE | 02 | M3-V3 / m2.1-v1,v3 |
 | 04 | DATA pre-image | O | PENDING | 03 | M3-V3 / m2.1-v2 |
 | 05 | ZERO/DISCARD pre-image | O | PENDING | 04 | M3-V3 / m2.1-v2 |
 | 06 | Token batch、finish、abort | O | PENDING | 05 | M3-V3 / m2.1-v2 |
@@ -225,11 +225,11 @@ Suggested commit:
 
 **类别：S。允许文件：** snapshot coordinator、store 私有成员/接线、fake clock/barrier、聚焦测试；Claude 写红灯与 class shell，逻辑负责人写/审查 transition。
 
-- [ ] 红灯覆盖 active token 唯一性、cutoff membership、每块一次 pre-image、单调 `next_scan_block` frontier、预算计数和 metadata rollback；禁止动态 consumed-block set。
-- [ ] 先只实现 ZERO/DISCARD 元数据 pre-image 容器与 token 生命周期，不实现 DATA payload。
-- [ ] 预算保留必须在 mutation 发布前成功；失败/取消不留下幽灵 record 或泄露 byte/accounting。
-- [ ] 审查所有锁路径符合 PLAN 1.2，运行 `m2.1-v1`、`m2.1-v3`。
-- [ ] 建议提交 `feat(storage): coordinate bounded snapshot epochs`。
+- [x] 红灯覆盖 active token 唯一性、cutoff membership、每块一次 pre-image、单调 `next_scan_block` frontier、预算计数和 metadata rollback；禁止动态 consumed-block set。
+- [x] 先只实现 ZERO/DISCARD 元数据 pre-image 容器与 token 生命周期，不实现 DATA payload。
+- [x] 预算保留必须在 mutation 发布前成功；失败/取消不留下幽灵 record 或泄露 byte/accounting。
+- [x] 审查所有锁路径符合 PLAN 1.2，运行 `m2.1-v1`、`m2.1-v3`。
+- [x] 已提交 `cf3671f` 与安全加固 `7858f2e`；验收证据见 `docs/validation/m3-persistence-acceptance.md`。
 
 ## Task 04 — 保存 DATA pre-image
 
