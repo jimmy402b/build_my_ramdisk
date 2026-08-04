@@ -94,13 +94,14 @@ constexpr auto kNoResult =
     (std::numeric_limits<std::uint32_t>::max)();
 
 class SnapshotCoordinatorBarrier final
-    : public myrd::ISnapshotCoordinatorObserver {
+    : public myrd::ISnapshotCoordinatorNonReentrantBarrier {
 public:
     explicit SnapshotCoordinatorBarrier(
-        myrd::SnapshotCoordinatorEvent target) noexcept
+        myrd::SnapshotCoordinatorBarrierEvent target) noexcept
         : target_(target) {}
 
-    void on_event(myrd::SnapshotCoordinatorEvent event) noexcept override {
+    void pause_while_coordinator_locked(
+        myrd::SnapshotCoordinatorBarrierEvent event) noexcept override {
         if (event != target_) {
             return;
         }
@@ -119,7 +120,7 @@ public:
     }
 
 private:
-    myrd::SnapshotCoordinatorEvent target_;
+    myrd::SnapshotCoordinatorBarrierEvent target_;
     std::atomic<bool> reached_{};
     std::atomic<bool> release_{};
 };
@@ -276,6 +277,7 @@ TEST_CASE(m2_1_coordinator_charges_metadata_and_rolls_back_reservations) {
     REQUIRE_EQ(accounting.cow_records, 0ull);
     REQUIRE_EQ(accounting.pending_reservations, 1ull);
     REQUIRE(!coordinator.peek_preimage(1).has_value());
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
 
     auto exhausted = coordinator.reserve_metadata_before_mutation(
         bounded_context(),
@@ -297,6 +299,7 @@ TEST_CASE(m2_1_coordinator_charges_metadata_and_rolls_back_reservations) {
     REQUIRE_EQ(accounting.cow_records, 0ull);
     REQUIRE_EQ(accounting.pending_reservations, 0ull);
     REQUIRE(!coordinator.peek_preimage(1).has_value());
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
 
     auto cancelled_reservation = coordinator.reserve_metadata_before_mutation(
         bounded_context(),
@@ -319,11 +322,12 @@ TEST_CASE(m2_1_coordinator_charges_metadata_and_rolls_back_reservations) {
     REQUIRE_EQ(accounting.cow_records, 0ull);
     REQUIRE_EQ(accounting.pending_reservations, 0ull);
     REQUIRE(!coordinator.peek_preimage(3).has_value());
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
 }
 
 TEST_CASE(m2_1_cancel_during_reservation_leaves_no_ghost_record_or_bytes) {
     auto barrier = std::make_shared<SnapshotCoordinatorBarrier>(
-        myrd::SnapshotCoordinatorEvent::ReservationInserted);
+        myrd::SnapshotCoordinatorBarrierEvent::ReservationInserted);
     myrd::SnapshotCoordinator coordinator(
         myrd::kSnapshotCowRecordBudgetBytes, barrier);
     auto activated = coordinator.activate(6, 12);
@@ -357,6 +361,103 @@ TEST_CASE(m2_1_cancel_during_reservation_leaves_no_ghost_record_or_bytes) {
     REQUIRE_EQ(accounting.cow_records, 0ull);
     REQUIRE_EQ(accounting.pending_reservations, 0ull);
     REQUIRE(!coordinator.peek_preimage(7).has_value());
+}
+
+TEST_CASE(m2_1_pending_reservation_can_outlive_destroyed_coordinator) {
+    alignas(myrd::SnapshotCoordinator)
+        std::array<std::byte, sizeof(myrd::SnapshotCoordinator)> storage{};
+    std::optional<myrd::SnapshotMetadataReservation> pending;
+    auto* coordinator = std::construct_at(
+        reinterpret_cast<myrd::SnapshotCoordinator*>(storage.data()),
+        myrd::kSnapshotCowRecordBudgetBytes);
+    auto activated = coordinator->activate(6, 12);
+    REQUIRE(activated.ok());
+    auto reserved = coordinator->reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            7, 9, myrd::DirtyRecordKind::Discard, 6, 12));
+    REQUIRE(reserved.ok());
+    REQUIRE_EQ(reserved.value().disposition(),
+               myrd::SnapshotPreimageDisposition::Reserved);
+    pending.emplace(reserved.move_value());
+    REQUIRE_EQ(coordinator->snapshot().pending_reservations, 1ull);
+    std::destroy_at(coordinator);
+
+    // Reuse the exact address and reservation fields. A dangling raw owner
+    // would now erase the replacement coordinator's unrelated reservation.
+    auto* replacement = std::construct_at(
+        reinterpret_cast<myrd::SnapshotCoordinator*>(storage.data()),
+        myrd::kSnapshotCowRecordBudgetBytes);
+    auto replacement_token = replacement->activate(6, 12);
+    REQUIRE(replacement_token.ok());
+    auto replacement_pending = replacement->reserve_metadata_before_mutation(
+        bounded_context(),
+        replacement_token.value(),
+        metadata_preimage(
+            7, 9, myrd::DirtyRecordKind::Discard, 6, 12));
+    REQUIRE(replacement_pending.ok());
+    REQUIRE_EQ(replacement->snapshot().pending_reservations, 1ull);
+
+    pending.reset();
+    REQUIRE(!pending.has_value());
+    REQUIRE_EQ(replacement->snapshot().pending_reservations, 1ull);
+    replacement->rollback_metadata_preimage(replacement_pending.value());
+    REQUIRE_EQ(replacement->snapshot().pending_reservations, 0ull);
+    std::destroy_at(replacement);
+}
+
+TEST_CASE(m2_1_snapshot_token_id_is_unique_across_equal_coordinators) {
+    myrd::SnapshotCoordinator owner(
+        myrd::kSnapshotCowRecordBudgetBytes);
+    myrd::SnapshotCoordinator stranger(
+        myrd::kSnapshotCowRecordBudgetBytes);
+    auto owner_token = owner.activate(4, 6);
+    auto stranger_token = stranger.activate(4, 6);
+    REQUIRE(owner_token.ok());
+    REQUIRE(stranger_token.ok());
+    REQUIRE(owner_token.value().snapshot_id !=
+            stranger_token.value().snapshot_id);
+
+    auto foreign = stranger.reserve_metadata_before_mutation(
+        bounded_context(),
+        owner_token.value(),
+        metadata_preimage(2, 3, myrd::DirtyRecordKind::Zero, 4, 6));
+    REQUIRE(!foreign.ok());
+    REQUIRE_EQ(error_code(foreign.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
+}
+
+TEST_CASE(m2_1_pending_duplicate_is_busy_until_rollback) {
+    myrd::SnapshotCoordinator coordinator(
+        2 * myrd::kSnapshotCowRecordBudgetBytes);
+    auto activated = coordinator.activate(4, 6);
+    REQUIRE(activated.ok());
+
+    auto first = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(2, 3, myrd::DirtyRecordKind::Zero, 4, 6));
+    REQUIRE(first.ok());
+    auto duplicate = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(2, 4, myrd::DirtyRecordKind::Zero, 4, 6));
+    REQUIRE(!duplicate.ok());
+    REQUIRE_EQ(error_code(duplicate.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+
+    coordinator.rollback_metadata_preimage(first.value());
+    auto retry = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(2, 5, myrd::DirtyRecordKind::Zero, 4, 6));
+    REQUIRE(retry.ok());
+    REQUIRE_EQ(retry.value().disposition(),
+               myrd::SnapshotPreimageDisposition::Reserved);
+    coordinator.rollback_metadata_preimage(retry.value());
 }
 
 TEST_CASE(m2_1_wrong_coordinator_cannot_orphan_a_pending_reservation) {
@@ -449,11 +550,89 @@ TEST_CASE(m2_1_coordinator_never_treats_data_as_metadata_only) {
     REQUIRE_EQ(accounting.pending_reservations, 0ull);
 }
 
+TEST_CASE(m2_1_coordinator_rejects_unknown_dirty_record_kind) {
+    myrd::SnapshotCoordinator coordinator(
+        myrd::kSnapshotCowRecordBudgetBytes);
+    auto activated = coordinator.activate(2, 3);
+    REQUIRE(activated.ok());
+    auto invalid = metadata_preimage(
+        0,
+        1,
+        static_cast<myrd::DirtyRecordKind>(0xFF),
+        2,
+        3);
+
+    auto reserved = coordinator.reserve_metadata_before_mutation(
+        bounded_context(), activated.value(), invalid);
+    REQUIRE(!reserved.ok());
+    REQUIRE_EQ(error_code(reserved.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::FatalInternalInvariant));
+    const auto accounting = coordinator.snapshot();
+    REQUIRE_EQ(accounting.cow_current_bytes, 0ull);
+    REQUIRE_EQ(accounting.cow_records, 0ull);
+    REQUIRE_EQ(accounting.pending_reservations, 0ull);
+}
+
+TEST_CASE(m2_1_coordinator_map_has_bounded_logarithmic_probe_growth) {
+    constexpr std::uint64_t kRecordCount = 10'000;
+    myrd::SnapshotCoordinator coordinator(
+        kRecordCount * myrd::kSnapshotCowRecordBudgetBytes);
+    auto activated = coordinator.activate(9, 10);
+    REQUIRE(activated.ok());
+
+    for (std::uint64_t block = 0; block < kRecordCount; ++block) {
+        auto reserved = coordinator.reserve_metadata_before_mutation(
+            bounded_context(),
+            activated.value(),
+            metadata_preimage(
+                block,
+                block + 1,
+                block % 2 == 0 ? myrd::DirtyRecordKind::Zero
+                               : myrd::DirtyRecordKind::Discard,
+                9,
+                10));
+        REQUIRE(reserved.ok());
+        REQUIRE(coordinator.publish_metadata_preimage(
+                    bounded_context(), reserved.value())
+                    .ok());
+    }
+
+    const auto filled = coordinator.snapshot();
+    REQUIRE_EQ(filled.cow_records, kRecordCount);
+    REQUIRE_EQ(
+        filled.cow_current_bytes,
+        kRecordCount * myrd::kSnapshotCowRecordBudgetBytes);
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+    const auto probes_after_build =
+        coordinator.index_probe_count_for_test();
+    REQUIRE(probes_after_build < kRecordCount * 80);
+
+    for (std::uint64_t block = kRecordCount; block-- > 0;) {
+        const auto preimage = coordinator.peek_preimage(block);
+        REQUIRE(preimage.has_value());
+        REQUIRE_EQ(preimage->block_index, block);
+        REQUIRE_EQ(preimage->version, block + 1);
+    }
+    const auto reverse_lookup_probes =
+        coordinator.index_probe_count_for_test() - probes_after_build;
+    REQUIRE(reverse_lookup_probes < kRecordCount * 32);
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+
+    REQUIRE(coordinator.advance_scan_frontier(
+                activated.value(), kRecordCount, kRecordCount)
+                .ok());
+    const auto consumed = coordinator.snapshot();
+    REQUIRE_EQ(consumed.cow_records, 0ull);
+    REQUIRE_EQ(consumed.cow_current_bytes, 0ull);
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+}
+
 TEST_CASE(m2_1_store_coordinator_lock_path_holds_no_stripe_or_state_lock) {
     auto barrier = std::make_shared<SnapshotCoordinatorBarrier>(
-        myrd::SnapshotCoordinatorEvent::ActivateLocked);
+        myrd::SnapshotCoordinatorBarrierEvent::ActivateLocked);
     myrd::DynamicBlockStoreTestDependencies dependencies;
-    dependencies.snapshot_coordinator_observer = barrier;
+    dependencies.snapshot_coordinator_non_reentrant_barrier = barrier;
     auto backing = myrd::test::FakeBackingStoreBuilder(13).build();
     auto created = myrd::DynamicBlockStore::create_for_testing(
         backing_args(backing, 2, 13), dependencies);
@@ -959,8 +1138,10 @@ TEST_CASE(m2_1_mutation_admission_honors_cancellation_and_deadline) {
             std::memory_order_release);
     });
     REQUIRE(wait_until([&] {
-        return myrd::DynamicBlockStoreTestAccess::mutation_waiters(*store) ==
-               2;
+        // snapshot_blocked_writers is cumulative, so unlike the instantaneous
+        // waiter gauge it cannot be missed if the 50 ms deadline expires just
+        // before this thread is scheduled.
+        return store->stats().snapshot_blocked_writers >= 2;
     }));
     mutation_stop.request_stop();
     REQUIRE(wait_until([&] {
@@ -973,6 +1154,8 @@ TEST_CASE(m2_1_mutation_admission_honors_cancellation_and_deadline) {
     REQUIRE_EQ(deadline_code.load(std::memory_order_acquire),
                static_cast<std::uint32_t>(
                    myrd::OperationErrorCode::timed_out));
+    REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::mutation_waiters(*store),
+               0ull);
 
     gate->open();
     old_writer.join();
@@ -989,11 +1172,15 @@ TEST_CASE(m2_1_close_wakes_cut_and_mutation_admission_waiters) {
                        .build();
     auto store = require_store(backing_args(backing));
     std::vector<std::byte> partial(512, std::byte{0x62});
+    std::atomic<std::uint32_t> old_writer_code{kNoResult};
     std::atomic<std::uint32_t> cut_code{kNoResult};
     std::atomic<std::uint32_t> queued_code{kNoResult};
 
     std::thread old_writer([&] {
-        (void)store->write(bounded_context(), 0, partial);
+        const auto result = store->write(bounded_context(), 0, partial);
+        old_writer_code.store(
+            result.ok() ? 0 : error_code(result.error()),
+            std::memory_order_release);
     });
     REQUIRE(gate->wait_until_entered(
         1, std::chrono::steady_clock::now() + kWaitBound));
@@ -1026,17 +1213,22 @@ TEST_CASE(m2_1_close_wakes_cut_and_mutation_admission_waiters) {
         close_done.store(true, std::memory_order_release);
     });
     REQUIRE(wait_until([&] {
-        return cut_code.load(std::memory_order_acquire) != kNoResult &&
+        return old_writer_code.load(std::memory_order_acquire) != kNoResult &&
+               cut_code.load(std::memory_order_acquire) != kNoResult &&
                queued_code.load(std::memory_order_acquire) != kNoResult;
     }));
+    REQUIRE_EQ(old_writer_code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::session_closed));
     REQUIRE_EQ(cut_code.load(std::memory_order_acquire),
                static_cast<std::uint32_t>(
                    myrd::OperationErrorCode::session_closed));
     REQUIRE_EQ(queued_code.load(std::memory_order_acquire),
                static_cast<std::uint32_t>(
                    myrd::OperationErrorCode::session_closed));
-    REQUIRE(!close_done.load(std::memory_order_acquire));
-
+    // The backing gate observes the close stop token, so the in-flight writer
+    // may drain and let close finish before this thread is scheduled again.
+    // Assert outcomes, not that racy scheduling window.
     gate->open();
     old_writer.join();
     cut.join();

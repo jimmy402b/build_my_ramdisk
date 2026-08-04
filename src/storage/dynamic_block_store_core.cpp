@@ -171,7 +171,7 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
     try {
         snapshot_coordinator = std::make_unique<SnapshotCoordinator>(
             args.options.snapshot_cow_max_bytes,
-            dependencies.snapshot_coordinator_observer);
+            dependencies.snapshot_coordinator_non_reentrant_barrier);
     } catch (...) {
         return Result<std::unique_ptr<DynamicBlockStore>>::failure(
             make_factory_error(

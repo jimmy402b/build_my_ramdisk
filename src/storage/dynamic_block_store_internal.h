@@ -183,7 +183,7 @@ public:
     virtual void after_segment(std::uint64_t block_index) noexcept = 0;
 };
 
-class ISnapshotCoordinatorObserver;
+class ISnapshotCoordinatorNonReentrantBarrier;
 
 // Mutating access is intentionally confined to tests that need to establish
 // states owned by later M2 tasks. Product code cannot reach these helpers
@@ -270,8 +270,8 @@ struct DynamicBlockStoreTestDependencies {
     std::shared_ptr<VirtualMemoryCleanupTracker> cleanup_tracker;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer;
     std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer;
-    std::shared_ptr<ISnapshotCoordinatorObserver>
-        snapshot_coordinator_observer;
+    std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
+        snapshot_coordinator_non_reentrant_barrier;
     DynamicBlockStoreFactoryStage fail_stage{
         DynamicBlockStoreFactoryStage::None};
     bool fail_snapshot_allocation{};

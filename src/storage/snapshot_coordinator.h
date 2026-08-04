@@ -26,18 +26,23 @@ enum class SnapshotPreimageDisposition : std::uint8_t {
     Reserved = 3,
 };
 
-enum class SnapshotCoordinatorEvent : std::uint8_t {
+enum class SnapshotCoordinatorBarrierEvent : std::uint8_t {
     ActivateLocked = 0,
     ReservationInserted = 1,
 };
 
-class ISnapshotCoordinatorObserver {
+// Test-only deterministic barrier. It is invoked while the coordinator mutex
+// is held, so implementations must only signal/wait and must never call back
+// into SnapshotCoordinator or DynamicBlockStore.
+class ISnapshotCoordinatorNonReentrantBarrier {
 public:
-    virtual ~ISnapshotCoordinatorObserver() = default;
-    virtual void on_event(SnapshotCoordinatorEvent event) noexcept = 0;
+    virtual ~ISnapshotCoordinatorNonReentrantBarrier() = default;
+    virtual void pause_while_coordinator_locked(
+        SnapshotCoordinatorBarrierEvent event) noexcept = 0;
 };
 
 class SnapshotCoordinator;
+class SnapshotCoordinatorState;
 
 class SnapshotMetadataReservation final {
 public:
@@ -57,10 +62,11 @@ public:
 
 private:
     friend class SnapshotCoordinator;
+    friend class SnapshotCoordinatorState;
 
     SnapshotMetadataReservation(
         SnapshotPreimageDisposition disposition,
-        SnapshotCoordinator* owner,
+        std::weak_ptr<SnapshotCoordinatorState> owner_state,
         std::uint64_t snapshot_id,
         std::uint64_t block_index,
         std::uint64_t reservation_id) noexcept;
@@ -69,7 +75,7 @@ private:
 
     SnapshotPreimageDisposition disposition_{
         SnapshotPreimageDisposition::NotMember};
-    SnapshotCoordinator* owner_{};
+    std::weak_ptr<SnapshotCoordinatorState> owner_state_;
     std::uint64_t snapshot_id_{};
     std::uint64_t block_index_{};
     std::uint64_t reservation_id_{};
@@ -92,7 +98,8 @@ class SnapshotCoordinator final {
 public:
     explicit SnapshotCoordinator(
         std::uint64_t max_bytes,
-        std::shared_ptr<ISnapshotCoordinatorObserver> observer = {});
+        std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
+            non_reentrant_barrier = {});
     ~SnapshotCoordinator() noexcept;
 
     SnapshotCoordinator(const SnapshotCoordinator&) = delete;
@@ -131,14 +138,11 @@ public:
     Result<ConsistentSnapshotStatus> status(
         const ConsistentSnapshotToken& token) const;
     SnapshotCoordinatorSnapshot snapshot() const;
+    Result<void> validate_invariants_for_test() const;
+    std::uint64_t index_probe_count_for_test() const;
 
 private:
-    friend class SnapshotMetadataReservation;
-    class Impl;
-
-    void abandon(SnapshotMetadataReservation& reservation) noexcept;
-
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<SnapshotCoordinatorState> state_;
 };
 
 } // namespace myrd

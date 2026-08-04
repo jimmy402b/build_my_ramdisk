@@ -1,6 +1,10 @@
 #include "snapshot_coordinator.h"
 
+#include <array>
+#include <atomic>
+#include <condition_variable>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -32,9 +36,33 @@ bool same_token(
 
 struct SnapshotBudgetExhausted final {};
 
+std::atomic<std::uint64_t> global_snapshot_id{1};
+
+std::uint64_t acquire_snapshot_id() noexcept {
+    auto current = global_snapshot_id.load(std::memory_order_relaxed);
+    while (current != 0 &&
+           current != (std::numeric_limits<std::uint64_t>::max)()) {
+        if (global_snapshot_id.compare_exchange_weak(
+                current,
+                current + 1,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return current;
+        }
+    }
+    return 0;
+}
+
 struct SnapshotRecordBudget final {
     explicit SnapshotRecordBudget(std::uint64_t limit) noexcept
         : max_bytes(limit) {}
+
+    ~SnapshotRecordBudget() noexcept {
+        if (current_bytes != 0 || live_allocations != 0 ||
+            map_header_in_use) {
+            std::terminate();
+        }
+    }
 
     void reserve(std::size_t count) {
         if (count == 0 ||
@@ -49,6 +77,7 @@ struct SnapshotRecordBudget final {
             throw SnapshotBudgetExhausted{};
         }
         current_bytes += bytes;
+        live_allocations += static_cast<std::uint64_t>(count);
         if (peak_bytes < current_bytes) {
             peak_bytes = current_bytes;
         }
@@ -57,112 +86,233 @@ struct SnapshotRecordBudget final {
     void release(std::size_t count) noexcept {
         const auto bytes = static_cast<std::uint64_t>(count) *
                            kSnapshotCowRecordBudgetBytes;
-        if (count == 0 || current_bytes < bytes) {
+        if (count == 0 || current_bytes < bytes ||
+            live_allocations < static_cast<std::uint64_t>(count)) {
             std::terminate();
         }
         current_bytes -= bytes;
+        live_allocations -= static_cast<std::uint64_t>(count);
+    }
+
+    void* try_allocate_map_header(std::size_t count) noexcept {
+        if (count != 1 || !map_header_available) {
+            return nullptr;
+        }
+        map_header_available = false;
+        map_header_in_use = true;
+        return map_header_slab.data();
+    }
+
+    void seal_map_header() noexcept { map_header_available = false; }
+
+    bool owns_map_header(const void* pointer) const noexcept {
+        return pointer == map_header_slab.data();
+    }
+
+    void release_map_header() noexcept {
+        if (!map_header_in_use) {
+            std::terminate();
+        }
+        map_header_in_use = false;
     }
 
     std::uint64_t max_bytes{};
     std::uint64_t current_bytes{};
     std::uint64_t peak_bytes{};
+    std::uint64_t live_allocations{};
+    alignas(std::max_align_t)
+        std::array<std::byte, kSnapshotCowRecordBudgetBytes>
+            map_header_slab{};
+    bool map_header_available{true};
+    bool map_header_in_use{};
+};
+
+template <class T>
+class SnapshotSlabAllocator final {
+public:
+    using value_type = T;
+
+    SnapshotSlabAllocator() noexcept = default;
+    explicit SnapshotSlabAllocator(
+        SnapshotRecordBudget* budget) noexcept
+        : budget_(budget) {}
+
+    template <class U>
+    SnapshotSlabAllocator(
+        const SnapshotSlabAllocator<U>& other) noexcept
+        : budget_(other.budget()) {}
+
+    [[nodiscard]] T* allocate(std::size_t count) {
+        static_assert(
+            sizeof(T) <= kSnapshotCowRecordBudgetBytes,
+            "rebound snapshot map node exceeds its frozen 256-byte slab");
+        static_assert(
+            alignof(T) <= alignof(std::max_align_t),
+            "snapshot map node requires unsupported over-alignment");
+        if (budget_ == nullptr || count == 0 ||
+            count > (std::numeric_limits<std::size_t>::max)() /
+                        static_cast<std::size_t>(
+                            kSnapshotCowRecordBudgetBytes)) {
+            throw std::bad_alloc{};
+        }
+        if (void* header = budget_->try_allocate_map_header(count);
+            header != nullptr) {
+            return static_cast<T*>(header);
+        }
+        budget_->reserve(count);
+        try {
+            return static_cast<T*>(::operator new(
+                count * static_cast<std::size_t>(
+                            kSnapshotCowRecordBudgetBytes)));
+        } catch (...) {
+            budget_->release(count);
+            throw;
+        }
+    }
+
+    void deallocate(T* pointer, std::size_t count) noexcept {
+        if (budget_ == nullptr || pointer == nullptr || count == 0) {
+            std::terminate();
+        }
+        if (budget_->owns_map_header(pointer)) {
+            if (count != 1) {
+                std::terminate();
+            }
+            budget_->release_map_header();
+            return;
+        }
+        ::operator delete(pointer);
+        budget_->release(count);
+    }
+
+    SnapshotRecordBudget* budget() const noexcept { return budget_; }
+
+    template <class U>
+    bool operator==(const SnapshotSlabAllocator<U>& other) const noexcept {
+        return budget_ == other.budget();
+    }
+
+    template <class U>
+    bool operator!=(const SnapshotSlabAllocator<U>& other) const noexcept {
+        return !(*this == other);
+    }
+
+private:
+    template <class>
+    friend class SnapshotSlabAllocator;
+
+    SnapshotRecordBudget* budget_{};
 };
 
 } // namespace
 
-class SnapshotCoordinator::Impl final {
+class SnapshotCoordinatorState final {
 public:
     struct Record final {
         SnapshotPreimage preimage;
         std::uint64_t reservation_id{};
         bool committed{};
-        Record* next{};
     };
 
-    static_assert(
-        sizeof(Record) <= kSnapshotCowRecordBudgetBytes,
-        "snapshot record exceeds its frozen bookkeeping slab");
+    struct CountingLess final {
+        std::uint64_t* probes{};
 
-    Impl(
+        bool operator()(
+            std::uint64_t left,
+            std::uint64_t right) const noexcept {
+            if (probes == nullptr ||
+                *probes == (std::numeric_limits<std::uint64_t>::max)()) {
+                std::terminate();
+            }
+            ++*probes;
+            return left < right;
+        }
+    };
+
+    using RecordEntry = std::pair<const std::uint64_t, Record>;
+    using RecordAllocator = SnapshotSlabAllocator<RecordEntry>;
+    using RecordMap = std::map<
+        std::uint64_t,
+        Record,
+        CountingLess,
+        RecordAllocator>;
+
+    SnapshotCoordinatorState(
         std::uint64_t max_bytes,
-        std::shared_ptr<ISnapshotCoordinatorObserver> next_observer)
+        std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
+            next_barrier)
         : budget(max_bytes),
-          observer(std::move(next_observer)) {}
+          records(CountingLess{&index_probes}, RecordAllocator{&budget}),
+          non_reentrant_barrier(std::move(next_barrier)) {
+        // MSVC std::map allocates one sentinel node in its constructor. It is
+        // coordinator infrastructure, not a COW record, so it comes from the
+        // one embedded slab above. Sealing here guarantees that an STL which
+        // does not allocate a sentinel cannot consume the slab on first insert.
+        budget.seal_map_header();
+    }
 
-    ~Impl() noexcept {
+    ~SnapshotCoordinatorState() noexcept {
         clear_records();
     }
+
+    void abandon(SnapshotMetadataReservation& reservation) noexcept;
 
     bool token_matches(const ConsistentSnapshotToken& token) const noexcept {
         return active_token.has_value() &&
                same_token(*active_token, token);
     }
 
-    void notify(SnapshotCoordinatorEvent event) const noexcept {
-        if (observer) {
-            observer->on_event(event);
+    void pause_for_test(
+        SnapshotCoordinatorBarrierEvent event) const noexcept {
+        if (non_reentrant_barrier) {
+            non_reentrant_barrier->pause_while_coordinator_locked(event);
         }
     }
 
-    Record* find_record(std::uint64_t block_index) const noexcept {
-        auto* record = records;
-        while (record != nullptr &&
-               record->preimage.block_index < block_index) {
-            record = record->next;
-        }
-        return record != nullptr &&
-                       record->preimage.block_index == block_index
-            ? record
-            : nullptr;
+    Record* find_record(std::uint64_t block_index) noexcept {
+        const auto found = records.find(block_index);
+        return found == records.end() ? nullptr : &found->second;
     }
 
-    Record* allocate_record(
+    const Record* find_record(std::uint64_t block_index) const noexcept {
+        const auto found = records.find(block_index);
+        return found == records.end() ? nullptr : &found->second;
+    }
+
+    Record* insert_record(
         const SnapshotPreimage& metadata,
         std::uint64_t reservation_id) {
-        budget.reserve(1);
-        void* slab = nullptr;
-        try {
-            slab = ::operator new(
-                static_cast<std::size_t>(
-                    kSnapshotCowRecordBudgetBytes));
-            return std::construct_at(
-                static_cast<Record*>(slab),
-                Record{metadata, reservation_id, false, nullptr});
-        } catch (...) {
-            if (slab != nullptr) {
-                ::operator delete(slab);
-            }
-            budget.release(1);
-            throw;
-        }
-    }
-
-    void insert_record(Record* record) noexcept {
-        auto** link = &records;
-        while (*link != nullptr &&
-               (*link)->preimage.block_index <
-                   record->preimage.block_index) {
-            link = &(*link)->next;
-        }
-        if (*link != nullptr &&
-            (*link)->preimage.block_index ==
-                record->preimage.block_index) {
+        auto [inserted, is_new] = records.try_emplace(
+            metadata.block_index,
+            Record{
+                SnapshotPreimage{
+                    metadata.block_index,
+                    metadata.version,
+                    metadata.kind,
+                    metadata.base_generation,
+                    metadata.dirty_epoch,
+                    {}},
+                reservation_id,
+                false});
+        if (!is_new) {
             std::terminate();
         }
-        record->next = *link;
-        *link = record;
+        return &inserted->second;
     }
 
     void erase_record(Record* record) noexcept {
-        auto** link = &records;
-        while (*link != nullptr && *link != record) {
-            link = &(*link)->next;
-        }
-        if (*link != record) {
+        if (record == nullptr) {
             std::terminate();
         }
-        *link = record->next;
-        if (record->committed) {
+        const auto found = records.find(record->preimage.block_index);
+        if (found == records.end() || &found->second != record) {
+            std::terminate();
+        }
+        erase_record(found);
+    }
+
+    void erase_record(RecordMap::iterator record) noexcept {
+        if (record->second.committed) {
             if (committed_records == 0) {
                 std::terminate();
             }
@@ -173,30 +323,31 @@ public:
             }
             --pending_reservations;
         }
-        std::destroy_at(record);
-        ::operator delete(record);
-        budget.release(1);
+        records.erase(record);
     }
 
     void clear_records() noexcept {
-        while (records != nullptr) {
-            erase_record(records);
+        while (!records.empty()) {
+            erase_record(records.begin());
         }
         if (committed_records != 0 || pending_reservations != 0) {
             std::terminate();
         }
-        if (budget.current_bytes != 0) {
+        if (budget.current_bytes != 0 || budget.live_allocations != 0) {
             std::terminate();
         }
     }
 
     mutable std::mutex mutex;
+    std::condition_variable condition;
     SnapshotRecordBudget budget;
-    Record* records{};
-    std::shared_ptr<ISnapshotCoordinatorObserver> observer;
+    std::uint64_t index_probes{};
+    RecordMap records;
+    std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
+        non_reentrant_barrier;
     std::optional<ConsistentSnapshotToken> active_token;
     std::optional<ConsistentSnapshotState> active_state;
-    std::uint64_t next_snapshot_id{1};
+    std::optional<DynamicBlockStoreErrorCode> abort_reason;
     std::uint64_t next_reservation_id{1};
     std::uint64_t next_scan_block{};
     std::uint64_t committed_records{};
@@ -205,12 +356,12 @@ public:
 
 SnapshotMetadataReservation::SnapshotMetadataReservation(
     SnapshotPreimageDisposition disposition,
-    SnapshotCoordinator* owner,
+    std::weak_ptr<SnapshotCoordinatorState> owner_state,
     std::uint64_t snapshot_id,
     std::uint64_t block_index,
     std::uint64_t reservation_id) noexcept
     : disposition_(disposition),
-      owner_(owner),
+      owner_state_(std::move(owner_state)),
       snapshot_id_(snapshot_id),
       block_index_(block_index),
       reservation_id_(reservation_id) {}
@@ -222,11 +373,10 @@ SnapshotMetadataReservation::~SnapshotMetadataReservation() noexcept {
 SnapshotMetadataReservation::SnapshotMetadataReservation(
     SnapshotMetadataReservation&& other) noexcept
     : disposition_(other.disposition_),
-      owner_(other.owner_),
+      owner_state_(std::move(other.owner_state_)),
       snapshot_id_(other.snapshot_id_),
       block_index_(other.block_index_),
       reservation_id_(other.reservation_id_) {
-    other.owner_ = nullptr;
 }
 
 SnapshotMetadataReservation& SnapshotMetadataReservation::operator=(
@@ -234,50 +384,52 @@ SnapshotMetadataReservation& SnapshotMetadataReservation::operator=(
     if (this != &other) {
         reset();
         disposition_ = other.disposition_;
-        owner_ = other.owner_;
+        owner_state_ = std::move(other.owner_state_);
         snapshot_id_ = other.snapshot_id_;
         block_index_ = other.block_index_;
         reservation_id_ = other.reservation_id_;
-        other.owner_ = nullptr;
     }
     return *this;
 }
 
 void SnapshotMetadataReservation::reset() noexcept {
-    if (owner_ != nullptr) {
-        owner_->abandon(*this);
+    if (auto owner_state = owner_state_.lock()) {
+        owner_state->abandon(*this);
     }
+    owner_state_.reset();
 }
 
 SnapshotCoordinator::SnapshotCoordinator(
     std::uint64_t max_bytes,
-    std::shared_ptr<ISnapshotCoordinatorObserver> observer)
-    : impl_(std::make_unique<Impl>(max_bytes, std::move(observer))) {}
+    std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
+        non_reentrant_barrier)
+    : state_(std::make_shared<SnapshotCoordinatorState>(
+          max_bytes, std::move(non_reentrant_barrier))) {}
 
 SnapshotCoordinator::~SnapshotCoordinator() noexcept = default;
 
 Result<ConsistentSnapshotToken> SnapshotCoordinator::activate(
     BackingGeneration source_backing_generation,
     std::uint64_t cutoff_dirty_epoch) {
-    std::scoped_lock lock(impl_->mutex);
-    impl_->notify(SnapshotCoordinatorEvent::ActivateLocked);
-    if (impl_->active_token.has_value()) {
+    std::scoped_lock lock(state_->mutex);
+    state_->pause_for_test(
+        SnapshotCoordinatorBarrierEvent::ActivateLocked);
+    if (state_->active_token.has_value()) {
         return Result<ConsistentSnapshotToken>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotBusy,
                 L"another consistent snapshot owns the coordinator"));
     }
-    if (impl_->records != nullptr || impl_->budget.current_bytes != 0 ||
-        impl_->pending_reservations != 0 ||
-        impl_->committed_records != 0) {
+    if (!state_->records.empty() || state_->budget.current_bytes != 0 ||
+        state_->pending_reservations != 0 ||
+        state_->committed_records != 0) {
         return Result<ConsistentSnapshotToken>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 L"inactive coordinator retained COW resources"));
     }
-    if (impl_->next_snapshot_id == 0 ||
-        impl_->next_snapshot_id ==
-            (std::numeric_limits<std::uint64_t>::max)()) {
+    const auto snapshot_id = acquire_snapshot_id();
+    if (snapshot_id == 0) {
         return Result<ConsistentSnapshotToken>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
@@ -285,13 +437,15 @@ Result<ConsistentSnapshotToken> SnapshotCoordinator::activate(
     }
 
     const ConsistentSnapshotToken token{
-        impl_->next_snapshot_id++,
+        snapshot_id,
         source_backing_generation,
         cutoff_dirty_epoch,
     };
-    impl_->active_token = token;
-    impl_->active_state = ConsistentSnapshotState::Active;
-    impl_->next_scan_block = 0;
+    state_->active_token = token;
+    state_->active_state = ConsistentSnapshotState::Active;
+    state_->abort_reason.reset();
+    state_->next_scan_block = 0;
+    state_->condition.notify_all();
     return Result<ConsistentSnapshotToken>::success(token);
 }
 
@@ -306,24 +460,33 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
             initial_live.error());
     }
 
-    std::scoped_lock lock(impl_->mutex);
-    if (!impl_->token_matches(token)) {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token)) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
                 L"snapshot token does not own this coordinator"));
     }
-    if (impl_->active_state != ConsistentSnapshotState::Active) {
+    if (state_->active_state != ConsistentSnapshotState::Active) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotAborted,
                 L"snapshot is not active"));
     }
-    if (metadata.kind == DirtyRecordKind::Data || !metadata.data.empty()) {
+    if (metadata.kind != DirtyRecordKind::Zero &&
+        metadata.kind != DirtyRecordKind::Discard) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
-                L"DATA pre-image payload preservation belongs to M3 Task04"));
+                metadata.kind == DirtyRecordKind::Data
+                    ? L"DATA pre-image payload preservation belongs to M3 Task04"
+                    : L"snapshot pre-image has an unknown dirty record kind"));
+    }
+    if (!metadata.data.empty()) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"metadata-only pre-image unexpectedly owns payload bytes"));
     }
     if (metadata.dirty_epoch == 0 ||
         metadata.dirty_epoch > token.cutoff_dirty_epoch ||
@@ -331,31 +494,38 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
         return Result<SnapshotMetadataReservation>::success(
             SnapshotMetadataReservation{
                 SnapshotPreimageDisposition::NotMember,
-                nullptr,
+                {},
                 0,
                 0,
                 0});
     }
-    if (metadata.block_index < impl_->next_scan_block) {
+    if (metadata.block_index < state_->next_scan_block) {
         return Result<SnapshotMetadataReservation>::success(
             SnapshotMetadataReservation{
                 SnapshotPreimageDisposition::Consumed,
-                nullptr,
+                {},
                 0,
                 0,
                 0});
     }
-    if (impl_->find_record(metadata.block_index) != nullptr) {
+    if (const auto* existing = state_->find_record(metadata.block_index);
+        existing != nullptr) {
+        if (!existing->committed) {
+            return Result<SnapshotMetadataReservation>::failure(
+                coordinator_error(
+                    DynamicBlockStoreErrorCode::SnapshotBusy,
+                    L"snapshot block already has a pending reservation"));
+        }
         return Result<SnapshotMetadataReservation>::success(
             SnapshotMetadataReservation{
                 SnapshotPreimageDisposition::AlreadyPreserved,
-                nullptr,
+                {},
                 0,
                 0,
                 0});
     }
-    if (impl_->next_reservation_id == 0 ||
-        impl_->next_reservation_id ==
+    if (state_->next_reservation_id == 0 ||
+        state_->next_reservation_id ==
             (std::numeric_limits<std::uint64_t>::max)()) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
@@ -363,19 +533,19 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
                 L"snapshot reservation id exhausted"));
     }
 
-    const auto reservation_id = impl_->next_reservation_id++;
+    const auto reservation_id = state_->next_reservation_id++;
     try {
         // The actual 256-byte slab contains the metadata record, reservation
-        // bookkeeping and ordered linked-index node. DATA payload allocation
-        // is deliberately absent until Task04.
-        auto* record = impl_->allocate_record(metadata, reservation_id);
-        impl_->insert_record(record);
-        ++impl_->pending_reservations;
-        impl_->notify(SnapshotCoordinatorEvent::ReservationInserted);
+        // bookkeeping and ordered tree node. DATA payload allocation is
+        // deliberately absent until Task04.
+        auto* record = state_->insert_record(metadata, reservation_id);
+        ++state_->pending_reservations;
+        state_->pause_for_test(
+            SnapshotCoordinatorBarrierEvent::ReservationInserted);
 
         const auto reserved_live = check_operation_context(context);
         if (!reserved_live.ok()) {
-            impl_->erase_record(record);
+            state_->erase_record(record);
             return Result<SnapshotMetadataReservation>::failure(
                 reserved_live.error());
         }
@@ -399,7 +569,7 @@ SnapshotCoordinator::reserve_metadata_before_mutation(
     return Result<SnapshotMetadataReservation>::success(
         SnapshotMetadataReservation{
             SnapshotPreimageDisposition::Reserved,
-            this,
+            state_,
             token.snapshot_id,
             metadata.block_index,
             reservation_id});
@@ -414,8 +584,9 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
         return Result<void>::failure(initial_live.error());
     }
 
-    std::scoped_lock lock(impl_->mutex);
-    if (reservation.owner_ != this) {
+    std::scoped_lock lock(state_->mutex);
+    auto reservation_state = reservation.owner_state_.lock();
+    if (reservation_state.get() != state_.get()) {
         return Result<void>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
@@ -423,18 +594,18 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
     }
     if (reservation.disposition_ !=
             SnapshotPreimageDisposition::Reserved ||
-        !impl_->active_token.has_value() ||
-        reservation.snapshot_id_ != impl_->active_token->snapshot_id) {
-        reservation.owner_ = nullptr;
+        !state_->active_token.has_value() ||
+        reservation.snapshot_id_ != state_->active_token->snapshot_id) {
+        reservation.owner_state_.reset();
         return Result<void>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
                 L"metadata reservation does not belong to active token"));
     }
-    auto* record = impl_->find_record(reservation.block_index_);
+    auto* record = state_->find_record(reservation.block_index_);
     if (record == nullptr || record->committed ||
         record->reservation_id != reservation.reservation_id_) {
-        reservation.owner_ = nullptr;
+        reservation.owner_state_.reset();
         return Result<void>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
@@ -443,34 +614,36 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
 
     const auto publish_live = check_operation_context(context);
     if (!publish_live.ok()) {
-        impl_->erase_record(record);
-        reservation.owner_ = nullptr;
+        state_->erase_record(record);
+        reservation.owner_state_.reset();
         return Result<void>::failure(publish_live.error());
     }
-    if (impl_->pending_reservations == 0) {
+    if (state_->pending_reservations == 0) {
         std::terminate();
     }
-    --impl_->pending_reservations;
-    ++impl_->committed_records;
+    --state_->pending_reservations;
+    ++state_->committed_records;
     record->committed = true;
-    reservation.owner_ = nullptr;
+    reservation.owner_state_.reset();
+    state_->condition.notify_all();
     return Result<void>::success();
 }
 
 void SnapshotCoordinator::rollback_metadata_preimage(
     SnapshotMetadataReservation& reservation) noexcept {
-    if (reservation.owner_ == this) {
-        abandon(reservation);
+    auto reservation_state = reservation.owner_state_.lock();
+    if (reservation_state.get() == state_.get()) {
+        state_->abandon(reservation);
     }
 }
 
 std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
     std::uint64_t block_index) const {
-    std::scoped_lock lock(impl_->mutex);
-    const auto* record = impl_->find_record(block_index);
+    std::scoped_lock lock(state_->mutex);
+    const auto* record = state_->find_record(block_index);
     if (record == nullptr ||
         !record->committed ||
-        block_index < impl_->next_scan_block) {
+        block_index < state_->next_scan_block) {
         return std::nullopt;
     }
     return record->preimage;
@@ -480,120 +653,237 @@ Result<void> SnapshotCoordinator::advance_scan_frontier(
     const ConsistentSnapshotToken& token,
     std::uint64_t next_scan_block,
     std::uint64_t total_blocks) {
-    std::scoped_lock lock(impl_->mutex);
-    if (!impl_->token_matches(token)) {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
     }
-    if (next_scan_block < impl_->next_scan_block ||
+    if (next_scan_block < state_->next_scan_block ||
         next_scan_block > total_blocks) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::FatalInternalInvariant,
             L"snapshot frontier must advance monotonically within geometry"));
     }
-    for (auto* record = impl_->records;
-         record != nullptr &&
-         record->preimage.block_index < next_scan_block;
-         record = record->next) {
-        if (!record->committed) {
+    for (auto record = state_->records.begin();
+         record != state_->records.end() &&
+         record->first < next_scan_block;
+         ++record) {
+        if (!record->second.committed) {
             return Result<void>::failure(coordinator_error(
                 DynamicBlockStoreErrorCode::SnapshotBusy,
                 L"snapshot frontier reached a pending reservation"));
         }
     }
-    while (impl_->records != nullptr &&
-           impl_->records->preimage.block_index < next_scan_block) {
-        impl_->erase_record(impl_->records);
+    while (!state_->records.empty() &&
+           state_->records.begin()->first < next_scan_block) {
+        state_->erase_record(state_->records.begin());
     }
-    impl_->next_scan_block = next_scan_block;
+    state_->next_scan_block = next_scan_block;
     if (next_scan_block == total_blocks) {
-        impl_->active_state = ConsistentSnapshotState::FullyScanned;
+        state_->active_state = ConsistentSnapshotState::FullyScanned;
     }
+    state_->condition.notify_all();
     return Result<void>::success();
 }
 
 Result<void> SnapshotCoordinator::finish(
     const ConsistentSnapshotToken& token,
     std::uint64_t total_blocks) {
-    std::scoped_lock lock(impl_->mutex);
-    if (!impl_->token_matches(token)) {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
     }
-    if (impl_->active_state != ConsistentSnapshotState::FullyScanned ||
-        impl_->next_scan_block != total_blocks) {
+    if (state_->active_state != ConsistentSnapshotState::FullyScanned ||
+        state_->next_scan_block != total_blocks) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotNotFullyScanned,
             L"snapshot cannot finish before its frontier reaches the end"));
     }
-    impl_->clear_records();
-    impl_->active_token.reset();
-    impl_->active_state.reset();
-    impl_->next_scan_block = 0;
+    state_->clear_records();
+    state_->active_token.reset();
+    state_->active_state.reset();
+    state_->abort_reason.reset();
+    state_->next_scan_block = 0;
+    state_->condition.notify_all();
     return Result<void>::success();
 }
 
 Result<void> SnapshotCoordinator::abort(
     const ConsistentSnapshotToken& token) {
-    std::scoped_lock lock(impl_->mutex);
-    if (!impl_->token_matches(token)) {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
     }
-    impl_->clear_records();
-    impl_->active_token.reset();
-    impl_->active_state.reset();
-    impl_->next_scan_block = 0;
+    state_->active_state = ConsistentSnapshotState::Aborted;
+    state_->abort_reason = DynamicBlockStoreErrorCode::SnapshotAborted;
+    state_->condition.notify_all();
+    state_->clear_records();
+    state_->active_token.reset();
+    state_->active_state.reset();
+    state_->abort_reason.reset();
+    state_->next_scan_block = 0;
+    state_->condition.notify_all();
     return Result<void>::success();
 }
 
 Result<ConsistentSnapshotStatus> SnapshotCoordinator::status(
     const ConsistentSnapshotToken& token) const {
-    std::scoped_lock lock(impl_->mutex);
-    if (!impl_->token_matches(token) || !impl_->active_state.has_value()) {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token) || !state_->active_state.has_value()) {
         return Result<ConsistentSnapshotStatus>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
     }
     return Result<ConsistentSnapshotStatus>::success(
         ConsistentSnapshotStatus{
-            *impl_->active_state,
-            impl_->budget.current_bytes,
-            impl_->committed_records,
+            *state_->active_state,
+            state_->budget.current_bytes,
+            state_->committed_records,
             0,
         });
 }
 
 SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
-    std::scoped_lock lock(impl_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return SnapshotCoordinatorSnapshot{
-        impl_->active_token,
-        impl_->active_state,
-        impl_->next_scan_block,
-        impl_->budget.current_bytes,
-        impl_->budget.peak_bytes,
-        impl_->committed_records,
-        impl_->pending_reservations,
+        state_->active_token,
+        state_->active_state,
+        state_->next_scan_block,
+        state_->budget.current_bytes,
+        state_->budget.peak_bytes,
+        state_->committed_records,
+        state_->pending_reservations,
     };
 }
 
-void SnapshotCoordinator::abandon(
+Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
+    std::scoped_lock lock(state_->mutex);
+    const auto invariant_failure = [](std::wstring message) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            std::move(message)));
+    };
+
+    if (state_->active_token.has_value() !=
+        state_->active_state.has_value()) {
+        return invariant_failure(
+            L"snapshot token/state presence diverged");
+    }
+    if (state_->active_state.has_value()) {
+        switch (*state_->active_state) {
+        case ConsistentSnapshotState::Active:
+        case ConsistentSnapshotState::FullyScanned:
+        case ConsistentSnapshotState::Aborted:
+            break;
+        default:
+            return invariant_failure(L"snapshot state is unknown");
+        }
+        if (state_->active_token->snapshot_id == 0) {
+            return invariant_failure(L"active snapshot id is zero");
+        }
+        const bool is_aborted =
+            *state_->active_state == ConsistentSnapshotState::Aborted;
+        if (is_aborted != state_->abort_reason.has_value()) {
+            return invariant_failure(
+                L"snapshot abort state/reason presence diverged");
+        }
+    } else if (!state_->records.empty() ||
+               state_->next_scan_block != 0 ||
+               state_->abort_reason.has_value()) {
+        return invariant_failure(
+            L"inactive snapshot retained coordinator state");
+    }
+
+    std::uint64_t committed = 0;
+    std::uint64_t pending = 0;
+    std::optional<std::uint64_t> previous_block;
+    for (const auto& [block_index, record] : state_->records) {
+        if (previous_block.has_value() &&
+            block_index <= *previous_block) {
+            return invariant_failure(
+                L"snapshot map keys are not strictly ordered");
+        }
+        previous_block = block_index;
+        if (record.preimage.block_index != block_index ||
+            block_index < state_->next_scan_block) {
+            return invariant_failure(
+                L"snapshot record key/frontier invariant failed");
+        }
+        if ((record.preimage.kind != DirtyRecordKind::Zero &&
+             record.preimage.kind != DirtyRecordKind::Discard) ||
+            !record.preimage.data.empty()) {
+            return invariant_failure(
+                L"metadata-only map retained DATA or payload bytes");
+        }
+        if (record.reservation_id == 0) {
+            return invariant_failure(
+                L"snapshot reservation id is zero");
+        }
+        if (state_->active_token.has_value() &&
+            (record.preimage.dirty_epoch == 0 ||
+             record.preimage.dirty_epoch >
+                 state_->active_token->cutoff_dirty_epoch ||
+             record.preimage.base_generation >
+                 state_->active_token->source_backing_generation)) {
+            return invariant_failure(
+                L"snapshot map retained a non-member record");
+        }
+        if (record.committed) {
+            ++committed;
+        } else {
+            ++pending;
+        }
+    }
+    if (committed != state_->committed_records ||
+        pending != state_->pending_reservations) {
+        return invariant_failure(
+            L"snapshot pending/committed counters diverged");
+    }
+    if (state_->records.size() >
+        (std::numeric_limits<std::uint64_t>::max)() /
+            kSnapshotCowRecordBudgetBytes) {
+        return invariant_failure(L"snapshot map size overflowed budget math");
+    }
+    const auto expected_bytes =
+        static_cast<std::uint64_t>(state_->records.size()) *
+        kSnapshotCowRecordBudgetBytes;
+    if (state_->budget.live_allocations != state_->records.size() ||
+        state_->budget.current_bytes != expected_bytes ||
+        state_->budget.current_bytes > state_->budget.max_bytes ||
+        state_->budget.peak_bytes < state_->budget.current_bytes ||
+        state_->budget.peak_bytes > state_->budget.max_bytes) {
+        return invariant_failure(
+            L"snapshot allocator slabs and byte accounting diverged");
+    }
+    return Result<void>::success();
+}
+
+std::uint64_t SnapshotCoordinator::index_probe_count_for_test() const {
+    std::scoped_lock lock(state_->mutex);
+    return state_->index_probes;
+}
+
+void SnapshotCoordinatorState::abandon(
     SnapshotMetadataReservation& reservation) noexcept {
     try {
-        std::scoped_lock lock(impl_->mutex);
-        if (reservation.owner_ == this) {
-            auto* record = impl_->find_record(
+        std::scoped_lock lock(mutex);
+        auto reservation_state = reservation.owner_state_.lock();
+        if (reservation_state.get() == this) {
+            auto* record = find_record(
                 reservation.block_index_);
             if (record != nullptr &&
                 !record->committed &&
                 record->reservation_id ==
                     reservation.reservation_id_) {
-                impl_->erase_record(record);
+                erase_record(record);
+                condition.notify_all();
             }
-            reservation.owner_ = nullptr;
+            reservation.owner_state_.reset();
         }
     } catch (...) {
         std::terminate();
