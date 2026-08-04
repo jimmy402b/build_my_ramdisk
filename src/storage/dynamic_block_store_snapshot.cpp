@@ -49,6 +49,13 @@ Error consistent_snapshot_error(
     };
 }
 
+Error consistent_snapshot_invariant(std::wstring message) {
+    return consistent_snapshot_error(
+        DynamicBlockStoreErrorCode::FatalInternalInvariant,
+        L"DynamicBlockStore::copy_consistent_snapshot_batch",
+        std::move(message));
+}
+
 Error consistent_snapshot_error(
     DynamicBlockStoreErrorCode code,
     std::wstring operation,
@@ -495,7 +502,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
             auto* entry = directory_->find(scan_index);
             if (entry == nullptr) {
                 return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    snapshot_invariant(
+                    consistent_snapshot_invariant(
                         L"allocated leaf disappeared during consistent scan"));
             }
             if (count_scan_visits) {
@@ -555,7 +562,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
             }
             if (!is_stable_block_state(entry->state)) {
                 return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    snapshot_invariant(L"unknown block state"));
+                    consistent_snapshot_invariant(L"unknown block state"));
             }
 
             auto preimage = snapshot_coordinator_->peek_preimage(scan_index);
@@ -577,7 +584,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                      !preimage->data.empty())) {
                     return snapshot_failure<
                         std::vector<DirtyBlockSnapshot>>(
-                        snapshot_invariant(
+                        consistent_snapshot_invariant(
                             L"snapshot pre-image has an invalid payload"));
                 }
                 if (preimage->kind == DirtyRecordKind::Data &&
@@ -619,7 +626,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                  entry->dirty_kind != DirtyRecordKind::Zero &&
                  entry->dirty_kind != DirtyRecordKind::Discard)) {
                 return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    snapshot_invariant(
+                    consistent_snapshot_invariant(
                         L"dirty block has an invalid snapshot identity"));
             }
             if (entry->dirty_epoch > token.cutoff_dirty_epoch) {
@@ -648,12 +655,13 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
             if (entry->pin_count ==
                 (std::numeric_limits<std::uint64_t>::max)()) {
                 return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    snapshot_invariant(L"snapshot pin count wrapped"));
+                    consistent_snapshot_invariant(
+                        L"snapshot pin count wrapped"));
             }
             const auto address = arena_->block_address(scan_index);
             if (!address.ok() || !arena_->is_block_committed(scan_index)) {
                 return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    snapshot_invariant(
+                    consistent_snapshot_invariant(
                         L"resident dirty block is not committed"));
             }
             std::vector<std::byte> payload(
@@ -690,7 +698,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 (entry->state != BlockState::ResidentDirty &&
                  !writer_waiting_for_pin)) {
                 return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
-                    snapshot_invariant(
+                    consistent_snapshot_invariant(
                         L"dirty block changed incompatibly while pinned"));
             }
             --entry->pin_count;
