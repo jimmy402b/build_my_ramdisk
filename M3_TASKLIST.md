@@ -150,7 +150,7 @@ Suggested commit:
 | 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
 | 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
 | 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
-| 11 | Exact file I/O 与 sparse fake | C | PENDING | 10 | M3-V1 |
+| 11 | Exact file I/O 与 sparse fake | C | READY_FOR_REVIEW | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | PENDING | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | PENDING | 13 | M3-V1 |
@@ -308,12 +308,12 @@ Suggested commit:
 
 **类别：C。允许文件：** `src/persistence/file_io.*`、`tests/support/fault_file.*`、I/O tests。
 
-- [ ] 红灯覆盖 exact read/write、EOF、short I/O、offset overflow、flush、size、sparse range、cancel/deadline 和 stable Win32 mapping。
-- [ ] 生产 wrapper 循环处理 partial I/O，但 zero progress 立即失败；每次计算都 checked。
-- [ ] fake 能按 phase/call/byte 注入 short write、disk full、torn write、flush error、readback corruption 与 close error。
-- [ ] multi-terabyte sparse fake 的 open/one-range read 保持 bounded calls/memory，产品不 whole-file map；fault injection 只可由显式 test build/object 启用，production 默认 no-op。
-- [ ] 证明 persistence library 不依赖 driver/proxy，fake 与生产接口行为对齐。
-- [ ] 跑 `m3-v1` 中当前可用项目；建议提交 `feat(persistence): add checked file io`。
+- [x] 红灯覆盖 exact read/write、EOF、short I/O、offset overflow、flush、size、sparse range、cancel/deadline 和 stable Win32 mapping。
+- [x] 生产 wrapper 循环处理 partial I/O，但 zero progress 立即失败；每次计算都 checked。
+- [x] fake 能按 phase/call/byte 注入 short write、disk full、torn write、flush error、readback corruption 与 close error。
+- [x] multi-terabyte sparse fake 的 open/one-range read 保持 bounded calls/memory，产品不 whole-file map；fault injection 只可由显式 test build/object 启用，production 默认 no-op。
+- [x] 证明 persistence library 不依赖 driver/proxy，fake 与生产接口行为对齐。
+- [x] 跑 `m3-v1` 中当前可用项目；建议提交 `feat(persistence): add checked file io`。
 
 ## Task 12 — 目录约束、文件身份与单 writer lock
 

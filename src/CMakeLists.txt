@@ -157,6 +157,8 @@ myrd_enable_warnings(myrd-m0-poc)
 add_library(myrd_persistence STATIC
     persistence/persistence_types.h
     persistence/persistence_types.cpp
+    persistence/file_io.h
+    persistence/file_io.cpp
 )
 target_include_directories(myrd_persistence PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_persistence PUBLIC myrd_storage myrd_common bcrypt)
