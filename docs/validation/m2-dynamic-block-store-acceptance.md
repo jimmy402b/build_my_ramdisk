@@ -4,13 +4,14 @@ Date: 2026-08-04 (Asia/Shanghai)
 
 ## Verdict
 
-**M2-A PASS. M2-B PASS. M2-C functional/cleanup PASS.** Task 21 was executed
-in its required order on one Release candidate after a clean build: M2-V1,
-M2-V2, two consecutive M2-V3 runs, M2-V4, the complete M1-V2 local
-regression, and one fresh real M2-V5 run. No gate failed, no retry selected a
-preferred result, and no evidence was edited. Full **M2-C remains pending**
-Task 22's memory/performance/fault and 20-cycle soak gates. This document does
-not claim `M2 GO`.
+**M2-A PASS. M2-B PASS. M2-C PASS. M2 GO.** The final accepted Release
+candidate is commit `ca83de4e274849b7defdd4d0ec1bbaa3840993a6`; its
+`myrd-m2-e2e.exe` SHA-256 is
+`86A85457D44D1B25089A6033B11FF3D221B2CEE778BA8D3A47690A175FDBBA63`.
+Task 21's ordered core/concurrency/real-NTFS gates and Task 22's memory,
+performance, fault, 20-cycle soak, final M2 regression, and final M1
+regression all pass. The final V6 and V7 aggregate reports independently pass
+`Verify-M2Json.ps1`; no failed attempt was reused as passing evidence.
 
 ## Reproducible environment facts
 
@@ -419,16 +420,143 @@ only physical Disk 0 remained, and `phdskmnt` returned to Running/Automatic.
 No Task 21 attempt failed, no evidence directory was reused, and no threshold,
 JSON report, cleanup target, or test selection was changed during execution.
 
-### Stage verdicts and remaining boundary
+### Task 21 checkpoint verdicts and remaining boundary
 
 - **M2-A PASS:** V1 core and V2 model/real-VM evidence are complete.
 - **M2-B PASS:** both V3 runs, V4, and the full required M1 local regression
   are complete without retry-to-pass or resource drift.
 - **M2-C functional/cleanup PASS:** the canonical V5 real NTFS run is complete
   and exact cleanup is proven.
-- **Full M2-C remains pending Task 22. `M2 GO` is not issued.** V6 must still
-  prove the dedicated memory/performance/fault gates, and V7 must complete 20
-  real Release lifecycles followed by final regression and report validation.
+- **At the Task 21 checkpoint, full M2-C remained pending Task 22 and `M2 GO`
+  was not issued.** V6 still had to prove the dedicated
+  memory/performance/fault gates, and V7 still had to complete 20 real Release
+  lifecycles followed by final regression and report validation. The final
+  Task 22 section below closes that historical boundary.
 
 M2 still does not implement or claim durable filesystem backing, a journal,
 checkpoint/recovery, timed writeback, crash recovery, M3 persistence, or M4.
+
+## Task 22 — Final memory, performance, fault, and soak acceptance
+
+### Final candidate and commands
+
+All final Task 22 evidence is bound to commit
+`ca83de4e274849b7defdd4d0ec1bbaa3840993a6` and executable SHA-256
+`86A85457D44D1B25089A6033B11FF3D221B2CEE778BA8D3A47690A175FDBBA63`.
+The pinned `phdskmnt.sys` SHA-256 remained
+`3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9`.
+
+```powershell
+. .\tools\Enter-MsvcEnvironment.ps1
+cmake --build .\out\build\msvc --config Release --clean-first
+ctest --test-dir .\out\build\msvc -C Release --output-on-failure
+
+powershell -File .\tools\Invoke-M2Verification.ps1 -Tier M2-V6 `
+  -Configuration Release -EvidenceBase .\out\m2-orchestrated `
+  -Executable .\out\build\msvc\src\Release\myrd-m2-e2e.exe `
+  -AcceptedM1Report 'C:\Users\JimmyLin\Desktop\build_my_ramdisk\.claude\worktrees\feature+m1-proxy-productization\reports\m1-v6\run-20260803-045952-6447101-20.json' `
+  -ExpectedDriverSha256 3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9 `
+  -SafetyAcknowledged
+
+# The same command was then run with -Tier M2-V7.
+powershell -File .\tools\Verify-M2Json.ps1 -Tier M2-V6 `
+  -Path .\out\m2-orchestrated\m2-v6-20260804-100956-df15869849e7\m2-v6-aggregate.json `
+  -Executable .\out\build\msvc\src\Release\myrd-m2-e2e.exe
+powershell -File .\tools\Verify-M2Json.ps1 -Tier M2-V7 `
+  -Path .\out\m2-orchestrated\m2-v7-20260804-101335-0ff845aa6db8\m2-v7-aggregate.json `
+  -Executable .\out\build\msvc\src\Release\myrd-m2-e2e.exe
+```
+
+The clean Release build and full CTest exited `0`; all `57/57` tests passed.
+Both final orchestrated commands and both independent aggregate-verifier
+commands exited `0`.
+
+### M2-V6 results
+
+Canonical evidence:
+`out/m2-orchestrated/m2-v6-20260804-100956-df15869849e7/`.
+The aggregate report is `m2-v6-aggregate.json`, SHA-256
+`A0DA6F51FDDFE0975E0234DC11F56BA70E76A9961D3AF53424D96C1C702E67EF`.
+
+| Gate | Observed | Required threshold | Result |
+|---|---:|---:|---|
+| Empty 64 GiB Ready/fixed metadata | 102,400 bytes | <= 134,217,728 bytes | PASS |
+| 1 GiB unique-write total growth | 1,079,177,216 bytes | <= 1,181,218,406 bytes including fixed metadata | PASS |
+| Store committed after write | 1,073,741,824 bytes | exact 1 GiB | PASS |
+| Reclaimed after UNMAP | 1,076,420,608 bytes in 30 ms | >= 966,367,641 bytes within 10,000 ms | PASS |
+| Request-path private growth | 0 bytes; constant-space descriptor; 8 MiB maximum request allocation | no unbounded per-request growth | PASS |
+| Sequential QD1 ratio | 11,605 basis points | >= 7,000 | PASS |
+| Random QD1 ratio | 7,844 basis points | >= 6,000 | PASS |
+| Real lifecycle fault boundaries | 10/10 | every declared boundary with exact cleanup | PASS |
+
+The normal V6 real run also performed GPT initialization, NTFS formatting,
+4,294,967,296-byte write/hash readback, 2,147,483,648-byte delete/ReTrim,
+mount removal, exact AIM device removal, provider stop, and service/baseline
+restoration. Fault runs covered `capture-baseline`, `construct-provider`,
+`start-provider`, `create-device`, `wait-for-disk`, `setup-write`,
+`sample-after-write`, `delete-retrim`, `sample-after-retrim`, and
+`performance`. This includes both pre-format raw-disk and formatted-volume
+failure boundaries; formatting is a normal filesystem step, not a driver
+availability workaround.
+
+### M2-V7 results and final regressions
+
+Canonical evidence:
+`out/m2-orchestrated/m2-v7-20260804-101335-0ff845aa6db8/`.
+The aggregate report is `m2-v7-aggregate.json`, SHA-256
+`B9DCC2E54CCD726597E494C5DBF406C1CD972D9515CA57D0094867BC9F627B04`.
+
+All `20/20` independent Release processes returned GO and exact outer
+inventory cleanup. Every cycle ran the full 4 GiB V5 workload rather than the
+permitted smaller soak region. Across the soak, 85,899,345,920 bytes were
+written and hash-read, and 42,949,672,960 bytes were deleted/ReTrimmed.
+Sequential ratios ranged from 9,238 to 15,420 basis points and random ratios
+from 7,260 to 9,833; all remained above 7,000/6,000. No cycle had a structural
+baseline mismatch or a process-resource growth failure.
+
+After cycle 20, the same orchestrator freshly ran M2-V1, M2-V2, M2-V3 twice,
+M2-V4, and M1-V2 Release. Every recorded exit code is `0`; the aggregate
+stores hashes for each stdout log. Independent V6 and V7 JSON verification
+then passed again against the final executable.
+
+### Failed-attempt and defect history
+
+No failed attempt was deleted or counted toward the final 20 cycles.
+
+- An initial V7 invocation used a mistyped expected driver hash and failed in
+  preflight before disk mutation.
+- `m2-v7-20260804-093800-da3d99c8f563` stopped at cycle 12 after a valid NTFS
+  workload because two runtime threads were released (`4 -> 2`). Commit
+  `6b76170` unified native and JSON resource policy as a non-growth leak gate
+  and made resource-only NO-GO reports valid and auditable.
+- `m2-v7-20260804-100050-e5bfd31c0cb5` stopped at cycle 7 with a transient
+  final handle sample (`119 -> 120`). Commit `ca83de4` added a bounded 20 x
+  50 ms post-cleanup stabilization window; persistent growth still fails.
+- Earlier Task 22 implementation defects were fixed in `d479906`, `587871d`,
+  `4a8b322`, `211fe14`, and `ef48f30`: real fault/soak gates, Win32-safe
+  evidence paths, exact fault schema fields, strictly ordered fast-fault
+  samples, and confirmed raw-disk fault evidence.
+
+After each executable change, the Release suite and V6 were rerun and V7 was
+restarted at cycle 1. Thresholds, cleanup identities, and failed reports were
+not edited to obtain PASS.
+
+### M3 handoff and scope boundary
+
+M2 hands M3 a stable `IBlockDevice` path, immutable `IBackingStore` and
+`BackingView` contracts, dirty snapshot/cursor/base-generation evidence,
+install-before-ack ordering, exact version/kind/generation acknowledgement,
+and observable stats and limits. The accepted tests prove that acknowledged
+data/zero state cannot resurrect from an older generation after eviction and
+reload.
+
+M2 deliberately does **not** implement durable file backing, a journal,
+checkpoint/recovery, timed writeback, crash consistency, or power-loss
+recovery. Those remain M3/M4 work and are not implied by `M2 GO`.
+
+The full Plan Definition of done was reread after the final run. M1 regression,
+large sparse reservation, model/proxy/NTFS correctness, lazy/single-flight
+backing behavior, eviction and generation safety, limits/fault/shutdown,
+100,000-operation model, concurrency/resources, 4 GiB NTFS, V6, V7, exact
+cleanup, and machine-readable evidence are all covered by the final candidate.
+No M3/M4 behavior or durability claim was added. Final verdict: **M2 GO**.

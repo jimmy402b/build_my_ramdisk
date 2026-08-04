@@ -1109,43 +1109,43 @@ Executor / timestamp:
 
 ### M2-V6 memory/performance/fault
 
-- [ ] empty 64 GiB Ready provider committed `<=128 MiB`。
-- [ ] 1 GiB unique writes 新增 `<=1.10 GiB + measured fixed metadata`。
-- [ ] 释放/unmap 1 GiB 后 10 秒内回收 `>=90%`。
-- [ ] fixed M0/M1 provider 与 M2 使用同机、同 build policy、同 QD1 probe。
-- [ ] sequential：32 MiB aligned，warmup excluded，M2 >= baseline 70%。
-- [ ] random：10,000 × 4 KiB aligned QD1 fixed seed，M2 >= baseline 60%。
-- [ ] short I/O/error/zero baseline 不是合法样本。
-- [ ] 证明 request path 无 unbounded per-request allocation。
-- [ ] 每个 lifecycle failure point 注入后 exact cleanup 与 service restore。
-- [ ] JSON validator 对 threshold 和 cleanup 全部通过。
+- [x] empty 64 GiB Ready provider committed `<=128 MiB`。
+- [x] 1 GiB unique writes 新增 `<=1.10 GiB + measured fixed metadata`。
+- [x] 释放/unmap 1 GiB 后 10 秒内回收 `>=90%`。
+- [x] fixed M0/M1 provider 与 M2 使用同机、同 build policy、同 QD1 probe。
+- [x] sequential：32 MiB aligned，warmup excluded，M2 >= baseline 70%。
+- [x] random：10,000 × 4 KiB aligned QD1 fixed seed，M2 >= baseline 60%。
+- [x] short I/O/error/zero baseline 不是合法样本。
+- [x] 证明 request path 无 unbounded per-request allocation。
+- [x] 每个 lifecycle failure point 注入后 exact cleanup 与 service restore。
+- [x] JSON validator 对 threshold 和 cleanup 全部通过。
 
 ### M2-V7 20-cycle Release soak
 
-- [ ] 用同一 accepted Release build 跑 20 个完整 cycle。
-- [ ] 每轮：create→read/write verified data→ZERO/UNMAP→delete→remove exact device→stop provider。
-- [ ] 每轮可用 64 MiB deterministic region；不得用它替代 V5 的 4 GiB gate。
-- [ ] 每轮记录 checksum、stats、memory、handles、threads、device ID、cleanup。
-- [ ] 每轮后 disk/volume/mount/service/device baseline 一致。
-- [ ] 20 轮零 leaked provider device/store thread/arena reservation/mount/service mutation。
-- [ ] 任一轮失败则整项 V7 FAIL；修复后从第 1 轮重新跑新 evidence run。
+- [x] 用同一 accepted Release build 跑 20 个完整 cycle。
+- [x] 每轮：create→read/write verified data→ZERO/UNMAP→delete→remove exact device→stop provider。
+- [x] 每轮可用 64 MiB deterministic region；不得用它替代 V5 的 4 GiB gate。
+- [x] 每轮记录 checksum、stats、memory、handles、threads、device ID、cleanup。
+- [x] 每轮后 disk/volume/mount/service/device baseline 一致。
+- [x] 20 轮零 leaked provider device/store thread/arena reservation/mount/service mutation。
+- [x] 任一轮失败则整项 V7 FAIL；修复后从第 1 轮重新跑新 evidence run。
 
 ### 最终回归和 acceptance 文档
 
-- [ ] final M1 full regression 通过。
-- [ ] final M2-V1..V4 通过或与同一 commit 的 fresh canonical run 关联。
-- [ ] 所有 canonical JSON 再跑 `Verify-M2Json.ps1`。
-- [ ] Task 21 的 functional/cleanup 与本任务 memory/performance 全通过后，才标记 M2-C PASS。
-- [ ] acceptance 每一项包含：command、exit code、evidence path、observed、threshold、result。
-- [ ] 列出所有失败 attempts 与修复 commits，不删除历史。
-- [ ] 写明稳定 M3 handoff：IBlockDevice、immutable IBackingStore、BackingView、snapshot/cursor/base generation、install-before-ack、exact version/kind/generation ack、stats、limits。
-- [ ] 明确 M2 未实现 durable persistence/journal/checkpoint/file backing。
-- [ ] 只有全部 gate 通过才写 `M2 GO`；否则必须写 `M2 NO-GO` 和 root cause。
-- [ ] performance-only miss 仍为 `M2 NO-GO`。
-- [ ] corruption、dirty loss、resurrection、cleanup ambiguity 不可 waiver。
-- [ ] `git diff --check`、Release build、最终 worktree/status 审查完成。
-- [ ] 回读完整 Plan Definition of done，逐句打勾并写最终偏航检查。
-- [ ] 建议提交：`docs(m2): issue dynamic block store acceptance verdict`。
+- [x] final M1 full regression 通过。
+- [x] final M2-V1..V4 通过或与同一 commit 的 fresh canonical run 关联。
+- [x] 所有 canonical JSON 再跑 `Verify-M2Json.ps1`。
+- [x] Task 21 的 functional/cleanup 与本任务 memory/performance 全通过后，才标记 M2-C PASS。
+- [x] acceptance 每一项包含：command、exit code、evidence path、observed、threshold、result。
+- [x] 列出所有失败 attempts 与修复 commits，不删除历史。
+- [x] 写明稳定 M3 handoff：IBlockDevice、immutable IBackingStore、BackingView、snapshot/cursor/base generation、install-before-ack、exact version/kind/generation ack、stats、limits。
+- [x] 明确 M2 未实现 durable persistence/journal/checkpoint/file backing。
+- [x] 只有全部 gate 通过才写 `M2 GO`；否则必须写 `M2 NO-GO` 和 root cause。
+- [x] performance-only miss 仍为 `M2 NO-GO`。
+- [x] corruption、dirty loss、resurrection、cleanup ambiguity 不可 waiver。
+- [x] `git diff --check`、Release build、最终 worktree/status 审查完成。
+- [x] 回读完整 Plan Definition of done，逐句打勾并写最终偏航检查。
+- [x] 建议提交：`docs(m2): issue dynamic block store acceptance verdict`。
 
 ---
 
@@ -1153,23 +1153,23 @@ Executor / timestamp:
 
 以下任何一项未打勾，都不能把总状态或验收报告写成 `M2 GO`：
 
-- [ ] M1 在最终 M2 commit 上仍为 fresh PASS。
-- [ ] 64 GiB 和 1 TiB reserve 不导致同比例 commit/per-block metadata。
-- [ ] read/write/ZERO/UNMAP byte correctness 通过 model、proxy、NTFS 三层证明。
-- [ ] 第一次访问才 load；same-block miss single-flight；AllZero 不 commit data page。
-- [ ] ResidentClean 可回收；dirty/zero override 永不 eviction/丢失/backing resurrection。
-- [ ] soft/hard limits、budget、read-through、resource exhaustion 正确。
-- [ ] cancel/deadline/fault/shutdown 无 hang、无半状态、无泄漏。
-- [ ] dirty snapshot/version/exact ack 在并发 mutation 下正确。
-- [ ] immutable successor view 原子安装；ack-before-install 失败；exact ack 后 eviction/reload 不复活 predecessor 数据。
-- [ ] deterministic 100,000 model PASS。
-- [ ] M2-A、M2-B、M2-C 均 PASS。
-- [ ] real NTFS verified data >=4 GiB，DeleteNotify/ReTrim/UNMAP 证据完整。
-- [ ] empty/1 GiB growth/90% release 三项内存门槛 PASS。
-- [ ] sequential 70% 与 random 60% 性能门槛 PASS。
-- [ ] 20-cycle Release soak PASS。
-- [ ] exact device cleanup、service restore、disk/volume/mount/resource baseline PASS。
-- [ ] acceptance 报告和 JSON validator 均给出 `M2 GO`。
+- [x] M1 在最终 M2 commit 上仍为 fresh PASS。
+- [x] 64 GiB 和 1 TiB reserve 不导致同比例 commit/per-block metadata。
+- [x] read/write/ZERO/UNMAP byte correctness 通过 model、proxy、NTFS 三层证明。
+- [x] 第一次访问才 load；same-block miss single-flight；AllZero 不 commit data page。
+- [x] ResidentClean 可回收；dirty/zero override 永不 eviction/丢失/backing resurrection。
+- [x] soft/hard limits、budget、read-through、resource exhaustion 正确。
+- [x] cancel/deadline/fault/shutdown 无 hang、无半状态、无泄漏。
+- [x] dirty snapshot/version/exact ack 在并发 mutation 下正确。
+- [x] immutable successor view 原子安装；ack-before-install 失败；exact ack 后 eviction/reload 不复活 predecessor 数据。
+- [x] deterministic 100,000 model PASS。
+- [x] M2-A、M2-B、M2-C 均 PASS。
+- [x] real NTFS verified data >=4 GiB，DeleteNotify/ReTrim/UNMAP 证据完整。
+- [x] empty/1 GiB growth/90% release 三项内存门槛 PASS。
+- [x] sequential 70% 与 random 60% 性能门槛 PASS。
+- [x] 20-cycle Release soak PASS。
+- [x] exact device cleanup、service restore、disk/volume/mount/resource baseline PASS。
+- [x] acceptance 报告和 JSON validator 均给出 `M2 GO`。
 
 ---
 
@@ -1542,3 +1542,19 @@ Evidence paths: `reports/m2-task21/e0ee6d2/` contains V1, V2/detail, two V3, V4,
 Defect/retry audit: no Task 21 gate failed and no stop condition fired. The verbose V2 selection only captured diagnostics from two already-passing tests; it was not failure recovery. No JSON, threshold, cleanup target, test label, product source, or evidence file was edited to obtain a pass.
 Plan drift audit: M2-A and M2-B are formally PASS, and only the functional/cleanup portion of M2-C is PASS. Full M2-C and `M2 GO` remain unclaimed until Task 22 implements and passes V6 memory/performance/fault evidence, V7 20-cycle Release soak, final M1/M2 regression, and canonical report validation. No M3/M4 or durable persistence work began.
 Executor / timestamp: Codex / `2026-08-04T08:45:00+08:00`
+
+Task: 22 — Performance/fault gates, 20-cycle soak, and final M2 verdict
+Status: DONE
+Start commit / end commit: `da0637d` / pending commit `docs(m2): issue dynamic block store acceptance verdict`
+Implementation and defect commits: `d479906`, `587871d`, `4a8b322`, `211fe14`, `ef48f30`, `6b76170`, `ca83de4`
+Files changed: Task 22 orchestration/fault-injection/report verification and their tests; final resource-policy/stabilization fixes; this checklist and `docs/validation/m2-dynamic-block-store-acceptance.md`
+Red tests and observed failures: report path length, guessed fault fields, equal fast-fault timestamps, and raw-disk identity were fixed test-first. V7 run `m2-v7-20260804-093800-da3d99c8f563` failed at cycle 12 on released threads `4 -> 2`; `6b76170` unified the non-growth leak policy and valid resource-only NO-GO evidence. V7 run `m2-v7-20260804-100050-e5bfd31c0cb5` failed at cycle 7 on transient handles `119 -> 120`; `ca83de4` added a bounded 20 x 50 ms stabilization window without waiving persistent growth. Every executable change forced a fresh V6 and a V7 restart at cycle 1.
+Focused verification command / exit code: final M2-V6 exits 0 and independent `Verify-M2Json.ps1 -Tier M2-V6` exits 0; aggregate `out/m2-orchestrated/m2-v6-20260804-100956-df15869849e7/m2-v6-aggregate.json`, SHA-256 `A0DA6F51FDDFE0975E0234DC11F56BA70E76A9961D3AF53424D96C1C702E67EF`
+V6 evidence: Ready/fixed metadata 102,400 bytes <=128 MiB; 1 GiB write growth 1,079,177,216 bytes <=1.10 GiB plus fixed metadata; 1,076,420,608 bytes reclaimed in 30 ms versus >=966,367,641 within 10 s; request private growth 0 with constant-space descriptors and 8 MiB maximum request allocation; sequential/random ratios 11,605/7,844 basis points versus 7,000/6,000; all 10 real failure points exact-cleanup PASS
+Soak verification command / exit code: final M2-V7 exits 0; independent `Verify-M2Json.ps1 -Tier M2-V7` exits 0; aggregate `out/m2-orchestrated/m2-v7-20260804-101335-0ff845aa6db8/m2-v7-aggregate.json`, SHA-256 `B9DCC2E54CCD726597E494C5DBF406C1CD972D9515CA57D0094867BC9F627B04`
+V7 evidence: 20/20 full 4 GiB GPT/NTFS/hash/DeleteNotify/ReTrim cycles returned GO and exact structural/resource cleanup; total write/read 85,899,345,920 bytes and delete 42,949,672,960 bytes; sequential range 9,238-15,420 and random range 7,260-9,833 basis points; no failed run was reused
+Cumulative verification command / exit code: clean-first final Release build exits 0 and full CTest passes 57/57; the V7 tail freshly passes M2-V1, M2-V2, M2-V3 twice, M2-V4, and M1-V2 with every exit code 0; candidate commit `ca83de4e274849b7defdd4d0ec1bbaa3840993a6`, executable SHA-256 `86A85457D44D1B25089A6033B11FF3D221B2CEE778BA8D3A47690A175FDBBA63`
+Plan drift audit: the complete Plan Definition of done was reread and every statement is covered by final candidate evidence. M2-A, M2-B, and M2-C are PASS and the only allowed final verdict is `M2 GO`. M2 does not implement or claim durable file backing, journal, checkpoint, timed writeback, crash recovery, M3, or M4.
+M3 handoff: stable `IBlockDevice`, immutable `IBackingStore`/`BackingView`, snapshot/cursor/base generation, install-before-ack, exact version/kind/generation ack, stats, limits, and anti-resurrection behavior are accepted without contract redesign.
+Open risks: durable persistence and crash/power-loss behavior remain explicitly assigned to M3/M4; they are outside M2 GO.
+Executor / timestamp: Codex / `2026-08-04T10:31:00+08:00`
