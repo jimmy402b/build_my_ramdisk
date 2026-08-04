@@ -371,9 +371,13 @@ private:
         const auto elapsed = std::chrono::duration_cast<
             std::chrono::milliseconds>(
                 clock_.steady_now() - run_started_steady_);
-        const auto elapsed_ms =
+        auto elapsed_ms =
             elapsed.count() < 0 ? 0 : static_cast<std::uint64_t>(
                 elapsed.count());
+        if (!report_.os_memory_samples.empty() &&
+            elapsed_ms <= report_.os_memory_samples.back().elapsed_ms) {
+            elapsed_ms = report_.os_memory_samples.back().elapsed_ms + 1;
+        }
         report_.store_stats_samples.push_back(
             {point, captured, std::move(sample.store_stats)});
         report_.os_memory_samples.push_back({

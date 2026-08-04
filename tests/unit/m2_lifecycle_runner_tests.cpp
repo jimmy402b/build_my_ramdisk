@@ -834,6 +834,21 @@ TEST_CASE(m2_lifecycle_every_injected_main_phase_uses_owned_resource_cleanup) {
     }
 }
 
+TEST_CASE(m2_lifecycle_fast_fault_samples_keep_strict_elapsed_order) {
+    Fixture fixture(FailAt::none, 0ms);
+    const auto report = fixture.run(
+        {}, 5s, myrd::M2PhaseId::start_provider);
+
+    REQUIRE_EQ(report.verdict, myrd::M2Verdict::no_go);
+    REQUIRE_EQ(fixture.probe.publish_calls, 1u);
+    REQUIRE_EQ(report.os_memory_samples.size(), 2u);
+    REQUIRE(
+        report.os_memory_samples[1].elapsed_ms >
+        report.os_memory_samples[0].elapsed_ms);
+    REQUIRE(myrd::validate_m2_report_json(
+                myrd::serialize_m2_report(report)).ok());
+}
+
 TEST_CASE(m2_lifecycle_publish_failure_returns_no_go_without_claiming_publication) {
     Fixture fixture(FailAt::publish_report);
     const auto report = fixture.run();
