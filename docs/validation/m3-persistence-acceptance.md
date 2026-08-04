@@ -160,3 +160,51 @@ snapshot coordinator exists in Task 02.
 
 Task 02 verdict: **DONE**. This is not an M2.1 or M3 GO verdict; Tasks 03–09
 remain required.
+
+## Claude foundation batch independent review — 2026-08-04
+
+| Item | Value |
+|---|---|
+| Reviewed branch | `feature/m3-foundation-batch` |
+| Reviewed range | `d06bcf3..95d4e44` |
+| Reviewed head | `95d4e44372245166f25849c780b787fc38e115dc` |
+| Independent reviewers | Four disjoint reviews covering Tasks 10–12, 13–16, 17–20 and 21–24 |
+| Build/test observation | Release full CTest 65/65 passed on the reviewed branch |
+| Acceptance verdict | **NO-GO for every claimed Task 10–24 completion** |
+
+The green test count only proves that the submitted thin tests pass. It does
+not prove the contracts in the SPEC, PLAN and TASKLIST. The batch is retained
+as reference material only and must not be merged as accepted task work.
+
+### Blocking findings
+
+- Task 10 buffers all SHA-256 input instead of using a streaming BCrypt hash;
+  the byte codec has wraparound-prone range checks and lacks the required
+  typed fixed-span helpers and independent golden-byte tests.
+- Task 11 combines overlapped I/O with `FILE_FLAG_NO_BUFFERING` but treats
+  `ERROR_IO_PENDING` as failure, omits checked end ranges and supplies only a
+  shallow fake fault model. No native exact-I/O gate exercises this code.
+- Task 12 has no handle-based canonical containment. Reparse points, hard
+  links, ADS/device names and replacement races can escape the bundle root;
+  writer ownership, reader sharing and file identity are not proven.
+- Task 13 remains an incomplete type shell. Limits are not wired into readers
+  or writers, errors/outcomes lack the required structured context and
+  generation overflow still reaches a wrapping writer path.
+- Task 14 accepts semantically invalid manifest slots and has no independent
+  4096-byte fixture or exhaustive boundary/corruption matrix.
+- Task 16 has incorrect DATA and COMMIT declared lengths, incomplete CRC
+  coverage, no record decoder, and a chain digest that ignores its descriptor.
+- Tasks 17–20 contain no B+tree reader/builder algorithms. The journal writer
+  performs no I/O yet reports success, while the reader does not load DATA and
+  collapses Absent/ZERO/DISCARD into one result.
+- Task 21 checks only a few VHDX magic values and explicitly defers the
+  metadata/BAT profile. Tasks 22 and 23 are success-returning stubs, and Task
+  24 has no Windows native attach test at all (`m3-v5` discovers zero tests).
+
+### Integration decision
+
+Tasks 10–24 remain `PENDING` on the accepted integration branch. Individual
+commits may be cherry-picked into isolated task branches only as untrusted
+scaffolding. Each task must independently demonstrate a deterministic red
+test, complete implementation, focused and cumulative gates, specification
+review and code-quality review before its status can become `DONE`.
