@@ -788,6 +788,30 @@ set_tests_properties(unit.m3.file_io PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 30)
 
+# ---- M3 secure bundle paths and identities (Task 12) -----------------------
+add_executable(myrd_m3_writer_lock_helper
+    helpers/m3_writer_lock_helper.cpp
+)
+target_link_libraries(myrd_m3_writer_lock_helper PRIVATE myrd_persistence)
+target_include_directories(myrd_m3_writer_lock_helper PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_writer_lock_helper)
+
+add_executable(myrd_m3_persistence_path_tests
+    unit/m3_persistence_path_tests.cpp
+)
+add_dependencies(myrd_m3_persistence_path_tests myrd_m3_writer_lock_helper)
+target_link_libraries(myrd_m3_persistence_path_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_persistence_path_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/support")
+myrd_enable_warnings(myrd_m3_persistence_path_tests)
+add_test(NAME unit.m3.persistence_path COMMAND myrd_m3_persistence_path_tests)
+set_tests_properties(unit.m3.persistence_path PROPERTIES
+    LABELS "m3-v1"
+    TIMEOUT 30)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp

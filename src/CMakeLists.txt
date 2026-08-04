@@ -159,6 +159,12 @@ add_library(myrd_persistence STATIC
     persistence/persistence_types.cpp
     persistence/file_io.h
     persistence/file_io.cpp
+    persistence/file_identity.h
+    persistence/file_identity.cpp
+    persistence/image_paths.h
+    persistence/image_paths.cpp
+    persistence/writer_lock.h
+    persistence/writer_lock.cpp
 )
 target_include_directories(myrd_persistence PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_persistence PUBLIC myrd_storage myrd_common bcrypt)

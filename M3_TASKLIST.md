@@ -162,7 +162,7 @@ Suggested commit:
 | 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
 | 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
 | 11 | Exact file I/O 与 sparse fake | C | DONE | 10 | M3-V1 |
-| 12 | 路径、文件身份、writer lock | C | PENDING | 11 | M3-V1 |
+| 12 | 路径、文件身份、writer lock | C | READY_FOR_REVIEW | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | PENDING | 13 | M3-V1 |
 | 15 | 完整双槽 candidate 选择 | O | PENDING | 14,20,22 | M3-V2 |
@@ -349,11 +349,29 @@ Suggested commit: feat(storage): snapshot zero and discard transitions
 
 **类别：C。允许文件：** `src/persistence/image_paths.*`、`file_identity.*`、`writer_lock.*`、tests。
 
-- [ ] 红灯覆盖相对/绝对逃逸、`..`、symlink/junction/reparse、hard link、case/Unicode、替换文件和 concurrent writer。
-- [ ] 路径先 canonicalize 再验证在 bundle root；打开后以 volume serial/file ID/size 等身份复核，禁止只信文件名。
-- [ ] writer lock 绑定 manifest identity；读者可并发，第二 writer 返回稳定 Busy，不偷锁。
-- [ ] cleanup API 只接收已验证 bundle-owned identity。
-- [ ] 跑 `m3-v1` 中当前可用项目；建议提交 `feat(persistence): secure image paths and identities`。
+**执行记录（READY_FOR_REVIEW）：**
+
+- Executor / timestamp: Codex / 2026-08-04T20:36:56+08:00
+- Start commit / branch: `a280de5e31f485b31cef75db1d3aa76be1840a9b` / `feature/m3-task12`
+- Allowed files: `src/persistence/image_paths.*`、`file_identity.*`、`writer_lock.*`、对应 tests/CMake、本任务状态与记录。
+- Dependencies: Task 11 为 `DONE`；基线提交包含 `49f9731`、`dad0c6d`、`42b71ff`、`68a4190` 与验收提交 `a280de5`。
+- Baseline: `cmake --preset msvc`、Release build、`ctest --preset release -L m3-v1 --output-on-failure`（2/2）、完整 Release CTest（61/61）均退出 0。
+- Assumptions: 文件名仍只允许一个 UTF-8 相对 component；Task 12 仅定义最小稳定错误类型并标注 Task 13 迁移点；不实现 manifest codec 或 Task 13 outcome。
+- Actual files: `src/persistence/file_identity.*`、`image_paths.*`、`writer_lock.*`、`src/CMakeLists.txt`、`tests/unit/m3_persistence_path_tests.cpp`、`tests/helpers/m3_writer_lock_helper.cpp`、`tests/CMakeLists.txt`、本记录。
+- Red tests: Debug target 首次因缺少 `file_identity.h`、第二次因缺少 `writer_lock.h` 编译失败（C1083，退出 1）；新增 hardlink-after-validation 期望 `HardLink`、case-sensitive sibling、按值 manifest identity static assert、intermediate junction swap 均先稳定失败（退出 1），再逐项实现转绿。
+- Implementation: 严格 UTF-8 单 component/DOS device 校验；handle-opened normalized final path；root/target/target-parent volume serial + 128-bit file ID 与 size/attrs/reparse/link-count；reparse/hardlink fail-closed；handle-anchored inspection/mutation capability；cleanup 前重新验证；manifest identity 绑定的进程内竞态防护 + 跨进程 `LockFileEx`；正常/异常退出 RAII 释放。
+- Verification: Debug focused 1/1；Release focused 1/1；Release high-risk repeat 20/20；当前 `m3-v1` 3/3；完整 Release 62/62；`git diff --check` 退出 0。
+- Self-review: 逐文件审查发现并修复 case-sensitive `Bundle`/`bundle` 父目录误判、中间 junction 换向后从原始路径 reopen、`manifest_identity()` 悬空引用，以及 cleanup 后增 hardlink 的错误分类；所有缺陷均有回归测试。
+- Evidence: `tests/unit/m3_persistence_path_tests.cpp` SHA-256 `6F546F01BEC4C316EEC030495B1D71126EFDDCF223EF2C76EA957EC4134DEF05`；Release `myrd_m3_persistence_path_tests.exe` SHA-256 `5E0AFF0B6C4BA54E49D5D6F33E2E9B4DA1F4C790EA756A6F1647BC8F861ABFC3`。
+- Drift audit: 未修改 M1 protocol、AIM contract、M2 block 语义、checkpoint durability 顺序或 M4 边界；仅新增 Task 12 最小稳定错误码并明确 Task 13 迁移；cleanup capability 只授予路径/identity/writer 权限，Task 36 仍必须另外证明 manifest/BackingView/in-flight/reconciliation retention 条件。
+- Open risks / excluded follow-up: Task 13 合并完整 persistence error context；后续 codec 必须消费/适配已验证 handle，禁止按 `final_path()` 重新打开；Task 36 实现引用保留策略。独立审查委派因 Claude API `ConnectionRefused` 未产出结论，因此本任务按用户要求停在 `READY_FOR_REVIEW`，不置 `DONE`。
+- Suggested commit: `feat(persistence): secure image paths and identities`。
+
+- [x] 红灯覆盖相对/绝对逃逸、`..`、symlink/junction/reparse、hard link、case/Unicode、替换文件和 concurrent writer。
+- [x] 路径先 canonicalize 再验证在 bundle root；打开后以 volume serial/file ID/size 等身份复核，禁止只信文件名。
+- [x] writer lock 绑定 manifest identity；读者可并发，第二 writer 返回稳定 Busy，不偷锁。
+- [x] cleanup API 只接收已验证 bundle-owned identity。
+- [x] 跑 `m3-v1` 中当前可用项目；建议提交 `feat(persistence): secure image paths and identities`。
 
 ## Task 13 — Persistence 稳定类型、错误与 outcome
 
