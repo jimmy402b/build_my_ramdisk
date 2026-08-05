@@ -529,6 +529,79 @@ private:
     bool release_ready_event_{};
 };
 
+class Task07AbortRaceObserver final
+    : public myrd::ISnapshotPressureTestObserver {
+public:
+    void on_snapshot_pressure_event(
+        myrd::SnapshotPressureTestEvent event,
+        std::uint64_t block_index) noexcept override {
+        std::unique_lock lock(mutex_);
+        if (event == myrd::SnapshotPressureTestEvent::PreparingPublished &&
+            block_index == 0) {
+            preparing_published_ = true;
+            condition_.notify_all();
+            condition_.wait(lock, [this] { return release_preparing_; });
+        } else if (
+            event == myrd::SnapshotPressureTestEvent::CapacityWaitReady &&
+            block_index == 1) {
+            capacity_ready_ = true;
+            condition_.notify_all();
+            condition_.wait(lock, [this] { return release_capacity_; });
+        } else if (
+            event ==
+                myrd::SnapshotPressureTestEvent::CapacityWaitSleeping &&
+            block_index == 1) {
+            capacity_sleeping_ = true;
+            condition_.notify_all();
+        }
+    }
+
+    [[nodiscard]] bool wait_preparing(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(lock, deadline, [this] {
+            return preparing_published_;
+        });
+    }
+
+    [[nodiscard]] bool wait_capacity_ready(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(lock, deadline, [this] {
+            return capacity_ready_;
+        });
+    }
+
+    [[nodiscard]] bool wait_capacity_sleeping(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(lock, deadline, [this] {
+            return capacity_sleeping_;
+        });
+    }
+
+    void release_preparing() noexcept {
+        std::scoped_lock lock(mutex_);
+        release_preparing_ = true;
+        condition_.notify_all();
+    }
+
+    void release_capacity() noexcept {
+        std::scoped_lock lock(mutex_);
+        release_capacity_ = true;
+        condition_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool preparing_published_{};
+    bool capacity_ready_{};
+    bool capacity_sleeping_{};
+    bool release_preparing_{};
+    bool release_capacity_{};
+};
+
 myrd::SnapshotPreimage metadata_preimage(
     std::uint64_t block_index,
     std::uint64_t version,
@@ -941,6 +1014,92 @@ TEST_CASE(m2_1_task07_manual_clock_stall_aborts_once_and_writer_continues) {
     REQUIRE_EQ(current_second, as_vector(second_replacement));
     REQUIRE(store->validate_invariants_for_test().ok());
     cleanup.release();
+}
+
+TEST_CASE(m2_1_task07_stall_abort_preserves_pending_reservation_owner) {
+    const auto initial_time = std::chrono::steady_clock::time_point{
+        std::chrono::milliseconds{20'000}};
+    auto clock = std::make_shared<Task07ManualClock>(initial_time);
+    auto observer = std::make_shared<Task07AbortRaceObserver>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 2, 7);
+    args.options.snapshot_cow_max_bytes =
+        myrd::kMinimumSnapshotCowBytes;
+    const auto stall_limit = args.options.snapshot_writer_stall_limit;
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.snapshot_pressure_clock = clock;
+    dependencies.snapshot_pressure_test_observer = observer;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        std::move(args), std::move(dependencies));
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+
+    const std::array first_block{myrd::DataRange{
+        0, myrd::kBlockSizeBytes}};
+    REQUIRE(store->zero(bounded_context(), first_block).ok());
+    REQUIRE(store->write(
+        bounded_context(),
+        myrd::kBlockSizeBytes,
+        block_data(0x31)).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+
+    std::atomic<std::uint32_t> metadata_code{kNoResult};
+    std::atomic<std::uint32_t> data_code{kNoResult};
+    std::jthread metadata_writer([&] {
+        const auto result = store->unmap(
+            myrd::OperationContext{}, first_block);
+        metadata_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+    });
+    std::jthread data_writer;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        observer->release_capacity();
+        observer->release_preparing();
+        if (data_writer.joinable()) {
+            data_writer.join();
+        }
+        if (metadata_writer.joinable()) {
+            metadata_writer.join();
+        }
+    });
+    REQUIRE(observer->wait_preparing(
+        std::chrono::steady_clock::now() + kWaitBound));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               myrd::kSnapshotCowRecordBudgetBytes);
+
+    data_writer = std::jthread([&] {
+        const auto result = store->write(
+            myrd::OperationContext{},
+            myrd::kBlockSizeBytes,
+            block_data(0x42));
+        data_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+    });
+    REQUIRE(observer->wait_capacity_ready(
+        std::chrono::steady_clock::now() + kWaitBound));
+    observer->release_capacity();
+    REQUIRE(observer->wait_capacity_sleeping(
+        std::chrono::steady_clock::now() + kWaitBound));
+
+    clock->advance(
+        stall_limit +
+        std::chrono::milliseconds{1});
+    myrd::DynamicBlockStoreTestAccess::notify_snapshot_capacity_waiters(
+        *store);
+    data_writer.join();
+    REQUIRE_EQ(data_code.load(std::memory_order_acquire), 0u);
+
+    observer->release_preparing();
+    metadata_writer.join();
+    cleanup.release();
+
+    REQUIRE_EQ(metadata_code.load(std::memory_order_acquire), 0u);
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
+    REQUIRE(store->validate_invariants_for_test().ok());
 }
 
 TEST_CASE(m2_1_task07_close_wakes_capacity_waiter_then_releases_snapshot) {
@@ -1513,7 +1672,7 @@ TEST_CASE(m2_1_task07_metadata_preparing_marker_preserves_zero_and_discard) {
     }
 }
 
-TEST_CASE(m2_1_task07_abort_resolves_coordinator_before_preparing_marker) {
+TEST_CASE(m2_1_task07_abort_returns_before_paused_preparing_owner_drains) {
     auto observer = std::make_shared<Task07PreparingObserver>();
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto args = backing_args(backing, 1, 7);
@@ -1561,8 +1720,12 @@ TEST_CASE(m2_1_task07_abort_resolves_coordinator_before_preparing_marker) {
     REQUIRE(observer->wait_reader_ready(
         std::chrono::steady_clock::now() + kWaitBound));
     REQUIRE(store->abort_consistent_snapshot(begun.value()).ok());
-    REQUIRE(observer->wait_marker_wait_ready(
-        std::chrono::steady_clock::now() + kWaitBound));
+    const auto aborting =
+        store->consistent_snapshot_status(begun.value());
+    REQUIRE(aborting.ok());
+    REQUIRE_EQ(
+        aborting.value().state,
+        myrd::ConsistentSnapshotState::Aborted);
     REQUIRE(!reader_returned.load(std::memory_order_acquire));
 
     observer->release_owner();
@@ -1655,7 +1818,7 @@ TEST_CASE(m2_1_task07_close_drains_a_paused_preparing_owner) {
     REQUIRE_EQ(stats.snapshot_cow_records, 0ull);
 }
 
-TEST_CASE(m2_1_task07_abort_waits_for_active_data_fill_without_holding_locks) {
+TEST_CASE(m2_1_task07_abort_returns_before_active_data_fill_drains) {
     auto observer = std::make_shared<Task07ActiveFillObserver>();
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto args = backing_args(backing, 1, 7);
@@ -1709,7 +1872,9 @@ TEST_CASE(m2_1_task07_abort_waits_for_active_data_fill_without_holding_locks) {
                status.value().state ==
                    myrd::ConsistentSnapshotState::Aborted;
     }));
-    REQUIRE_EQ(abort_code.load(std::memory_order_acquire), kNoResult);
+    REQUIRE(wait_until([&] {
+        return abort_code.load(std::memory_order_acquire) == 0;
+    }));
     REQUIRE(store->validate_invariants_for_test().ok());
 
     observer->release();

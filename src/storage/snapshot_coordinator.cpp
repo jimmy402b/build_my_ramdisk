@@ -521,6 +521,22 @@ public:
             });
     }
 
+    void finalize_explicit_abort_if_drained() noexcept {
+        if (!abort_finalize_requested || closing ||
+            active_state != ConsistentSnapshotState::Aborted ||
+            pending_reservations != 0 || has_active_fill() ||
+            !capacity_waiters.empty() || capacity_grant.has_value()) {
+            return;
+        }
+        clear_records();
+        active_token.reset();
+        active_state.reset();
+        abort_reason.reset();
+        next_scan_block = 0;
+        abort_finalize_requested = false;
+        condition.notify_all();
+    }
+
     mutable std::mutex mutex;
     std::condition_variable condition;
     SnapshotRecordBudget budget;
@@ -541,6 +557,7 @@ public:
     std::uint64_t next_capacity_ticket{1};
     std::uint64_t writer_stalls_total{};
     std::uint64_t auto_aborts_total{};
+    bool abort_finalize_requested{};
     bool closing{};
     std::atomic<bool> preimage_lookup_entered_for_test{};
 };
@@ -1005,6 +1022,7 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
     if (state_->active_state != ConsistentSnapshotState::Active) {
         state_->erase_record(record);
         reservation.owner_state_.reset();
+        state_->finalize_explicit_abort_if_drained();
         state_->condition.notify_all();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
@@ -1242,6 +1260,7 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         state_->active_state != ConsistentSnapshotState::Active ||
         state_->closing) {
         unregister();
+        state_->finalize_explicit_abort_if_drained();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
             L"snapshot ended while waiting for COW capacity"));
@@ -1264,11 +1283,7 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         ++state_->auto_aborts_total;
         state_->capacity_grant.reset();
         unregister();
-        if (state_->has_active_fill()) {
-            state_->clear_committed_records();
-        } else {
-            state_->clear_records();
-        }
+        state_->clear_committed_records();
         state_->condition.notify_all();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
@@ -1410,7 +1425,7 @@ Result<void> SnapshotCoordinator::finish(
 
 Result<void> SnapshotCoordinator::abort(
     const ConsistentSnapshotToken& token) {
-    std::unique_lock lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
@@ -1418,17 +1433,11 @@ Result<void> SnapshotCoordinator::abort(
     }
     state_->active_state = ConsistentSnapshotState::Aborted;
     state_->abort_reason = DynamicBlockStoreErrorCode::SnapshotAborted;
+    state_->abort_finalize_requested = true;
     state_->capacity_grant.reset();
+    state_->clear_committed_records();
     state_->condition.notify_all();
-    state_->condition.wait(lock, [this] {
-        return !state_->has_active_fill();
-    });
-    state_->clear_records();
-    state_->active_token.reset();
-    state_->active_state.reset();
-    state_->abort_reason.reset();
-    state_->next_scan_block = 0;
-    state_->condition.notify_all();
+    state_->finalize_explicit_abort_if_drained();
     return Result<void>::success();
 }
 
@@ -1500,6 +1509,7 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
     } else if (!state_->records.empty() ||
                state_->next_scan_block != 0 ||
                state_->abort_reason.has_value() ||
+               state_->abort_finalize_requested ||
                !state_->capacity_waiters.empty() ||
                state_->capacity_grant.has_value()) {
         return invariant_failure(
@@ -1679,10 +1689,11 @@ void SnapshotCoordinator::finalize_close() noexcept {
         }
         state_->clear_records();
         state_->capacity_grant.reset();
-        state_->active_token.reset();
-        state_->active_state.reset();
-        state_->abort_reason.reset();
-        state_->next_scan_block = 0;
+    state_->active_token.reset();
+    state_->active_state.reset();
+    state_->abort_reason.reset();
+    state_->next_scan_block = 0;
+    state_->abort_finalize_requested = false;
         state_->condition.notify_all();
     } catch (...) {
         std::terminate();
@@ -1706,6 +1717,7 @@ void SnapshotCoordinatorState::abandon(
                 record->reservation_id ==
                     reservation.reservation_id_) {
                 erase_record(record);
+                finalize_explicit_abort_if_drained();
                 condition.notify_all();
             }
             reservation.owner_state_.reset();
