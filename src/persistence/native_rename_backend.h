@@ -38,6 +38,9 @@ public:
         DWORD timeout_ms) = 0;
     virtual void cancel(HANDLE file) noexcept = 0;
     [[nodiscard]] virtual ULONG status_to_dos(LONG status) noexcept = 0;
+    [[nodiscard]] virtual bool flush(
+        HANDLE file,
+        DWORD& native_error) noexcept = 0;
 };
 
 } // namespace myrd::persistence::detail

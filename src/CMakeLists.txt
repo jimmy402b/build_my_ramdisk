@@ -171,11 +171,14 @@ add_library(myrd_persistence STATIC
     persistence/vhdx_format.cpp
     persistence/vhdx_reader.h
     persistence/vhdx_reader.cpp
+    persistence/vhdx_writer.h
+    persistence/vhdx_writer.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h
     persistence/file_identity.cpp
     persistence/native_rename_backend.h
+    persistence/native_sparse_backend.h
     persistence/image_paths.h
     persistence/image_paths.cpp
     persistence/writer_lock.h

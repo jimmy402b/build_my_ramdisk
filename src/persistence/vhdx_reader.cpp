@@ -585,7 +585,20 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create(
     std::unique_ptr<ValidatedPersistenceFile> file,
     VhdxLayout layout,
     VhdxReaderOptions options) {
+    return create(
+        OperationContext{}, std::move(file), std::move(layout), options);
+}
+
+Result<std::unique_ptr<VhdxReader>> VhdxReader::create(
+    const OperationContext& context,
+    std::unique_ptr<ValidatedPersistenceFile> file,
+    VhdxLayout layout,
+    VhdxReaderOptions options) {
     constexpr auto operation = L"VhdxReader::create";
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<std::unique_ptr<VhdxReader>>::failure(live.error());
+    }
     if (!file) {
         return reader_failure<std::unique_ptr<VhdxReader>>(
             L"validated VHDX file is missing",
@@ -593,6 +606,7 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create(
     }
     const auto identity = file->observed_identity();
     return create_owned(
+        context,
         std::unique_ptr<IPersistenceFile>(std::move(file)),
         identity, std::move(layout), options);
 }
@@ -603,18 +617,35 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create_for_testing(
     WindowsFileIdentity windows_identity,
     VhdxLayout layout,
     VhdxReaderOptions options) {
+    return create_for_testing(
+        OperationContext{}, std::move(file), std::move(windows_identity),
+        std::move(layout), options);
+}
+
+Result<std::unique_ptr<VhdxReader>> VhdxReader::create_for_testing(
+    const OperationContext& context,
+    std::unique_ptr<IPersistenceFile> file,
+    WindowsFileIdentity windows_identity,
+    VhdxLayout layout,
+    VhdxReaderOptions options) {
     return create_owned(
+        context,
         std::move(file), std::move(windows_identity),
         std::move(layout), options);
 }
 #endif
 
 Result<std::unique_ptr<VhdxReader>> VhdxReader::create_owned(
+    const OperationContext& context,
     std::unique_ptr<IPersistenceFile> file,
     WindowsFileIdentity windows_identity,
     VhdxLayout layout,
     VhdxReaderOptions options) {
     constexpr auto operation = L"VhdxReader::create";
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<std::unique_ptr<VhdxReader>>::failure(live.error());
+    }
     if (!file || options.bat_cache.max_entries == 0 ||
         options.bat_cache.max_bytes < kVhdxBatPageBytes ||
         options.bat_cache.max_entries >
@@ -628,7 +659,7 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create_owned(
     try {
         const std::shared_ptr<IPersistenceFile> parse_view(
             file.get(), [](IPersistenceFile*) noexcept {});
-        auto reparsed = parse_vhdx_layout(OperationContext{}, parse_view);
+        auto reparsed = parse_vhdx_layout(context, parse_view);
         if (!reparsed.ok()) {
             return Result<std::unique_ptr<VhdxReader>>::failure(
                 reparsed.error());
@@ -641,7 +672,7 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create_owned(
         auto impl = std::make_unique<Impl>(
             std::move(file), std::move(windows_identity),
             std::move(layout), options);
-        auto length = impl->verify_length(OperationContext{}, operation);
+        auto length = impl->verify_length(context, operation);
         if (!length.ok()) {
             return Result<std::unique_ptr<VhdxReader>>::failure(
                 length.error());

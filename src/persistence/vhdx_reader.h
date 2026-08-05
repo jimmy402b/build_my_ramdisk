@@ -55,9 +55,20 @@ public:
         std::unique_ptr<ValidatedPersistenceFile> file,
         VhdxLayout layout,
         VhdxReaderOptions options);
+    static Result<std::unique_ptr<VhdxReader>> create(
+        const OperationContext& context,
+        std::unique_ptr<ValidatedPersistenceFile> file,
+        VhdxLayout layout,
+        VhdxReaderOptions options);
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     static Result<std::unique_ptr<VhdxReader>> create_for_testing(
+        std::unique_ptr<IPersistenceFile> file,
+        WindowsFileIdentity windows_identity,
+        VhdxLayout layout,
+        VhdxReaderOptions options);
+    static Result<std::unique_ptr<VhdxReader>> create_for_testing(
+        const OperationContext& context,
         std::unique_ptr<IPersistenceFile> file,
         WindowsFileIdentity windows_identity,
         VhdxLayout layout,
@@ -85,6 +96,7 @@ private:
     struct Impl;
     explicit VhdxReader(std::unique_ptr<Impl> impl) noexcept;
     static Result<std::unique_ptr<VhdxReader>> create_owned(
+        const OperationContext& context,
         std::unique_ptr<IPersistenceFile> file,
         WindowsFileIdentity windows_identity,
         VhdxLayout layout,

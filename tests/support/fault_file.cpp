@@ -163,6 +163,8 @@ public:
         const std::span<const std::byte> source) override {
         std::unique_lock lock(state_->mutex_);
         const auto call = begin_locked(FaultFilePhase::Write);
+        record_request_locked(
+            FaultFilePhase::Write, call, offset, source.size());
         ScopeExit notify_observer([&] {
             lock.unlock();
             observe(FaultFilePhase::Write, call);
@@ -252,6 +254,12 @@ public:
         const std::uint64_t new_length) override {
         std::unique_lock lock(state_->mutex_);
         const auto call = begin_locked(FaultFilePhase::Truncate);
+        record_request_locked(
+            FaultFilePhase::Truncate, call, 0,
+            static_cast<std::size_t>((std::min)(
+                new_length,
+                static_cast<std::uint64_t>(
+                    (std::numeric_limits<std::size_t>::max)()))));
         ScopeExit notify_observer([&] {
             lock.unlock();
             observe(FaultFilePhase::Truncate, call);
@@ -476,6 +484,7 @@ private:
         const wchar_t* operation) {
         std::unique_lock lock(state_->mutex_);
         const auto call = begin_locked(phase);
+        record_request_locked(phase, call, 0, 0);
         ScopeExit notify_observer([&] {
             lock.unlock();
             observe(phase, call);

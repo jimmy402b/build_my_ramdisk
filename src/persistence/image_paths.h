@@ -40,6 +40,10 @@ validate_image_component(std::string_view utf8_name);
 
 namespace detail {
 struct WriterAuthorityState;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+class INativeRenameBackend;
+class INativeSparseBackend;
+#endif
 }
 
 class BundleWriterLock;
@@ -103,6 +107,9 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> create_bundle_file_for_mutation(
+        BundleWriterLock&,
+        std::string_view);
     friend Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
         BundleWriterLock&);
     friend class ValidatedPersistenceFile;
@@ -110,6 +117,8 @@ private:
         open_validated_persistence_file(ValidatedBundleFile&&);
     friend Result<void> truncate_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::uint64_t);
+    friend Result<void> mark_validated_bundle_file_sparse(
+        const OperationContext&, BundleWriterLock&, ValidatedBundleFile&);
     friend Result<void> rename_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::string_view);
     friend Result<void> rename_validated_bundle_file(
@@ -162,6 +171,7 @@ public:
     Result<void> close() override;
 
     [[nodiscard]] WindowsFileIdentity observed_identity() const;
+    [[nodiscard]] std::wstring observed_final_path() const;
     [[nodiscard]] Result<WindowsFileIdentity>
     verify_mutation_capability();
     [[nodiscard]] Result<ValidatedBundleFile>
@@ -203,6 +213,11 @@ open_bundle_file_for_mutation(
     std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
 
 [[nodiscard]] Result<ValidatedBundleFile>
+create_bundle_file_for_mutation(
+    BundleWriterLock& writer_lock,
+    std::string_view relative_name);
+
+[[nodiscard]] Result<ValidatedBundleFile>
 open_locked_manifest_for_mutation(BundleWriterLock& writer_lock);
 
 [[nodiscard]] Result<std::unique_ptr<ValidatedPersistenceFile>>
@@ -213,12 +228,23 @@ open_validated_persistence_file(ValidatedBundleFile&& capability);
     ValidatedBundleFile& file,
     std::uint64_t new_length);
 
+[[nodiscard]] Result<void> mark_validated_bundle_file_sparse(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file);
+
 [[nodiscard]] Result<void> rename_validated_bundle_file(
     BundleWriterLock& writer_lock,
     ValidatedBundleFile& file,
     std::string_view new_relative_name);
 
 [[nodiscard]] Result<void> rename_validated_bundle_file(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    std::string_view new_relative_name);
+
+[[nodiscard]] Result<void> write_through_rename_validated_bundle_file(
     const OperationContext& context,
     BundleWriterLock& writer_lock,
     ValidatedBundleFile& file,
@@ -241,5 +267,25 @@ template <class T>
         result.error().domain == ErrorDomain::storage &&
         result.error().code == static_cast<std::uint32_t>(code);
 }
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+namespace test {
+
+[[nodiscard]] Result<void> mark_validated_bundle_file_sparse_with_backend(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    detail::INativeSparseBackend& backend);
+
+[[nodiscard]] Result<void>
+write_through_rename_validated_bundle_file_with_backend(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    std::string_view new_relative_name,
+    detail::INativeRenameBackend& backend);
+
+}  // namespace test
+#endif
 
 } // namespace myrd::persistence

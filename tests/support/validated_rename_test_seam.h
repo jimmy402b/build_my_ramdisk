@@ -35,6 +35,14 @@ using AfterWriterStateSnapshotHook = void (*)(void* context);
     std::string_view new_relative_name,
     detail::INativeRenameBackend& backend);
 
+[[nodiscard]] Result<void>
+write_through_rename_validated_bundle_file_with_backend(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    std::string_view new_relative_name,
+    detail::INativeRenameBackend& backend);
+
 [[nodiscard]] std::size_t native_rename_slots_in_use() noexcept;
 [[nodiscard]] std::size_t maximum_native_rename_slots() noexcept;
 [[nodiscard]] bool quarantine_empty_native_rename_for_test();

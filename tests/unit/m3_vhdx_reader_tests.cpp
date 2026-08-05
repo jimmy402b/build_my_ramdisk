@@ -627,6 +627,25 @@ TEST_CASE(vhdx_reader_create_rejects_layout_from_another_file) {
         PersistenceErrorCode::BackingDataCorrupt));
 }
 
+TEST_CASE(vhdx_reader_context_create_pre_cancel_performs_no_reparse_io) {
+    auto image = make_image(8 * kMiB);
+    const auto reads_before =
+        image.state->calls(test::FaultFilePhase::Read);
+    std::stop_source stopped;
+    stopped.request_stop();
+
+    auto result = VhdxReader::create_for_testing(
+        OperationContext{stopped.get_token()}, std::move(image.file),
+        image.windows_identity, *image.layout, reader_options());
+
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(result.error().domain, ErrorDomain::storage);
+    REQUIRE_EQ(result.error().code, static_cast<std::uint32_t>(
+        OperationErrorCode::cancelled));
+    REQUIRE_EQ(
+        image.state->calls(test::FaultFilePhase::Read), reads_before);
+}
+
 TEST_CASE(vhdx_reader_propagates_bat_and_payload_io_faults) {
     auto bat_fault = make_image(
         8 * kMiB, 512, kDefaultFileLength,

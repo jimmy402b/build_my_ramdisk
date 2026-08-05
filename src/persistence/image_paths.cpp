@@ -3,9 +3,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <winioctl.h>
 
 #include "src/persistence/persistence_types.h"
 #include "src/persistence/native_rename_backend.h"
+#include "src/persistence/native_sparse_backend.h"
 #include "src/persistence/windows_file_io_bridge.h"
 #include "src/persistence/writer_lock.h"
 #include "src/common/scope_exit.h"
@@ -59,6 +61,18 @@ template <class T>
     const std::uint32_t native_code = 0) {
     return Result<T>::failure(path_error(
         code, operation, message, native_code));
+}
+
+[[nodiscard]] Result<void> rename_commit_indeterminate(
+    const wchar_t* message,
+    const std::uint32_t native_code = 0) {
+    return Result<void>::failure({
+        ErrorDomain::persistence,
+        static_cast<std::uint32_t>(
+            PersistenceErrorCode::CommitIndeterminate),
+        L"image_path.rename_write_through",
+        message,
+        native_code});
 }
 
 [[nodiscard]] ImagePathErrorCode native_open_error_code(
@@ -140,9 +154,69 @@ public:
             : status_to_dos_(status);
     }
 
+    bool flush(HANDLE file, DWORD& native_error) noexcept override {
+        if (FlushFileBuffers(file)) {
+            native_error = ERROR_SUCCESS;
+            return true;
+        }
+        native_error = GetLastError();
+        return false;
+    }
+
 private:
     NtSetInformationFileFunction set_information_{};
     RtlNtStatusToDosErrorFunction status_to_dos_{};
+};
+
+class WindowsNativeSparseBackend final
+    : public detail::INativeSparseBackend {
+public:
+    bool begin(
+        HANDLE file,
+        FILE_SET_SPARSE_BUFFER* input,
+        OVERLAPPED* overlapped,
+        DWORD& native_error) noexcept override {
+        DWORD ignored = 0;
+        if (DeviceIoControl(
+                file, FSCTL_SET_SPARSE,
+                input, sizeof(*input), nullptr, 0,
+                &ignored, overlapped)) {
+            native_error = ERROR_SUCCESS;
+            return true;
+        }
+        native_error = GetLastError();
+        return false;
+    }
+
+    DWORD wait(
+        const std::span<const HANDLE> handles,
+        const DWORD timeout_ms) noexcept override {
+        if (handles.empty() ||
+            handles.size() > static_cast<std::size_t>(MAXIMUM_WAIT_OBJECTS)) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return WAIT_FAILED;
+        }
+        return WaitForMultipleObjects(
+            static_cast<DWORD>(handles.size()), handles.data(),
+            FALSE, timeout_ms);
+    }
+
+    void cancel(HANDLE file, OVERLAPPED* overlapped) noexcept override {
+        static_cast<void>(CancelIoEx(file, overlapped));
+    }
+
+    bool complete(
+        HANDLE file,
+        OVERLAPPED* overlapped,
+        DWORD& native_error) noexcept override {
+        DWORD ignored = 0;
+        if (GetOverlappedResult(file, overlapped, &ignored, FALSE)) {
+            native_error = ERROR_SUCCESS;
+            return true;
+        }
+        native_error = GetLastError();
+        return false;
+    }
 };
 
 struct NativeRenameOperation final {
@@ -158,11 +232,30 @@ struct NativeRenameOperation final {
     NativeRenameOperation* quarantine_next{};
 };
 
+struct NativeSparseOperation final {
+    ~NativeSparseOperation() noexcept;
+
+    UniqueHandle file;
+    UniqueHandle completion_event;
+    OVERLAPPED overlapped{};
+    FILE_SET_SPARSE_BUFFER input{TRUE};
+    std::shared_ptr<detail::WriterAuthorityState> writer_authority;
+    bool quarantine_slot_held{};
+    bool test_releasable{};
+    NativeSparseOperation* quarantine_next{};
+};
+
 constexpr std::size_t kMaximumNativeRenameQuarantineSlots = 8;
 std::atomic<std::size_t> g_native_rename_slots{};
 std::atomic<NativeRenameOperation*> g_quarantined_native_renames{};
 std::mutex g_test_quarantine_mutex;
 NativeRenameOperation* g_test_quarantined_native_renames{};
+
+constexpr std::size_t kMaximumNativeSparseQuarantineSlots = 8;
+std::atomic<std::size_t> g_native_sparse_slots{};
+std::atomic<NativeSparseOperation*> g_quarantined_native_sparse{};
+std::mutex g_test_sparse_quarantine_mutex;
+NativeSparseOperation* g_test_quarantined_native_sparse{};
 
 NativeRenameOperation::~NativeRenameOperation() noexcept {
     if (quarantine_slot_held) {
@@ -186,8 +279,28 @@ NativeRenameOperation::~NativeRenameOperation() noexcept {
     return false;
 }
 
+[[nodiscard]] bool try_reserve_native_sparse_slot(
+    NativeSparseOperation& operation) noexcept {
+    auto current = g_native_sparse_slots.load(std::memory_order_acquire);
+    while (current < kMaximumNativeSparseQuarantineSlots) {
+        if (g_native_sparse_slots.compare_exchange_weak(
+                current, current + 1,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            operation.quarantine_slot_held = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] detail::INativeRenameBackend& native_rename_backend() {
     static WindowsNativeRenameBackend backend;
+    return backend;
+}
+
+[[nodiscard]] detail::INativeSparseBackend& native_sparse_backend() {
+    static WindowsNativeSparseBackend backend;
     return backend;
 }
 
@@ -212,6 +325,12 @@ NativeRenameOperation::~NativeRenameOperation() noexcept {
     return static_cast<DWORD>((std::min)(
         timeout,
         static_cast<decltype(timeout)>(kNativeRenameMaxWaitMs)));
+}
+
+NativeSparseOperation::~NativeSparseOperation() noexcept {
+    if (quarantine_slot_held) {
+        g_native_sparse_slots.fetch_sub(1, std::memory_order_acq_rel);
+    }
 }
 
 void quarantine_native_rename(
@@ -243,9 +362,31 @@ void quarantine_native_rename(
         std::memory_order_acquire));
 }
 
+void quarantine_native_sparse(
+    std::unique_ptr<NativeSparseOperation> operation) noexcept {
+    auto* const quarantined = operation.release();
+    if (quarantined->test_releasable) {
+        std::scoped_lock lock(g_test_sparse_quarantine_mutex);
+        quarantined->quarantine_next = g_test_quarantined_native_sparse;
+        g_test_quarantined_native_sparse = quarantined;
+        return;
+    }
+    auto* head = g_quarantined_native_sparse.load(
+        std::memory_order_acquire);
+    do {
+        quarantined->quarantine_next = head;
+    } while (!g_quarantined_native_sparse.compare_exchange_weak(
+        head,
+        quarantined,
+        std::memory_order_release,
+        std::memory_order_acquire));
+}
+
 thread_local BeforeNativeRenameHook g_before_native_rename_hook{};
 thread_local void* g_before_native_rename_context{};
 thread_local detail::INativeRenameBackend* g_native_rename_backend_override{};
+thread_local detail::INativeSparseBackend* g_native_sparse_backend_override{};
+thread_local bool g_write_through_rename{};
 
 class ScopedNativeRenameHook final {
 public:
@@ -279,6 +420,33 @@ public:
     ScopedNativeRenameBackend(const ScopedNativeRenameBackend&) = delete;
     ScopedNativeRenameBackend& operator=(
         const ScopedNativeRenameBackend&) = delete;
+};
+
+class ScopedNativeSparseBackend final {
+public:
+    explicit ScopedNativeSparseBackend(
+        detail::INativeSparseBackend& backend) noexcept {
+        g_native_sparse_backend_override = &backend;
+    }
+    ~ScopedNativeSparseBackend() noexcept {
+        g_native_sparse_backend_override = nullptr;
+    }
+    ScopedNativeSparseBackend(const ScopedNativeSparseBackend&) = delete;
+    ScopedNativeSparseBackend& operator=(
+        const ScopedNativeSparseBackend&) = delete;
+};
+
+class ScopedWriteThroughRename final {
+public:
+    ScopedWriteThroughRename() noexcept {
+        g_write_through_rename = true;
+    }
+    ~ScopedWriteThroughRename() noexcept {
+        g_write_through_rename = false;
+    }
+    ScopedWriteThroughRename(const ScopedWriteThroughRename&) = delete;
+    ScopedWriteThroughRename& operator=(
+        const ScopedWriteThroughRename&) = delete;
 };
 
 [[nodiscard]] bool equals_ordinal_ignore_case(
@@ -506,24 +674,25 @@ struct OpenedBundleFile final {
     HANDLE capability_file,
     const WindowsFileIdentity& capability_root_identity,
     const WindowsFileIdentity& capability_identity,
+    const wchar_t* operation,
     const bool allow_writer_close_requested = false) {
     if (poisoned) {
         return path_failure<void>(
             ImagePathErrorCode::IdentityMismatch,
-            L"image_path.cleanup",
+            operation,
             L"validated file capability is fail-closed");
     }
     if (deleted ||
         (require_cleanup_authority && !cleanup_authorized)) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
-            L"image_path.cleanup",
-            L"cleanup requires a live writer and file capability");
+            operation,
+            L"operation requires a live writer and file capability");
     }
     if (authority == nullptr || authority.get() != &writer_state) {
         return path_failure<void>(
             ImagePathErrorCode::WriterLockInvalid,
-            L"image_path.cleanup",
+            operation,
             L"file capability belongs to a different writer lifetime");
     }
 
@@ -541,35 +710,35 @@ struct OpenedBundleFile final {
             : current_identity.error().native_code;
         return path_failure<void>(
             ImagePathErrorCode::IoError,
-            L"image_path.cleanup",
-            L"cleanup identity recheck failed",
+            operation,
+            L"validated capability identity recheck failed",
             native_code);
     }
     if (!same_file_object(root_identity.value(), capability_root_identity) ||
         !same_file_object(root_identity.value(), writer_state.root_identity)) {
         return path_failure<void>(
             ImagePathErrorCode::PathEscape,
-            L"image_path.cleanup",
-            L"bundle root identity changed before cleanup");
+            operation,
+            L"bundle root identity changed during validated operation");
     }
     if ((current_identity.value().attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
         current_identity.value().reparse_tag != 0) {
         return path_failure<void>(
             ImagePathErrorCode::ReparsePoint,
-            L"image_path.cleanup",
-            L"bundle file became a reparse point before cleanup");
+            operation,
+            L"bundle file became a reparse point during validated operation");
     }
     if (current_identity.value().hard_link_count != 1) {
         return path_failure<void>(
             ImagePathErrorCode::HardLink,
-            L"image_path.cleanup",
-            L"bundle file gained another hard link before cleanup");
+            operation,
+            L"bundle file gained another hard link during validated operation");
     }
     if (!exact_identity_match(current_identity.value(), capability_identity)) {
         return path_failure<void>(
             ImagePathErrorCode::IdentityMismatch,
-            L"image_path.cleanup",
-            L"bundle file identity changed before cleanup");
+            operation,
+            L"bundle file identity changed during validated operation");
     }
     auto contained = is_direct_bundle_child(
         capability_root, capability_file);
@@ -579,8 +748,8 @@ struct OpenedBundleFile final {
     if (!contained.value()) {
         return path_failure<void>(
             ImagePathErrorCode::PathEscape,
-            L"image_path.cleanup",
-            L"bundle file left the bundle root before cleanup");
+            operation,
+            L"bundle file left the bundle root during validated operation");
     }
     return Result<void>::success();
 }
@@ -719,7 +888,9 @@ Result<ImageComponent> validate_image_component(
             wide_name.back() == L'.' || wide_name.back() == L' ') {
             return invalid_name(L"image filename uses a reserved component form");
         }
-        constexpr std::wstring_view forbidden = L"<>:\"/\\|?*";
+        // Reject '~' so caller-controlled names cannot resolve through an
+        // NTFS-generated 8.3 alias before the atomic publication rename.
+        constexpr std::wstring_view forbidden = L"<>:\"/\\|?*~";
         for (const auto character : wide_name) {
             if (character < L' ' || forbidden.find(character) != std::wstring_view::npos) {
                 return invalid_name(L"image filename contains a forbidden character");
@@ -967,7 +1138,8 @@ Result<void> ValidatedPersistenceFile::write_exact(
         impl_->capability.root_handle_.get(),
         impl_->capability.file_handle_.get(),
         impl_->capability.root_identity_,
-        impl_->capability.identity_);
+        impl_->capability.identity_,
+        L"image_path.validated_io.write");
     if (!capability_valid.ok()) {
         return capability_valid;
     }
@@ -1005,7 +1177,8 @@ Result<void> ValidatedPersistenceFile::flush(
         impl_->capability.root_handle_.get(),
         impl_->capability.file_handle_.get(),
         impl_->capability.root_identity_,
-        impl_->capability.identity_);
+        impl_->capability.identity_,
+        L"image_path.validated_io.flush");
     if (!capability_valid.ok()) {
         return capability_valid;
     }
@@ -1059,7 +1232,8 @@ Result<void> ValidatedPersistenceFile::truncate(
         impl_->capability.root_handle_.get(),
         impl_->capability.file_handle_.get(),
         impl_->capability.root_identity_,
-        impl_->capability.identity_);
+        impl_->capability.identity_,
+        L"image_path.validated_io.truncate");
     if (!capability_valid.ok()) {
         return capability_valid;
     }
@@ -1104,6 +1278,17 @@ WindowsFileIdentity ValidatedPersistenceFile::observed_identity() const {
     return impl_->capability.identity_;
 }
 
+std::wstring ValidatedPersistenceFile::observed_final_path() const {
+    if (impl_ == nullptr) {
+        return {};
+    }
+    std::scoped_lock lock(impl_->mutex);
+    if (impl_->released) {
+        return {};
+    }
+    return impl_->capability.final_path_;
+}
+
 Result<WindowsFileIdentity>
 ValidatedPersistenceFile::verify_mutation_capability() {
     if (impl_ == nullptr) {
@@ -1128,7 +1313,8 @@ ValidatedPersistenceFile::verify_mutation_capability() {
         impl_->capability.root_handle_.get(),
         impl_->capability.file_handle_.get(),
         impl_->capability.root_identity_,
-        impl_->capability.identity_);
+        impl_->capability.identity_,
+        L"image_path.validated_io.verify_mutation");
     if (!capability_valid.ok()) {
         return Result<WindowsFileIdentity>::failure(
             capability_valid.error());
@@ -1326,6 +1512,318 @@ Result<ValidatedBundleFile> open_bundle_file_for_mutation(
     return Result<ValidatedBundleFile>::success(std::move(capability));
 }
 
+Result<ValidatedBundleFile> create_bundle_file_for_mutation(
+    BundleWriterLock& writer_lock,
+    const std::string_view relative_name) {
+    auto component = validate_image_component(relative_name);
+    if (!component.ok()) {
+        return Result<ValidatedBundleFile>::failure(
+            std::move(component.error()));
+    }
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::WriterLockInvalid,
+            L"image_path.create_mutable",
+            L"creating a bundle file requires a live writer lock");
+    }
+    std::scoped_lock lock(writer_state->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*writer_state);
+    if (!writer_valid.ok()) {
+        return Result<ValidatedBundleFile>::failure(
+            std::move(writer_valid.error()));
+    }
+    try {
+        std::wstring target_path = writer_state->root_final_path;
+        if (!target_path.empty() &&
+            target_path.back() != L'\\' && target_path.back() != L'/') {
+            target_path.push_back(L'\\');
+        }
+        target_path.append(component.value().wide_name);
+        UniqueHandle file_handle(CreateFileW(
+            target_path.c_str(),
+            GENERIC_READ | GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ,
+            nullptr,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+                FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
+            nullptr));
+        if (!file_handle) {
+            const auto native_code = GetLastError();
+            return path_failure<ValidatedBundleFile>(
+                native_open_error_code(native_code),
+                L"image_path.create_mutable",
+                L"creating a unique bundle file failed",
+                native_code);
+        }
+        auto identity = query_windows_file_identity(file_handle.get());
+        if (!identity.ok()) {
+            return path_failure<ValidatedBundleFile>(
+                ImagePathErrorCode::IoError,
+                L"image_path.create_mutable",
+                L"querying the created bundle file identity failed",
+                identity.error().native_code);
+        }
+        if ((identity.value().attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+            (identity.value().attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+            identity.value().reparse_tag != 0 ||
+            identity.value().hard_link_count != 1) {
+            return path_failure<ValidatedBundleFile>(
+                ImagePathErrorCode::IdentityMismatch,
+                L"image_path.create_mutable",
+                L"created bundle file identity is unsafe");
+        }
+        auto contained = is_direct_bundle_child(
+            writer_state->root_handle.get(), file_handle.get());
+        if (!contained.ok()) {
+            return Result<ValidatedBundleFile>::failure(
+                std::move(contained.error()));
+        }
+        if (!contained.value()) {
+            return path_failure<ValidatedBundleFile>(
+                ImagePathErrorCode::PathEscape,
+                L"image_path.create_mutable",
+                L"created bundle file is not a direct child");
+        }
+        auto root_handle = duplicate_capability_handle(
+            writer_state->root_handle.get(), L"image_path.create_mutable");
+        if (!root_handle.ok()) {
+            return Result<ValidatedBundleFile>::failure(
+                std::move(root_handle.error()));
+        }
+        auto final_path = normalized_final_path(file_handle.get());
+        if (!final_path.ok()) {
+            return Result<ValidatedBundleFile>::failure(
+                std::move(final_path.error()));
+        }
+        ValidatedBundleFile capability(
+            root_handle.move_value(),
+            std::move(file_handle),
+            writer_state->root_identity,
+            identity.move_value(),
+            writer_state->root_final_path,
+            final_path.move_value(),
+            component.value().utf8_name,
+            true,
+            true);
+        capability.writer_authority_ = writer_state;
+        return Result<ValidatedBundleFile>::success(std::move(capability));
+    } catch (const std::bad_alloc&) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::IoError,
+            L"image_path.create_mutable",
+            L"allocating created bundle capability failed",
+            ERROR_NOT_ENOUGH_MEMORY);
+    }
+}
+
+Result<void> mark_validated_bundle_file_sparse(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file) {
+    auto live = check_operation_context(context);
+    if (!live.ok()) return live;
+    auto writer_state = writer_lock.snapshot_state();
+    auto authority = file.writer_authority_.lock();
+    if (writer_state == nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::WriterLockInvalid,
+            L"image_path.mark_sparse",
+            L"marking sparse requires a live writer lock");
+    }
+    std::unique_lock lock(writer_state->mutex);
+    if (!file.mutable_access_) {
+        return path_failure<void>(
+            ImagePathErrorCode::AccessDenied,
+            L"image_path.mark_sparse",
+            L"read-only bundle capability cannot be marked sparse",
+            ERROR_ACCESS_DENIED);
+    }
+    auto valid = verify_validated_capability_locked(
+        *writer_state, authority, file.deleted_, file.poisoned_,
+        false, file.cleanup_authorized_, file.root_handle_.get(),
+        file.file_handle_.get(), file.root_identity_, file.identity_,
+        L"image_path.mark_sparse");
+    if (!valid.ok()) return valid;
+
+    try {
+        auto operation = std::make_unique<NativeSparseOperation>();
+        auto duplicated = duplicate_capability_handle(
+            file.file_handle_.get(), L"image_path.mark_sparse");
+        if (!duplicated.ok()) {
+            return Result<void>::failure(duplicated.error());
+        }
+        operation->file = duplicated.move_value();
+        operation->completion_event.reset(
+            CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!operation->completion_event) {
+            return path_failure<void>(
+                ImagePathErrorCode::IoError,
+                L"image_path.mark_sparse",
+                L"creating sparse completion event failed",
+                GetLastError());
+        }
+        operation->overlapped.hEvent = operation->completion_event.get();
+        operation->test_releasable =
+            g_native_sparse_backend_override != nullptr;
+        UniqueHandle stop_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!stop_event) {
+            return path_failure<void>(
+                ImagePathErrorCode::IoError,
+                L"image_path.mark_sparse",
+                L"creating sparse cancellation event failed",
+                GetLastError());
+        }
+        if (!try_reserve_native_sparse_slot(*operation)) {
+            return path_failure<void>(
+                ImagePathErrorCode::IoError,
+                L"image_path.mark_sparse",
+                L"native sparse quarantine capacity is exhausted",
+                ERROR_NOT_ENOUGH_QUOTA);
+        }
+        operation->writer_authority = writer_state;
+        ++writer_state->active_native_renames;
+        bool native_operation_registered = true;
+        ScopeExit finish_native_operation([&]() noexcept {
+            if (!native_operation_registered) return;
+            if (lock.owns_lock()) {
+                detail::complete_native_rename_locked(
+                    *writer_state, false);
+                return;
+            }
+            std::scoped_lock state_lock(writer_state->mutex);
+            detail::complete_native_rename_locked(
+                *writer_state, false);
+        });
+        const auto quarantine_operation = [&]() noexcept {
+            ++writer_state->quarantined_native_renames;
+            writer_state->native_rename_condition.notify_all();
+            native_operation_registered = false;
+            quarantine_native_sparse(std::move(operation));
+        };
+
+        auto& backend = g_native_sparse_backend_override != nullptr
+            ? *g_native_sparse_backend_override
+            : native_sparse_backend();
+        DWORD native_error = ERROR_SUCCESS;
+        const auto synchronous = backend.begin(
+            operation->file.get(), &operation->input,
+            &operation->overlapped, native_error);
+        if (!synchronous && native_error != ERROR_IO_PENDING) {
+            return path_failure<void>(
+                native_open_error_code(native_error),
+                L"image_path.mark_sparse",
+                L"FSCTL_SET_SPARSE failed",
+                native_error);
+        }
+        if (!synchronous) {
+            std::stop_callback callback(
+                context.stop_token,
+                [event = stop_event.get()]() noexcept {
+                    static_cast<void>(SetEvent(event));
+                });
+            const std::array<HANDLE, 3> wait_handles{
+                operation->completion_event.get(),
+                stop_event.get(),
+                writer_state->close_event.get()};
+            DWORD waited = WAIT_FAILED;
+            DWORD wait_error = ERROR_SUCCESS;
+            bool completion_observed = false;
+            bool completion_succeeded = false;
+            {
+                ScopeExit relock_writer([&lock]() noexcept {
+                    if (!lock.owns_lock()) lock.lock();
+                });
+                lock.unlock();
+                waited = backend.wait(
+                    wait_handles, deadline_timeout_ms(context));
+                if (waited == WAIT_FAILED) wait_error = GetLastError();
+                if (waited == WAIT_OBJECT_0) {
+                    completion_succeeded = backend.complete(
+                        operation->file.get(), &operation->overlapped,
+                        native_error);
+                    completion_observed = completion_succeeded ||
+                        native_error != ERROR_IO_INCOMPLETE;
+                } else {
+                    backend.cancel(
+                        operation->file.get(), &operation->overlapped);
+                    constexpr DWORD kCancelDrainTimeoutMs = 2000;
+                    const std::array<HANDLE, 1> drain_handle{
+                        operation->completion_event.get()};
+                    const auto drained = backend.wait(
+                        drain_handle, kCancelDrainTimeoutMs);
+                    if (drained == WAIT_OBJECT_0) {
+                        completion_succeeded = backend.complete(
+                            operation->file.get(), &operation->overlapped,
+                            native_error);
+                        completion_observed = completion_succeeded ||
+                            native_error != ERROR_IO_INCOMPLETE;
+                    } else if (drained == WAIT_FAILED && wait_error == 0) {
+                        wait_error = GetLastError();
+                    }
+                }
+            }
+            if (!completion_observed) {
+                quarantine_operation();
+                file.poisoned_ = true;
+                return path_failure<void>(
+                    ImagePathErrorCode::IoError,
+                    L"image_path.mark_sparse",
+                    L"native sparse completion is indeterminate",
+                    ERROR_IO_INCOMPLETE);
+            }
+            if (!completion_succeeded) {
+                if (native_error != ERROR_OPERATION_ABORTED) {
+                    return path_failure<void>(
+                        native_open_error_code(native_error),
+                        L"image_path.mark_sparse",
+                        L"pending FSCTL_SET_SPARSE failed",
+                        native_error);
+                }
+                if (waited == WAIT_OBJECT_0 + 2) {
+                    return path_failure<void>(
+                        ImagePathErrorCode::WriterLockInvalid,
+                        L"image_path.mark_sparse",
+                        L"writer closed while sparse mark was pending");
+                }
+                auto interrupted = check_operation_context(context);
+                if (!interrupted.ok()) return interrupted;
+                return path_failure<void>(
+                    ImagePathErrorCode::IoError,
+                    L"image_path.mark_sparse",
+                    L"native sparse mark was cancelled",
+                    wait_error != 0 ? wait_error : ERROR_OPERATION_ABORTED);
+            }
+            valid = verify_validated_capability_locked(
+                *writer_state, authority, file.deleted_, file.poisoned_,
+                false, file.cleanup_authorized_, file.root_handle_.get(),
+                file.file_handle_.get(), file.root_identity_, file.identity_,
+                L"image_path.mark_sparse");
+            if (!valid.ok()) return valid;
+        }
+    } catch (const std::bad_alloc&) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.mark_sparse",
+            L"allocating sparse native operation failed",
+            ERROR_NOT_ENOUGH_MEMORY);
+    }
+    auto refreshed = query_windows_file_identity(file.file_handle_.get());
+    if (!refreshed.ok()) {
+        file.poisoned_ = true;
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.mark_sparse",
+            L"refreshing sparse file identity failed",
+            refreshed.error().native_code);
+    }
+    file.identity_ = refreshed.move_value();
+    live = check_operation_context(context);
+    if (!live.ok()) return live;
+    return Result<void>::success();
+}
+
 Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
     BundleWriterLock& writer_lock) {
     auto writer_state = writer_lock.snapshot_state();
@@ -1440,7 +1938,8 @@ Result<void> truncate_validated_bundle_file(
         file.root_handle_.get(),
         file.file_handle_.get(),
         file.root_identity_,
-        file.identity_);
+        file.identity_,
+        L"image_path.truncate");
     if (!allowed.ok()) {
         return allowed;
     }
@@ -1499,6 +1998,7 @@ Result<void> rename_validated_bundle_file(
             L"rename requires a live writer lock");
     }
     std::unique_lock lock(writer_state->mutex);
+    bool native_commit_observed = false;
     auto allowed = verify_validated_capability_locked(
         *writer_state,
         file.writer_authority_.lock(),
@@ -1509,12 +2009,28 @@ Result<void> rename_validated_bundle_file(
         file.root_handle_.get(),
         file.file_handle_.get(),
         file.root_identity_,
-        file.identity_);
+        file.identity_,
+        L"image_path.rename");
     if (!allowed.ok()) {
         return allowed;
     }
 
     try {
+        std::wstring committed_final_path;
+        std::string committed_relative_name;
+        if (g_write_through_rename) {
+            // Preallocate every value needed to update the capability before
+            // entering the namespace commit. The handle-relative target is a
+            // validated direct child of this already verified root.
+            committed_final_path = file.root_final_path_;
+            if (!committed_final_path.empty() &&
+                committed_final_path.back() != L'\\' &&
+                committed_final_path.back() != L'/') {
+                committed_final_path.push_back(L'\\');
+            }
+            committed_final_path.append(component.value().wide_name);
+            committed_relative_name = component.value().utf8_name;
+        }
         // Duplicate the already-validated file object without reopening a
         // pathname. Its overlapped nature can produce STATUS_PENDING, so the
         // bounded path below owns every native buffer through drain/quarantine.
@@ -1593,6 +2109,11 @@ Result<void> rename_validated_bundle_file(
             backend.cancel(operation->metadata_file.get());
             quarantine_operation();
             file.poisoned_ = true;
+            if (g_write_through_rename) {
+                return rename_commit_indeterminate(
+                    L"native rename submission threw after commit may have occurred",
+                    ERROR_UNHANDLED_EXCEPTION);
+            }
             return path_failure<void>(
                 ImagePathErrorCode::IoError,
                 L"image_path.rename",
@@ -1667,11 +2188,23 @@ Result<void> rename_validated_bundle_file(
 
             if (!completion_observed) {
                 quarantine_operation();
+                if (g_write_through_rename) {
+                    file.poisoned_ = true;
+                    return rename_commit_indeterminate(
+                        L"native rename completion could not be determined",
+                        ERROR_IO_INCOMPLETE);
+                }
             }
 
             const auto native_completion_code = completion_observed
                 ? backend.status_to_dos(status)
                 : ERROR_IO_INCOMPLETE;
+            if (completion_observed && status >= 0) {
+                // A successful native status means the namespace mutation is
+                // already externally visible. From this point a write-through
+                // publisher may only report success or CommitIndeterminate.
+                native_commit_observed = true;
+            }
             if (completion_observed &&
                 native_completion_code != ERROR_OPERATION_ABORTED) {
                 // Success and non-cancellation native failures are handled by
@@ -1729,9 +2262,15 @@ Result<void> rename_validated_bundle_file(
                 file.file_handle_.get(),
                 file.root_identity_,
                 file.identity_,
+                L"image_path.rename",
                 true);
             if (!still_allowed.ok()) {
                 file.poisoned_ = true;
+                if (g_write_through_rename && native_commit_observed) {
+                    return rename_commit_indeterminate(
+                        L"rename committed but post-commit authority recheck failed",
+                        still_allowed.error().native_code);
+                }
                 return still_allowed;
             }
         }
@@ -1748,6 +2287,7 @@ Result<void> rename_validated_bundle_file(
                 file.file_handle_.get(),
                 file.root_identity_,
                 file.identity_,
+                L"image_path.rename",
                 true);
             if (!still_allowed.ok()) {
                 file.poisoned_ = true;
@@ -1761,6 +2301,20 @@ Result<void> rename_validated_bundle_file(
                 native_code);
         }
 
+        native_commit_observed = true;
+        if (g_write_through_rename) {
+            DWORD flush_error = ERROR_SUCCESS;
+            if (!backend.flush(file.file_handle_.get(), flush_error)) {
+                file.poisoned_ = true;
+                return rename_commit_indeterminate(
+                    L"rename committed but its write-through flush failed",
+                    flush_error);
+            }
+            file.final_path_.swap(committed_final_path);
+            file.relative_name_.swap(committed_relative_name);
+            return Result<void>::success();
+        }
+
         auto post_allowed = verify_validated_capability_locked(
             *writer_state,
             file.writer_authority_.lock(),
@@ -1772,15 +2326,25 @@ Result<void> rename_validated_bundle_file(
             file.file_handle_.get(),
             file.root_identity_,
             file.identity_,
+            L"image_path.rename",
             true);
         if (!post_allowed.ok()) {
             file.poisoned_ = true;
+            if (g_write_through_rename) {
+                return rename_commit_indeterminate(
+                    L"rename committed but post-commit authority changed",
+                    post_allowed.error().native_code);
+            }
             return post_allowed;
         }
         auto contained = is_direct_bundle_child(
             file.root_handle_.get(), file.file_handle_.get());
         if (!contained.ok() || !contained.value()) {
             file.poisoned_ = true;
+            if (g_write_through_rename) {
+                return rename_commit_indeterminate(
+                    L"rename committed but containment could not be proven");
+            }
             return path_failure<void>(
                 ImagePathErrorCode::PathEscape,
                 L"image_path.rename",
@@ -1793,6 +2357,11 @@ Result<void> rename_validated_bundle_file(
             const auto native_code = !final_path.ok()
                 ? final_path.error().native_code
                 : identity.error().native_code;
+            if (g_write_through_rename) {
+                return rename_commit_indeterminate(
+                    L"rename committed but identity refresh failed",
+                    native_code);
+            }
             return path_failure<void>(
                 ImagePathErrorCode::IoError,
                 L"image_path.rename",
@@ -1801,6 +2370,10 @@ Result<void> rename_validated_bundle_file(
         }
         if (!same_file_object(file.identity_, identity.value())) {
             file.poisoned_ = true;
+            if (g_write_through_rename) {
+                return rename_commit_indeterminate(
+                    L"rename committed but file identity changed");
+            }
             return path_failure<void>(
                 ImagePathErrorCode::IdentityMismatch,
                 L"image_path.rename",
@@ -1811,12 +2384,35 @@ Result<void> rename_validated_bundle_file(
         file.relative_name_ = component.value().utf8_name;
         return Result<void>::success();
     } catch (const std::bad_alloc&) {
+        if (g_write_through_rename && native_commit_observed) {
+            file.poisoned_ = true;
+            return rename_commit_indeterminate(
+                L"rename committed but post-commit allocation failed",
+                ERROR_NOT_ENOUGH_MEMORY);
+        }
         return path_failure<void>(
             ImagePathErrorCode::IoError,
             L"image_path.rename",
             L"allocating rename information failed",
             ERROR_NOT_ENOUGH_MEMORY);
     }
+}
+
+Result<void> write_through_rename_validated_bundle_file(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    const std::string_view new_relative_name) {
+    if (g_write_through_rename) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename_write_through",
+            L"write-through rename cannot be nested",
+            ERROR_INVALID_STATE);
+    }
+    const ScopedWriteThroughRename write_through;
+    return rename_validated_bundle_file(
+        context, writer_lock, file, new_relative_name);
 }
 
 Result<void> delete_validated_bundle_file(
@@ -1840,7 +2436,8 @@ Result<void> delete_validated_bundle_file(
         file.root_handle_.get(),
         file.file_handle_.get(),
         file.root_identity_,
-        file.identity_);
+        file.identity_,
+        L"image_path.delete");
     if (!allowed.ok()) {
         return allowed;
     }
@@ -1902,6 +2499,41 @@ Result<void> rename_validated_bundle_file_with_backend(
         context, writer_lock, file, new_relative_name);
 }
 
+Result<void> write_through_rename_validated_bundle_file_with_backend(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    const std::string_view new_relative_name,
+    detail::INativeRenameBackend& backend) {
+    if (g_native_rename_backend_override != nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.rename_test_seam",
+            L"rename backend test seam cannot be nested",
+            ERROR_INVALID_PARAMETER);
+    }
+    const ScopedNativeRenameBackend scoped_backend(backend);
+    return write_through_rename_validated_bundle_file(
+        context, writer_lock, file, new_relative_name);
+}
+
+Result<void> mark_validated_bundle_file_sparse_with_backend(
+    const OperationContext& context,
+    BundleWriterLock& writer_lock,
+    ValidatedBundleFile& file,
+    detail::INativeSparseBackend& backend) {
+    if (g_native_sparse_backend_override != nullptr) {
+        return path_failure<void>(
+            ImagePathErrorCode::IoError,
+            L"image_path.sparse_test_seam",
+            L"sparse backend test seam cannot be nested",
+            ERROR_INVALID_PARAMETER);
+    }
+    const ScopedNativeSparseBackend scoped_backend(backend);
+    return mark_validated_bundle_file_sparse(
+        context, writer_lock, file);
+}
+
 std::size_t native_rename_slots_in_use() noexcept {
     return g_native_rename_slots.load(std::memory_order_acquire);
 }
@@ -1958,6 +2590,28 @@ std::size_t release_quarantined_native_renames_for_test() {
         std::scoped_lock lock(g_test_quarantine_mutex);
         operation = g_test_quarantined_native_renames;
         g_test_quarantined_native_renames = nullptr;
+    }
+    std::size_t released{};
+    while (operation != nullptr) {
+        auto* const next = operation->quarantine_next;
+        if (operation->writer_authority != nullptr) {
+            auto& state = *operation->writer_authority;
+            std::scoped_lock lock(state.mutex);
+            detail::complete_native_rename_locked(state, true);
+        }
+        delete operation;
+        operation = next;
+        ++released;
+    }
+    return released;
+}
+
+std::size_t release_quarantined_native_sparse_for_test() {
+    NativeSparseOperation* operation{};
+    {
+        std::scoped_lock lock(g_test_sparse_quarantine_mutex);
+        operation = g_test_quarantined_native_sparse;
+        g_test_quarantined_native_sparse = nullptr;
     }
     std::size_t released{};
     while (operation != nullptr) {

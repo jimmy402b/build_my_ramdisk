@@ -5,11 +5,13 @@
 
 #include "src/persistence/file_identity.h"
 #include "src/persistence/image_paths.h"
+#include "src/persistence/persistence_types.h"
 #include "src/persistence/writer_lock.h"
 #include "src/common/scope_exit.h"
 #include "src/common/unique_handle.h"
 #include "test_framework.h"
 #include "validated_rename_test_seam.h"
+#include "validated_sparse_test_seam.h"
 
 #include <array>
 #include <atomic>
@@ -531,13 +533,20 @@ public:
         WriterCloseCompletionWins,
         NonDrainingWriterClose,
         ThrowDuringWait,
+        ThrowAfterCommit,
+        SuccessThenHardlink,
+        FlushError,
     };
 
     ScriptedPendingRenameBackend(
         const Mode mode,
         myrd::persistence::BundleWriterLock& writer,
-        std::stop_source* stop_source = nullptr)
-        : mode_(mode), writer_(writer), stop_source_(stop_source) {}
+        std::stop_source* stop_source = nullptr,
+        std::filesystem::path committed_path = {},
+        std::filesystem::path hardlink_path = {})
+        : mode_(mode), writer_(writer), stop_source_(stop_source),
+          committed_path_(std::move(committed_path)),
+          hardlink_path_(std::move(hardlink_path)) {}
 
     LONG begin(
         HANDLE file,
@@ -547,6 +556,9 @@ public:
         ++begin_calls;
         io_status_ = io_status;
         if (mode_ == Mode::Success ||
+            mode_ == Mode::FlushError ||
+            mode_ == Mode::ThrowAfterCommit ||
+            mode_ == Mode::SuccessThenHardlink ||
             mode_ == Mode::CancelCompletionWins ||
             mode_ == Mode::WriterCloseCompletionWins) {
             using NtSetInformationFileFunction = LONG(NTAPI*)(
@@ -580,6 +592,17 @@ public:
             }
             if (completion_status_ != 0) {
                 throw std::runtime_error("real rename failed in pending seam");
+            }
+            if (mode_ == Mode::SuccessThenHardlink &&
+                !CreateHardLinkW(
+                    hardlink_path_.c_str(), committed_path_.c_str(),
+                    nullptr)) {
+                throw std::runtime_error(
+                    "creating post-commit hardlink failed");
+            }
+            if (mode_ == Mode::ThrowAfterCommit) {
+                throw std::runtime_error(
+                    "backend threw after a successful native commit");
             }
         } else if (mode_ == Mode::Error) {
             completion_status_ = static_cast<LONG>(0xC0000022UL);
@@ -646,9 +669,24 @@ public:
         return status == 0 ? ERROR_SUCCESS : ERROR_GEN_FAILURE;
     }
 
+    bool flush(HANDLE file, DWORD& native_error) noexcept override {
+        ++flush_calls;
+        if (mode_ == Mode::FlushError) {
+            native_error = ERROR_WRITE_FAULT;
+            return false;
+        }
+        if (FlushFileBuffers(file)) {
+            native_error = ERROR_SUCCESS;
+            return true;
+        }
+        native_error = GetLastError();
+        return false;
+    }
+
     std::size_t wait_calls{};
     std::size_t cancel_calls{};
     std::size_t begin_calls{};
+    std::size_t flush_calls{};
     bool writer_mutex_available{};
     bool writer_close_completed{};
 
@@ -668,6 +706,8 @@ private:
     std::stop_source* stop_source_{};
     myrd::persistence::detail::NativeRenameIoStatus* io_status_{};
     LONG completion_status_{};
+    std::filesystem::path committed_path_;
+    std::filesystem::path hardlink_path_;
     bool close_writer_{};
     std::shared_ptr<std::atomic<bool>> probe_completed_;
     std::shared_ptr<std::atomic<bool>> probe_operation_ok_;
@@ -695,6 +735,45 @@ private:
         }
         writer_mutex_available = completed->load(std::memory_order_acquire);
     }
+};
+
+class NonDrainingSparseBackend final
+    : public myrd::persistence::detail::INativeSparseBackend {
+public:
+    bool begin(
+        HANDLE,
+        FILE_SET_SPARSE_BUFFER*,
+        OVERLAPPED*,
+        DWORD& native_error) noexcept override {
+        ++begin_calls;
+        native_error = ERROR_IO_PENDING;
+        return false;
+    }
+
+    DWORD wait(
+        std::span<const HANDLE>,
+        DWORD) noexcept override {
+        ++wait_calls;
+        return WAIT_TIMEOUT;
+    }
+
+    void cancel(HANDLE, OVERLAPPED*) noexcept override {
+        ++cancel_calls;
+    }
+
+    bool complete(
+        HANDLE,
+        OVERLAPPED*,
+        DWORD& native_error) noexcept override {
+        ++complete_calls;
+        native_error = ERROR_IO_INCOMPLETE;
+        return false;
+    }
+
+    std::size_t begin_calls{};
+    std::size_t wait_calls{};
+    std::size_t cancel_calls{};
+    std::size_t complete_calls{};
 };
 
 TEST_CASE(task12_nt_relative_rename_works_when_win32_wrapper_rejects_root) {
@@ -843,6 +922,233 @@ TEST_CASE(task12_pending_rename_success_releases_writer_mutex_while_waiting) {
     REQUIRE_EQ(backend.cancel_calls, std::size_t{0});
     REQUIRE(!std::filesystem::exists(source));
     REQUIRE_EQ(read_text(destination), std::string("pending-success-data"));
+}
+
+TEST_CASE(task23_write_through_rename_flushes_after_native_commit) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"write-through-source.vhdx";
+    const auto destination = sandbox.bundle() / L"write-through-final.vhdx";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "durable");
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "write-through-source.vhdx", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::Success, writer);
+
+    auto renamed = myrd::persistence::test::
+        write_through_rename_validated_bundle_file_with_backend(
+            myrd::OperationContext{}, writer, capability,
+            "write-through-final.vhdx", backend);
+
+    REQUIRE(renamed.ok());
+    REQUIRE_EQ(backend.flush_calls, std::size_t{1});
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE_EQ(read_text(destination), std::string("durable"));
+    REQUIRE(backend.finish_writer_probe());
+}
+
+TEST_CASE(task23_post_rename_flush_failure_is_commit_indeterminate) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"flush-fail-source.vhdx";
+    const auto destination = sandbox.bundle() / L"flush-fail-final.vhdx";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "indeterminate");
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "flush-fail-source.vhdx", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::FlushError, writer);
+
+    auto renamed = myrd::persistence::test::
+        write_through_rename_validated_bundle_file_with_backend(
+            myrd::OperationContext{}, writer, capability,
+            "flush-fail-final.vhdx", backend);
+
+    REQUIRE(!renamed.ok());
+    REQUIRE_EQ(renamed.error().domain, myrd::ErrorDomain::persistence);
+    REQUIRE_EQ(renamed.error().code, static_cast<std::uint32_t>(
+        myrd::persistence::PersistenceErrorCode::CommitIndeterminate));
+    REQUIRE_EQ(backend.flush_calls, std::size_t{1});
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE_EQ(read_text(destination), std::string("indeterminate"));
+    REQUIRE(backend.finish_writer_probe());
+}
+
+TEST_CASE(task23_backend_throw_after_commit_is_commit_indeterminate) {
+    TemporarySandbox sandbox;
+    myrd::ScopeExit cleanup_quarantine([]() noexcept {
+        static_cast<void>(
+            myrd::persistence::test::
+                release_quarantined_native_renames_for_test());
+    });
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"throw-source.vhdx";
+    const auto destination = sandbox.bundle() / L"throw-final.vhdx";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "committed-before-throw");
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "throw-source.vhdx", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::ThrowAfterCommit, writer);
+
+    auto renamed = myrd::persistence::test::
+        write_through_rename_validated_bundle_file_with_backend(
+            myrd::OperationContext{}, writer, capability,
+            "throw-final.vhdx", backend);
+
+    REQUIRE(!renamed.ok());
+    REQUIRE_EQ(renamed.error().domain, myrd::ErrorDomain::persistence);
+    REQUIRE_EQ(renamed.error().code, static_cast<std::uint32_t>(
+        myrd::persistence::PersistenceErrorCode::CommitIndeterminate));
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE_EQ(read_text(destination), std::string("committed-before-throw"));
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
+        std::size_t{1});
+    cleanup_quarantine.release();
+}
+
+TEST_CASE(task23_post_commit_recheck_failure_is_commit_indeterminate) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"recheck-source.vhdx";
+    const auto destination = sandbox.bundle() / L"recheck-final.vhdx";
+    const auto hardlink = sandbox.bundle() / L"recheck-alias.vhdx";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "committed-before-recheck");
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "recheck-source.vhdx", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::SuccessThenHardlink, writer,
+        nullptr, destination, hardlink);
+
+    auto renamed = myrd::persistence::test::
+        write_through_rename_validated_bundle_file_with_backend(
+            myrd::OperationContext{}, writer, capability,
+            "recheck-final.vhdx", backend);
+
+    REQUIRE(!renamed.ok());
+    REQUIRE_EQ(renamed.error().domain, myrd::ErrorDomain::persistence);
+    REQUIRE_EQ(renamed.error().code, static_cast<std::uint32_t>(
+        myrd::persistence::PersistenceErrorCode::CommitIndeterminate));
+    REQUIRE(!std::filesystem::exists(source));
+    REQUIRE(std::filesystem::exists(destination));
+    REQUIRE(std::filesystem::exists(hardlink));
+    REQUIRE_EQ(backend.flush_calls, std::size_t{0});
+    REQUIRE(backend.finish_writer_probe());
+}
+
+TEST_CASE(task23_unresolved_write_through_rename_is_commit_indeterminate) {
+    TemporarySandbox sandbox;
+    myrd::ScopeExit cleanup_quarantine([]() noexcept {
+        static_cast<void>(
+            myrd::persistence::test::
+                release_quarantined_native_renames_for_test());
+    });
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    const auto source = sandbox.bundle() / L"indeterminate-source.vhdx";
+    write_text(manifest, std::string(8192, 'm'));
+    write_text(source, "pending");
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result = open_bundle_file_for_mutation(
+        writer, "indeterminate-source.vhdx", identity_of(source));
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    ScriptedPendingRenameBackend backend(
+        ScriptedPendingRenameBackend::Mode::NonDrainingWriterClose,
+        writer);
+
+    auto renamed = myrd::persistence::test::
+        write_through_rename_validated_bundle_file_with_backend(
+            myrd::OperationContext{}, writer, capability,
+            "indeterminate-final.vhdx", backend);
+
+    REQUIRE(!renamed.ok());
+    REQUIRE_EQ(renamed.error().domain, myrd::ErrorDomain::persistence);
+    REQUIRE_EQ(renamed.error().code, static_cast<std::uint32_t>(
+        myrd::persistence::PersistenceErrorCode::CommitIndeterminate));
+    REQUIRE_EQ(backend.flush_calls, std::size_t{0});
+    REQUIRE(backend.finish_writer_probe());
+    REQUIRE(!backend.writer_close_completed);
+    REQUIRE_EQ(
+        myrd::persistence::test::release_quarantined_native_renames_for_test(),
+        std::size_t{1});
+    cleanup_quarantine.release();
+    auto replacement = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(replacement.ok());
+}
+
+TEST_CASE(task23_non_draining_sparse_mark_returns_bounded_and_fails_closed) {
+    TemporarySandbox sandbox;
+    myrd::ScopeExit cleanup_sparse([]() noexcept {
+        static_cast<void>(
+            myrd::persistence::test::
+                release_quarantined_native_sparse_for_test());
+    });
+    const auto manifest = sandbox.bundle() / L"disk.rdm";
+    write_text(manifest, std::string(8192, 'm'));
+    auto writer_result = acquire_bundle_writer_lock(
+        sandbox.bundle(), "disk.rdm");
+    REQUIRE(writer_result.ok());
+    auto writer = writer_result.move_value();
+    auto capability_result =
+        myrd::persistence::create_bundle_file_for_mutation(
+            writer, "pending-sparse.vhdx");
+    REQUIRE(capability_result.ok());
+    auto capability = capability_result.move_value();
+    NonDrainingSparseBackend backend;
+    myrd::OperationContext context{};
+    context.deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(5);
+    const auto started = std::chrono::steady_clock::now();
+
+    auto marked = myrd::persistence::test::
+        mark_validated_bundle_file_sparse_with_backend(
+            context, writer, capability, backend);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    REQUIRE(!marked.ok());
+    REQUIRE(elapsed < std::chrono::seconds(3));
+    REQUIRE_EQ(backend.begin_calls, std::size_t{1});
+    REQUIRE_EQ(backend.wait_calls, std::size_t{2});
+    REQUIRE_EQ(backend.cancel_calls, std::size_t{1});
+    REQUIRE_EQ(backend.complete_calls, std::size_t{0});
+    REQUIRE(is_image_path_error(
+        writer.close(), ImagePathErrorCode::WriterLockInvalid));
+    REQUIRE_EQ(
+        myrd::persistence::test::
+            release_quarantined_native_sparse_for_test(),
+        std::size_t{1});
+    cleanup_sparse.release();
 }
 
 TEST_CASE(task12_pending_rename_error_releases_mutex_and_preserves_file) {
@@ -1212,6 +1518,7 @@ TEST_CASE(task12_rejects_unsafe_or_non_utf8_components) {
         "bad|name.rdj",
         "bad?name.rdj",
         "bad*name.rdj",
+        "short~1.rdj",
         std::string("bad\0name.rdj", 12),
         std::string("\xC0\xAF", 2),
         std::string("\xE2\x28\xA1", 3),
@@ -1509,6 +1816,8 @@ TEST_CASE(task12_validated_write_rejects_hardlink_added_after_adapter_open) {
     const auto capability_denied = io->verify_mutation_capability();
     REQUIRE(is_image_path_error(
         capability_denied, ImagePathErrorCode::HardLink));
+    REQUIRE_EQ(capability_denied.error().operation,
+               std::wstring(L"image_path.validated_io.verify_mutation"));
     const std::array<std::byte, 4> replacement{
         std::byte{'b'}, std::byte{'a'}, std::byte{'d'}, std::byte{'!'}};
     const auto denied = io->write_exact(0, replacement);
@@ -1516,6 +1825,8 @@ TEST_CASE(task12_validated_write_rejects_hardlink_added_after_adapter_open) {
     REQUIRE_EQ(read_text(data), before_content);
     REQUIRE_EQ(read_text(external_alias), before_content);
     REQUIRE(is_image_path_error(denied, ImagePathErrorCode::HardLink));
+    REQUIRE_EQ(denied.error().operation,
+               std::wstring(L"image_path.validated_io.write"));
     REQUIRE_EQ(identity_of(data), before_identity);
     REQUIRE_EQ(identity_of(external_alias), before_identity);
 }
@@ -1548,6 +1859,8 @@ TEST_CASE(task12_validated_truncate_rejects_hardlink_added_after_adapter_open) {
     REQUIRE_EQ(read_text(data), before_content);
     REQUIRE_EQ(read_text(external_alias), before_content);
     REQUIRE(is_image_path_error(denied, ImagePathErrorCode::HardLink));
+    REQUIRE_EQ(denied.error().operation,
+               std::wstring(L"image_path.validated_io.truncate"));
     REQUIRE_EQ(identity_of(data), before_identity);
     REQUIRE_EQ(identity_of(external_alias), before_identity);
 }

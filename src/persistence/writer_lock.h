@@ -98,13 +98,22 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> create_bundle_file_for_mutation(
+        BundleWriterLock&, std::string_view);
     friend Result<ValidatedBundleFile> open_locked_manifest_for_mutation(
         BundleWriterLock&);
     friend Result<void> truncate_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::uint64_t);
+    friend Result<void> mark_validated_bundle_file_sparse(
+        const OperationContext&, BundleWriterLock&, ValidatedBundleFile&);
     friend Result<void> rename_validated_bundle_file(
         BundleWriterLock&, ValidatedBundleFile&, std::string_view);
     friend Result<void> rename_validated_bundle_file(
+        const OperationContext&,
+        BundleWriterLock&,
+        ValidatedBundleFile&,
+        std::string_view);
+    friend Result<void> write_through_rename_validated_bundle_file(
         const OperationContext&,
         BundleWriterLock&,
         ValidatedBundleFile&,
