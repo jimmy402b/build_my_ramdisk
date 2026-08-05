@@ -10,6 +10,24 @@ namespace myrd::test::consistent_model {
 
 namespace {
 
+void validate_geometry(std::uint64_t logical_size_bytes) {
+    const auto maximum_vector_size =
+        std::vector<std::byte>{}.max_size();
+    if (logical_size_bytes == 0 ||
+        logical_size_bytes % kSectorBytes != 0 ||
+        logical_size_bytes > maximum_vector_size) {
+        throw std::invalid_argument(
+            "consistent model geometry is invalid");
+    }
+}
+
+std::vector<std::byte> make_zero_image(
+    std::uint64_t logical_size_bytes) {
+    validate_geometry(logical_size_bytes);
+    return std::vector<std::byte>(
+        static_cast<std::size_t>(logical_size_bytes), std::byte{0});
+}
+
 std::uint64_t allocate_owner_id() {
     static std::atomic<std::uint64_t> next{1};
     const auto id = next.fetch_add(1, std::memory_order_relaxed);
@@ -43,8 +61,6 @@ Operation make_operation(DeterministicRandom& random,
     operation.payload_seed = random.next();
     operation.max_payload_bytes =
         (1 + random.next() % 4) * kBlockBytes;
-    operation.record_limit =
-        static_cast<std::size_t>(1 + random.next() % 8);
 
     const auto total_sectors = logical_size_bytes / kSectorBytes;
     const auto mode = random.next() % 6;
@@ -153,8 +169,7 @@ std::string describe_operation(std::size_t index,
            << " length=" << operation.length
            << " payload_seed=0x" << std::hex << operation.payload_seed
            << std::dec
-           << " max_payload=" << operation.max_payload_bytes
-           << " record_limit=" << operation.record_limit;
+           << " max_payload=" << operation.max_payload_bytes;
     return stream.str();
 }
 
@@ -188,9 +203,7 @@ std::optional<Schedule> reduce_failure(
 Model::Model(std::uint64_t logical_size_bytes,
              std::uint64_t backing_generation)
     : Model(logical_size_bytes,
-            std::vector<std::byte>(
-                static_cast<std::size_t>(logical_size_bytes),
-                std::byte{0}),
+            make_zero_image(logical_size_bytes),
             backing_generation) {}
 
 Model::Model(std::uint64_t logical_size_bytes,
@@ -201,7 +214,9 @@ Model::Model(std::uint64_t logical_size_bytes,
                    (logical_size_bytes % kBlockBytes != 0 ? 1 : 0)),
       backing_generation_(backing_generation),
       owner_id_(allocate_owner_id()) {
-    if (initial_bytes.size() != logical_size_bytes) {
+    validate_geometry(logical_size_bytes_);
+    if (initial_bytes.size() !=
+        static_cast<std::size_t>(logical_size_bytes_)) {
         throw std::invalid_argument("initial image size does not match geometry");
     }
     for (std::uint64_t block = 0; block < block_count_; ++block) {
@@ -243,7 +258,9 @@ std::optional<CutToken> Model::active_cut() const noexcept {
 
 bool Model::write(std::uint64_t offset,
                   std::span<const std::byte> data) {
-    if (data.empty() || offset > logical_size_bytes_ ||
+    if (data.empty() || offset % kSectorBytes != 0 ||
+        data.size() % static_cast<std::size_t>(kSectorBytes) != 0 ||
+        offset > logical_size_bytes_ ||
         data.size() > logical_size_bytes_ - offset) {
         return false;
     }
@@ -291,6 +308,7 @@ bool Model::zero(std::uint64_t offset,
                  std::uint64_t length,
                  Kind requested_kind) {
     if (requested_kind == Kind::Data || length == 0 ||
+        offset % kSectorBytes != 0 || length % kSectorBytes != 0 ||
         offset > logical_size_bytes_ ||
         length > logical_size_bytes_ - offset) {
         return false;
@@ -335,7 +353,10 @@ bool Model::zero(std::uint64_t offset,
 std::optional<std::vector<std::byte>> Model::read(
     std::uint64_t offset,
     std::uint64_t length) const {
-    if (length == 0 || offset > logical_size_bytes_ ||
+    if (length == 0 || offset % kSectorBytes != 0 ||
+        length % kSectorBytes != 0 ||
+        length > std::vector<std::byte>{}.max_size() ||
+        offset > logical_size_bytes_ ||
         length > logical_size_bytes_ - offset) {
         return std::nullopt;
     }

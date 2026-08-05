@@ -13,10 +13,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -581,6 +583,51 @@ TEST_CASE(m2_1_task08_model_restates_geometry_and_starts_clean) {
     REQUIRE(!model.active_cut().has_value());
 }
 
+TEST_CASE(m2_1_task08_model_rejects_invalid_geometry_and_alignment) {
+    using namespace myrd::test::consistent_model;
+    bool rejected_zero = false;
+    try {
+        Model invalid(0, 7);
+    } catch (const std::invalid_argument&) {
+        rejected_zero = true;
+    }
+    REQUIRE(rejected_zero);
+
+    bool rejected_unaligned = false;
+    try {
+        Model invalid(
+            kBlockBytes + 1,
+            std::vector<std::byte>(
+                static_cast<std::size_t>(kBlockBytes + 1)),
+            7);
+    } catch (const std::invalid_argument&) {
+        rejected_unaligned = true;
+    }
+    REQUIRE(rejected_unaligned);
+
+    bool rejected_oversized = false;
+    try {
+        Model invalid(
+            (std::numeric_limits<std::uint64_t>::max)(),
+            std::vector<std::byte>{},
+            7);
+    } catch (const std::invalid_argument&) {
+        rejected_oversized = true;
+    }
+    REQUIRE(rejected_oversized);
+
+    Model model(kBlockBytes + kSectorBytes, 7);
+    const std::vector<std::byte> sector(
+        static_cast<std::size_t>(kSectorBytes), std::byte{0x5A});
+    const std::vector<std::byte> short_write(1, std::byte{0x5A});
+    REQUIRE(!model.write(1, sector));
+    REQUIRE(!model.write(0, short_write));
+    REQUIRE(!model.zero(1, kSectorBytes, Kind::Zero));
+    REQUIRE(!model.zero(0, 1, Kind::Discard));
+    REQUIRE(!model.read(1, kSectorBytes).has_value());
+    REQUIRE(!model.read(0, 1).has_value());
+}
+
 TEST_CASE(m2_1_task08_begin_copies_one_immutable_whole_disk_cut) {
     using myrd::test::consistent_model::Kind;
     using myrd::test::consistent_model::Model;
@@ -677,7 +724,10 @@ TEST_CASE(m2_1_task08_schedule_is_seed_only_deterministic_and_complete) {
         REQUIRE(eviction_block < first_block ||
                 eviction_block > last_block);
     }
-    REQUIRE(!describe_operation(0, first.operations.front()).empty());
+    const auto description =
+        describe_operation(0, first.operations.front());
+    REQUIRE(!description.empty());
+    REQUIRE(description.find("record_limit") == std::string::npos);
     REQUIRE_EQ(operation_payload(first.operations.front()),
                operation_payload(replay.operations.front()));
 }
@@ -906,16 +956,15 @@ TEST_CASE(m2_1_task08_reducer_keeps_failure_and_only_deletes_operations) {
     using namespace myrd::test::consistent_model;
     auto schedule = generate_schedule(0x1234, 8);
     schedule.operations[0] = Operation{
-        OperationKind::Begin, 0, 0, 1, kBlockBytes, 2};
+        OperationKind::Begin, 0, 0, 1, kBlockBytes};
     schedule.operations[1] = Operation{
-        OperationKind::Write, 0, 8 * kSectorBytes, 2, kBlockBytes, 2};
+        OperationKind::Write, 0, 8 * kSectorBytes, 2, kBlockBytes};
     schedule.operations[2] = Operation{
         OperationKind::Write,
         kBlockBytes,
         8 * kSectorBytes,
         0xBAD5EED,
-        kBlockBytes,
-        2};
+        kBlockBytes};
     const auto predicate = [](const Schedule& candidate) {
         return std::any_of(
             candidate.operations.begin(),

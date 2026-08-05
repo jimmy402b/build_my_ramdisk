@@ -48,7 +48,6 @@ struct Operation final {
     std::uint64_t length{};
     std::uint64_t payload_seed{};
     std::uint64_t max_payload_bytes{kBlockBytes};
-    std::size_t record_limit{1};
 
     bool operator==(const Operation&) const = default;
 };
