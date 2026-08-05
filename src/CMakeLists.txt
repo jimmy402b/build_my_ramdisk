@@ -157,6 +157,8 @@ myrd_enable_warnings(myrd-m0-poc)
 add_library(myrd_persistence STATIC
     persistence/persistence_types.h
     persistence/persistence_types.cpp
+    persistence/manifest_format.h
+    persistence/manifest_format.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h
