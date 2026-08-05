@@ -40,6 +40,8 @@ inline constexpr std::uint32_t kLogicalSectorSize512  = 512;
 inline constexpr std::uint32_t kLogicalSectorSize4096 = 4096;
 inline constexpr std::uint32_t kPhysicalSectorSize    = 4096;
 inline constexpr std::uint64_t kM2BlockSize           = 64ULL * 1024ULL;
+inline constexpr std::uint64_t kMinimumDataRecordBytes =
+    kM2BlockSize + kJournalAlignment;
 
 // ============================================================================
 // Generation / epoch helpers
@@ -133,9 +135,12 @@ struct PersistenceLimits {
 enum class LimitsStatus : std::uint8_t {
     Ok = 0,
     MaxVirtualBytesZero,
+    MaxVirtualBytesUnlimited,
+    MaxVirtualBytesNotSectorAligned,
     MaxJournalCommittedBytesZero,
     MaxJournalRecordsZero,
     SingleRecordExceedsJournalBytes,
+    JournalRecordsExceedCommittedBytes,
     MaxIndexCacheBytesZero,
     MaxIndexCacheEntriesZero,
     CacheEntriesExceedIndexBytes,
@@ -143,7 +148,9 @@ enum class LimitsStatus : std::uint8_t {
     MaxBatCacheEntriesZero,
     CacheEntriesExceedBatBytes,
     MaxIoScratchBytesZero,
+    IoScratchTooSmall,
     MaxVerifyBatchBytesZero,
+    VerifyBatchTooSmall,
     ArithmeticOverflow,
 };
 
@@ -151,9 +158,12 @@ constexpr std::string_view to_string(LimitsStatus status) noexcept {
     switch (status) {
     case LimitsStatus::Ok:                             return "Ok";
     case LimitsStatus::MaxVirtualBytesZero:            return "MaxVirtualBytesZero";
+    case LimitsStatus::MaxVirtualBytesUnlimited:       return "MaxVirtualBytesUnlimited";
+    case LimitsStatus::MaxVirtualBytesNotSectorAligned:return "MaxVirtualBytesNotSectorAligned";
     case LimitsStatus::MaxJournalCommittedBytesZero:   return "MaxJournalCommittedBytesZero";
     case LimitsStatus::MaxJournalRecordsZero:          return "MaxJournalRecordsZero";
     case LimitsStatus::SingleRecordExceedsJournalBytes:return "SingleRecordExceedsJournalBytes";
+    case LimitsStatus::JournalRecordsExceedCommittedBytes:return "JournalRecordsExceedCommittedBytes";
     case LimitsStatus::MaxIndexCacheBytesZero:         return "MaxIndexCacheBytesZero";
     case LimitsStatus::MaxIndexCacheEntriesZero:       return "MaxIndexCacheEntriesZero";
     case LimitsStatus::CacheEntriesExceedIndexBytes:   return "CacheEntriesExceedIndexBytes";
@@ -161,7 +171,9 @@ constexpr std::string_view to_string(LimitsStatus status) noexcept {
     case LimitsStatus::MaxBatCacheEntriesZero:         return "MaxBatCacheEntriesZero";
     case LimitsStatus::CacheEntriesExceedBatBytes:     return "CacheEntriesExceedBatBytes";
     case LimitsStatus::MaxIoScratchBytesZero:          return "MaxIoScratchBytesZero";
+    case LimitsStatus::IoScratchTooSmall:              return "IoScratchTooSmall";
     case LimitsStatus::MaxVerifyBatchBytesZero:        return "MaxVerifyBatchBytesZero";
+    case LimitsStatus::VerifyBatchTooSmall:            return "VerifyBatchTooSmall";
     case LimitsStatus::ArithmeticOverflow:             return "ArithmeticOverflow";
     }
     return "UnknownLimitsStatus";
@@ -174,6 +186,10 @@ constexpr std::string_view to_string(LimitsStatus status) noexcept {
 /// rejected.
 inline LimitsStatus validate_limits(const PersistenceLimits& lim) noexcept {
     if (lim.max_virtual_bytes == 0)          return LimitsStatus::MaxVirtualBytesZero;
+    if (lim.max_virtual_bytes == UINT64_MAX)
+        return LimitsStatus::MaxVirtualBytesUnlimited;
+    if (lim.max_virtual_bytes % kLogicalSectorSize512 != 0)
+        return LimitsStatus::MaxVirtualBytesNotSectorAligned;
     if (lim.max_journal_committed_bytes == 0)return LimitsStatus::MaxJournalCommittedBytesZero;
     if (lim.max_journal_records == 0)        return LimitsStatus::MaxJournalRecordsZero;
     if (lim.max_index_cache_bytes == 0)      return LimitsStatus::MaxIndexCacheBytesZero;
@@ -183,11 +199,6 @@ inline LimitsStatus validate_limits(const PersistenceLimits& lim) noexcept {
     if (lim.max_io_scratch_bytes == 0)       return LimitsStatus::MaxIoScratchBytesZero;
     if (lim.max_verify_batch_bytes == 0)     return LimitsStatus::MaxVerifyBatchBytesZero;
 
-    // A single journal record must fit in committed bytes (at least header + payload).
-    // Minimum plausible record overhead: kJournalAlignment bytes.
-    if (lim.max_journal_committed_bytes < kJournalAlignment)
-        return LimitsStatus::SingleRecordExceedsJournalBytes;
-
     // Each index cache entry needs at least kIndexNodeBytes.
     if (lim.max_index_cache_entries > lim.max_index_cache_bytes / kIndexNodeBytes)
         return LimitsStatus::CacheEntriesExceedIndexBytes;
@@ -196,6 +207,18 @@ inline LimitsStatus validate_limits(const PersistenceLimits& lim) noexcept {
     // Use a conservative minimum of 8 bytes per entry.
     if (lim.max_bat_cache_entries > lim.max_bat_cache_bytes / 8)
         return LimitsStatus::CacheEntriesExceedBatBytes;
+
+    // A single journal record must fit in committed bytes (at least header + payload).
+    if (lim.max_journal_committed_bytes < kMinimumDataRecordBytes)
+        return LimitsStatus::SingleRecordExceedsJournalBytes;
+    if (lim.max_journal_records >
+        lim.max_journal_committed_bytes / kMinimumDataRecordBytes)
+        return LimitsStatus::JournalRecordsExceedCommittedBytes;
+
+    if (lim.max_io_scratch_bytes < kM2BlockSize)
+        return LimitsStatus::IoScratchTooSmall;
+    if (lim.max_verify_batch_bytes < kM2BlockSize)
+        return LimitsStatus::VerifyBatchTooSmall;
 
     // Check for arithmetic overflow on combined limits.
     // If max_virtual_bytes + scratch + verify overflows, reject.

@@ -342,30 +342,114 @@ TEST_CASE(validate_limits_rejects_zero_verify_batch_bytes) {
 
 TEST_CASE(validate_limits_detects_arithmetic_overflow) {
     PersistenceLimits lim{};
-    lim.max_virtual_bytes = UINT64_MAX;
-    lim.max_journal_committed_bytes = 4096;
+    lim.max_virtual_bytes = UINT64_MAX - 4095;
+    lim.max_journal_committed_bytes = kMinimumDataRecordBytes;
     lim.max_journal_records = 1;
     lim.max_index_cache_bytes = 4096;
     lim.max_index_cache_entries = 1;
     lim.max_bat_cache_bytes = 8;
     lim.max_bat_cache_entries = 1;
-    lim.max_io_scratch_bytes = 1; // will overflow with UINT64_MAX
-    lim.max_verify_batch_bytes = 4096;
+    lim.max_io_scratch_bytes = kM2BlockSize; // will overflow with max_virtual_bytes
+    lim.max_verify_batch_bytes = kM2BlockSize;
     REQUIRE(validate_limits(lim) == LimitsStatus::ArithmeticOverflow);
 }
 
 TEST_CASE(validate_limits_accepts_valid_limits) {
     PersistenceLimits lim{};
     lim.max_virtual_bytes = 64ULL * 1024 * 1024;
-    lim.max_journal_committed_bytes = 4096;
+    lim.max_journal_committed_bytes = kMinimumDataRecordBytes;
     lim.max_journal_records = 1;
     lim.max_index_cache_bytes = 4096;
     lim.max_index_cache_entries = 1;
     lim.max_bat_cache_bytes = 8;
     lim.max_bat_cache_entries = 1;
-    lim.max_io_scratch_bytes = 4096;
-    lim.max_verify_batch_bytes = 4096;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize;
     REQUIRE(validate_limits(lim) == LimitsStatus::Ok);
+}
+
+TEST_CASE(validate_limits_rejects_unaligned_virtual_limit) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = 64ULL * 1024 * 1024 + 1;
+    lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment;
+    lim.max_journal_records = 1;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize;
+    REQUIRE(validate_limits(lim) == LimitsStatus::MaxVirtualBytesNotSectorAligned);
+}
+
+TEST_CASE(validate_limits_rejects_hidden_unlimited_virtual_limit) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = UINT64_MAX;
+    lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment;
+    lim.max_journal_records = 1;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize;
+    REQUIRE(validate_limits(lim) == LimitsStatus::MaxVirtualBytesUnlimited);
+}
+
+TEST_CASE(validate_limits_rejects_journal_without_complete_data_record) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = 64ULL * 1024 * 1024;
+    lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment - 1;
+    lim.max_journal_records = 1;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize;
+    REQUIRE(validate_limits(lim) == LimitsStatus::SingleRecordExceedsJournalBytes);
+}
+
+TEST_CASE(validate_limits_rejects_more_records_than_committed_bytes_allow) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = 64ULL * 1024 * 1024;
+    lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment;
+    lim.max_journal_records = 2;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize;
+    REQUIRE(validate_limits(lim) == LimitsStatus::JournalRecordsExceedCommittedBytes);
+}
+
+TEST_CASE(validate_limits_rejects_io_scratch_smaller_than_block) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = 64ULL * 1024 * 1024;
+    lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment;
+    lim.max_journal_records = 1;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize - 1;
+    lim.max_verify_batch_bytes = kM2BlockSize;
+    REQUIRE(validate_limits(lim) == LimitsStatus::IoScratchTooSmall);
+}
+
+TEST_CASE(validate_limits_rejects_verify_batch_smaller_than_block) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = 64ULL * 1024 * 1024;
+    lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment;
+    lim.max_journal_records = 1;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize - 1;
+    REQUIRE(validate_limits(lim) == LimitsStatus::VerifyBatchTooSmall);
 }
 
 // ============================================================================
@@ -681,7 +765,9 @@ TEST_CASE(all_geometry_status_values_have_non_empty_to_string) {
 }
 
 TEST_CASE(all_limits_status_values_have_non_empty_to_string) {
-    for (std::uint8_t i = 0; i <= 13; ++i) {
+    for (std::uint8_t i = 0;
+         i <= static_cast<std::uint8_t>(LimitsStatus::VerifyBatchTooSmall);
+         ++i) {
         auto ls = static_cast<LimitsStatus>(i);
         auto s = to_string(ls);
         REQUIRE(!s.empty());
