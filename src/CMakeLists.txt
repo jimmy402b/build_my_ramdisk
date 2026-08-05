@@ -161,6 +161,8 @@ add_library(myrd_persistence STATIC
     persistence/manifest_format.cpp
     persistence/journal_format.h
     persistence/journal_format.cpp
+    persistence/journal_index.h
+    persistence/journal_index.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h
