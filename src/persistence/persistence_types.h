@@ -14,6 +14,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <variant>
 
 namespace myrd {
 namespace persistence {
@@ -76,10 +78,48 @@ struct ImageUuid final {
 
 /// @return true if incremented, false on overflow (value unchanged).
 inline bool checked_increment(std::uint64_t& value) noexcept {
-    if (value == UINT64_MAX) return false;
+    if (value >= kInvalidGeneration - 1) return false;
     ++value;
     return true;
 }
+
+using CheckpointGeneration = std::uint64_t;
+using BaseGeneration = std::uint64_t;
+using JournalEpoch = std::uint64_t;
+
+struct JournalCommitDescriptor final {
+    std::uint64_t offset{0};
+    std::uint64_t length{0};
+    std::uint32_t crc32c{0};
+    std::array<std::byte, 32> chain_digest{};
+
+    bool operator==(const JournalCommitDescriptor&) const noexcept = default;
+};
+
+struct PersistentIndexRootDescriptor final {
+    std::uint64_t offset{0};
+    std::uint64_t length{0};
+    std::uint32_t crc32c{0};
+
+    bool operator==(const PersistentIndexRootDescriptor&) const noexcept = default;
+};
+
+struct JournalGenerationDescriptor final {
+    JournalEpoch epoch{0};
+    std::uint64_t committed_length{0};
+    JournalCommitDescriptor commit{};
+    PersistentIndexRootDescriptor root{};
+
+    bool operator==(const JournalGenerationDescriptor&) const noexcept = default;
+};
+
+struct ManifestGenerationDescriptor final {
+    CheckpointGeneration checkpoint_generation{0};
+    BaseGeneration base_generation{0};
+    JournalGenerationDescriptor journal{};
+
+    bool operator==(const ManifestGenerationDescriptor&) const noexcept = default;
+};
 
 // ============================================================================
 // Image geometry (SPEC §8.3, §8.6, frozen)
@@ -190,6 +230,7 @@ enum class LimitsStatus : std::uint8_t {
     MaxVerifyBatchBytesZero,
     VerifyBatchTooSmall,
     ArithmeticOverflow,
+    HiddenUnlimited,
 };
 
 constexpr std::string_view to_string(LimitsStatus status) noexcept {
@@ -213,6 +254,7 @@ constexpr std::string_view to_string(LimitsStatus status) noexcept {
     case LimitsStatus::MaxVerifyBatchBytesZero:        return "MaxVerifyBatchBytesZero";
     case LimitsStatus::VerifyBatchTooSmall:            return "VerifyBatchTooSmall";
     case LimitsStatus::ArithmeticOverflow:             return "ArithmeticOverflow";
+    case LimitsStatus::HiddenUnlimited:                return "HiddenUnlimited";
     }
     return "UnknownLimitsStatus";
 }
@@ -240,6 +282,7 @@ constexpr std::optional<std::uint8_t> encode_wire(
     case LimitsStatus::MaxVerifyBatchBytesZero:         return std::uint8_t{16};
     case LimitsStatus::VerifyBatchTooSmall:             return std::uint8_t{17};
     case LimitsStatus::ArithmeticOverflow:              return std::uint8_t{18};
+    case LimitsStatus::HiddenUnlimited:                 return std::uint8_t{19};
     }
     return std::nullopt;
 }
@@ -266,6 +309,7 @@ constexpr std::optional<LimitsStatus> decode_limits_status(
     case 16: return LimitsStatus::MaxVerifyBatchBytesZero;
     case 17: return LimitsStatus::VerifyBatchTooSmall;
     case 18: return LimitsStatus::ArithmeticOverflow;
+    case 19: return LimitsStatus::HiddenUnlimited;
     default: return std::nullopt;
     }
 }
@@ -289,6 +333,18 @@ inline LimitsStatus validate_limits(const PersistenceLimits& lim) noexcept {
     if (lim.max_bat_cache_entries == 0)      return LimitsStatus::MaxBatCacheEntriesZero;
     if (lim.max_io_scratch_bytes == 0)       return LimitsStatus::MaxIoScratchBytesZero;
     if (lim.max_verify_batch_bytes == 0)     return LimitsStatus::MaxVerifyBatchBytesZero;
+
+    // UINT64_MAX is a common hidden spelling of "unlimited". Every budget is
+    // required to be a finite caller-owned hard limit, not only virtual size.
+    if (lim.max_journal_committed_bytes == UINT64_MAX ||
+        lim.max_journal_records == UINT64_MAX ||
+        lim.max_index_cache_bytes == UINT64_MAX ||
+        lim.max_index_cache_entries == UINT64_MAX ||
+        lim.max_bat_cache_bytes == UINT64_MAX ||
+        lim.max_bat_cache_entries == UINT64_MAX ||
+        lim.max_io_scratch_bytes == UINT64_MAX ||
+        lim.max_verify_batch_bytes == UINT64_MAX)
+        return LimitsStatus::HiddenUnlimited;
 
     // Each index cache entry needs at least kIndexNodeBytes.
     if (lim.max_index_cache_entries > lim.max_index_cache_bytes / kIndexNodeBytes)
@@ -490,12 +546,16 @@ constexpr bool is_valid_disposition_transition(
         return true;
     case CommitDisposition::CommitIndeterminate:
         // Resolution may prove old gen intact → NotCommitted,
-        // or prove new gen committed → CommittedNeedsReconciliation.
+        // prove new gen committed → CommittedNeedsReconciliation, or remain
+        // indeterminate when a retry still cannot prove either state.
         return to == CommitDisposition::NotCommitted ||
+               to == CommitDisposition::CommitIndeterminate ||
                to == CommitDisposition::CommittedNeedsReconciliation;
     case CommitDisposition::Committed:
-        // Terminal: cannot transition back.
-        return to == CommitDisposition::Committed;
+        // The durable commit cannot go backwards, but a post-commit readback,
+        // view-install or ack failure requires reconciliation.
+        return to == CommitDisposition::Committed ||
+               to == CommitDisposition::CommittedNeedsReconciliation;
     case CommitDisposition::CommittedNeedsReconciliation:
         // Reconciliation can succeed → Committed, or remain in reconciliation.
         return to == CommitDisposition::Committed ||
@@ -690,6 +750,190 @@ struct CheckpointOutcome {
     std::optional<Error> error;
     std::optional<PersistenceErrorContext> error_context;
 };
+
+/// Public persistence errors must carry stable correlation data. Nil image
+/// UUID and kInvalidGeneration remain permitted while opening an image whose
+/// identity/generation cannot yet be trusted; operation and operation_id are
+/// always available to the caller and therefore mandatory.
+inline bool is_complete_error_context(
+    const PersistenceErrorContext& context) noexcept
+{
+    return !context.operation.empty() &&
+           context.operation_id != 0 &&
+           !context.image_uuid.is_nil() &&
+           context.generation != kInvalidGeneration &&
+           encode_wire(context.code).has_value() &&
+           encode_wire(context.phase).has_value() &&
+           encode_wire(context.disposition).has_value();
+}
+
+inline bool operation_labels_match(
+    std::wstring_view common_operation,
+    std::string_view persistence_operation) noexcept
+{
+    if (common_operation.size() != persistence_operation.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < common_operation.size(); ++i) {
+        const auto byte = static_cast<unsigned char>(persistence_operation[i]);
+        if (byte > 0x7F || common_operation[i] != static_cast<wchar_t>(byte)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct PersistenceFailure final {
+    Error common_error;
+    PersistenceErrorContext context;
+};
+
+inline std::optional<std::wstring> widen_ascii_operation(
+    std::string_view operation)
+{
+    std::wstring wide;
+    wide.reserve(operation.size());
+    for (const char value : operation) {
+        const auto byte = static_cast<unsigned char>(value);
+        if (byte > 0x7F) {
+            return std::nullopt;
+        }
+        wide.push_back(static_cast<wchar_t>(byte));
+    }
+    return wide;
+}
+
+class CompletePersistenceErrorContext final {
+public:
+    static std::optional<CompletePersistenceErrorContext> create(
+        PersistenceErrorContext context)
+    {
+        if (!is_complete_error_context(context) ||
+            !widen_ascii_operation(context.operation).has_value()) {
+            return std::nullopt;
+        }
+        return CompletePersistenceErrorContext{std::move(context)};
+    }
+
+    [[nodiscard]] const PersistenceErrorContext& value() const noexcept {
+        return context_;
+    }
+
+private:
+    explicit CompletePersistenceErrorContext(PersistenceErrorContext context)
+        : context_(std::move(context)) {}
+
+    PersistenceErrorContext context_;
+};
+
+class CheckedIncrementOutcome final {
+public:
+    static CheckedIncrementOutcome success(std::uint64_t value) {
+        return CheckedIncrementOutcome{value};
+    }
+
+    static CheckedIncrementOutcome failure(PersistenceFailure failure) {
+        return CheckedIncrementOutcome{std::move(failure)};
+    }
+
+    [[nodiscard]] bool ok() const noexcept {
+        return std::holds_alternative<std::uint64_t>(result_);
+    }
+
+    [[nodiscard]] std::uint64_t value() const {
+        return std::get<std::uint64_t>(result_);
+    }
+
+    [[nodiscard]] const PersistenceFailure& error() const {
+        return std::get<PersistenceFailure>(result_);
+    }
+
+private:
+    explicit CheckedIncrementOutcome(std::uint64_t value) : result_(value) {}
+    explicit CheckedIncrementOutcome(PersistenceFailure failure)
+        : result_(std::move(failure)) {}
+
+    std::variant<std::uint64_t, PersistenceFailure> result_;
+};
+
+/// Checked generation/epoch increment for public persistence code. The caller
+/// supplies the already-complete operation context so a wrap cannot escape as
+/// a context-free common Error.
+inline CheckedIncrementOutcome checked_increment_or_fatal(
+    std::uint64_t value,
+    const CompletePersistenceErrorContext& complete_context)
+{
+    if (value < kInvalidGeneration - 1) {
+        return CheckedIncrementOutcome::success(value + 1);
+    }
+
+    auto context = complete_context.value();
+    context.code = PersistenceErrorCode::FatalInternalInvariant;
+    context.native_code = 0;
+    const auto operation = widen_ascii_operation(context.operation);
+    Error common_error{
+        ErrorDomain::persistence,
+        static_cast<std::uint32_t>(
+            PersistenceErrorCode::FatalInternalInvariant),
+        *operation,
+        L"generation or epoch would reach the reserved invalid value",
+        0};
+    return CheckedIncrementOutcome::failure(
+        PersistenceFailure{std::move(common_error), std::move(context)});
+}
+
+/// Reject internally contradictory public checkpoint results before they are
+/// reported or serialized. This does not classify a checkpoint; it validates
+/// that the already-selected disposition agrees with its structured error.
+inline bool is_valid_checkpoint_outcome(
+    const CheckpointOutcome& outcome) noexcept
+{
+    if (!encode_wire(outcome.disposition).has_value() ||
+        outcome.generation == kInvalidGeneration) {
+        return false;
+    }
+
+    if (outcome.error.has_value() != outcome.error_context.has_value()) {
+        return false;
+    }
+
+    if (!outcome.error.has_value()) {
+        return outcome.disposition == CommitDisposition::Committed &&
+               outcome.manifest_candidate_verified &&
+               outcome.backing_view_installed;
+    }
+
+    const auto& error = *outcome.error;
+    const auto& context = *outcome.error_context;
+    if (error.domain != ErrorDomain::persistence ||
+        !is_complete_error_context(context) ||
+        error.code != static_cast<std::uint32_t>(context.code) ||
+        error.native_code != context.native_code ||
+        !operation_labels_match(error.operation, context.operation) ||
+        context.generation != outcome.generation ||
+        context.disposition != outcome.disposition) {
+        return false;
+    }
+
+    switch (outcome.disposition) {
+    case CommitDisposition::NotCommitted:
+        return context.code != PersistenceErrorCode::CommitIndeterminate &&
+               !outcome.manifest_candidate_verified &&
+               !outcome.backing_view_installed &&
+               outcome.acknowledged_blocks == 0;
+    case CommitDisposition::CommitIndeterminate:
+        return context.code == PersistenceErrorCode::CommitIndeterminate &&
+               !outcome.manifest_candidate_verified &&
+               !outcome.backing_view_installed &&
+               outcome.acknowledged_blocks == 0;
+    case CommitDisposition::Committed:
+        return false;
+    case CommitDisposition::CommittedNeedsReconciliation:
+        return context.code != PersistenceErrorCode::Cancelled &&
+               context.code != PersistenceErrorCode::DeadlineExceeded;
+    }
+    return false;
+}
 
 }  // namespace persistence
 }  // namespace myrd

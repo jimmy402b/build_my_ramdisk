@@ -37,6 +37,7 @@ std::string error_domain(ErrorDomain domain) {
     case ErrorDomain::cleanup: return "cleanup";
     case ErrorDomain::evidence: return "evidence";
     case ErrorDomain::internal: return "internal";
+    case ErrorDomain::persistence: return "persistence";
     }
     return "unknown";
 }
