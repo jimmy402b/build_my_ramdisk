@@ -1,307 +1,363 @@
 {
   "schema": "m3-fault-phase-registry-v1",
-  "description": "Stable fault-injection phase registry for M3 checkpoint, recovery, compaction and cleanup. Each phase has a stable ID, exact boundary, short/torn/kill capability, required gate, and expected disposition. Task19/31/33/35/42 treat this file as read-only.",
+  "description": "Frozen M3 fault boundaries. state_disposition is the in-process state at the boundary; error_disposition is the API disposition if that boundary returns an injected error; kill_recovery is the only durable generation set accepted after process termination.",
   "phases": [
     {
       "id": "snapshot.cut.before",
       "boundary": "Before begin_consistent_snapshot() closes mutation admission",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "snapshot.cut.during_drain",
-      "boundary": "During active_mutations_ drain inside begin_consistent_snapshot()",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "During active mutation drain inside begin_consistent_snapshot()",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "snapshot.cut.after_token_active",
-      "boundary": "After snapshot token is activated, before mutation gate reopens",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After snapshot token activation and before mutation admission reopens",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "cow.preimage.alloc.before",
-      "boundary": "Before COW pre-image allocation",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before bounded COW pre-image allocation",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "cow.preimage.alloc.after",
+      "boundary": "After bounded COW pre-image allocation and before publication",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "cow.preimage.publish.before",
+      "boundary": "Immediately before publishing a prepared COW pre-image",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "cow.preimage.publish.after",
-      "boundary": "After COW pre-image is published to coordinator",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After COW pre-image publication to the snapshot coordinator",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
+
     {
       "id": "journal.append.data.before",
-      "boundary": "Before appending a DATA record to journal",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before exact append of a DATA record",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.data.after",
-      "boundary": "After appending a DATA record, before next operation",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After exact DATA record append and before the next record",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.zero.before",
-      "boundary": "Before appending a ZERO record to journal",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before exact append of a ZERO record",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.zero.after",
-      "boundary": "After appending a ZERO record, before next operation",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After exact ZERO record append and before the next record",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.discard.before",
-      "boundary": "Before appending a DISCARD record to journal",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before exact append of a DISCARD record",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.discard.after",
-      "boundary": "After appending a DISCARD record, before next operation",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After exact DISCARD record append and before the next record",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.index_node.before",
-      "boundary": "Before appending an INDEX_NODE record to journal",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before exact append of an INDEX_NODE record",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.append.index_node.after",
-      "boundary": "After appending an INDEX_NODE, before next operation",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After exact INDEX_NODE append and before the next record",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.commit.append.before",
-      "boundary": "Before appending CHECKPOINT_COMMIT record",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before exact append of CHECKPOINT_COMMIT",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.commit.append.after",
-      "boundary": "After CHECKPOINT_COMMIT append, before flush",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After CHECKPOINT_COMMIT append and before journal flush",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.flush.before",
-      "boundary": "Before FlushFileBuffers() on journal",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before FlushFileBuffers() on the journal",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.flush.error",
-      "boundary": "FlushFileBuffers() returns error on journal",
-      "short": false, "torn": false, "kill": false,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "When journal FlushFileBuffers() returns an error",
+      "short": false, "torn": false, "kill": false, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "NotApplicable"
     },
     {
       "id": "journal.flush.after",
-      "boundary": "After journal flush succeeds, before readback",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After journal flush succeeds and before readback",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.readback.before",
-      "boundary": "Before readback of committed journal tail",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before exact readback of all newly committed journal bytes",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "journal.readback.corrupt",
-      "boundary": "Readback data CRC/digest mismatch",
-      "short": false, "torn": false, "kill": false,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "When journal readback CRC or digest validation fails",
+      "short": false, "torn": false, "kill": false, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "NotApplicable"
     },
     {
       "id": "journal.readback.after",
-      "boundary": "After journal readback validates, before manifest write",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After complete journal readback validation and before manifest publication",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v1",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
+
     {
       "id": "manifest.slot_write.before",
-      "boundary": "Before writing the 4096-byte manifest slot",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before the uncancellable manifest slot-write attempt begins",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "manifest.slot_write.short",
-      "boundary": "Short write during manifest slot (fewer than 4096 bytes)",
-      "short": true, "torn": true, "kill": false,
-      "gate": "m3-v2",
-      "expected_disposition": "CommitIndeterminate"
+      "boundary": "When the manifest slot write returns fewer than 4096 bytes",
+      "short": true, "torn": false, "kill": false, "gate": "m3-v2",
+      "state_disposition": "CommitIndeterminate", "error_disposition": "CommitIndeterminate", "kill_recovery": "NotApplicable"
     },
     {
       "id": "manifest.slot_write.torn",
-      "boundary": "Torn write: partial sector written, process terminates",
-      "short": false, "torn": true, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommitIndeterminate"
+      "boundary": "During a sector-aligned torn manifest slot write followed by process termination",
+      "short": false, "torn": true, "kill": true, "gate": "m3-v2",
+      "state_disposition": "CommitIndeterminate", "error_disposition": "NotApplicable", "kill_recovery": "OldOrNewCompleteGeneration"
     },
     {
       "id": "manifest.slot_write.after",
-      "boundary": "After 4096-byte slot write completes, before flush",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommitIndeterminate"
+      "boundary": "After exact slot write completes and before manifest flush",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "CommitIndeterminate", "error_disposition": "NotApplicable", "kill_recovery": "OldOrNewCompleteGeneration"
     },
     {
       "id": "manifest.flush.before",
-      "boundary": "Before FlushFileBuffers() on manifest",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommitIndeterminate"
+      "boundary": "Before FlushFileBuffers() on the manifest after slot-write attempt",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "CommitIndeterminate", "error_disposition": "CommitIndeterminate", "kill_recovery": "OldOrNewCompleteGeneration"
     },
     {
       "id": "manifest.flush.error",
-      "boundary": "FlushFileBuffers() returns error on manifest",
-      "short": false, "torn": false, "kill": false,
-      "gate": "m3-v2",
-      "expected_disposition": "CommitIndeterminate"
+      "boundary": "When manifest FlushFileBuffers() returns an error",
+      "short": false, "torn": false, "kill": false, "gate": "m3-v2",
+      "state_disposition": "CommitIndeterminate", "error_disposition": "CommitIndeterminate", "kill_recovery": "NotApplicable"
     },
     {
       "id": "manifest.flush.after",
-      "boundary": "After manifest flush succeeds (commit point established)",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "Committed"
+      "boundary": "After manifest flush succeeds at the unique commit point",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "NotApplicable", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
       "id": "manifest.readback.before",
-      "boundary": "Before re-reading published manifest slot",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommittedNeedsReconciliation"
+      "boundary": "Before re-reading the durably published manifest slot",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "CommittedNeedsReconciliation", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
       "id": "manifest.readback.corrupt",
-      "boundary": "Published slot readback CRC/field mismatch",
-      "short": false, "torn": false, "kill": false,
-      "gate": "m3-v2",
-      "expected_disposition": "CommittedNeedsReconciliation"
+      "boundary": "When published manifest readback CRC or field validation fails",
+      "short": false, "torn": false, "kill": false, "gate": "m3-v2",
+      "state_disposition": "CommittedNeedsReconciliation", "error_disposition": "CommittedNeedsReconciliation", "kill_recovery": "NotApplicable"
+    },
+    {
+      "id": "manifest.readback.after",
+      "boundary": "After full published-candidate validation succeeds",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "NotApplicable", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
       "id": "backing.view_install.before",
-      "boundary": "Before install_backing_view() with new generation",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommittedNeedsReconciliation"
+      "boundary": "Before install_backing_view() for the committed generation",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "CommittedNeedsReconciliation", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
       "id": "backing.view_install.after",
-      "boundary": "After install_backing_view() succeeds, before ack",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommittedNeedsReconciliation"
+      "boundary": "After backing view installation and before conditional acknowledgment",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "NotApplicable", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
       "id": "backing.ack.each.before",
-      "boundary": "Before each mark_persisted() conditional ack",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommittedNeedsReconciliation"
+      "boundary": "Before each mark_persisted() conditional acknowledgment",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "CommittedNeedsReconciliation", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
       "id": "backing.ack.each.after",
-      "boundary": "After each mark_persisted() conditional ack",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v2",
-      "expected_disposition": "CommittedNeedsReconciliation"
+      "boundary": "After each mark_persisted() conditional acknowledgment",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "NotApplicable", "kill_recovery": "NewCompleteGenerationOnly"
     },
     {
+      "id": "reconciliation.before",
+      "boundary": "Before resolving committed view installation or acknowledgment state",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "CommittedNeedsReconciliation", "error_disposition": "CommittedNeedsReconciliation", "kill_recovery": "NewCompleteGenerationOnly"
+    },
+    {
+      "id": "reconciliation.after",
+      "boundary": "After reconciliation completes and the session may return Ready",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v2",
+      "state_disposition": "Committed", "error_disposition": "NotApplicable", "kill_recovery": "NewCompleteGenerationOnly"
+    },
+
+    {
       "id": "compaction.vhdx.create.before",
-      "boundary": "Before creating temporary VHDX for compaction",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before creating the unique temporary compaction VHDX",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.create.after",
+      "boundary": "After unique temporary VHDX creation and before extent writes",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.vhdx.write.before",
-      "boundary": "Before writing an extent to temporary VHDX",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before each exact extent write to the temporary VHDX",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.vhdx.write.after",
-      "boundary": "After writing an extent, before next",
-      "short": true, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "After each exact temporary VHDX extent write",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.vhdx.flush.before",
-      "boundary": "Before flushing temporary VHDX",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before flushing the completed temporary VHDX",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.flush.after",
+      "boundary": "After temporary VHDX flush succeeds and before readback",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.readback.before",
+      "boundary": "Before complete readback of temporary VHDX format metadata and every written extent",
+      "short": true, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.readback.after",
+      "boundary": "After complete format-metadata and written-extent readback succeeds",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.vhdx.validate.before",
-      "boundary": "Before validating temporary VHDX through product reader",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before validating the temporary VHDX through the product reader",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.validate.after",
+      "boundary": "After strict product-reader validation of the temporary VHDX",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.windows_validate.before",
+      "boundary": "Before offline Windows Virtual Disk API validation without attaching the temporary VHDX",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.windows_validate.after",
+      "boundary": "After offline Windows Virtual Disk API validation succeeds without a second disk attachment",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.vhdx.rename.before",
-      "boundary": "After final identity and containment revalidation, immediately before handle-relative write-through rename of the validated temporary VHDX",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Immediately before handle-relative write-through publication rename",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.vhdx.rename.after",
+      "boundary": "After write-through publication of the unique final VHDX name",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.journal.create.before",
-      "boundary": "Before creating new journal epoch",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before creating the new journal epoch",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.journal.create.after",
+      "boundary": "After creating the new journal epoch and before genesis flush",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "compaction.journal.flush.before",
-      "boundary": "Before flushing new journal",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before flushing the new journal epoch genesis",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotCommitted", "kill_recovery": "OldCompleteGenerationOnly"
+    },
+    {
+      "id": "compaction.journal.flush.after",
+      "boundary": "After new journal epoch genesis flush and before the consistent cut",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "NotCommitted", "error_disposition": "NotApplicable", "kill_recovery": "OldCompleteGenerationOnly"
     },
     {
       "id": "cleanup.old_file.delete.before",
-      "boundary": "Before deleting an obsolete file during retention cleanup",
-      "short": false, "torn": false, "kill": true,
-      "gate": "m3-v4",
-      "expected_disposition": "NotCommitted"
+      "boundary": "Before identity-checked deletion of an eligible obsolete bundle file",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "Committed", "error_disposition": "CommittedNeedsReconciliation", "kill_recovery": "NewCompleteGenerationOnly"
+    },
+    {
+      "id": "cleanup.old_file.delete.after",
+      "boundary": "After identity-checked deletion of an eligible obsolete bundle file",
+      "short": false, "torn": false, "kill": true, "gate": "m3-v4",
+      "state_disposition": "Committed", "error_disposition": "NotApplicable", "kill_recovery": "NewCompleteGenerationOnly"
     }
   ]
 }

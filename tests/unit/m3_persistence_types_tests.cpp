@@ -6,6 +6,7 @@
 
 #include "test_framework.h"
 
+#include "src/common/sha256.h"
 #include "src/persistence/persistence_types.h"
 
 #include <array>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <regex>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -40,13 +42,47 @@ struct FaultPhaseFixture final {
     bool supports_torn{false};
     bool supports_kill{false};
     std::string gate;
-    std::string expected_disposition;
+    std::string state_disposition;
+    std::string error_disposition;
+    std::string kill_recovery;
 };
+
+PersistenceLimits valid_limits() {
+    PersistenceLimits limits{};
+    limits.max_virtual_bytes = 64ULL * 1024 * 1024;
+    limits.max_journal_committed_bytes = kMinimumDataRecordBytes;
+    limits.max_journal_records = 1;
+    limits.max_index_cache_bytes = kIndexNodeBytes;
+    limits.max_index_cache_entries = 1;
+    limits.max_bat_cache_bytes = sizeof(std::uint64_t);
+    limits.max_bat_cache_entries = 1;
+    limits.max_io_scratch_bytes = kM2BlockSize;
+    limits.max_verify_batch_bytes = kM2BlockSize;
+    return limits;
+}
+
+PersistenceErrorContext complete_error_context(
+    std::string operation,
+    PersistenceErrorCode code,
+    SessionPhase phase,
+    std::uint64_t generation,
+    CommitDisposition disposition)
+{
+    PersistenceErrorContext context{};
+    context.operation = std::move(operation);
+    context.code = code;
+    context.phase = phase;
+    context.operation_id = 42;
+    context.image_uuid.bytes[0] = std::byte{0xA5};
+    context.generation = generation;
+    context.disposition = disposition;
+    return context;
+}
 
 std::vector<FaultPhaseFixture> parse_fault_phase_fixtures(
     const std::string& json) {
     const std::regex phase_pattern{
-        R"json(\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"boundary"\s*:\s*"([^"]+)"\s*,\s*"short"\s*:\s*(true|false)\s*,\s*"torn"\s*:\s*(true|false)\s*,\s*"kill"\s*:\s*(true|false)\s*,\s*"gate"\s*:\s*"([^"]+)"\s*,\s*"expected_disposition"\s*:\s*"([^"]+)"\s*\})json"};
+        R"json(\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"boundary"\s*:\s*"([^"]+)"\s*,\s*"short"\s*:\s*(true|false)\s*,\s*"torn"\s*:\s*(true|false)\s*,\s*"kill"\s*:\s*(true|false)\s*,\s*"gate"\s*:\s*"([^"]+)"\s*,\s*"state_disposition"\s*:\s*"([^"]+)"\s*,\s*"error_disposition"\s*:\s*"([^"]+)"\s*,\s*"kill_recovery"\s*:\s*"([^"]+)"\s*\})json"};
 
     std::vector<FaultPhaseFixture> phases;
     for (auto it = std::sregex_iterator(json.begin(), json.end(), phase_pattern);
@@ -59,7 +95,9 @@ std::vector<FaultPhaseFixture> parse_fault_phase_fixtures(
             (*it)[4].str() == "true",
             (*it)[5].str() == "true",
             (*it)[6].str(),
-            (*it)[7].str()});
+            (*it)[7].str(),
+            (*it)[8].str(),
+            (*it)[9].str()});
     }
     return phases;
 }
@@ -199,10 +237,57 @@ TEST_CASE(checked_increment_rejects_uint64_max) {
 
 TEST_CASE(checked_increment_rejects_uint64_max_minus_one_then_wraps) {
     std::uint64_t val = UINT64_MAX - 1;
-    REQUIRE(checked_increment(val));
-    REQUIRE_EQ(val, UINT64_MAX);
-    REQUIRE(!checked_increment(val)); // second increment fails
-    REQUIRE_EQ(val, UINT64_MAX);
+    REQUIRE(!checked_increment(val));
+    REQUIRE_EQ(val, UINT64_MAX - 1);
+}
+
+TEST_CASE(checked_increment_or_fatal_returns_stable_persistence_error_on_wrap) {
+    auto context = complete_error_context(
+        "checkpoint-generation",
+        PersistenceErrorCode::FatalInternalInvariant,
+        SessionPhase::Checkpointing,
+        7,
+        CommitDisposition::NotCommitted);
+    const auto complete = CompletePersistenceErrorContext::create(context);
+    REQUIRE(complete.has_value());
+
+    auto success = checked_increment_or_fatal(0, *complete);
+    REQUIRE(success.ok());
+    REQUIRE_EQ(success.value(), 1ull);
+
+    auto failure = checked_increment_or_fatal(
+        UINT64_MAX - 1, *complete);
+    REQUIRE(!failure.ok());
+    REQUIRE_EQ(failure.error().common_error.domain,
+               ErrorDomain::persistence);
+    REQUIRE_EQ(failure.error().common_error.code,
+               static_cast<std::uint32_t>(
+                   PersistenceErrorCode::FatalInternalInvariant));
+    REQUIRE_EQ(failure.error().common_error.operation,
+               std::wstring{L"checkpoint-generation"});
+    REQUIRE(is_complete_error_context(failure.error().context));
+
+    context.image_uuid = {};
+    REQUIRE(!CompletePersistenceErrorContext::create(context).has_value());
+}
+
+TEST_CASE(persistence_generation_descriptors_have_owned_stable_fields) {
+    ManifestGenerationDescriptor descriptor{};
+    descriptor.checkpoint_generation = 9;
+    descriptor.base_generation = 8;
+    descriptor.journal.epoch = 3;
+    descriptor.journal.committed_length = 8192;
+    descriptor.journal.commit.offset = 4096;
+    descriptor.journal.commit.length = 4096;
+    descriptor.journal.commit.crc32c = 0x12345678U;
+    descriptor.journal.commit.chain_digest[0] = std::byte{0xA5};
+    descriptor.journal.root.offset = 12288;
+    descriptor.journal.root.length = kIndexNodeBytes;
+    descriptor.journal.root.crc32c = 0x90ABCDEFU;
+
+    const auto copy = descriptor;
+    REQUIRE_EQ(copy, descriptor);
+    REQUIRE_EQ(copy.journal.commit.chain_digest.size(), 32ull);
 }
 
 // ============================================================================
@@ -451,6 +536,26 @@ TEST_CASE(validate_limits_rejects_hidden_unlimited_virtual_limit) {
     REQUIRE(validate_limits(lim) == LimitsStatus::MaxVirtualBytesUnlimited);
 }
 
+TEST_CASE(validate_limits_rejects_hidden_unlimited_non_virtual_limits) {
+    using Field = std::uint64_t PersistenceLimits::*;
+    constexpr std::array<Field, 8> fields{
+        &PersistenceLimits::max_journal_committed_bytes,
+        &PersistenceLimits::max_journal_records,
+        &PersistenceLimits::max_index_cache_bytes,
+        &PersistenceLimits::max_index_cache_entries,
+        &PersistenceLimits::max_bat_cache_bytes,
+        &PersistenceLimits::max_bat_cache_entries,
+        &PersistenceLimits::max_io_scratch_bytes,
+        &PersistenceLimits::max_verify_batch_bytes,
+    };
+
+    for (const auto field : fields) {
+        auto limits = valid_limits();
+        limits.*field = UINT64_MAX;
+        REQUIRE_EQ(validate_limits(limits), LimitsStatus::HiddenUnlimited);
+    }
+}
+
 TEST_CASE(validate_limits_rejects_journal_without_complete_data_record) {
     PersistenceLimits lim{};
     lim.max_virtual_bytes = 64ULL * 1024 * 1024;
@@ -606,16 +711,16 @@ TEST_CASE(not_committed_can_transition_to_any_disposition) {
 
 TEST_CASE(commit_indeterminate_can_only_resolve_to_not_committed_or_reconciliation) {
     REQUIRE(is_valid_disposition_transition(CommitDisposition::CommitIndeterminate, CommitDisposition::NotCommitted));
-    REQUIRE(!is_valid_disposition_transition(CommitDisposition::CommitIndeterminate, CommitDisposition::CommitIndeterminate));
+    REQUIRE(is_valid_disposition_transition(CommitDisposition::CommitIndeterminate, CommitDisposition::CommitIndeterminate));
     REQUIRE(!is_valid_disposition_transition(CommitDisposition::CommitIndeterminate, CommitDisposition::Committed));
     REQUIRE(is_valid_disposition_transition(CommitDisposition::CommitIndeterminate, CommitDisposition::CommittedNeedsReconciliation));
 }
 
-TEST_CASE(committed_is_terminal) {
+TEST_CASE(committed_can_only_stay_committed_or_require_reconciliation) {
     REQUIRE(!is_valid_disposition_transition(CommitDisposition::Committed, CommitDisposition::NotCommitted));
     REQUIRE(!is_valid_disposition_transition(CommitDisposition::Committed, CommitDisposition::CommitIndeterminate));
     REQUIRE(is_valid_disposition_transition(CommitDisposition::Committed, CommitDisposition::Committed));
-    REQUIRE(!is_valid_disposition_transition(CommitDisposition::Committed, CommitDisposition::CommittedNeedsReconciliation));
+    REQUIRE(is_valid_disposition_transition(CommitDisposition::Committed, CommitDisposition::CommittedNeedsReconciliation));
 }
 
 TEST_CASE(committed_needs_reconciliation_can_become_committed_or_stay) {
@@ -845,6 +950,139 @@ TEST_CASE(checkpoint_outcome_carries_error_and_matching_context) {
     REQUIRE_EQ(outcome.error_context->generation, 9ull);
 }
 
+TEST_CASE(public_error_context_requires_stable_correlation_fields) {
+    PersistenceErrorContext context{};
+    REQUIRE(!is_complete_error_context(context));
+
+    context.operation = "checkpoint";
+    context.operation_id = 42;
+    context.phase = SessionPhase::Checkpointing;
+    context.generation = 9;
+    REQUIRE(!is_complete_error_context(context));
+
+    context.image_uuid.bytes[0] = std::byte{0x01};
+    REQUIRE(is_complete_error_context(context));
+
+    context.phase = static_cast<SessionPhase>(0xFF);
+    REQUIRE(!is_complete_error_context(context));
+}
+
+TEST_CASE(checkpoint_outcome_validation_rejects_split_error_context) {
+    CheckpointOutcome outcome{};
+    outcome.disposition = CommitDisposition::CommitIndeterminate;
+    outcome.generation = 9;
+    outcome.error = myrd::Error{
+        myrd::ErrorDomain::persistence,
+        static_cast<std::uint32_t>(PersistenceErrorCode::CommitIndeterminate),
+        L"checkpoint",
+        L"manifest publish result is unknown",
+        1117};
+    REQUIRE(!is_valid_checkpoint_outcome(outcome));
+
+    PersistenceErrorContext context{};
+    context.operation = "checkpoint";
+    context.code = PersistenceErrorCode::CommitIndeterminate;
+    context.phase = SessionPhase::ResolvingCommit;
+    context.native_code = 1117;
+    context.operation_id = 42;
+    context.image_uuid.bytes[0] = std::byte{0x01};
+    context.generation = 9;
+    context.disposition = CommitDisposition::NotCommitted;
+    outcome.error_context = context;
+    REQUIRE(!is_valid_checkpoint_outcome(outcome));
+
+    outcome.error_context->disposition = CommitDisposition::CommitIndeterminate;
+    REQUIRE(is_valid_checkpoint_outcome(outcome));
+
+    outcome.error_context->operation = "compact";
+    REQUIRE(!is_valid_checkpoint_outcome(outcome));
+}
+
+TEST_CASE(checkpoint_outcome_validation_rejects_post_commit_cancel_or_timeout) {
+    for (const auto code : {
+             PersistenceErrorCode::Cancelled,
+             PersistenceErrorCode::DeadlineExceeded}) {
+        CheckpointOutcome outcome{};
+        outcome.disposition = CommitDisposition::CommittedNeedsReconciliation;
+        outcome.generation = 9;
+        outcome.error = myrd::Error{
+            myrd::ErrorDomain::persistence,
+            static_cast<std::uint32_t>(code),
+            L"checkpoint",
+            L"post-commit failure",
+            0};
+        outcome.error_context = complete_error_context(
+            "checkpoint",
+            code,
+            SessionPhase::Reconciling,
+            9,
+            CommitDisposition::CommittedNeedsReconciliation);
+        REQUIRE(!is_valid_checkpoint_outcome(outcome));
+    }
+}
+
+TEST_CASE(checkpoint_reconciliation_may_preserve_first_indeterminate_error) {
+    CheckpointOutcome outcome{};
+    outcome.disposition = CommitDisposition::CommittedNeedsReconciliation;
+    outcome.generation = 9;
+    outcome.error = myrd::Error{
+        myrd::ErrorDomain::persistence,
+        static_cast<std::uint32_t>(
+            PersistenceErrorCode::CommitIndeterminate),
+        L"checkpoint",
+        L"first manifest flush failure preserved after resolution",
+        1117};
+    outcome.error_context = complete_error_context(
+        "checkpoint",
+        PersistenceErrorCode::CommitIndeterminate,
+        SessionPhase::Reconciling,
+        9,
+        CommitDisposition::CommittedNeedsReconciliation);
+    outcome.error_context->native_code = 1117;
+    REQUIRE(is_valid_checkpoint_outcome(outcome));
+}
+
+TEST_CASE(checkpoint_outcome_validation_rejects_success_shaped_failure) {
+    CheckpointOutcome outcome{};
+    outcome.disposition = CommitDisposition::Committed;
+    REQUIRE(!is_valid_checkpoint_outcome(outcome));
+
+    outcome.manifest_candidate_verified = true;
+    outcome.backing_view_installed = true;
+    REQUIRE(is_valid_checkpoint_outcome(outcome));
+
+    outcome.generation = kInvalidGeneration;
+    REQUIRE(!is_valid_checkpoint_outcome(outcome));
+}
+
+TEST_CASE(checkpoint_outcome_validation_rejects_precommit_install_or_ack) {
+    for (const auto disposition : {
+             CommitDisposition::NotCommitted,
+             CommitDisposition::CommitIndeterminate}) {
+        const auto code = disposition == CommitDisposition::NotCommitted
+            ? PersistenceErrorCode::IoError
+            : PersistenceErrorCode::CommitIndeterminate;
+        CheckpointOutcome outcome{};
+        outcome.disposition = disposition;
+        outcome.generation = 9;
+        outcome.error = myrd::Error{
+            ErrorDomain::persistence,
+            static_cast<std::uint32_t>(code),
+            L"checkpoint",
+            L"precommit failure",
+            0};
+        outcome.error_context = complete_error_context(
+            "checkpoint", code, SessionPhase::Checkpointing, 9, disposition);
+        REQUIRE(is_valid_checkpoint_outcome(outcome));
+
+        outcome.backing_view_installed = true;
+        REQUIRE(!is_valid_checkpoint_outcome(outcome));
+        outcome.backing_view_installed = false;
+        outcome.acknowledged_blocks = 1;
+        REQUIRE(!is_valid_checkpoint_outcome(outcome));
+    }
+}
+
 TEST_CASE(error_context_phase_covers_all_session_phases) {
     // Each session phase should be storable in the error context.
     PersistenceErrorContext ctx{};
@@ -911,7 +1149,7 @@ TEST_CASE(all_geometry_status_values_have_non_empty_to_string) {
 
 TEST_CASE(all_limits_status_values_have_non_empty_to_string) {
     for (std::uint8_t i = 0;
-         i <= static_cast<std::uint8_t>(LimitsStatus::ArithmeticOverflow);
+         i <= static_cast<std::uint8_t>(LimitsStatus::HiddenUnlimited);
          ++i) {
         auto ls = static_cast<LimitsStatus>(i);
         auto s = to_string(ls);
@@ -1053,6 +1291,7 @@ TEST_CASE(all_stable_enums_round_trip_explicit_wire_values) {
         WireCase{LimitsStatus::MaxVerifyBatchBytesZero, std::uint8_t{16}},
         WireCase{LimitsStatus::VerifyBatchTooSmall, std::uint8_t{17}},
         WireCase{LimitsStatus::ArithmeticOverflow, std::uint8_t{18}},
+        WireCase{LimitsStatus::HiddenUnlimited, std::uint8_t{19}},
     };
     for (const auto& item : limit_cases) {
         REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
@@ -1086,8 +1325,35 @@ TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
     REQUIRE(json.find("\"schema\": \"m3-fault-phase-registry-v1\"") !=
             std::string::npos);
 
+    const auto raw_bytes = std::span<const std::byte>{
+        reinterpret_cast<const std::byte*>(json.data()), json.size()};
+    const auto raw_file_hash = myrd::sha256_hex(raw_bytes);
+    REQUIRE(raw_file_hash.ok());
+    REQUIRE(raw_file_hash.value() ==
+                "A47C3E147A7CD8F9A275F0604AB92C0FCB087AABF6334A23E05E6BA6832BA1D2" ||
+            raw_file_hash.value() ==
+                "4BB1F173B2B04316D7CBA7DAD7311C352202762ACA50AD9323C76ECE6A22C80B");
+
+    std::string normalized_json;
+    normalized_json.reserve(json.size());
+    for (std::size_t i = 0; i < json.size(); ++i) {
+        if (json[i] == '\r') {
+            REQUIRE(i + 1 < json.size());
+            REQUIRE_EQ(json[i + 1], '\n');
+            continue;
+        }
+        normalized_json.push_back(json[i]);
+    }
+    const auto normalized_bytes = std::span<const std::byte>{
+        reinterpret_cast<const std::byte*>(normalized_json.data()),
+        normalized_json.size()};
+    const auto fixture_hash = myrd::sha256_hex(normalized_bytes);
+    REQUIRE(fixture_hash.ok());
+    REQUIRE_EQ(fixture_hash.value(),
+               std::string{"A47C3E147A7CD8F9A275F0604AB92C0FCB087AABF6334A23E05E6BA6832BA1D2"});
+
     const auto phases = parse_fault_phase_fixtures(json);
-    REQUIRE_EQ(phases.size(), static_cast<std::size_t>(43));
+    REQUIRE_EQ(phases.size(), static_cast<std::size_t>(59));
     const std::regex id_field_pattern{R"json("id"\s*:)json"};
     const auto id_field_count = static_cast<std::size_t>(std::distance(
         std::sregex_iterator{json.begin(), json.end(),
@@ -1096,15 +1362,25 @@ TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
     REQUIRE_EQ(id_field_count, phases.size());
 
     const std::regex stable_id_pattern{"^[a-z0-9]+([._][a-z0-9]+)*$"};
-    const std::set<std::string> allowed_gates{"m3-v2", "m3-v4"};
+    const std::set<std::string> allowed_gates{
+        "m3-v1", "m3-v2", "m3-v4"};
+    const std::set<std::string> allowed_recovery{
+        "NotApplicable",
+        "OldCompleteGenerationOnly",
+        "OldOrNewCompleteGeneration",
+        "NewCompleteGenerationOnly"};
     std::set<std::string> ids;
     for (const auto& phase : phases) {
         REQUIRE(std::regex_match(phase.id, stable_id_pattern));
         REQUIRE(ids.insert(phase.id).second);
         REQUIRE(phase.boundary.size() >= 12);
         REQUIRE(allowed_gates.contains(phase.gate));
-        REQUIRE(parse_commit_disposition(phase.expected_disposition)
-                    .has_value());
+        REQUIRE(parse_commit_disposition(phase.state_disposition).has_value());
+        REQUIRE(phase.error_disposition == "NotApplicable" ||
+                parse_commit_disposition(phase.error_disposition).has_value());
+        REQUIRE(allowed_recovery.contains(phase.kill_recovery));
+        REQUIRE_EQ(phase.supports_kill,
+                   phase.kill_recovery != "NotApplicable");
     }
 
     constexpr std::array required_ids{
@@ -1112,6 +1388,8 @@ TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
         "snapshot.cut.during_drain",
         "snapshot.cut.after_token_active",
         "cow.preimage.alloc.before",
+        "cow.preimage.alloc.after",
+        "cow.preimage.publish.before",
         "cow.preimage.publish.after",
         "journal.append.data.before",
         "journal.append.data.after",
@@ -1138,24 +1416,58 @@ TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
         "manifest.flush.after",
         "manifest.readback.before",
         "manifest.readback.corrupt",
+        "manifest.readback.after",
         "backing.view_install.before",
         "backing.view_install.after",
         "backing.ack.each.before",
         "backing.ack.each.after",
+        "reconciliation.before",
+        "reconciliation.after",
         "compaction.vhdx.create.before",
+        "compaction.vhdx.create.after",
         "compaction.vhdx.write.before",
         "compaction.vhdx.write.after",
         "compaction.vhdx.flush.before",
+        "compaction.vhdx.flush.after",
+        "compaction.vhdx.readback.before",
+        "compaction.vhdx.readback.after",
         "compaction.vhdx.validate.before",
+        "compaction.vhdx.validate.after",
+        "compaction.vhdx.windows_validate.before",
+        "compaction.vhdx.windows_validate.after",
         "compaction.vhdx.rename.before",
+        "compaction.vhdx.rename.after",
         "compaction.journal.create.before",
+        "compaction.journal.create.after",
         "compaction.journal.flush.before",
+        "compaction.journal.flush.after",
         "cleanup.old_file.delete.before",
+        "cleanup.old_file.delete.after",
     };
     REQUIRE_EQ(required_ids.size(), phases.size());
     for (const auto id : required_ids) {
         REQUIRE(ids.contains(id));
     }
+
+    std::string canonical;
+    for (const auto& phase : phases) {
+        canonical.append(phase.id).push_back('\n');
+        canonical.append(phase.boundary).push_back('\n');
+        canonical.append(phase.supports_short ? "1\n" : "0\n");
+        canonical.append(phase.supports_torn ? "1\n" : "0\n");
+        canonical.append(phase.supports_kill ? "1\n" : "0\n");
+        canonical.append(phase.gate).push_back('\n');
+        canonical.append(phase.state_disposition).push_back('\n');
+        canonical.append(phase.error_disposition).push_back('\n');
+        canonical.append(phase.kill_recovery).push_back('\n');
+    }
+    const auto bytes = std::span<const std::byte>{
+        reinterpret_cast<const std::byte*>(canonical.data()),
+        canonical.size()};
+    const auto semantic_hash = myrd::sha256_hex(bytes);
+    REQUIRE(semantic_hash.ok());
+    REQUIRE_EQ(semantic_hash.value(),
+               std::string{"D43DEA1EC3ECAEF5A4A1E4DB089E95CA1E9E0306DE3FD0481443D43D036590C7"});
 }
 
 }  // namespace
