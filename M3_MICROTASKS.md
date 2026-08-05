@@ -171,7 +171,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   finish、abort 五个等待点；每格写具体 waiter/event/资源 before/after。
 - [x] `T07.12 [X]` 实现 close：先阻止新 admission，再 signal 全 wait domain，drain
   active mutation/read，最后释放 token/COW/pin/handle；不得在 active count 前清 state。
-- [ ] `T07.13 [M]` resource invariant tests：所有 current gauges 归零，peak/lifetime
+- [x] `T07.13 [M]` resource invariant tests：所有 current gauges 归零，peak/lifetime
   只按 frozen 事件变化；失败/取消/close/abort 每条路径都检查。
 - [ ] `T07.14 [M]` Debug/Release focused repeat、`unit.m2.concurrency`、
   `unit.m2.stress`、`m2-v1/v3`、完整 Release；记录 discovery count、seed、峰值、hash。

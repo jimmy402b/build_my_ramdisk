@@ -1110,6 +1110,46 @@ TEST_CASE(m2_1_task07_fifo_waiters_make_progress_one_cow_slot_at_a_time) {
     REQUIRE(store->validate_invariants_for_test().ok());
 }
 
+TEST_CASE(m2_1_task07_finish_and_abort_zero_current_resources_preserve_peak) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 1, 7));
+    const auto first = block_data(0x61);
+    REQUIRE(store->write(bounded_context(), 0, first).ok());
+
+    const auto aborted = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(aborted.ok());
+    REQUIRE(store->write(bounded_context(), 0, block_data(0x72)).ok());
+    const auto peak_after_abort_record =
+        store->stats().snapshot_cow_peak_bytes;
+    REQUIRE_EQ(peak_after_abort_record, myrd::kMinimumSnapshotCowBytes);
+    REQUIRE(store->abort_consistent_snapshot(aborted.value()).ok());
+    auto stats = store->stats();
+    REQUIRE(!stats.snapshot_active_state.has_value());
+    REQUIRE_EQ(stats.snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(stats.snapshot_cow_records, 0ull);
+    REQUIRE_EQ(stats.snapshot_cow_peak_bytes, peak_after_abort_record);
+    REQUIRE_EQ(stats.snapshot_writer_stalls_total, 0ull);
+    REQUIRE_EQ(stats.snapshot_auto_aborts_total, 0ull);
+
+    const auto finished = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(finished.ok());
+    REQUIRE(store->write(bounded_context(), 0, block_data(0x83)).ok());
+    myrd::DirtyScanCursor cursor{};
+    const auto batch = store->copy_consistent_snapshot_batch(
+        bounded_context(), finished.value(), cursor, myrd::kBlockSizeBytes);
+    REQUIRE(batch.ok());
+    REQUIRE_EQ(batch.value().size(), 1ull);
+    REQUIRE(store->finish_consistent_snapshot(finished.value()).ok());
+    stats = store->stats();
+    REQUIRE(!stats.snapshot_active_state.has_value());
+    REQUIRE_EQ(stats.snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(stats.snapshot_cow_records, 0ull);
+    REQUIRE_EQ(stats.snapshot_cow_peak_bytes, peak_after_abort_record);
+    REQUIRE_EQ(stats.snapshot_writer_stalls_total, 0ull);
+    REQUIRE_EQ(stats.snapshot_auto_aborts_total, 0ull);
+    REQUIRE(store->validate_invariants_for_test().ok());
+}
+
 TEST_CASE(m2_1_coordinator_owns_one_exact_token_and_cut_membership) {
     myrd::SnapshotCoordinator coordinator(
         4 * myrd::kSnapshotCowRecordBudgetBytes);
