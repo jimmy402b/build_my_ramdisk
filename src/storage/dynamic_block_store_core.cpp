@@ -439,6 +439,18 @@ void DynamicBlockStore::close() {
 
 void DynamicBlockStore::finish_close() {
     snapshot_coordinator_->finalize_close();
+    std::shared_ptr<const IBackingStore> retired_backing;
+    {
+        std::scoped_lock state_lock(state_mutex_);
+        if (backing_publications_in_progress_ != 0) {
+            std::terminate();
+        }
+        retired_backing = std::move(backing_view_.store);
+    }
+    // A file-backed reader may close native handles in its destructor. Keep
+    // that callback outside store locks while still making close(), rather
+    // than the later DynamicBlockStore destructor, the ownership boundary.
+    retired_backing.reset();
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::Quiesced));
 

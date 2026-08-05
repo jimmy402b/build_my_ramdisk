@@ -203,7 +203,28 @@ TEST_CASE(m2_backing_closed_store_rejects_install_without_changing_view) {
                    myrd::OperationErrorCode::session_closed));
     const auto view = store->backing_view_for_test();
     REQUIRE_EQ(view.generation, 3ull);
-    REQUIRE(view.store == initial);
+    REQUIRE(view.store == nullptr);
+}
+
+TEST_CASE(m2_backing_close_releases_store_owned_reader_before_destruction) {
+    auto tracker =
+        std::make_shared<myrd::test::FakeBackingStoreLifetimeTracker>();
+    auto initial = myrd::test::FakeBackingStoreBuilder(44)
+                       .lifetime_tracker(tracker)
+                       .build();
+    auto store = require_store(backing_args(initial));
+    initial.reset();
+    REQUIRE_EQ(tracker->live_count(), 1ull);
+    REQUIRE_EQ(tracker->destroyed_count(), 0ull);
+
+    store->close();
+
+    REQUIRE(store->is_closed());
+    REQUIRE_EQ(tracker->live_count(), 0ull);
+    REQUIRE_EQ(tracker->destroyed_count(), 1ull);
+    const auto view = store->backing_view_for_test();
+    REQUIRE_EQ(view.generation, 3ull);
+    REQUIRE(view.store == nullptr);
 }
 
 TEST_CASE(m2_backing_install_wait_is_interrupted_by_close) {
