@@ -189,6 +189,8 @@ Result<std::unique_ptr<DynamicBlockStore>> DynamicBlockStore::create_impl(
                           std::move(snapshot_coordinator),
                           std::move(dependencies.lifecycle_observer),
                           std::move(dependencies.read_observer),
+                          std::move(
+                              dependencies.snapshot_pressure_test_observer),
                           dependencies.fail_snapshot_allocation,
                           dependencies.pause_before_snapshot_wait,
                           dependencies.pause_after_snapshot_pin,
@@ -248,6 +250,8 @@ DynamicBlockStore::DynamicBlockStore(
         lifecycle_observer,
     std::shared_ptr<IDynamicBlockStoreReadObserver>
         read_observer,
+    std::shared_ptr<ISnapshotPressureTestObserver>
+        snapshot_pressure_test_observer,
     bool fail_snapshot_allocation,
     bool pause_before_snapshot_wait,
     bool pause_after_snapshot_pin,
@@ -262,6 +266,8 @@ DynamicBlockStore::DynamicBlockStore(
       snapshot_coordinator_(std::move(snapshot_coordinator)),
       lifecycle_observer_(std::move(lifecycle_observer)),
       read_observer_(std::move(read_observer)),
+      snapshot_pressure_test_observer_(
+          std::move(snapshot_pressure_test_observer)),
       fail_snapshot_allocation_(fail_snapshot_allocation),
       snapshot_wait_pause_for_test_(pause_before_snapshot_wait),
       snapshot_pin_pause_for_test_(pause_after_snapshot_pin),
@@ -813,6 +819,17 @@ bool DynamicBlockStoreTestAccess::all_stripes_available(
         }
         stripe.mutex.unlock();
     }
+    return true;
+}
+
+bool DynamicBlockStoreTestAccess::block_stripe_available(
+    DynamicBlockStore& store,
+    std::uint64_t block_index) noexcept {
+    auto& stripe = store.stripes_->stripe_for(block_index);
+    if (!stripe.mutex.try_lock()) {
+        return false;
+    }
+    stripe.mutex.unlock();
     return true;
 }
 

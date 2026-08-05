@@ -23,6 +23,7 @@ class BlockDirectory;
 class EvictionManager;
 class LockStripeSet;
 class SnapshotCoordinator;
+class ISnapshotPressureTestObserver;
 class VirtualMemoryArena;
 struct DynamicBlockStoreTestDependencies;
 class IDynamicBlockStoreLifecycleObserver;
@@ -165,6 +166,8 @@ private:
             lifecycle_observer,
         std::shared_ptr<IDynamicBlockStoreReadObserver>
             read_observer,
+        std::shared_ptr<ISnapshotPressureTestObserver>
+            snapshot_pressure_test_observer,
         bool fail_snapshot_allocation,
         bool pause_before_snapshot_wait,
         bool pause_after_snapshot_pin,
@@ -276,6 +279,8 @@ private:
     std::unique_ptr<EvictionManager> eviction_manager_;
     std::shared_ptr<IDynamicBlockStoreLifecycleObserver> lifecycle_observer_;
     std::shared_ptr<IDynamicBlockStoreReadObserver> read_observer_;
+    std::shared_ptr<ISnapshotPressureTestObserver>
+        snapshot_pressure_test_observer_;
     bool fail_snapshot_allocation_{};
     std::atomic<bool> snapshot_wait_pause_for_test_{};
     std::atomic<bool> snapshot_wait_gap_reached_for_test_{};

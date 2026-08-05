@@ -168,6 +168,14 @@ Result<void> DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
         : snapshot_coordinator_->reserve_metadata_before_mutation(
               context, *coordinator.active_token, metadata);
     if (!reserved.ok()) {
+        if (snapshot_pressure_test_observer_ &&
+            reserved.error().domain == ErrorDomain::storage &&
+            reserved.error().code == static_cast<std::uint32_t>(
+                DynamicBlockStoreErrorCode::SnapshotResourceExhausted)) {
+            snapshot_pressure_test_observer_->on_snapshot_pressure_event(
+                SnapshotPressureTestEvent::CapacityUnavailable,
+                block_index);
+        }
         return Result<void>::failure(reserved.error());
     }
     auto reservation = reserved.move_value();

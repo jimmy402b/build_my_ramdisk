@@ -43,6 +43,23 @@ public:
         SnapshotCoordinatorBarrierEvent event) noexcept = 0;
 };
 
+enum class SnapshotPressureTestEvent : std::uint8_t {
+    CapacityUnavailable = 0,
+    CapacityWaitReady = 1,
+};
+
+// Test-only observer. Unlike the non-reentrant coordinator barrier, callbacks
+// on this interface must be made without coordinator/state/lifecycle locks.
+// CapacityWaitReady must additionally be emitted after releasing the block
+// stripe so a deterministic test may pause the writer safely.
+class ISnapshotPressureTestObserver {
+public:
+    virtual ~ISnapshotPressureTestObserver() = default;
+    virtual void on_snapshot_pressure_event(
+        SnapshotPressureTestEvent event,
+        std::uint64_t block_index) noexcept = 0;
+};
+
 class SnapshotCoordinator;
 class SnapshotCoordinatorState;
 
