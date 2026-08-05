@@ -1496,7 +1496,7 @@ Result<ConsistentSnapshotStatus> SnapshotCoordinator::status(
         ConsistentSnapshotStatus{
             *state_->active_state,
             state_->budget.current_bytes,
-            state_->committed_records,
+            static_cast<std::uint64_t>(state_->records.size()),
             static_cast<std::uint64_t>(state_->capacity_waiters.size()),
         });
 }
@@ -1510,7 +1510,7 @@ SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
         state_->next_scan_block,
         state_->budget.current_bytes,
         state_->budget.peak_bytes,
-        state_->committed_records,
+        static_cast<std::uint64_t>(state_->records.size()),
         state_->pending_reservations,
         static_cast<std::uint64_t>(state_->capacity_waiters.size()),
         state_->writer_stalls_total,

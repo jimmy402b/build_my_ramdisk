@@ -456,11 +456,14 @@ struct DynamicBlockStoreStats {
     // ---- M2.1 consistent snapshot gauges -----------------------------------
     std::uint64_t snapshot_active_id{};
     std::optional<ConsistentSnapshotState> snapshot_active_state{};
-    // ---- M2.1 consistent snapshot lifetime counters ------------------------
+    // ---- M2.1 consistent snapshot gauges -----------------------------------
     std::uint64_t snapshot_cow_current_bytes{};
+    // ---- M2.1 consistent snapshot peak/lifetime counters -------------------
     std::uint64_t snapshot_cow_peak_bytes{};
+    // ---- M2.1 consistent snapshot gauges, continued ------------------------
     std::uint64_t snapshot_cow_records{};
     std::uint64_t snapshot_blocked_writers{};
+    // ---- M2.1 consistent snapshot lifetime counters ------------------------
     std::uint64_t snapshot_writer_stalls_total{};
     std::uint64_t snapshot_auto_aborts_total{};
     std::uint64_t snapshot_consistent_batches_total{};

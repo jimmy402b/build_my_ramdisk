@@ -815,6 +815,7 @@ TEST_CASE(m2_1_task07_full_cow_budget_blocks_second_writer_before_publish) {
     REQUIRE_EQ(
         myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
         1ull);
+    REQUIRE_EQ(store->stats().snapshot_blocked_writers, 1ull);
 
     myrd::BlockEntry second_waiting{};
     REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
@@ -950,6 +951,7 @@ TEST_CASE(m2_1_task07_batch_consumption_wakes_writer_without_lost_notify) {
     REQUIRE_EQ(
         myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
         0ull);
+    REQUIRE_EQ(store->stats().snapshot_blocked_writers, 0ull);
 
     const auto second_batch = store->copy_consistent_snapshot_batch(
         bounded_context(), begun.value(), cursor, myrd::kBlockSizeBytes);
@@ -1120,6 +1122,7 @@ TEST_CASE(m2_1_task07_stall_abort_preserves_pending_reservation_owner) {
         std::chrono::steady_clock::now() + kWaitBound));
     REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
                myrd::kSnapshotCowRecordBudgetBytes);
+    REQUIRE_EQ(store->stats().snapshot_cow_records, 1ull);
 
     data_writer = std::jthread([&] {
         const auto result = store->write(
@@ -2146,7 +2149,7 @@ TEST_CASE(m2_1_coordinator_charges_metadata_and_rolls_back_reservations) {
                myrd::kSnapshotCowRecordBudgetBytes);
     REQUIRE_EQ(accounting.cow_peak_bytes,
                myrd::kSnapshotCowRecordBudgetBytes);
-    REQUIRE_EQ(accounting.cow_records, 0ull);
+    REQUIRE_EQ(accounting.cow_records, 1ull);
     REQUIRE_EQ(accounting.pending_reservations, 1ull);
     REQUIRE(!coordinator.peek_preimage(1).has_value());
     REQUIRE(coordinator.validate_invariants_for_test().ok());
@@ -2900,6 +2903,7 @@ TEST_CASE(m2_1_cut_drains_the_whole_multiblock_mutation_and_does_not_block_reads
         return myrd::DynamicBlockStoreTestAccess::mutation_waiters(*store) ==
                1;
     }));
+    REQUIRE_EQ(store->stats().snapshot_blocked_writers, 1ull);
 
     std::vector<std::byte> read_output(
         static_cast<std::size_t>(myrd::kBlockSizeBytes));
@@ -2929,7 +2933,7 @@ TEST_CASE(m2_1_cut_drains_the_whole_multiblock_mutation_and_does_not_block_reads
     REQUIRE_EQ(stats.snapshot_active_id, token.snapshot_id);
     REQUIRE_EQ(stats.snapshot_active_state,
                std::optional{myrd::ConsistentSnapshotState::Active});
-    REQUIRE_EQ(stats.snapshot_blocked_writers, 1ull);
+    REQUIRE_EQ(stats.snapshot_blocked_writers, 0ull);
 }
 
 TEST_CASE(m2_1_zero_and_unmap_hold_one_token_across_all_ranges) {
@@ -3153,17 +3157,16 @@ TEST_CASE(m2_1_mutation_admission_honors_cancellation_and_deadline) {
         const auto result = store->zero(
             myrd::OperationContext{
                 {}, std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(50)},
+                        std::chrono::milliseconds(250)},
             ranges);
         deadline_code.store(
             result.ok() ? 0 : error_code(result.error()),
             std::memory_order_release);
     });
     REQUIRE(wait_until([&] {
-        // snapshot_blocked_writers is cumulative, so unlike the instantaneous
-        // waiter gauge it cannot be missed if the 50 ms deadline expires just
-        // before this thread is scheduled.
-        return store->stats().snapshot_blocked_writers >= 2;
+        return myrd::DynamicBlockStoreTestAccess::mutation_waiters(*store) ==
+                   2 &&
+               store->stats().snapshot_blocked_writers == 2;
     }));
     mutation_stop.request_stop();
     REQUIRE(wait_until([&] {
@@ -3176,6 +3179,7 @@ TEST_CASE(m2_1_mutation_admission_honors_cancellation_and_deadline) {
     REQUIRE_EQ(deadline_code.load(std::memory_order_acquire),
                static_cast<std::uint32_t>(
                    myrd::OperationErrorCode::timed_out));
+    REQUIRE_EQ(store->stats().snapshot_blocked_writers, 0ull);
     REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::mutation_waiters(*store),
                0ull);
 

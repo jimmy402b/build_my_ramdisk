@@ -526,11 +526,6 @@ Result<void> DynamicBlockStore::enter_mutation(
     if (mutation_gate_closed_) {
         registered_waiter = true;
         ++mutation_waiters_;
-        {
-            // Required order: admission/lifecycle -> state. No stripe is held.
-            std::scoped_lock state_lock(state_mutex_);
-            ++stats_.snapshot_blocked_writers;
-        }
         const auto gate_open_or_store_closing = [this]() noexcept {
             return !mutation_gate_closed_ ||
                    lifecycle_state_ != LifecycleState::Open;
@@ -773,6 +768,7 @@ const DynamicBlockStoreOptions& DynamicBlockStore::options() const noexcept {
 }
 
 DynamicBlockStoreStats DynamicBlockStore::stats() const {
+    std::scoped_lock lifecycle_lock(lifecycle_mutex_);
     const auto coordinator = snapshot_coordinator_->snapshot();
     std::scoped_lock lock(state_mutex_);
     auto result = stats_;
@@ -783,6 +779,13 @@ DynamicBlockStoreStats DynamicBlockStore::stats() const {
     result.snapshot_cow_current_bytes = coordinator.cow_current_bytes;
     result.snapshot_cow_peak_bytes = coordinator.cow_peak_bytes;
     result.snapshot_cow_records = coordinator.cow_records;
+    if (mutation_waiters_ >
+        (std::numeric_limits<std::uint64_t>::max)() -
+            coordinator.capacity_waiters) {
+        std::terminate();
+    }
+    result.snapshot_blocked_writers =
+        mutation_waiters_ + coordinator.capacity_waiters;
     result.snapshot_writer_stalls_total = coordinator.writer_stalls_total;
     result.snapshot_auto_aborts_total = coordinator.auto_aborts_total;
     return result;
