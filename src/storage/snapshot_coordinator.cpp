@@ -1286,6 +1286,7 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         : check_operation_context(context);
     if (!live.ok()) {
         unregister();
+        state_->finalize_explicit_abort_if_drained();
         return live;
     }
     if (!state_->token_matches(token) ||
