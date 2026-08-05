@@ -157,9 +157,9 @@ Suggested commit:
 | 04 | DATA pre-image | O | DONE | 03 | M3-V3 / m2.1-v2 |
 | 05 | ZERO/DISCARD pre-image | O | DONE | 04 | M3-V3 / m2.1-v2 |
 | 06 | Token batch、finish、abort | O | DONE | 05 | M3-V3 / m2.1-v2 |
-| 07 | 压力、stall、close 与资源清理 | O | PENDING | 06 | M3-V3 / m2.1-v3,v5 |
-| 08 | 独立整盘快照参考模型 | S | PENDING | 07 | M3-V3 / m2.1-v4 |
-| 09 | M2.1 前置验收 verdict | O | PENDING | 08 | M3-V3 prerequisite |
+| 07 | 压力、stall、close 与资源清理 | O | DONE | 06 | M3-V3 / m2.1-v3,v5 |
+| 08 | 独立整盘快照参考模型 | S | DONE | 07 | M3-V3 / m2.1-v4 |
+| 09 | M2.1 前置验收 verdict | O | DONE | 08 | M3-V3 prerequisite |
 | 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
 | 11 | Exact file I/O 与 sparse fake | C | DONE | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | DONE | 11 | M3-V1 |
@@ -464,13 +464,13 @@ blocks corpus。Task 08 状态：`DONE`。
 
 ## Task 09 — 签发 M2.1 前置 verdict
 
-**类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。
+**类别：O。允许文件：** `docs/validation/m3-persistence-acceptance.md`、本任务状态与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。
 
-- [ ] 从 clean Release build 跑 `m2.1-v0..v5`、聚合后的官方 `m3-v3` 和完整 CTest，记录提交、机器、工具链、命令和退出码。
-- [ ] 审计 COW 峰值、writer stall、自动 abort、线程/handle/VM/accounting 和 deterministic seeds。
-- [ ] 明确 verdict 为 `GO`、`NO-GO` 或 `BLOCKED`；任一必需 gate skip/fail 不能写 GO。
-- [ ] 只有 GO 后才允许 Task 28/30 使用 M2.1；基础 codec 任务可按依赖并行准备。
-- [ ] 建议提交 `docs(m2.1): issue consistent snapshot prerequisite verdict`。
+- [x] 从 clean Debug/Release build 跑 `m2.1-v0..v5`、聚合后的官方 `m3-v3` 和完整 CTest，记录提交、机器、工具链、命令和退出码。
+- [x] 审计 COW 峰值、writer stall、自动 abort、线程/handle/VM/accounting 和 deterministic seeds。
+- [x] 最终 verdict 为 `M2.1 PASS`；所有必需 gate 均无 skip/fail。
+- [x] T09.6 两名独立验收人均为 GO，P0/P1/P2 均为 0；Task 28/30 现在允许消费 M2.1。这不是 M3 GO。
+- [x] Round 1/2 NO-GO、修复和最终复核记录见 `docs/validation/m3-persistence-acceptance.md` 的 Task 09 章节及 R2 machine evidence。
 
 ## Task 10 — CRC32C、streaming SHA-256 与 checked byte codec
 

@@ -659,3 +659,254 @@ kernel namespace arbitration, not another finite recheck.
 
 Task 12 verdict: **DONE**. This is not an M3 GO verdict; Tasks 13–44 and the
 real AIM/NTFS, native VHDX, crash and soak acceptance gates remain required.
+
+## Task 09 M2.1 prerequisite verdict — 2026-08-05
+
+### Verdict and acceptance identity
+
+Final verdict: **M2.1 PASS**. Tasks 28 and 30 are authorized to consume the
+M2.1 interface. This is explicitly **not M3 GO**: Tasks 13–44, native
+VHDX/journal persistence, real AIM+NTFS operation, crash recovery and soak
+acceptance remain open.
+
+| Item | Accepted value |
+|---|---|
+| Branch | `feature/m3-task07-review-fixes` |
+| Tested source commit | `c55e8330505f4d8387f69673a5903cee3e5019bd` |
+| Fresh build/evidence root | `.worktrees/m3-task09-validation/out/validation/task09-c55e833-r2/` |
+| OS | Windows 11 Pro, version `10.0.26200`, build `26200` |
+| CPU / memory | AMD Ryzen 5 5600, 6 cores / 12 logical processors; `68359413760` bytes RAM |
+| Toolchain | MSVC `19.44.35228` (`cl.exe` 14.44.35207), CMake `4.2.2`, Ninja `1.13.2` |
+| Lost-wakeup defect review | Two independent read-only code reviews: final GO; P0=0, P1=0, P2=0 |
+| T09.6 acceptance review | Final specification PASS and evidence GO; P0=0, P1=0, P2=0 |
+
+The validation directory did not exist before configure. Configure and both
+full builds ran from the Visual Studio x64 developer environment with these
+effective commands; every command exited `0`:
+
+```powershell
+cmake -S . -B out/validation/task09-c55e833-r2 -G "Ninja Multi-Config" `
+  -DCMAKE_CONFIGURATION_TYPES="Debug;Release" `
+  -DCMAKE_CXX_COMPILER_LAUNCHER=tools/msvc-utf8-launcher.cmd `
+  -DBUILD_TESTING=ON
+cmake --build out/validation/task09-c55e833-r2 --config Debug
+cmake --build out/validation/task09-c55e833-r2 --config Release
+```
+
+Raw configure, build and test output is retained under
+`.worktrees/m3-task09-validation/out/validation/task09-c55e833-r2/evidence/`.
+`00-preflight.log` binds the pre-test timestamp, detached worktree path, exact
+HEAD, zero porcelain entries, previously absent build directory, machine and
+toolchain. Each later log records its exact command and final exit code; no
+earlier build log is used for this verdict.
+
+### T09.1–T09.2 clean-build and dynamic gates
+
+| Gate | Result | Exit |
+|---|---:|---:|
+| Fresh Debug full CTest | 62/62 | 0 |
+| Fresh Release full CTest | 63/63 | 0 |
+| Release `m3-v3`, run 1 | 4/4 | 0 |
+| Release `m3-v3`, run 2 | 4/4 | 0 |
+| Release `m2-v1` | 16/16 | 0 |
+| Release `m2-v2` | 6/6 | 0 |
+| Release `m2-v3` | 6/6 | 0 |
+| Release `m2-v4` | 35/35 | 0 |
+| Release `m2-v5` | 6/6 | 0 |
+| Release `unit.m2.concurrency --repeat until-fail:100` | 100/100 | 0 |
+| Direct Release consistent-snapshot suite | 94/94 | 0 |
+| Direct Release backing-generation suite | 11/11 | 0 |
+| Direct Release concurrency suite | 22/22 | 0 |
+
+The official `m3-v3` aggregate contains
+`unit.m3.m2_consistent_snapshot`,
+`unit.m3.m2_consistent_snapshot_model`,
+`unit.m2.backing_generation` and `unit.m2.concurrency`. The internal labels
+remain separately discoverable: `m2.1-v0` 3 tests and `m2.1-v1..v5` one test
+each. There were no required skips.
+
+Task 08's frozen 100 seeds were supplemented with a fresh, externally
+generated corpus. For seed index `i`, the generator took the last eight bytes
+of `SHA256("c55e833|T09|i")` as a big-endian hexadecimal seed. The model ran
+100 seeds × 1000 operations = 100,000 operations and passed 13/13 tests:
+
+| Corpus item | Value |
+|---|---|
+| First seed | `8035c78ecf339580` |
+| Last seed | `c68c264b8e312873` |
+| Comma-separated corpus SHA-256 | `F31F44BD52794F13C1866778F4B9FEB60B6A1830DA93FAEF79BEC7FD0C9B4780` |
+| External summary | `seeds=100 operations=100000 slowest_seed=0xf337ebafb2b22414 slowest_us=40075` |
+
+The key accepted binary hashes are:
+
+| Configuration | Binary | SHA-256 |
+|---|---|---|
+| Debug | `myrd_m2_consistent_snapshot_tests.exe` | `8416F97725768E801B3F3658F9E72F96E7600DE194B11EC4D18F7BB7079ED175` |
+| Debug | `myrd_m2_consistent_snapshot_model_tests.exe` | `6607CC22B1C1699E6F838E85463DB9DF983538248FD6E41338EA5BF478DC3ACC` |
+| Debug | `myrd_m2_backing_generation_tests.exe` | `B89A04A5FB2E40334D09171FA0D5F7BE654BA6ABC387D3C1E8D46D18E3861771` |
+| Debug | `myrd_m2_concurrency_tests.exe` | `2AE238D4D89F5D36DFE4BB0B182AE62A819833F15A1071C0EE1B54614E7E4C7C` |
+| Release | `myrd_m2_consistent_snapshot_tests.exe` | `8E347CA00416BCAB0904ED7BD08D0455699086EBA7CE362E2ED0D1F3AB05F8EF` |
+| Release | `myrd_m2_consistent_snapshot_model_tests.exe` | `D6620045DF4A5B2C8F632B3022ACB6434FC6C91955C07649BEDF568183DE3B87` |
+| Release | `myrd_m2_backing_generation_tests.exe` | `DE02FD34E089746AD734E76CB20CD6D14781B421848E3FC74DC89D30CCDD71C1` |
+| Release | `myrd_m2_concurrency_tests.exe` | `2D95C2CBEF218572FAD62789280D31342F79F06E3C24CE2CD32BB1161505DE97` |
+
+### T09.3 M2.1 diff and dependency inventory
+
+The repository history interleaves M2.1 with Tasks 10–12, so the raw contiguous
+range `a37ce86..c55e833` is intentionally not called an M2.1-only diff. The
+reproducible M2.1 implementation commit set is selected from that range by
+including subjects matching `(feat|fix|test)(storage):` plus the single
+`test(m3): register M2.1 aggregate gate` commit, while excluding docs-only,
+common-codec and persistence commits:
+
+```powershell
+$selected = git log --reverse --format='%H%x09%s' a37ce86..c55e833 |
+  Where-Object {
+    $_ -match "\t(feat|fix|test)\(storage\):" -or
+    $_ -match "\ttest\(m3\): register M2\.1"
+  }
+$hashes = $selected | ForEach-Object { ($_ -split "`t")[0] }
+$files = foreach ($hash in $hashes) {
+  git diff-tree --no-commit-id --name-only -r $hash
+}
+$files | Sort-Object -Unique
+```
+
+This yields 55 commits and the following exact 38-file touched-file inventory:
+
+```text
+docs/validation/m3-persistence-acceptance.md
+M3_MICROTASKS.md
+M3_TASKLIST.md
+src/CMakeLists.txt
+src/m2/m2_report.cpp
+src/storage/block_directory.cpp
+src/storage/block_directory.h
+src/storage/consistent_snapshot.h
+src/storage/dynamic_block_store.h
+src/storage/dynamic_block_store_backing.cpp
+src/storage/dynamic_block_store_core.cpp
+src/storage/dynamic_block_store_internal.h
+src/storage/dynamic_block_store_ranges.cpp
+src/storage/dynamic_block_store_read.cpp
+src/storage/dynamic_block_store_snapshot.cpp
+src/storage/dynamic_block_store_write.cpp
+src/storage/dynamic_block_types.h
+src/storage/snapshot_coordinator.cpp
+src/storage/snapshot_coordinator.h
+tests/CMakeLists.txt
+tests/support/consistent_snapshot_model.cpp
+tests/support/consistent_snapshot_model.h
+tests/unit/block_directory_tests.cpp
+tests/unit/block_math_tests.cpp
+tests/unit/dynamic_block_store_backing_generation_tests.cpp
+tests/unit/dynamic_block_store_concurrency_tests.cpp
+tests/unit/dynamic_block_store_consistent_snapshot_model_tests.cpp
+tests/unit/dynamic_block_store_consistent_snapshot_tests.cpp
+tests/unit/dynamic_block_store_core_tests.cpp
+tests/unit/dynamic_block_store_eviction_tests.cpp
+tests/unit/dynamic_block_store_limit_tests.cpp
+tests/unit/dynamic_block_store_model_tests.cpp
+tests/unit/dynamic_block_store_range_tests.cpp
+tests/unit/dynamic_block_store_read_tests.cpp
+tests/unit/dynamic_block_store_snapshot_tests.cpp
+tests/unit/dynamic_block_store_stress_tests.cpp
+tests/unit/dynamic_block_store_write_tests.cpp
+tests/unit/m2_report_tests.cpp
+```
+
+The exact selected commit list and file list are retained as machine evidence:
+`12-m2.1-commit-set.txt` SHA-256
+`D365032E4DC031DEF1561887B69F51AD80B3B2E593322105E62218875A39AA20`
+and `13-m2.1-file-inventory.txt` SHA-256
+`C15F1121861C078B687D7C77775C5668A7F2347D770ACF184F1591B78D76F6EB`.
+
+Public contract changes are limited to:
+
+- `ConsistentSnapshotToken`, `ConsistentSnapshotState` and
+  `ConsistentSnapshotStatus`;
+- fixed accounting constants `kSnapshotCowRecordBudgetBytes` and
+  `kMinimumSnapshotCowBytes`;
+- begin/copy-batch/finish/abort/status methods;
+- bounded `snapshot_cow_max_bytes` and
+  `snapshot_writer_stall_limit` options;
+- stable errors `SnapshotBusy`, `SnapshotTokenInvalid`, `SnapshotAborted`,
+  `SnapshotNotFullyScanned` and `SnapshotResourceExhausted`;
+- option-validation errors `SnapshotCowBytesTooSmall`,
+  `SnapshotCowStallNotPositive` and `SnapshotCowStallTooLarge`;
+- coherent/lifetime stats for active snapshot, COW current/peak/records,
+  blocked writers, stalls, auto-aborts, batches and records.
+
+The added `src/storage` lines contain zero `CreateFile`, `ReadFile`,
+`WriteFile`, `DeviceIoControl`, AIM, ImDisk or phdskmnt references.
+`myrd_storage` still links only `myrd_common`; it has no persistence-format,
+Win32 file, driver or proxy dependency. M2.1 adds no worker thread, native
+handle or new VM API. COW ownership is ordinary bounded user memory accounted
+by the coordinator. Full `m2-v4`, close/resource tests and the structural
+storage-independent build all passed.
+
+### T09.4 signed invariant audit
+
+| Frozen requirement | Signed conclusion and direct evidence |
+|---|---|
+| Snapshot linearization | **PASS.** Begin closes mutation admission, drains the complete public multi-block mutation, captures backing generation and dirty epoch, publishes one token, then reopens admission. Reads continue. Deterministic cut/cancel/deadline/close tests pass; the reference model matched the frozen 100 seeds plus 100 new seeds (200,000 modeled operations total). |
+| Bounded COW and stall | **PASS.** DATA is charged 64 KiB plus the fixed 256-byte coordinator record; ZERO/DISCARD still consume the record charge. One-record pressure, FIFO grant, no-barging, release-stripe-before-wait, cancellation/deadline and 250 ms auto-abort tests pass. Peak/current/record/blocked/stall/abort counters are checked, and finish/abort/close return current resources to zero without erasing lifetime peak. |
+| No resurrection | **PASS.** COW is installed before mutation publication, returned payload owns its bytes, consumed blocks cannot create a later pre-image, and exact acknowledgement rechecks version/kind/generation/cutoff epoch. `ack_evict_reload_never_exposes_predecessor_bytes`, DATA resurrection, ZERO resurrection and zero/discard exact-ack tests all pass. |
+| Install-before-ack | **PASS.** Before `FullyScanned`, both `install_backing_view()` and `mark_persisted()` return `SnapshotBusy`; finish returns `SnapshotNotFullyScanned`. After the full ascending scan, the accepted order is successor install → exact conditional acknowledgements → finish. A post-cut rewrite fails acknowledgement with `version_changed` and remains dirty. |
+| Close and resource ownership | **PASS.** Close rejects new admission, signals lifecycle/coordinator/stripe/test barriers, drains active requests/mutations/reads, then finalizes token/COW and releases the store-owned backing. Capacity wait, preparing owner, status request, transient load, pin, pressure wait and record-staging close paths pass. Final gauges are zero, backing owners expire, VM release occurs exactly once, and the concurrency suite passed 100 consecutive Release runs. |
+
+No SPEC §7 or PLAN §1.1–1.3 requirement was waived. No M1/AIM protocol,
+persistence wire format, durability commit point or M4 boundary was changed.
+
+### Defect evidence and independent review
+
+The first Task09 concurrency repetition on pre-verdict commit `b3d8b19`
+correctly produced a RED result: `unit.m2.concurrency` failed at
+`dynamic_block_store_concurrency_tests.cpp:521` because a loading waiter did
+not observe cancellation within the two-second bound. Root cause was the
+notify-only stop callback window between predicate evaluation and the actual
+condition-variable sleep.
+
+Commit `c55e833` replaces those vulnerable stripe/coordinator waits with C++20
+native stop-token predicate waits and includes close in every stripe predicate.
+It deliberately does not allocate a per-wait combined `stop_source`; close
+continues to synchronize notification by taking the predicate mutex. The same
+class of wait in read, write, zero/unmap, ordinary snapshot, consistent
+snapshot, Preparing and capacity paths is covered.
+
+Independent code review found and rejected two intermediate designs before
+the lost-wakeup defect was accepted: a per-wait `stop_source` could add an OOM
+exception inside an active block transition, and an early revision omitted
+close from the native predicate. Both were removed. Two final read-only code
+reviews report P0=0, P1=0, P2=0 and GO; these code reviews are not substituted
+for the separate T09.6 acceptance review.
+After the final code change, Debug 62/62, Release 63/63, concurrency 100/100
+and consistent-snapshot 20/20 all passed; the fresh `c55e833` validation above
+then passed independently.
+
+T09.6 round 1 produced two evidence-only NO-GO verdicts, preserved verbatim in
+`14-task09-spec-review-round1.txt` and
+`15-task09-evidence-review-round1.txt`. The repair:
+
+- restores Task09 to PENDING and removes premature authorization;
+- defines a reproducible 55-commit M2.1 implementation selection and its exact
+  38-file touched-file inventory;
+- adds the two budget constants and three option-validation errors to the
+  public-change inventory;
+- replaces the first evidence set with a new detached, clean-worktree run whose
+  `00-preflight.log` binds HEAD/status/build-dir/machine/toolchain before
+  configure;
+- uses only the permitted verdict token `M2.1 PASS`.
+
+T09.6 specification review round 2 is preserved in
+`16-task09-spec-review-round2.txt`. Its sole P1 was a first-run
+`slowest_us` value copied into the R2 table; the table now records the R2 raw
+value `40075`. No behavioral result, seed, operation count or hash changed.
+
+Final T09.6 records are preserved in `17-task09-spec-review-final.txt` and
+`18-task09-evidence-review-final.txt`. Both reviewers independently report
+P0=0, P1=0, P2=0 and authorize the status-only finalization.
+
+Task 09 verdict: **M2.1 PASS**. This closes only the M2.1 prerequisite,
+authorizes Tasks 28/30 to consume the interface, and does not claim persistence
+or end-to-end M3 completion.
