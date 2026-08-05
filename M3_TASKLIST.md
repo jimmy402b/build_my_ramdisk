@@ -357,6 +357,25 @@ CTest `62/62`。固定 stress seed `0x4D59524453545231`；one-record COW peak
 `65,792` bytes；Release focused binary SHA-256
 `937C545CB01A10A6F1132D625D1A1584F76BF217166B5145F14697030D4CCDDC`。
 
+T07.15 evidence：最终候选 `6a2fa1d0792b9c09d4c7690897f39a87b4110d02`。
+两轮独立审查先后揭示并修复 cancelled publication 丢 notify、abort 提前删除 pending
+owner、capacity grant 可被插队/同块窃取、status 绕过 request drain、current gauge
+口径错误、close 未释放 backing owner、Preparing wake 后复用 sparse leaf、显式 abort 与
+capacity cancel/deadline 后不 finalize、以及 staged batch 可把 auto-aborted token 复活等
+问题；最终两位 reviewer 交叉复审均为 P0/P1/P2=`0/0/0`。确定性回归还冻结了
+close-after-staging 的 `session_closed` 优先级和异常安全的 thread/barrier cleanup。
+最终 Debug/Release focused binary 各 `94/94`、exit `0`；SHA-256 分别为
+`799FF973F0F3B034985561EFA7B0186F51EFE730298A32DCA6B4343139C7483D` 与
+`84E82FB552FA6DFFB0FA4267914AB37820D7D9B56B892755E851366EF993662D`。最后一次
+production 变更 `419c4ff` 后完整 Debug/Release CTest 分别 `62/62`、`63/63`；其后的
+`6a2fa1d` 只调整 5 行测试 cleanup 顺序并重新通过双配置 focused。
+
+最新 mutation proof：隔离删除 capacity wait 前的 stripe unlock/reacquire 后，focused
+gate 在 `29.99s` 硬超时；恢复后隔离删除 frontier advance 的 `notify_all`，FIFO 回归在
+`0.33s`、`code2 == kNoResult` 断言稳定失败。两次 mutation 均未提交；恢复后两个源码
+blob hash 与 HEAD 完全相同，`git diff --check 0f07f46..HEAD` 和最终 clean-tree 检查均
+通过。Task 07 状态：`DONE`。
+
 ### Task07 close matrix（T07.11）
 
 | 等待/竞争点 | close 前 waiter 与资源 | close 线性化与唤醒 | drain 后必须成立 |
