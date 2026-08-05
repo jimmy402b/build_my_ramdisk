@@ -533,6 +533,55 @@ TEST_CASE(m2_1_task08_model_batches_one_cut_and_invalidates_abort) {
     REQUIRE(!model.abort_cut(*aborted));
 }
 
+TEST_CASE(m2_1_task08_model_owns_token_cursor_and_finish_state) {
+    using namespace myrd::test::consistent_model;
+    Model model(3 * kBlockBytes, 7);
+    Model other_model(3 * kBlockBytes, 7);
+    REQUIRE(model.write(0, block_bytes(0x64)));
+    REQUIRE(model.write(kBlockBytes, block_bytes(0x65)));
+    const auto token = model.begin_cut();
+    const auto other_token = other_model.begin_cut();
+    REQUIRE(token.has_value());
+    REQUIRE(other_token.has_value());
+    REQUIRE(*token != *other_token);
+
+    std::uint64_t forged_cursor = 2;
+    REQUIRE(!model.copy_cut(
+        *token, forged_cursor, kBlockBytes, 1).has_value());
+    REQUIRE_EQ(forged_cursor, 2ull);
+    REQUIRE(!model.finish_cut(*token, model.block_count()));
+
+    std::uint64_t cursor = 0;
+    const auto first = model.copy_cut(
+        *token, cursor, kBlockBytes, 1);
+    REQUIRE(first.has_value());
+    REQUIRE_EQ(first->size(), 1ull);
+    REQUIRE_EQ(cursor, 1ull);
+
+    std::uint64_t rolled_back_cursor = 0;
+    REQUIRE(!model.copy_cut(
+        *token, rolled_back_cursor, kBlockBytes, 1).has_value());
+    REQUIRE_EQ(rolled_back_cursor, 0ull);
+    REQUIRE(!model.finish_cut(*token, model.block_count()));
+
+    std::uint64_t foreign_cursor = cursor;
+    REQUIRE(!model.copy_cut(
+        *other_token, foreign_cursor, kBlockBytes, 1).has_value());
+    REQUIRE_EQ(foreign_cursor, cursor);
+
+    const auto second = model.copy_cut(
+        *token, cursor, kBlockBytes, 1);
+    REQUIRE(second.has_value());
+    REQUIRE_EQ(second->size(), 1ull);
+    REQUIRE_EQ(cursor, 2ull);
+    const auto exhausted = model.copy_cut(
+        *token, cursor, kBlockBytes, 1);
+    REQUIRE(exhausted.has_value());
+    REQUIRE(exhausted->empty());
+    REQUIRE_EQ(cursor, model.block_count());
+    REQUIRE(model.finish_cut(*token, cursor));
+}
+
 TEST_CASE(m2_1_task08_directed_store_union_equals_independent_cut) {
     using namespace myrd::test::consistent_model;
     constexpr std::uint64_t generation = 7;

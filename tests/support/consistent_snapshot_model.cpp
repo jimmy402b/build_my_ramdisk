@@ -1,6 +1,7 @@
 #include "consistent_snapshot_model.h"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -8,6 +9,15 @@
 namespace myrd::test::consistent_model {
 
 namespace {
+
+std::uint64_t allocate_owner_id() {
+    static std::atomic<std::uint64_t> next{1};
+    const auto id = next.fetch_add(1, std::memory_order_relaxed);
+    if (id == 0 || id == (std::numeric_limits<std::uint64_t>::max)()) {
+        throw std::overflow_error("consistent model owner id exhausted");
+    }
+    return id;
+}
 
 class DeterministicRandom final {
 public:
@@ -202,7 +212,8 @@ Model::Model(std::uint64_t logical_size_bytes,
     : logical_size_bytes_(logical_size_bytes),
       block_count_(logical_size_bytes / kBlockBytes +
                    (logical_size_bytes % kBlockBytes != 0 ? 1 : 0)),
-      backing_generation_(backing_generation) {
+      backing_generation_(backing_generation),
+      owner_id_(allocate_owner_id()) {
     if (initial_bytes.size() != logical_size_bytes) {
         throw std::invalid_argument("initial image size does not match geometry");
     }
@@ -370,7 +381,7 @@ std::optional<CutToken> Model::begin_cut() {
         next_cut_id_ == (std::numeric_limits<std::uint64_t>::max)()) {
         return std::nullopt;
     }
-    const CutToken token{next_cut_id_++};
+    const CutToken token{next_cut_id_++, owner_id_};
     std::vector<SnapshotRecord> next_records;
     next_records.reserve(static_cast<std::size_t>(dirty_block_count()));
     for (const auto& [block_index, state] : blocks_) {
@@ -391,6 +402,7 @@ std::optional<CutToken> Model::begin_cut() {
     }
     active_cut_ = token;
     cut_records_ = std::move(next_records);
+    cut_cursor_ = 0;
     return token;
 }
 
@@ -403,8 +415,9 @@ std::optional<std::vector<SnapshotRecord>> Model::copy_cut(
     CutToken token,
     std::uint64_t& cursor,
     std::uint64_t max_payload_bytes,
-    std::size_t record_limit) const {
-    if (active_cut_ != token || cursor > block_count_ ||
+    std::size_t record_limit) {
+    if (active_cut_ != token || token.owner_id != owner_id_ ||
+        cursor != cut_cursor_ || cursor > block_count_ ||
         max_payload_bytes < kBlockBytes ||
         max_payload_bytes % kBlockBytes != 0 || record_limit == 0) {
         return std::nullopt;
@@ -412,20 +425,21 @@ std::optional<std::vector<SnapshotRecord>> Model::copy_cut(
 
     std::vector<SnapshotRecord> batch;
     std::uint64_t payload_bytes = 0;
-    while (cursor < block_count_ && batch.size() < record_limit) {
+    auto next_cursor = cursor;
+    while (next_cursor < block_count_ && batch.size() < record_limit) {
         const auto found = std::lower_bound(
             cut_records_.begin(),
             cut_records_.end(),
-            cursor,
+            next_cursor,
             [](const SnapshotRecord& record, std::uint64_t block_index) {
                 return record.block_index < block_index;
             });
         if (found == cut_records_.end()) {
-            cursor = block_count_;
+            next_cursor = block_count_;
             break;
         }
-        if (found->block_index > cursor) {
-            cursor = found->block_index;
+        if (found->block_index > next_cursor) {
+            next_cursor = found->block_index;
         }
         if (found->kind == Kind::Data &&
             max_payload_bytes - payload_bytes < kBlockBytes) {
@@ -435,26 +449,31 @@ std::optional<std::vector<SnapshotRecord>> Model::copy_cut(
         if (found->kind == Kind::Data) {
             payload_bytes += kBlockBytes;
         }
-        ++cursor;
+        ++next_cursor;
     }
+    cursor = next_cursor;
+    cut_cursor_ = next_cursor;
     return batch;
 }
 
 bool Model::finish_cut(CutToken token, std::uint64_t cursor) noexcept {
-    if (active_cut_ != token || cursor != block_count_) {
+    if (active_cut_ != token || token.owner_id != owner_id_ ||
+        cursor != cut_cursor_ || cut_cursor_ != block_count_) {
         return false;
     }
     active_cut_.reset();
     cut_records_.clear();
+    cut_cursor_ = 0;
     return true;
 }
 
 bool Model::abort_cut(CutToken token) noexcept {
-    if (active_cut_ != token) {
+    if (active_cut_ != token || token.owner_id != owner_id_) {
         return false;
     }
     active_cut_.reset();
     cut_records_.clear();
+    cut_cursor_ = 0;
     return true;
 }
 

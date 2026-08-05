@@ -77,6 +77,7 @@ std::optional<Schedule> reduce_failure(
 
 struct CutToken final {
     std::uint64_t id{};
+    std::uint64_t owner_id{};
 
     bool operator==(const CutToken&) const = default;
 };
@@ -88,6 +89,10 @@ public:
     Model(std::uint64_t logical_size_bytes,
           std::vector<std::byte> initial_bytes,
           std::uint64_t backing_generation);
+    Model(const Model&) = delete;
+    Model& operator=(const Model&) = delete;
+    Model(Model&&) = delete;
+    Model& operator=(Model&&) = delete;
 
     std::uint64_t logical_size_bytes() const noexcept;
     std::uint64_t block_count() const noexcept;
@@ -109,7 +114,7 @@ public:
         CutToken token,
         std::uint64_t& cursor,
         std::uint64_t max_payload_bytes,
-        std::size_t record_limit) const;
+        std::size_t record_limit);
     bool finish_cut(CutToken token, std::uint64_t cursor) noexcept;
     bool abort_cut(CutToken token) noexcept;
 
@@ -125,9 +130,11 @@ private:
     std::uint64_t logical_size_bytes_{};
     std::uint64_t block_count_{};
     std::uint64_t backing_generation_{};
+    std::uint64_t owner_id_{};
     std::map<std::uint64_t, BlockState> blocks_;
     std::optional<CutToken> active_cut_;
     std::vector<SnapshotRecord> cut_records_;
+    std::uint64_t cut_cursor_{};
     std::uint64_t next_cut_id_{1};
 };
 
