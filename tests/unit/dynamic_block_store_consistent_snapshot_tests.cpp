@@ -1554,6 +1554,11 @@ TEST_CASE(m2_1_task07_close_wins_after_batch_staging_before_advance) {
     }));
 
     std::jthread closer([&] { store->close(); });
+    myrd::ScopeExit release_after_closer([&]() noexcept {
+        (void)myrd::DynamicBlockStoreTestAccess::
+            release_consistent_snapshot_advance_pause(*store);
+    });
+    release_advance.release();
     REQUIRE(lifecycle->wait_for(
         myrd::DynamicBlockStoreLifecycleEvent::WaitersNotified,
         std::chrono::steady_clock::now() + kWaitBound));
