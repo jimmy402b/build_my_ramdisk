@@ -311,19 +311,19 @@ codec 来迎合 selector。
 
 允许：`journal_index.*`、`m3_journal_index_tests.cpp`、test CMake。
 
-- [ ] `T17.1 [M]` 建 focused target 和手工 node fixtures：empty/leaf/multi-level、
+- [x] `T17.1 [M]` 建 focused target 和手工 node fixtures：empty/leaf/multi-level、
   boundary/absent、DATA/ZERO/DISCARD。先加可编译 lookup stub，RED 必须在 expected
   descriptor/Absent 断言失败，缺 API 只算 bootstrap。
-- [ ] `T17.2 [H]` 冻结 corruption matrix：CRC、unsorted/duplicate key、cycle、
+- [x] `T17.2 [H]` 冻结 corruption matrix：CRC、unsorted/duplicate key、cycle、
   child 越 committed length、depth 9、offset/alignment overflow；corrupt 绝不能
   变成 Absent。
-- [ ] `T17.3 [H]` 实现 iterative lookup：max depth 8、visited-offset set、每次 exact
+- [x] `T17.3 [H]` 实现 iterative lookup：max depth 8、visited-offset set、每次 exact
   bounded read、key range 单调收窄；任何 allocation 前先验证 count/length limit。
-- [ ] `T17.4 [M]` 实现 bounded cache 外壳和 eviction tests；cache key 必须包含
+- [x] `T17.4 [M]` 实现 bounded cache 外壳和 eviction tests；cache key 必须包含
   file identity + epoch + root generation + node offset，禁止跨 immutable view 复用。
-- [ ] `T17.5 [M]` 一百万 random lookup 对 `std::map`，记录 seed/peak cache bytes/
+- [x] `T17.5 [M]` 一百万 random lookup 对 `std::map`，记录 seed/peak cache bytes/
   read calls；Debug/Release focused + format tests。
-- [ ] `T17.6 [H]` 独立 malformed-input/cache-identity review，mutation 删除 depth/
+- [x] `T17.6 [H]` 独立 malformed-input/cache-identity review，mutation 删除 depth/
   committed-bound check 时测试必须失败。
 
 ### Task 18 — COW index builder

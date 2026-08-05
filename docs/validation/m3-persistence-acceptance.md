@@ -955,3 +955,49 @@ Evidence SHA-256:
 
 Task 16 verdict: **DONE**. This authorizes Task 17 to consume the immutable
 node codec and does not claim Task 17–20 or end-to-end persistence completion.
+
+## Task 17 — Immutable journal-index reader acceptance
+
+Task 17 is accepted at implementation commit
+`dcf5bea646696fe77d3e941eaa384d36127607e` (base implementation `ecf256c`,
+review repair `dcf5bea`). The reader performs iterative
+immutable B+tree lookup only. It does not build nodes, read DATA payloads,
+append journal bytes or publish a manifest.
+
+An empty root returns Absent without I/O. Nonempty lookup reads exact 4096-byte
+nodes inside the caller committed length, traverses at most eight levels and
+tracks visited offsets. Every root/child transition revalidates CRC,
+generation, exact child level and min/max range. Strictly decoded leaf entries
+produce distinct DATA, ZERO, DISCARD and Absent outcomes; corruption in any
+node or descriptor that was needed for the lookup cannot become Absent.
+
+The LRU node cache is bounded by both caller-supplied bytes and entry count.
+Its key binds Windows file-object identity, journal UUID, epoch, root
+generation, committed length, root descriptor and node offset. Tests prove
+that different file objects, journal identities and epochs do not reuse an
+entry and that eviction/clear restore the current gauges without exceeding
+the configured peak.
+
+The fixed seed `0x17A5B4C3D2E1908F` drove 1,000,000 lookups against a
+`std::map` oracle. Results matched exactly; the fully warmed Release reader
+performed three physical node reads and retained three nodes. Debug and
+Release focused tests passed 1/1, both `m3-v1` gates passed 7/7, and full
+Release CTest passed 67/67.
+
+Evidence SHA-256:
+
+- `journal_index.cpp`:
+  `0C02133E24D041A4A142FDB402727AFDDE94676CDFCA91A229FC0C28988B4D74`;
+- journal-index tests:
+  `E6F4BEFDD1D56A8581613FE91DE9F7ECBD9B26BE2CF632A1179C75BF2F3A6EA0`;
+- Release journal-index test executable:
+  `1FA71EBCCA307EC27896872F938D391402EE7B89AAB84D84F63CB7B832C7D6E9`.
+
+An independent malformed-input/cache-identity review issued final GO with
+P0/P1/P2 = 0/0/3. It specifically rechecked that production lookup calls
+the visited/depth guards, and that a real lookup waiting on the cache mutex
+returns `timed_out` after its deadline. The three remaining P2 items are
+additional exhaustive stress/mutation coverage and do not block Task17.
+
+Task 17 verdict: **DONE**. This authorizes Task 18 to consume the reader and
+node codec; it does not claim path-copy construction or journal durability.

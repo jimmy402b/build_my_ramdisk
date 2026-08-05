@@ -639,11 +639,24 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：S。允许文件：** `journal_index.*`、reader tests；Claude 可写 parser/cache，逻辑负责人审查 corruption。
 
-- [ ] 红灯覆盖 empty/leaf/multilevel/boundary/absent、unsorted/duplicate/cycle、bad CRC/child/range、depth 9 和 cache eviction。
-- [ ] iterative lookup 最大深度 8，visited-offset 防环；所有 read 在 manifest committed length 内。
-- [ ] cache key 包含完整 file identity/epoch/root generation/node offset，不能跨 view 混用。
-- [ ] 一百万随机 lookup 与 `std::map` 对比；固定 seed。
-- [ ] 跑 `m3-v1`；建议提交 `feat(persistence): read immutable journal index`。
+- [x] 红灯覆盖 empty/leaf/multilevel/boundary/absent、unsorted/duplicate/cycle、bad CRC/child/range、depth 9 和 cache eviction。
+- [x] iterative lookup 最大深度 8，visited-offset 防环；所有 read 在 manifest committed length 内。
+- [x] cache key 包含完整 file identity/epoch/root generation/node offset，不能跨 view 混用。
+- [x] 一百万随机 lookup 与 `std::map` 对比；固定 seed。
+- [x] 跑 `m3-v1`；建议提交 `feat(persistence): read immutable journal index`。
+
+**完成记录（DONE，2026-08-05）：**
+
+- Accepted implementation: `dcf5bea646696fe77d3e941eaa384d36127607e`（基础实现 `ecf256c`，修复与审查闭环 `dcf5bea`）。
+- Reader 只执行 iterative immutable lookup；empty root 零 I/O，leaf 精确区分 DATA/ZERO/DISCARD/Absent，internal gap 返回 Absent，任何已读取 node/descriptor 损坏返回 `JournalCorrupt`。
+- 每层 exact read 固定 4096 bytes 且先验证 caller committed length；最多 8 层，visited-offset 防环，并复核 root/child CRC、generation、level 和 min/max range。
+- LRU cache 同时受 bytes/entries 双上限约束；key 包含 Windows file object identity、journal UUID、epoch、root generation、committed length、root descriptor 和 node offset，禁止跨 immutable view 复用。
+- Tests 覆盖 leaf/multilevel/完整 8 层、边界/gap、CRC、duplicate/unsorted、cycle-shaped descriptor、child escape、depth 9、parent-child mismatch、cache hit/eviction/clear/identity isolation、invalid view 与取消。
+- 固定 seed `0x17A5B4C3D2E1908F` 的 1,000,000 random lookups 与 `std::map` 完全一致；Release 中 read calls 为 3，cache peak 为 3 nodes。
+- Verification: Debug/Release focused 1/1；Debug/Release `m3-v1` 7/7；完整 Release CTest 67/67；`git diff --check` 通过。
+- Independent review: malformed-input/cache-identity reviewer final GO，P0/P1/P2 = 0/0/3；P1 cycle/depth integration、deadline mutex wait 已修复并复核通过。剩余 P2 为更大极端矩阵和 clear-cache 并发的增强覆盖，不阻塞 Task17。
+- Evidence SHA-256: `journal_index.cpp` `0C02133E24D041A4A142FDB402727AFDDE94676CDFCA91A229FC0C28988B4D74`；tests `E6F4BEFDD1D56A8581613FE91DE9F7ECBD9B26BE2CF632A1179C75BF2F3A6EA0`；Release test executable `1FA71EBCCA307EC27896872F938D391402EE7B89AAB84D84F63CB7B832C7D6E9`。
+- Boundary: Task17 不构造/写入 COW nodes，不读取 DATA payload，不执行 journal append/flush；这些属于 Task18–20。
 
 ## Task 18 — COW index builder
 
