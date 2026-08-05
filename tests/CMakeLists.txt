@@ -1001,6 +1001,26 @@ set_tests_properties(unit.m3.vhdx_writer PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 90)
 
+# ---- M3 Windows native VHDX compatibility gate (Task 24) ------------------
+add_executable(myrd_m3_windows_vhdx_compat_tests
+    integration/m3_windows_vhdx_compat_tests.cpp
+)
+target_link_libraries(myrd_m3_windows_vhdx_compat_tests PRIVATE
+    myrd_persistence myrd_driver)
+target_include_directories(myrd_m3_windows_vhdx_compat_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_windows_vhdx_compat_tests)
+
+add_test(
+    NAME integration.m3.windows_vhdx
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-vhdx-compat.ps1"
+            -Executable "$<TARGET_FILE:myrd_m3_windows_vhdx_compat_tests>")
+set_tests_properties(integration.m3.windows_vhdx PROPERTIES
+    LABELS "m3-v5"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 240)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
