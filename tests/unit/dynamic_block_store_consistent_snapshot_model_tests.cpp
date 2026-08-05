@@ -3,6 +3,8 @@
 #include "consistent_snapshot_model.h"
 #include "fake_backing_store.h"
 #include "src/storage/dynamic_block_store.h"
+#include "src/storage/dynamic_block_store_internal.h"
+#include "src/storage/eviction_manager.h"
 
 #include <algorithm>
 #include <array>
@@ -338,6 +340,42 @@ void run_schedule(std::uint64_t seed, std::size_t operation_count) {
                 expected_token.reset();
             }
             break;
+        case OperationKind::Read:
+        case OperationKind::Load: {
+            std::vector<std::byte> actual_bytes(
+                static_cast<std::size_t>(operation.length));
+            const auto actual = store->read(
+                myrd::OperationContext{},
+                operation.offset,
+                actual_bytes);
+            const auto expected = model.read(
+                operation.offset, operation.length);
+            expect_schedule(
+                actual.ok() == expected.has_value(),
+                seed,
+                index,
+                operation,
+                "read/load result diverged");
+            expect_schedule(
+                actual.ok() && actual_bytes == *expected,
+                seed,
+                index,
+                operation,
+                "read/load bytes diverged");
+            break;
+        }
+        case OperationKind::Evict: {
+            const auto pass =
+                myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(
+                    *store, 0);
+            expect_schedule(
+                pass.invariant_failures == 0,
+                seed,
+                index,
+                operation,
+                "eviction reported an invariant failure");
+            break;
+        }
         }
     }
     if (actual_token.has_value()) {
@@ -426,12 +464,14 @@ TEST_CASE(m2_1_task08_schedule_is_seed_only_deterministic_and_complete) {
     REQUIRE(first.block_count <= 64);
     REQUIRE_EQ(first.operations.size(), operation_count);
 
-    std::array<std::uint64_t, 7> kinds{};
+    std::array<std::uint64_t, 10> kinds{};
     for (const auto& operation : first.operations) {
         ++kinds[static_cast<std::size_t>(operation.kind)];
         if (operation.kind == OperationKind::Write ||
             operation.kind == OperationKind::Zero ||
-            operation.kind == OperationKind::Discard) {
+            operation.kind == OperationKind::Discard ||
+            operation.kind == OperationKind::Read ||
+            operation.kind == OperationKind::Load) {
             REQUIRE(operation.length != 0);
             REQUIRE_EQ(operation.offset % kSectorBytes, 0ull);
             REQUIRE_EQ(operation.length % kSectorBytes, 0ull);

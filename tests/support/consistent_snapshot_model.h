@@ -37,6 +37,9 @@ enum class OperationKind : std::uint8_t {
     Copy = 4,
     Finish = 5,
     Abort = 6,
+    Read = 7,
+    Evict = 8,
+    Load = 9,
 };
 
 struct Operation final {
@@ -96,6 +99,9 @@ public:
     bool zero(std::uint64_t offset,
               std::uint64_t length,
               Kind requested_kind);
+    std::optional<std::vector<std::byte>> read(
+        std::uint64_t offset,
+        std::uint64_t length) const;
     std::optional<CutToken> begin_cut();
     const std::vector<SnapshotRecord>* cut_records(
         CutToken token) const noexcept;

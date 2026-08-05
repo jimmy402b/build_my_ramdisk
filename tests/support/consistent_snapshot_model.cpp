@@ -29,7 +29,7 @@ Operation make_operation(DeterministicRandom& random,
                          std::uint64_t logical_size_bytes) {
     Operation operation{};
     operation.kind = static_cast<OperationKind>(
-        index < 7 ? index : random.next() % 7);
+        index < 10 ? index : random.next() % 10);
     operation.payload_seed = random.next();
     operation.max_payload_bytes =
         (1 + random.next() % 4) * kBlockBytes;
@@ -75,6 +75,12 @@ const char* operation_name(OperationKind kind) noexcept {
         return "finish";
     case OperationKind::Abort:
         return "abort";
+    case OperationKind::Read:
+        return "read";
+    case OperationKind::Evict:
+        return "evict";
+    case OperationKind::Load:
+        return "load";
     }
     return "unknown";
 }
@@ -155,7 +161,9 @@ std::optional<Schedule> reduce_failure(
     const bool has_range =
         boundary.kind == OperationKind::Write ||
         boundary.kind == OperationKind::Zero ||
-        boundary.kind == OperationKind::Discard;
+        boundary.kind == OperationKind::Discard ||
+        boundary.kind == OperationKind::Read ||
+        boundary.kind == OperationKind::Load;
     if (has_range && boundary.length > kSectorBytes &&
         boundary.length % kSectorBytes == 0) {
         std::uint64_t low_sectors = 1;
@@ -324,6 +332,37 @@ bool Model::zero(std::uint64_t offset,
         state.dirty = true;
     }
     return true;
+}
+
+std::optional<std::vector<std::byte>> Model::read(
+    std::uint64_t offset,
+    std::uint64_t length) const {
+    if (length == 0 || offset > logical_size_bytes_ ||
+        length > logical_size_bytes_ - offset) {
+        return std::nullopt;
+    }
+    std::vector<std::byte> result;
+    result.reserve(static_cast<std::size_t>(length));
+    const auto first_block = offset / kBlockBytes;
+    const auto last_block = (offset + length - 1) / kBlockBytes;
+    for (auto block = first_block; block <= last_block; ++block) {
+        const auto found = blocks_.find(block);
+        if (found == blocks_.end()) {
+            return std::nullopt;
+        }
+        const auto block_start = block * kBlockBytes;
+        const auto segment_start = (std::max)(offset, block_start);
+        const auto segment_end = (std::min)(
+            offset + length,
+            block_start + kBlockBytes);
+        result.insert(
+            result.end(),
+            found->second.value.begin() + static_cast<std::ptrdiff_t>(
+                segment_start - block_start),
+            found->second.value.begin() + static_cast<std::ptrdiff_t>(
+                segment_end - block_start));
+    }
+    return result;
 }
 
 std::optional<CutToken> Model::begin_cut() {
