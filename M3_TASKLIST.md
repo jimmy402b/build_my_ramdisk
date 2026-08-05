@@ -379,44 +379,60 @@ CTest `62/62`。固定 stress seed `0x4D59524453545231`；one-record COW peak
 - [ ] 加定向 schedule 覆盖所有此前竞态，不允许 production author 修改 expected outcome。
 - [ ] 跑 `m2.1-v4` 和 M2 全套；建议提交 `test(storage): model whole disk snapshot cuts`。
 
-T08.1 evidence：commit `49cd72d`；新增 frozen test
+T08.1 evidence：commits `49cd72d` + `dd9f7e7`；新增 frozen test
 `unit.m3.m2_consistent_snapshot_model`（discovery `1`，label `m2.1-v4`）。oracle
 只包含 test-side 64 KiB geometry、`std::map<block, kind/value/version>` 与独立 immutable
 cut copy，不 include/call coordinator、batch helper 或生产 codec。首个行为 RED 在缺少
 `Kind/write/zero/begin_cut/cut_records` API 时编译失败；GREEN `2/2`，并证明 post-cut
-overwrite 与 clean→dirty 不进入既有 cut。
+overwrite 与 clean→dirty 不进入既有 cut。独立审查后的 RED 另证明跨 Model token、跳跃/
+回退 cursor 与未扫描 finish 原实现会被接受；修复后 token 含 owner identity，Model 自持
+单调 scan cursor，外部 cursor 只能匹配推进，finish 同时校验内外 cursor 已到末尾。
 
-T08.2 evidence：commits `3587c5f` + `cbd037c`；generator 的唯一输入是 64-bit seed 与
+T08.2 evidence：commits `3587c5f` + `cbd037c` + `7d70079`；generator 的唯一输入是 64-bit seed 与
 operation count，使用 test-side SplitMix64，输出 2–64 blocks 与 read/write/zero/
 discard/evict/load/begin/copy/finish/abort 全十类操作。相同 seed 的 operation、payload、
-limits 与文本 trace 完全相同，
+limits 与文本 trace 完全相同，固定前十步包含未被前三次 mutation 污染的同块
+`Evict→Load` 对；adapter 必须观察 `ResidentClean→Unresident→ResidentClean`、实际
+`evicted_blocks > 0` 与 backing-read counter 增长，不能以 no-op eviction 过门。
 不同 seed 不同；10,000-op determinism/range/coverage RED→GREEN，focused `3/3`。
 
-T08.3 evidence：commit `6ec6c45`；oracle 自己实现 immutable cut、ascending cursor、
-payload-before-copy、record limit、finish/abort token lifecycle。test adapter 只在边界把 model
+T08.3 evidence：commits `6ec6c45` + `dd9f7e7`；oracle 自己实现 immutable cut、owned
+ascending cursor、payload-before-copy、固定 store 配置对应的 batch record limit、严格
+finish/abort token lifecycle。test adapter 只在边界把 model
 kind/record 转成 public storage 类型，不共享 production 算法。定向矩阵覆盖 DATA/ZERO/
 DISCARD、post-cut overwrite、post-cut clean→dirty 排除、final short DATA zero padding、
 partial-progress abort/stale token；固定 seed `0xDEADBEEF` 的 2,000-op store/model schedule
 逐 batch 比较 cursor 与 records，focused `7/7`。
 
-T08.4 evidence：commit `d1a8c50`；reducer 只二分删除失败边界后的 suffix，再对边界
-I/O 按 512-byte sector 缩短 length；seed、geometry、此前 operations、payload seed 与
-外部 failure predicate 均不改。非失败输入返回空，缩减后必须由同一 predicate 再确认；
-focused `8/8`。
+T08.4 evidence：commits `d1a8c50` + `56e9ed4`；reducer 只二分删除失败边界后的 suffix，
+不改写任何 Operation、expected outcome、seed、geometry 或 payload seed；非失败输入返回空，
+缩减后必须由同一 failure message 再确认。它已接入真实 store/model adapter：一次测试侧
+Evict/Load 追踪缺陷在 seed `0xDEADBEEF` 上触发时，实际输出从 2,000 步缩到 309 步的
+`M2_1_MODEL_REDUCED_TRACE`，证明不是仅在合成 predicate 测试中存在。
 
-T08.5 evidence：隔离 mutation 将 `fill_data_preimage` 的 DATA copy 临时替换为全零，
-Debug model gate 稳定在 directed store/model cut comparison 的 DATA payload equality 红灯
-（exit `1`）；恢复同一行后 `8/8`。`git diff -- src/storage` 无输出，mutation 未提交、
-工作树无 production 残留。
+T08.5 evidence：在未提交的隔离 mutation 中，`preserve_snapshot_preimage_before_mutation`
+检测到 active token 后对有效 block 直接返回 `Preserved`，实际跳过 reservation/fill/publish
+整条 pre-image preservation 路径。Debug model gate 稳定在 directed store/model cut
+comparison 红灯（record identity mismatch，exit `1`）；恢复补丁并重新链接后 `12/12`。
+`git diff -- src/storage` 与 staged production diff 均为空，mutation 未提交、工作树无残留。
 
-T08.6 evidence：候选 `391788f`；quick seeds `0/1/0x00C0FFEE/0xDEADBEEF`，
+T08.6 evidence：候选 `4bed62cc861f55db09bc332db71a4a72f361ccb3`；quick seeds `0/1/0x00C0FFEE/0xDEADBEEF`，
 100 个 corpus seeds 固定为 `SHA256("937e688|T08|i")` digest 低 64 位。每个 corpus/
 quick seed 运行 1,000 operations，另有 `0xDEADBEEF` 2,000-op 定向 schedule；每个
-Debug/Release focused run 共 106,000 store/model operations，`10/10`。Release
-`m2.1-v4` discovery `1`、gate `1/1`，完整 Release CTest `63/63`；最终 focused
-Release CTest `2.73s`。Release binary SHA-256
-`0CB2CD2C3436F5BD83139CE0B1B807A2346C56A78F44E7F72218256114ACC395`；oracle
-header/cpp hashes `E475E0EB...FFFDF` / `9522A6B2...A1ACF`。
+Debug/Release focused run 共 106,000 store/model operations，`12/12`。Debug focused
+连续 repeat `5/5`；Release direct run 最慢 corpus seed
+`0x3d23d6b0c03810f9`，`77,529 us`。Release `m2.1-v4` discovery `1`、gate `1/1`
+（`2.07s`），完整 Release CTest `63/63`。验证命令为
+`ctest --preset debug -R unit.m3.m2_consistent_snapshot_model --repeat until-fail:5`、
+`cmake --build --preset release`、Release focused binary、
+`ctest --preset release -L m2.1-v4` 与 `ctest --preset release`，全部 exit `0`。
+Debug/Release focused binary SHA-256 分别为
+`8137A0214ED262AD5BD30EDE26CFD72328D3C553A9FF583411E8793086D316D8`、
+`75F7121798C5DE62EBCBCAA0EBAB0A42983B3ED2348C80126DAF58FD5E460BA8`；oracle
+header/cpp/test SHA-256 分别为
+`CD708E24C32C45BE78B73F8CC0FED86241B7ABBA95D3BD94D7610570993F609B`、
+`1687B911C84E0905CFC50A9291D36642C6272B406318AE85067E6EAEC886B94C`、
+`CE7A3F0455A77B66C9B560D3516A1F04E6375709906A74099336B49502D2EFD2`。
 
 ## Task 09 — 签发 M2.1 前置 verdict
 
