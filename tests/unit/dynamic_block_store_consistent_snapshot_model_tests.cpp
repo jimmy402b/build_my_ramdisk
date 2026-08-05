@@ -592,3 +592,44 @@ TEST_CASE(m2_1_task08_abort_after_partial_progress_invalidates_both_tokens) {
     REQUIRE_EQ(expected_cursor, 1ull);
     REQUIRE(store->validate_invariants_for_test().ok());
 }
+
+TEST_CASE(m2_1_task08_reducer_keeps_failure_and_only_shrinks_trace) {
+    using namespace myrd::test::consistent_model;
+    auto schedule = generate_schedule(0x1234, 8);
+    schedule.operations[0] = Operation{
+        OperationKind::Begin, 0, 0, 1, kBlockBytes, 2};
+    schedule.operations[1] = Operation{
+        OperationKind::Write, 0, 8 * kSectorBytes, 2, kBlockBytes, 2};
+    schedule.operations[2] = Operation{
+        OperationKind::Write,
+        kBlockBytes,
+        8 * kSectorBytes,
+        0xBAD5EED,
+        kBlockBytes,
+        2};
+    const auto predicate = [](const Schedule& candidate) {
+        return std::any_of(
+            candidate.operations.begin(),
+            candidate.operations.end(),
+            [](const Operation& operation) {
+                return operation.kind == OperationKind::Write &&
+                       operation.payload_seed == 0xBAD5EED;
+            });
+    };
+
+    const auto reduced = reduce_failure(schedule, predicate);
+    REQUIRE(reduced.has_value());
+    REQUIRE(predicate(*reduced));
+    REQUIRE_EQ(reduced->seed, schedule.seed);
+    REQUIRE_EQ(reduced->block_count, schedule.block_count);
+    REQUIRE_EQ(reduced->operations.size(), 3ull);
+    REQUIRE_EQ(reduced->operations[0], schedule.operations[0]);
+    REQUIRE_EQ(reduced->operations[1], schedule.operations[1]);
+    REQUIRE_EQ(reduced->operations[2].kind, OperationKind::Write);
+    REQUIRE_EQ(reduced->operations[2].payload_seed, 0xBAD5EEDull);
+    REQUIRE_EQ(reduced->operations[2].offset, kBlockBytes);
+    REQUIRE_EQ(reduced->operations[2].length, kSectorBytes);
+
+    REQUIRE(!reduce_failure(
+        schedule, [](const Schedule&) { return false; }).has_value());
+}

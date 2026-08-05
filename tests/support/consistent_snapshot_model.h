@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
@@ -66,6 +67,10 @@ Schedule generate_schedule(std::uint64_t seed,
 std::vector<std::byte> operation_payload(const Operation& operation);
 std::string describe_operation(std::size_t index,
                                const Operation& operation);
+using FailurePredicate = std::function<bool(const Schedule&)>;
+std::optional<Schedule> reduce_failure(
+    const Schedule& schedule,
+    const FailurePredicate& still_fails);
 
 struct CutToken final {
     std::uint64_t id{};
