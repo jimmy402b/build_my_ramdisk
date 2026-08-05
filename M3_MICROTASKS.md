@@ -406,34 +406,34 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 
 允许：`vhdx_reader.*`、reader tests。
 
-- [ ] `T22.1 [M]` RED states：fully present/not present/undefined/zero/unmapped、
+- [x] `T22.1 [M]` RED states：fully present/not present/undefined/zero/unmapped、
   boundary/final、512/4096 sector、2 MiB payload→64 KiB block slicing。
-- [ ] `T22.2 [H]` RED rejected states：partially present/invalid bits/physical overlap/
+- [x] `T22.2 [H]` RED rejected states：partially present/invalid bits/physical overlap/
   payload outside file or before data region/overflow/post-open truncation。
-- [ ] `T22.3 [H]` 实现 on-demand BAT page lookup；cache 有 caller budget，key 含
+- [x] `T22.3 [H]` 实现 on-demand BAT page lookup；cache 有 caller budget，key 含
   immutable base identity，Absent/Zero 不读 payload、不分配 image-sized buffer。
-- [ ] `T22.4 [M]` 实现 exact payload slice read 与 read counters；读一个 uncached
+- [x] `T22.4 [M]` 实现 exact payload slice read 与 read counters；读一个 uncached
   64 KiB block只能触及对应 BAT page/payload range。
-- [ ] `T22.5 [M]` 实现 allocated extent descriptor enumeration，不读 payload；输出
+- [x] `T22.5 [M]` 实现 allocated extent descriptor enumeration，不读 payload；输出
   sorted/unique/bounds-checked ranges。
-- [ ] `T22.6 [H]` random sparse map oracle、cache identity mutation、Debug/Release
+- [x] `T22.6 [H]` random sparse map oracle、cache identity mutation、Debug/Release
   focused。
 
 ### Task 23 — Sparse dynamic VHDX writer
 
 允许：`vhdx_writer.*`、writer tests；最终文件名必须是 unique，禁止 overwrite。
 
-- [ ] `T23.1 [M]` RED fixtures：empty/minimum/large sparse/final partial/all-zero/non-
+- [x] `T23.1 [M]` RED fixtures：empty/minimum/large sparse/final partial/all-zero/non-
   contiguous payload，expected layout 来自 Task21 独立 parser/fixture。
-- [ ] `T23.2 [H]` 实现 pure deterministic layout plan：metadata/BAT first、payload
+- [x] `T23.2 [H]` 实现 pure deterministic layout plan：metadata/BAT first、payload
   alignment、checked arithmetic、all-zero skip、reserved zero；此卡零文件写入。
-- [ ] `T23.3 [M]` 实现 same-directory unique temp file、sparse mark、extend、按 plan
+- [x] `T23.3 [M]` 实现 same-directory unique temp file、sparse mark、extend、按 plan
   exact writes；每个 phase 可注入失败。
-- [ ] `T23.4 [X]` 实现 publish 顺序：flush→close→Task21/22 reopen verify checksums+
+- [x] `T23.4 [X]` 实现 publish 顺序：flush→close→Task21/22 reopen verify checksums+
   sampled payload→write-through rename 到 unique final；任何失败不得返回 final。
-- [ ] `T23.5 [M]` failure matrix：create/sparse/extend/metadata/BAT/payload/flush/close/
+- [x] `T23.5 [M]` failure matrix：create/sparse/extend/metadata/BAT/payload/flush/close/
   reopen/rename；断言 manifest-referenced base 从未覆盖。
-- [ ] `T23.6 [H]` random sparse logical hash 与 reader 比较、mutation 调换 publish
+- [x] `T23.6 [H]` random sparse logical hash 与 reader 比较、mutation 调换 publish
   顺序必须红；Debug/Release focused。
 
 ### Task 24 — Windows native VHDX compatibility gate

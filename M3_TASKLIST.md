@@ -172,8 +172,8 @@ Suggested commit:
 | 19 | Journal checkpoint append/readback | S | DONE | 11,16,18 | M3-V1/V2 |
 | 20 | JournalReader block resolution | S | DONE | 17,19 | M3-V1 |
 | 21 | Strict VHDX parser | C | DONE | 10,11,13 | M3-V1 |
-| 22 | Lazy BAT reader | S | PENDING | 21 | M3-V1 |
-| 23 | Sparse dynamic VHDX writer | S | PENDING | 11,21,22 | M3-V1 |
+| 22 | Lazy BAT reader | S | DONE | 21 | M3-V1 |
+| 23 | Sparse dynamic VHDX writer | S | DONE | 11,21,22 | M3-V1 |
 | 24 | Windows native VHDX gate | C | PENDING | 23 | M3-V5 |
 | 25 | Journal-first composite backing | O | PENDING | 20,22 | M3-V2 |
 | 26 | Recovery engine 与 BackingView | O | PENDING | 15,25 | M3-V2 |
@@ -734,21 +734,21 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：S。允许文件：** `vhdx_reader.*`、reader tests；BAT state 语义由逻辑负责人审查。
 
-- [ ] 红灯覆盖 fully-present/not-present/undefined/zero/unmapped、final partial、512/4096 sectors 和 2 MiB→64 KiB 映射。
-- [ ] partially-present、invalid bits、payload overlap/out-of-file/before-data、overflow/truncate 都 fail-closed。
-- [ ] BAT page cache 有界且按 immutable base identity 分区；读取一个 block 不加载整 VHDX。
-- [ ] allocated extent enumeration 只读 metadata/BAT，返回 sorted unique checked ranges。
-- [ ] 随机 sparse map oracle 与 `m3-v1` 通过；建议提交 `feat(persistence): read sparse vhdx blocks lazily`。
+- [x] 红灯覆盖 fully-present/not-present/undefined/zero/unmapped、final partial、512/4096 sectors 和 2 MiB→64 KiB 映射。
+- [x] partially-present、invalid bits、payload overlap/out-of-file/before-data、overflow/truncate 都 fail-closed。
+- [x] BAT page cache 有界且按 immutable base identity 分区；读取一个 block 不加载整 VHDX。
+- [x] allocated extent enumeration 只读 metadata/BAT，返回 sorted unique checked ranges。
+- [x] 随机 sparse map oracle 与 `m3-v1` 通过；实现提交 `6e04578`：`feat(persistence): read sparse vhdx blocks lazily`。
 
 ## Task 23 — Sparse dynamic VHDX writer
 
 **类别：S。允许文件：** `vhdx_writer.*`、writer tests；publish/flush/sparse 由逻辑负责人审查。
 
-- [ ] 红灯覆盖 empty/sparse/large/final partial/all-zero/non-contiguous payload 与全部 I/O fault phase。
-- [ ] mutation 前先完成 checked deterministic layout；metadata/BAT 先规划，payload 对齐，reserved 清零，zero block 不分配。
-- [ ] 写 same-directory unique temp，flush/close/reopen product verify 后 atomic rename；不覆盖任何 referenced base。
-- [ ] 每个 failure point 不返回 partial final name，且保留可诊断 cleanup outcome。
-- [ ] 跑 `m3-v1`；建议提交 `feat(persistence): write sparse dynamic vhdx bases`。
+- [x] 红灯覆盖 empty/sparse/large/final partial/all-zero/non-contiguous payload 与全部 I/O fault phase。
+- [x] mutation 前先完成 checked deterministic layout；metadata/BAT 先规划，payload 对齐，reserved 清零，zero block 不分配。
+- [x] 写 same-directory unique temp，flush/close/reopen product verify 后 atomic rename；不覆盖任何 referenced base。
+- [x] 每个 failure point 不返回 partial final name，且保留可诊断 cleanup outcome。
+- [x] 跑 `m3-v1`；实现提交 `10973da`：`feat(persistence): write sparse dynamic vhdx bases`。
 
 ## Task 24 — Windows native VHDX compatibility gate
 

@@ -739,11 +739,11 @@ return ManifestCorrupt;
 **Depends on:** 11, 21, 22
 **Files:** Create `src/persistence/vhdx_writer.h/.cpp`, `tests/unit/m3_vhdx_writer_tests.cpp`.
 
-- [ ] **Step 1: Red-test empty and sparse images** at minimum geometry, large logical geometry, final partial block, all-zero allocated candidates, and non-contiguous payload blocks.
-- [ ] **Step 2: Implement deterministic layout planning** before file mutation. Use checked arithmetic; allocate metadata/BAT first; place payloads on required boundaries; skip all-zero blocks; zero all reserved bytes.
-- [ ] **Step 3: Write to a same-directory temporary file**, flush, close, reopen through `VhdxReader`, verify every structural checksum and sampled payload, then atomically rename to the final unique filename. Never overwrite a manifest-referenced base.
-- [ ] **Step 4: Inject failure at create, sparse-mark, extend, metadata, BAT, payload, flush, close, reopen and rename. Assert no partially written final filename is returned.**
-- [ ] **Step 5: Commit.** `feat(persistence): write sparse dynamic vhdx bases`.
+- [x] **Step 1: Red-test empty and sparse images** at minimum geometry, large logical geometry, final partial block, all-zero allocated candidates, and non-contiguous payload blocks.
+- [x] **Step 2: Implement deterministic layout planning** before file mutation. Use checked arithmetic; allocate metadata/BAT first; place payloads on required boundaries; skip all-zero blocks; zero all reserved bytes.
+- [x] **Step 3: Write to a same-directory temporary file**, flush, close, reopen through `VhdxReader`, verify every structural checksum and sampled payload, then atomically rename to the final unique filename. Never overwrite a manifest-referenced base.
+- [x] **Step 4: Inject failure at create, sparse-mark, extend, metadata, BAT, payload, flush, close, reopen and rename. Assert no partially written final filename is returned.**
+- [x] **Step 5: Commit.** `feat(persistence): write sparse dynamic vhdx bases`.
 
 ### Task 24: Prove Windows accepts product-written VHDX files
 

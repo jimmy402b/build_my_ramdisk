@@ -1279,6 +1279,60 @@ Evidence SHA-256:
 - Release VHDX reader test executable:
   `81286CBDCA34EAD5A172960367B15CD15047867EF41A2D5FFE5777B231DDC41D`.
 
+## Task 23 — Sparse dynamic VHDX writer acceptance
+
+Task 23 is accepted at implementation commit `10973da`. The writer first builds
+a deterministic, checked layout plan and only then mutates a same-directory
+temporary file. It supports logical sector sizes 512 and 4096, handles BAT
+chunk boundaries and final partial blocks, skips all-zero payload blocks, and
+zeroes every reserved byte. Checked arithmetic rejects unrepresentable file
+layouts before file creation.
+
+Publication is ordered as sparse-file creation, exact planned writes, flush,
+close of all old handles, reopen through the product `VhdxReader`, structural
+and sampled-payload verification, and handle-relative no-overwrite rename with
+a post-commit volume flush. Native sparse-mark operations use heap-owned async
+state with finite wait/cancel/drain behavior. Once the namespace commit may
+have happened, failures are classified as `CommitIndeterminate` instead of
+being returned as ordinary pre-commit errors. Temporary and final names are
+validated before creation, compared case-insensitively, and reject `~` so an
+NTFS 8.3 short-name alias cannot turn publication into self-replacement.
+
+Tests cover create, sparse mark, extend, metadata, BAT, payload, flush, close,
+reopen and rename failures. They also prove physical sparsity with allocated-
+range queries, verify actual I/O ordering, and compare a fixed-seed random
+sparse logical image and the reopened reader by SHA-256. No failure returns a
+partially written final filename.
+
+Three independent review rounds were performed. The first two rounds exposed
+and then closed write-through, post-commit classification, cancellation,
+failure-matrix, diagnostics, aliasing and oracle weaknesses. The final review
+returned **GO** with P0/P1/P2 = 0/0/0, including explicit confirmation of the
+8.3 alias defense.
+
+Final verification evidence:
+
+- complete Debug CTest: 72/72 passed;
+- Release `m3-v1`: 13/13 passed;
+- focused path suite: 41/41 passed;
+- focused writer suite: 25/25 passed;
+- `BUILD_TESTING=OFF` production persistence library built successfully;
+- `dumpbin /symbols` reported `NO_TEST_SEAM_SYMBOLS`;
+- `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `vhdx_writer.cpp`:
+  `4024976CD990F56CF3CFDC3BF0A6CD601DEE95314519F072CCDB2E1CD5D7C7A4`;
+- VHDX writer tests:
+  `581C152827E3BB653D022393D47BB65DE0EDFFC083349594F363CF5663DB7B5B`;
+- Release VHDX writer test executable:
+  `67C86641B10C3E0A11B5DA09B818C2F4592DC617B97871EDA7A7EA25998FC425`.
+
+Task 23 verdict: **DONE**. This authorizes Task 24 to ask Windows native VHDX
+APIs to open and attach product-written fixtures. It does not claim native
+Windows compatibility until that independent Task 24 gate passes.
+
 Task 22 verdict: **DONE**. This authorizes Task 23 to produce sparse dynamic
 VHDX bases that are reopened and verified by this reader. It does not write or
 publish VHDX files, compose journal fallback, select recovery candidates or
