@@ -1207,3 +1207,79 @@ Evidence SHA-256:
 Task 21 verdict: **DONE**. This authorizes Task 22 to interpret BAT entries and
 read payload slices lazily. It does not validate individual BAT states or
 payload ranges, write VHDX files, or claim Windows native compatibility.
+
+## Task 22 — Lazy VHDX BAT-reader acceptance
+
+Task 22 is accepted at implementation commit `6e04578`. The reader resolves
+the frozen dynamic, non-differencing VHDX profile into 64 KiB M2 blocks without
+mapping or loading the complete image. States NotPresent, Undefined, Zero and
+Unmapped return `AllZero` without touching the destination or payload; only a
+FullyPresent entry issues the exact bounded payload read. The final logical
+block is zero-padded through a scratch buffer and reaches the destination only
+after exact I/O and final operation-context validation succeed.
+
+The product constructor accepts only exclusive ownership of a
+`ValidatedPersistenceFile` and derives Windows file-object identity from that
+handle-anchored capability. The generic file/identity constructor is a
+`BUILD_TESTING`-only seam and its symbol is absent from the production library.
+Creation reparses and byte-equivalently compares the immutable `VhdxLayout`;
+every operation also verifies the unchanged file length.
+
+BAT lookup reads 4 KiB pages on demand. The LRU cache is bounded by explicit
+byte and entry budgets and keyed by Windows file-object identity, VHDX
+file/data-write GUIDs and page index. No cache mutex spans file I/O. Concurrent
+misses may perform duplicate bounded reads, but cache insertion is race-safe;
+`clear_cache()` advances a generation so an older in-flight miss cannot refill
+the cleared cache. LRU insertion has rollback on allocation failure and public
+paths translate allocation failure into `Result` errors.
+
+Normal reads validate reserved/state bits, relevant interleaved sector-bitmap
+entries, file/structure bounds and every touched physical payload range.
+Touched aliases or BAT mutation latch corruption for all later operations.
+This is deliberately incremental: proving overlap against an unseen BAT entry
+would require violating lazy-open by scanning the complete BAT. Callers that
+need a complete proof use `enumerate_allocated_extents()`, which scans every BAT
+entry, validates all bitmap/range relationships and returns sorted unique
+virtual extents without reading payload bytes. Both incremental integrity state
+and enumeration output have explicit caller budgets. A complete enumeration
+therefore requires `max_observed_payloads` to cover all payload blocks; later
+public option sizing must document this for large sparse images.
+
+Tests cover all supported/rejected payload states, reserved bits, structural
+overlap/out-of-file/overflow, touched physical aliases and corruption latching,
+2 MiB-to-64 KiB slicing, final partial blocks, 512/4096 sector bitmap
+boundaries, exact independent I/O offset/length traces, bounded eviction,
+clear-during-stalled-I/O concurrency, post-open length change, layout mismatch,
+AccessDenied/short/zero-progress/native errors, post-BAT/post-payload
+cancellation and deadline, destination atomicity, extent budgets and a
+deterministic 256-payload sparse model.
+
+The first independent review returned NO-GO with four P1 findings: caller-
+forgeable file identity and mutable shared ownership, incomplete normal-read
+BAT integrity checks, a cache mutex held across file I/O and exception-unsafe
+LRU insertion. Targeted red tests and the ownership/cache/integrity redesign
+closed all four. Final independent review returned GO with P0/P1/P2 = 0/0/5.
+The five non-blocking P2 items are retained for later integration hardening:
+make the random BAT oracle formula-independent; exercise product-capability
+wait behavior; publish default `max_observed_payloads` sizing; extend payload,
+enumeration, allocator and dual-miss fault matrices; and record that the shared
+fault-file trace/forced-length seam was a justified Task 22 scope exception.
+
+Final focused Debug and Release reader suites passed 21/21. Complete Debug
+CTest passed 71/71 and complete Release CTest passed 72/72. A
+`BUILD_TESTING=OFF` Release build of `myrd_persistence` passed, and `dumpbin`
+confirmed that `create_for_testing` is absent. `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `vhdx_reader.cpp`:
+  `E140D5D33FC25985B311681FF72456859A811A9FAAF5F453601388C319D5F0B7`;
+- VHDX reader tests:
+  `5C8A5362655569BC12F7275863BBE0A8DE457EE9648CA70838595BCC8913999D`;
+- Release VHDX reader test executable:
+  `81286CBDCA34EAD5A172960367B15CD15047867EF41A2D5FFE5777B231DDC41D`.
+
+Task 22 verdict: **DONE**. This authorizes Task 23 to produce sparse dynamic
+VHDX bases that are reopened and verified by this reader. It does not write or
+publish VHDX files, compose journal fallback, select recovery candidates or
+claim Windows native compatibility; those remain Tasks 23–25.

@@ -727,11 +727,11 @@ return ManifestCorrupt;
 **Depends on:** 21
 **Files:** Create `src/persistence/vhdx_reader.h/.cpp`, `tests/unit/m3_vhdx_reader_tests.cpp`.
 
-- [ ] **Step 1: Red-test `read_block()`** for fully present, not present, undefined, zero and unmapped payload states; boundary blocks; final partial block; 512/4096 logical sectors; and a 2 MiB product block split into 64 KiB store blocks.
-- [ ] **Step 2: Red-test rejected BAT states** including partially present, invalid state bits, physical overlap, payload outside file, payload before data region, arithmetic overflow and file truncation after open.
-- [ ] **Step 3: Implement on-demand BAT lookup** with a bounded page cache keyed by immutable base identity. Read payload only when requested; absent/zero blocks return zero without allocating a full-image buffer.
-- [ ] **Step 4: Enumerate allocated payload extents** without reading payload data; return sorted, unique, bounds-checked virtual ranges for compaction.
-- [ ] **Step 5: Compare random sparse images with an independent map oracle and commit `feat(persistence): read sparse vhdx blocks lazily`.**
+- [x] **Step 1: Red-test `read_block()`** for fully present, not present, undefined, zero and unmapped payload states; boundary blocks; final partial block; 512/4096 logical sectors; and a 2 MiB product block split into 64 KiB store blocks.
+- [x] **Step 2: Red-test rejected BAT states** including partially present, invalid state bits, physical overlap, payload outside file, payload before data region, arithmetic overflow and file truncation after open.
+- [x] **Step 3: Implement on-demand BAT lookup** with a bounded page cache keyed by immutable base identity. Read payload only when requested; absent/zero blocks return zero without allocating a full-image buffer.
+- [x] **Step 4: Enumerate allocated payload extents** without reading payload data; return sorted, unique, bounds-checked virtual ranges for compaction.
+- [x] **Step 5: Compare random sparse images with an independent map oracle and commit `feat(persistence): read sparse vhdx blocks lazily`.**
 
 ### Task 23: Write a valid sparse dynamic VHDX base
 
