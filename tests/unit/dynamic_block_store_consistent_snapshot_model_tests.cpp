@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +50,38 @@ constexpr std::array<std::uint64_t, 100> kGeneratedSeeds{
     0x18F2'A8BF'D1B7'87F9ull, 0xBACE'966D'70C7'30B6ull, 0xF0B1'C8F3'DD03'2625ull, 0xCFD5'AF32'99BB'7110ull, 0xEAD3'00CD'35B3'5D72ull,
     0x9AAC'F08C'D5E1'F0D7ull, 0xE3C0'D439'D977'3FC3ull, 0x9473'F179'4C71'7CA7ull, 0x9CC7'DC3D'55B9'2614ull, 0xD806'F0A2'92EA'6208ull,
 };
+
+std::optional<std::array<std::uint64_t, 100>> parse_external_seed_corpus(
+    std::string_view text) {
+    std::array<std::uint64_t, 100> seeds{};
+    std::size_t start = 0;
+    for (std::size_t index = 0; index < seeds.size(); ++index) {
+        const auto separator = text.find(',', start);
+        if ((index + 1 < seeds.size() &&
+             separator == std::string_view::npos) ||
+            (index + 1 == seeds.size() &&
+             separator != std::string_view::npos)) {
+            return std::nullopt;
+        }
+        const auto end = separator == std::string_view::npos
+            ? text.size()
+            : separator;
+        const auto token = text.substr(start, end - start);
+        if (token.empty() || token.size() > 16) {
+            return std::nullopt;
+        }
+        std::uint64_t seed = 0;
+        const auto parsed = std::from_chars(
+            token.data(), token.data() + token.size(), seed, 16);
+        if (parsed.ec != std::errc{} ||
+            parsed.ptr != token.data() + token.size()) {
+            return std::nullopt;
+        }
+        seeds[index] = seed;
+        start = end + 1;
+    }
+    return seeds;
+}
 
 std::vector<std::byte> block_bytes(std::uint8_t value) {
     return std::vector<std::byte>(
@@ -1007,6 +1040,45 @@ TEST_CASE(m2_1_task08_one_hundred_generated_seeds_match_cut_model) {
     std::cout << "M2_1_MODEL_SUMMARY schema=m3-seed-v1"
               << " seeds=" << kGeneratedSeeds.size()
               << " operations=" << kGeneratedSeeds.size() * 1'000
+              << " slowest_seed=0x" << std::hex << slowest_seed
+              << std::dec << " slowest_us="
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     slowest_duration)
+                     .count()
+              << std::endl;
+}
+
+TEST_CASE(m2_1_task09_external_seed_corpus_matches_cut_model) {
+    char* raw = nullptr;
+    std::size_t raw_size = 0;
+    REQUIRE_EQ(_dupenv_s(
+                   &raw,
+                   &raw_size,
+                   "MYRD_M2_1_MODEL_EXTRA_SEEDS"),
+               0);
+    std::unique_ptr<char, decltype(&std::free)> raw_owner(raw, &std::free);
+    if (raw == nullptr) {
+        return;
+    }
+    REQUIRE(raw_size != 0);
+    const auto seeds = parse_external_seed_corpus(
+        std::string_view{raw, raw_size - 1});
+    REQUIRE(seeds.has_value());
+    std::uint64_t slowest_seed = 0;
+    std::chrono::nanoseconds slowest_duration{};
+    for (const auto seed : *seeds) {
+        const auto started = std::chrono::steady_clock::now();
+        run_schedule(seed, 1'000);
+        const auto duration =
+            std::chrono::steady_clock::now() - started;
+        if (duration > slowest_duration) {
+            slowest_duration = duration;
+            slowest_seed = seed;
+        }
+    }
+    std::cout << "M2_1_MODEL_EXTERNAL_SUMMARY schema=m3-seed-v1"
+              << " seeds=" << seeds->size()
+              << " operations=" << seeds->size() * 1'000
               << " slowest_seed=0x" << std::hex << slowest_seed
               << std::dec << " slowest_us="
               << std::chrono::duration_cast<std::chrono::microseconds>(
