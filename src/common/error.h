@@ -14,7 +14,8 @@ enum class ErrorDomain : std::uint8_t {
     storage,
     cleanup,
     evidence,
-    internal
+    internal,
+    persistence
 };
 
 enum class OperationErrorCode : std::uint32_t {

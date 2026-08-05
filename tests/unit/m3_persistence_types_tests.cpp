@@ -8,8 +8,13 @@
 
 #include "src/persistence/persistence_types.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace myrd {
 namespace persistence {
@@ -562,7 +567,16 @@ TEST_CASE(checkpoint_outcome_default_is_not_committed) {
     REQUIRE(!outcome.backing_view_installed);
     REQUIRE_EQ(outcome.acknowledged_blocks, static_cast<std::uint64_t>(0));
     REQUIRE_EQ(outcome.still_dirty_blocks, static_cast<std::uint64_t>(0));
+    REQUIRE(!outcome.error.has_value());
+    REQUIRE(!outcome.error_context.has_value());
 }
+
+static_assert(std::is_same_v<
+              decltype(CheckpointOutcome::error),
+              std::optional<myrd::Error>>);
+static_assert(std::is_same_v<
+              decltype(CheckpointOutcome::error_context),
+              std::optional<PersistenceErrorContext>>);
 
 TEST_CASE(checkpoint_outcome_committed_path) {
     CheckpointOutcome outcome{};
@@ -659,14 +673,20 @@ TEST_CASE(session_phase_stable_strings) {
 TEST_CASE(error_context_default_is_empty) {
     PersistenceErrorContext ctx{};
     REQUIRE(ctx.operation.empty());
+    REQUIRE_EQ(ctx.code, PersistenceErrorCode::FatalInternalInvariant);
     REQUIRE_EQ(ctx.phase, SessionPhase::Closed);
     REQUIRE_EQ(ctx.native_code, 0U);
     REQUIRE_EQ(ctx.operation_id, static_cast<std::uint64_t>(0));
-    REQUIRE_EQ(ctx.image_uuid_lo, static_cast<std::uint64_t>(0));
-    REQUIRE_EQ(ctx.image_uuid_hi, static_cast<std::uint64_t>(0));
+    REQUIRE(ctx.image_uuid.is_nil());
     REQUIRE_EQ(ctx.generation, kInvalidGeneration);
     REQUIRE_EQ(ctx.disposition, CommitDisposition::NotCommitted);
+    REQUIRE(ctx.safe_context.empty());
 }
+
+static_assert(std::is_same_v<
+              decltype(PersistenceErrorContext::operation), std::string>);
+static_assert(std::is_same_v<
+              decltype(PersistenceErrorContext::image_uuid), ImageUuid>);
 
 TEST_CASE(error_context_default_passes_is_default_check) {
     PersistenceErrorContext ctx{};
@@ -682,22 +702,68 @@ TEST_CASE(error_context_with_data_is_not_default) {
 TEST_CASE(error_context_holds_all_required_fields) {
     PersistenceErrorContext ctx{};
     ctx.operation = "recovery";
+    ctx.code = PersistenceErrorCode::JournalCorrupt;
     ctx.phase = SessionPhase::Opening;
     ctx.native_code = 5;
     ctx.operation_id = 42;
-    ctx.image_uuid_lo = 0xDEADBEEFCAFE0001ULL;
-    ctx.image_uuid_hi = 0x1234567890ABCDEFULL;
+    ctx.image_uuid.bytes[0] = std::byte{0x01};
+    ctx.image_uuid.bytes[15] = std::byte{0xEF};
     ctx.generation = 3;
     ctx.disposition = CommitDisposition::CommitIndeterminate;
+    ctx.safe_context = "journal header verification";
 
     REQUIRE_EQ(ctx.operation, string_view("recovery"));
+    REQUIRE_EQ(ctx.code, PersistenceErrorCode::JournalCorrupt);
     REQUIRE_EQ(ctx.phase, SessionPhase::Opening);
     REQUIRE_EQ(ctx.native_code, 5U);
     REQUIRE_EQ(ctx.operation_id, static_cast<std::uint64_t>(42));
-    REQUIRE_EQ(ctx.image_uuid_lo, 0xDEADBEEFCAFE0001ULL);
-    REQUIRE_EQ(ctx.image_uuid_hi, 0x1234567890ABCDEFULL);
+    REQUIRE_EQ(ctx.image_uuid.bytes[0], std::byte{0x01});
+    REQUIRE_EQ(ctx.image_uuid.bytes[15], std::byte{0xEF});
     REQUIRE_EQ(ctx.generation, static_cast<std::uint64_t>(3));
     REQUIRE_EQ(ctx.disposition, CommitDisposition::CommitIndeterminate);
+    REQUIRE_EQ(ctx.safe_context,
+               string_view("journal header verification"));
+}
+
+TEST_CASE(error_context_owns_operation_and_safe_context_strings) {
+    std::string operation = "checkpoint";
+    std::string safe_context = "manifest flush";
+    PersistenceErrorContext ctx{};
+    ctx.operation = operation;
+    ctx.safe_context = safe_context;
+
+    operation.assign("changed");
+    safe_context.assign("changed");
+    REQUIRE_EQ(ctx.operation, string_view("checkpoint"));
+    REQUIRE_EQ(ctx.safe_context, string_view("manifest flush"));
+}
+
+TEST_CASE(checkpoint_outcome_carries_error_and_matching_context) {
+    CheckpointOutcome outcome{};
+    outcome.disposition = CommitDisposition::CommitIndeterminate;
+    outcome.generation = 9;
+    outcome.error = myrd::Error{
+        myrd::ErrorDomain::persistence,
+        static_cast<std::uint32_t>(PersistenceErrorCode::CommitIndeterminate),
+        L"checkpoint",
+        L"manifest publish result is unknown",
+        1117};
+    PersistenceErrorContext context{};
+    context.operation = "checkpoint";
+    context.code = PersistenceErrorCode::CommitIndeterminate;
+    context.phase = SessionPhase::ResolvingCommit;
+    context.native_code = 1117;
+    context.operation_id = 42;
+    context.generation = 9;
+    context.disposition = CommitDisposition::CommitIndeterminate;
+    outcome.error_context = context;
+
+    REQUIRE(outcome.error.has_value());
+    REQUIRE_EQ(outcome.error->domain, myrd::ErrorDomain::persistence);
+    REQUIRE(outcome.error_context.has_value());
+    REQUIRE_EQ(outcome.error_context->code,
+               PersistenceErrorCode::CommitIndeterminate);
+    REQUIRE_EQ(outcome.error_context->generation, 9ull);
 }
 
 TEST_CASE(error_context_phase_covers_all_session_phases) {

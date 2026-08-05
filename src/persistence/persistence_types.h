@@ -1,13 +1,18 @@
 #pragma once
 
+#include "src/common/error.h"
+
 /// @file persistence_types.h
 /// @brief M3 persistence engine public constants, types and version contract.
 ///
 /// This header belongs to the myrd_persistence library and must not depend
 /// on driver, proxy, M1, M2 or platform lifecycle types.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace myrd {
@@ -49,6 +54,21 @@ inline constexpr std::uint64_t kMinimumDataRecordBytes =
 // generation and epoch never wrap; checked-increment returns false on overflow.
 
 inline constexpr std::uint64_t kInvalidGeneration = UINT64_MAX;
+
+struct ImageUuid final {
+    std::array<std::byte, 16> bytes{};
+
+    [[nodiscard]] constexpr bool is_nil() const noexcept {
+        for (const auto value : bytes) {
+            if (value != std::byte{}) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool operator==(const ImageUuid&) const noexcept = default;
+};
 
 /// @return true if incremented, false on overflow (value unchanged).
 inline bool checked_increment(std::uint64_t& value) noexcept {
@@ -332,15 +352,6 @@ constexpr bool is_valid_disposition_transition(
 // CheckpointOutcome (PLAN §1.5, frozen)
 // ============================================================================
 
-struct CheckpointOutcome {
-    CommitDisposition disposition{CommitDisposition::NotCommitted};
-    std::uint64_t generation{0};
-    bool manifest_candidate_verified{false};
-    bool backing_view_installed{false};
-    std::uint64_t acknowledged_blocks{0};
-    std::uint64_t still_dirty_blocks{0};
-};
-
 // ============================================================================
 // Volume barrier kind (PLAN §1.5, frozen)
 // ============================================================================
@@ -423,7 +434,8 @@ constexpr std::string_view to_string(SessionPhase phase) noexcept {
 
 struct PersistenceErrorContext {
     /// Human-readable operation label (not used for programmatic branching).
-    std::string_view operation{};
+    std::string operation{};
+    PersistenceErrorCode code{PersistenceErrorCode::FatalInternalInvariant};
     /// Session phase when the error occurred.
     SessionPhase phase{SessionPhase::Closed};
     /// Platform error code (Win32 ERROR_* or NTSTATUS, 0 if not applicable).
@@ -431,25 +443,37 @@ struct PersistenceErrorContext {
     /// Unique operation id for correlation with evidence.
     std::uint64_t operation_id{0};
     /// Image UUID bytes — all zero when not available.
-    std::uint64_t image_uuid_lo{0};
-    std::uint64_t image_uuid_hi{0};
+    ImageUuid image_uuid{};
     /// Generation at the time of the error, or kInvalidGeneration.
     std::uint64_t generation{kInvalidGeneration};
     /// Commit disposition at the time of the error.
     CommitDisposition disposition{CommitDisposition::NotCommitted};
+    std::string safe_context{};
 };
 
 /// Returns true if the context is in its default/zero state.
 constexpr bool is_default_context(const PersistenceErrorContext& ctx) noexcept {
     return ctx.operation.empty() &&
+           ctx.code == PersistenceErrorCode::FatalInternalInvariant &&
            ctx.phase == SessionPhase::Closed &&
            ctx.native_code == 0 &&
            ctx.operation_id == 0 &&
-           ctx.image_uuid_lo == 0 &&
-           ctx.image_uuid_hi == 0 &&
+           ctx.image_uuid.is_nil() &&
            ctx.generation == kInvalidGeneration &&
-           ctx.disposition == CommitDisposition::NotCommitted;
+           ctx.disposition == CommitDisposition::NotCommitted &&
+           ctx.safe_context.empty();
 }
+
+struct CheckpointOutcome {
+    CommitDisposition disposition{CommitDisposition::NotCommitted};
+    std::uint64_t generation{0};
+    bool manifest_candidate_verified{false};
+    bool backing_view_installed{false};
+    std::uint64_t acknowledged_blocks{0};
+    std::uint64_t still_dirty_blocks{0};
+    std::optional<Error> error;
+    std::optional<PersistenceErrorContext> error_context;
+};
 
 }  // namespace persistence
 }  // namespace myrd
