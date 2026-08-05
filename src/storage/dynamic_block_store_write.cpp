@@ -131,7 +131,8 @@ void increment_state_gauge(DynamicBlockStoreStats& stats,
 
 } // namespace
 
-Result<void> DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
+Result<DynamicBlockStore::SnapshotPreimagePreserveOutcome>
+DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
     const OperationContext& context,
     std::uint64_t block_index,
     std::uint64_t version,
@@ -145,13 +146,16 @@ Result<void> DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
     if ((!data_record && !metadata_record) ||
         (data_record && data.size() != kBlockSizeBytes) ||
         (metadata_record && !data.empty())) {
-        return snapshot_preimage_invariant(
-            L"dirty snapshot identity or pre-image payload is invalid");
+        return Result<SnapshotPreimagePreserveOutcome>::failure(
+            snapshot_preimage_invariant(
+                L"dirty snapshot identity or pre-image payload is invalid")
+                .error());
     }
 
     const auto coordinator = snapshot_coordinator_->snapshot();
     if (!coordinator.active_token.has_value()) {
-        return Result<void>::success();
+        return Result<SnapshotPreimagePreserveOutcome>::success(
+            SnapshotPreimagePreserveOutcome::Preserved);
     }
 
     const SnapshotPreimage metadata{
@@ -168,23 +172,80 @@ Result<void> DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
         : snapshot_coordinator_->reserve_metadata_before_mutation(
               context, *coordinator.active_token, metadata);
     if (!reserved.ok()) {
-        if (snapshot_pressure_test_observer_ &&
-            reserved.error().domain == ErrorDomain::storage &&
+        if (reserved.error().domain == ErrorDomain::storage &&
             reserved.error().code == static_cast<std::uint32_t>(
-                DynamicBlockStoreErrorCode::SnapshotResourceExhausted)) {
-            snapshot_pressure_test_observer_->on_snapshot_pressure_event(
-                SnapshotPressureTestEvent::CapacityUnavailable,
-                block_index);
+                DynamicBlockStoreErrorCode::SnapshotAborted)) {
+            return Result<SnapshotPreimagePreserveOutcome>::success(
+                SnapshotPreimagePreserveOutcome::Preserved);
         }
-        return Result<void>::failure(reserved.error());
+        if (reserved.error().domain != ErrorDomain::storage ||
+            reserved.error().code != static_cast<std::uint32_t>(
+                DynamicBlockStoreErrorCode::SnapshotResourceExhausted)) {
+            return Result<SnapshotPreimagePreserveOutcome>::failure(
+                reserved.error());
+        }
+        return Result<SnapshotPreimagePreserveOutcome>::success(
+            SnapshotPreimagePreserveOutcome::CapacityUnavailable);
     }
     auto reservation = reserved.move_value();
     if (reservation.disposition() !=
         SnapshotPreimageDisposition::Reserved) {
+        return Result<SnapshotPreimagePreserveOutcome>::success(
+            SnapshotPreimagePreserveOutcome::Preserved);
+    }
+    const auto published = snapshot_coordinator_->publish_metadata_preimage(
+        context, reservation);
+    if (!published.ok()) {
+        if (published.error().domain == ErrorDomain::storage &&
+            (published.error().code == static_cast<std::uint32_t>(
+                 DynamicBlockStoreErrorCode::SnapshotAborted) ||
+             published.error().code == static_cast<std::uint32_t>(
+                 DynamicBlockStoreErrorCode::SnapshotTokenInvalid))) {
+            return Result<SnapshotPreimagePreserveOutcome>::success(
+                SnapshotPreimagePreserveOutcome::Preserved);
+        }
+        return Result<SnapshotPreimagePreserveOutcome>::failure(
+            published.error());
+    }
+    return Result<SnapshotPreimagePreserveOutcome>::success(
+        SnapshotPreimagePreserveOutcome::Preserved);
+}
+
+Result<void> DynamicBlockStore::wait_for_snapshot_capacity(
+    const OperationContext& context,
+    std::unique_lock<std::mutex>& block_lock,
+    std::uint64_t block_index,
+    bool data_record) {
+    const auto coordinator = snapshot_coordinator_->snapshot();
+    if (!coordinator.active_token.has_value()) {
         return Result<void>::success();
     }
-    return snapshot_coordinator_->publish_metadata_preimage(
-        context, reservation);
+    if (snapshot_pressure_test_observer_) {
+        snapshot_pressure_test_observer_->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::CapacityUnavailable,
+            block_index);
+    }
+    const auto required_bytes = data_record
+        ? kMinimumSnapshotCowBytes
+        : kSnapshotCowRecordBudgetBytes;
+    block_lock.unlock();
+    const auto waited = snapshot_coordinator_->wait_for_capacity_change(
+        context,
+        *coordinator.active_token,
+        required_bytes,
+        block_index,
+        options_.snapshot_writer_stall_limit,
+        snapshot_pressure_test_observer_.get());
+    block_lock.lock();
+    if (!waited.ok() &&
+        waited.error().domain == ErrorDomain::storage &&
+        (waited.error().code == static_cast<std::uint32_t>(
+             DynamicBlockStoreErrorCode::SnapshotAborted) ||
+         waited.error().code == static_cast<std::uint32_t>(
+             DynamicBlockStoreErrorCode::SnapshotTokenInvalid))) {
+        return Result<void>::success();
+    }
+    return waited;
 }
 
 Result<void> DynamicBlockStore::write_one_segment(
@@ -471,6 +532,27 @@ Result<void> DynamicBlockStore::write_one_segment(
                 if (!preserved.ok()) {
                     return rollback(preserved.error());
                 }
+                if (preserved.value() ==
+                    SnapshotPreimagePreserveOutcome::CapacityUnavailable) {
+                    {
+                        std::scoped_lock state_lock(state_mutex_);
+                        increment_state_gauge(stats_, original_state);
+                    }
+                    entry->state = original_state;
+                    entry->prior_state = original_state;
+                    entry->transition_owner = 0;
+                    entry->transition_epoch = 0;
+                    transition_active = false;
+                    stripe.condition.notify_all();
+                    const auto waited = wait_for_snapshot_capacity(
+                        context, block_lock, block_index, true);
+                    block_lock.unlock();
+                    stripe.condition.notify_all();
+                    if (!waited.ok()) {
+                        return waited;
+                    }
+                    continue;
+                }
             }
 
             BackingView captured_view;
@@ -574,6 +656,20 @@ Result<void> DynamicBlockStore::write_one_segment(
                     release_commit_reservation(true);
                 }
                 return Result<void>::failure(preserved.error());
+            }
+            if (preserved.value() ==
+                SnapshotPreimagePreserveOutcome::CapacityUnavailable) {
+                if (budget.value() == CommitBudgetOutcome::Reserved) {
+                    release_commit_reservation(true);
+                }
+                const auto waited = wait_for_snapshot_capacity(
+                    context, block_lock, block_index, false);
+                block_lock.unlock();
+                stripe.condition.notify_all();
+                if (!waited.ok()) {
+                    return waited;
+                }
+                continue;
             }
         }
 

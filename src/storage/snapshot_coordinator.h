@@ -3,6 +3,7 @@
 #include "dynamic_block_types.h"
 #include "src/common/operation_context.h"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -108,6 +109,9 @@ struct SnapshotCoordinatorSnapshot {
     std::uint64_t cow_peak_bytes{};
     std::uint64_t cow_records{};
     std::uint64_t pending_reservations{};
+    std::uint64_t capacity_waiters{};
+    std::uint64_t writer_stalls_total{};
+    std::uint64_t auto_aborts_total{};
 };
 
 // Lock order is lifecycle/admission -> at most one block stripe -> this
@@ -147,6 +151,14 @@ public:
 
     void rollback_metadata_preimage(
         SnapshotMetadataReservation& reservation) noexcept;
+
+    Result<void> wait_for_capacity_change(
+        const OperationContext& context,
+        const ConsistentSnapshotToken& token,
+        std::uint64_t required_bytes,
+        std::uint64_t block_index,
+        std::chrono::milliseconds stall_limit,
+        ISnapshotPressureTestObserver* test_observer);
 
     std::optional<SnapshotPreimage> peek_preimage(
         std::uint64_t block_index) const;

@@ -780,6 +780,8 @@ DynamicBlockStoreStats DynamicBlockStore::stats() const {
     result.snapshot_cow_current_bytes = coordinator.cow_current_bytes;
     result.snapshot_cow_peak_bytes = coordinator.cow_peak_bytes;
     result.snapshot_cow_records = coordinator.cow_records;
+    result.snapshot_writer_stalls_total = coordinator.writer_stalls_total;
+    result.snapshot_auto_aborts_total = coordinator.auto_aborts_total;
     return result;
 }
 

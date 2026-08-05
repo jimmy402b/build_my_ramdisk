@@ -423,6 +423,9 @@ TEST_CASE(m2_1_task07_full_cow_budget_blocks_second_writer_before_publish) {
     REQUIRE(store->write(bounded_context(), 0, first_replacement).ok());
     REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
                myrd::kMinimumSnapshotCowBytes);
+    myrd::BlockEntry second_before{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 1, second_before));
 
     std::stop_source writer_stop;
     std::atomic<std::uint32_t> writer_code{kNoResult};
@@ -451,12 +454,18 @@ TEST_CASE(m2_1_task07_full_cow_budget_blocks_second_writer_before_publish) {
     REQUIRE(observer->capacity_unavailable());
     REQUIRE_EQ(observer->block_index(), 1ull);
     REQUIRE_EQ(writer_code.load(std::memory_order_acquire), kNoResult);
+    REQUIRE_EQ(
+        myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
+        1ull);
 
-    std::vector<std::byte> observed(second_cut.size());
-    REQUIRE(store->read(bounded_context(), myrd::kBlockSizeBytes,
-                        observed).ok());
-    REQUIRE(std::equal(observed.begin(), observed.end(),
-                       second_cut.begin(), second_cut.end()));
+    myrd::BlockEntry second_waiting{};
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 1, second_waiting));
+    REQUIRE_EQ(second_waiting.version, second_before.version);
+    REQUIRE_EQ(second_waiting.dirty_epoch, second_before.dirty_epoch);
+    REQUIRE_EQ(second_waiting.dirty_base_generation,
+               second_before.dirty_base_generation);
+    REQUIRE_EQ(second_waiting.dirty_kind, second_before.dirty_kind);
 }
 
 TEST_CASE(m2_1_task07_capacity_wait_releases_the_block_stripe) {
@@ -503,8 +512,101 @@ TEST_CASE(m2_1_task07_capacity_wait_releases_the_block_stripe) {
     const auto race = observer->wait_for_ready_or_writer_returned(
         std::chrono::steady_clock::now() + kWaitBound);
     REQUIRE_EQ(race, Task07PressureObserver::RaceResult::ReadyToSleep);
+    REQUIRE_EQ(
+        myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
+        1ull);
     REQUIRE(myrd::DynamicBlockStoreTestAccess::block_stripe_available(
         *store, 1));
+}
+
+TEST_CASE(m2_1_task07_batch_consumption_wakes_writer_without_lost_notify) {
+    Task07OneRecordCowFixture fixture;
+    auto observer = std::make_shared<Task07PressureObserver>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 2, 7);
+    args.options.snapshot_cow_max_bytes =
+        fixture.options().snapshot_cow_max_bytes;
+    args.options.snapshot_writer_stall_limit =
+        fixture.options().snapshot_writer_stall_limit;
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.snapshot_pressure_test_observer = observer;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        std::move(args), std::move(dependencies));
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+
+    const auto first_cut = block_data(0x15);
+    const auto second_cut = block_data(0x26);
+    const auto first_replacement = block_data(0x37);
+    const auto second_replacement = block_data(0x48);
+    REQUIRE(store->write(bounded_context(), 0, first_cut).ok());
+    REQUIRE(store->write(bounded_context(), myrd::kBlockSizeBytes,
+                         second_cut).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(store->write(bounded_context(), 0, first_replacement).ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               myrd::kMinimumSnapshotCowBytes);
+
+    std::stop_source writer_stop;
+    std::atomic<std::uint32_t> writer_code{kNoResult};
+    std::jthread writer([&] {
+        const myrd::OperationContext context{
+            writer_stop.get_token(),
+            std::chrono::steady_clock::time_point::max()};
+        const auto result = store->write(
+            context, myrd::kBlockSizeBytes, second_replacement);
+        writer_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+        observer->record_writer_returned();
+    });
+    myrd::ScopeExit cleanup([&]() noexcept {
+        writer_stop.request_stop();
+        observer->release_ready_event();
+        if (writer.joinable()) {
+            writer.join();
+        }
+    });
+
+    REQUIRE_EQ(observer->wait_for_ready_or_writer_returned(
+                   std::chrono::steady_clock::now() + kWaitBound),
+               Task07PressureObserver::RaceResult::ReadyToSleep);
+    REQUIRE_EQ(
+        myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
+        1ull);
+
+    myrd::DirtyScanCursor cursor{};
+    const auto first_batch = store->copy_consistent_snapshot_batch(
+        bounded_context(), begun.value(), cursor, myrd::kBlockSizeBytes);
+    REQUIRE(first_batch.ok());
+    REQUIRE_EQ(first_batch.value().size(), 1ull);
+    REQUIRE_EQ(first_batch.value().front().block_index, 0ull);
+    REQUIRE_EQ(first_batch.value().front().data, as_vector(first_cut));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+
+    observer->release_ready_event();
+    writer.join();
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
+    REQUIRE_EQ(
+        myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
+        0ull);
+
+    const auto second_batch = store->copy_consistent_snapshot_batch(
+        bounded_context(), begun.value(), cursor, myrd::kBlockSizeBytes);
+    REQUIRE(second_batch.ok());
+    REQUIRE_EQ(second_batch.value().size(), 1ull);
+    REQUIRE_EQ(second_batch.value().front().block_index, 1ull);
+    REQUIRE_EQ(second_batch.value().front().data, as_vector(second_cut));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+
+    std::vector<std::byte> current_second(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(
+        bounded_context(), myrd::kBlockSizeBytes, current_second).ok());
+    REQUIRE_EQ(current_second, as_vector(second_replacement));
+    REQUIRE(store->validate_invariants_for_test().ok());
+    cleanup.release();
 }
 
 TEST_CASE(m2_1_coordinator_owns_one_exact_token_and_cut_membership) {
@@ -1870,7 +1972,7 @@ TEST_CASE(m2_1_backing_load_failure_publishes_neither_mutation_nor_cow) {
     REQUIRE_EQ(entry.dirty_epoch, 0ull);
 }
 
-TEST_CASE(m2_1_data_cow_budget_failure_keeps_second_block_unmodified) {
+TEST_CASE(m2_1_data_cow_stall_aborts_snapshot_and_writer_continues) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7)
                        .data_block(0, block_data(0xB6))
                        .data_block(1, block_data(0xC7))
@@ -1894,34 +1996,33 @@ TEST_CASE(m2_1_data_cow_budget_failure_keeps_second_block_unmodified) {
         *store, 1, second_before));
     const std::vector<std::byte> second_replacement(
         static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0xAB});
-    const auto rejected = store->write(
+    const auto written = store->write(
         bounded_context(), myrd::kBlockSizeBytes, second_replacement);
-    REQUIRE(!rejected.ok());
-    REQUIRE_EQ(error_code(rejected.error()),
-               static_cast<std::uint32_t>(
-                   myrd::DynamicBlockStoreErrorCode::
-                       SnapshotResourceExhausted));
+    REQUIRE(written.ok());
     myrd::BlockEntry second_after{};
     REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
         *store, 1, second_after));
-    REQUIRE_EQ(second_after.state, second_before.state);
-    REQUIRE_EQ(second_after.version, second_before.version);
-    REQUIRE_EQ(second_after.dirty_epoch, second_before.dirty_epoch);
-    REQUIRE_EQ(second_after.dirty_kind, second_before.dirty_kind);
-    REQUIRE_EQ(second_after.dirty_base_generation,
-               second_before.dirty_base_generation);
+    REQUIRE_EQ(second_after.state, myrd::BlockState::ResidentDirty);
+    REQUIRE(second_after.version > second_before.version);
+    REQUIRE(second_after.dirty_epoch > second_before.dirty_epoch);
+    REQUIRE_EQ(second_after.dirty_kind, myrd::DirtyRecordKind::Data);
 
     std::vector<std::byte> current_second(
         static_cast<std::size_t>(myrd::kBlockSizeBytes));
     REQUIRE(store->read(
         bounded_context(), myrd::kBlockSizeBytes, current_second).ok());
-    REQUIRE_EQ(payload_hash(current_second), payload_hash(second));
-    REQUIRE(current_second == second);
+    REQUIRE_EQ(payload_hash(current_second), payload_hash(second_replacement));
+    REQUIRE(current_second == second_replacement);
     myrd::SnapshotPreimage unexpected{};
     REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
         *store, 1, unexpected));
-    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
-               myrd::kMinimumSnapshotCowBytes);
+    const auto stats = store->stats();
+    REQUIRE_EQ(stats.snapshot_active_state,
+               std::optional{myrd::ConsistentSnapshotState::Aborted});
+    REQUIRE_EQ(stats.snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(stats.snapshot_cow_records, 0ull);
+    REQUIRE_EQ(stats.snapshot_writer_stalls_total, 1ull);
+    REQUIRE_EQ(stats.snapshot_auto_aborts_total, 1ull);
 }
 
 TEST_CASE(m2_1_published_preimage_remains_visible_across_reader_mutator_interleaving) {
@@ -2106,7 +2207,7 @@ TEST_CASE(m2_1_resident_dirty_future_generation_fails_closed_before_cow) {
     REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
 }
 
-TEST_CASE(m2_1_cross_block_late_cow_failure_keeps_precise_prefix) {
+TEST_CASE(m2_1_cross_block_cow_stall_aborts_then_completes_suffix) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto store = require_store(backing_args(backing, 3, 7));
     const auto first_reference = block_data(0x65);
@@ -2123,16 +2224,14 @@ TEST_CASE(m2_1_cross_block_late_cow_failure_keeps_precise_prefix) {
     REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
 
     const std::vector<std::byte> spanning(1024, std::byte{0x87});
-    const auto rejected = store->write(
+    const auto written = store->write(
         bounded_context(), myrd::kBlockSizeBytes - 512, spanning);
-    REQUIRE(!rejected.ok());
-    REQUIRE_EQ(error_code(rejected.error()),
-               static_cast<std::uint32_t>(
-                   myrd::DynamicBlockStoreErrorCode::
-                       SnapshotResourceExhausted));
+    REQUIRE(written.ok());
 
     auto expected_first = as_vector(first_reference);
     std::copy_n(spanning.begin(), 512, expected_first.end() - 512);
+    auto expected_second = as_vector(second_reference);
+    std::copy_n(spanning.begin() + 512, 512, expected_second.begin());
     std::vector<std::byte> actual_first(
         static_cast<std::size_t>(myrd::kBlockSizeBytes));
     std::vector<std::byte> actual_second(
@@ -2142,10 +2241,8 @@ TEST_CASE(m2_1_cross_block_late_cow_failure_keeps_precise_prefix) {
         bounded_context(), myrd::kBlockSizeBytes, actual_second).ok());
     REQUIRE_EQ(payload_hash(actual_first), payload_hash(expected_first));
     REQUIRE(actual_first == expected_first);
-    REQUIRE_EQ(payload_hash(actual_second),
-               payload_hash(second_reference));
-    REQUIRE(std::equal(actual_second.begin(), actual_second.end(),
-                       second_reference.begin()));
+    REQUIRE_EQ(payload_hash(actual_second), payload_hash(expected_second));
+    REQUIRE(actual_second == expected_second);
 
     myrd::BlockEntry first_after{};
     myrd::BlockEntry second_after{};
@@ -2155,29 +2252,20 @@ TEST_CASE(m2_1_cross_block_late_cow_failure_keeps_precise_prefix) {
         *store, 1, second_after));
     REQUIRE(first_after.version > first_cut.version);
     REQUIRE(first_after.dirty_epoch > first_cut.dirty_epoch);
-    REQUIRE_EQ(second_after.state, second_cut.state);
-    REQUIRE_EQ(second_after.version, second_cut.version);
-    REQUIRE_EQ(second_after.dirty_epoch, second_cut.dirty_epoch);
-    REQUIRE_EQ(second_after.dirty_base_generation,
-               second_cut.dirty_base_generation);
+    REQUIRE_EQ(second_after.state, myrd::BlockState::ResidentDirty);
+    REQUIRE(second_after.version > second_cut.version);
+    REQUIRE(second_after.dirty_epoch > second_cut.dirty_epoch);
 
-    myrd::SnapshotPreimage first_preimage{};
+    myrd::SnapshotPreimage unexpected_first{};
     myrd::SnapshotPreimage unexpected_second{};
-    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
-        *store, 0, first_preimage));
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+        *store, 0, unexpected_first));
     REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
         *store, 1, unexpected_second));
-    REQUIRE_EQ(first_preimage.version, first_cut.version);
-    REQUIRE_EQ(first_preimage.dirty_epoch, first_cut.dirty_epoch);
-    REQUIRE_EQ(first_preimage.base_generation,
-               first_cut.dirty_base_generation);
-    REQUIRE_EQ(payload_hash(first_preimage.data),
-               payload_hash(first_reference));
-    REQUIRE(std::equal(first_preimage.data.begin(), first_preimage.data.end(),
-                       first_reference.begin()));
-    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
-               myrd::kMinimumSnapshotCowBytes);
-    REQUIRE_EQ(store->stats().snapshot_cow_records, 1ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_writer_stalls_total, 1ull);
+    REQUIRE_EQ(store->stats().snapshot_auto_aborts_total, 1ull);
     REQUIRE(store->validate_invariants_for_test().ok());
 }
 
@@ -2945,7 +3033,7 @@ TEST_CASE(m2_1_snapshot_reader_interleaves_with_successful_metadata_publish) {
     REQUIRE(current.version > cut.version);
 }
 
-TEST_CASE(m2_1_metadata_budget_failure_keeps_zero_identity_unmodified) {
+TEST_CASE(m2_1_metadata_cow_stall_aborts_snapshot_and_unmap_continues) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto args = backing_args(backing, 3, 7);
     args.options.snapshot_cow_max_bytes =
@@ -2965,34 +3053,29 @@ TEST_CASE(m2_1_metadata_budget_failure_keeps_zero_identity_unmodified) {
     REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
         *store, 1, before));
     const auto range = full_block_range(1);
-    const auto rejected = store->unmap(bounded_context(), range);
-    REQUIRE(!rejected.ok());
-    REQUIRE_EQ(error_code(rejected.error()),
-               static_cast<std::uint32_t>(
-                   myrd::DynamicBlockStoreErrorCode::
-                       SnapshotResourceExhausted));
+    const auto unmapped = store->unmap(bounded_context(), range);
+    REQUIRE(unmapped.ok());
 
     myrd::BlockEntry after{};
     REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
         *store, 1, after));
-    REQUIRE_EQ(after.state, before.state);
-    REQUIRE_EQ(after.version, before.version);
-    REQUIRE_EQ(after.dirty_kind, before.dirty_kind);
-    REQUIRE_EQ(after.dirty_epoch, before.dirty_epoch);
-    REQUIRE_EQ(after.dirty_base_generation,
-               before.dirty_base_generation);
+    REQUIRE_EQ(after.state, myrd::BlockState::ZeroDirty);
+    REQUIRE(after.version > before.version);
+    REQUIRE_EQ(after.dirty_kind, myrd::DirtyRecordKind::Discard);
+    REQUIRE(after.dirty_epoch > before.dirty_epoch);
     myrd::SnapshotPreimage first_preimage{};
     myrd::SnapshotPreimage unexpected{};
-    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
         *store, 0, first_preimage));
     REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
         *store, 1, unexpected));
-    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
-               myrd::kMinimumSnapshotCowBytes);
-    REQUIRE_EQ(store->stats().snapshot_cow_records, 1ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_cow_records, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_writer_stalls_total, 1ull);
+    REQUIRE_EQ(store->stats().snapshot_auto_aborts_total, 1ull);
 }
 
-TEST_CASE(m2_1_cross_range_late_cow_failure_keeps_exact_zero_prefix) {
+TEST_CASE(m2_1_cross_range_cow_stall_aborts_then_completes_range) {
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
     auto args = backing_args(backing, 3, 7);
     args.options.snapshot_cow_max_bytes =
@@ -3013,12 +3096,8 @@ TEST_CASE(m2_1_cross_range_late_cow_failure_keeps_exact_zero_prefix) {
 
     const std::array<myrd::DataRange, 1> spanning{{{
         0, 2 * myrd::kBlockSizeBytes}}};
-    const auto rejected = store->unmap(bounded_context(), spanning);
-    REQUIRE(!rejected.ok());
-    REQUIRE_EQ(error_code(rejected.error()),
-               static_cast<std::uint32_t>(
-                   myrd::DynamicBlockStoreErrorCode::
-                       SnapshotResourceExhausted));
+    const auto unmapped = store->unmap(bounded_context(), spanning);
+    REQUIRE(unmapped.ok());
 
     myrd::BlockEntry first_after{};
     myrd::BlockEntry second_after{};
@@ -3029,28 +3108,26 @@ TEST_CASE(m2_1_cross_range_late_cow_failure_keeps_exact_zero_prefix) {
     REQUIRE_EQ(first_after.state, myrd::BlockState::ZeroDirty);
     REQUIRE_EQ(first_after.dirty_kind, myrd::DirtyRecordKind::Discard);
     REQUIRE(first_after.version > first_cut.version);
-    REQUIRE_EQ(second_after.state, second_cut.state);
-    REQUIRE_EQ(second_after.version, second_cut.version);
-    REQUIRE_EQ(second_after.dirty_epoch, second_cut.dirty_epoch);
+    REQUIRE_EQ(second_after.state, myrd::BlockState::ZeroDirty);
+    REQUIRE_EQ(second_after.dirty_kind, myrd::DirtyRecordKind::Discard);
+    REQUIRE(second_after.version > second_cut.version);
+    REQUIRE(second_after.dirty_epoch > second_cut.dirty_epoch);
 
     myrd::SnapshotPreimage first_preimage{};
     myrd::SnapshotPreimage second_preimage{};
-    REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
+    REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
         *store, 0, first_preimage));
-    REQUIRE_EQ(first_preimage.kind, myrd::DirtyRecordKind::Zero);
-    REQUIRE_EQ(first_preimage.version, first_cut.version);
-    REQUIRE_EQ(first_preimage.dirty_epoch, first_cut.dirty_epoch);
-    REQUIRE(first_preimage.data.empty());
     REQUIRE(!myrd::DynamicBlockStoreTestAccess::snapshot_preimage(
         *store, 1, second_preimage));
     std::vector<std::byte> second_actual(
         static_cast<std::size_t>(myrd::kBlockSizeBytes));
     REQUIRE(store->read(
         bounded_context(), myrd::kBlockSizeBytes, second_actual).ok());
-    REQUIRE(std::equal(second_actual.begin(), second_actual.end(),
-                       second_reference.begin()));
-    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
-               myrd::kSnapshotCowRecordBudgetBytes);
+    REQUIRE(std::all_of(second_actual.begin(), second_actual.end(),
+                        [](std::byte value) { return value == std::byte{}; }));
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(store->stats().snapshot_writer_stalls_total, 1ull);
+    REQUIRE_EQ(store->stats().snapshot_auto_aborts_total, 1ull);
 }
 
 TEST_CASE(m2_1_partial_range_backing_failure_leaves_no_cow_or_mutation) {

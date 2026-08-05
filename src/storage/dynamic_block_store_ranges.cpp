@@ -213,7 +213,18 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                         entry->dirty_epoch,
                         {});
                 if (!preserved.ok()) {
-                    return preserved;
+                    return Result<void>::failure(preserved.error());
+                }
+                if (preserved.value() ==
+                    SnapshotPreimagePreserveOutcome::CapacityUnavailable) {
+                    const auto waited = wait_for_snapshot_capacity(
+                        context, block_lock, block_index, false);
+                    block_lock.unlock();
+                    stripe.condition.notify_all();
+                    if (!waited.ok()) {
+                        return waited;
+                    }
+                    continue;
                 }
             }
             BackingGeneration generation{};
@@ -335,6 +346,24 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                         static_cast<std::size_t>(kBlockSizeBytes)));
             if (!preserved.ok()) {
                 return restore_before_decommit(preserved.error());
+            }
+            if (preserved.value() ==
+                SnapshotPreimagePreserveOutcome::CapacityUnavailable) {
+                {
+                    std::scoped_lock state_lock(state_mutex_);
+                    increment_state_gauge(stats_, original_state);
+                }
+                *entry = original_entry;
+                transition_active = false;
+                stripe.condition.notify_all();
+                const auto waited = wait_for_snapshot_capacity(
+                    context, block_lock, block_index, true);
+                block_lock.unlock();
+                stripe.condition.notify_all();
+                if (!waited.ok()) {
+                    return waited;
+                }
+                continue;
             }
         }
 

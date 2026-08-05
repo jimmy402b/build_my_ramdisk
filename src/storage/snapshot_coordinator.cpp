@@ -489,6 +489,9 @@ public:
     std::uint64_t next_scan_block{};
     std::uint64_t committed_records{};
     std::uint64_t pending_reservations{};
+    std::uint64_t capacity_waiters{};
+    std::uint64_t writer_stalls_total{};
+    std::uint64_t auto_aborts_total{};
     std::atomic<bool> preimage_lookup_entered_for_test{};
 };
 
@@ -846,6 +849,122 @@ void SnapshotCoordinator::rollback_metadata_preimage(
     }
 }
 
+Result<void> SnapshotCoordinator::wait_for_capacity_change(
+    const OperationContext& context,
+    const ConsistentSnapshotToken& token,
+    std::uint64_t required_bytes,
+    std::uint64_t block_index,
+    std::chrono::milliseconds stall_limit,
+    ISnapshotPressureTestObserver* test_observer) {
+    if (required_bytes == 0 || required_bytes > state_->budget.max_bytes ||
+        stall_limit.count() <= 0) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
+            L"snapshot COW request cannot fit within the configured budget"));
+    }
+
+    std::unique_lock lock(state_->mutex);
+    const auto capacity_available = [&]() noexcept {
+        return state_->budget.current_bytes <= state_->budget.max_bytes &&
+               required_bytes <=
+                   state_->budget.max_bytes - state_->budget.current_bytes;
+    };
+    if (!state_->token_matches(token) ||
+        state_->active_state != ConsistentSnapshotState::Active) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotAborted,
+            L"snapshot ended before the capacity waiter registered"));
+    }
+    if (capacity_available()) {
+        return Result<void>::success();
+    }
+    if (state_->capacity_waiters ==
+        (std::numeric_limits<std::uint64_t>::max)()) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"snapshot capacity waiter count wrapped"));
+    }
+    ++state_->capacity_waiters;
+    bool registered = true;
+    const auto unregister = [&]() noexcept {
+        if (!registered) {
+            return;
+        }
+        if (state_->capacity_waiters == 0) {
+            std::terminate();
+        }
+        --state_->capacity_waiters;
+        registered = false;
+    };
+
+    lock.unlock();
+    if (test_observer != nullptr) {
+        test_observer->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::CapacityWaitReady,
+            block_index);
+    }
+    lock.lock();
+
+    const auto notify_waiter = [state = state_]() noexcept {
+        state->condition.notify_all();
+    };
+    std::stop_callback stop_callback(
+        context.stop_token, notify_waiter);
+    const auto now = std::chrono::steady_clock::now();
+    const auto stall_deadline = now + stall_limit;
+    const auto wait_deadline =
+        (std::min)(context.deadline, stall_deadline);
+    const auto wait_predicate = [&]() noexcept {
+        return capacity_available() || !state_->token_matches(token) ||
+               state_->active_state != ConsistentSnapshotState::Active ||
+               context.stop_token.stop_requested();
+    };
+    if (wait_deadline ==
+        std::chrono::steady_clock::time_point::max()) {
+        state_->condition.wait(lock, wait_predicate);
+    } else {
+        (void)state_->condition.wait_until(
+            lock, wait_deadline, wait_predicate);
+    }
+
+    unregister();
+    const auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return live;
+    }
+    if (!state_->token_matches(token) ||
+        state_->active_state != ConsistentSnapshotState::Active) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotAborted,
+            L"snapshot ended while waiting for COW capacity"));
+    }
+    if (!capacity_available() &&
+        std::chrono::steady_clock::now() >= stall_deadline) {
+        state_->active_state = ConsistentSnapshotState::Aborted;
+        state_->abort_reason =
+            DynamicBlockStoreErrorCode::SnapshotResourceExhausted;
+        if (state_->writer_stalls_total ==
+                (std::numeric_limits<std::uint64_t>::max)() ||
+            state_->auto_aborts_total ==
+                (std::numeric_limits<std::uint64_t>::max)()) {
+            std::terminate();
+        }
+        ++state_->writer_stalls_total;
+        ++state_->auto_aborts_total;
+        state_->clear_records();
+        state_->condition.notify_all();
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotAborted,
+            L"snapshot COW capacity made no progress before stall limit"));
+    }
+    if (!capacity_available()) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"capacity wait ended while its predicate remained false"));
+    }
+    return Result<void>::success();
+}
+
 std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
     std::uint64_t block_index) const {
     state_->preimage_lookup_entered_for_test.store(
@@ -993,6 +1112,9 @@ SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
         state_->budget.peak_bytes,
         state_->committed_records,
         state_->pending_reservations,
+        state_->capacity_waiters,
+        state_->writer_stalls_total,
+        state_->auto_aborts_total,
     };
 }
 

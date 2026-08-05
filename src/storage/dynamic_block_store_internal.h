@@ -295,6 +295,8 @@ public:
     static bool block_stripe_available(
         DynamicBlockStore& store,
         std::uint64_t block_index) noexcept;
+    static std::uint64_t snapshot_capacity_waiters(
+        const DynamicBlockStore& store) noexcept;
     static bool signal_eviction_if_needed(DynamicBlockStore& store);
     static bool signal_eviction_many_for_test(
         DynamicBlockStore& store,

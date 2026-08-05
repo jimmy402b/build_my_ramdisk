@@ -150,17 +150,17 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   count；加入 one-record COW budget fixture、fake clock 和 barrier，不改 production。
 - [x] `T07.2 [H]` 冻结 ownership/lock-order 表：stripe、coordinator mutex、admission、
   reservation、Preparing marker、payload、waiter 各由谁持有/释放；未签署前不写逻辑。
-- [ ] `T07.3 [H]` RED：第一 pre-image 填满 budget，第二 writer 到达“容量不足”
+- [x] `T07.3 [H]` RED：第一 pre-image 填满 budget，第二 writer 到达“容量不足”
   barrier 后保持 blocked；用事件证明它尚未 publish mutation，不得用 sleep。
-- [ ] `T07.4 [H]` RED：第二 writer 等 capacity 时，另一个线程必须能取得该 block
+- [x] `T07.4 [H]` RED：第二 writer 等 capacity 时，另一个线程必须能取得该 block
   stripe；故意持 stripe wait 的 mutation 必须稳定卡在测试 watchdog 断言。
-- [ ] `T07.5 [X]` 只实现 try-reserve→capacity unavailable→release stripe→登记
+- [x] `T07.5 [X]` 只实现 try-reserve→capacity unavailable→release stripe→登记
   waiter；此卡不实现 wake 后 retry。验证 T07.3/4 的 blocked state 与 counters。
 - [ ] `T07.6 [X]` 只实现成功 reservation 的 per-block `Preparing` publication 与
   rollback；reader 可等 marker condition，但禁止通过获取 stripe 等 marker。
-- [ ] `T07.7 [X]` 只实现 wake 后 reacquire stripe + 重验 token/frontier/pre-image/
+- [x] `T07.7 [X]` 只实现 wake 后 reacquire stripe + 重验 token/frontier/pre-image/
   entry identity；任一变化就 rollback/retry/按 frozen error 返回，禁止用旧指针复制。
-- [ ] `T07.8 [H]` RED+GREEN：batch consume 一个 pre-image 释放额度并精准唤醒；
+- [x] `T07.8 [H]` RED+GREEN：batch consume 一个 pre-image 释放额度并精准唤醒；
   writer 完成后 mutation 与 snapshot record 均 exact，一次 notify 不丢失。
 - [ ] `T07.9 [H]` 多 writer/fairness/spurious/cancel/deadline matrix；每个 interleaving
   用 barrier 固定，current blocked-writer gauge 和 reservation bytes 始终一致。

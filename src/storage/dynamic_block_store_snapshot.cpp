@@ -981,6 +981,11 @@ bool DynamicBlockStoreTestAccess::snapshot_preimage_lookup_entered(
     return store.snapshot_coordinator_->preimage_lookup_entered_for_test();
 }
 
+std::uint64_t DynamicBlockStoreTestAccess::snapshot_capacity_waiters(
+    const DynamicBlockStore& store) noexcept {
+    return store.snapshot_coordinator_->snapshot().capacity_waiters;
+}
+
 bool DynamicBlockStoreTestAccess::advance_snapshot_frontier(
     DynamicBlockStore& store,
     const ConsistentSnapshotToken& token,
