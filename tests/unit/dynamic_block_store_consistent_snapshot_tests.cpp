@@ -11,10 +11,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -142,6 +144,88 @@ private:
     std::atomic<bool> release_{};
 };
 
+class Task07ManualClock final {
+public:
+    explicit Task07ManualClock(
+        std::chrono::steady_clock::time_point initial) noexcept
+        : ticks_(initial.time_since_epoch().count()) {}
+
+    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept {
+        return std::chrono::steady_clock::time_point{
+            std::chrono::steady_clock::duration{
+                ticks_.load(std::memory_order_acquire)}};
+    }
+
+    void advance(std::chrono::milliseconds delta) noexcept {
+        ticks_.fetch_add(
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                delta)
+                .count(),
+            std::memory_order_acq_rel);
+    }
+
+private:
+    std::atomic<std::chrono::steady_clock::duration::rep> ticks_;
+};
+
+class Task07OneRecordCowFixture final {
+public:
+    Task07OneRecordCowFixture() : options_(valid_options()) {
+        options_.snapshot_cow_max_bytes =
+            myrd::kMinimumSnapshotCowBytes;
+    }
+
+    [[nodiscard]] const myrd::DynamicBlockStoreOptions& options()
+        const noexcept {
+        return options_;
+    }
+
+    [[nodiscard]] std::unique_ptr<myrd::DynamicBlockStore> create_store(
+        std::shared_ptr<const myrd::IBackingStore> backing,
+        std::uint64_t logical_blocks = 2,
+        myrd::BackingGeneration generation = 7) const {
+        auto args = backing_args(
+            std::move(backing), logical_blocks, generation);
+        args.options.snapshot_cow_max_bytes =
+            options_.snapshot_cow_max_bytes;
+        args.options.snapshot_writer_stall_limit =
+            options_.snapshot_writer_stall_limit;
+        return require_store(std::move(args));
+    }
+
+private:
+    myrd::DynamicBlockStoreOptions options_;
+};
+
+class Task07EventBarrier final {
+public:
+    void arrive_and_wait() {
+        std::unique_lock lock(mutex_);
+        arrived_ = true;
+        condition_.notify_all();
+        condition_.wait(lock, [this] { return released_; });
+    }
+
+    [[nodiscard]] bool wait_until_arrived(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(
+            lock, deadline, [this] { return arrived_; });
+    }
+
+    void release() {
+        std::scoped_lock lock(mutex_);
+        released_ = true;
+        condition_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool arrived_{};
+    bool released_{};
+};
+
 myrd::SnapshotPreimage metadata_preimage(
     std::uint64_t block_index,
     std::uint64_t version,
@@ -206,6 +290,40 @@ myrd::DirtyRecordKind record_kind(LogicalDirtyKind kind) {
 }
 
 } // namespace
+
+TEST_CASE(m2_1_task07_pressure_fixture_freezes_exact_one_record_contract) {
+    const auto initial_time = std::chrono::steady_clock::time_point{
+        std::chrono::milliseconds{1'000}};
+    Task07ManualClock clock(initial_time);
+    Task07OneRecordCowFixture fixture;
+    Task07EventBarrier barrier;
+
+    REQUIRE_EQ(fixture.options().snapshot_cow_max_bytes,
+               myrd::kMinimumSnapshotCowBytes);
+    REQUIRE_EQ(fixture.options().snapshot_writer_stall_limit,
+               std::chrono::milliseconds{250});
+
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = fixture.create_store(backing);
+    std::vector<std::byte> cut_value(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x41});
+    std::vector<std::byte> replacement(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes), std::byte{0x52});
+    REQUIRE(store->write(bounded_context(), 0, cut_value).ok());
+    REQUIRE(store->begin_consistent_snapshot(bounded_context()).ok());
+    REQUIRE(store->write(bounded_context(), 0, replacement).ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               myrd::kMinimumSnapshotCowBytes);
+
+    clock.advance(std::chrono::milliseconds{37});
+    REQUIRE_EQ(clock.now(), initial_time + std::chrono::milliseconds{37});
+
+    std::thread waiter([&] { barrier.arrive_and_wait(); });
+    REQUIRE(barrier.wait_until_arrived(
+        std::chrono::steady_clock::now() + kWaitBound));
+    barrier.release();
+    waiter.join();
+}
 
 TEST_CASE(m2_1_coordinator_owns_one_exact_token_and_cut_membership) {
     myrd::SnapshotCoordinator coordinator(
