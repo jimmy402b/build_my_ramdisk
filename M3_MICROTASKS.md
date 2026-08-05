@@ -197,7 +197,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   证明模型稳定失败并记录断言；随后恢复补丁，工作树不得残留 mutation。
 - [x] `T08.6 [M]` Debug/Release 固定种子各一次、100 个生成 seed、完整 M2 回归；
   保存最慢 seed、总操作数和 hash。
-- [ ] `T08.7 [H]` 独立 reviewer 确认 oracle 与生产实现无共享算法/codec，GO 后
+- [x] `T08.7 [H]` 独立 reviewer 确认 oracle 与生产实现无共享算法/codec，GO 后
   Task 08 才可 `DONE`。
 
 ### Task 09 — M2.1 prerequisite verdict

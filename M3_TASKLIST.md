@@ -373,11 +373,11 @@ CTest `62/62`。固定 stress seed `0x4D59524453545231`；one-record COW peak
 
 **类别：S；oracle 由不同执行者冻结。允许文件：** `tests/model/`、`tests/support/`、测试注册；不改产品实现。
 
-- [ ] 模型只使用简单 block map、cut event 和操作日志，不 include/call production coordinator/codec。
-- [ ] 生成跨块 read/write/zero/unmap/evict/load/begin/copy/finish/abort 随机 schedule，至少 100,000 操作。
-- [ ] 每个完成 token 的 block set/kind/payload 必须等于同一线性化切点；保存 seed 和最小失败 trace。
-- [ ] 加定向 schedule 覆盖所有此前竞态，不允许 production author 修改 expected outcome。
-- [ ] 跑 `m2.1-v4` 和 M2 全套；建议提交 `test(storage): model whole disk snapshot cuts`。
+- [x] 模型只使用简单 block map、cut event 和操作日志，不 include/call production coordinator/codec。
+- [x] 生成跨块 read/write/zero/unmap/evict/load/begin/copy/finish/abort 随机 schedule，至少 100,000 操作。
+- [x] 每个完成 token 的 block set/kind/payload 必须等于同一线性化切点；保存 seed 和最小失败 trace。
+- [x] 加定向 schedule 覆盖所有此前竞态，不允许 production author 修改 expected outcome。
+- [x] 跑 `m2.1-v4` 和 M2 全套；建议提交 `test(storage): model whole disk snapshot cuts`。
 
 T08.1 evidence：commits `49cd72d` + `dd9f7e7`；新增 frozen test
 `unit.m3.m2_consistent_snapshot_model`（discovery `1`，label `m2.1-v4`）。oracle
@@ -433,6 +433,15 @@ header/cpp/test SHA-256 分别为
 `CD708E24C32C45BE78B73F8CC0FED86241B7ABBA95D3BD94D7610570993F609B`、
 `1687B911C84E0905CFC50A9291D36642C6272B406318AE85067E6EAEC886B94C`、
 `CE7A3F0455A77B66C9B560D3516A1F04E6375709906A74099336B49502D2EFD2`。
+
+T08.7 evidence：独立 reviewer A 在候选 `4bed62c` 上复核 token owner、Model-owned
+cursor、strict finish 与算法独立性，P0/P1=`0/0`，verdict `GO`。独立 reviewer B 首轮
+仅因提交态证据仍旧而 `NO-GO`；证据提交 `77889d5` 后复核 hash、commands、exit code、
+12/12、106,000 operations 与 63/63，P0/P1=`0/0`，最终 verdict `GO`。两者均确认
+oracle support 只依赖自身头文件与标准库，不共享 production coordinator、batch helper、
+codec 或首次覆盖前 COW 状态机。非阻断 P2（理论 owner-id 耗尽、手工超大 Schedule
+乘法、非法 enum 强转、failure signature 粒度）留给最终 XHigh 审计，不影响固定 2–64
+blocks corpus。Task 08 状态：`DONE`。
 
 ## Task 09 — 签发 M2.1 前置 verdict
 
