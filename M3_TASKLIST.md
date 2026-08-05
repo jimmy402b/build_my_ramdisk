@@ -398,6 +398,11 @@ DISCARD、post-cut overwrite、post-cut clean→dirty 排除、final short DATA 
 partial-progress abort/stale token；固定 seed `0xDEADBEEF` 的 2,000-op store/model schedule
 逐 batch 比较 cursor 与 records，focused `7/7`。
 
+T08.4 evidence：commit `d1a8c50`；reducer 只二分删除失败边界后的 suffix，再对边界
+I/O 按 512-byte sector 缩短 length；seed、geometry、此前 operations、payload seed 与
+外部 failure predicate 均不改。非失败输入返回空，缩减后必须由同一 predicate 再确认；
+focused `8/8`。
+
 ## Task 09 — 签发 M2.1 前置 verdict
 
 **类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。
