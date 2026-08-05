@@ -465,6 +465,7 @@ TEST_CASE(m2_1_task08_schedule_is_seed_only_deterministic_and_complete) {
     REQUIRE_EQ(first.operations.size(), operation_count);
 
     std::array<std::uint64_t, 10> kinds{};
+    bool saw_cross_block_range = false;
     for (const auto& operation : first.operations) {
         ++kinds[static_cast<std::size_t>(operation.kind)];
         if (operation.kind == OperationKind::Write ||
@@ -478,11 +479,16 @@ TEST_CASE(m2_1_task08_schedule_is_seed_only_deterministic_and_complete) {
             REQUIRE(operation.offset <= first.logical_size_bytes());
             REQUIRE(operation.length <=
                     first.logical_size_bytes() - operation.offset);
+            if (operation.offset / kBlockBytes !=
+                (operation.offset + operation.length - 1) / kBlockBytes) {
+                saw_cross_block_range = true;
+            }
         }
     }
     for (const auto count : kinds) {
         REQUIRE(count != 0);
     }
+    REQUIRE(saw_cross_block_range);
     REQUIRE(!describe_operation(0, first.operations.front()).empty());
     REQUIRE_EQ(operation_payload(first.operations.front()),
                operation_payload(replay.operations.front()));
