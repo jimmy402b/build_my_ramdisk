@@ -47,6 +47,13 @@ public:
 enum class SnapshotPressureTestEvent : std::uint8_t {
     CapacityUnavailable = 0,
     CapacityWaitReady = 1,
+    CapacityWaitSleeping = 2,
+};
+
+class ISnapshotPressureClock {
+public:
+    virtual ~ISnapshotPressureClock() = default;
+    virtual std::chrono::steady_clock::time_point now() const noexcept = 0;
 };
 
 // Test-only observer. Unlike the non-reentrant coordinator barrier, callbacks
@@ -104,6 +111,7 @@ private:
 struct SnapshotCoordinatorSnapshot {
     std::optional<ConsistentSnapshotToken> active_token;
     std::optional<ConsistentSnapshotState> active_state;
+    std::optional<DynamicBlockStoreErrorCode> abort_reason;
     std::uint64_t next_scan_block{};
     std::uint64_t cow_current_bytes{};
     std::uint64_t cow_peak_bytes{};
@@ -122,7 +130,8 @@ public:
     explicit SnapshotCoordinator(
         std::uint64_t max_bytes,
         std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
-            non_reentrant_barrier = {});
+            non_reentrant_barrier = {},
+        std::shared_ptr<ISnapshotPressureClock> pressure_clock = {});
     ~SnapshotCoordinator() noexcept;
 
     SnapshotCoordinator(const SnapshotCoordinator&) = delete;
@@ -181,6 +190,7 @@ public:
     Result<void> validate_invariants_for_test() const;
     std::uint64_t index_probe_count_for_test() const;
     bool preimage_lookup_entered_for_test() const noexcept;
+    void notify_capacity_waiters_for_test() noexcept;
 
 private:
     Result<SnapshotMetadataReservation> reserve_before_mutation(

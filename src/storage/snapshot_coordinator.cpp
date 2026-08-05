@@ -383,10 +383,12 @@ public:
     SnapshotCoordinatorState(
         std::uint64_t max_bytes,
         std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
-            next_barrier)
+            next_barrier,
+        std::shared_ptr<ISnapshotPressureClock> next_pressure_clock)
         : budget(max_bytes),
           records(CountingLess{&index_probes}, RecordAllocator{&budget}),
-          non_reentrant_barrier(std::move(next_barrier)) {
+          non_reentrant_barrier(std::move(next_barrier)),
+          pressure_clock(std::move(next_pressure_clock)) {
         // Standard-library implementations may allocate one or more sentinel
         // and container-proxy nodes while constructing std::map (MSVC Debug
         // uses more than Release). They are fixed coordinator infrastructure,
@@ -400,6 +402,11 @@ public:
     }
 
     void abandon(SnapshotMetadataReservation& reservation) noexcept;
+
+    std::chrono::steady_clock::time_point now() const noexcept {
+        return pressure_clock ? pressure_clock->now()
+                              : std::chrono::steady_clock::now();
+    }
 
     bool token_matches(const ConsistentSnapshotToken& token) const noexcept {
         return active_token.has_value() &&
@@ -482,6 +489,7 @@ public:
     RecordMap records;
     std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
         non_reentrant_barrier;
+    std::shared_ptr<ISnapshotPressureClock> pressure_clock;
     std::optional<ConsistentSnapshotToken> active_token;
     std::optional<ConsistentSnapshotState> active_state;
     std::optional<DynamicBlockStoreErrorCode> abort_reason;
@@ -543,9 +551,12 @@ void SnapshotMetadataReservation::reset() noexcept {
 SnapshotCoordinator::SnapshotCoordinator(
     std::uint64_t max_bytes,
     std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
-        non_reentrant_barrier)
+        non_reentrant_barrier,
+    std::shared_ptr<ISnapshotPressureClock> pressure_clock)
     : state_(std::make_shared<SnapshotCoordinatorState>(
-          max_bytes, std::move(non_reentrant_barrier))) {}
+          max_bytes,
+          std::move(non_reentrant_barrier),
+          std::move(pressure_clock))) {}
 
 SnapshotCoordinator::~SnapshotCoordinator() noexcept = default;
 
@@ -910,7 +921,7 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     };
     std::stop_callback stop_callback(
         context.stop_token, notify_waiter);
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = state_->now();
     const auto stall_deadline = now + stall_limit;
     const auto wait_deadline =
         (std::min)(context.deadline, stall_deadline);
@@ -919,12 +930,22 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
                state_->active_state != ConsistentSnapshotState::Active ||
                context.stop_token.stop_requested();
     };
-    if (wait_deadline ==
-        std::chrono::steady_clock::time_point::max()) {
+    lock.unlock();
+    if (test_observer != nullptr) {
+        test_observer->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::CapacityWaitSleeping,
+            block_index);
+    }
+    lock.lock();
+    if (state_->pressure_clock) {
+        while (!wait_predicate() && state_->now() < wait_deadline) {
+            state_->condition.wait(lock);
+        }
+    } else if (wait_deadline ==
+               std::chrono::steady_clock::time_point::max()) {
         state_->condition.wait(lock, wait_predicate);
     } else {
-        (void)state_->condition.wait_until(
-            lock, wait_deadline, wait_predicate);
+        (void)state_->condition.wait_until(lock, wait_deadline, wait_predicate);
     }
 
     unregister();
@@ -939,7 +960,7 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
             L"snapshot ended while waiting for COW capacity"));
     }
     if (!capacity_available() &&
-        std::chrono::steady_clock::now() >= stall_deadline) {
+        state_->now() >= stall_deadline) {
         state_->active_state = ConsistentSnapshotState::Aborted;
         state_->abort_reason =
             DynamicBlockStoreErrorCode::SnapshotResourceExhausted;
@@ -1098,7 +1119,7 @@ Result<ConsistentSnapshotStatus> SnapshotCoordinator::status(
             *state_->active_state,
             state_->budget.current_bytes,
             state_->committed_records,
-            0,
+            state_->capacity_waiters,
         });
 }
 
@@ -1107,6 +1128,7 @@ SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
     return SnapshotCoordinatorSnapshot{
         state_->active_token,
         state_->active_state,
+        state_->abort_reason,
         state_->next_scan_block,
         state_->budget.current_bytes,
         state_->budget.peak_bytes,
@@ -1255,6 +1277,10 @@ std::uint64_t SnapshotCoordinator::index_probe_count_for_test() const {
 bool SnapshotCoordinator::preimage_lookup_entered_for_test() const noexcept {
     return state_->preimage_lookup_entered_for_test.load(
         std::memory_order_acquire);
+}
+
+void SnapshotCoordinator::notify_capacity_waiters_for_test() noexcept {
+    state_->condition.notify_all();
 }
 
 void SnapshotCoordinatorState::abandon(

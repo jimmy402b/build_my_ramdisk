@@ -185,6 +185,7 @@ public:
 
 class ISnapshotCoordinatorNonReentrantBarrier;
 class ISnapshotPressureTestObserver;
+class ISnapshotPressureClock;
 struct SnapshotPreimage;
 
 // Mutating access is intentionally confined to tests that need to establish
@@ -297,6 +298,8 @@ public:
         std::uint64_t block_index) noexcept;
     static std::uint64_t snapshot_capacity_waiters(
         const DynamicBlockStore& store) noexcept;
+    static void notify_snapshot_capacity_waiters(
+        DynamicBlockStore& store) noexcept;
     static bool signal_eviction_if_needed(DynamicBlockStore& store);
     static bool signal_eviction_many_for_test(
         DynamicBlockStore& store,
@@ -320,6 +323,7 @@ struct DynamicBlockStoreTestDependencies {
         snapshot_coordinator_non_reentrant_barrier;
     std::shared_ptr<ISnapshotPressureTestObserver>
         snapshot_pressure_test_observer;
+    std::shared_ptr<ISnapshotPressureClock> snapshot_pressure_clock;
     DynamicBlockStoreFactoryStage fail_stage{
         DynamicBlockStoreFactoryStage::None};
     bool fail_snapshot_allocation{};

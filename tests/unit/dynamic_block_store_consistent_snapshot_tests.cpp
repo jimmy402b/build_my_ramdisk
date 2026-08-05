@@ -144,13 +144,14 @@ private:
     std::atomic<bool> release_{};
 };
 
-class Task07ManualClock final {
+class Task07ManualClock final : public myrd::ISnapshotPressureClock {
 public:
     explicit Task07ManualClock(
         std::chrono::steady_clock::time_point initial) noexcept
         : ticks_(initial.time_since_epoch().count()) {}
 
-    [[nodiscard]] std::chrono::steady_clock::time_point now() const noexcept {
+    [[nodiscard]] std::chrono::steady_clock::time_point now()
+        const noexcept override {
         return std::chrono::steady_clock::time_point{
             std::chrono::steady_clock::duration{
                 ticks_.load(std::memory_order_acquire)}};
@@ -245,6 +246,9 @@ public:
         } else if (
             event == myrd::SnapshotPressureTestEvent::CapacityWaitReady) {
             ready_to_sleep_ = true;
+        } else if (
+            event == myrd::SnapshotPressureTestEvent::CapacityWaitSleeping) {
+            sleeping_ = true;
         }
         condition_.notify_all();
         if (event == myrd::SnapshotPressureTestEvent::CapacityWaitReady) {
@@ -275,6 +279,14 @@ public:
         return capacity_unavailable_;
     }
 
+    [[nodiscard]] bool wait_until_sleeping(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(lock, deadline, [this] {
+            return sleeping_;
+        });
+    }
+
     [[nodiscard]] std::uint64_t block_index() const noexcept {
         std::scoped_lock lock(mutex_);
         return block_index_;
@@ -292,6 +304,7 @@ private:
     std::uint64_t block_index_{};
     bool capacity_unavailable_{};
     bool ready_to_sleep_{};
+    bool sleeping_{};
     bool writer_returned_{};
     bool release_ready_event_{};
 };
@@ -600,6 +613,106 @@ TEST_CASE(m2_1_task07_batch_consumption_wakes_writer_without_lost_notify) {
     REQUIRE_EQ(second_batch.value().front().data, as_vector(second_cut));
     REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
 
+    std::vector<std::byte> current_second(
+        static_cast<std::size_t>(myrd::kBlockSizeBytes));
+    REQUIRE(store->read(
+        bounded_context(), myrd::kBlockSizeBytes, current_second).ok());
+    REQUIRE_EQ(current_second, as_vector(second_replacement));
+    REQUIRE(store->validate_invariants_for_test().ok());
+    cleanup.release();
+}
+
+TEST_CASE(m2_1_task07_manual_clock_stall_aborts_once_and_writer_continues) {
+    const auto initial_time = std::chrono::steady_clock::time_point{
+        std::chrono::milliseconds{10'000}};
+    auto clock = std::make_shared<Task07ManualClock>(initial_time);
+    auto observer = std::make_shared<Task07PressureObserver>();
+    Task07OneRecordCowFixture fixture;
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 2, 7);
+    args.options.snapshot_cow_max_bytes =
+        fixture.options().snapshot_cow_max_bytes;
+    args.options.snapshot_writer_stall_limit =
+        fixture.options().snapshot_writer_stall_limit;
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.snapshot_pressure_test_observer = observer;
+    dependencies.snapshot_pressure_clock = clock;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        std::move(args), std::move(dependencies));
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+
+    const auto first_cut = block_data(0x5A);
+    const auto second_cut = block_data(0x6B);
+    const auto second_replacement = block_data(0x7C);
+    REQUIRE(store->write(bounded_context(), 0, first_cut).ok());
+    REQUIRE(store->write(bounded_context(), myrd::kBlockSizeBytes,
+                         second_cut).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(store->write(bounded_context(), 0, block_data(0x8D)).ok());
+
+    std::stop_source writer_stop;
+    std::atomic<std::uint32_t> writer_code{kNoResult};
+    std::jthread writer([&] {
+        const myrd::OperationContext context{
+            writer_stop.get_token(),
+            std::chrono::steady_clock::time_point::max()};
+        const auto result = store->write(
+            context, myrd::kBlockSizeBytes, second_replacement);
+        writer_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+        observer->record_writer_returned();
+    });
+    myrd::ScopeExit cleanup([&]() noexcept {
+        writer_stop.request_stop();
+        observer->release_ready_event();
+        myrd::DynamicBlockStoreTestAccess::notify_snapshot_capacity_waiters(
+            *store);
+        if (writer.joinable()) {
+            writer.join();
+        }
+    });
+
+    REQUIRE_EQ(observer->wait_for_ready_or_writer_returned(
+                   std::chrono::steady_clock::now() + kWaitBound),
+               Task07PressureObserver::RaceResult::ReadyToSleep);
+    observer->release_ready_event();
+    REQUIRE(observer->wait_until_sleeping(
+        std::chrono::steady_clock::now() + kWaitBound));
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), kNoResult);
+
+    clock->advance(fixture.options().snapshot_writer_stall_limit +
+                   std::chrono::milliseconds{1});
+    myrd::DynamicBlockStoreTestAccess::notify_snapshot_capacity_waiters(
+        *store);
+    writer.join();
+
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
+    const auto stats = store->stats();
+    REQUIRE_EQ(stats.snapshot_active_state,
+               std::optional{myrd::ConsistentSnapshotState::Aborted});
+    REQUIRE_EQ(stats.snapshot_cow_current_bytes, 0ull);
+    REQUIRE_EQ(stats.snapshot_cow_records, 0ull);
+    REQUIRE_EQ(stats.snapshot_writer_stalls_total, 1ull);
+    REQUIRE_EQ(stats.snapshot_auto_aborts_total, 1ull);
+    REQUIRE_EQ(
+        myrd::DynamicBlockStoreTestAccess::snapshot_capacity_waiters(*store),
+        0ull);
+
+    const auto status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state, myrd::ConsistentSnapshotState::Aborted);
+    REQUIRE_EQ(status.value().blocked_writers, 0ull);
+    myrd::DirtyScanCursor cursor{};
+    const auto rejected_batch = store->copy_consistent_snapshot_batch(
+        bounded_context(), begun.value(), cursor, myrd::kBlockSizeBytes);
+    REQUIRE(!rejected_batch.ok());
+    REQUIRE_EQ(error_code(rejected_batch.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       SnapshotResourceExhausted));
     std::vector<std::byte> current_second(
         static_cast<std::size_t>(myrd::kBlockSizeBytes));
     REQUIRE(store->read(

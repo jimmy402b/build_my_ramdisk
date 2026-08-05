@@ -434,9 +434,11 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 L"snapshot cursor does not equal the token frontier"));
     }
     if (coordinator.active_state == ConsistentSnapshotState::Aborted) {
+        const auto reason = coordinator.abort_reason.value_or(
+            DynamicBlockStoreErrorCode::SnapshotAborted);
         return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
             consistent_snapshot_error(
-                DynamicBlockStoreErrorCode::SnapshotAborted,
+                reason,
                 operation,
                 L"snapshot was aborted"));
     }
@@ -984,6 +986,11 @@ bool DynamicBlockStoreTestAccess::snapshot_preimage_lookup_entered(
 std::uint64_t DynamicBlockStoreTestAccess::snapshot_capacity_waiters(
     const DynamicBlockStore& store) noexcept {
     return store.snapshot_coordinator_->snapshot().capacity_waiters;
+}
+
+void DynamicBlockStoreTestAccess::notify_snapshot_capacity_waiters(
+    DynamicBlockStore& store) noexcept {
+    store.snapshot_coordinator_->notify_capacity_waiters_for_test();
 }
 
 bool DynamicBlockStoreTestAccess::advance_snapshot_frontier(
