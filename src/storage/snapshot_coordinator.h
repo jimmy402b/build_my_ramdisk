@@ -168,6 +168,7 @@ public:
         std::uint64_t block_index,
         std::chrono::milliseconds stall_limit,
         ISnapshotPressureTestObserver* test_observer);
+    void release_capacity_grant(std::uint64_t block_index) noexcept;
 
     std::optional<SnapshotPreimage> peek_preimage(
         std::uint64_t block_index) const;

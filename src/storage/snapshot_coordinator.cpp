@@ -1,9 +1,11 @@
 #include "snapshot_coordinator.h"
+#include "src/common/scope_exit.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <limits>
 #include <map>
 #include <memory>
@@ -380,6 +382,17 @@ public:
         CountingLess,
         RecordAllocator>;
 
+    struct CapacityWaiter final {
+        std::uint64_t ticket{};
+        std::uint64_t required_bytes{};
+        std::uint64_t block_index{};
+    };
+
+    struct CapacityGrant final {
+        std::uint64_t ticket{};
+        std::uint64_t block_index{};
+    };
+
     SnapshotCoordinatorState(
         std::uint64_t max_bytes,
         std::shared_ptr<ISnapshotCoordinatorNonReentrantBarrier>
@@ -497,7 +510,9 @@ public:
     std::uint64_t next_scan_block{};
     std::uint64_t committed_records{};
     std::uint64_t pending_reservations{};
-    std::uint64_t capacity_waiters{};
+    std::deque<CapacityWaiter> capacity_waiters;
+    std::optional<CapacityGrant> capacity_grant;
+    std::uint64_t next_capacity_ticket{1};
     std::uint64_t writer_stalls_total{};
     std::uint64_t auto_aborts_total{};
     bool closing{};
@@ -635,6 +650,22 @@ SnapshotCoordinator::reserve_before_mutation(
     }
 
     std::scoped_lock lock(state_->mutex);
+    bool grant_released = false;
+    if (state_->capacity_grant.has_value()) {
+        if (state_->capacity_grant->block_index != metadata.block_index) {
+            return Result<SnapshotMetadataReservation>::failure(
+                coordinator_error(
+                    DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
+                    L"snapshot COW capacity is granted to an earlier waiter"));
+        }
+        state_->capacity_grant.reset();
+        grant_released = true;
+    }
+    ScopeExit notify_grant_release([&]() noexcept {
+        if (grant_released) {
+            state_->condition.notify_all();
+        }
+    });
     if (!state_->token_matches(token)) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
@@ -887,26 +918,50 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
             DynamicBlockStoreErrorCode::SnapshotAborted,
             L"snapshot ended before the capacity waiter registered"));
     }
-    if (capacity_available()) {
+    if (capacity_available() && !state_->capacity_grant.has_value()) {
         return Result<void>::success();
     }
-    if (state_->capacity_waiters ==
-        (std::numeric_limits<std::uint64_t>::max)()) {
+    if (state_->next_capacity_ticket == 0 ||
+        state_->next_capacity_ticket ==
+            (std::numeric_limits<std::uint64_t>::max)()) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::FatalInternalInvariant,
-            L"snapshot capacity waiter count wrapped"));
+            L"snapshot capacity waiter ticket exhausted"));
     }
-    ++state_->capacity_waiters;
+    const auto ticket = state_->next_capacity_ticket++;
+    try {
+        state_->capacity_waiters.push_back(
+            SnapshotCoordinatorState::CapacityWaiter{
+                ticket, required_bytes, block_index});
+    } catch (const std::bad_alloc&) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
+            L"snapshot capacity waiter registration allocation failed"));
+    } catch (...) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"snapshot capacity waiter registration failed"));
+    }
     bool registered = true;
     const auto unregister = [&]() noexcept {
         if (!registered) {
             return;
         }
-        if (state_->capacity_waiters == 0) {
+        const auto found = std::find_if(
+            state_->capacity_waiters.begin(),
+            state_->capacity_waiters.end(),
+            [ticket](const auto& waiter) {
+                return waiter.ticket == ticket;
+            });
+        if (found == state_->capacity_waiters.end()) {
             std::terminate();
         }
-        --state_->capacity_waiters;
+        const bool removed_head = found == state_->capacity_waiters.begin();
+        state_->capacity_waiters.erase(found);
         registered = false;
+        if (removed_head && !state_->capacity_grant.has_value()) {
+            state_->condition.notify_all();
+        }
     };
 
     lock.unlock();
@@ -927,7 +982,11 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     const auto wait_deadline =
         (std::min)(context.deadline, stall_deadline);
     const auto wait_predicate = [&]() noexcept {
-        return capacity_available() || !state_->token_matches(token) ||
+        const bool is_head = !state_->capacity_waiters.empty() &&
+            state_->capacity_waiters.front().ticket == ticket;
+        return (is_head && !state_->capacity_grant.has_value() &&
+                capacity_available()) ||
+               !state_->token_matches(token) ||
                state_->active_state != ConsistentSnapshotState::Active ||
                state_->closing || context.stop_token.stop_requested();
     };
@@ -949,19 +1008,39 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         (void)state_->condition.wait_until(lock, wait_deadline, wait_predicate);
     }
 
-    unregister();
-    const auto live = check_operation_context(context);
+    const auto live = state_->pressure_clock
+        ? (context.stop_token.stop_requested()
+               ? Result<void>::failure(Error{
+                     ErrorDomain::storage,
+                     static_cast<std::uint32_t>(
+                         OperationErrorCode::cancelled),
+                     L"SnapshotCoordinator::wait_for_capacity_change",
+                     L"operation cancelled"})
+               : (state_->now() >= context.deadline
+                      ? Result<void>::failure(Error{
+                            ErrorDomain::storage,
+                            static_cast<std::uint32_t>(
+                                OperationErrorCode::timed_out),
+                            L"SnapshotCoordinator::wait_for_capacity_change",
+                            L"operation deadline expired"})
+                      : Result<void>::success()))
+        : check_operation_context(context);
     if (!live.ok()) {
+        unregister();
         return live;
     }
     if (!state_->token_matches(token) ||
         state_->active_state != ConsistentSnapshotState::Active ||
         state_->closing) {
+        unregister();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
             L"snapshot ended while waiting for COW capacity"));
     }
-    if (!capacity_available() &&
+    const auto capacity_usable = [&]() noexcept {
+        return capacity_available() && !state_->capacity_grant.has_value();
+    };
+    if (!capacity_usable() &&
         state_->now() >= stall_deadline) {
         state_->active_state = ConsistentSnapshotState::Aborted;
         state_->abort_reason =
@@ -974,18 +1053,46 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         }
         ++state_->writer_stalls_total;
         ++state_->auto_aborts_total;
+        state_->capacity_grant.reset();
+        unregister();
         state_->clear_records();
         state_->condition.notify_all();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
             L"snapshot COW capacity made no progress before stall limit"));
     }
-    if (!capacity_available()) {
+    if (!capacity_usable()) {
+        unregister();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::FatalInternalInvariant,
             L"capacity wait ended while its predicate remained false"));
     }
+    const bool is_head = !state_->capacity_waiters.empty() &&
+        state_->capacity_waiters.front().ticket == ticket;
+    if (!is_head || state_->capacity_grant.has_value()) {
+        unregister();
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"capacity waiter woke without owning the FIFO grant"));
+    }
+    state_->capacity_grant =
+        SnapshotCoordinatorState::CapacityGrant{ticket, block_index};
+    unregister();
     return Result<void>::success();
+}
+
+void SnapshotCoordinator::release_capacity_grant(
+    std::uint64_t block_index) noexcept {
+    try {
+        std::scoped_lock lock(state_->mutex);
+        if (state_->capacity_grant.has_value() &&
+            state_->capacity_grant->block_index == block_index) {
+            state_->capacity_grant.reset();
+            state_->condition.notify_all();
+        }
+    } catch (...) {
+        std::terminate();
+    }
 }
 
 std::optional<SnapshotPreimage> SnapshotCoordinator::peek_preimage(
@@ -1098,6 +1205,7 @@ Result<void> SnapshotCoordinator::abort(
     }
     state_->active_state = ConsistentSnapshotState::Aborted;
     state_->abort_reason = DynamicBlockStoreErrorCode::SnapshotAborted;
+    state_->capacity_grant.reset();
     state_->condition.notify_all();
     state_->clear_records();
     state_->active_token.reset();
@@ -1121,7 +1229,7 @@ Result<ConsistentSnapshotStatus> SnapshotCoordinator::status(
             *state_->active_state,
             state_->budget.current_bytes,
             state_->committed_records,
-            state_->capacity_waiters,
+            static_cast<std::uint64_t>(state_->capacity_waiters.size()),
         });
 }
 
@@ -1136,7 +1244,7 @@ SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
         state_->budget.peak_bytes,
         state_->committed_records,
         state_->pending_reservations,
-        state_->capacity_waiters,
+        static_cast<std::uint64_t>(state_->capacity_waiters.size()),
         state_->writer_stalls_total,
         state_->auto_aborts_total,
     };
@@ -1175,9 +1283,40 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
         }
     } else if (!state_->records.empty() ||
                state_->next_scan_block != 0 ||
-               state_->abort_reason.has_value()) {
+               state_->abort_reason.has_value() ||
+               !state_->capacity_waiters.empty() ||
+               state_->capacity_grant.has_value()) {
         return invariant_failure(
             L"inactive snapshot retained coordinator state");
+    }
+
+    std::uint64_t previous_ticket = 0;
+    for (const auto& waiter : state_->capacity_waiters) {
+        if (waiter.ticket == 0 || waiter.ticket <= previous_ticket ||
+            waiter.required_bytes == 0 ||
+            waiter.required_bytes > state_->budget.max_bytes) {
+            return invariant_failure(
+                L"snapshot capacity FIFO metadata is invalid");
+        }
+        previous_ticket = waiter.ticket;
+    }
+    if (state_->capacity_grant.has_value()) {
+        if (state_->capacity_grant->ticket == 0 ||
+            state_->closing ||
+            state_->active_state != ConsistentSnapshotState::Active) {
+            return invariant_failure(
+                L"snapshot capacity grant outlived its active owner");
+        }
+        const auto duplicate = std::find_if(
+            state_->capacity_waiters.begin(),
+            state_->capacity_waiters.end(),
+            [state = state_.get()](const auto& waiter) {
+                return waiter.ticket == state->capacity_grant->ticket;
+            });
+        if (duplicate != state_->capacity_waiters.end()) {
+            return invariant_failure(
+                L"snapshot capacity grant remained in the FIFO queue");
+        }
     }
 
     std::uint64_t committed = 0;
@@ -1285,6 +1424,7 @@ void SnapshotCoordinator::request_close() noexcept {
     try {
         std::scoped_lock lock(state_->mutex);
         state_->closing = true;
+        state_->capacity_grant.reset();
         if (state_->active_token.has_value()) {
             state_->active_state = ConsistentSnapshotState::Aborted;
             state_->abort_reason =
@@ -1299,10 +1439,11 @@ void SnapshotCoordinator::request_close() noexcept {
 void SnapshotCoordinator::finalize_close() noexcept {
     try {
         std::scoped_lock lock(state_->mutex);
-        if (!state_->closing || state_->capacity_waiters != 0) {
+        if (!state_->closing || !state_->capacity_waiters.empty()) {
             std::terminate();
         }
         state_->clear_records();
+        state_->capacity_grant.reset();
         state_->active_token.reset();
         state_->active_state.reset();
         state_->abort_reason.reset();

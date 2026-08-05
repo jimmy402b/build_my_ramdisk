@@ -140,6 +140,9 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
     BackingGeneration base_generation,
     std::uint64_t dirty_epoch,
     std::span<const std::byte> data) {
+    ScopeExit release_capacity_grant([this, block_index]() noexcept {
+        snapshot_coordinator_->release_capacity_grant(block_index);
+    });
     const bool data_record = kind == DirtyRecordKind::Data;
     const bool metadata_record = kind == DirtyRecordKind::Zero ||
                                  kind == DirtyRecordKind::Discard;
@@ -254,6 +257,9 @@ Result<void> DynamicBlockStore::write_one_segment(
     std::uint64_t block_offset_bytes,
     std::span<const std::byte> source,
     bool explicit_zero_is_noop) {
+    ScopeExit release_capacity_grant([this, block_index]() noexcept {
+        snapshot_coordinator_->release_capacity_grant(block_index);
+    });
     for (;;) {
         const auto live = check_operation_context(context);
         if (!live.ok()) {

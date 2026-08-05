@@ -162,7 +162,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   entry identity；任一变化就 rollback/retry/按 frozen error 返回，禁止用旧指针复制。
 - [x] `T07.8 [H]` RED+GREEN：batch consume 一个 pre-image 释放额度并精准唤醒；
   writer 完成后 mutation 与 snapshot record 均 exact，一次 notify 不丢失。
-- [ ] `T07.9 [H]` 多 writer/fairness/spurious/cancel/deadline matrix；每个 interleaving
+- [x] `T07.9 [H]` 多 writer/fairness/spurious/cancel/deadline matrix；每个 interleaving
   用 barrier 固定，current blocked-writer gauge 和 reservation bytes 始终一致。
 - [x] `T07.10 [X]` 实现 no-progress stall deadline：一次 CAS 转 Aborted，保存
   `SnapshotResourceExhausted`，notify 全 reader/writer，foreground mutation 继续；

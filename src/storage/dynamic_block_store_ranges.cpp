@@ -2,6 +2,7 @@
 
 #include "block_directory.h"
 #include "dynamic_block_store_internal.h"
+#include "snapshot_coordinator.h"
 #include "virtual_memory_arena.h"
 #include "src/common/scope_exit.h"
 
@@ -133,6 +134,9 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
     const OperationContext& context,
     std::uint64_t block_index,
     DirtyRecordKind kind) {
+    ScopeExit release_capacity_grant([this, block_index]() noexcept {
+        snapshot_coordinator_->release_capacity_grant(block_index);
+    });
     for (;;) {
         const auto live = check_operation_context(context);
         if (!live.ok()) {
