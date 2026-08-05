@@ -408,6 +408,15 @@ Debug model gate 稳定在 directed store/model cut comparison 的 DATA payload 
 （exit `1`）；恢复同一行后 `8/8`。`git diff -- src/storage` 无输出，mutation 未提交、
 工作树无 production 残留。
 
+T08.6 evidence：候选 `391788f`；quick seeds `0/1/0x00C0FFEE/0xDEADBEEF`，
+100 个 corpus seeds 固定为 `SHA256("937e688|T08|i")` digest 低 64 位。每个 corpus/
+quick seed 运行 1,000 operations，另有 `0xDEADBEEF` 2,000-op 定向 schedule；每个
+Debug/Release focused run 共 106,000 store/model operations，`10/10`。Release
+`m2.1-v4` discovery `1`、gate `1/1`，完整 Release CTest `63/63`；focused 最慢
+Debug `4.819s`、Release `2.476s`。Release binary SHA-256
+`0B05EF6459B4A07E78FEA063572DAEB45C5F0516E7CAB415B52703B781FBD38D`；oracle
+header/cpp hashes `E475E0EB...FFFDF` / `9522A6B2...A1ACF`。
+
 ## Task 09 — 签发 M2.1 前置 verdict
 
 **类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。
