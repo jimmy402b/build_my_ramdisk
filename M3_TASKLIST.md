@@ -386,9 +386,10 @@ cut copy，不 include/call coordinator、batch helper 或生产 codec。首个�
 `Kind/write/zero/begin_cut/cut_records` API 时编译失败；GREEN `2/2`，并证明 post-cut
 overwrite 与 clean→dirty 不进入既有 cut。
 
-T08.2 evidence：commit `3587c5f`；generator 的唯一输入是 64-bit seed 与 operation
-count，使用 test-side SplitMix64，输出 2–64 blocks 与 write/zero/discard/begin/copy/
-finish/abort 全七类操作。相同 seed 的 operation、payload、limits 与文本 trace 完全相同，
+T08.2 evidence：commits `3587c5f` + `cbd037c`；generator 的唯一输入是 64-bit seed 与
+operation count，使用 test-side SplitMix64，输出 2–64 blocks 与 read/write/zero/
+discard/evict/load/begin/copy/finish/abort 全十类操作。相同 seed 的 operation、payload、
+limits 与文本 trace 完全相同，
 不同 seed 不同；10,000-op determinism/range/coverage RED→GREEN，focused `3/3`。
 
 T08.3 evidence：commit `6ec6c45`；oracle 自己实现 immutable cut、ascending cursor、
@@ -412,9 +413,9 @@ T08.6 evidence：候选 `391788f`；quick seeds `0/1/0x00C0FFEE/0xDEADBEEF`，
 100 个 corpus seeds 固定为 `SHA256("937e688|T08|i")` digest 低 64 位。每个 corpus/
 quick seed 运行 1,000 operations，另有 `0xDEADBEEF` 2,000-op 定向 schedule；每个
 Debug/Release focused run 共 106,000 store/model operations，`10/10`。Release
-`m2.1-v4` discovery `1`、gate `1/1`，完整 Release CTest `63/63`；focused 最慢
-Debug `4.819s`、Release `2.476s`。Release binary SHA-256
-`0B05EF6459B4A07E78FEA063572DAEB45C5F0516E7CAB415B52703B781FBD38D`；oracle
+`m2.1-v4` discovery `1`、gate `1/1`，完整 Release CTest `63/63`；最终 focused
+Release CTest `2.73s`。Release binary SHA-256
+`0CB2CD2C3436F5BD83139CE0B1B807A2346C56A78F44E7F72218256114ACC395`；oracle
 header/cpp hashes `E475E0EB...FFFDF` / `9522A6B2...A1ACF`。
 
 ## Task 09 — 签发 M2.1 前置 verdict
