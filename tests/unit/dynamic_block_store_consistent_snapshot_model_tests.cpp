@@ -2,6 +2,7 @@
 
 #include "consistent_snapshot_model.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -64,4 +65,42 @@ TEST_CASE(m2_1_task08_begin_copies_one_immutable_whole_disk_cut) {
     REQUIRE_EQ((*cut)[2].kind, Kind::Discard);
     REQUIRE((*cut)[2].data.empty());
     REQUIRE_EQ(model.dirty_block_count(), 4ull);
+}
+
+TEST_CASE(m2_1_task08_schedule_is_seed_only_deterministic_and_complete) {
+    using namespace myrd::test::consistent_model;
+    constexpr std::uint64_t seed = 0x00C0FFEEull;
+    constexpr std::size_t operation_count = 10'000;
+
+    const auto first = generate_schedule(seed, operation_count);
+    const auto replay = generate_schedule(seed, operation_count);
+    const auto different = generate_schedule(seed + 1, operation_count);
+
+    REQUIRE_EQ(first, replay);
+    REQUIRE(first != different);
+    REQUIRE_EQ(first.seed, seed);
+    REQUIRE(first.block_count >= 2);
+    REQUIRE(first.block_count <= 64);
+    REQUIRE_EQ(first.operations.size(), operation_count);
+
+    std::array<std::uint64_t, 7> kinds{};
+    for (const auto& operation : first.operations) {
+        ++kinds[static_cast<std::size_t>(operation.kind)];
+        if (operation.kind == OperationKind::Write ||
+            operation.kind == OperationKind::Zero ||
+            operation.kind == OperationKind::Discard) {
+            REQUIRE(operation.length != 0);
+            REQUIRE_EQ(operation.offset % kSectorBytes, 0ull);
+            REQUIRE_EQ(operation.length % kSectorBytes, 0ull);
+            REQUIRE(operation.offset <= first.logical_size_bytes());
+            REQUIRE(operation.length <=
+                    first.logical_size_bytes() - operation.offset);
+        }
+    }
+    for (const auto count : kinds) {
+        REQUIRE(count != 0);
+    }
+    REQUIRE(!describe_operation(0, first.operations.front()).empty());
+    REQUIRE_EQ(operation_payload(first.operations.front()),
+               operation_payload(replay.operations.front()));
 }

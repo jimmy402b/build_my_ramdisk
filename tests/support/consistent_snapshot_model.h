@@ -4,11 +4,13 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace myrd::test::consistent_model {
 
 inline constexpr std::uint64_t kBlockBytes = 64ull * 1024ull;
+inline constexpr std::uint64_t kSectorBytes = 512ull;
 
 enum class Kind : std::uint8_t {
     Data = 0,
@@ -25,6 +27,45 @@ struct SnapshotRecord final {
 
     bool operator==(const SnapshotRecord&) const = default;
 };
+
+enum class OperationKind : std::uint8_t {
+    Write = 0,
+    Zero = 1,
+    Discard = 2,
+    Begin = 3,
+    Copy = 4,
+    Finish = 5,
+    Abort = 6,
+};
+
+struct Operation final {
+    OperationKind kind{OperationKind::Write};
+    std::uint64_t offset{};
+    std::uint64_t length{};
+    std::uint64_t payload_seed{};
+    std::uint64_t max_payload_bytes{kBlockBytes};
+    std::size_t record_limit{1};
+
+    bool operator==(const Operation&) const = default;
+};
+
+struct Schedule final {
+    std::uint64_t seed{};
+    std::uint64_t block_count{};
+    std::vector<Operation> operations;
+
+    std::uint64_t logical_size_bytes() const noexcept {
+        return block_count * kBlockBytes;
+    }
+
+    bool operator==(const Schedule&) const = default;
+};
+
+Schedule generate_schedule(std::uint64_t seed,
+                           std::size_t operation_count);
+std::vector<std::byte> operation_payload(const Operation& operation);
+std::string describe_operation(std::size_t index,
+                               const Operation& operation);
 
 struct CutToken final {
     std::uint64_t id{};

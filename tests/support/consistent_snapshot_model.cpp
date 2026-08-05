@@ -2,9 +2,129 @@
 
 #include <algorithm>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 namespace myrd::test::consistent_model {
+
+namespace {
+
+class DeterministicRandom final {
+public:
+    explicit DeterministicRandom(std::uint64_t seed) noexcept : state_(seed) {}
+
+    std::uint64_t next() noexcept {
+        auto value = (state_ += 0x9E37'79B9'7F4A'7C15ull);
+        value = (value ^ (value >> 30)) * 0xBF58'476D'1CE4'E5B9ull;
+        value = (value ^ (value >> 27)) * 0x94D0'49BB'1331'11EBull;
+        return value ^ (value >> 31);
+    }
+
+private:
+    std::uint64_t state_{};
+};
+
+Operation make_operation(DeterministicRandom& random,
+                         std::size_t index,
+                         std::uint64_t logical_size_bytes) {
+    Operation operation{};
+    operation.kind = static_cast<OperationKind>(
+        index < 7 ? index : random.next() % 7);
+    operation.payload_seed = random.next();
+    operation.max_payload_bytes =
+        (1 + random.next() % 4) * kBlockBytes;
+    operation.record_limit =
+        static_cast<std::size_t>(1 + random.next() % 8);
+
+    const auto total_sectors = logical_size_bytes / kSectorBytes;
+    const auto mode = random.next() % 6;
+    std::uint64_t first_sector = random.next() % total_sectors;
+    std::uint64_t sector_count = 1;
+    if (mode == 0) {
+        first_sector =
+            (random.next() % (logical_size_bytes / kBlockBytes)) *
+            (kBlockBytes / kSectorBytes);
+        sector_count = kBlockBytes / kSectorBytes;
+    } else if (mode == 1 && total_sectors > 2) {
+        first_sector = random.next() % (total_sectors - 1);
+        sector_count = 2;
+    } else if (mode == 2) {
+        first_sector = total_sectors - 1;
+    } else {
+        const auto remaining = total_sectors - first_sector;
+        sector_count = 1 + random.next() % (std::min)(remaining, 16ull);
+    }
+    operation.offset = first_sector * kSectorBytes;
+    operation.length = sector_count * kSectorBytes;
+    return operation;
+}
+
+const char* operation_name(OperationKind kind) noexcept {
+    switch (kind) {
+    case OperationKind::Write:
+        return "write";
+    case OperationKind::Zero:
+        return "zero";
+    case OperationKind::Discard:
+        return "discard";
+    case OperationKind::Begin:
+        return "begin";
+    case OperationKind::Copy:
+        return "copy";
+    case OperationKind::Finish:
+        return "finish";
+    case OperationKind::Abort:
+        return "abort";
+    }
+    return "unknown";
+}
+
+} // namespace
+
+Schedule generate_schedule(std::uint64_t seed,
+                           std::size_t operation_count) {
+    DeterministicRandom random(seed);
+    Schedule schedule{};
+    schedule.seed = seed;
+    schedule.block_count = 2 + random.next() % 63;
+    schedule.operations.reserve(operation_count);
+    for (std::size_t index = 0; index < operation_count; ++index) {
+        schedule.operations.push_back(make_operation(
+            random, index, schedule.logical_size_bytes()));
+    }
+    return schedule;
+}
+
+std::vector<std::byte> operation_payload(const Operation& operation) {
+    if (operation.kind != OperationKind::Write) {
+        return {};
+    }
+    std::vector<std::byte> payload(
+        static_cast<std::size_t>(operation.length));
+    auto state = operation.payload_seed;
+    for (auto& value : payload) {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        value = std::byte{static_cast<std::uint8_t>(
+            (state * 0x2545'F491'4F6C'DD1Dull) >> 56)};
+    }
+    return payload;
+}
+
+std::string describe_operation(std::size_t index,
+                               const Operation& operation) {
+    std::ostringstream stream;
+    stream << "index=" << index
+           << " kind=" << operation_name(operation.kind)
+           << " offset=" << operation.offset
+           << " length=" << operation.length
+           << " payload_seed=0x" << std::hex << operation.payload_seed
+           << std::dec
+           << " max_payload=" << operation.max_payload_bytes
+           << " record_limit=" << operation.record_limit;
+    return stream.str();
+}
 
 Model::Model(std::uint64_t logical_size_bytes,
              std::uint64_t backing_generation)
