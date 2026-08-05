@@ -534,6 +534,38 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 context.stop_token, notify_waiter);
             std::unique_lock block_lock(stripe.mutex);
 
+            if (entry->snapshot_preparing_id != 0 ||
+                entry->snapshot_reservation_id != 0) {
+                if (entry->snapshot_preparing_id == 0 ||
+                    entry->snapshot_reservation_id == 0) {
+                    return snapshot_failure<
+                        std::vector<DirtyBlockSnapshot>>(
+                        consistent_snapshot_invariant(
+                            L"snapshot Preparing marker identity diverged"));
+                }
+                const auto waited = wait_for_snapshot_preparing(
+                    context,
+                    block_lock,
+                    entry->snapshot_preparing_id,
+                    entry->snapshot_reservation_id,
+                    scan_index);
+                block_lock.unlock();
+                if (closing_requested()) {
+                    return snapshot_failure<
+                        std::vector<DirtyBlockSnapshot>>(
+                        consistent_snapshot_error(
+                            static_cast<std::uint32_t>(
+                                OperationErrorCode::session_closed),
+                            operation,
+                            L"dynamic block store is closing"));
+                }
+                if (!waited.ok()) {
+                    return snapshot_failure<
+                        std::vector<DirtyBlockSnapshot>>(waited.error());
+                }
+                continue;
+            }
+
             while (is_transient_block_state(entry->state) &&
                    !closing_requested()) {
                 const auto observed_state = entry->state;

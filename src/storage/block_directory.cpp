@@ -80,6 +80,11 @@ BlockEntryInvariantResult validate_block_entry(
     if (!is_known_dirty_kind(entry.dirty_kind)) {
         return {BlockEntryInvariantError::InvalidDirtyKind};
     }
+    if ((entry.snapshot_preparing_id == 0) !=
+        (entry.snapshot_reservation_id == 0)) {
+        return {
+            BlockEntryInvariantError::SnapshotPreparingIdentityInvalid};
+    }
     if (is_transient_block_state(entry.state) &&
         !is_stable_block_state(entry.prior_state)) {
         return {BlockEntryInvariantError::TransientPriorNotStable};

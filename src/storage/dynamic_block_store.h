@@ -20,6 +20,7 @@
 namespace myrd {
 
 class BlockDirectory;
+struct BlockEntry;
 class EvictionManager;
 class LockStripeSet;
 class SnapshotCoordinator;
@@ -223,12 +224,20 @@ private:
         DirtyRecordKind kind,
         BackingGeneration base_generation,
         std::uint64_t dirty_epoch,
-        std::span<const std::byte> data);
+        std::span<const std::byte> data,
+        std::unique_lock<std::mutex>& block_lock,
+        std::condition_variable& stripe_condition);
     Result<void> wait_for_snapshot_capacity(
         const OperationContext& context,
         std::unique_lock<std::mutex>& block_lock,
         std::uint64_t block_index,
         bool data_record);
+    Result<void> wait_for_snapshot_preparing(
+        const OperationContext& context,
+        std::unique_lock<std::mutex>& block_lock,
+        std::uint64_t snapshot_id,
+        std::uint64_t reservation_id,
+        std::uint64_t block_index);
     Result<void> publish_full_zero_segment(
         const OperationContext& context,
         std::uint64_t block_index,

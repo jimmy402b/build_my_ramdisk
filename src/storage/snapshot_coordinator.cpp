@@ -285,12 +285,12 @@ public:
         return *this;
     }
 
-    void assign(std::span<const std::byte> source) {
-        if (budget_ == nullptr || data_ != nullptr || source.empty() ||
-            source.size() > (std::numeric_limits<std::uint64_t>::max)()) {
+    void allocate(std::size_t size) {
+        if (budget_ == nullptr || data_ != nullptr || size == 0 ||
+            size > (std::numeric_limits<std::uint64_t>::max)()) {
             throw std::bad_alloc{};
         }
-        const auto bytes = static_cast<std::uint64_t>(source.size());
+        const auto bytes = static_cast<std::uint64_t>(size);
         budget_->reserve_bytes(bytes, 1);
         try {
             data_ = static_cast<std::byte*>(
@@ -299,10 +299,10 @@ public:
             budget_->release_bytes(bytes, 1);
             throw;
         }
-        std::copy(source.begin(), source.end(), data_);
-        size_ = source.size();
+        size_ = size;
     }
 
+    [[nodiscard]] std::byte* data() noexcept { return data_; }
     [[nodiscard]] const std::byte* begin() const noexcept { return data_; }
     [[nodiscard]] const std::byte* end() const noexcept {
         return data_ == nullptr ? nullptr : data_ + size_;
@@ -342,6 +342,8 @@ public:
         SnapshotPreimage preimage;
         Payload payload;
         std::uint64_t reservation_id{};
+        bool fill_active{};
+        bool payload_filled{};
         bool committed{};
 
         Record(
@@ -484,6 +486,12 @@ public:
     }
 
     void clear_records() noexcept {
+        for (const auto& [block_index, record] : records) {
+            (void)block_index;
+            if (record.fill_active) {
+                std::terminate();
+            }
+        }
         while (!records.empty()) {
             erase_record(records.begin());
         }
@@ -493,6 +501,24 @@ public:
         if (budget.current_bytes != 0 || budget.live_allocations != 0) {
             std::terminate();
         }
+    }
+
+    void clear_committed_records() noexcept {
+        for (auto record = records.begin(); record != records.end();) {
+            if (record->second.committed) {
+                auto current = record++;
+                erase_record(current);
+            } else {
+                ++record;
+            }
+        }
+    }
+
+    bool has_active_fill() const noexcept {
+        return std::any_of(
+            records.begin(), records.end(), [](const auto& entry) {
+                return entry.second.fill_active;
+            });
     }
 
     mutable std::mutex mutex;
@@ -782,7 +808,7 @@ SnapshotCoordinator::reserve_before_mutation(
         inserted_record = state_->insert_record(metadata, reservation_id);
         ++state_->pending_reservations;
         if (data_preimage) {
-            inserted_record->payload.assign(payload);
+            inserted_record->payload.allocate(payload.size());
         }
         state_->pause_for_test(
             SnapshotCoordinatorBarrierEvent::ReservationInserted);
@@ -828,6 +854,115 @@ SnapshotCoordinator::reserve_before_mutation(
             reservation_id});
 }
 
+Result<void> SnapshotCoordinator::fill_data_preimage(
+    const OperationContext& context,
+    SnapshotMetadataReservation& reservation,
+    std::span<const std::byte> payload,
+    ISnapshotPressureTestObserver* test_observer) {
+    const auto initial_live = check_operation_context(context);
+    if (!initial_live.ok()) {
+        return initial_live;
+    }
+    if (payload.size() != kBlockSizeBytes) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"DATA pre-image fill must contain exactly one block"));
+    }
+
+    std::byte* destination = nullptr;
+    {
+        std::scoped_lock lock(state_->mutex);
+        auto reservation_state = reservation.owner_state_.lock();
+        if (reservation_state.get() == state_.get() &&
+            (!state_->active_token.has_value() ||
+             reservation.snapshot_id_ != state_->active_token->snapshot_id ||
+             state_->active_state != ConsistentSnapshotState::Active)) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotAborted,
+                L"snapshot ended before DATA pre-image fill"));
+        }
+        auto* record = state_->find_record(reservation.block_index_);
+        if (reservation_state.get() != state_.get() ||
+            reservation.disposition_ !=
+                SnapshotPreimageDisposition::Reserved ||
+            record == nullptr || record->committed || record->fill_active ||
+            record->payload_filled ||
+            record->reservation_id != reservation.reservation_id_ ||
+            record->preimage.kind != DirtyRecordKind::Data ||
+            record->payload.size() != kBlockSizeBytes) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"DATA pre-image fill reservation is missing or changed"));
+        }
+        record->fill_active = true;
+        destination = record->payload.data();
+    }
+
+    if (test_observer != nullptr) {
+        test_observer->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::PreparingFillActive,
+            reservation.block_index_);
+    }
+
+    bool fill_active = true;
+    ScopeExit release_fill([&]() noexcept {
+        if (!fill_active) {
+            return;
+        }
+        try {
+            std::scoped_lock lock(state_->mutex);
+            auto* record = state_->find_record(reservation.block_index_);
+            if (record != nullptr &&
+                record->reservation_id == reservation.reservation_id_ &&
+                record->fill_active) {
+                record->fill_active = false;
+                state_->condition.notify_all();
+            }
+        } catch (...) {
+            std::terminate();
+        }
+    });
+
+    std::copy(payload.begin(), payload.end(), destination);
+    const auto copied_live = check_operation_context(context);
+    if (!copied_live.ok()) {
+        return copied_live;
+    }
+
+    {
+        std::scoped_lock lock(state_->mutex);
+        auto* record = state_->find_record(reservation.block_index_);
+        if ((!state_->active_token.has_value() ||
+             reservation.snapshot_id_ != state_->active_token->snapshot_id ||
+             state_->active_state != ConsistentSnapshotState::Active) &&
+            record == nullptr) {
+            fill_active = false;
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotAborted,
+                L"snapshot ended during DATA pre-image fill"));
+        }
+        if (record == nullptr || record->committed || !record->fill_active ||
+            record->reservation_id != reservation.reservation_id_) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"DATA pre-image fill owner changed during copy"));
+        }
+        record->fill_active = false;
+        fill_active = false;
+        if (!state_->active_token.has_value() ||
+            reservation.snapshot_id_ != state_->active_token->snapshot_id ||
+            state_->active_state != ConsistentSnapshotState::Active) {
+            state_->condition.notify_all();
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotAborted,
+                L"snapshot ended during DATA pre-image fill"));
+        }
+        record->payload_filled = true;
+        state_->condition.notify_all();
+    }
+    return Result<void>::success();
+}
+
 Result<void> SnapshotCoordinator::publish_metadata_preimage(
     const OperationContext& context,
     SnapshotMetadataReservation& reservation) {
@@ -857,12 +992,23 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
     }
     auto* record = state_->find_record(reservation.block_index_);
     if (record == nullptr || record->committed ||
-        record->reservation_id != reservation.reservation_id_) {
+        record->fill_active ||
+        record->reservation_id != reservation.reservation_id_ ||
+        (record->preimage.kind == DirtyRecordKind::Data &&
+         !record->payload_filled)) {
         reservation.owner_state_.reset();
         return Result<void>::failure(
             coordinator_error(
                 DynamicBlockStoreErrorCode::FatalInternalInvariant,
                 L"metadata reservation record is missing or changed"));
+    }
+    if (state_->active_state != ConsistentSnapshotState::Active) {
+        state_->erase_record(record);
+        reservation.owner_state_.reset();
+        state_->condition.notify_all();
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotAborted,
+            L"snapshot ended before pre-image publication"));
     }
 
     const auto publish_live = check_operation_context(context);
@@ -890,6 +1036,65 @@ void SnapshotCoordinator::rollback_metadata_preimage(
     if (reservation_state.get() == state_.get()) {
         state_->abandon(reservation);
     }
+}
+
+Result<void> SnapshotCoordinator::wait_for_preparing_resolution(
+    const OperationContext& context,
+    std::uint64_t snapshot_id,
+    std::uint64_t block_index,
+    std::uint64_t reservation_id,
+    ISnapshotPressureTestObserver* test_observer) {
+    if (snapshot_id == 0 || reservation_id == 0) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"snapshot Preparing marker identity is zero"));
+    }
+    const auto initial_live = check_operation_context(context);
+    if (!initial_live.ok()) {
+        return initial_live;
+    }
+
+    std::unique_lock lock(state_->mutex);
+    const auto resolved = [&]() noexcept {
+        const auto* record = state_->find_record(block_index);
+        return record == nullptr || record->committed ||
+               record->reservation_id != reservation_id ||
+               state_->closing || context.stop_token.stop_requested();
+    };
+    const auto notify_waiter = [state = state_]() noexcept {
+        state->condition.notify_all();
+    };
+    std::stop_callback stop_callback(context.stop_token, notify_waiter);
+    if (!resolved() && test_observer != nullptr) {
+        lock.unlock();
+        test_observer->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::PreparingWaitReady,
+            block_index);
+        lock.lock();
+    }
+    if (context.deadline ==
+        std::chrono::steady_clock::time_point::max()) {
+        state_->condition.wait(lock, resolved);
+    } else {
+        (void)state_->condition.wait_until(lock, context.deadline, resolved);
+    }
+    const auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return live;
+    }
+    if (state_->closing) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotAborted,
+            L"snapshot ended while waiting for Preparing marker"));
+    }
+    const auto* record = state_->find_record(block_index);
+    if (record != nullptr && !record->committed &&
+        record->reservation_id == reservation_id) {
+        return Result<void>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"Preparing wait ended before reservation resolution"));
+    }
+    return Result<void>::success();
 }
 
 Result<void> SnapshotCoordinator::wait_for_capacity_change(
@@ -1055,7 +1260,11 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         ++state_->auto_aborts_total;
         state_->capacity_grant.reset();
         unregister();
-        state_->clear_records();
+        if (state_->has_active_fill()) {
+            state_->clear_committed_records();
+        } else {
+            state_->clear_records();
+        }
         state_->condition.notify_all();
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
@@ -1197,7 +1406,7 @@ Result<void> SnapshotCoordinator::finish(
 
 Result<void> SnapshotCoordinator::abort(
     const ConsistentSnapshotToken& token) {
-    std::scoped_lock lock(state_->mutex);
+    std::unique_lock lock(state_->mutex);
     if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
@@ -1207,6 +1416,9 @@ Result<void> SnapshotCoordinator::abort(
     state_->abort_reason = DynamicBlockStoreErrorCode::SnapshotAborted;
     state_->capacity_grant.reset();
     state_->condition.notify_all();
+    state_->condition.wait(lock, [this] {
+        return !state_->has_active_fill();
+    });
     state_->clear_records();
     state_->active_token.reset();
     state_->active_state.reset();
@@ -1345,6 +1557,25 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
             (metadata_record && !record.payload.empty())) {
             return invariant_failure(
                 L"snapshot record kind and payload diverged");
+        }
+        if (metadata_record &&
+            (record.fill_active || record.payload_filled)) {
+            return invariant_failure(
+                L"snapshot metadata record retained DATA fill state");
+        }
+        if (record.fill_active &&
+            (record.committed || record.payload_filled || !data_record)) {
+            return invariant_failure(
+                L"snapshot active DATA fill state is invalid");
+        }
+        if (record.committed && data_record &&
+            (!record.payload_filled || record.fill_active)) {
+            return invariant_failure(
+                L"snapshot committed DATA record is not fully populated");
+        }
+        if (record.payload_filled && !data_record) {
+            return invariant_failure(
+                L"snapshot payload fill flag belongs to metadata");
         }
         if (record.reservation_id == 0) {
             return invariant_failure(

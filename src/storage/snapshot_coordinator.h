@@ -48,6 +48,10 @@ enum class SnapshotPressureTestEvent : std::uint8_t {
     CapacityUnavailable = 0,
     CapacityWaitReady = 1,
     CapacityWaitSleeping = 2,
+    PreparingPublished = 3,
+    PreparingWaitReady = 4,
+    PreparingMarkerWaitReady = 5,
+    PreparingFillActive = 6,
 };
 
 class ISnapshotPressureClock {
@@ -58,8 +62,8 @@ public:
 
 // Test-only observer. Unlike the non-reentrant coordinator barrier, callbacks
 // on this interface must be made without coordinator/state/lifecycle locks.
-// CapacityWaitReady must additionally be emitted after releasing the block
-// stripe so a deterministic test may pause the writer safely.
+// CapacityWaitReady and all Preparing events must additionally be emitted
+// after releasing the block stripe so deterministic tests may pause safely.
 class ISnapshotPressureTestObserver {
 public:
     virtual ~ISnapshotPressureTestObserver() = default;
@@ -86,6 +90,9 @@ public:
     SnapshotPreimageDisposition disposition() const noexcept {
         return disposition_;
     }
+
+    std::uint64_t snapshot_id() const noexcept { return snapshot_id_; }
+    std::uint64_t reservation_id() const noexcept { return reservation_id_; }
 
 private:
     friend class SnapshotCoordinator;
@@ -157,6 +164,19 @@ public:
     Result<void> publish_metadata_preimage(
         const OperationContext& context,
         SnapshotMetadataReservation& reservation);
+
+    Result<void> fill_data_preimage(
+        const OperationContext& context,
+        SnapshotMetadataReservation& reservation,
+        std::span<const std::byte> payload,
+        ISnapshotPressureTestObserver* test_observer);
+
+    Result<void> wait_for_preparing_resolution(
+        const OperationContext& context,
+        std::uint64_t snapshot_id,
+        std::uint64_t block_index,
+        std::uint64_t reservation_id,
+        ISnapshotPressureTestObserver* test_observer);
 
     void rollback_metadata_preimage(
         SnapshotMetadataReservation& reservation) noexcept;

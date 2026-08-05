@@ -139,7 +139,20 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
     DirtyRecordKind kind,
     BackingGeneration base_generation,
     std::uint64_t dirty_epoch,
-    std::span<const std::byte> data) {
+    std::span<const std::byte> data,
+    std::unique_lock<std::mutex>& block_lock,
+    std::condition_variable& stripe_condition) {
+    const auto snapshot_ended_outcome = [this]() {
+        if (closing_requested()) {
+            return Result<SnapshotPreimagePreserveOutcome>::failure(
+                write_error(
+                    OperationErrorCode::session_closed,
+                    L"DynamicBlockStore::preserve_snapshot_preimage_before_mutation",
+                    L"dynamic block store is closing"));
+        }
+        return Result<SnapshotPreimagePreserveOutcome>::success(
+            SnapshotPreimagePreserveOutcome::Preserved);
+    };
     ScopeExit release_capacity_grant([this, block_index]() noexcept {
         snapshot_coordinator_->release_capacity_grant(block_index);
     });
@@ -178,8 +191,7 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
         if (reserved.error().domain == ErrorDomain::storage &&
             reserved.error().code == static_cast<std::uint32_t>(
                 DynamicBlockStoreErrorCode::SnapshotAborted)) {
-            return Result<SnapshotPreimagePreserveOutcome>::success(
-                SnapshotPreimagePreserveOutcome::Preserved);
+            return snapshot_ended_outcome();
         }
         if (reserved.error().domain != ErrorDomain::storage ||
             reserved.error().code != static_cast<std::uint32_t>(
@@ -196,16 +208,92 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
         return Result<SnapshotPreimagePreserveOutcome>::success(
             SnapshotPreimagePreserveOutcome::Preserved);
     }
+
+    auto* marker_entry = directory_->find(block_index);
+    if (!block_lock.owns_lock() || marker_entry == nullptr ||
+        marker_entry->snapshot_preparing_id != 0 ||
+        marker_entry->snapshot_reservation_id != 0 ||
+        reservation.snapshot_id() == 0 || reservation.reservation_id() == 0) {
+        snapshot_coordinator_->rollback_metadata_preimage(reservation);
+        return Result<SnapshotPreimagePreserveOutcome>::failure(
+            snapshot_preimage_invariant(
+                L"snapshot Preparing marker ownership is invalid")
+                .error());
+    }
+    marker_entry->snapshot_preparing_id = reservation.snapshot_id();
+    marker_entry->snapshot_reservation_id = reservation.reservation_id();
+    const auto marker_snapshot_id = marker_entry->snapshot_preparing_id;
+    const auto marker_reservation_id = marker_entry->snapshot_reservation_id;
+    const auto marker_state = marker_entry->state;
+    const auto marker_prior_state = marker_entry->prior_state;
+    const auto marker_transition_owner = marker_entry->transition_owner;
+    const auto marker_transition_epoch = marker_entry->transition_epoch;
+    marker_entry = nullptr;
+    block_lock.unlock();
+    if (snapshot_pressure_test_observer_) {
+        snapshot_pressure_test_observer_->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::PreparingPublished,
+            block_index);
+    }
+    const auto filled = data_record
+        ? snapshot_coordinator_->fill_data_preimage(
+              context,
+              reservation,
+              data,
+              snapshot_pressure_test_observer_.get())
+        : Result<void>::success();
+    block_lock.lock();
+    auto* current_entry = directory_->find(block_index);
+    if (current_entry == nullptr) {
+        std::terminate();
+    }
+    const auto clear_marker = [&]() noexcept {
+        if (current_entry->snapshot_preparing_id != marker_snapshot_id ||
+            current_entry->snapshot_reservation_id != marker_reservation_id) {
+            std::terminate();
+        }
+        current_entry->snapshot_preparing_id = 0;
+        current_entry->snapshot_reservation_id = 0;
+        stripe_condition.notify_all();
+    };
+    if (!filled.ok()) {
+        snapshot_coordinator_->rollback_metadata_preimage(reservation);
+        clear_marker();
+        if (filled.error().domain == ErrorDomain::storage &&
+            (filled.error().code == static_cast<std::uint32_t>(
+                 DynamicBlockStoreErrorCode::SnapshotAborted) ||
+             filled.error().code == static_cast<std::uint32_t>(
+                 DynamicBlockStoreErrorCode::SnapshotTokenInvalid))) {
+            return snapshot_ended_outcome();
+        }
+        return Result<SnapshotPreimagePreserveOutcome>::failure(
+            filled.error());
+    }
+    if (current_entry->state != marker_state ||
+        current_entry->prior_state != marker_prior_state ||
+        current_entry->transition_owner != marker_transition_owner ||
+        current_entry->transition_epoch != marker_transition_epoch ||
+        current_entry->version != version ||
+        current_entry->dirty_kind != kind ||
+        current_entry->dirty_base_generation != base_generation ||
+        current_entry->dirty_epoch != dirty_epoch) {
+        snapshot_coordinator_->rollback_metadata_preimage(reservation);
+        clear_marker();
+        return Result<SnapshotPreimagePreserveOutcome>::failure(
+            snapshot_preimage_invariant(
+                L"snapshot Preparing source identity changed during fill")
+                .error());
+    }
     const auto published = snapshot_coordinator_->publish_metadata_preimage(
         context, reservation);
+    clear_marker();
     if (!published.ok()) {
         if (published.error().domain == ErrorDomain::storage &&
             (published.error().code == static_cast<std::uint32_t>(
                  DynamicBlockStoreErrorCode::SnapshotAborted) ||
              published.error().code == static_cast<std::uint32_t>(
                  DynamicBlockStoreErrorCode::SnapshotTokenInvalid))) {
-            return Result<SnapshotPreimagePreserveOutcome>::success(
-                SnapshotPreimagePreserveOutcome::Preserved);
+            return snapshot_ended_outcome();
         }
         return Result<SnapshotPreimagePreserveOutcome>::failure(
             published.error());
@@ -251,6 +339,69 @@ Result<void> DynamicBlockStore::wait_for_snapshot_capacity(
     return waited;
 }
 
+Result<void> DynamicBlockStore::wait_for_snapshot_preparing(
+    const OperationContext& context,
+    std::unique_lock<std::mutex>& block_lock,
+    std::uint64_t snapshot_id,
+    std::uint64_t reservation_id,
+    std::uint64_t block_index) {
+    if (!block_lock.owns_lock() || snapshot_id == 0 ||
+        reservation_id == 0) {
+        return Result<void>::failure(
+            snapshot_preimage_invariant(
+                L"snapshot Preparing wait identity is invalid")
+                .error());
+    }
+    block_lock.unlock();
+    const auto waited = snapshot_coordinator_->wait_for_preparing_resolution(
+        context,
+        snapshot_id,
+        block_index,
+        reservation_id,
+        snapshot_pressure_test_observer_.get());
+    block_lock.lock();
+    if (waited.ok()) {
+        auto& stripe = stripes_->stripe_for(block_index);
+        const auto marker_is_current = [this,
+                                        block_index,
+                                        snapshot_id,
+                                        reservation_id]() noexcept {
+            const auto* current_entry = directory_->find(block_index);
+            return current_entry != nullptr &&
+                   current_entry->snapshot_preparing_id == snapshot_id &&
+                   current_entry->snapshot_reservation_id == reservation_id;
+        };
+        if (marker_is_current() && snapshot_pressure_test_observer_) {
+            block_lock.unlock();
+            snapshot_pressure_test_observer_->on_snapshot_pressure_event(
+                SnapshotPressureTestEvent::PreparingMarkerWaitReady,
+                block_index);
+            block_lock.lock();
+        }
+        const auto notify_waiter = [&stripe]() noexcept {
+            stripe.condition.notify_all();
+        };
+        std::stop_callback stop_callback(context.stop_token, notify_waiter);
+        while (marker_is_current() && !closing_requested() &&
+               !context.stop_token.stop_requested() &&
+               std::chrono::steady_clock::now() < context.deadline) {
+            if (context.deadline ==
+                std::chrono::steady_clock::time_point::max()) {
+                stripe.condition.wait(block_lock);
+            } else {
+                stripe.condition.wait_until(block_lock, context.deadline);
+            }
+        }
+        if (!closing_requested()) {
+            const auto live = check_operation_context(context);
+            if (!live.ok()) {
+                return live;
+            }
+        }
+    }
+    return waited;
+}
+
 Result<void> DynamicBlockStore::write_one_segment(
     const OperationContext& context,
     std::uint64_t block_index,
@@ -277,6 +428,26 @@ Result<void> DynamicBlockStore::write_one_segment(
         auto* entry = access.value();
         auto& stripe = stripes_->stripe_for(block_index);
         std::unique_lock block_lock(stripe.mutex);
+
+        if (entry->snapshot_preparing_id != 0 ||
+            entry->snapshot_reservation_id != 0) {
+            if (entry->snapshot_preparing_id == 0 ||
+                entry->snapshot_reservation_id == 0) {
+                return write_invariant(
+                    L"snapshot Preparing marker identity diverged");
+            }
+            const auto waited = wait_for_snapshot_preparing(
+                context,
+                block_lock,
+                entry->snapshot_preparing_id,
+                entry->snapshot_reservation_id,
+                block_index);
+            block_lock.unlock();
+            if (!waited.ok()) {
+                return closing_requested() ? closed_write() : waited;
+            }
+            continue;
+        }
 
         const auto block_start = block_index * kBlockSizeBytes;
         const auto remaining = geometry_.logical_size_bytes - block_start;
@@ -534,7 +705,13 @@ Result<void> DynamicBlockStore::write_one_segment(
                         entry->dirty_epoch,
                         std::span<const std::byte>(
                             address.value(),
-                            static_cast<std::size_t>(kBlockSizeBytes)));
+                            static_cast<std::size_t>(kBlockSizeBytes)),
+                        block_lock,
+                        stripe.condition);
+                entry = directory_->find(block_index);
+                if (entry == nullptr) {
+                    std::terminate();
+                }
                 if (!preserved.ok()) {
                     return rollback(preserved.error());
                 }
@@ -656,7 +833,13 @@ Result<void> DynamicBlockStore::write_one_segment(
                     entry->dirty_kind,
                     entry->dirty_base_generation,
                     entry->dirty_epoch,
-                    {});
+                    {},
+                    block_lock,
+                    stripe.condition);
+            entry = directory_->find(block_index);
+            if (entry == nullptr) {
+                std::terminate();
+            }
             if (!preserved.ok()) {
                 if (budget.value() == CommitBudgetOutcome::Reserved) {
                     release_commit_reservation(true);

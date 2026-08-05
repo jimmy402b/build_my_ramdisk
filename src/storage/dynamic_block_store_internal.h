@@ -26,6 +26,8 @@ struct BlockEntry {
     BlockState prior_state{BlockState::Unresident};
     std::uint64_t transition_owner{};
     std::uint64_t transition_epoch{};
+    std::uint64_t snapshot_preparing_id{};
+    std::uint64_t snapshot_reservation_id{};
     std::uint64_t load_epoch{};
     std::uint64_t version{};
     std::uint64_t pin_count{};
@@ -58,6 +60,7 @@ enum class BlockEntryInvariantError : std::uint8_t {
     ContentVersionWrapped = 6,
     CleanGenerationAhead = 7,
     DirtyBaseGenerationAhead = 8,
+    SnapshotPreparingIdentityInvalid = 9,
 };
 
 struct BlockEntryInvariantResult {

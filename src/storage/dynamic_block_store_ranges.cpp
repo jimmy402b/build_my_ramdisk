@@ -155,6 +155,26 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
         auto& stripe = stripes_->stripe_for(block_index);
         std::unique_lock block_lock(stripe.mutex);
 
+        if (entry->snapshot_preparing_id != 0 ||
+            entry->snapshot_reservation_id != 0) {
+            if (entry->snapshot_preparing_id == 0 ||
+                entry->snapshot_reservation_id == 0) {
+                return range_invariant(
+                    kind, L"snapshot Preparing marker identity diverged");
+            }
+            const auto waited = wait_for_snapshot_preparing(
+                context,
+                block_lock,
+                entry->snapshot_preparing_id,
+                entry->snapshot_reservation_id,
+                block_index);
+            block_lock.unlock();
+            if (!waited.ok()) {
+                return closing_requested() ? closed_range(kind) : waited;
+            }
+            continue;
+        }
+
         if (is_transient_block_state(entry->state)) {
             const auto observed_state = entry->state;
             const auto observed_epoch = entry->transition_epoch;
@@ -215,7 +235,13 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                         entry->dirty_kind,
                         entry->dirty_base_generation,
                         entry->dirty_epoch,
-                        {});
+                        {},
+                        block_lock,
+                        stripe.condition);
+                entry = directory_->find(block_index);
+                if (entry == nullptr) {
+                    std::terminate();
+                }
                 if (!preserved.ok()) {
                     return Result<void>::failure(preserved.error());
                 }
@@ -347,7 +373,13 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                     original_entry.dirty_epoch,
                     std::span<const std::byte>(
                         address.value(),
-                        static_cast<std::size_t>(kBlockSizeBytes)));
+                        static_cast<std::size_t>(kBlockSizeBytes)),
+                    block_lock,
+                    stripe.condition);
+            entry = directory_->find(block_index);
+            if (entry == nullptr) {
+                std::terminate();
+            }
             if (!preserved.ok()) {
                 return restore_before_decommit(preserved.error());
             }
