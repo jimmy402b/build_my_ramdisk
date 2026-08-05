@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -160,6 +161,17 @@ bool records_equal(
     return true;
 }
 
+std::optional<myrd::BlockEntry> entry_snapshot(
+    myrd::DynamicBlockStore& store,
+    std::uint64_t block_index) {
+    myrd::BlockEntry entry{};
+    if (!myrd::DynamicBlockStoreTestAccess::snapshot_entry(
+            store, block_index, entry)) {
+        return std::nullopt;
+    }
+    return entry;
+}
+
 struct ScheduleFailure final {
     std::size_t index{};
     myrd::test::consistent_model::Operation operation;
@@ -205,6 +217,8 @@ void execute_schedule(
     std::vector<myrd::DirtyBlockSnapshot> actual_union;
     std::vector<SnapshotRecord> expected_union;
     std::vector<SnapshotRecord> expected_cut;
+    std::optional<std::pair<std::size_t, std::uint64_t>> pending_reload;
+    std::uint64_t successful_evict_load_pairs = 0;
 
     for (std::size_t index = 0; index < schedule.operations.size(); ++index) {
         const auto& operation = schedule.operations[index];
@@ -346,6 +360,22 @@ void execute_schedule(
             break;
         case OperationKind::Read:
         case OperationKind::Load: {
+            const auto target_block = operation.offset / kBlockBytes;
+            const bool must_reload = operation.kind == OperationKind::Load &&
+                pending_reload.has_value() &&
+                pending_reload->first == index &&
+                pending_reload->second == target_block;
+            const auto before_entry = entry_snapshot(*store, target_block);
+            const auto before_stats = store->stats();
+            if (must_reload) {
+                expect_schedule(
+                    before_entry.has_value() &&
+                        before_entry->state == myrd::BlockState::Unresident,
+                    seed,
+                    index,
+                    operation,
+                    "load target was not unresident");
+            }
             std::vector<std::byte> actual_bytes(
                 static_cast<std::size_t>(operation.length));
             const auto actual = store->read(
@@ -366,18 +396,92 @@ void execute_schedule(
                 index,
                 operation,
                 "read/load bytes diverged");
+            if (must_reload) {
+                const auto after_entry =
+                    entry_snapshot(*store, target_block);
+                const auto after_stats = store->stats();
+                expect_schedule(
+                    after_entry.has_value() &&
+                        after_entry->state ==
+                            myrd::BlockState::ResidentClean,
+                    seed,
+                    index,
+                    operation,
+                    "load did not restore a clean resident block");
+                expect_schedule(
+                    after_stats.backing_reads_total >
+                        before_stats.backing_reads_total,
+                    seed,
+                    index,
+                    operation,
+                    "load did not issue a backing read");
+                pending_reload.reset();
+                ++successful_evict_load_pairs;
+            }
             break;
         }
         case OperationKind::Evict: {
-            const auto pass =
+            const auto target_block = operation.offset / kBlockBytes;
+            const bool has_paired_load =
+                index + 1 < schedule.operations.size() &&
+                schedule.operations[index + 1].kind ==
+                    OperationKind::Load &&
+                schedule.operations[index + 1].offset / kBlockBytes ==
+                    target_block;
+            if (!has_paired_load) {
+                const auto pass =
+                    myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(
+                        *store, 0);
+                expect_schedule(
+                    pass.invariant_failures == 0,
+                    seed,
+                    index,
+                    operation,
+                    "unpaired eviction reported an invariant failure");
+                break;
+            }
+            const auto expected = model.read(
+                operation.offset, operation.length);
+            std::vector<std::byte> actual_bytes(
+                static_cast<std::size_t>(operation.length));
+            const auto loaded = store->read(
+                myrd::OperationContext{}, operation.offset, actual_bytes);
+            expect_schedule(
+                loaded.ok() && expected.has_value() &&
+                    actual_bytes == *expected,
+                seed,
+                index,
+                operation,
+                "eviction target could not be made resident");
+            const auto resident_entry =
+                entry_snapshot(*store, target_block);
+            if (!resident_entry.has_value() ||
+                resident_entry->state != myrd::BlockState::ResidentClean) {
+                break;
+            }
+            const auto first_pass =
+                myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(
+                    *store, 0);
+            const auto second_pass =
                 myrd::DynamicBlockStoreTestAccess::run_eviction_sweep(
                     *store, 0);
             expect_schedule(
-                pass.invariant_failures == 0,
+                first_pass.invariant_failures == 0 &&
+                    second_pass.invariant_failures == 0,
                 seed,
                 index,
                 operation,
                 "eviction reported an invariant failure");
+            const auto after_entry = entry_snapshot(*store, target_block);
+            expect_schedule(
+                first_pass.evicted_blocks + second_pass.evicted_blocks > 0 &&
+                    after_entry.has_value() &&
+                    after_entry->state == myrd::BlockState::Unresident,
+                seed,
+                index,
+                operation,
+                "eviction did not make the target block unresident");
+            pending_reload = std::pair{index + 1, target_block};
             break;
         }
         }
@@ -398,6 +502,14 @@ void execute_schedule(
             schedule.operations.size() - 1,
             schedule.operations.back(),
             "store invariant failed after schedule");
+    }
+    if (schedule.operations.size() >= 10 &&
+        successful_evict_load_pairs == 0) {
+        fail_schedule(
+            seed,
+            schedule.operations.size() - 1,
+            schedule.operations.back(),
+            "schedule never completed an eviction reload pair");
     }
 }
 
@@ -546,6 +658,25 @@ TEST_CASE(m2_1_task08_schedule_is_seed_only_deterministic_and_complete) {
         REQUIRE(count != 0);
     }
     REQUIRE(saw_cross_block_range);
+    REQUIRE_EQ(first.operations[8].kind, OperationKind::Evict);
+    REQUIRE_EQ(first.operations[9].kind, OperationKind::Load);
+    REQUIRE_EQ(first.operations[8].offset, first.operations[9].offset);
+    REQUIRE_EQ(first.operations[8].length, first.operations[9].length);
+    const auto eviction_block =
+        first.operations[8].offset / kBlockBytes;
+    for (std::size_t index = 0; index < 8; ++index) {
+        const auto& operation = first.operations[index];
+        if (operation.kind != OperationKind::Write &&
+            operation.kind != OperationKind::Zero &&
+            operation.kind != OperationKind::Discard) {
+            continue;
+        }
+        const auto first_block = operation.offset / kBlockBytes;
+        const auto last_block =
+            (operation.offset + operation.length - 1) / kBlockBytes;
+        REQUIRE(eviction_block < first_block ||
+                eviction_block > last_block);
+    }
     REQUIRE(!describe_operation(0, first.operations.front()).empty());
     REQUIRE_EQ(operation_payload(first.operations.front()),
                operation_payload(replay.operations.front()));

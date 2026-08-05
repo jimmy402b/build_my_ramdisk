@@ -108,6 +108,22 @@ Schedule generate_schedule(std::uint64_t seed,
         schedule.operations.push_back(make_operation(
             random, index, schedule.logical_size_bytes()));
     }
+    const auto directed_mutation_count =
+        (std::min)(operation_count, std::size_t{3});
+    for (std::size_t index = 0;
+         index < directed_mutation_count;
+         ++index) {
+        schedule.operations[index].offset = index * kSectorBytes;
+        schedule.operations[index].length = kSectorBytes;
+    }
+    if (operation_count >= 10) {
+        const auto eviction_offset =
+            (schedule.block_count - 1) * kBlockBytes;
+        schedule.operations[8].offset = eviction_offset;
+        schedule.operations[8].length = kSectorBytes;
+        schedule.operations[9].offset = eviction_offset;
+        schedule.operations[9].length = kSectorBytes;
+    }
     return schedule;
 }
 
