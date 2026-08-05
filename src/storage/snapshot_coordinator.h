@@ -184,6 +184,8 @@ public:
         const ConsistentSnapshotToken& token,
         std::uint64_t total_blocks);
     Result<void> abort(const ConsistentSnapshotToken& token);
+    void request_close() noexcept;
+    void finalize_close() noexcept;
     Result<ConsistentSnapshotStatus> status(
         const ConsistentSnapshotToken& token) const;
     SnapshotCoordinatorSnapshot snapshot() const;

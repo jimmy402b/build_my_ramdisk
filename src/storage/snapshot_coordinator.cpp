@@ -500,6 +500,7 @@ public:
     std::uint64_t capacity_waiters{};
     std::uint64_t writer_stalls_total{};
     std::uint64_t auto_aborts_total{};
+    bool closing{};
     std::atomic<bool> preimage_lookup_entered_for_test{};
 };
 
@@ -928,7 +929,7 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     const auto wait_predicate = [&]() noexcept {
         return capacity_available() || !state_->token_matches(token) ||
                state_->active_state != ConsistentSnapshotState::Active ||
-               context.stop_token.stop_requested();
+               state_->closing || context.stop_token.stop_requested();
     };
     lock.unlock();
     if (test_observer != nullptr) {
@@ -954,7 +955,8 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         return live;
     }
     if (!state_->token_matches(token) ||
-        state_->active_state != ConsistentSnapshotState::Active) {
+        state_->active_state != ConsistentSnapshotState::Active ||
+        state_->closing) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
             L"snapshot ended while waiting for COW capacity"));
@@ -1277,6 +1279,38 @@ std::uint64_t SnapshotCoordinator::index_probe_count_for_test() const {
 bool SnapshotCoordinator::preimage_lookup_entered_for_test() const noexcept {
     return state_->preimage_lookup_entered_for_test.load(
         std::memory_order_acquire);
+}
+
+void SnapshotCoordinator::request_close() noexcept {
+    try {
+        std::scoped_lock lock(state_->mutex);
+        state_->closing = true;
+        if (state_->active_token.has_value()) {
+            state_->active_state = ConsistentSnapshotState::Aborted;
+            state_->abort_reason =
+                DynamicBlockStoreErrorCode::SnapshotAborted;
+        }
+        state_->condition.notify_all();
+    } catch (...) {
+        std::terminate();
+    }
+}
+
+void SnapshotCoordinator::finalize_close() noexcept {
+    try {
+        std::scoped_lock lock(state_->mutex);
+        if (!state_->closing || state_->capacity_waiters != 0) {
+            std::terminate();
+        }
+        state_->clear_records();
+        state_->active_token.reset();
+        state_->active_state.reset();
+        state_->abort_reason.reset();
+        state_->next_scan_block = 0;
+        state_->condition.notify_all();
+    } catch (...) {
+        std::terminate();
+    }
 }
 
 void SnapshotCoordinator::notify_capacity_waiters_for_test() noexcept {

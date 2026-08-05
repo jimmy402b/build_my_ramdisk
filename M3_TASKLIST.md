@@ -344,6 +344,18 @@ T07.1 evidence：commit `b91872b`；Debug/Release focused 各 `1/1`，discovery 
 T07.2 本表是后续 T07.3–T07.15 的实现约束；若代码需要反向锁序，必须先回到本卡修改并重新签署，
 不得在 production patch 中静默偏离。
 
+### Task07 close matrix（T07.11）
+
+| 等待/竞争点 | close 前 waiter 与资源 | close 线性化与唤醒 | drain 后必须成立 |
+|---|---|---|---|
+| mutation admission | `mutation_gate_closed_` 下的 lifecycle waiter；未取得 mutation token | `Closing` 先拒绝新 request/mutation，`close_stop_source_` 与 lifecycle condition 同时唤醒 | waiter 返回 `session_closed`；mutation waiter/current active 归零 |
+| COW capacity | coordinator 已登记 capacity waiter；writer 不持 stripe；token/COW 仍归 coordinator | `request_close()` 在 coordinator guard 下发布 `Aborted` 并 notify；writer 醒后重验 closing/token，不再 publish mutation | active request 退出后 `finalize_close()` 才清 token/COW；waiter/current bytes/records 均为零 |
+| transient snapshot batch | reader 等 stripe transient 或测试 record barrier，仍持 request token | close 先释放测试 barrier并通知所有 stripe，再等 request drain | batch 返回 `session_closed`，pin/stripe waiter/record staging 归零 |
+| finish | 无内部 condition wait；竞争边界是 public request admission 与 coordinator guard | 已进入的 finish 先在线性化点完成，close 随后 drain；未进入或 close 后调用返回 `session_closed` | 不允许 finish 在 Closed 后复活 token/records |
+| abort | 无内部 condition wait；竞争边界同 finish | 已进入的 abort 原子终结 token；否则由 close 的 `request_close`/`finalize_close` 终结 | close 后 abort 返回 `session_closed`；token/COW 不残留 |
+
+关闭顺序冻结为：拒绝新 admission → signal lifecycle/coordinator/stripe/barrier → 停 worker → drain active request/mutation/read → coordinator `finalize_close` 清 token/COW → 发布 `Closed`。不得在 active request 归零前执行最终资源清理。
+
 ## Task 08 — 独立整盘快照参考模型
 
 **类别：S；oracle 由不同执行者冻结。允许文件：** `tests/model/`、`tests/support/`、测试注册；不改产品实现。

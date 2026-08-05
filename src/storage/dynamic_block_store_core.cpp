@@ -405,6 +405,7 @@ void DynamicBlockStore::close() {
     }
 
     close_stop_source_.request_stop();
+    snapshot_coordinator_->request_close();
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::RejectNewRequests));
     notify_all_waiters();
@@ -437,6 +438,7 @@ void DynamicBlockStore::close() {
 }
 
 void DynamicBlockStore::finish_close() {
+    snapshot_coordinator_->finalize_close();
     notify_lifecycle_event(static_cast<std::uint8_t>(
         DynamicBlockStoreLifecycleEvent::Quiesced));
 
