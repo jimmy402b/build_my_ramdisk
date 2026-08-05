@@ -156,7 +156,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   stripe；故意持 stripe wait 的 mutation 必须稳定卡在测试 watchdog 断言。
 - [x] `T07.5 [X]` 只实现 try-reserve→capacity unavailable→release stripe→登记
   waiter；此卡不实现 wake 后 retry。验证 T07.3/4 的 blocked state 与 counters。
-- [ ] `T07.6 [X]` 只实现成功 reservation 的 per-block `Preparing` publication 与
+- [x] `T07.6 [X]` 只实现成功 reservation 的 per-block `Preparing` publication 与
   rollback；reader 可等 marker condition，但禁止通过获取 stripe 等 marker。
 - [x] `T07.7 [X]` 只实现 wake 后 reacquire stripe + 重验 token/frontier/pre-image/
   entry identity；任一变化就 rollback/retry/按 frozen error 返回，禁止用旧指针复制。

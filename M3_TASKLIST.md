@@ -344,6 +344,12 @@ T07.1 evidence：commit `b91872b`；Debug/Release focused 各 `1/1`，discovery 
 T07.2 本表是后续 T07.3–T07.15 的实现约束；若代码需要反向锁序，必须先回到本卡修改并重新签署，
 不得在 production patch 中静默偏离。
 
+T07.6 evidence：commit `fe1ec19`；reservation 后在 stripe 内发布 snapshot/reservation
+marker，释放 stripe 与 coordinator 后填充 DATA，重新取目录 entry 并重验 state/transition/
+version/dirty identity 后才 publish；waiter 跨 unlock 只保留标量 identity。确定性测试覆盖
+DATA/ZERO/DISCARD、publish/rollback、cancel、explicit abort、active fill abort 与 close；
+Debug/Release focused 各 `85/85`，各重复 `20/20`，`git diff --check` 退出 0。
+
 ### Task07 close matrix（T07.11）
 
 | 等待/竞争点 | close 前 waiter 与资源 | close 线性化与唤醒 | drain 后必须成立 |
