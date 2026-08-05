@@ -427,11 +427,11 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
   contiguous payload，expected layout 来自 Task21 独立 parser/fixture。
 - [x] `T23.2 [H]` 实现 pure deterministic layout plan：metadata/BAT first、payload
   alignment、checked arithmetic、all-zero skip、reserved zero；此卡零文件写入。
-- [x] `T23.3 [M]` 实现 same-directory unique temp file、sparse mark、extend、按 plan
-  exact writes；每个 phase 可注入失败。
+- [x] `T23.3 [M]` 实现 same-directory unique ordinary temp file（禁止 NTFS sparse
+  attribute）、extend、按 plan exact writes；动态稀疏只由 BAT 和短文件表达。
 - [x] `T23.4 [X]` 实现 publish 顺序：flush→close→Task21/22 reopen verify checksums+
   sampled payload→write-through rename 到 unique final；任何失败不得返回 final。
-- [x] `T23.5 [M]` failure matrix：create/sparse/extend/metadata/BAT/payload/flush/close/
+- [x] `T23.5 [M]` failure matrix：create/extend/metadata/BAT/payload/flush/close/
   reopen/rename；断言 manifest-referenced base 从未覆盖。
 - [x] `T23.6 [H]` random sparse logical hash 与 reader 比较、mutation 调换 publish
   顺序必须红；Debug/Release focused。
@@ -441,16 +441,16 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 允许：compat integration test、PowerShell harness、test registration；不得在 gate
 中修改 VHDX writer 来“跳过”失败。
 
-- [ ] `T24.1 [M]` 实现 capability probe：admin、`OpenVirtualDisk`、
+- [x] `T24.1 [M]` 实现 capability probe：admin、`OpenVirtualDisk`、
   `AttachVirtualDisk`、`GetVirtualDiskPhysicalPath`；不可用返回 machine-readable
   `BLOCKED/SKIP reason`，不算 PASS。
-- [ ] `T24.2 [M]` 生成 empty/sparse/boundary/512/4096 fixtures；read-only/no-drive-
+- [x] `T24.2 [M]` 生成 empty/sparse/boundary/512/4096 fixtures；read-only/no-drive-
   letter open、query、attach、sample、finally detach，记录 Win32 codes。
-- [ ] `T24.3 [H]` 加 safety gate：AIM-exported disk online 时禁止 attach 同一数据；
+- [x] `T24.3 [H]` 加 safety gate：AIM-exported disk online 时禁止 attach 同一数据；
   cleanup failure 必须使 gate 非零并给恢复命令。
-- [ ] `T24.4 [M]` 用 Windows 独立创建一份兼容 VHDX，Task21/22 读取并比较 geometry/
+- [x] `T24.4 [M]` 用 Windows 独立创建一份兼容 VHDX，Task21/22 读取并比较 geometry/
   data；若 fixture 不入库，保存可重复 generator + hash。
-- [ ] `T24.5 [H]` 管理员真机复核所有场景并签署 M3-V5；环境 SKIP 不能 `DONE`。
+- [x] `T24.5 [H]` 管理员真机复核所有场景并签署 M3-V5；环境 SKIP 不能 `DONE`。
 
 ## 6. 阶段四：Recovery、create 与 lazy session（Task 25–29）
 

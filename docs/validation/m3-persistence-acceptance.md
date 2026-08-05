@@ -1281,26 +1281,31 @@ Evidence SHA-256:
 
 ## Task 23 — Sparse dynamic VHDX writer acceptance
 
-Task 23 is accepted at implementation commit `10973da`. The writer first builds
+Task 23 is accepted at implementation commit `10973da` with the Windows
+compatibility correction at `c1cb72c`. The writer first builds
 a deterministic, checked layout plan and only then mutates a same-directory
 temporary file. It supports logical sector sizes 512 and 4096, handles BAT
 chunk boundaries and final partial blocks, skips all-zero payload blocks, and
 zeroes every reserved byte. Checked arithmetic rejects unrepresentable file
 layouts before file creation.
 
-Publication is ordered as sparse-file creation, exact planned writes, flush,
+Publication is ordered as ordinary-file creation, exact planned writes, flush,
 close of all old handles, reopen through the product `VhdxReader`, structural
 and sampled-payload verification, and handle-relative no-overwrite rename with
-a post-commit volume flush. Native sparse-mark operations use heap-owned async
-state with finite wait/cancel/drain behavior. Once the namespace commit may
-have happened, failures are classified as `CommitIndeterminate` instead of
+a post-commit volume flush. The container deliberately never receives the NTFS
+sparse attribute: Windows Virtdisk rejects such VHDX files. Dynamic sparseness
+is represented by absent BAT entries and by never appending absent payloads,
+so a large sparse logical disk remains a short ordinary file. Once the
+namespace commit may have happened, failures are classified as
+`CommitIndeterminate` instead of
 being returned as ordinary pre-commit errors. Temporary and final names are
 validated before creation, compared case-insensitively, and reject `~` so an
 NTFS 8.3 short-name alias cannot turn publication into self-replacement.
 
-Tests cover create, sparse mark, extend, metadata, BAT, payload, flush, close,
-reopen and rename failures. They also prove physical sparsity with allocated-
-range queries, verify actual I/O ordering, and compare a fixed-seed random
+Tests cover create, extend, metadata, BAT, payload, flush, close, reopen and
+rename failures. They assert that the container is not an NTFS sparse file but
+remains shorter than its sparse logical geometry, verify actual I/O ordering,
+and compare a fixed-seed random
 sparse logical image and the reopened reader by SHA-256. No failure returns a
 partially written final filename.
 
@@ -1308,12 +1313,15 @@ Three independent review rounds were performed. The first two rounds exposed
 and then closed write-through, post-commit classification, cancellation,
 failure-matrix, diagnostics, aliasing and oracle weaknesses. The final review
 returned **GO** with P0/P1/P2 = 0/0/0, including explicit confirmation of the
-8.3 alias defense.
+8.3 alias defense. Task 24 subsequently exposed one cross-system defect that
+self-read tests could not detect: `OpenVirtualDisk` returned
+`ERROR_VIRTUAL_DISK_LIMITATION` for the NTFS sparse attribute. The correction
+removed that attribute and added a native Windows regression gate.
 
 Final verification evidence:
 
-- complete Debug CTest: 72/72 passed;
-- Release `m3-v1`: 13/13 passed;
+- complete Debug CTest: 73/73 passed;
+- Release writer and native compatibility gates passed;
 - focused path suite: 41/41 passed;
 - focused writer suite: 25/25 passed;
 - `BUILD_TESTING=OFF` production persistence library built successfully;
@@ -1323,17 +1331,86 @@ Final verification evidence:
 Evidence SHA-256:
 
 - `vhdx_writer.cpp`:
-  `4024976CD990F56CF3CFDC3BF0A6CD601DEE95314519F072CCDB2E1CD5D7C7A4`;
+  `3EA72D7EBF4D890ECEE03634FDBCDAF90E132F4C8AEDAE74B2BC0A0A39DAEE17`;
 - VHDX writer tests:
-  `581C152827E3BB653D022393D47BB65DE0EDFFC083349594F363CF5663DB7B5B`;
+  `C9A51B71C23CB7890FE6308C126B6CF57BD4E0EF994ADDED1F7479090CC63D10`;
 - Release VHDX writer test executable:
-  `67C86641B10C3E0A11B5DA09B818C2F4592DC617B97871EDA7A7EA25998FC425`.
+  `53A9E0C616A5E1354847C16B726D6500A1C646D314EB303245F971CAD9B86851`.
 
 Task 23 verdict: **DONE**. This authorizes Task 24 to ask Windows native VHDX
-APIs to open and attach product-written fixtures. It does not claim native
-Windows compatibility until that independent Task 24 gate passes.
+APIs to open and attach product-written fixtures. Native compatibility is now
+proven separately by the Task 24 gate below.
 
 Task 22 verdict: **DONE**. This authorizes Task 23 to produce sparse dynamic
 VHDX bases that are reopened and verified by this reader. It does not write or
 publish VHDX files, compose journal fallback, select recovery candidates or
 claim Windows native compatibility; those remain Tasks 23–25.
+
+## Task 24 — Windows native VHDX compatibility acceptance
+
+Task 24 is accepted at harness commit `31a12c7`, hardened by `0ba7028`, with
+the product compatibility correction at `c1cb72c`. The first elevated native
+run deliberately failed at `OpenVirtualDisk` with `0xC03A001A`
+(`ERROR_VIRTUAL_DISK_LIMITATION`). The Windows SDK defines that result for
+virtual-disk containers carrying unsupported sparse/compressed/encrypted file
+attributes. Removing the NTFS sparse attribute made the same product fixtures
+pass without weakening their BAT-level dynamic sparseness.
+
+The gate dynamically probes `virtdisk.dll`, administrator elevation and the
+required APIs. Missing capabilities return a machine-readable `BLOCKED` report
+and exit 77; CTest deliberately has no skip-return override, so a mandatory
+M3-V5 run cannot turn BLOCKED into a successful process. Before, immediately
+around and after every attachment/raw-I/O boundary, the gate requires zero AIM
+devices. It never supplies a fixture path to AIM.
+
+Four product-generated cases cover empty and sparse data, the 512-byte-sector
+BAT chunk boundary, and 4096-byte logical sectors. Each case is opened through
+`OpenVirtualDisk`, queried, attached read-only without a drive letter, sampled
+through its raw disk handle, and detached in finally-style cleanup. The raw
+handle is bound to a canonical `\\.\PhysicalDriveN` path by an attach-time
+PhysicalDrive baseline, `IOCTL_STORAGE_GET_DEVICE_NUMBER`, a second
+`GetVirtualDiskPhysicalPath` query and an exact geometry check. Detach must
+remove that new PhysicalDrive number.
+
+The reverse case uses Windows `CreateVirtualDisk` with the frozen 2 MiB block,
+512-byte logical-sector and 4096-byte physical-sector geometry. It attaches the
+new image without a drive letter, proves the raw-handle identity and 8 MiB
+length before writing, flushes and detaches, then closes every native handle.
+The product `parse_vhdx_layout` and `VhdxReader` reopen that independently
+created file and reproduce the complete deterministic 64 KiB payload.
+
+Every PASS report contains exactly the five required unique cases, their fixed
+sample lengths and fixed SHA-256 values, successful detach outcomes and a
+successful sandbox removal. Detach or sandbox cleanup failure produces FAIL,
+the native error code and a bounded recovery command.
+
+The first independent review returned NO-GO with P0/P1/P2 = 0/4/3. It found
+missing raw-disk identity closure, insufficient AIM boundary observations,
+ignored sandbox cleanup, CTest skip-success semantics, weak JSON/case/hash
+validation and an unaligned geometry buffer. All findings received targeted
+hardening. The second review returned **GO** with P0/P1/P2 = 0/0/0.
+
+Final verification evidence:
+
+- the initial native red gate reported `OpenVirtualDisk:3225026586`;
+- focused Debug and Release M3-V5 gates passed all five native cases;
+- each case completed detach with Win32 code 0 and sandbox cleanup succeeded;
+- complete Debug CTest passed 73/73;
+- focused Release writer and native compatibility tests passed 2/2;
+- the `BUILD_TESTING=OFF` production persistence library built successfully;
+- `dumpbin /symbols` reported `NO_TEST_SEAM_SYMBOLS`;
+- `git diff --check` passed.
+
+Evidence SHA-256:
+
+- native compatibility harness:
+  `E19730E2114915A268C2CCB808E57C0E12C9108B95EDA23E900652EDF7544C8B`;
+- PowerShell gate:
+  `540C44266998BEE079561DEA98900E9C59AA4979C212DC73214D1B28B4FF0124`;
+- Release native compatibility executable:
+  `352E7C992BD859D3716AD845F845FD7C6126984315E87B8077B23A31D691EE54`.
+
+Task 24 verdict: **DONE**. Windows accepts and attaches product-written dynamic
+VHDX bases, and the product parser/reader accepts a Windows-created compatible
+VHDX. This authorizes Task 25; it does not yet compose journal-first fallback,
+recover manifests or create complete generation-zero image bundles.

@@ -742,7 +742,7 @@ return ManifestCorrupt;
 - [x] **Step 1: Red-test empty and sparse images** at minimum geometry, large logical geometry, final partial block, all-zero allocated candidates, and non-contiguous payload blocks.
 - [x] **Step 2: Implement deterministic layout planning** before file mutation. Use checked arithmetic; allocate metadata/BAT first; place payloads on required boundaries; skip all-zero blocks; zero all reserved bytes.
 - [x] **Step 3: Write to a same-directory temporary file**, flush, close, reopen through `VhdxReader`, verify every structural checksum and sampled payload, then atomically rename to the final unique filename. Never overwrite a manifest-referenced base.
-- [x] **Step 4: Inject failure at create, sparse-mark, extend, metadata, BAT, payload, flush, close, reopen and rename. Assert no partially written final filename is returned.**
+- [x] **Step 4: Inject failure at create, extend, metadata, BAT, payload, flush, close, reopen and rename. Assert no partially written final filename is returned. The dynamic VHDX container is an ordinary file; Windows rejects the NTFS sparse attribute.**
 - [x] **Step 5: Commit.** `feat(persistence): write sparse dynamic vhdx bases`.
 
 ### Task 24: Prove Windows accepts product-written VHDX files
@@ -751,11 +751,11 @@ return ManifestCorrupt;
 **Depends on:** 23
 **Files:** Create `tests/integration/m3_windows_vhdx_compat_tests.cpp`, `tests/e2e/test-m3-vhdx-compat.ps1`; modify CMake test registration.
 
-- [ ] **Step 1: Add a capability probe** for `OpenVirtualDisk`, `AttachVirtualDisk` and `GetVirtualDiskPhysicalPath`; unsupported/non-admin environments skip with a machine-readable reason, not pass silently.
-- [ ] **Step 2: Generate empty, sparse, boundary and 512/4096-sector fixtures** using product code, open each with Windows read-only/no-drive-letter flags, query geometry, attach, sample known data and detach in finally-style cleanup.
-- [ ] **Step 3: Open one independently Windows-created compatible VHDX** through `VhdxReader` and compare geometry/data. Keep only a documented generator script if redistributing the binary fixture is inappropriate.
-- [ ] **Step 4: Assert product files are never attached while the AIM-exported RAM disk is online; record exact Windows error codes and cleanup outcomes.**
-- [ ] **Step 5: Commit.** `test(m3): add native vhdx compatibility gate`.
+- [x] **Step 1: Add a capability probe** for `OpenVirtualDisk`, `AttachVirtualDisk` and `GetVirtualDiskPhysicalPath`; unsupported/non-admin environments skip with a machine-readable reason, not pass silently.
+- [x] **Step 2: Generate empty, sparse, boundary and 512/4096-sector fixtures** using product code, open each with Windows read-only/no-drive-letter flags, query geometry, attach, sample known data and detach in finally-style cleanup.
+- [x] **Step 3: Open one independently Windows-created compatible VHDX** through `VhdxReader` and compare geometry/data. Keep only a documented generator script if redistributing the binary fixture is inappropriate.
+- [x] **Step 4: Assert product files are never attached while the AIM-exported RAM disk is online; record exact Windows error codes and cleanup outcomes.**
+- [x] **Step 5: Commit.** `31a12c7` `test(m3): add native vhdx compatibility gate`.
 
 ### Task 25: Compose journal-first and VHDX-fallback block resolution
 

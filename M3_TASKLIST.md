@@ -174,7 +174,7 @@ Suggested commit:
 | 21 | Strict VHDX parser | C | DONE | 10,11,13 | M3-V1 |
 | 22 | Lazy BAT reader | S | DONE | 21 | M3-V1 |
 | 23 | Sparse dynamic VHDX writer | S | DONE | 11,21,22 | M3-V1 |
-| 24 | Windows native VHDX gate | C | PENDING | 23 | M3-V5 |
+| 24 | Windows native VHDX gate | C | DONE | 23 | M3-V5 |
 | 25 | Journal-first composite backing | O | PENDING | 20,22 | M3-V2 |
 | 26 | Recovery engine 与 BackingView | O | PENDING | 15,25 | M3-V2 |
 | 27 | Generation-zero create/reopen | S | PENDING | 12,14,16,19,23,25,26 | M3-V2 |
@@ -748,17 +748,17 @@ blocks corpus。Task 08 状态：`DONE`。
 - [x] mutation 前先完成 checked deterministic layout；metadata/BAT 先规划，payload 对齐，reserved 清零，zero block 不分配。
 - [x] 写 same-directory unique temp，flush/close/reopen product verify 后 atomic rename；不覆盖任何 referenced base。
 - [x] 每个 failure point 不返回 partial final name，且保留可诊断 cleanup outcome。
-- [x] 跑 `m3-v1`；实现提交 `10973da`：`feat(persistence): write sparse dynamic vhdx bases`。
+- [x] 跑 `m3-v1`；实现 `10973da`，Windows ordinary-file 修正 `c1cb72c`。
 
 ## Task 24 — Windows native VHDX compatibility gate
 
 **类别：C。允许文件：** `tests/integration/m3_windows_vhdx_compat_tests.cpp`、`tests/e2e/test-m3-vhdx-compat.ps1`、测试注册。
 
-- [ ] capability probe 区分 non-admin/API unavailable；机器可读 SKIP reason，不允许静默 pass。
-- [ ] product 生成 empty/sparse/boundary/512/4096 fixture，通过 `OpenVirtualDisk`、read-only attach、geometry/data sample、detach。
-- [ ] product reader 打开一份 Windows native-created compatible VHDX 并比较 geometry/data。
-- [ ] finally cleanup；禁止 VHDX 与同一 AIM RAM disk 在线双挂载。
-- [ ] 跑 `m3-v5` native gate；建议提交 `test(m3): add native vhdx compatibility gate`。
+- [x] capability probe 区分 non-admin/API unavailable；机器可读 SKIP reason，不允许静默 pass。
+- [x] product 生成 empty/sparse/boundary/512/4096 fixture，通过 `OpenVirtualDisk`、read-only attach、geometry/data sample、detach。
+- [x] product reader 打开一份 Windows native-created compatible VHDX 并比较 geometry/data。
+- [x] finally cleanup；禁止 VHDX 与同一 AIM RAM disk 在线双挂载。
+- [x] Debug/Release `m3-v5` native gate 与独立复审通过；实现 `31a12c7`，加固 `0ba7028`。
 
 ## Task 25 — Journal-first composite backing
 
