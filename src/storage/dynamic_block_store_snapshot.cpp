@@ -151,14 +151,6 @@ DynamicBlockStore::copy_dirty_batch(
             std::vector<std::byte> payload;
 
             for (;;) {
-                auto notify_waiter = [&stripe]() noexcept {
-                    {
-                        std::scoped_lock callback_lock(stripe.mutex);
-                    }
-                    stripe.condition.notify_all();
-                };
-                std::stop_callback cancellation_callback(
-                    context.stop_token, notify_waiter);
                 std::unique_lock block_lock(stripe.mutex);
                 if (is_transient_block_state(entry->state)) {
                     const auto observed_state = entry->state;
@@ -169,28 +161,24 @@ DynamicBlockStore::copy_dirty_batch(
                         stripe_waiter_count_.fetch_sub(
                             1, std::memory_order_release);
                     });
-                    while (entry->state == observed_state &&
-                           entry->transition_epoch == observed_epoch &&
-                           !closing_requested() &&
-                           !context.stop_token.stop_requested() &&
-                           std::chrono::steady_clock::now() <
-                               context.deadline) {
-                        if (snapshot_wait_pause_for_test_.load(
-                                std::memory_order_acquire)) {
-                            snapshot_wait_gap_reached_for_test_.store(
-                                true, std::memory_order_release);
-                            snapshot_wait_gap_reached_for_test_.notify_all();
-                            snapshot_wait_pause_for_test_.wait(
-                                true, std::memory_order_acquire);
-                        }
-                        if (context.deadline ==
-                            std::chrono::steady_clock::time_point::max()) {
-                            stripe.condition.wait(block_lock);
-                        } else {
-                            stripe.condition.wait_until(
-                                block_lock, context.deadline);
-                        }
+                    if (snapshot_wait_pause_for_test_.load(
+                            std::memory_order_acquire)) {
+                        snapshot_wait_gap_reached_for_test_.store(
+                            true, std::memory_order_release);
+                        snapshot_wait_gap_reached_for_test_.notify_all();
+                        snapshot_wait_pause_for_test_.wait(
+                            true, std::memory_order_acquire);
                     }
+                    wait_for_interruptible_stripe_predicate(
+                        stripe.condition,
+                        block_lock,
+                        context.stop_token,
+                        context.deadline,
+                        [&]() noexcept {
+                            return closing_requested() ||
+                                   entry->state != observed_state ||
+                                   entry->transition_epoch != observed_epoch;
+                        });
                     block_lock.unlock();
                     if (closing_requested()) {
                         return snapshot_failure<
@@ -524,14 +512,6 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     1, std::memory_order_relaxed);
             }
             auto& stripe = stripes_->stripe_for(scan_index);
-            auto notify_waiter = [&stripe]() noexcept {
-                {
-                    std::scoped_lock callback_lock(stripe.mutex);
-                }
-                stripe.condition.notify_all();
-            };
-            std::stop_callback cancellation_callback(
-                context.stop_token, notify_waiter);
             std::unique_lock block_lock(stripe.mutex);
 
             if (entry->snapshot_preparing_id != 0 ||
@@ -579,27 +559,24 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     stripe_waiter_count_.fetch_sub(
                         1, std::memory_order_release);
                 });
-                while (entry->state == observed_state &&
-                       entry->transition_epoch == observed_epoch &&
-                       !closing_requested() &&
-                       !context.stop_token.stop_requested() &&
-                       std::chrono::steady_clock::now() < context.deadline) {
-                    if (snapshot_wait_pause_for_test_.load(
-                            std::memory_order_acquire)) {
-                        snapshot_wait_gap_reached_for_test_.store(
-                            true, std::memory_order_release);
-                        snapshot_wait_gap_reached_for_test_.notify_all();
-                        snapshot_wait_pause_for_test_.wait(
-                            true, std::memory_order_acquire);
-                    }
-                    if (context.deadline ==
-                        std::chrono::steady_clock::time_point::max()) {
-                        stripe.condition.wait(block_lock);
-                    } else {
-                        stripe.condition.wait_until(
-                            block_lock, context.deadline);
-                    }
+                if (snapshot_wait_pause_for_test_.load(
+                        std::memory_order_acquire)) {
+                    snapshot_wait_gap_reached_for_test_.store(
+                        true, std::memory_order_release);
+                    snapshot_wait_gap_reached_for_test_.notify_all();
+                    snapshot_wait_pause_for_test_.wait(
+                        true, std::memory_order_acquire);
                 }
+                wait_for_interruptible_stripe_predicate(
+                    stripe.condition,
+                    block_lock,
+                    context.stop_token,
+                    context.deadline,
+                    [&]() noexcept {
+                        return closing_requested() ||
+                               entry->state != observed_state ||
+                               entry->transition_epoch != observed_epoch;
+                    });
                 if (closing_requested()) {
                     break;
                 }

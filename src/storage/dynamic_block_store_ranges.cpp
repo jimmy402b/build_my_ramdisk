@@ -184,23 +184,16 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
             ScopeExit remove_waiter([this]() noexcept {
                 stripe_waiter_count_.fetch_sub(1, std::memory_order_release);
             });
-            auto notify_waiter = [&stripe]() noexcept {
-                stripe.condition.notify_all();
-            };
-            std::stop_callback cancellation_callback(
-                context.stop_token, notify_waiter);
-            while (entry->state == observed_state &&
-                   entry->transition_epoch == observed_epoch &&
-                   !closing_requested() &&
-                   !context.stop_token.stop_requested() &&
-                   std::chrono::steady_clock::now() < context.deadline) {
-                if (context.deadline ==
-                    std::chrono::steady_clock::time_point::max()) {
-                    stripe.condition.wait(block_lock);
-                } else {
-                    stripe.condition.wait_until(block_lock, context.deadline);
-                }
-            }
+            wait_for_interruptible_stripe_predicate(
+                stripe.condition,
+                block_lock,
+                context.stop_token,
+                context.deadline,
+                [&]() noexcept {
+                    return closing_requested() ||
+                           entry->state != observed_state ||
+                           entry->transition_epoch != observed_epoch;
+                });
             block_lock.unlock();
             if (closing_requested()) {
                 return closed_range(kind);
@@ -330,22 +323,14 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
             ScopeExit remove_waiter([this]() noexcept {
                 stripe_waiter_count_.fetch_sub(1, std::memory_order_release);
             });
-            auto notify_waiter = [&stripe]() noexcept {
-                stripe.condition.notify_all();
-            };
-            std::stop_callback cancellation_callback(
-                context.stop_token, notify_waiter);
-            while (entry->pin_count != 0 &&
-                   !closing_requested() &&
-                   !context.stop_token.stop_requested() &&
-                   std::chrono::steady_clock::now() < context.deadline) {
-                if (context.deadline ==
-                    std::chrono::steady_clock::time_point::max()) {
-                    stripe.condition.wait(block_lock);
-                } else {
-                    stripe.condition.wait_until(block_lock, context.deadline);
-                }
-            }
+            wait_for_interruptible_stripe_predicate(
+                stripe.condition,
+                block_lock,
+                context.stop_token,
+                context.deadline,
+                [&]() noexcept {
+                    return closing_requested() || entry->pin_count == 0;
+                });
         }
         if (closing_requested()) {
             return restore_before_decommit(closed_range(kind).error());

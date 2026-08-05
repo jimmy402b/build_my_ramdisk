@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stop_token>
 #include <type_traits>
 #include <utility>
 
@@ -109,12 +110,37 @@ private:
 
 struct LockStripe {
     std::mutex mutex;
-    std::condition_variable condition;
+    std::condition_variable_any condition;
 
     LockStripe() = default;
     LockStripe(const LockStripe&) = delete;
     LockStripe& operator=(const LockStripe&) = delete;
 };
+
+// A notify-only stop_callback paired with condition_variable::wait has a
+// lost-wakeup window between the caller's predicate check and the actual
+// sleep.  Use the C++20 stop-token wait as the single interruptible stripe
+// primitive for request cancellation. Store close remains lossless because
+// notify_all_waiters() takes each stripe mutex before notifying it.
+template <typename Predicate>
+bool wait_for_interruptible_stripe_predicate(
+    std::condition_variable_any& condition,
+    std::unique_lock<std::mutex>& lock,
+    std::stop_token request_stop_token,
+    std::chrono::steady_clock::time_point deadline,
+    Predicate&& predicate) {
+    if (deadline == std::chrono::steady_clock::time_point::max()) {
+        return condition.wait(
+            lock,
+            request_stop_token,
+            std::forward<Predicate>(predicate));
+    }
+    return condition.wait_until(
+        lock,
+        request_stop_token,
+        deadline,
+        std::forward<Predicate>(predicate));
+}
 
 enum class LockStripeSetError : std::uint8_t {
     None = 0,

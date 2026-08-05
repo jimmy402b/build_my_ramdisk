@@ -227,7 +227,7 @@ private:
         std::span<const std::byte> data,
         std::uint64_t capacity_grant_ticket,
         std::unique_lock<std::mutex>& block_lock,
-        std::condition_variable& stripe_condition);
+        std::condition_variable_any& stripe_condition);
     Result<void> wait_for_snapshot_capacity(
         const OperationContext& context,
         std::unique_lock<std::mutex>& block_lock,

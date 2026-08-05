@@ -538,7 +538,7 @@ public:
     }
 
     mutable std::mutex mutex;
-    std::condition_variable condition;
+    std::condition_variable_any condition;
     SnapshotRecordBudget budget;
     std::uint64_t index_probes{};
     RecordMap records;
@@ -1116,10 +1116,6 @@ Result<void> SnapshotCoordinator::wait_for_preparing_resolution(
                record->reservation_id != reservation_id ||
                state_->closing || context.stop_token.stop_requested();
     };
-    const auto notify_waiter = [state = state_]() noexcept {
-        state->condition.notify_all();
-    };
-    std::stop_callback stop_callback(context.stop_token, notify_waiter);
     if (!resolved() && test_observer != nullptr) {
         lock.unlock();
         test_observer->on_snapshot_pressure_event(
@@ -1129,9 +1125,11 @@ Result<void> SnapshotCoordinator::wait_for_preparing_resolution(
     }
     if (context.deadline ==
         std::chrono::steady_clock::time_point::max()) {
-        state_->condition.wait(lock, resolved);
+        (void)state_->condition.wait(
+            lock, context.stop_token, resolved);
     } else {
-        (void)state_->condition.wait_until(lock, context.deadline, resolved);
+        (void)state_->condition.wait_until(
+            lock, context.stop_token, context.deadline, resolved);
     }
     const auto live = check_operation_context(context);
     if (!live.ok()) {
@@ -1231,11 +1229,6 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     }
     lock.lock();
 
-    const auto notify_waiter = [state = state_]() noexcept {
-        state->condition.notify_all();
-    };
-    std::stop_callback stop_callback(
-        context.stop_token, notify_waiter);
     const auto now = state_->now();
     const auto stall_deadline = now + stall_limit;
     const auto wait_deadline =
@@ -1257,14 +1250,18 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     }
     lock.lock();
     if (state_->pressure_clock) {
-        while (!wait_predicate() && state_->now() < wait_deadline) {
-            state_->condition.wait(lock);
-        }
+        const auto fake_clock_wait_predicate = [&]() noexcept {
+            return wait_predicate() || state_->now() >= wait_deadline;
+        };
+        (void)state_->condition.wait(
+            lock, context.stop_token, fake_clock_wait_predicate);
     } else if (wait_deadline ==
                std::chrono::steady_clock::time_point::max()) {
-        state_->condition.wait(lock, wait_predicate);
+        (void)state_->condition.wait(
+            lock, context.stop_token, wait_predicate);
     } else {
-        (void)state_->condition.wait_until(lock, wait_deadline, wait_predicate);
+        (void)state_->condition.wait_until(
+            lock, context.stop_token, wait_deadline, wait_predicate);
     }
 
     const auto live = state_->pressure_clock
