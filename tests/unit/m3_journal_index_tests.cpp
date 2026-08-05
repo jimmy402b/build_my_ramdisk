@@ -5,12 +5,14 @@
 #include "tests/support/fault_file.h"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
 #include <map>
 #include <memory>
 #include <stop_token>
+#include <thread>
 #include <vector>
 
 namespace myrd::persistence {
@@ -287,10 +289,14 @@ TEST_CASE(journal_index_accepts_exactly_eight_levels) {
     view.root = {root_offset, kIndexNodeBytes, child_crc};
     auto reader = JournalIndexReader::create({8 * kIndexNodeBytes, 8});
     REQUIRE(reader.ok());
+    test::reset_journal_index_guard_test_counters();
     const auto result = reader.value()->lookup(view, 42);
     REQUIRE(result.ok());
     REQUIRE_EQ(result.value().kind, JournalIndexLookupKind::Data);
     REQUIRE_EQ(reader.value()->cache_stats().read_calls, 8ull);
+    const auto guards = test::journal_index_guard_test_counters();
+    REQUIRE(guards.visited_calls >= 8);
+    REQUIRE(guards.depth_calls >= 7);
 }
 
 TEST_CASE(journal_index_corruption_never_becomes_absent) {
@@ -426,7 +432,21 @@ TEST_CASE(journal_index_cache_identity_prevents_cross_view_reuse) {
     auto journal_view = first.view;
     journal_view.journal_identity.journal_uuid[1] = std::byte{1};
     REQUIRE(reader.value()->lookup(journal_view, 3).ok());
-    REQUIRE_EQ(first.state->calls(test::FaultFilePhase::Read), 3ull);
+    auto offset_view = first.view;
+    offset_view.root.offset = 0x15000;
+    // The same immutable node is copied to another aligned offset so only
+    // the node/root offset identity changes.
+    auto source = make_leaf_fixture();
+    std::array<std::byte, kIndexNodeBytes> node_bytes{};
+    REQUIRE(source.view.file->read_exact(0x14000, node_bytes).ok());
+    REQUIRE(first.view.file->write_exact(0x15000, node_bytes).ok());
+    offset_view.root.crc32c = read_u32(node_bytes, 32);
+    REQUIRE(reader.value()->lookup(offset_view, 3).ok());
+
+    auto length_view = first.view;
+    length_view.committed_length += kJournalAlignment;
+    REQUIRE(reader.value()->lookup(length_view, 3).ok());
+    REQUIRE_EQ(first.state->calls(test::FaultFilePhase::Read), 5ull);
 }
 
 TEST_CASE(journal_index_rejects_invalid_views_limits_and_cancelled_reads) {
@@ -446,6 +466,10 @@ TEST_CASE(journal_index_rejects_invalid_views_limits_and_cancelled_reads) {
     invalid = fixture.view;
     invalid.file_identity.file_id = {};
     require_journal_corrupt(reader.value()->lookup(invalid, 3));
+    invalid = fixture.view;
+    invalid.root.offset = UINT64_MAX - kJournalAlignment + 1;
+    invalid.committed_length = UINT64_MAX - kJournalAlignment + 1;
+    require_journal_corrupt(reader.value()->lookup(invalid, 3));
 
     std::stop_source stop;
     stop.request_stop();
@@ -454,6 +478,72 @@ TEST_CASE(journal_index_rejects_invalid_views_limits_and_cancelled_reads) {
     const auto before = fixture.state->calls(test::FaultFilePhase::Read);
     REQUIRE(!reader.value()->lookup(context, fixture.view, 3).ok());
     REQUIRE_EQ(fixture.state->calls(test::FaultFilePhase::Read), before);
+}
+
+TEST_CASE(journal_index_traversal_guards_have_direct_mutation_proof) {
+    const std::array<std::uint64_t, 3> visited{0x1000, 0x2000, 0x3000};
+    REQUIRE(!test::journal_index_test_rejects_visited_offset(
+                  visited, 0x2000).ok());
+    REQUIRE(test::journal_index_test_rejects_visited_offset(
+                visited, 0x4000).ok());
+    REQUIRE(test::journal_index_test_rejects_depth_overflow(7, 1).error().code
+            == static_cast<std::uint32_t>(
+                PersistenceErrorCode::JournalCorrupt));
+    REQUIRE(test::journal_index_test_rejects_depth_overflow(6, 1).ok());
+    REQUIRE(test::journal_index_test_rejects_depth_overflow(7, 0).ok());
+}
+
+TEST_CASE(journal_index_cache_is_safe_under_concurrent_hits_and_eviction) {
+    auto fixture = make_tree_fixture();
+    auto reader = JournalIndexReader::create({3 * kIndexNodeBytes, 3});
+    REQUIRE(reader.ok());
+    std::atomic<bool> failed{false};
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 8; ++index) {
+        workers.emplace_back([&] {
+            for (int iteration = 0; iteration < 200; ++iteration) {
+                const auto key = static_cast<std::uint64_t>(iteration % 4) *
+                                 10;
+                const auto result = reader.value()->lookup(fixture.view, key);
+                if (!result.ok()) failed.store(true);
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    REQUIRE(!failed.load());
+    const auto stats = reader.value()->cache_stats();
+    REQUIRE(stats.current_entries <= 3);
+    REQUIRE(stats.current_bytes <= 3 * kIndexNodeBytes);
+    REQUIRE(stats.peak_entries <= 3);
+    REQUIRE(stats.peak_bytes <= 3 * kIndexNodeBytes);
+}
+
+TEST_CASE(journal_index_deadline_expires_while_cache_mutex_is_held) {
+    auto fixture = make_leaf_fixture();
+    auto reader = JournalIndexReader::create({kIndexNodeBytes, 1});
+    REQUIRE(reader.ok());
+    REQUIRE(reader.value()->lookup(fixture.view, 3).ok());
+
+    std::atomic<bool> entered{false};
+    std::atomic<bool> holder_ok{false};
+    std::thread holder([&] {
+        holder_ok.store(reader.value()->hold_cache_lock_for_test(
+                            entered, std::chrono::milliseconds{100}).ok(),
+                        std::memory_order_release);
+    });
+    while (!entered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    OperationContext context{
+        {}, std::chrono::steady_clock::now() +
+                 std::chrono::milliseconds{10}};
+    const auto result = reader.value()->lookup(context, fixture.view, 3);
+    holder.join();
+    REQUIRE(holder_ok.load(std::memory_order_acquire));
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(result.error().domain, ErrorDomain::storage);
+    REQUIRE_EQ(result.error().code,
+               static_cast<std::uint32_t>(OperationErrorCode::timed_out));
 }
 
 TEST_CASE(journal_index_one_million_random_lookups_match_map_oracle) {

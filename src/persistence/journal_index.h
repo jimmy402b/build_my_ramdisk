@@ -6,8 +6,11 @@
 #include "src/persistence/file_io.h"
 #include "src/persistence/journal_format.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 
 namespace myrd::persistence {
 
@@ -73,10 +76,34 @@ public:
     [[nodiscard]] JournalIndexCacheStats cache_stats() const;
     void clear_cache();
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    Result<void> hold_cache_lock_for_test(
+        std::atomic<bool>& entered,
+        std::chrono::milliseconds duration);
+#endif
+
 private:
     struct Impl;
     explicit JournalIndexReader(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 };
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+namespace test {
+struct JournalIndexGuardTestCounters final {
+    std::uint64_t visited_calls{0};
+    std::uint64_t depth_calls{0};
+};
+void reset_journal_index_guard_test_counters();
+[[nodiscard]] JournalIndexGuardTestCounters
+journal_index_guard_test_counters();
+[[nodiscard]] Result<void> journal_index_test_rejects_visited_offset(
+    std::span<const std::uint64_t> visited,
+    std::uint64_t candidate);
+[[nodiscard]] Result<void> journal_index_test_rejects_depth_overflow(
+    std::uint32_t depth,
+    std::uint16_t node_level);
+}  // namespace test
+#endif
 
 }  // namespace myrd::persistence

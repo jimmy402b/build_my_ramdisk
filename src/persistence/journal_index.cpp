@@ -2,15 +2,23 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <list>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
 namespace myrd::persistence {
 namespace {
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+std::atomic<std::uint64_t> g_visited_guard_calls{0};
+std::atomic<std::uint64_t> g_depth_guard_calls{0};
+#endif
 
 template <typename Buffer>
 bool all_zero(const Buffer& bytes) noexcept {
@@ -131,6 +139,32 @@ struct ExpectedNode final {
     std::optional<std::uint64_t> maximum_key{};
 };
 
+Result<void> validate_visited_offset(
+    const std::span<const std::uint64_t> visited,
+    const std::uint64_t candidate) {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    g_visited_guard_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+    if (std::find(visited.begin(), visited.end(), candidate) !=
+        visited.end()) {
+        return index_failure<void>(L"JournalIndexReader::lookup",
+                                   L"index cycle detected");
+    }
+    return Result<void>::success();
+}
+
+Result<void> validate_descent_depth(const std::uint32_t depth,
+                                    const std::uint16_t node_level) {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    g_depth_guard_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+    if (node_level != 0 && depth >= kMaxIndexDepth - 1) {
+        return index_failure<void>(L"JournalIndexReader::lookup",
+                                   L"index exceeds maximum depth");
+    }
+    return Result<void>::success();
+}
+
 }  // namespace
 
 struct JournalIndexReader::Impl final {
@@ -146,9 +180,21 @@ struct JournalIndexReader::Impl final {
         const OperationContext& context,
         const JournalIndexView& view,
         const std::uint64_t node_offset) {
+        auto context_result = check_operation_context(context);
+        if (!context_result.ok()) {
+            return Result<
+                std::shared_ptr<const DecodedJournalIndexNode>>::failure(
+                context_result.error());
+        }
         const auto key = make_cache_key(view, node_offset);
         {
             std::lock_guard lock(mutex);
+            context_result = check_operation_context(context);
+            if (!context_result.ok()) {
+                return Result<
+                    std::shared_ptr<const DecodedJournalIndexNode>>::failure(
+                    context_result.error());
+            }
             const auto cached = cache.find(key);
             if (cached != cache.end()) {
                 lru.splice(lru.begin(), lru, cached->second.lru_iterator);
@@ -166,9 +212,20 @@ struct JournalIndexReader::Impl final {
             return Result<std::shared_ptr<const DecodedJournalIndexNode>>::
                 failure(read.error());
         }
+        context_result = check_operation_context(context);
+        if (!context_result.ok()) {
+            return Result<
+                std::shared_ptr<const DecodedJournalIndexNode>>::failure(
+                context_result.error());
+        }
         auto decoded = decode_index_node(bytes, node_offset,
                                          view.committed_length);
         if (!decoded.ok()) {
+            if (decoded.error().domain == ErrorDomain::internal) {
+                return Result<
+                    std::shared_ptr<const DecodedJournalIndexNode>>::failure(
+                    decoded.error());
+            }
             return index_failure<
                 std::shared_ptr<const DecodedJournalIndexNode>>(
                 L"JournalIndexReader::lookup",
@@ -188,8 +245,20 @@ struct JournalIndexReader::Impl final {
                 L"allocating decoded node failed", 0});
         }
 
+        context_result = check_operation_context(context);
+        if (!context_result.ok()) {
+            return Result<
+                std::shared_ptr<const DecodedJournalIndexNode>>::failure(
+                context_result.error());
+        }
         try {
             std::lock_guard lock(mutex);
+            context_result = check_operation_context(context);
+            if (!context_result.ok()) {
+                return Result<
+                    std::shared_ptr<const DecodedJournalIndexNode>>::failure(
+                    context_result.error());
+            }
             const auto existing = cache.find(key);
             if (existing != cache.end()) {
                 lru.splice(lru.begin(), lru,
@@ -303,10 +372,11 @@ Result<JournalIndexLookupResult> JournalIndexReader::lookup(
             return Result<JournalIndexLookupResult>::failure(
                 context_result.error());
         }
-        if (std::find(visited.begin(), visited.begin() + visited_count,
-                      node_offset) != visited.begin() + visited_count) {
-            return index_failure<JournalIndexLookupResult>(
-                L"JournalIndexReader::lookup", L"index cycle detected");
+        const auto cycle = validate_visited_offset(
+            std::span<const std::uint64_t>{visited}.first(visited_count),
+            node_offset);
+        if (!cycle.ok()) {
+            return Result<JournalIndexLookupResult>::failure(cycle.error());
         }
         visited[visited_count++] = node_offset;
 
@@ -364,10 +434,10 @@ Result<JournalIndexLookupResult> JournalIndexReader::lookup(
         if (child == node.internal_entries.end()) {
             return Result<JournalIndexLookupResult>::success({});
         }
-        if (depth + 1 >= kMaxIndexDepth || node.level == 0) {
-            return index_failure<JournalIndexLookupResult>(
-                L"JournalIndexReader::lookup",
-                L"index exceeds maximum depth");
+        const auto depth_validation = validate_descent_depth(depth, node.level);
+        if (!depth_validation.ok()) {
+            return Result<JournalIndexLookupResult>::failure(
+                depth_validation.error());
         }
         node_offset = child->child_offset;
         expected = {child->child_crc32c, child->child_generation,
@@ -398,5 +468,47 @@ void JournalIndexReader::clear_cache() {
     impl_->stats.current_entries = 0;
     impl_->stats.current_bytes = 0;
 }
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+Result<void> JournalIndexReader::hold_cache_lock_for_test(
+    std::atomic<bool>& entered,
+    const std::chrono::milliseconds duration) {
+    if (!impl_) {
+        return index_failure<void>(
+            L"JournalIndexReader::hold_cache_lock_for_test",
+            L"reader is moved from", PersistenceErrorCode::FatalInternalInvariant);
+    }
+    std::lock_guard lock(impl_->mutex);
+    entered.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(duration);
+    return Result<void>::success();
+}
+
+namespace test {
+
+JournalIndexGuardTestCounters journal_index_guard_test_counters() {
+    return {g_visited_guard_calls.load(std::memory_order_relaxed),
+            g_depth_guard_calls.load(std::memory_order_relaxed)};
+}
+
+void reset_journal_index_guard_test_counters() {
+    g_visited_guard_calls.store(0, std::memory_order_relaxed);
+    g_depth_guard_calls.store(0, std::memory_order_relaxed);
+}
+
+Result<void> journal_index_test_rejects_visited_offset(
+    const std::span<const std::uint64_t> visited,
+    const std::uint64_t candidate) {
+    return validate_visited_offset(visited, candidate);
+}
+
+Result<void> journal_index_test_rejects_depth_overflow(
+    const std::uint32_t depth,
+    const std::uint16_t node_level) {
+    return validate_descent_depth(depth, node_level);
+}
+
+}  // namespace test
+#endif
 
 }  // namespace myrd::persistence
