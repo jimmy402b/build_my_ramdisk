@@ -254,18 +254,18 @@ Task 10–12 必须先 `DONE`。所有格式字段、offset、reserved bytes、C
 
 允许：`manifest_format.*`、独立 fixtures、manifest codec tests。
 
-- [ ] `T14.1 [M]` 手工写一份 4096-byte golden fixture 和字段 offset 表；fixture
+- [x] `T14.1 [M]` 手工写一份 4096-byte golden fixture 和字段 offset 表；fixture
   不得调用 production encoder。先加可编译 stub，测试必须在 golden bytes/value
   断言 RED；缺 decoder/encoder 只算 bootstrap。
-- [ ] `T14.2 [M]` 实现 decode 的固定长度/magic/version/reserved-zero/name UTF-8/
+- [x] `T14.2 [M]` 实现 decode 的固定长度/magic/version/reserved-zero/name UTF-8/
   geometry/overflow 边界；任一 short/extra/unknown 必须返回具体格式错误。
-- [ ] `T14.3 [M]` 实现 CRC：CRC 字段视为零，覆盖冻结范围；single-bit flip、CRC
+- [x] `T14.3 [M]` 实现 CRC：CRC 字段视为零，覆盖冻结范围；single-bit flip、CRC
   field flip、reserved byte flip 都必须被拒绝。
-- [ ] `T14.4 [M]` 实现 deterministic encode：先清零整 slot，再按 offset 写字段，
+- [x] `T14.4 [M]` 实现 deterministic encode：先清零整 slot，再按 offset 写字段，
   最后 CRC；同一输入 byte-for-byte 相同。
-- [ ] `T14.5 [M]` 加 boundary matrix：max name、empty/invalid name、generation
+- [x] `T14.5 [M]` 加 boundary matrix：max name、empty/invalid name、generation
   0/max、slot A/B、unknown flags、trailing garbage；encode→decode 不能替代 golden。
-- [ ] `T14.6 [H]` 独立 offset/coverage review 和 mutation proof（改一个 offset/CRC
+- [x] `T14.6 [H]` 独立 offset/coverage review 和 mutation proof（改一个 offset/CRC
   range 必须失败）；Debug/Release focused + `m3-v1`。
 
 ### Task 15 — 最高完全有效的双槽 candidate

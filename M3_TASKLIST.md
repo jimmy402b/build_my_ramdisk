@@ -164,7 +164,7 @@ Suggested commit:
 | 11 | Exact file I/O 与 sparse fake | C | DONE | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | DONE | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | DONE | 10,11,12 | M3-V1 |
-| 14 | 4096-byte manifest codec | C | PENDING | 13 | M3-V1 |
+| 14 | 4096-byte manifest codec | C | DONE | 13 | M3-V1 |
 | 15 | 完整双槽 candidate 选择 | O | PENDING | 14,20,22 | M3-V2 |
 | 16 | Journal wire format 与 digest | C | PENDING | 13 | M3-V1 |
 | 17 | Immutable B+tree reader | S | PENDING | 11,16 | M3-V1 |
@@ -585,11 +585,23 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：C。允许文件：** `manifest_format.*`、manifest unit tests、`tests/fixtures/m3/manifest-v1.hex`。
 
-- [ ] 独立 hand-built fixture 锁定每个字段的 exact bytes、CRC 位置和 reserved zero。
-- [ ] 每个字段、长度、UTF-8、geometry、identity、generation/root/commit 关系、unknown mandatory flag 都有 corruption 红灯。
-- [ ] encode 先清零固定 4096-byte buffer；CRC 计算时 CRC 字段视为零；decode 禁止容忍 reserved semantic data。
-- [ ] 对有效值随机 round-trip，并在每个 byte boundary truncate。
-- [ ] 跑 `m3-v1`；建议提交 `feat(persistence): add manifest slot codec`。
+- [x] 独立 hand-built fixture 锁定每个字段的 exact bytes、CRC 位置和 reserved zero。
+- [x] 每个字段、长度、UTF-8、geometry、identity、generation/root/commit 关系、unknown mandatory flag 都有 corruption 红灯。
+- [x] encode 先清零固定 4096-byte buffer；CRC 计算时 CRC 字段视为零；decode 禁止容忍 reserved semantic data。
+- [x] 对有效值随机 round-trip，并在每个 byte boundary truncate。
+- [x] 跑 `m3-v1`；建议提交 `feat(persistence): add manifest slot codec`。
+
+**完成记录（DONE，2026-08-05）：**
+
+- Accepted implementation：`a8ee63c710369de9c6b9d65a1edaad0ecb29939b`。
+- Frozen layout：`.rdm` slot 固定 4096 bytes、little-endian、固定 offset/width、完整 reserved-zero 表；独立 sparse golden fixture 的 CRC32C bytes 为 `6E DA 48 F0`，不调用 production encoder。
+- Validation：exact length/magic/major、reserved/name padding、bounded UTF-8 单 component、geometry/M2 block size、non-nil identities、generation/epoch、commit 必须结束于 committed length、root range/canonical empty root、mandatory flags均 fail closed；诊断时间戳不因系统时钟回拨使镜像失效。
+- Tests：逐 byte 的 CRC rejection 原因、逐个 reserved/name-padding byte 在重算 CRC 后的语义拒绝、全部 truncation + extra byte、encode invalid matrix、slot A/B、name 1/255、generation 0/max-valid、optional flags、128 组确定性随机字段/identity/range round-trip；显式覆盖复用的非相邻 root。
+- Mutation proof：把 committed-time offset `776→775`，golden 测试立即 RED；CRC 覆盖范围从 4096 缩为 4095 bytes，golden 测试立即 RED；探针均已撤销并重新转绿。
+- Verification：Debug/Release focused `unit.m3.manifest_format` 各 1/1；Release `m3-v1` 5/5；Release clean build 后完整 CTest 65/65；`git diff --check` 通过。
+- Independent review：production format/security 与 test oracle 两条审查最终均 GO，P0/P1 = 0/0。测试审查提出的 reserved 全覆盖、完整 offset 表、随机字段矩阵和非相邻 root 均已补齐。
+- Evidence SHA-256：`manifest_format.cpp` `7EC0870ECB8C58A291A3A02B84227FEA4F5C18B15A78B64FEA6F4AFB7A92C289`；golden fixture `CB327E553B95E416918693F077E957E3975869647CE29E37B9EF35A5F086C463`；layout table `EF517A6D75308BA6902465C0E582CFE89E8BE1B6542B03295408DB0AC07B5AAC`；Release test executable `5E343BBF158252EBACA3DD1890C74FE31168E544E7E006973B15396D1058B7E8`。
+- Boundary：本任务只验证单 slot 自身格式；A/B 完整 candidate、referenced VHDX/journal/commit/root/digest 的联合验证与 fallback 仍属于 Task15/20/22/26。
 
 ## Task 15 — 选择最高“完全有效”的双槽 candidate
 
