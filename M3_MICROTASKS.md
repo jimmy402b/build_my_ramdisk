@@ -193,7 +193,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   abort partial progress 全覆盖。独立 reviewer 审查 oracle，生产作者不得改期望。
 - [x] `T08.4 [M]` 加最小 trace reducer，把失败 schedule 缩到仍失败的前缀；
   reducer 只删操作，不重写 expected outcome。
-- [ ] `T08.5 [H]` 做 mutation proof：在隔离补丁中禁用一次 pre-image preservation，
+- [x] `T08.5 [H]` 做 mutation proof：在隔离补丁中禁用一次 pre-image preservation，
   证明模型稳定失败并记录断言；随后恢复补丁，工作树不得残留 mutation。
 - [ ] `T08.6 [M]` Debug/Release 固定种子各一次、100 个生成 seed、完整 M2 回归；
   保存最慢 seed、总操作数和 hash。

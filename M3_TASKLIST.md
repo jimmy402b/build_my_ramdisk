@@ -403,6 +403,11 @@ I/O 按 512-byte sector 缩短 length；seed、geometry、此前 operations、pa
 外部 failure predicate 均不改。非失败输入返回空，缩减后必须由同一 predicate 再确认；
 focused `8/8`。
 
+T08.5 evidence：隔离 mutation 将 `fill_data_preimage` 的 DATA copy 临时替换为全零，
+Debug model gate 稳定在 directed store/model cut comparison 的 DATA payload equality 红灯
+（exit `1`）；恢复同一行后 `8/8`。`git diff -- src/storage` 无输出，mutation 未提交、
+工作树无 production 残留。
+
 ## Task 09 — 签发 M2.1 前置 verdict
 
 **类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。
