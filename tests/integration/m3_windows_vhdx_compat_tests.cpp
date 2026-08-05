@@ -4,9 +4,11 @@
 #include <winioctl.h>
 #include <virtdisk.h>
 
+#include "src/common/sha256.h"
 #include "src/common/unique_handle.h"
 #include "src/driver/adapter_discovery.h"
 #include "src/driver/direct_aim_adapter.h"
+#include "src/driver/physical_drive_locator.h"
 #include "src/driver/windows_srb_transport.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/vhdx_format.h"
@@ -22,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <span>
@@ -55,6 +58,8 @@ struct CaseReport final {
     bool cleanup_succeeded{};
     std::uint32_t cleanup_win32{};
     std::string recovery_command;
+    std::string data_sha256;
+    std::uint64_t data_bytes{};
 };
 
 struct GateReport final {
@@ -62,6 +67,10 @@ struct GateReport final {
     std::string reason;
     bool elevated{};
     std::int64_t aim_devices_online{-1};
+    bool sandbox_cleanup_attempted{};
+    bool sandbox_cleanup_succeeded{};
+    std::uint32_t sandbox_cleanup_win32{};
+    std::string sandbox_recovery_command;
     std::vector<CaseReport> cases;
 };
 
@@ -148,6 +157,14 @@ void emit_report(const GateReport& report) {
            << ",\"reason\":\"" << json_escape(report.reason) << "\""
            << ",\"elevated\":" << (report.elevated ? "true" : "false")
            << ",\"aim_devices_online\":" << report.aim_devices_online
+           << ",\"sandbox_cleanup_attempted\":"
+           << (report.sandbox_cleanup_attempted ? "true" : "false")
+           << ",\"sandbox_cleanup_succeeded\":"
+           << (report.sandbox_cleanup_succeeded ? "true" : "false")
+           << ",\"sandbox_cleanup_win32\":"
+           << report.sandbox_cleanup_win32
+           << ",\"sandbox_recovery_command\":\""
+           << json_escape(report.sandbox_recovery_command) << "\""
            << ",\"cases\":[";
     for (std::size_t index = 0; index < report.cases.size(); ++index) {
         if (index != 0) output << ',';
@@ -163,7 +180,10 @@ void emit_report(const GateReport& report) {
                << (item.cleanup_succeeded ? "true" : "false")
                << ",\"cleanup_win32\":" << item.cleanup_win32
                << ",\"recovery_command\":\""
-               << json_escape(item.recovery_command) << "\"}";
+               << json_escape(item.recovery_command) << "\""
+               << ",\"data_sha256\":\""
+               << json_escape(item.data_sha256) << "\""
+               << ",\"data_bytes\":" << item.data_bytes << "}";
     }
     output << "]}";
     std::cout << output.str() << '\n';
@@ -308,9 +328,11 @@ std::int64_t require_no_online_aim_devices() {
     return count;
 }
 
+std::wstring powershell_single_quote(std::wstring_view value);
+
 class Sandbox final {
 public:
-    Sandbox() {
+    explicit Sandbox(GateReport& report) : report_(report) {
         static std::uint64_t sequence{};
         root_ = std::filesystem::temp_directory_path() /
             (L"myrd-m3-vhdx-compat-" +
@@ -334,21 +356,49 @@ public:
                        static_cast<std::streamsize>(bytes.size()));
         manifest.close();
         if (!manifest) {
+            static_cast<void>(cleanup());
             throw GateFailure("create_test_manifest", ERROR_WRITE_FAULT,
                               "could not create compatibility sandbox");
         }
     }
 
-    ~Sandbox() noexcept {
-        std::error_code ignored;
-        std::filesystem::remove_all(root_, ignored);
-    }
+    ~Sandbox() noexcept { static_cast<void>(cleanup()); }
 
     [[nodiscard]] const std::filesystem::path& root() const noexcept {
         return root_;
     }
 
+    [[nodiscard]] bool cleanup() noexcept {
+        if (report_.sandbox_cleanup_attempted) {
+            return report_.sandbox_cleanup_succeeded;
+        }
+        report_.sandbox_cleanup_attempted = true;
+        std::error_code error;
+        static_cast<void>(std::filesystem::remove_all(root_, error));
+        report_.sandbox_cleanup_win32 = error
+            ? static_cast<std::uint32_t>(error.value())
+            : ERROR_SUCCESS;
+        report_.sandbox_cleanup_succeeded =
+            !error && !std::filesystem::exists(root_, error);
+        if (error) {
+            report_.sandbox_cleanup_win32 =
+                static_cast<std::uint32_t>(error.value());
+            report_.sandbox_cleanup_succeeded = false;
+        }
+        if (!report_.sandbox_cleanup_succeeded) {
+            if (report_.sandbox_cleanup_win32 == ERROR_SUCCESS) {
+                report_.sandbox_cleanup_win32 = ERROR_DIR_NOT_EMPTY;
+            }
+            report_.sandbox_recovery_command = utf8(
+                L"Remove-Item -LiteralPath '" +
+                powershell_single_quote(root_.wstring()) +
+                L"' -Recurse -Force");
+        }
+        return report_.sandbox_cleanup_succeeded;
+    }
+
 private:
+    GateReport& report_;
     std::filesystem::path root_;
 };
 
@@ -572,9 +622,119 @@ UniqueHandle open_physical_disk(
               "attached PhysicalDrive did not become ready");
 }
 
+std::uint32_t parse_physical_drive_number(
+    const std::wstring_view path, CaseReport& report) {
+    constexpr std::wstring_view prefix = L"\\\\.\\PhysicalDrive";
+    if (path.size() <= prefix.size() ||
+        CompareStringOrdinal(
+            path.data(), static_cast<int>(prefix.size()),
+            prefix.data(), static_cast<int>(prefix.size()), TRUE) !=
+            CSTR_EQUAL) {
+        fail_case(report, "validate_PhysicalDrive_path",
+                  ERROR_INVALID_NAME,
+                  "Virtdisk returned a noncanonical PhysicalDrive path");
+    }
+    std::uint64_t number{};
+    for (const auto character : path.substr(prefix.size())) {
+        if (character < L'0' || character > L'9' ||
+            number > ((std::numeric_limits<std::uint32_t>::max)() -
+                      static_cast<std::uint64_t>(character - L'0')) / 10U) {
+            fail_case(report, "validate_PhysicalDrive_path",
+                      ERROR_INVALID_NAME,
+                      "PhysicalDrive suffix is not a checked device number");
+        }
+        number = number * 10U +
+            static_cast<std::uint64_t>(character - L'0');
+    }
+    const auto canonical =
+        std::wstring(prefix) + std::to_wstring(number);
+    if (CompareStringOrdinal(
+            path.data(), static_cast<int>(path.size()),
+            canonical.data(), static_cast<int>(canonical.size()), TRUE) !=
+        CSTR_EQUAL) {
+        fail_case(report, "validate_PhysicalDrive_path",
+                  ERROR_INVALID_NAME,
+                  "PhysicalDrive path is not in canonical decimal form");
+    }
+    return static_cast<std::uint32_t>(number);
+}
+
+std::uint32_t validate_attached_physical_identity(
+    const VirtdiskApi& api, const HANDLE virtual_disk,
+    const HANDLE physical_disk, const std::wstring_view original_path,
+    const std::span<const std::uint32_t> baseline, CaseReport& report) {
+    const auto path_number = parse_physical_drive_number(
+        original_path, report);
+    STORAGE_DEVICE_NUMBER identity{};
+    DWORD returned{};
+    if (!DeviceIoControl(
+            physical_disk, IOCTL_STORAGE_GET_DEVICE_NUMBER, nullptr, 0,
+            &identity, sizeof(identity), &returned, nullptr)) {
+        fail_case(report, "IOCTL_STORAGE_GET_DEVICE_NUMBER",
+                  GetLastError(),
+                  "could not bind raw handle to a disk device number");
+    }
+    // Windows reports partition 0 for a whole PhysicalDrive on this provider;
+    // some storage stacks use -1. The canonical whole-disk path plus matching
+    // disk device type/number is the identity boundary, not that field.
+    if (returned < sizeof(identity) || identity.DeviceType != FILE_DEVICE_DISK ||
+        identity.DeviceNumber != path_number ||
+        (identity.PartitionNumber != 0 &&
+         identity.PartitionNumber != static_cast<DWORD>(-1))) {
+        fail_case(report, "IOCTL_STORAGE_GET_DEVICE_NUMBER",
+                  ERROR_INVALID_DATA,
+                  "raw handle identity differs from Virtdisk PhysicalDrive: "
+                  "returned=" + std::to_string(returned) +
+                  ", type=" + std::to_string(identity.DeviceType) +
+                  ", device=" + std::to_string(identity.DeviceNumber) +
+                  ", path=" + std::to_string(path_number) +
+                  ", partition=" + std::to_string(identity.PartitionNumber));
+    }
+    if (std::find(baseline.begin(), baseline.end(), path_number) !=
+        baseline.end()) {
+        fail_case(report, "PhysicalDrive_baseline_check",
+                  ERROR_ALREADY_EXISTS,
+                  "Virtdisk attachment reused a pre-existing disk number");
+    }
+    const auto refreshed_path = physical_path(api, virtual_disk, report);
+    if (CompareStringOrdinal(
+            original_path.data(), static_cast<int>(original_path.size()),
+            refreshed_path.data(), static_cast<int>(refreshed_path.size()),
+            TRUE) != CSTR_EQUAL) {
+        fail_case(report, "GetVirtualDiskPhysicalPath(recheck)",
+                  ERROR_DEVICE_REMOVED,
+                  "attachment identity changed after opening raw handle");
+    }
+    return path_number;
+}
+
+void require_attached_disk_removed(
+    const std::uint32_t device_number, CaseReport& report) {
+    const auto path = L"\\\\.\\PhysicalDrive" +
+        std::to_wstring(device_number);
+    for (std::uint32_t attempt = 0; attempt < 50; ++attempt) {
+        UniqueHandle probe(CreateFileW(
+            path.c_str(), 0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!probe) {
+            const auto code = GetLastError();
+            if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND ||
+                code == ERROR_NO_SUCH_DEVICE || code == ERROR_DEV_NOT_EXIST) {
+                return;
+            }
+            fail_case(report, "CreateFileW(detach identity probe)", code,
+                      "could not prove attached PhysicalDrive was removed");
+        }
+        Sleep(100);
+    }
+    fail_case(report, "PhysicalDrive_detach_check", ERROR_BUSY,
+              "detached Virtdisk device number remained online");
+}
+
 std::uint64_t physical_disk_size(
     const HANDLE disk, CaseReport& report) {
-    std::array<std::byte, 1024> output{};
+    alignas(DISK_GEOMETRY_EX) std::array<std::byte, 1024> output{};
     DWORD returned{};
     if (!DeviceIoControl(
             disk, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, nullptr, 0,
@@ -650,6 +810,9 @@ void verify_product_fixture(
     const VirtdiskApi& api, const ProductFixture& fixture,
     CaseReport& report) {
     static_cast<void>(require_no_online_aim_devices());
+    const auto baseline = require_product(
+        myrd::aim::snapshot_physical_drive_numbers(), report,
+        "snapshot_physical_drive_numbers(before attach)");
     const auto access = static_cast<VIRTUAL_DISK_ACCESS_MASK>(
         VIRTUAL_DISK_ACCESS_ATTACH_RO | VIRTUAL_DISK_ACCESS_DETACH |
         VIRTUAL_DISK_ACCESS_GET_INFO);
@@ -666,14 +829,19 @@ void verify_product_fixture(
     const auto flags = static_cast<ATTACH_VIRTUAL_DISK_FLAG>(
         ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY |
         ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER);
+    static_cast<void>(require_no_online_aim_devices());
     attach_virtual_disk(api, disk.get(), flags, attached, report);
+    static_cast<void>(require_no_online_aim_devices());
     const auto path = physical_path(api, disk.get(), report);
     auto physical = open_physical_disk(path, GENERIC_READ, report);
+    const auto device_number = validate_attached_physical_identity(
+        api, disk.get(), physical.get(), path, baseline, report);
     if (physical_disk_size(physical.get(), report) != fixture.virtual_size) {
         fail_case(report, "IOCTL_DISK_GET_DRIVE_GEOMETRY_EX",
                   ERROR_INVALID_DATA,
                   "attached disk size differs from product geometry");
     }
+    static_cast<void>(require_no_online_aim_devices());
     const auto actual = read_physical(
         physical.get(), fixture.sample_offset,
         fixture.expected_sample.size(), report);
@@ -681,11 +849,17 @@ void verify_product_fixture(
         fail_case(report, "ReadFile(PhysicalDrive)", ERROR_CRC,
                   "attached bytes differ from product payload");
     }
+    static_cast<void>(require_no_online_aim_devices());
+    report.data_sha256 = require_product(
+        myrd::sha256_hex(actual), report, "sha256_hex(product sample)");
+    report.data_bytes = actual.size();
     physical.reset();
     if (!attached.detach_now()) {
         fail_case(report, "DetachVirtualDisk", report.cleanup_win32,
                   "finally-detach failed; run recovery_command");
     }
+    require_attached_disk_removed(device_number, report);
+    static_cast<void>(require_no_online_aim_devices());
     report.status = "PASS";
     report.operation = "native_round_trip";
     report.detail = "Windows open/query/attach/sample/detach succeeded";
@@ -727,18 +901,26 @@ void verify_windows_created_fixture(
                   "Windows-created fixture has unexpected geometry");
     }
 
+    const auto baseline = require_product(
+        myrd::aim::snapshot_physical_drive_numbers(), report,
+        "snapshot_physical_drive_numbers(before native attach)");
     AttachedDisk attached(api, disk.get(), report, path);
+    static_cast<void>(require_no_online_aim_devices());
     attach_virtual_disk(
         api, disk.get(), ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER,
         attached, report);
+    static_cast<void>(require_no_online_aim_devices());
     const auto device_path = physical_path(api, disk.get(), report);
     auto physical = open_physical_disk(
         device_path, GENERIC_READ | GENERIC_WRITE, report);
+    const auto device_number = validate_attached_physical_identity(
+        api, disk.get(), physical.get(), device_path, baseline, report);
     if (physical_disk_size(physical.get(), report) != 8 * kMiB) {
         fail_case(report, "IOCTL_DISK_GET_DRIVE_GEOMETRY_EX(native)",
                   ERROR_INVALID_DATA,
                   "refused to write a PhysicalDrive with unexpected size");
     }
+    static_cast<void>(require_no_online_aim_devices());
     std::vector<std::byte> expected(64 * kKiB);
     auto state = std::uint64_t{0x510e527fade682d1ULL};
     for (auto& value : expected) {
@@ -748,12 +930,15 @@ void verify_windows_created_fixture(
         value = static_cast<std::byte>(state & 0xffU);
     }
     write_physical(physical.get(), 0, expected, report);
+    static_cast<void>(require_no_online_aim_devices());
     physical.reset();
     if (!attached.detach_now()) {
         fail_case(report, "DetachVirtualDisk(native)",
                   report.cleanup_win32,
                   "finally-detach failed; run recovery_command");
     }
+    require_attached_disk_removed(device_number, report);
+    static_cast<void>(require_no_online_aim_devices());
     disk.reset();
 
     auto parser_capability = require_product(
@@ -796,6 +981,9 @@ void verify_windows_created_fixture(
         fail_case(report, "VhdxReader::read_block(native)", ERROR_CRC,
                   "product reader differs from Windows-written data");
     }
+    report.data_sha256 = require_product(
+        myrd::sha256_hex(actual), report, "sha256_hex(native sample)");
+    report.data_bytes = actual.size();
     report.status = "PASS";
     report.operation = "windows_create_product_read";
     report.detail =
@@ -813,7 +1001,7 @@ void run_gate(GateReport& report) {
     api.load();
     report.aim_devices_online = require_no_online_aim_devices();
 
-    Sandbox sandbox;
+    Sandbox sandbox(report);
     CaseReport setup_case;
     setup_case.name = "product_fixture_setup";
     auto writer = require_product(
@@ -877,6 +1065,12 @@ void run_gate(GateReport& report) {
     report.cases.push_back({"windows_native_reader"});
     verify_windows_created_fixture(api, sandbox, report.cases.back());
 
+    if (!sandbox.cleanup()) {
+        throw GateFailure(
+            "cleanup_compatibility_sandbox",
+            report.sandbox_cleanup_win32,
+            "sandbox cleanup failed; run sandbox_recovery_command");
+    }
     report.status = "PASS";
     report.reason = "all_native_vhdx_compatibility_cases_passed";
 }

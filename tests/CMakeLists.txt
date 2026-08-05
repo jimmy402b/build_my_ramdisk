@@ -1018,7 +1018,6 @@ add_test(
             -Executable "$<TARGET_FILE:myrd_m3_windows_vhdx_compat_tests>")
 set_tests_properties(integration.m3.windows_vhdx PROPERTIES
     LABELS "m3-v5"
-    SKIP_RETURN_CODE 77
     TIMEOUT 240)
 
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
