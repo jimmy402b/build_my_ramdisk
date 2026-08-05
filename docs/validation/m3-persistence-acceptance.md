@@ -1052,3 +1052,58 @@ Evidence SHA-256:
 Task 18 verdict: **DONE**. This authorizes Task 19 to append planned records,
 nodes and a commit, then flush and independently read them back. It does not
 claim journal durability or manifest publication.
+
+## Task 19 — Durable journal-checkpoint preparation acceptance
+
+Task 19 is accepted at implementation commit
+`5e0fa901b54c2692316b0e205382cc0fd61d91de`. It appends block records and
+Task 18 COW index nodes only at or after the caller's manifest committed
+length, writes one complete checkpoint commit, flushes exactly once, and then
+independently reads back every new record before returning an unpublished
+`PreparedCheckpoint`.
+
+The writer freezes each block descriptor from its encoded bytes, streams the
+canonical checkpoint digest, verifies the complete sequence and committed end,
+and resolves every updated key through a separate `JournalIndexReader` rooted
+at the just-written tree. Assignment node counts and final offsets are checked
+against the planned layout. The returned value contains generation, root and
+commit descriptors, committed length, chain digest, per-kind counts and a
+bounded ack-stream descriptor; it does not publish the manifest or acknowledge
+the M2 snapshot.
+
+Production mutation requires a `ValidatedPersistenceFile`. The capability is
+checked before append and again before Prepared, while every underlying write
+and flush remains bound to the live bundle WriterLock and rechecks file-object
+identity, hard-link count, reparse state and direct-child containment. The
+generic in-memory fault file is accepted only when test seams are compiled.
+
+Tests bind named phases and actual backend I/O in one ordered trace. They cover
+short progress in every record, zero progress, disk-full and torn writes,
+split-tree node failures, flush failure, record/node/commit and crosscheck-only
+corruption, source-payload mutation after encoding, per-phase and per-ordinal
+cancellation/deadline, finite budgets, final partial DATA blocks, retries, and
+byte-for-byte preservation of both generation-zero and generation-one
+committed prefixes after failure.
+
+Final focused Debug and Release writer tests passed. A no-test-seam
+`BUILD_TESTING=OFF` Release build of `myrd_persistence` passed. Release
+`m3-v1` passed 9/9 and complete Release CTest passed 69/69. An independent
+durability/capability review returned GO with P0/P1 = 0/0; three of its four
+nonblocking test-strength suggestions were subsequently added, while a
+standalone runtime production-capability probe remains optional because the
+real production branch is compiled and the lower-level capability behavior is
+already exercised directly.
+
+Evidence SHA-256:
+
+- `journal_writer.cpp`:
+  `BC3301DF2F1C3FA639DC4B4A7172C6A82271B5D29DFE830D7F084EDA1A354AD8`;
+- journal-writer tests:
+  `FAED697968A720CE42EC5C9EEBF9BB09573CD16B4A6B7A924DF262BE2A07A718`;
+- Release journal-writer test executable:
+  `395FC46FDE90642FC19B0659DDFA09477EBCAA1EDF2BCCDBA8C2B44F7BA3485D`.
+
+Task 19 verdict: **DONE**. This authorizes Task 20 to resolve immutable
+committed journal blocks. It does not authorize manifest publication,
+BackingView installation, snapshot acknowledgement or end-to-end checkpoint
+commit.

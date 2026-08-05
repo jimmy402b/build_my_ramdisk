@@ -684,11 +684,20 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：S。允许文件：** `journal_writer.*`、writer fault tests；durability 顺序由逻辑负责人签字。
 
-- [ ] 为 data/node/commit/flush/readback 每一 phase 写 fault 红灯，含 short write、disk full、cancel、deadline。
-- [ ] 只从 manifest committed length 追加，不覆盖已提交 byte；padding 清零并 streaming 计算 canonical digest。
-- [ ] 完整 commit 后 flush 一次，再重读所有新 byte 独立复算 CRC/digest/end。
-- [ ] 返回 PreparedCheckpoint，不发布 manifest、不 install、不 ack。
-- [ ] 证明任一 pre-manifest failure 只留可忽略 tail；跑 `m3-v1`/fault tests。
+- [x] 为 data/node/commit/flush/readback 每一 phase 写 fault 红灯，含 short write、disk full、cancel、deadline。
+- [x] 只从 manifest committed length 追加，不覆盖已提交 byte；padding 清零并 streaming 计算 canonical digest。
+- [x] 完整 commit 后 flush 一次，再重读所有新 byte 独立复算 CRC/digest/end。
+- [x] 返回 PreparedCheckpoint，不发布 manifest、不 install、不 ack。
+- [x] 证明任一 pre-manifest failure 只留可忽略 tail；跑 `m3-v1`/fault tests。
+
+**完成记录（DONE，2026-08-05）：**
+
+- Accepted implementation：`5e0fa901b54c2692316b0e205382cc0fd61d91de`。
+- Append 从 manifest committed length 开始；block records、COW nodes、commit 完整写入后只 flush 一次，再逐 record readback，并从最终 root 用独立 `JournalIndexReader` 逐项核对冻结 descriptor。
+- 生产构建只接受持有 live bundle WriterLock 的 `ValidatedPersistenceFile`；写前和 Prepared 前都复核 file-object identity、hard-link、reparse 与 containment。测试 fake 只存在于 `BUILD_TESTING` 构建。
+- Fault matrix 覆盖逐 record short I/O、disk-full/torn write、flush、readback/crosscheck corruption、逐 phase+ordinal cancellation/deadline、多节点 ordinal，以及 generation-0/1 committed prefix 逐 byte 不变。
+- Verification：Debug/Release focused writer 通过；`BUILD_TESTING=OFF` Release `myrd_persistence` 编译通过；Release `m3-v1` 9/9、完整 Release CTest 69/69。独立 durability/capability 审查 GO，P0/P1 = 0/0。
+- Boundary：本任务只返回未发布的 `PreparedCheckpoint`；不写 manifest、不 install BackingView、不 ack snapshot。
 - [ ] 建议提交 `feat(persistence): prepare durable journal checkpoints`。
 
 ## Task 20 — JournalReader 解析 committed blocks

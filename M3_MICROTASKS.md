@@ -346,19 +346,23 @@ codec 来迎合 selector。
 
 允许：`journal_writer.*`、writer tests/fakes；不得写 manifest。
 
-- [ ] `T19.1 [M]` 建 phase fake 和 RED matrix：每个 record/node/commit 的 before/
+- [x] `T19.1 [M]` 建 phase fake 和 RED matrix：每个 record/node/commit 的 before/
   short/disk-full/cancel/deadline、flush、readback；每格记录 calls 与 surviving bytes。
-- [ ] `T19.2 [H]` 冻结 append contract：起点只能是 manifest committed length，
+- [x] `T19.2 [H]` 冻结 append contract：起点只能是 manifest committed length，
   禁止覆盖 committed bytes；padding 全零；canonical digest streaming。
-- [ ] `T19.3 [H]` 实现 record append 与 COW nodes/commit append；每个 offset/length
+- [x] `T19.3 [H]` 实现 record append 与 COW nodes/commit append；每个 offset/length
   checked，任何失败只留下未引用 tail，old root 不变。
-- [ ] `T19.4 [X]` 实现唯一 durability 顺序：完整 commit bytes→一次 journal flush→
+- [x] `T19.4 [X]` 实现唯一 durability 顺序：完整 commit bytes→一次 journal flush→
   re-read 所有新 bytes→独立重算 record/node CRC、digest、committed end。禁止在
   readback 前返回 Prepared。
-- [ ] `T19.5 [M]` 构造 `PreparedCheckpoint` value：generation、root/commit、length、
+- [x] `T19.5 [M]` 构造 `PreparedCheckpoint` value：generation、root/commit、length、
   digest、counts、bounded ack-stream descriptor；类型不得暗示已 publish。
-- [ ] `T19.6 [H]` 证明每个 pre-manifest failure 都只产生 ignorable tail；mutation
+- [x] `T19.6 [H]` 证明每个 pre-manifest failure 都只产生 ignorable tail；mutation
   调换 commit/flush/readback 顺序必须红。Debug/Release focused + `m3-v1`。
+
+Task 19 implementation：`5e0fa901b54c2692316b0e205382cc0fd61d91de`；
+独立审查 GO（P0/P1=0/0）。进入 Task 20 前必须保持 manifest publish、
+BackingView install 和 snapshot ack 均在本任务边界之外。
 
 ### Task 20 — JournalReader block resolution
 

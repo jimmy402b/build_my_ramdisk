@@ -690,12 +690,12 @@ return ManifestCorrupt;
 **Depends on:** 11, 16, 18
 **Files:** Create `src/persistence/journal_writer.h/.cpp`, `tests/unit/m3_journal_writer_tests.cpp`.
 
-- [ ] **Step 1: Red-test named phases** for each data record, node, commit, flush, and readback. Inject short write, disk full, cancellation and deadline before every phase.
-- [ ] **Step 2: Implement append from manifest committed length.** Never overwrite committed bytes; pad every record with zeros; accumulate the canonical streaming digest.
-- [ ] **Step 3: Append COW index nodes and commit**, flush exactly once after the complete commit, then re-read every newly appended byte and independently recalculate record CRC, node CRC, digest and committed end.
-- [ ] **Step 4: Return a `PreparedCheckpoint`** containing generation, root/commit descriptors, committed length, digest, record counts and an ack-record stream descriptor. It is not yet published.
-- [ ] **Step 5: Prove any pre-manifest failure leaves only an ignorable tail and old root. Run `m3-v1` and writer fault tests.**
-- [ ] **Step 6: Commit.** `feat(persistence): prepare durable journal checkpoints`.
+- [x] **Step 1: Red-test named phases** for each data record, node, commit, flush, and readback. Inject short write, disk full, cancellation and deadline before every phase.
+- [x] **Step 2: Implement append from manifest committed length.** Never overwrite committed bytes; pad every record with zeros; accumulate the canonical streaming digest.
+- [x] **Step 3: Append COW index nodes and commit**, flush exactly once after the complete commit, then re-read every newly appended byte and independently recalculate record CRC, node CRC, digest and committed end.
+- [x] **Step 4: Return a `PreparedCheckpoint`** containing generation, root/commit descriptors, committed length, digest, record counts and an ack-record stream descriptor. It is not yet published.
+- [x] **Step 5: Prove any pre-manifest failure leaves only an ignorable tail and old root. Run `m3-v1` and writer fault tests.**
+- [x] **Step 6: Commit.** `feat(persistence): prepare durable journal checkpoints` (`5e0fa901b54c2692316b0e205382cc0fd61d91de`).
 
 ### Task 20: Resolve committed blocks with `JournalReader`
 
