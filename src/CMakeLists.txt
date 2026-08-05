@@ -165,6 +165,8 @@ add_library(myrd_persistence STATIC
     persistence/journal_index.cpp
     persistence/journal_writer.h
     persistence/journal_writer.cpp
+    persistence/journal_reader.h
+    persistence/journal_reader.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h
