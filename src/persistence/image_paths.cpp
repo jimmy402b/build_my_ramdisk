@@ -1104,6 +1104,43 @@ WindowsFileIdentity ValidatedPersistenceFile::observed_identity() const {
     return impl_->capability.identity_;
 }
 
+Result<WindowsFileIdentity>
+ValidatedPersistenceFile::verify_mutation_capability() {
+    if (impl_ == nullptr) {
+        return path_failure<WindowsFileIdentity>(
+            ImagePathErrorCode::IoError,
+            L"image_path.validated_io.verify_mutation",
+            L"validated persistence file is unavailable",
+            ERROR_INVALID_HANDLE);
+    }
+    std::scoped_lock operation_lock(impl_->mutex);
+    auto authority = writer_authority_for_mutation(
+        L"image_path.validated_io.verify_mutation");
+    if (!authority.ok()) {
+        return Result<WindowsFileIdentity>::failure(authority.error());
+    }
+    std::scoped_lock writer_lock(authority.value()->mutex);
+    auto capability_valid = verify_validated_capability_locked(
+        *authority.value(),
+        impl_->capability.writer_authority_.lock(),
+        impl_->capability.deleted_, impl_->poisoned, false,
+        impl_->capability.cleanup_authorized_,
+        impl_->capability.root_handle_.get(),
+        impl_->capability.file_handle_.get(),
+        impl_->capability.root_identity_,
+        impl_->capability.identity_);
+    if (!capability_valid.ok()) {
+        return Result<WindowsFileIdentity>::failure(
+            capability_valid.error());
+    }
+    auto refreshed = refresh_identity_after_mutation(authority.value());
+    if (!refreshed.ok()) {
+        return Result<WindowsFileIdentity>::failure(refreshed.error());
+    }
+    return Result<WindowsFileIdentity>::success(
+        impl_->capability.identity_);
+}
+
 Result<ValidatedBundleFile>
 ValidatedPersistenceFile::release_validated_bundle_file() {
     if (impl_ == nullptr) {

@@ -162,6 +162,8 @@ public:
     Result<void> close() override;
 
     [[nodiscard]] WindowsFileIdentity observed_identity() const;
+    [[nodiscard]] Result<WindowsFileIdentity>
+    verify_mutation_capability();
     [[nodiscard]] Result<ValidatedBundleFile>
     release_validated_bundle_file();
 

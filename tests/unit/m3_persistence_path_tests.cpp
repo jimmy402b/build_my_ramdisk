@@ -1461,6 +1461,9 @@ TEST_CASE(task12_validated_writer_io_refreshes_identity_for_cleanup) {
     REQUIRE(io_result.ok());
     auto io = io_result.move_value();
 
+    const auto initial_capability = io->verify_mutation_capability();
+    REQUIRE(initial_capability.ok());
+    REQUIRE_EQ(initial_capability.value(), identity_of(data));
     const std::string suffix = "4567";
     const auto suffix_bytes = std::as_bytes(std::span(suffix));
     REQUIRE(io->write_exact(4, suffix_bytes).ok());
@@ -1503,6 +1506,9 @@ TEST_CASE(task12_validated_write_rejects_hardlink_added_after_adapter_open) {
     REQUIRE(CreateHardLinkW(external_alias.c_str(), data.c_str(), nullptr));
     const auto before_content = read_text(data);
     const auto before_identity = identity_of(external_alias);
+    const auto capability_denied = io->verify_mutation_capability();
+    REQUIRE(is_image_path_error(
+        capability_denied, ImagePathErrorCode::HardLink));
     const std::array<std::byte, 4> replacement{
         std::byte{'b'}, std::byte{'a'}, std::byte{'d'}, std::byte{'!'}};
     const auto denied = io->write_exact(0, replacement);
@@ -1571,6 +1577,9 @@ TEST_CASE(task12_locked_manifest_io_is_writable_only_for_live_writer) {
     REQUIRE(writer.verify().ok());
 
     REQUIRE(writer.close().ok());
+    const auto capability_denied = io->verify_mutation_capability();
+    REQUIRE(is_image_path_error(
+        capability_denied, ImagePathErrorCode::WriterLockInvalid));
     const auto denied = io->write_exact(1, marker);
     REQUIRE(is_image_path_error(
         denied, ImagePathErrorCode::WriterLockInvalid));
