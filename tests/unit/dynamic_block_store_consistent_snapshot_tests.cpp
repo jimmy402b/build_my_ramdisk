@@ -602,6 +602,58 @@ private:
     bool release_capacity_{};
 };
 
+class Task07CapacityGrantObserver final
+    : public myrd::ISnapshotPressureTestObserver {
+public:
+    void on_snapshot_pressure_event(
+        myrd::SnapshotPressureTestEvent event,
+        std::uint64_t block_index) noexcept override {
+        if (block_index != 1) {
+            return;
+        }
+        std::unique_lock lock(mutex_);
+        if (event ==
+            myrd::SnapshotPressureTestEvent::CapacityWaitSleeping) {
+            sleeping_ = true;
+            condition_.notify_all();
+        } else if (
+            event == myrd::SnapshotPressureTestEvent::CapacityGrantReady) {
+            granted_ = true;
+            condition_.notify_all();
+            condition_.wait(lock, [this] { return released_; });
+        }
+    }
+
+    [[nodiscard]] bool wait_sleeping(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(lock, deadline, [this] {
+            return sleeping_;
+        });
+    }
+
+    [[nodiscard]] bool wait_granted(
+        std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_until(lock, deadline, [this] {
+            return granted_;
+        });
+    }
+
+    void release() noexcept {
+        std::scoped_lock lock(mutex_);
+        released_ = true;
+        condition_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool sleeping_{};
+    bool granted_{};
+    bool released_{};
+};
+
 myrd::SnapshotPreimage metadata_preimage(
     std::uint64_t block_index,
     std::uint64_t version,
@@ -2082,6 +2134,148 @@ TEST_CASE(m2_1_coordinator_charges_metadata_and_rolls_back_reservations) {
     REQUIRE_EQ(accounting.pending_reservations, 0ull);
     REQUIRE(!coordinator.peek_preimage(3).has_value());
     REQUIRE(coordinator.validate_invariants_for_test().ok());
+}
+
+TEST_CASE(m2_1_task07_registered_capacity_head_prevents_barging) {
+    myrd::SnapshotCoordinator coordinator(
+        myrd::kSnapshotCowRecordBudgetBytes);
+    const auto activated = coordinator.activate(7, 3);
+    REQUIRE(activated.ok());
+
+    auto first = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            0, 1, myrd::DirtyRecordKind::Zero, 7, 1));
+    REQUIRE(first.ok());
+    REQUIRE(coordinator.publish_metadata_preimage(
+        bounded_context(), first.value()).ok());
+
+    auto observer = std::make_shared<Task07PressureObserver>();
+    std::atomic<std::uint32_t> waiter_code{kNoResult};
+    std::uint64_t grant_ticket = 0;
+    std::jthread waiter([&] {
+        const auto result = coordinator.wait_for_capacity_change(
+            myrd::OperationContext{},
+            activated.value(),
+            myrd::kSnapshotCowRecordBudgetBytes,
+            1,
+            std::chrono::seconds{2},
+            observer.get(),
+            grant_ticket);
+        waiter_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+    });
+    myrd::ScopeExit cleanup([&]() noexcept {
+        observer->release_ready_event();
+        coordinator.notify_capacity_waiters_for_test();
+        if (waiter.joinable()) {
+            waiter.join();
+        }
+    });
+    REQUIRE_EQ(observer->wait_for_ready_or_writer_returned(
+                   std::chrono::steady_clock::now() + kWaitBound),
+               Task07PressureObserver::RaceResult::ReadyToSleep);
+    REQUIRE(coordinator.advance_scan_frontier(
+        activated.value(), 0, 1, 3).ok());
+
+    auto barger = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            2, 1, myrd::DirtyRecordKind::Zero, 7, 2));
+    REQUIRE(!barger.ok());
+    REQUIRE_EQ(
+        error_code(barger.error()),
+        static_cast<std::uint32_t>(
+            myrd::DynamicBlockStoreErrorCode::SnapshotResourceExhausted));
+
+    observer->release_ready_event();
+    waiter.join();
+    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire), 0u);
+    auto owner = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            1, 1, myrd::DirtyRecordKind::Zero, 7, 2),
+        grant_ticket);
+    REQUIRE(owner.ok());
+    coordinator.rollback_metadata_preimage(owner.value());
+    REQUIRE(coordinator.abort(activated.value()).ok());
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+    cleanup.release();
+}
+
+TEST_CASE(m2_1_task07_capacity_grant_cannot_be_stolen_by_same_block) {
+    myrd::SnapshotCoordinator coordinator(
+        myrd::kSnapshotCowRecordBudgetBytes);
+    const auto activated = coordinator.activate(7, 2);
+    REQUIRE(activated.ok());
+    auto first = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            0, 1, myrd::DirtyRecordKind::Zero, 7, 1));
+    REQUIRE(first.ok());
+    REQUIRE(coordinator.publish_metadata_preimage(
+        bounded_context(), first.value()).ok());
+
+    auto observer = std::make_shared<Task07CapacityGrantObserver>();
+    std::atomic<std::uint32_t> waiter_code{kNoResult};
+    std::uint64_t grant_ticket = 0;
+    std::jthread waiter([&] {
+        const auto result = coordinator.wait_for_capacity_change(
+            myrd::OperationContext{},
+            activated.value(),
+            myrd::kSnapshotCowRecordBudgetBytes,
+            1,
+            std::chrono::seconds{2},
+            observer.get(),
+            grant_ticket);
+        waiter_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+    });
+    myrd::ScopeExit cleanup([&]() noexcept {
+        observer->release();
+        coordinator.notify_capacity_waiters_for_test();
+        if (waiter.joinable()) {
+            waiter.join();
+        }
+    });
+    REQUIRE(observer->wait_sleeping(
+        std::chrono::steady_clock::now() + kWaitBound));
+    REQUIRE(coordinator.advance_scan_frontier(
+        activated.value(), 0, 1, 2).ok());
+    REQUIRE(observer->wait_granted(
+        std::chrono::steady_clock::now() + kWaitBound));
+
+    auto thief = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            1, 1, myrd::DirtyRecordKind::Zero, 7, 2));
+    REQUIRE(!thief.ok());
+    REQUIRE_EQ(
+        error_code(thief.error()),
+        static_cast<std::uint32_t>(
+            myrd::DynamicBlockStoreErrorCode::SnapshotResourceExhausted));
+
+    observer->release();
+    waiter.join();
+    REQUIRE_EQ(waiter_code.load(std::memory_order_acquire), 0u);
+    auto owner = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            1, 1, myrd::DirtyRecordKind::Zero, 7, 2),
+        grant_ticket);
+    REQUIRE(owner.ok());
+    coordinator.rollback_metadata_preimage(owner.value());
+    REQUIRE(coordinator.abort(activated.value()).ok());
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+    cleanup.release();
 }
 
 TEST_CASE(m2_1_cancel_during_reservation_leaves_no_ghost_record_or_bytes) {

@@ -134,8 +134,10 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
     const OperationContext& context,
     std::uint64_t block_index,
     DirtyRecordKind kind) {
-    ScopeExit release_capacity_grant([this, block_index]() noexcept {
-        snapshot_coordinator_->release_capacity_grant(block_index);
+    std::uint64_t capacity_grant_ticket = 0;
+    ScopeExit release_capacity_grant([this, &capacity_grant_ticket]() noexcept {
+        snapshot_coordinator_->release_capacity_grant(
+            capacity_grant_ticket);
     });
     for (;;) {
         const auto live = check_operation_context(context);
@@ -236,6 +238,7 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                         entry->dirty_base_generation,
                         entry->dirty_epoch,
                         {},
+                        capacity_grant_ticket,
                         block_lock,
                         stripe.condition);
                 entry = directory_->find(block_index);
@@ -248,7 +251,11 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                 if (preserved.value() ==
                     SnapshotPreimagePreserveOutcome::CapacityUnavailable) {
                     const auto waited = wait_for_snapshot_capacity(
-                        context, block_lock, block_index, false);
+                        context,
+                        block_lock,
+                        block_index,
+                        false,
+                        capacity_grant_ticket);
                     block_lock.unlock();
                     stripe.condition.notify_all();
                     if (!waited.ok()) {
@@ -374,6 +381,7 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                     std::span<const std::byte>(
                         address.value(),
                         static_cast<std::size_t>(kBlockSizeBytes)),
+                    capacity_grant_ticket,
                     block_lock,
                     stripe.condition);
             entry = directory_->find(block_index);
@@ -393,7 +401,11 @@ Result<void> DynamicBlockStore::publish_full_zero_segment(
                 transition_active = false;
                 stripe.condition.notify_all();
                 const auto waited = wait_for_snapshot_capacity(
-                    context, block_lock, block_index, true);
+                    context,
+                    block_lock,
+                    block_index,
+                    true,
+                    capacity_grant_ticket);
                 block_lock.unlock();
                 stripe.condition.notify_all();
                 if (!waited.ok()) {

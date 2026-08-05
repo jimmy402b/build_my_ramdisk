@@ -140,6 +140,7 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
     BackingGeneration base_generation,
     std::uint64_t dirty_epoch,
     std::span<const std::byte> data,
+    std::uint64_t capacity_grant_ticket,
     std::unique_lock<std::mutex>& block_lock,
     std::condition_variable& stripe_condition) {
     const auto snapshot_ended_outcome = [this]() {
@@ -153,9 +154,6 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
         return Result<SnapshotPreimagePreserveOutcome>::success(
             SnapshotPreimagePreserveOutcome::Preserved);
     };
-    ScopeExit release_capacity_grant([this, block_index]() noexcept {
-        snapshot_coordinator_->release_capacity_grant(block_index);
-    });
     const bool data_record = kind == DirtyRecordKind::Data;
     const bool metadata_record = kind == DirtyRecordKind::Zero ||
                                  kind == DirtyRecordKind::Discard;
@@ -184,9 +182,16 @@ DynamicBlockStore::preserve_snapshot_preimage_before_mutation(
     };
     auto reserved = data_record
         ? snapshot_coordinator_->reserve_data_before_mutation(
-              context, *coordinator.active_token, metadata, data)
+              context,
+              *coordinator.active_token,
+              metadata,
+              data,
+              capacity_grant_ticket)
         : snapshot_coordinator_->reserve_metadata_before_mutation(
-              context, *coordinator.active_token, metadata);
+              context,
+              *coordinator.active_token,
+              metadata,
+              capacity_grant_ticket);
     if (!reserved.ok()) {
         if (reserved.error().domain == ErrorDomain::storage &&
             reserved.error().code == static_cast<std::uint32_t>(
@@ -306,7 +311,8 @@ Result<void> DynamicBlockStore::wait_for_snapshot_capacity(
     const OperationContext& context,
     std::unique_lock<std::mutex>& block_lock,
     std::uint64_t block_index,
-    bool data_record) {
+    bool data_record,
+    std::uint64_t& capacity_grant_ticket) {
     const auto coordinator = snapshot_coordinator_->snapshot();
     if (!coordinator.active_token.has_value()) {
         return Result<void>::success();
@@ -319,6 +325,9 @@ Result<void> DynamicBlockStore::wait_for_snapshot_capacity(
     const auto required_bytes = data_record
         ? kMinimumSnapshotCowBytes
         : kSnapshotCowRecordBudgetBytes;
+    snapshot_coordinator_->release_capacity_grant(
+        capacity_grant_ticket);
+    capacity_grant_ticket = 0;
     block_lock.unlock();
     const auto waited = snapshot_coordinator_->wait_for_capacity_change(
         context,
@@ -326,7 +335,8 @@ Result<void> DynamicBlockStore::wait_for_snapshot_capacity(
         required_bytes,
         block_index,
         options_.snapshot_writer_stall_limit,
-        snapshot_pressure_test_observer_.get());
+        snapshot_pressure_test_observer_.get(),
+        capacity_grant_ticket);
     block_lock.lock();
     if (!waited.ok() &&
         waited.error().domain == ErrorDomain::storage &&
@@ -408,8 +418,10 @@ Result<void> DynamicBlockStore::write_one_segment(
     std::uint64_t block_offset_bytes,
     std::span<const std::byte> source,
     bool explicit_zero_is_noop) {
-    ScopeExit release_capacity_grant([this, block_index]() noexcept {
-        snapshot_coordinator_->release_capacity_grant(block_index);
+    std::uint64_t capacity_grant_ticket = 0;
+    ScopeExit release_capacity_grant([this, &capacity_grant_ticket]() noexcept {
+        snapshot_coordinator_->release_capacity_grant(
+            capacity_grant_ticket);
     });
     for (;;) {
         const auto live = check_operation_context(context);
@@ -706,6 +718,7 @@ Result<void> DynamicBlockStore::write_one_segment(
                         std::span<const std::byte>(
                             address.value(),
                             static_cast<std::size_t>(kBlockSizeBytes)),
+                        capacity_grant_ticket,
                         block_lock,
                         stripe.condition);
                 entry = directory_->find(block_index);
@@ -728,7 +741,11 @@ Result<void> DynamicBlockStore::write_one_segment(
                     transition_active = false;
                     stripe.condition.notify_all();
                     const auto waited = wait_for_snapshot_capacity(
-                        context, block_lock, block_index, true);
+                        context,
+                        block_lock,
+                        block_index,
+                        true,
+                        capacity_grant_ticket);
                     block_lock.unlock();
                     stripe.condition.notify_all();
                     if (!waited.ok()) {
@@ -834,6 +851,7 @@ Result<void> DynamicBlockStore::write_one_segment(
                     entry->dirty_base_generation,
                     entry->dirty_epoch,
                     {},
+                    capacity_grant_ticket,
                     block_lock,
                     stripe.condition);
             entry = directory_->find(block_index);
@@ -852,7 +870,11 @@ Result<void> DynamicBlockStore::write_one_segment(
                     release_commit_reservation(true);
                 }
                 const auto waited = wait_for_snapshot_capacity(
-                    context, block_lock, block_index, false);
+                    context,
+                    block_lock,
+                    block_index,
+                    false,
+                    capacity_grant_ticket);
                 block_lock.unlock();
                 stripe.condition.notify_all();
                 if (!waited.ok()) {

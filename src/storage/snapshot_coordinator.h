@@ -53,6 +53,7 @@ enum class SnapshotPressureTestEvent : std::uint8_t {
     PreparingWaitReady = 4,
     PreparingMarkerWaitReady = 5,
     PreparingFillActive = 6,
+    CapacityGrantReady = 7,
 };
 
 class ISnapshotPressureClock {
@@ -154,13 +155,15 @@ public:
     Result<SnapshotMetadataReservation> reserve_metadata_before_mutation(
         const OperationContext& context,
         const ConsistentSnapshotToken& token,
-        const SnapshotPreimage& metadata);
+        const SnapshotPreimage& metadata,
+        std::uint64_t capacity_grant_ticket = 0);
 
     Result<SnapshotMetadataReservation> reserve_data_before_mutation(
         const OperationContext& context,
         const ConsistentSnapshotToken& token,
         const SnapshotPreimage& metadata,
-        std::span<const std::byte> payload);
+        std::span<const std::byte> payload,
+        std::uint64_t capacity_grant_ticket = 0);
 
     Result<void> publish_metadata_preimage(
         const OperationContext& context,
@@ -188,8 +191,10 @@ public:
         std::uint64_t required_bytes,
         std::uint64_t block_index,
         std::chrono::milliseconds stall_limit,
-        ISnapshotPressureTestObserver* test_observer);
-    void release_capacity_grant(std::uint64_t block_index) noexcept;
+        ISnapshotPressureTestObserver* test_observer,
+        std::uint64_t& capacity_grant_ticket);
+    void release_capacity_grant(
+        std::uint64_t capacity_grant_ticket) noexcept;
 
     std::optional<SnapshotPreimage> peek_preimage(
         std::uint64_t block_index) const;
@@ -222,7 +227,8 @@ private:
         const ConsistentSnapshotToken& token,
         const SnapshotPreimage& metadata,
         std::span<const std::byte> payload,
-        bool data_preimage);
+        bool data_preimage,
+        std::uint64_t capacity_grant_ticket);
 
     std::shared_ptr<SnapshotCoordinatorState> state_;
 };

@@ -225,13 +225,15 @@ private:
         BackingGeneration base_generation,
         std::uint64_t dirty_epoch,
         std::span<const std::byte> data,
+        std::uint64_t capacity_grant_ticket,
         std::unique_lock<std::mutex>& block_lock,
         std::condition_variable& stripe_condition);
     Result<void> wait_for_snapshot_capacity(
         const OperationContext& context,
         std::unique_lock<std::mutex>& block_lock,
         std::uint64_t block_index,
-        bool data_record);
+        bool data_record,
+        std::uint64_t& capacity_grant_ticket);
     Result<void> wait_for_snapshot_preparing(
         const OperationContext& context,
         std::unique_lock<std::mutex>& block_lock,

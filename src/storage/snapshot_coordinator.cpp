@@ -664,9 +664,15 @@ Result<SnapshotMetadataReservation>
 SnapshotCoordinator::reserve_metadata_before_mutation(
     const OperationContext& context,
     const ConsistentSnapshotToken& token,
-    const SnapshotPreimage& metadata) {
+    const SnapshotPreimage& metadata,
+    std::uint64_t capacity_grant_ticket) {
     return reserve_before_mutation(
-        context, token, metadata, {}, false);
+        context,
+        token,
+        metadata,
+        {},
+        false,
+        capacity_grant_ticket);
 }
 
 Result<SnapshotMetadataReservation>
@@ -674,9 +680,15 @@ SnapshotCoordinator::reserve_data_before_mutation(
     const OperationContext& context,
     const ConsistentSnapshotToken& token,
     const SnapshotPreimage& metadata,
-    std::span<const std::byte> payload) {
+    std::span<const std::byte> payload,
+    std::uint64_t capacity_grant_ticket) {
     return reserve_before_mutation(
-        context, token, metadata, payload, true);
+        context,
+        token,
+        metadata,
+        payload,
+        true,
+        capacity_grant_ticket);
 }
 
 Result<SnapshotMetadataReservation>
@@ -685,7 +697,8 @@ SnapshotCoordinator::reserve_before_mutation(
     const ConsistentSnapshotToken& token,
     const SnapshotPreimage& metadata,
     std::span<const std::byte> payload,
-    bool data_preimage) {
+    bool data_preimage,
+    std::uint64_t capacity_grant_ticket) {
     const auto initial_live = check_operation_context(context);
     if (!initial_live.ok()) {
         return Result<SnapshotMetadataReservation>::failure(
@@ -693,27 +706,47 @@ SnapshotCoordinator::reserve_before_mutation(
     }
 
     std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token)) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
+                L"snapshot token does not own this coordinator"));
+    }
     bool grant_released = false;
-    if (state_->capacity_grant.has_value()) {
-        if (state_->capacity_grant->block_index != metadata.block_index) {
+    if (capacity_grant_ticket != 0) {
+        if (!state_->capacity_grant.has_value() ||
+            state_->capacity_grant->ticket != capacity_grant_ticket ||
+            state_->capacity_grant->block_index != metadata.block_index) {
+            if (state_->active_state !=
+                ConsistentSnapshotState::Active) {
+                return Result<SnapshotMetadataReservation>::failure(
+                    coordinator_error(
+                        DynamicBlockStoreErrorCode::SnapshotAborted,
+                        L"snapshot ended before its capacity grant was consumed"));
+            }
             return Result<SnapshotMetadataReservation>::failure(
                 coordinator_error(
-                    DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
-                    L"snapshot COW capacity is granted to an earlier waiter"));
+                    DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                    L"snapshot capacity grant ticket is missing or changed"));
         }
         state_->capacity_grant.reset();
         grant_released = true;
+    } else if (state_->capacity_grant.has_value()) {
+        return Result<SnapshotMetadataReservation>::failure(
+            coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
+                L"snapshot COW capacity is granted to an earlier waiter"));
     }
     ScopeExit notify_grant_release([&]() noexcept {
         if (grant_released) {
             state_->condition.notify_all();
         }
     });
-    if (!state_->token_matches(token)) {
+    if (!grant_released && !state_->capacity_waiters.empty()) {
         return Result<SnapshotMetadataReservation>::failure(
             coordinator_error(
-                DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
-                L"snapshot token does not own this coordinator"));
+                DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
+                L"snapshot COW capacity is reserved for an earlier waiter"));
     }
     if (data_preimage &&
         (metadata.kind != DirtyRecordKind::Data ||
@@ -1125,7 +1158,9 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     std::uint64_t required_bytes,
     std::uint64_t block_index,
     std::chrono::milliseconds stall_limit,
-    ISnapshotPressureTestObserver* test_observer) {
+    ISnapshotPressureTestObserver* test_observer,
+    std::uint64_t& capacity_grant_ticket) {
+    capacity_grant_ticket = 0;
     if (required_bytes == 0 || required_bytes > state_->budget.max_bytes ||
         stall_limit.count() <= 0) {
         return Result<void>::failure(coordinator_error(
@@ -1144,9 +1179,6 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotAborted,
             L"snapshot ended before the capacity waiter registered"));
-    }
-    if (capacity_available() && !state_->capacity_grant.has_value()) {
-        return Result<void>::success();
     }
     if (state_->next_capacity_ticket == 0 ||
         state_->next_capacity_ticket ==
@@ -1306,16 +1338,27 @@ Result<void> SnapshotCoordinator::wait_for_capacity_change(
     state_->capacity_grant =
         SnapshotCoordinatorState::CapacityGrant{ticket, block_index};
     unregister();
+    capacity_grant_ticket = ticket;
+    lock.unlock();
+    if (test_observer != nullptr) {
+        test_observer->on_snapshot_pressure_event(
+            SnapshotPressureTestEvent::CapacityGrantReady,
+            block_index);
+    }
     return Result<void>::success();
 }
 
 void SnapshotCoordinator::release_capacity_grant(
-    std::uint64_t block_index) noexcept {
+    std::uint64_t capacity_grant_ticket) noexcept {
     try {
+        if (capacity_grant_ticket == 0) {
+            return;
+        }
         std::scoped_lock lock(state_->mutex);
         if (state_->capacity_grant.has_value() &&
-            state_->capacity_grant->block_index == block_index) {
+            state_->capacity_grant->ticket == capacity_grant_ticket) {
             state_->capacity_grant.reset();
+            state_->finalize_explicit_abort_if_drained();
             state_->condition.notify_all();
         }
     } catch (...) {
