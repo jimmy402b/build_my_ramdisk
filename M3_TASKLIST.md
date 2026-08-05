@@ -386,6 +386,11 @@ cut copy，不 include/call coordinator、batch helper 或生产 codec。首个�
 `Kind/write/zero/begin_cut/cut_records` API 时编译失败；GREEN `2/2`，并证明 post-cut
 overwrite 与 clean→dirty 不进入既有 cut。
 
+T08.2 evidence：commit `3587c5f`；generator 的唯一输入是 64-bit seed 与 operation
+count，使用 test-side SplitMix64，输出 2–64 blocks 与 write/zero/discard/begin/copy/
+finish/abort 全七类操作。相同 seed 的 operation、payload、limits 与文本 trace 完全相同，
+不同 seed 不同；10,000-op determinism/range/coverage RED→GREEN，focused `3/3`。
+
 ## Task 09 — 签发 M2.1 前置 verdict
 
 **类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。

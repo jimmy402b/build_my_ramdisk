@@ -186,7 +186,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
 
 - [x] `T08.1 [M]` 写纯 map oracle 类型：block→kind/value/version，另存 cut
   snapshot；不得 include/call coordinator、batch helper 或生产 codec。
-- [ ] `T08.2 [M]` 写确定性 schedule generator：2–64 blocks，write/zero/discard/
+- [x] `T08.2 [M]` 写确定性 schedule generator：2–64 blocks，write/zero/discard/
   begin/copy/finish/abort；输入只有 seed 和 operation count，失败打印完整 seed。
 - [ ] `T08.3 [H]` 冻结比较规则：返回 records 的 union 必须与一个线性化 cut
   完全相等；post-cut clean→dirty 不得出现；DATA/ZERO/DISCARD、final short block、
