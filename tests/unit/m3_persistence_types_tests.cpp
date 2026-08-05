@@ -74,8 +74,8 @@ TEST_CASE(geometry_constants_are_frozen) {
     REQUIRE_EQ(kJournalAlignment, static_cast<std::size_t>(4096));
     REQUIRE_EQ(kIndexNodeBytes, static_cast<std::size_t>(4096));
     REQUIRE_EQ(kMaxRelativeNameBytes, static_cast<std::size_t>(255));
-    REQUIRE_EQ(kFormatMajor, static_cast<std::uint32_t>(1));
-    REQUIRE_EQ(kFormatMinor, static_cast<std::uint32_t>(0));
+    REQUIRE_EQ(kM3FormatMajor, static_cast<std::uint32_t>(1));
+    REQUIRE_EQ(kM3FormatMinor, static_cast<std::uint32_t>(0));
     REQUIRE_EQ(kVhdxDataBlockBytes,
               static_cast<std::uint32_t>(2U * 1024U * 1024U));
     REQUIRE_EQ(kMaxIndexDepth, static_cast<std::uint32_t>(8));
@@ -157,6 +157,14 @@ TEST_CASE(validate_geometry_accepts_4096_sector_valid_geometry) {
     g.logical_sector_size = 4096;
     g.physical_sector_size = 4096;
     REQUIRE(validate_geometry(g) == GeometryStatus::Ok);
+}
+
+TEST_CASE(validate_geometry_accepts_one_logical_sector) {
+    ImageGeometry sector_512{512, 512, 4096};
+    REQUIRE_EQ(validate_geometry(sector_512), GeometryStatus::Ok);
+
+    ImageGeometry sector_4096{4096, 4096, 4096};
+    REQUIRE_EQ(validate_geometry(sector_4096), GeometryStatus::Ok);
 }
 
 TEST_CASE(validate_geometry_accepts_large_geometry) {
@@ -461,7 +469,8 @@ TEST_CASE(validate_limits_rejects_more_records_than_committed_bytes_allow) {
     PersistenceLimits lim{};
     lim.max_virtual_bytes = 64ULL * 1024 * 1024;
     lim.max_journal_committed_bytes = kM2BlockSize + kJournalAlignment;
-    lim.max_journal_records = 2;
+    lim.max_journal_records =
+        lim.max_journal_committed_bytes / kJournalAlignment + 1;
     lim.max_index_cache_bytes = kIndexNodeBytes;
     lim.max_index_cache_entries = 1;
     lim.max_bat_cache_bytes = 8;
@@ -469,6 +478,25 @@ TEST_CASE(validate_limits_rejects_more_records_than_committed_bytes_allow) {
     lim.max_io_scratch_bytes = kM2BlockSize;
     lim.max_verify_batch_bytes = kM2BlockSize;
     REQUIRE(validate_limits(lim) == LimitsStatus::JournalRecordsExceedCommittedBytes);
+}
+
+TEST_CASE(validate_limits_allows_aligned_metadata_records_within_journal_bytes) {
+    PersistenceLimits lim{};
+    lim.max_virtual_bytes = 64ULL * 1024 * 1024;
+    lim.max_journal_committed_bytes = kMinimumDataRecordBytes;
+    lim.max_journal_records =
+        kMinimumDataRecordBytes / kJournalAlignment;
+    lim.max_index_cache_bytes = kIndexNodeBytes;
+    lim.max_index_cache_entries = 1;
+    lim.max_bat_cache_bytes = 8;
+    lim.max_bat_cache_entries = 1;
+    lim.max_io_scratch_bytes = kM2BlockSize;
+    lim.max_verify_batch_bytes = kM2BlockSize;
+    REQUIRE_EQ(validate_limits(lim), LimitsStatus::Ok);
+
+    ++lim.max_journal_records;
+    REQUIRE_EQ(validate_limits(lim),
+               LimitsStatus::JournalRecordsExceedCommittedBytes);
 }
 
 TEST_CASE(validate_limits_rejects_io_scratch_smaller_than_block) {
@@ -676,6 +704,15 @@ TEST_CASE(raw_test_barrier_explicitly_no_filesystem_durability) {
 TEST_CASE(is_valid_barrier_for_checkpoint_rejects_unknown) {
     REQUIRE(!is_valid_barrier_for_checkpoint(static_cast<VolumeBarrierKind>(3)));
     REQUIRE(!is_valid_barrier_for_checkpoint(static_cast<VolumeBarrierKind>(254)));
+}
+
+TEST_CASE(checkpoint_barrier_validation_rejects_missing_optional) {
+    const std::optional<VolumeBarrierKind> missing;
+    REQUIRE(!is_valid_barrier_for_checkpoint(missing));
+    REQUIRE(is_valid_barrier_for_checkpoint(
+        std::optional{VolumeBarrierKind::WindowsVolumeFlushed}));
+    REQUIRE(!is_valid_barrier_for_checkpoint(std::optional{
+        static_cast<VolumeBarrierKind>(0xFF)}));
 }
 
 // ============================================================================
@@ -1072,18 +1109,50 @@ TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
 
     constexpr std::array required_ids{
         "snapshot.cut.before",
+        "snapshot.cut.during_drain",
+        "snapshot.cut.after_token_active",
+        "cow.preimage.alloc.before",
         "cow.preimage.publish.after",
+        "journal.append.data.before",
+        "journal.append.data.after",
+        "journal.append.zero.before",
+        "journal.append.zero.after",
+        "journal.append.discard.before",
+        "journal.append.discard.after",
+        "journal.append.index_node.before",
+        "journal.append.index_node.after",
         "journal.commit.append.before",
+        "journal.commit.append.after",
+        "journal.flush.before",
+        "journal.flush.error",
         "journal.flush.after",
+        "journal.readback.before",
+        "journal.readback.corrupt",
+        "journal.readback.after",
+        "manifest.slot_write.before",
+        "manifest.slot_write.short",
         "manifest.slot_write.torn",
+        "manifest.slot_write.after",
+        "manifest.flush.before",
+        "manifest.flush.error",
         "manifest.flush.after",
+        "manifest.readback.before",
         "manifest.readback.corrupt",
         "backing.view_install.before",
+        "backing.view_install.after",
+        "backing.ack.each.before",
         "backing.ack.each.after",
         "compaction.vhdx.create.before",
+        "compaction.vhdx.write.before",
+        "compaction.vhdx.write.after",
+        "compaction.vhdx.flush.before",
+        "compaction.vhdx.validate.before",
         "compaction.vhdx.rename.before",
+        "compaction.journal.create.before",
+        "compaction.journal.flush.before",
         "cleanup.old_file.delete.before",
     };
+    REQUIRE_EQ(required_ids.size(), phases.size());
     for (const auto id : required_ids) {
         REQUIRE(ids.contains(id));
     }

@@ -22,8 +22,12 @@ namespace persistence {
 // Format version (PLAN §1.4, frozen)
 // ============================================================================
 
-inline constexpr std::uint32_t kFormatMajor = 1;
-inline constexpr std::uint32_t kFormatMinor = 0;
+inline constexpr std::uint32_t kM3FormatMajor = 1;
+inline constexpr std::uint32_t kM3FormatMinor = 0;
+// Compatibility aliases for the Task 10 boundary probe. New persistence
+// codecs use the M3-qualified names above.
+inline constexpr std::uint32_t kFormatMajor = kM3FormatMajor;
+inline constexpr std::uint32_t kFormatMinor = kM3FormatMinor;
 
 // ============================================================================
 // Fixed layout constants (frozen by SPEC)
@@ -136,8 +140,8 @@ constexpr std::optional<GeometryStatus> decode_geometry_status(
 
 /// Validate image geometry per SPEC frozen profile.
 /// logical_sector_size must be 512 or 4096; physical_sector_size must be 4096.
-/// virtual_bytes must be non-zero, a multiple of logical_sector_size, and must
-/// not overflow when divided by kM2BlockSize.
+/// virtual_bytes must be non-zero and a multiple of logical_sector_size.
+/// A final partial M2 block is valid and is handled by the block store.
 inline GeometryStatus validate_geometry(const ImageGeometry& g) noexcept {
     if (g.virtual_bytes == 0) return GeometryStatus::VirtualBytesZero;
     if (g.logical_sector_size != kLogicalSectorSize512 &&
@@ -147,18 +151,6 @@ inline GeometryStatus validate_geometry(const ImageGeometry& g) noexcept {
         return GeometryStatus::PhysicalSectorInvalid;
     if (g.virtual_bytes % g.logical_sector_size != 0)
         return GeometryStatus::NotAlignedToLogicalSector;
-    // Check that virtual_bytes / kM2BlockSize fits in uint64_t.
-    // Equivalent to: virtual_bytes <= UINT64_MAX - (kM2BlockSize - 1)
-    // But simpler: if virtual_bytes is too large for the block count to fit
-    // in the usable range, reject.  The block count must fit in the block
-    // index type (currently uint64_t).  Since kM2BlockSize > 1 the only
-    // overflow risk is virtual_bytes > UINT64_MAX - (kM2BlockSize - 1).
-    // We use a safe division check.
-    std::uint64_t block_count = g.virtual_bytes / kM2BlockSize;
-    // block_count * kM2BlockSize might overflow, but we computed
-    // it by division so it is safe.  Just check it is non-zero.
-    if (block_count == 0) return GeometryStatus::TooLargeForBlockCount;
-    // block_count fits in uint64_t (the storage block-index type).
     return GeometryStatus::Ok;
 }
 
@@ -311,7 +303,7 @@ inline LimitsStatus validate_limits(const PersistenceLimits& lim) noexcept {
     if (lim.max_journal_committed_bytes < kMinimumDataRecordBytes)
         return LimitsStatus::SingleRecordExceedsJournalBytes;
     if (lim.max_journal_records >
-        lim.max_journal_committed_bytes / kMinimumDataRecordBytes)
+        lim.max_journal_committed_bytes / kJournalAlignment)
         return LimitsStatus::JournalRecordsExceedCommittedBytes;
 
     if (lim.max_io_scratch_bytes < kM2BlockSize)
@@ -575,6 +567,14 @@ constexpr bool is_valid_barrier_for_checkpoint(
     VolumeBarrierKind kind) noexcept
 {
     return is_valid_volume_barrier_kind(kind);
+}
+
+/// Optional form used by request validation so an omitted barrier cannot be
+/// confused with the zero-valued production barrier.
+constexpr bool is_valid_barrier_for_checkpoint(
+    const std::optional<VolumeBarrierKind>& kind) noexcept
+{
+    return kind.has_value() && is_valid_volume_barrier_kind(*kind);
 }
 
 // ============================================================================
