@@ -910,3 +910,48 @@ P0=0, P1=0, P2=0 and authorize the status-only finalization.
 Task 09 verdict: **M2.1 PASS**. This closes only the M2.1 prerequisite,
 authorizes Tasks 28/30 to consume the interface, and does not claim persistence
 or end-to-end M3 completion.
+
+## Task 16 — Journal wire-format acceptance
+
+Task 16 is accepted at implementation commit
+`59fe20d91c824d12ce983c7bbb773725f2e6952f`. The accepted scope is the pure
+journal wire contract only: immutable header, DATA/ZERO/DISCARD records,
+leaf/internal INDEX_NODE records, CHECKPOINT_COMMIT, canonical streaming
+SHA-256 and bounded stateful sequence validation. It performs no file I/O,
+manifest publication, B+tree lookup or path-copy construction.
+
+The independent frozen layout and sparse fixtures bind all offsets, declared
+physical lengths, reserved-zero regions and CRC fields. The canonical sample
+checkpoint digest is
+`632E32DE34E3EECEEB69017A1AC6DFFCA81A20F6EA9F0F6092C0B77B37168701`.
+Generation zero is the sole empty `0 -> 0` commit and retains the header
+genesis digest; later generations use checked `G -> G+1` and the ordinary
+checkpoint chain formula.
+
+The strict decoders reject malformed type/version/length/alignment/range,
+unknown mandatory flags, invalid identities or generations, nonzero padding,
+descriptor escapes, count/root inconsistencies and CRC/digest mismatches.
+DATA decode validates the full 64 KiB payload and logical-tail zeros without a
+second payload allocation. Sequence validation additionally enforces exact
+contiguous offsets, zero-based sequence numbers, one operation/generation,
+unique block updates, block-before-index order, one terminal commit, exact
+counts/root and caller committed end.
+
+Verification after the final code change passed Debug and Release focused
+tests 1/1. The full Task 16 gate passed Debug `m3-v1` 6/6, Release `m3-v1`
+6/6 and full Release CTest 66/66. All-record truncation, deterministic byte
+fuzz, semantic mutations with recomputed CRC and `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `journal_format.cpp`:
+  `AE9C1AAC5D71A7A86A9FB35ED401E1463E3D13DEA33D2FAC5D7E632A6249AABE`;
+- frozen layout:
+  `824BE2E2854FAA96F3A580C366B94758063F3CAEC2B3932FC3FB61A4A8C9C3A1`;
+- digest fixture:
+  `34A94F5AAAE342701527A538D6DD1793B57FF0E03CA1451259C1984DD47FC010`;
+- Release journal-format test executable:
+  `4F828DFEA84C72C5A03130CA2558D30B3C14F78E683D4F8D14548A2449E2545F`.
+
+Task 16 verdict: **DONE**. This authorizes Task 17 to consume the immutable
+node codec and does not claim Task 17–20 or end-to-end persistence completion.

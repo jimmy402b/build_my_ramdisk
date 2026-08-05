@@ -617,11 +617,23 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：C（digest 由逻辑负责人审查）。允许文件：** `journal_format.*`、golden fixtures/tests。
 
-- [ ] exact-byte 红灯覆盖 header、DATA/ZERO/DISCARD/INDEX_NODE/CHECKPOINT_COMMIT、4096 alignment、padding、final block。
-- [ ] 独立 SHA fixture 锁定 canonical record order、previous digest、epoch/generation/root/payload；任何 byte 改变都改变结果或 CRC 失败。
-- [ ] decode 在 allocation 前检查 type/length/alignment/overflow/UUID/generation；unknown mandatory type fail-closed。
-- [ ] genesis 与跨 epoch predecessor digest 按 SPEC 实现。
-- [ ] 跑 truncate/fuzz 和 `m3-v1`；建议提交 `feat(persistence): add journal wire format`。
+- [x] exact-byte 红灯覆盖 header、DATA/ZERO/DISCARD/INDEX_NODE/CHECKPOINT_COMMIT、4096 alignment、padding、final block。
+- [x] 独立 SHA fixture 锁定 canonical record order、previous digest、epoch/generation/root/payload；任何 byte 改变都改变结果或 CRC 失败。
+- [x] decode 在 allocation 前检查 type/length/alignment/overflow/UUID/generation；unknown mandatory type fail-closed。
+- [x] genesis 与跨 epoch predecessor digest 按 SPEC 实现。
+- [x] 跑 truncate/fuzz 和 `m3-v1`；建议提交 `feat(persistence): add journal wire format`。
+
+**完成记录（DONE，2026-08-05）：**
+
+- Accepted implementation: `59fe20d91c824d12ce983c7bbb773725f2e6952f`。
+- 冻结 4096-byte header/common/index/commit 与 69632-byte DATA 布局；独立 sparse fixtures 覆盖全部五种 record、CRC 和 canonical checkpoint digest `632E32DE34E3EECEEB69017A1AC6DFFCA81A20F6EA9F0F6092C0B77B37168701`。
+- strict codecs 在分配前验证 type/declared length/alignment/overflow/committed bound；DATA 使用固定 64 KiB payload 并验证短末块 zero tail，record CRC 使用无额外 payload copy 的 streaming CRC32C。
+- INDEX_NODE codec 只实现 immutable leaf/internal descriptor wire contract，不提前实现 Task17/18 tree 算法；验证 entry count/width/order/range/generation、child/record descriptor 与 reserved-zero。
+- CHECKPOINT_COMMIT codec 验证 UUID/journal identity/epoch、checked generation、counts、root、begin/end 与 geometry；stateful validator 额外验证 contiguous sequence、operation/generation consistency、duplicate block、block-before-index、exact counts/root 和 chain digest。
+- generation 0 使用唯一的 `0 -> 0` empty commit 和 header genesis digest；普通 checkpoint 使用 streaming canonical SHA-256，commit CRC/new-digest 字段按冻结规则置零。
+- Verification: Debug/Release focused 1/1；Debug/Release `m3-v1` 6/6；完整 Release CTest 66/66；deterministic byte fuzz、全部 record truncation 与 `git diff --check` 通过。
+- Evidence SHA-256: `journal_format.cpp` `AE9C1AAC5D71A7A86A9FB35ED401E1463E3D13DEA33D2FAC5D7E632A6249AABE`；layout `824BE2E2854FAA96F3A580C366B94758063F3CAEC2B3932FC3FB61A4A8C9C3A1`；digest fixture `34A94F5AAAE342701527A538D6DD1793B57FF0E03CA1451259C1984DD47FC010`；Release test executable `4F828DFEA84C72C5A03130CA2558D30B3C14F78E683D4F8D14548A2449E2545F`。
+- Boundary: Task16 不读写文件、不发布 manifest、不执行 B+tree lookup/path-copy；这些仍属于 Task17–20。
 
 ## Task 17 — Immutable B+tree reader
 

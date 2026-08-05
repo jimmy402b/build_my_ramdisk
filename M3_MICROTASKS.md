@@ -290,19 +290,19 @@ codec 来迎合 selector。
 
 允许：`journal_format.*`、journal codec tests/fixtures。
 
-- [ ] `T16.1 [M]` 手工冻结 header/DATA/ZERO/DISCARD/index/commit golden bytes、
+- [x] `T16.1 [M]` 手工冻结 header/DATA/ZERO/DISCARD/index/commit golden bytes、
   declared lengths、alignment 和 reserved ranges；不调用 production encoder。
-- [ ] `T16.2 [M]` 实现 header encode/decode：magic/version/UUID/geometry/base
+- [x] `T16.2 [M]` 实现 header encode/decode：magic/version/UUID/geometry/base
   generation/epoch/CRC/reserved bytes 全验证。
-- [ ] `T16.3 [M]` 实现 DATA/ZERO/DISCARD codec；payload 长度、final partial block、
+- [x] `T16.3 [M]` 实现 DATA/ZERO/DISCARD codec；payload 长度、final partial block、
   offset+length overflow、unknown type/flags、padding 全 fail closed。
-- [ ] `T16.4 [M]` 实现 index-node/commit descriptor codec，但不实现 tree 算法；
+- [x] `T16.4 [M]` 实现 index-node/commit descriptor codec，但不实现 tree 算法；
   child ranges、root offset、committed length、generation/epoch 做 checked validation。
-- [ ] `T16.5 [H]` 冻结 streaming chain-digest input 顺序与 commit exclusion/inclusion；
+- [x] `T16.5 [H]` 冻结 streaming chain-digest input 顺序与 commit exclusion/inclusion；
   chunked SHA 必须与独立 golden digest 一致，不能 buffer 整 journal。
-- [ ] `T16.6 [M]` 加 corruption matrix/fuzz：每个字段、长度、CRC、digest、truncation、
+- [x] `T16.6 [M]` 加 corruption matrix/fuzz：每个字段、长度、CRC、digest、truncation、
   duplicate/unknown record；reader 永不越过 caller committed length。
-- [ ] `T16.7 [H]` offset/length/digest independent review 与 mutation proof；运行
+- [x] `T16.7 [H]` offset/length/digest independent review 与 mutation proof；运行
   Debug/Release focused、fuzz、`m3-v1`。
 
 ## 5. 阶段三：Journal 与 VHDX 读写层（Task 17–24）
