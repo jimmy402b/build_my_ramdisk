@@ -51,6 +51,13 @@ struct FaultFileRule {
 using FaultFileObserver =
     std::function<void(FaultFilePhase, std::uint64_t)>;
 
+struct FaultFileRequest final {
+    FaultFilePhase phase{};
+    std::uint64_t call{};
+    std::uint64_t offset{};
+    std::uint64_t length{};
+};
+
 class FaultFileState final {
 public:
     [[nodiscard]] std::uint64_t logical_length() const;
@@ -58,6 +65,10 @@ public:
     [[nodiscard]] std::size_t allocated_pages() const;
     [[nodiscard]] std::uint64_t calls(FaultFilePhase phase) const;
     [[nodiscard]] bool closed() const;
+    void force_length_for_test(std::uint64_t logical_length);
+    void clear_requests_for_test();
+    [[nodiscard]] std::vector<FaultFileRequest> requests() const;
+    [[nodiscard]] bool request_trace_overflowed() const;
 
 private:
     friend class FaultFileBackend;
@@ -81,6 +92,10 @@ private:
     std::vector<bool> consumed_rules_;
     const FaultFileObserver observer_;
     bool closed_{};
+    static constexpr std::size_t kMaxRequestTrace = 8192;
+    std::array<FaultFileRequest, kMaxRequestTrace> requests_{};
+    std::size_t request_count_{};
+    bool request_trace_overflowed_{};
 };
 
 struct FaultFile {

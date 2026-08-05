@@ -95,6 +95,8 @@ public:
         const std::span<std::byte> destination) override {
         std::unique_lock lock(state_->mutex_);
         const auto call = begin_locked(FaultFilePhase::Read);
+        record_request_locked(
+            FaultFilePhase::Read, call, offset, destination.size());
         ScopeExit notify_observer([&] {
             lock.unlock();
             observe(FaultFilePhase::Read, call);
@@ -325,6 +327,19 @@ private:
         return ++state_->calls_[phase_index(phase)];
     }
 
+    void record_request_locked(
+        const FaultFilePhase phase,
+        const std::uint64_t call,
+        const std::uint64_t offset,
+        const std::size_t length) const noexcept {
+        if (state_->request_count_ >= state_->requests_.size()) {
+            state_->request_trace_overflowed_ = true;
+            return;
+        }
+        state_->requests_[state_->request_count_++] = {
+            phase, call, offset, static_cast<std::uint64_t>(length)};
+    }
+
     void observe(
         const FaultFilePhase phase,
         const std::uint64_t call) const {
@@ -514,6 +529,29 @@ std::uint64_t FaultFileState::calls(
 bool FaultFileState::closed() const {
     std::lock_guard lock(mutex_);
     return closed_;
+}
+
+void FaultFileState::force_length_for_test(
+    const std::uint64_t logical_length) {
+    std::lock_guard lock(mutex_);
+    logical_length_ = logical_length;
+}
+
+void FaultFileState::clear_requests_for_test() {
+    std::lock_guard lock(mutex_);
+    request_count_ = 0;
+    request_trace_overflowed_ = false;
+}
+
+std::vector<FaultFileRequest> FaultFileState::requests() const {
+    std::lock_guard lock(mutex_);
+    return {requests_.begin(), requests_.begin() +
+        static_cast<std::ptrdiff_t>(request_count_)};
+}
+
+bool FaultFileState::request_trace_overflowed() const {
+    std::lock_guard lock(mutex_);
+    return request_trace_overflowed_;
 }
 
 FaultFile make_fault_file(

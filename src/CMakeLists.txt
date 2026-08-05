@@ -169,6 +169,8 @@ add_library(myrd_persistence STATIC
     persistence/journal_reader.cpp
     persistence/vhdx_format.h
     persistence/vhdx_format.cpp
+    persistence/vhdx_reader.h
+    persistence/vhdx_reader.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h
