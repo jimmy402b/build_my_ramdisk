@@ -662,11 +662,23 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：S。允许文件：** 扩展 `journal_index.*`、builder tests；Claude 写 tests/pure shell，逻辑负责人审查 path-copy。
 
-- [ ] 红灯覆盖 insert/replace、DATA↔ZERO、root/leaf/internal split、unchanged subtree reuse 和输入顺序无关的 deterministic bytes。
-- [ ] 同一 checkpoint 重复 block update 必须拒绝，不能 last-write-wins 掩盖 snapshot bug。
-- [ ] 先生成纯内存 node plan，再 checked assign append offsets，最后 encode；写失败不影响旧 root。
-- [ ] 至少 100,000 updates 后每个 new root 与 map oracle 一致。
-- [ ] 跑 `m3-v1`；建议提交 `feat(persistence): build copy-on-write journal indexes`。
+- [x] 红灯覆盖 insert/replace、DATA↔ZERO、root/leaf/internal split、unchanged subtree reuse 和输入顺序无关的 deterministic bytes。
+- [x] 同一 checkpoint 重复 block update 必须拒绝，不能 last-write-wins 掩盖 snapshot bug。
+- [x] 先生成纯内存 node plan，再 checked assign append offsets，最后 encode；写失败不影响旧 root。
+- [x] 至少 100,000 updates 后每个 new root 与 map oracle 一致。
+- [x] 跑 `m3-v1`；建议提交 `feat(persistence): build copy-on-write journal indexes`。
+
+**完成记录（DONE，2026-08-06）：**
+
+- Accepted implementation：`9c6eab67d8f7059a9c206ac81d3650f582cf2b31`。
+- Builder 先返回 opaque、只读的纯内存 plan，绑定完整旧 file/journal/epoch/generation/committed/root identity；planning 只读旧 index，不执行任何 write 或 physical offset 分配。
+- 更新按 block key 确定性排序并拒绝 duplicate；checkpoint generation 必须严格 `G -> G+1`。Planner 只复制受影响 root paths，82-entry fanout 和 8-level depth fail closed，未修改多层 subtree 保留原 physical offset/CRC/generation。
+- Offset assignment 必须再次匹配 caller 的 immutable base view；所有 logical refs 均为 child-before-parent、全可达且无共享/孤儿。新 records 只能位于旧 committed end 之后且同批不重叠，复用 records/nodes 必须完整位于旧 committed range；overflow/alignment/image budget 在 encode 前拒绝。
+- Tests 显式覆盖 insert/replace、DATA→ZERO、ZERO→DATA、leaf split、83 leaves→2 level-1 nodes→level-2 root、两层 path-copy reuse、乱序 deterministic bytes、duplicate/limit/cancel/stale-tail/base mismatch 与旧 root 不变。
+- 固定 seed `0x18C0FFEE51A7B11D` 的 100,000-update workload 覆盖随机 interior insert、hot-key replacement 和 DATA/ZERO/DISCARD；Release 对每个连续 root 全量比较当时的 `std::map` oracle，Debug 做每批全量更新+历史抽样并最终全量比较。
+- Verification：最终 Debug `m3-v1` 8/8；完整 Release CTest 68/68（其中 Release `m3-v1` 8/8）；`git diff --check` 通过。独立 path-copy/split 复审最终 GO，P0/P1/P2 = 0/0/0。
+- Evidence SHA-256：`journal_index.cpp` `2962055831A30E25B020A472E19C1DA946375C4AA3E163718AD0EC268AE6BC88`；builder tests `1EB731605A05D7C8BC5331625C5A26ECF6E8A78C843868187DFC059164C8E892`；Release test executable `5F9D97E212FC2D746430F81CA7577A7F787A4DB05DCD443A4B34C729FF844B82`。
+- Boundary：Task18 不写 journal、不 flush/readback、不生成 commit/manifest；这些 durability 责任从 Task19 开始。
 
 ## Task 19 — Append、flush 并 readback 完整 checkpoint
 

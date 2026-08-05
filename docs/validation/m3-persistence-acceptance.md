@@ -1001,3 +1001,54 @@ additional exhaustive stress/mutation coverage and do not block Task17.
 
 Task 17 verdict: **DONE**. This authorizes Task 18 to consume the reader and
 node codec; it does not claim path-copy construction or journal durability.
+
+## Task 18 — Copy-on-write journal-index builder acceptance
+
+Task 18 is accepted at implementation commit
+`9c6eab67d8f7059a9c206ac81d3650f582cf2b31`. The builder produces an opaque,
+read-only in-memory plan before assigning any physical offsets. The plan binds
+the complete immutable base identity (file object, journal UUID, epoch, root
+generation, committed length and root descriptor), and planning performs no
+file writes.
+
+Each checkpoint must be exactly `G -> G+1`. Updates are sorted by block key for
+deterministic output and duplicate block updates are rejected. New journal
+record ranges must begin at or after the old committed end and may not overlap.
+The persistent B+tree planner copies only affected root paths, caps node fanout
+at 82 and depth at eight levels, and retains physical descriptors for untouched
+subtrees.
+
+Offset assignment rechecks the caller's expected immutable base view. It
+validates that every planned node is reachable exactly once in strict
+child-before-parent order, rejects orphan/shared/forward references, bounds all
+reused records and nodes by the old committed length, and bounds all new record
+ranges before the first index-node offset. Alignment, sequence, generation,
+node-count, image-byte and integer-overflow checks run before encoding. The
+builder still performs no writes; journal append durability remains Task 19.
+
+Focused tests cover inserts and replacements, DATA-to-ZERO and ZERO-to-DATA,
+leaf/internal/high-root splits, deterministic bytes under reordered input,
+duplicate rejection, cancellation and resource limits, stale-tail/base-identity
+rejection, and physical reuse of an untouched subtree below a level-2 root.
+The fixed seed `0x18C0FFEE51A7B11D` drives 100,000 update events containing
+random interior inserts, hot-key replacements and DATA/ZERO/DISCARD kinds.
+Release compares every consecutive published root with the complete map oracle;
+Debug verifies every batch plus a fixed historical sample and exhaustively
+checks the final root.
+
+Final verification passed Debug `m3-v1` 8/8 and complete Release CTest 68/68,
+including Release `m3-v1` 8/8. An independent path-copy/split review returned
+GO with P0/P1/P2 = 0/0/0. `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `journal_index.cpp`:
+  `2962055831A30E25B020A472E19C1DA946375C4AA3E163718AD0EC268AE6BC88`;
+- builder tests:
+  `1EB731605A05D7C8BC5331625C5A26ECF6E8A78C843868187DFC059164C8E892`;
+- Release builder-test executable:
+  `5F9D97E212FC2D746430F81CA7577A7F787A4DB05DCD443A4B34C729FF844B82`.
+
+Task 18 verdict: **DONE**. This authorizes Task 19 to append planned records,
+nodes and a commit, then flush and independently read them back. It does not
+claim journal durability or manifest publication.

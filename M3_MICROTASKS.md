@@ -330,17 +330,17 @@ codec 来迎合 selector。
 
 允许：`journal_index.*`、`m3_journal_index_builder_tests.cpp`。
 
-- [ ] `T18.1 [M]` RED fixtures：insert/replace kind、leaf/internal/root split、unchanged
+- [x] `T18.1 [M]` RED fixtures：insert/replace kind、leaf/internal/root split、unchanged
   subtree reuse、乱序输入得到相同 bytes；同 checkpoint duplicate block 必须拒绝。
-- [ ] `T18.2 [H]` 冻结 pure planning result：新 immutable node images、logical child
+- [x] `T18.2 [H]` 冻结 pure planning result：新 immutable node images、logical child
   references、old-root identity；此卡不写文件、不分配 physical offsets。
-- [ ] `T18.3 [H]` 实现只复制受影响 root paths 的 planner；失败不得改变 old root，
+- [x] `T18.3 [H]` 实现只复制受影响 root paths 的 planner；失败不得改变 old root，
   node fanout/count/size 全受 `PersistenceLimits` 约束。
-- [ ] `T18.4 [M]` 单独实现 checked append-offset assignment + encoding；输入 planner
+- [x] `T18.4 [M]` 单独实现 checked append-offset assignment + encoding；输入 planner
   不变，同输入 bytes deterministic；overflow/align/limit 先失败后零写入。
-- [ ] `T18.5 [M]` 100,000 updates 对 `std::map` 比较每个新 root lookup，并验证
+- [x] `T18.5 [M]` 100,000 updates 对 `std::map` 比较每个新 root lookup，并验证
   unchanged subtree physical identity 复用。
-- [ ] `T18.6 [H]` path-copy/split independent review + Debug/Release focused。
+- [x] `T18.6 [H]` path-copy/split independent review + Debug/Release focused。
 
 ### Task 19 — Append、flush、readback 完整 checkpoint
 
