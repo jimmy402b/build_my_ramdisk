@@ -1021,6 +1021,15 @@ Result<void> DynamicBlockStore::validate_invariants_for_test() {
                     false,
                     false);
                 block_invariant_failed |= !invariant.ok();
+                const auto& entry =
+                    leaf->entries[static_cast<std::size_t>(entry_index)];
+                if (entry.snapshot_preparing_id != 0 &&
+                    !snapshot_coordinator_->owns_pending_reservation(
+                        entry.snapshot_preparing_id,
+                        block,
+                        entry.snapshot_reservation_id)) {
+                    block_invariant_failed = true;
+                }
             }
         }
 
@@ -1065,6 +1074,11 @@ Result<void> DynamicBlockStore::validate_invariants_for_test() {
                     DynamicBlockStoreErrorCode::FatalInternalInvariant),
                 L"DynamicBlockStore::validate_invariants_for_test",
                 L"stable store invariant snapshot failed"));
+        }
+        const auto coordinator_invariant =
+            snapshot_coordinator_->validate_invariants_for_test();
+        if (!coordinator_invariant.ok()) {
+            return coordinator_invariant;
         }
         return Result<void>::success();
     }

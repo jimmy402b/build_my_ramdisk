@@ -1124,6 +1124,26 @@ bool DynamicBlockStoreTestAccess::snapshot_entry(
     return true;
 }
 
+bool DynamicBlockStoreTestAccess::set_snapshot_preparing_identity(
+    DynamicBlockStore& store,
+    std::uint64_t block_index,
+    std::uint64_t snapshot_id,
+    std::uint64_t reservation_id) {
+    if (block_index >= store.geometry_.total_blocks ||
+        ((snapshot_id == 0) != (reservation_id == 0))) {
+        return false;
+    }
+    auto access = store.directory_->get_or_create(block_index);
+    if (!access.ok()) {
+        return false;
+    }
+    auto& stripe = store.stripes_->stripe_for(block_index);
+    std::scoped_lock lock(stripe.mutex);
+    access.value()->snapshot_preparing_id = snapshot_id;
+    access.value()->snapshot_reservation_id = reservation_id;
+    return true;
+}
+
 bool DynamicBlockStoreTestAccess::set_dirty_kind(
     DynamicBlockStore& store,
     std::uint64_t block_index,

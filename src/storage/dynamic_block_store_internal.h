@@ -212,6 +212,11 @@ public:
     static bool snapshot_entry(DynamicBlockStore& store,
                                std::uint64_t block_index,
                                BlockEntry& output);
+    static bool set_snapshot_preparing_identity(
+        DynamicBlockStore& store,
+        std::uint64_t block_index,
+        std::uint64_t snapshot_id,
+        std::uint64_t reservation_id);
     static bool snapshot_preimage(
         DynamicBlockStore& store,
         std::uint64_t block_index,

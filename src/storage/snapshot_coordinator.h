@@ -216,6 +216,10 @@ public:
     Result<ConsistentSnapshotStatus> status(
         const ConsistentSnapshotToken& token) const;
     SnapshotCoordinatorSnapshot snapshot() const;
+    bool owns_pending_reservation(
+        std::uint64_t snapshot_id,
+        std::uint64_t block_index,
+        std::uint64_t reservation_id) const;
     Result<void> validate_invariants_for_test() const;
     std::uint64_t index_probe_count_for_test() const;
     bool preimage_lookup_entered_for_test() const noexcept;

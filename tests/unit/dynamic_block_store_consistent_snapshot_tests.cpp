@@ -1652,6 +1652,19 @@ TEST_CASE(m2_1_task07_cancelled_publish_notifies_preparing_waiter) {
     REQUIRE(coordinator.validate_invariants_for_test().ok());
 }
 
+TEST_CASE(m2_1_task07_store_invariant_rejects_ghost_preparing_marker) {
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto store = require_store(backing_args(backing, 1, 7));
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        set_snapshot_preparing_identity(*store, 0, 11, 22));
+
+    REQUIRE(!store->validate_invariants_for_test().ok());
+
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        set_snapshot_preparing_identity(*store, 0, 0, 0));
+    REQUIRE(store->validate_invariants_for_test().ok());
+}
+
 TEST_CASE(m2_1_task07_metadata_preparing_marker_preserves_zero_and_discard) {
     for (const auto cut_kind :
          {LogicalDirtyKind::Zero, LogicalDirtyKind::Discard}) {

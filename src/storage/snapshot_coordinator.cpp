@@ -1518,6 +1518,21 @@ SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
     };
 }
 
+bool SnapshotCoordinator::owns_pending_reservation(
+    std::uint64_t snapshot_id,
+    std::uint64_t block_index,
+    std::uint64_t reservation_id) const {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->active_token.has_value() || snapshot_id == 0 ||
+        reservation_id == 0 ||
+        state_->active_token->snapshot_id != snapshot_id) {
+        return false;
+    }
+    const auto* record = state_->find_record(block_index);
+    return record != nullptr && !record->committed &&
+           record->reservation_id == reservation_id;
+}
+
 Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
     std::scoped_lock lock(state_->mutex);
     const auto invariant_failure = [](std::wstring message) {
