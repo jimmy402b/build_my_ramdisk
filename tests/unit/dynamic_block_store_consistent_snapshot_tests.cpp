@@ -1397,6 +1397,100 @@ TEST_CASE(m2_1_task07_abort_finalizes_after_capacity_waiter_cancels) {
     REQUIRE(store->validate_invariants_for_test().ok());
 }
 
+TEST_CASE(m2_1_task07_staged_batch_cannot_revive_stalled_snapshot) {
+    const auto initial_time = std::chrono::steady_clock::now();
+    auto clock = std::make_shared<Task07ManualClock>(initial_time);
+    auto observer = std::make_shared<Task07PressureObserver>();
+    Task07OneRecordCowFixture fixture;
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 2, 7);
+    args.options.snapshot_cow_max_bytes =
+        fixture.options().snapshot_cow_max_bytes;
+    args.options.snapshot_writer_stall_limit =
+        fixture.options().snapshot_writer_stall_limit;
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.snapshot_pressure_test_observer = observer;
+    dependencies.snapshot_pressure_clock = clock;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        std::move(args), std::move(dependencies));
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+
+    REQUIRE(store->write(bounded_context(), 0, block_data(0x71)).ok());
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, block_data(0x82)).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(store->write(
+        bounded_context(), myrd::kBlockSizeBytes, block_data(0x93)).ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes,
+               myrd::kMinimumSnapshotCowBytes);
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        pause_consistent_snapshot_after_first_record(*store));
+
+    myrd::DirtyScanCursor cursor{};
+    std::optional<myrd::Result<std::vector<myrd::DirtyBlockSnapshot>>> copied;
+    std::thread reader([&] {
+        copied.emplace(store->copy_consistent_snapshot_batch(
+            bounded_context(), begun.value(), cursor,
+            2 * myrd::kBlockSizeBytes));
+    });
+    REQUIRE(wait_until([&] {
+        return myrd::DynamicBlockStoreTestAccess::
+            consistent_snapshot_record_staged(*store);
+    }));
+
+    std::atomic<std::uint32_t> writer_code{kNoResult};
+    std::thread writer([&] {
+        const auto result = store->write(
+            myrd::OperationContext{}, 0, block_data(0xA4));
+        writer_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+        observer->record_writer_returned();
+    });
+    REQUIRE_EQ(observer->wait_for_ready_or_writer_returned(
+                   std::chrono::steady_clock::now() + kWaitBound),
+               Task07PressureObserver::RaceResult::ReadyToSleep);
+    observer->release_ready_event();
+    REQUIRE(observer->wait_until_sleeping(
+        std::chrono::steady_clock::now() + kWaitBound));
+    clock->advance(fixture.options().snapshot_writer_stall_limit +
+                   std::chrono::milliseconds{1});
+    myrd::DynamicBlockStoreTestAccess::notify_snapshot_capacity_waiters(
+        *store);
+    writer.join();
+
+    REQUIRE_EQ(writer_code.load(std::memory_order_acquire), 0u);
+    auto status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state,
+               myrd::ConsistentSnapshotState::Aborted);
+    REQUIRE_EQ(store->stats().snapshot_auto_aborts_total, 1ull);
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        release_consistent_snapshot_record_pause(*store));
+    reader.join();
+
+    REQUIRE(copied.has_value());
+    REQUIRE(!copied->ok());
+    REQUIRE_EQ(error_code(copied->error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::
+                       SnapshotResourceExhausted));
+    REQUIRE_EQ(cursor.next_block_index, 0ull);
+    status = store->consistent_snapshot_status(begun.value());
+    REQUIRE(status.ok());
+    REQUIRE_EQ(status.value().state,
+               myrd::ConsistentSnapshotState::Aborted);
+    REQUIRE(!store->finish_consistent_snapshot(begun.value()).ok());
+    REQUIRE(store->abort_consistent_snapshot(begun.value()).ok());
+    const auto successor =
+        store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(successor.ok());
+    REQUIRE(store->abort_consistent_snapshot(successor.value()).ok());
+    REQUIRE(store->validate_invariants_for_test().ok());
+}
+
 TEST_CASE(m2_1_task07_fifo_waiters_make_progress_one_cow_slot_at_a_time) {
     auto observer = std::make_shared<Task07MultiPressureObserver>();
     Task07OneRecordCowFixture fixture;

@@ -1410,6 +1410,12 @@ Result<void> SnapshotCoordinator::advance_scan_frontier(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
     }
+    if (state_->active_state == ConsistentSnapshotState::Aborted) {
+        return Result<void>::failure(coordinator_error(
+            state_->abort_reason.value_or(
+                DynamicBlockStoreErrorCode::SnapshotAborted),
+            L"snapshot was aborted while a batch was staged"));
+    }
     if (state_->next_scan_block != expected_scan_block) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotBusy,
