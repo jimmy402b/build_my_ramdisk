@@ -869,6 +869,29 @@ set_tests_properties(unit.m3.manifest_format PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 30)
 
+# ---- M3 journal v1 format tests (Task 16) ----------------------------------
+add_executable(myrd_m3_journal_format_tests
+    unit/m3_journal_format_tests.cpp
+)
+target_link_libraries(myrd_m3_journal_format_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_journal_format_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m3_journal_format_tests PRIVATE
+    "MYRD_M3_JOURNAL_HEADER_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-header-v1.hex\""
+    "MYRD_M3_JOURNAL_DATA_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-data-v1.hex\""
+    "MYRD_M3_JOURNAL_ZERO_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-zero-v1.hex\""
+    "MYRD_M3_JOURNAL_DISCARD_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-discard-v1.hex\""
+    "MYRD_M3_JOURNAL_INDEX_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-index-v1.hex\""
+    "MYRD_M3_JOURNAL_COMMIT_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-commit-v1.hex\""
+    "MYRD_M3_JOURNAL_DIGEST_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-checkpoint-digest-v1.hex\"")
+myrd_enable_warnings(myrd_m3_journal_format_tests)
+add_test(NAME unit.m3.journal_format
+    COMMAND myrd_m3_journal_format_tests)
+set_tests_properties(unit.m3.journal_format PROPERTIES
+    LABELS "m3-v1"
+    TIMEOUT 60)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
