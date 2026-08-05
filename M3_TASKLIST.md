@@ -163,7 +163,7 @@ Suggested commit:
 | 10 | CRC32C、streaming SHA、byte codec | C | DONE | 00 | M3-V1 |
 | 11 | Exact file I/O 与 sparse fake | C | DONE | 10 | M3-V1 |
 | 12 | 路径、文件身份、writer lock | C | DONE | 11 | M3-V1 |
-| 13 | Persistence 类型、错误、outcome | C | PENDING | 10,11,12 | M3-V1 |
+| 13 | Persistence 类型、错误、outcome | C | DONE | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | PENDING | 13 | M3-V1 |
 | 15 | 完整双槽 candidate 选择 | O | PENDING | 14,20,22 | M3-V2 |
 | 16 | Journal wire format 与 digest | C | PENDING | 13 | M3-V1 |
@@ -561,14 +561,25 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：C。允许文件：** `src/persistence/persistence_types.*`、`persistence_error.*`、类型/JSON tests。
 
-- [ ] 红灯覆盖 geometry、identity、manifest/journal/root/commit descriptor、phase/session enum 和 stable strings。
-- [ ] 定义 caller-supplied `PersistenceLimits`：virtual/journal records、index/BAT cache bytes+entries、I/O scratch、verify batch；zero/overflow/单条记录放不下/隐藏 unlimited 全部拒绝。
-- [ ] 冻结 `NotCommitted`、`CommitIndeterminate`、`Committed`、`CommittedNeedsReconciliation`，不得折叠为 bool 或普通 `Result` error。
-- [ ] 冻结 `VolumeBarrierKind`：真实 filesystem 只有 exact volume flush 成功后可标 `WindowsVolumeFlushed`；raw/local test 必须显式标 `RawBlockTestNoFilesystemCache` 并禁止产生 filesystem durability claim。
-- [ ] error 保存 phase、stable code、原生 code 与可选安全 context；未知 enum/字段 fail-closed。
-- [ ] 每个 public error/outcome context 都有 operation、phase、Win32 code（适用时）、image UUID、operation id、generation 和 commit disposition；默认值与脱敏有红灯。
-- [ ] 序列化不依赖 enum ordinal/ABI；checked generation increment 拒绝回绕。
-- [ ] 跑 `m3-v1` 中当前可用项目；建议提交 `feat(persistence): define stable persistence contracts`。
+- [x] 红灯覆盖 geometry、identity、manifest/journal/root/commit descriptor、phase/session enum 和 stable strings。
+- [x] 定义 caller-supplied `PersistenceLimits`：virtual/journal records、index/BAT cache bytes+entries、I/O scratch、verify batch；zero/overflow/单条记录放不下/隐藏 unlimited 全部拒绝。
+- [x] 冻结 `NotCommitted`、`CommitIndeterminate`、`Committed`、`CommittedNeedsReconciliation`，不得折叠为 bool 或普通 `Result` error。
+- [x] 冻结 `VolumeBarrierKind`：真实 filesystem 只有 exact volume flush 成功后可标 `WindowsVolumeFlushed`；raw/local test 必须显式标 `RawBlockTestNoFilesystemCache` 并禁止产生 filesystem durability claim。
+- [x] error 保存 phase、stable code、原生 code 与可选安全 context；未知 enum/字段 fail-closed。
+- [x] 每个 public error/outcome context 都有 operation、phase、Win32 code（适用时）、image UUID、operation id、generation 和 commit disposition；默认值与脱敏有红灯。
+- [x] 序列化不依赖 enum ordinal/ABI；checked generation increment 拒绝回绕。
+- [x] 跑 `m3-v1` 中当前可用项目；建议提交 `feat(persistence): define stable persistence contracts`。
+
+**完成记录（DONE，2026-08-05）：**
+
+- Accepted implementation: `4544a49a29f0dabdad6d162ddc1d12bb7f02acc1`；冻结测试/fixture commit：`c2cf23cb166ec27106932d9d75bf835897bb014f`。
+- Claude 初稿未直接验收：修复了非 virtual budget 的隐藏 unlimited、保留 generation sentinel 回绕、`Committed → CommittedNeedsReconciliation`、indeterminate retry、自相矛盾 outcome、缺上下文 fatal increment，以及不完整 fault inventory/schema。
+- `CheckedIncrementOutcome` 使用 exactly-one-of variant；完整 persistence context 必须有稳定 operation、operation id、非 nil image UUID、有效 generation、phase/code/disposition。post-commit 保留 first `CommitIndeterminate` error code 时，最终 disposition 仍必须是 reconciliation。
+- Registry 冻结 59 个 phase，分别记录 boundary state、返回错误 disposition 和 kill 后允许的完整 generation 集合；覆盖 T19/31/33/35/42，包括完整 VHDX metadata/已写 extent readback、产品 reader 与离线 Windows Virtual Disk API 独立验证。
+- Registry SHA-256：LF/normalized `A47C3E147A7CD8F9A275F0604AB92C0FCB087AABF6334A23E05E6BA6832BA1D2`；CRLF raw `4BB1F173B2B04316D7CBA7DAD7311C352202762ACA50AD9323C76ECE6A22C80B`；semantic `D43DEA1EC3ECAEF5A4A1E4DB089E95CA1E9E0306DE3FD0481443D43D036590C7`。
+- Scope exception：为使新增 `ErrorDomain::persistence` 在共享消费者中一致，最小修改 `src/m1/m1_lifecycle_runner.cpp` 增加字符串映射；未改变 M1 protocol、I/O、lifecycle 或 report schema。
+- Verification：Debug/Release focused `unit.m3.persistence_types` 与 `unit.m1.lifecycle_runner` 通过；Release `m3-v1` 4/4；完整 Release 64/64；`git diff --check` 通过。
+- Independent review：类型/outcome 与 fault-registry 两条审查均最终 GO，P0/P1 = 0/0；Task14/16 继续负责 exact wire offsets、reserved bytes 与 codec golden fixtures。
 
 ## Task 14 — 编解码 4096-byte manifest slot
 

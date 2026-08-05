@@ -228,25 +228,25 @@ Task 10–12 必须先 `DONE`。所有格式字段、offset、reserved bytes、C
 允许：`src/persistence/persistence_types.*`、必要的 `persistence_error.*`、
 `tests/unit/m3_persistence_types_tests.cpp`、test CMake。
 
-- [ ] `T13.1 [M]` 新建 focused target；RED 覆盖全部 enum 数值/stable string、
+- [x] `T13.1 [M]` 新建 focused target；RED 覆盖全部 enum 数值/stable string、
   geometry constants、phase/session names。先补最小 compile stub，目标 RED 必须是
   断言失败，缺 API 只记录为 bootstrap。
-- [ ] `T13.2 [M]` RED 覆盖 geometry 与 checked increment：512/4096 sectors、
+- [x] `T13.2 [M]` RED 覆盖 geometry 与 checked increment：512/4096 sectors、
   64 KiB/2 MiB divisibility、zero、overflow、generation/epoch wrap。
-- [ ] `T13.3 [M]` RED 覆盖 caller-supplied `PersistenceLimits`：每个 zero、单条
+- [x] `T13.3 [M]` RED 覆盖 caller-supplied `PersistenceLimits`：每个 zero、单条
   record/node/block 放不下、bytes/entries 不一致、算术 overflow、隐藏 unlimited。
-- [ ] `T13.4 [H]` 冻结 `NotCommitted`、`CommitIndeterminate`、`Committed`、
+- [x] `T13.4 [H]` 冻结 `NotCommitted`、`CommitIndeterminate`、`Committed`、
   `CommittedNeedsReconciliation` 数据结构和 exhaustive transition table；只写
   types/tests，不写 checkpoint 流程。
-- [ ] `T13.5 [H]` 实现/测试 `VolumeBarrierKind` 和 request validation；unknown/
+- [x] `T13.5 [H]` 实现/测试 `VolumeBarrierKind` 和 request validation；unknown/
   missing barrier 必须在 snapshot begin 前失败，raw-test 明确不声称 filesystem
   durability。
-- [ ] `T13.6 [M]` 实现 error context value types：operation、phase、native code、
+- [x] `T13.6 [M]` 实现 error context value types：operation、phase、native code、
   image UUID、operation id、generation、disposition；默认值 fail-closed，日志字符串
   不参与程序分支，路径/块内容默认 redact。
-- [ ] `T13.7 [H]` exhaustive switch/serialization/ABI review；运行 Debug/Release
+- [x] `T13.7 [H]` exhaustive switch/serialization/ABI review；运行 Debug/Release
   focused、`m3-v1`、完整 Release。未覆盖 enum 必须编译或测试失败。
-- [ ] `T13.8 [H]` 独立冻结 `fault-phase-registry.json`：stable ID、exact boundary、
+- [x] `T13.8 [H]` 独立冻结 `fault-phase-registry.json`：stable ID、exact boundary、
   short/torn/kill capability、required gate 与 expected disposition；单独提交/hash，
   Task19/31/33/35/42 只读复用。
 
