@@ -387,20 +387,20 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 
 允许：`vhdx_format.*`、独立 golden fixtures、format tests。
 
-- [ ] `T21.1 [M]` 用独立脚本/手工 bytes 冻结 file identifier、双 headers、双
+- [x] `T21.1 [M]` 用独立脚本/手工 bytes 冻结 file identifier、双 headers、双
   region tables、metadata、parameters、disk size、sector sizes、BAT geometry。
-- [ ] `T21.2 [M]` RED 每个 structural boundary truncation 和 bad signature/checksum/
+- [x] `T21.2 [M]` RED 每个 structural boundary truncation 和 bad signature/checksum/
   GUID；不能用 production writer 生成唯一 expected fixture。
-- [ ] `T21.3 [H]` RED malformed matrix：header sequence 冲突、duplicate/missing
+- [x] `T21.3 [H]` RED malformed matrix：header sequence 冲突、duplicate/missing
   regions/metadata、overlap/alignment/overflow、unsupported differencing/compression、
   invalid sector/block geometry。
-- [ ] `T21.4 [H]` 实现 frozen dynamic non-differencing subset parser；双 header 与双
+- [x] `T21.4 [H]` 实现 frozen dynamic non-differencing subset parser；双 header 与双
   region table 各自从有效集合选最高，不能把一份 copy 的 validity 传给另一份。
-- [ ] `T21.5 [M]` 构造 immutable `VhdxLayout` value，仅暴露 checked ranges/
+- [x] `T21.5 [M]` 构造 immutable `VhdxLayout` value，仅暴露 checked ranges/
   geometry/identity；无 writable pointer，无 silent feature downgrade。
-- [ ] `T21.6 [M]` boundary fuzz + independent fixture builder cross-check；Debug/
+- [x] `T21.6 [M]` boundary fuzz + independent fixture builder cross-check；Debug/
   Release focused。
-- [ ] `T21.7 [H]` malformed-input reviewer 和 mutation proof GO 后完成。
+- [x] `T21.7 [H]` malformed-input reviewer 和 mutation proof GO 后完成。
 
 ### Task 22 — Lazy VHDX BAT reader
 

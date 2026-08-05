@@ -171,7 +171,7 @@ Suggested commit:
 | 18 | COW index builder | S | DONE | 17 | M3-V1 |
 | 19 | Journal checkpoint append/readback | S | DONE | 11,16,18 | M3-V1/V2 |
 | 20 | JournalReader block resolution | S | DONE | 17,19 | M3-V1 |
-| 21 | Strict VHDX parser | C | PENDING | 10,11,13 | M3-V1 |
+| 21 | Strict VHDX parser | C | DONE | 10,11,13 | M3-V1 |
 | 22 | Lazy BAT reader | S | PENDING | 21 | M3-V1 |
 | 23 | Sparse dynamic VHDX writer | S | PENDING | 11,21,22 | M3-V1 |
 | 24 | Windows native VHDX gate | C | PENDING | 23 | M3-V5 |
@@ -724,11 +724,11 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：C。允许文件：** `vhdx_format.*`、minimal fixtures/tests。
 
-- [ ] golden bytes 覆盖 identifier、双 header、双 region table、metadata entries、geometry 与 BAT。
-- [ ] 红灯覆盖坏 signature/checksum/GUID、conflicting sequence、missing/duplicate/overlap、overflow/truncate 和 unsupported flags。
-- [ ] 只接受 SPEC 冻结的 dynamic non-differencing profile；双 header/region 副本分别选最高有效项。
-- [ ] 输出 immutable `VhdxLayout`，禁止返回 raw writable structure 或接受未知 mandatory feature。
-- [ ] 以 Microsoft MS-VHDX 为规范逐字段审查，跑 `m3-v1`；建议提交 `feat(persistence): parse strict vhdx profile`。
+- [x] golden bytes 覆盖 identifier、双 header、双 region table、metadata entries、geometry 与 BAT。
+- [x] 红灯覆盖坏 signature/checksum/GUID、conflicting sequence、missing/duplicate/overlap、overflow/truncate 和 unsupported flags。
+- [x] 只接受 SPEC 冻结的 dynamic non-differencing profile；双 header/region 副本分别选最高有效项。
+- [x] 输出 immutable `VhdxLayout`，禁止返回 raw writable structure 或接受未知 mandatory feature。
+- [x] 以 Microsoft MS-VHDX 为规范逐字段审查，跑 `m3-v1`；建议提交 `feat(persistence): parse strict vhdx profile`。
 
 ## Task 22 — Lazy VHDX BAT reader
 

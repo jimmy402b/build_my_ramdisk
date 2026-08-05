@@ -1157,3 +1157,53 @@ Evidence SHA-256:
 Task 20 verdict: **DONE**. This authorizes Task 25 to compose journal hits with
 future Task 22 VHDX results. It does not implement VHDX parsing, BAT lookup,
 fallback, recovery selection or manifest publication.
+
+## Task 21 — Strict VHDX structural-parser acceptance
+
+Task 21 is accepted at implementation commit `2965425`. The parser reads only
+the fixed identifier, both 4 KiB headers, both 64 KiB region tables, the
+selected metadata table and its five required items. It never maps or scans
+the BAT or payload and never allocates memory proportional to virtual disk
+capacity.
+
+The accepted profile is dynamic, non-differencing VHDX with a clean log,
+exactly 2 MiB payload blocks, logical sectors of 512 or 4096 bytes and 4096-byte
+physical sectors. Header validity and sequence selection are independent of
+region-copy validity. Because region tables have no sequence field, one valid
+copy is accepted, two identical valid copies are accepted, and two valid but
+different copies fail closed. Unknown regions/metadata, parent locators,
+fixed/differencing flags, active logs and unsupported geometry return
+`UnsupportedVhdx`; malformed ranges, identities and checksums return
+`InvalidFormat`.
+
+`VhdxLayout` is a parser-only value: it has no public default constructor and
+contains no file handle or writable pointer. It exposes only validated
+geometry, VHDX identities, BAT/metadata/log ranges, file length, payload-block
+count, chunk ratio and the dynamic interleaved BAT-entry count.
+
+An independent fixture builder converts canonical GUID fields to Windows wire
+bytes and uses its own bitwise CRC32C implementation. Tests cover every exact
+read stage, both-copy fallback/conflict, the malformed field matrix, checked
+overlap/overflow, post-I/O cancellation/deadline/error propagation, exact
+64 TiB success with a sufficient sparse BAT, 128 deterministic truncation
+samples and 128 redundant-copy single-bit checksum mutations.
+
+Final Debug `m3-v1` passed 11/11 and complete Release CTest passed 71/71. A
+`BUILD_TESTING=OFF` Release build passed. Independent malformed-input review
+initially returned NO-GO twice, exposing writable-layout construction,
+insufficient stage-specific truncation/mutation proof and a deadline test that
+could pass early. After targeted fixes, final review returned GO with
+P0/P1/P2 = 0/0/0. `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `vhdx_format.cpp`:
+  `A64BBB6812EB60831E6F615E170B5155F92BE3CBAB13856B054141EA2D1E6405`;
+- VHDX format tests:
+  `EE6342A7DF875C5E943D13221AF598B33DCD06972AAD84CE5B8E73861CC8C8E2`;
+- Release VHDX format test executable:
+  `90245C5D6944205BAD768CD991D498B8D895ECEC6980A9A0EB55564E84FC87ED`.
+
+Task 21 verdict: **DONE**. This authorizes Task 22 to interpret BAT entries and
+read payload slices lazily. It does not validate individual BAT states or
+payload ranges, write VHDX files, or claim Windows native compatibility.

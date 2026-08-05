@@ -715,11 +715,11 @@ return ManifestCorrupt;
 **Depends on:** 10, 11, 13
 **Files:** Create `src/persistence/vhdx_format.h/.cpp`, `tests/unit/m3_vhdx_format_tests.cpp`, and minimal golden fixtures under `tests/fixtures/m3/vhdx/`.
 
-- [ ] **Step 1: Write golden-byte red tests** for both file identifiers, both headers, both region tables, metadata table entries, file parameters, virtual disk size, logical/physical sector sizes, and BAT geometry.
-- [ ] **Step 2: Red-test malformed input:** bad signatures/checksums/GUIDs, conflicting header sequence numbers, duplicate/missing regions or metadata, integer overflow, overlap, invalid alignment, unsupported differencing/compression flags, invalid block/sector sizes, and truncated files at every structural boundary.
-- [ ] **Step 3: Implement checked little-endian parsing** for the frozen dynamic, non-differencing VHDX subset only. Select the highest valid header and highest valid region table copy independently.
-- [ ] **Step 4: Expose immutable `VhdxLayout`** with virtual size, sector sizes, block size, BAT offset/count, metadata ranges and file identity; do not expose writable pointers or silently accept unsupported features.
-- [ ] **Step 5: Cross-check fixtures with an independent fixture builder and commit `feat(persistence): parse strict vhdx profile`.**
+- [x] **Step 1: Write golden-byte red tests** for both file identifiers, both headers, both region tables, metadata table entries, file parameters, virtual disk size, logical/physical sector sizes, and BAT geometry.
+- [x] **Step 2: Red-test malformed input:** bad signatures/checksums/GUIDs, conflicting header sequence numbers, duplicate/missing regions or metadata, integer overflow, overlap, invalid alignment, unsupported differencing/compression flags, invalid block/sector sizes, and truncated files at every structural boundary.
+- [x] **Step 3: Implement checked little-endian parsing** for the frozen dynamic, non-differencing VHDX subset only. Select the highest valid header and highest valid region table copy independently.
+- [x] **Step 4: Expose immutable `VhdxLayout`** with virtual size, sector sizes, block size, BAT offset/count, metadata ranges and file identity; do not expose writable pointers or silently accept unsupported features.
+- [x] **Step 5: Cross-check fixtures with an independent fixture builder and commit `feat(persistence): parse strict vhdx profile`.**
 
 ### Task 22: Resolve VHDX BAT entries lazily
 
