@@ -836,6 +836,15 @@ target_link_libraries(myrd_m3_persistence_types_tests PRIVATE
     myrd_test_support myrd_persistence)
 target_include_directories(myrd_m3_persistence_types_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m3_persistence_types_tests PRIVATE
+    "MYRD_M3_FAULT_PHASE_REGISTRY_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/fault-phase-registry.json\"")
+if(MSVC)
+    target_compile_options(myrd_m3_persistence_types_tests PRIVATE
+        /we4061 /we4062)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(myrd_m3_persistence_types_tests PRIVATE
+        -Werror=switch -Werror=switch-enum)
+endif()
 myrd_enable_warnings(myrd_m3_persistence_types_tests)
 add_test(NAME unit.m3.persistence_types
     COMMAND myrd_m3_persistence_types_tests)

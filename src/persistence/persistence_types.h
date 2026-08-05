@@ -108,6 +108,32 @@ constexpr std::string_view to_string(GeometryStatus status) noexcept {
     return "UnknownGeometryStatus";
 }
 
+constexpr std::optional<std::uint8_t> encode_wire(
+    GeometryStatus status) noexcept {
+    switch (status) {
+    case GeometryStatus::Ok:                        return std::uint8_t{0};
+    case GeometryStatus::VirtualBytesZero:          return std::uint8_t{1};
+    case GeometryStatus::LogicalSectorInvalid:      return std::uint8_t{2};
+    case GeometryStatus::PhysicalSectorInvalid:     return std::uint8_t{3};
+    case GeometryStatus::NotAlignedToLogicalSector: return std::uint8_t{4};
+    case GeometryStatus::TooLargeForBlockCount:     return std::uint8_t{5};
+    }
+    return std::nullopt;
+}
+
+constexpr std::optional<GeometryStatus> decode_geometry_status(
+    std::uint8_t wire) noexcept {
+    switch (wire) {
+    case 0: return GeometryStatus::Ok;
+    case 1: return GeometryStatus::VirtualBytesZero;
+    case 2: return GeometryStatus::LogicalSectorInvalid;
+    case 3: return GeometryStatus::PhysicalSectorInvalid;
+    case 4: return GeometryStatus::NotAlignedToLogicalSector;
+    case 5: return GeometryStatus::TooLargeForBlockCount;
+    default: return std::nullopt;
+    }
+}
+
 /// Validate image geometry per SPEC frozen profile.
 /// logical_sector_size must be 512 or 4096; physical_sector_size must be 4096.
 /// virtual_bytes must be non-zero, a multiple of logical_sector_size, and must
@@ -197,6 +223,59 @@ constexpr std::string_view to_string(LimitsStatus status) noexcept {
     case LimitsStatus::ArithmeticOverflow:             return "ArithmeticOverflow";
     }
     return "UnknownLimitsStatus";
+}
+
+constexpr std::optional<std::uint8_t> encode_wire(
+    LimitsStatus status) noexcept {
+    switch (status) {
+    case LimitsStatus::Ok:                              return std::uint8_t{0};
+    case LimitsStatus::MaxVirtualBytesZero:             return std::uint8_t{1};
+    case LimitsStatus::MaxVirtualBytesUnlimited:        return std::uint8_t{2};
+    case LimitsStatus::MaxVirtualBytesNotSectorAligned: return std::uint8_t{3};
+    case LimitsStatus::MaxJournalCommittedBytesZero:    return std::uint8_t{4};
+    case LimitsStatus::MaxJournalRecordsZero:           return std::uint8_t{5};
+    case LimitsStatus::SingleRecordExceedsJournalBytes: return std::uint8_t{6};
+    case LimitsStatus::JournalRecordsExceedCommittedBytes:
+        return std::uint8_t{7};
+    case LimitsStatus::MaxIndexCacheBytesZero:          return std::uint8_t{8};
+    case LimitsStatus::MaxIndexCacheEntriesZero:        return std::uint8_t{9};
+    case LimitsStatus::CacheEntriesExceedIndexBytes:    return std::uint8_t{10};
+    case LimitsStatus::MaxBatCacheBytesZero:            return std::uint8_t{11};
+    case LimitsStatus::MaxBatCacheEntriesZero:          return std::uint8_t{12};
+    case LimitsStatus::CacheEntriesExceedBatBytes:      return std::uint8_t{13};
+    case LimitsStatus::MaxIoScratchBytesZero:           return std::uint8_t{14};
+    case LimitsStatus::IoScratchTooSmall:               return std::uint8_t{15};
+    case LimitsStatus::MaxVerifyBatchBytesZero:         return std::uint8_t{16};
+    case LimitsStatus::VerifyBatchTooSmall:             return std::uint8_t{17};
+    case LimitsStatus::ArithmeticOverflow:              return std::uint8_t{18};
+    }
+    return std::nullopt;
+}
+
+constexpr std::optional<LimitsStatus> decode_limits_status(
+    std::uint8_t wire) noexcept {
+    switch (wire) {
+    case 0:  return LimitsStatus::Ok;
+    case 1:  return LimitsStatus::MaxVirtualBytesZero;
+    case 2:  return LimitsStatus::MaxVirtualBytesUnlimited;
+    case 3:  return LimitsStatus::MaxVirtualBytesNotSectorAligned;
+    case 4:  return LimitsStatus::MaxJournalCommittedBytesZero;
+    case 5:  return LimitsStatus::MaxJournalRecordsZero;
+    case 6:  return LimitsStatus::SingleRecordExceedsJournalBytes;
+    case 7:  return LimitsStatus::JournalRecordsExceedCommittedBytes;
+    case 8:  return LimitsStatus::MaxIndexCacheBytesZero;
+    case 9:  return LimitsStatus::MaxIndexCacheEntriesZero;
+    case 10: return LimitsStatus::CacheEntriesExceedIndexBytes;
+    case 11: return LimitsStatus::MaxBatCacheBytesZero;
+    case 12: return LimitsStatus::MaxBatCacheEntriesZero;
+    case 13: return LimitsStatus::CacheEntriesExceedBatBytes;
+    case 14: return LimitsStatus::MaxIoScratchBytesZero;
+    case 15: return LimitsStatus::IoScratchTooSmall;
+    case 16: return LimitsStatus::MaxVerifyBatchBytesZero;
+    case 17: return LimitsStatus::VerifyBatchTooSmall;
+    case 18: return LimitsStatus::ArithmeticOverflow;
+    default: return std::nullopt;
+    }
 }
 
 /// Validate caller-supplied PersistenceLimits.
@@ -302,6 +381,58 @@ constexpr std::string_view to_string(PersistenceErrorCode code) noexcept {
     return "UnknownPersistenceErrorCode";
 }
 
+constexpr std::optional<std::uint32_t> encode_wire(
+    PersistenceErrorCode code) noexcept {
+    switch (code) {
+    case PersistenceErrorCode::InvalidFormat:             return 1U;
+    case PersistenceErrorCode::UnsupportedVhdx:           return 2U;
+    case PersistenceErrorCode::ManifestCorrupt:           return 3U;
+    case PersistenceErrorCode::JournalCorrupt:            return 4U;
+    case PersistenceErrorCode::BackingDataCorrupt:        return 5U;
+    case PersistenceErrorCode::ImageInUse:                return 6U;
+    case PersistenceErrorCode::OperationBusy:             return 7U;
+    case PersistenceErrorCode::GenerationConflict:        return 8U;
+    case PersistenceErrorCode::SnapshotBusy:              return 9U;
+    case PersistenceErrorCode::SnapshotAborted:           return 10U;
+    case PersistenceErrorCode::SnapshotResourceExhausted: return 11U;
+    case PersistenceErrorCode::CommitIndeterminate:       return 12U;
+    case PersistenceErrorCode::DiskFull:                  return 13U;
+    case PersistenceErrorCode::AccessDenied:              return 14U;
+    case PersistenceErrorCode::IoError:                   return 15U;
+    case PersistenceErrorCode::Cancelled:                 return 16U;
+    case PersistenceErrorCode::DeadlineExceeded:          return 17U;
+    case PersistenceErrorCode::VerificationFailed:        return 18U;
+    case PersistenceErrorCode::FatalInternalInvariant:    return 19U;
+    }
+    return std::nullopt;
+}
+
+constexpr std::optional<PersistenceErrorCode>
+decode_persistence_error_code(std::uint32_t wire) noexcept {
+    switch (wire) {
+    case 1:  return PersistenceErrorCode::InvalidFormat;
+    case 2:  return PersistenceErrorCode::UnsupportedVhdx;
+    case 3:  return PersistenceErrorCode::ManifestCorrupt;
+    case 4:  return PersistenceErrorCode::JournalCorrupt;
+    case 5:  return PersistenceErrorCode::BackingDataCorrupt;
+    case 6:  return PersistenceErrorCode::ImageInUse;
+    case 7:  return PersistenceErrorCode::OperationBusy;
+    case 8:  return PersistenceErrorCode::GenerationConflict;
+    case 9:  return PersistenceErrorCode::SnapshotBusy;
+    case 10: return PersistenceErrorCode::SnapshotAborted;
+    case 11: return PersistenceErrorCode::SnapshotResourceExhausted;
+    case 12: return PersistenceErrorCode::CommitIndeterminate;
+    case 13: return PersistenceErrorCode::DiskFull;
+    case 14: return PersistenceErrorCode::AccessDenied;
+    case 15: return PersistenceErrorCode::IoError;
+    case 16: return PersistenceErrorCode::Cancelled;
+    case 17: return PersistenceErrorCode::DeadlineExceeded;
+    case 18: return PersistenceErrorCode::VerificationFailed;
+    case 19: return PersistenceErrorCode::FatalInternalInvariant;
+    default: return std::nullopt;
+    }
+}
+
 // ============================================================================
 // Commit disposition (PLAN §1.5, frozen)
 // ============================================================================
@@ -321,6 +452,39 @@ constexpr std::string_view to_string(CommitDisposition disposition) noexcept {
     case CommitDisposition::CommittedNeedsReconciliation:  return "CommittedNeedsReconciliation";
     }
     return "UnknownCommitDisposition";
+}
+
+constexpr std::optional<std::uint8_t> encode_wire(
+    CommitDisposition disposition) noexcept {
+    switch (disposition) {
+    case CommitDisposition::NotCommitted:                 return std::uint8_t{0};
+    case CommitDisposition::CommitIndeterminate:          return std::uint8_t{1};
+    case CommitDisposition::Committed:                    return std::uint8_t{2};
+    case CommitDisposition::CommittedNeedsReconciliation: return std::uint8_t{3};
+    }
+    return std::nullopt;
+}
+
+constexpr std::optional<CommitDisposition> decode_commit_disposition(
+    std::uint8_t wire) noexcept {
+    switch (wire) {
+    case 0: return CommitDisposition::NotCommitted;
+    case 1: return CommitDisposition::CommitIndeterminate;
+    case 2: return CommitDisposition::Committed;
+    case 3: return CommitDisposition::CommittedNeedsReconciliation;
+    default: return std::nullopt;
+    }
+}
+
+constexpr std::optional<CommitDisposition> parse_commit_disposition(
+    std::string_view text) noexcept {
+    if (text == "NotCommitted") return CommitDisposition::NotCommitted;
+    if (text == "CommitIndeterminate")
+        return CommitDisposition::CommitIndeterminate;
+    if (text == "Committed") return CommitDisposition::Committed;
+    if (text == "CommittedNeedsReconciliation")
+        return CommitDisposition::CommittedNeedsReconciliation;
+    return std::nullopt;
 }
 
 /// Exhaustive valid-transition table (SPEC §12, PLAN §1.5).
@@ -367,6 +531,24 @@ constexpr std::string_view to_string(VolumeBarrierKind kind) noexcept {
     case VolumeBarrierKind::RawBlockTestNoFilesystemCache: return "RawBlockTestNoFilesystemCache";
     }
     return "UnknownVolumeBarrierKind";
+}
+
+constexpr std::optional<std::uint8_t> encode_wire(
+    VolumeBarrierKind kind) noexcept {
+    switch (kind) {
+    case VolumeBarrierKind::WindowsVolumeFlushed:          return std::uint8_t{0};
+    case VolumeBarrierKind::RawBlockTestNoFilesystemCache: return std::uint8_t{1};
+    }
+    return std::nullopt;
+}
+
+constexpr std::optional<VolumeBarrierKind> decode_volume_barrier_kind(
+    std::uint8_t wire) noexcept {
+    switch (wire) {
+    case 0: return VolumeBarrierKind::WindowsVolumeFlushed;
+    case 1: return VolumeBarrierKind::RawBlockTestNoFilesystemCache;
+    default: return std::nullopt;
+    }
 }
 
 /// Returns true if `kind` is one of the two known values (not an unlisted byte).
@@ -426,6 +608,40 @@ constexpr std::string_view to_string(SessionPhase phase) noexcept {
     case SessionPhase::PersistenceFaulted: return "PersistenceFaulted";
     }
     return "UnknownSessionPhase";
+}
+
+constexpr std::optional<std::uint8_t> encode_wire(
+    SessionPhase phase) noexcept {
+    switch (phase) {
+    case SessionPhase::Closed:             return std::uint8_t{0};
+    case SessionPhase::Opening:            return std::uint8_t{1};
+    case SessionPhase::Ready:              return std::uint8_t{2};
+    case SessionPhase::Checkpointing:      return std::uint8_t{3};
+    case SessionPhase::Compacting:         return std::uint8_t{4};
+    case SessionPhase::Verifying:          return std::uint8_t{5};
+    case SessionPhase::ResolvingCommit:    return std::uint8_t{6};
+    case SessionPhase::Reconciling:        return std::uint8_t{7};
+    case SessionPhase::Closing:            return std::uint8_t{8};
+    case SessionPhase::PersistenceFaulted: return std::uint8_t{9};
+    }
+    return std::nullopt;
+}
+
+constexpr std::optional<SessionPhase> decode_session_phase(
+    std::uint8_t wire) noexcept {
+    switch (wire) {
+    case 0: return SessionPhase::Closed;
+    case 1: return SessionPhase::Opening;
+    case 2: return SessionPhase::Ready;
+    case 3: return SessionPhase::Checkpointing;
+    case 4: return SessionPhase::Compacting;
+    case 5: return SessionPhase::Verifying;
+    case 6: return SessionPhase::ResolvingCommit;
+    case 7: return SessionPhase::Reconciling;
+    case 8: return SessionPhase::Closing;
+    case 9: return SessionPhase::PersistenceFaulted;
+    default: return std::nullopt;
+    }
 }
 
 // ============================================================================

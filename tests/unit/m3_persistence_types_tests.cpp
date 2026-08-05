@@ -11,16 +11,58 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <optional>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace myrd {
 namespace persistence {
 namespace {
 
 using std::string_view;
+
+template <typename Enum, typename Wire>
+struct WireCase final {
+    Enum value;
+    Wire wire;
+};
+
+struct FaultPhaseFixture final {
+    std::string id;
+    std::string boundary;
+    bool supports_short{false};
+    bool supports_torn{false};
+    bool supports_kill{false};
+    std::string gate;
+    std::string expected_disposition;
+};
+
+std::vector<FaultPhaseFixture> parse_fault_phase_fixtures(
+    const std::string& json) {
+    const std::regex phase_pattern{
+        R"json(\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"boundary"\s*:\s*"([^"]+)"\s*,\s*"short"\s*:\s*(true|false)\s*,\s*"torn"\s*:\s*(true|false)\s*,\s*"kill"\s*:\s*(true|false)\s*,\s*"gate"\s*:\s*"([^"]+)"\s*,\s*"expected_disposition"\s*:\s*"([^"]+)"\s*\})json"};
+
+    std::vector<FaultPhaseFixture> phases;
+    for (auto it = std::sregex_iterator(json.begin(), json.end(), phase_pattern);
+         it != std::sregex_iterator{};
+         ++it) {
+        phases.push_back(FaultPhaseFixture{
+            (*it)[1].str(),
+            (*it)[2].str(),
+            (*it)[3].str() == "true",
+            (*it)[4].str() == "true",
+            (*it)[5].str() == "true",
+            (*it)[6].str(),
+            (*it)[7].str()});
+    }
+    return phases;
+}
 
 // ============================================================================
 // T13.1: Geometry constants (PLAN §1.4, frozen)
@@ -832,7 +874,7 @@ TEST_CASE(all_geometry_status_values_have_non_empty_to_string) {
 
 TEST_CASE(all_limits_status_values_have_non_empty_to_string) {
     for (std::uint8_t i = 0;
-         i <= static_cast<std::uint8_t>(LimitsStatus::VerifyBatchTooSmall);
+         i <= static_cast<std::uint8_t>(LimitsStatus::ArithmeticOverflow);
          ++i) {
         auto ls = static_cast<LimitsStatus>(i);
         auto s = to_string(ls);
@@ -860,6 +902,191 @@ TEST_CASE(disposition_values_are_abi_stable) {
 TEST_CASE(session_phase_values_are_abi_stable) {
     REQUIRE_EQ(static_cast<std::uint8_t>(SessionPhase::Closed), 0U);
     REQUIRE_EQ(static_cast<std::uint8_t>(SessionPhase::PersistenceFaulted), 9U);
+}
+
+TEST_CASE(all_stable_enums_round_trip_explicit_wire_values) {
+    constexpr std::array error_cases{
+        WireCase{PersistenceErrorCode::InvalidFormat, 1U},
+        WireCase{PersistenceErrorCode::UnsupportedVhdx, 2U},
+        WireCase{PersistenceErrorCode::ManifestCorrupt, 3U},
+        WireCase{PersistenceErrorCode::JournalCorrupt, 4U},
+        WireCase{PersistenceErrorCode::BackingDataCorrupt, 5U},
+        WireCase{PersistenceErrorCode::ImageInUse, 6U},
+        WireCase{PersistenceErrorCode::OperationBusy, 7U},
+        WireCase{PersistenceErrorCode::GenerationConflict, 8U},
+        WireCase{PersistenceErrorCode::SnapshotBusy, 9U},
+        WireCase{PersistenceErrorCode::SnapshotAborted, 10U},
+        WireCase{PersistenceErrorCode::SnapshotResourceExhausted, 11U},
+        WireCase{PersistenceErrorCode::CommitIndeterminate, 12U},
+        WireCase{PersistenceErrorCode::DiskFull, 13U},
+        WireCase{PersistenceErrorCode::AccessDenied, 14U},
+        WireCase{PersistenceErrorCode::IoError, 15U},
+        WireCase{PersistenceErrorCode::Cancelled, 16U},
+        WireCase{PersistenceErrorCode::DeadlineExceeded, 17U},
+        WireCase{PersistenceErrorCode::VerificationFailed, 18U},
+        WireCase{PersistenceErrorCode::FatalInternalInvariant, 19U},
+    };
+    for (const auto& item : error_cases) {
+        REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
+        REQUIRE_EQ(decode_persistence_error_code(item.wire),
+                   std::optional{item.value});
+    }
+
+    constexpr std::array disposition_cases{
+        WireCase{CommitDisposition::NotCommitted, std::uint8_t{0}},
+        WireCase{CommitDisposition::CommitIndeterminate, std::uint8_t{1}},
+        WireCase{CommitDisposition::Committed, std::uint8_t{2}},
+        WireCase{CommitDisposition::CommittedNeedsReconciliation,
+                 std::uint8_t{3}},
+    };
+    for (const auto& item : disposition_cases) {
+        REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
+        REQUIRE_EQ(decode_commit_disposition(item.wire),
+                   std::optional{item.value});
+        REQUIRE_EQ(parse_commit_disposition(to_string(item.value)),
+                   std::optional{item.value});
+    }
+
+    constexpr std::array barrier_cases{
+        WireCase{VolumeBarrierKind::WindowsVolumeFlushed, std::uint8_t{0}},
+        WireCase{VolumeBarrierKind::RawBlockTestNoFilesystemCache,
+                 std::uint8_t{1}},
+    };
+    for (const auto& item : barrier_cases) {
+        REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
+        REQUIRE_EQ(decode_volume_barrier_kind(item.wire),
+                   std::optional{item.value});
+    }
+
+    constexpr std::array phase_cases{
+        WireCase{SessionPhase::Closed, std::uint8_t{0}},
+        WireCase{SessionPhase::Opening, std::uint8_t{1}},
+        WireCase{SessionPhase::Ready, std::uint8_t{2}},
+        WireCase{SessionPhase::Checkpointing, std::uint8_t{3}},
+        WireCase{SessionPhase::Compacting, std::uint8_t{4}},
+        WireCase{SessionPhase::Verifying, std::uint8_t{5}},
+        WireCase{SessionPhase::ResolvingCommit, std::uint8_t{6}},
+        WireCase{SessionPhase::Reconciling, std::uint8_t{7}},
+        WireCase{SessionPhase::Closing, std::uint8_t{8}},
+        WireCase{SessionPhase::PersistenceFaulted, std::uint8_t{9}},
+    };
+    for (const auto& item : phase_cases) {
+        REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
+        REQUIRE_EQ(decode_session_phase(item.wire),
+                   std::optional{item.value});
+    }
+
+    constexpr std::array geometry_cases{
+        WireCase{GeometryStatus::Ok, std::uint8_t{0}},
+        WireCase{GeometryStatus::VirtualBytesZero, std::uint8_t{1}},
+        WireCase{GeometryStatus::LogicalSectorInvalid, std::uint8_t{2}},
+        WireCase{GeometryStatus::PhysicalSectorInvalid, std::uint8_t{3}},
+        WireCase{GeometryStatus::NotAlignedToLogicalSector, std::uint8_t{4}},
+        WireCase{GeometryStatus::TooLargeForBlockCount, std::uint8_t{5}},
+    };
+    for (const auto& item : geometry_cases) {
+        REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
+        REQUIRE_EQ(decode_geometry_status(item.wire),
+                   std::optional{item.value});
+    }
+
+    constexpr std::array limit_cases{
+        WireCase{LimitsStatus::Ok, std::uint8_t{0}},
+        WireCase{LimitsStatus::MaxVirtualBytesZero, std::uint8_t{1}},
+        WireCase{LimitsStatus::MaxVirtualBytesUnlimited, std::uint8_t{2}},
+        WireCase{LimitsStatus::MaxVirtualBytesNotSectorAligned,
+                 std::uint8_t{3}},
+        WireCase{LimitsStatus::MaxJournalCommittedBytesZero,
+                 std::uint8_t{4}},
+        WireCase{LimitsStatus::MaxJournalRecordsZero, std::uint8_t{5}},
+        WireCase{LimitsStatus::SingleRecordExceedsJournalBytes,
+                 std::uint8_t{6}},
+        WireCase{LimitsStatus::JournalRecordsExceedCommittedBytes,
+                 std::uint8_t{7}},
+        WireCase{LimitsStatus::MaxIndexCacheBytesZero, std::uint8_t{8}},
+        WireCase{LimitsStatus::MaxIndexCacheEntriesZero, std::uint8_t{9}},
+        WireCase{LimitsStatus::CacheEntriesExceedIndexBytes,
+                 std::uint8_t{10}},
+        WireCase{LimitsStatus::MaxBatCacheBytesZero, std::uint8_t{11}},
+        WireCase{LimitsStatus::MaxBatCacheEntriesZero, std::uint8_t{12}},
+        WireCase{LimitsStatus::CacheEntriesExceedBatBytes,
+                 std::uint8_t{13}},
+        WireCase{LimitsStatus::MaxIoScratchBytesZero, std::uint8_t{14}},
+        WireCase{LimitsStatus::IoScratchTooSmall, std::uint8_t{15}},
+        WireCase{LimitsStatus::MaxVerifyBatchBytesZero, std::uint8_t{16}},
+        WireCase{LimitsStatus::VerifyBatchTooSmall, std::uint8_t{17}},
+        WireCase{LimitsStatus::ArithmeticOverflow, std::uint8_t{18}},
+    };
+    for (const auto& item : limit_cases) {
+        REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});
+        REQUIRE_EQ(decode_limits_status(item.wire),
+                   std::optional{item.value});
+    }
+}
+
+TEST_CASE(unknown_stable_enum_wire_values_fail_closed) {
+    REQUIRE(!encode_wire(static_cast<PersistenceErrorCode>(0)).has_value());
+    REQUIRE(!decode_persistence_error_code(0).has_value());
+    REQUIRE(!encode_wire(static_cast<CommitDisposition>(0xFF)).has_value());
+    REQUIRE(!decode_commit_disposition(0xFF).has_value());
+    REQUIRE(!parse_commit_disposition("committed").has_value());
+    REQUIRE(!encode_wire(static_cast<VolumeBarrierKind>(0xFF)).has_value());
+    REQUIRE(!decode_volume_barrier_kind(0xFF).has_value());
+    REQUIRE(!encode_wire(static_cast<SessionPhase>(0xFF)).has_value());
+    REQUIRE(!decode_session_phase(0xFF).has_value());
+    REQUIRE(!encode_wire(static_cast<GeometryStatus>(0xFF)).has_value());
+    REQUIRE(!decode_geometry_status(0xFF).has_value());
+    REQUIRE(!encode_wire(static_cast<LimitsStatus>(0xFF)).has_value());
+    REQUIRE(!decode_limits_status(0xFF).has_value());
+}
+
+TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
+    std::ifstream input{MYRD_M3_FAULT_PHASE_REGISTRY_PATH,
+                        std::ios::binary};
+    REQUIRE(input.good());
+    const std::string json{std::istreambuf_iterator<char>{input},
+                           std::istreambuf_iterator<char>{}};
+    REQUIRE(json.find("\"schema\": \"m3-fault-phase-registry-v1\"") !=
+            std::string::npos);
+
+    const auto phases = parse_fault_phase_fixtures(json);
+    REQUIRE_EQ(phases.size(), static_cast<std::size_t>(43));
+    const std::regex id_field_pattern{R"json("id"\s*:)json"};
+    const auto id_field_count = static_cast<std::size_t>(std::distance(
+        std::sregex_iterator{json.begin(), json.end(),
+                             id_field_pattern},
+        std::sregex_iterator{}));
+    REQUIRE_EQ(id_field_count, phases.size());
+
+    const std::regex stable_id_pattern{"^[a-z0-9]+([._][a-z0-9]+)*$"};
+    const std::set<std::string> allowed_gates{"m3-v2", "m3-v4"};
+    std::set<std::string> ids;
+    for (const auto& phase : phases) {
+        REQUIRE(std::regex_match(phase.id, stable_id_pattern));
+        REQUIRE(ids.insert(phase.id).second);
+        REQUIRE(phase.boundary.size() >= 12);
+        REQUIRE(allowed_gates.contains(phase.gate));
+        REQUIRE(parse_commit_disposition(phase.expected_disposition)
+                    .has_value());
+    }
+
+    constexpr std::array required_ids{
+        "snapshot.cut.before",
+        "cow.preimage.publish.after",
+        "journal.commit.append.before",
+        "journal.flush.after",
+        "manifest.slot_write.torn",
+        "manifest.flush.after",
+        "manifest.readback.corrupt",
+        "backing.view_install.before",
+        "backing.ack.each.after",
+        "compaction.vhdx.create.before",
+        "compaction.vhdx.rename.before",
+        "cleanup.old_file.delete.before",
+    };
+    for (const auto id : required_ids) {
+        REQUIRE(ids.contains(id));
+    }
 }
 
 }  // namespace
