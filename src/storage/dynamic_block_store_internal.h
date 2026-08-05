@@ -263,6 +263,12 @@ public:
         const DynamicBlockStore& store) noexcept;
     static bool release_consistent_snapshot_record_pause(
         DynamicBlockStore& store) noexcept;
+    static bool pause_consistent_snapshot_before_advance(
+        DynamicBlockStore& store) noexcept;
+    static bool consistent_snapshot_advance_gap_reached(
+        const DynamicBlockStore& store) noexcept;
+    static bool release_consistent_snapshot_advance_pause(
+        DynamicBlockStore& store) noexcept;
     static bool pause_consistent_snapshot_status(
         DynamicBlockStore& store) noexcept;
     static bool consistent_snapshot_status_gap_reached(

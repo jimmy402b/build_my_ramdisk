@@ -736,6 +736,9 @@ void DynamicBlockStore::notify_all_waiters() {
     consistent_snapshot_record_pause_for_test_.store(
         false, std::memory_order_release);
     consistent_snapshot_record_pause_for_test_.notify_all();
+    consistent_snapshot_advance_pause_for_test_.store(
+        false, std::memory_order_release);
+    consistent_snapshot_advance_pause_for_test_.notify_all();
     {
         // Synchronize with install_backing_view's predicate check before
         // notifying it. Without taking state_mutex_, close could publish the

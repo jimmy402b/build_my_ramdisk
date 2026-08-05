@@ -840,9 +840,25 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 operation,
                 L"dynamic block store is closing"));
     }
+    if (consistent_snapshot_advance_pause_for_test_.load(
+            std::memory_order_acquire)) {
+        consistent_snapshot_advance_gap_reached_for_test_.store(
+            true, std::memory_order_release);
+        consistent_snapshot_advance_gap_reached_for_test_.notify_all();
+        consistent_snapshot_advance_pause_for_test_.wait(
+            true, std::memory_order_acquire);
+    }
     const auto advanced = snapshot_coordinator_->advance_scan_frontier(
         token, expected_frontier, scan_index, geometry_.total_blocks);
     if (!advanced.ok()) {
+        if (closing_requested()) {
+            return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
+                consistent_snapshot_error(
+                    static_cast<std::uint32_t>(
+                        OperationErrorCode::session_closed),
+                    operation,
+                    L"dynamic block store closed before frontier publication"));
+        }
         return snapshot_failure<std::vector<DirtyBlockSnapshot>>(
             advanced.error());
     }
@@ -866,7 +882,15 @@ Result<void> DynamicBlockStore::finish_consistent_snapshot(
             L"dynamic block store is closed"));
     }
     ScopeExit leave([this, &request]() { leave_request(request); });
-    return snapshot_coordinator_->finish(token, geometry_.total_blocks);
+    const auto result =
+        snapshot_coordinator_->finish(token, geometry_.total_blocks);
+    if (!result.ok() && closing_requested()) {
+        return Result<void>::failure(consistent_snapshot_error(
+            static_cast<std::uint32_t>(OperationErrorCode::session_closed),
+            L"DynamicBlockStore::finish_consistent_snapshot",
+            L"dynamic block store is closing"));
+    }
+    return result;
 }
 
 Result<void> DynamicBlockStore::abort_consistent_snapshot(
@@ -879,7 +903,14 @@ Result<void> DynamicBlockStore::abort_consistent_snapshot(
             L"dynamic block store is closed"));
     }
     ScopeExit leave([this, &request]() { leave_request(request); });
-    return snapshot_coordinator_->abort(token);
+    const auto result = snapshot_coordinator_->abort(token);
+    if (!result.ok() && closing_requested()) {
+        return Result<void>::failure(consistent_snapshot_error(
+            static_cast<std::uint32_t>(OperationErrorCode::session_closed),
+            L"DynamicBlockStore::abort_consistent_snapshot",
+            L"dynamic block store is closing"));
+    }
+    return result;
 }
 
 Result<ConsistentSnapshotStatus>
@@ -965,6 +996,32 @@ release_consistent_snapshot_record_pause(
         store.consistent_snapshot_record_pause_for_test_.exchange(
             false, std::memory_order_acq_rel);
     store.consistent_snapshot_record_pause_for_test_.notify_all();
+    return paused;
+}
+
+bool DynamicBlockStoreTestAccess::
+pause_consistent_snapshot_before_advance(
+    DynamicBlockStore& store) noexcept {
+    store.consistent_snapshot_advance_gap_reached_for_test_.store(
+        false, std::memory_order_release);
+    return !store.consistent_snapshot_advance_pause_for_test_.exchange(
+        true, std::memory_order_acq_rel);
+}
+
+bool DynamicBlockStoreTestAccess::
+consistent_snapshot_advance_gap_reached(
+    const DynamicBlockStore& store) noexcept {
+    return store.consistent_snapshot_advance_gap_reached_for_test_.load(
+        std::memory_order_acquire);
+}
+
+bool DynamicBlockStoreTestAccess::
+release_consistent_snapshot_advance_pause(
+    DynamicBlockStore& store) noexcept {
+    const bool paused =
+        store.consistent_snapshot_advance_pause_for_test_.exchange(
+            false, std::memory_order_acq_rel);
+    store.consistent_snapshot_advance_pause_for_test_.notify_all();
     return paused;
 }
 

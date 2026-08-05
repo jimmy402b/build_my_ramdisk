@@ -311,6 +311,8 @@ private:
     std::atomic<bool> persisted_ack_pause_for_test_{};
     std::atomic<bool> persisted_ack_gap_reached_for_test_{};
     std::atomic<bool> consistent_snapshot_record_pause_for_test_{};
+    std::atomic<bool> consistent_snapshot_advance_pause_for_test_{};
+    std::atomic<bool> consistent_snapshot_advance_gap_reached_for_test_{};
     mutable std::atomic<bool>
         consistent_snapshot_status_pause_for_test_{};
     mutable std::atomic<bool>
