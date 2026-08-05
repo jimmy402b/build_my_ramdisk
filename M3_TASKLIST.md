@@ -317,6 +317,33 @@ Independent review: 最终 SPEC GO、QUALITY GO，P0/P1/P2 均为 0。未实现 
 - [ ] stats current/peak/abort/stall/blocked 必须与 invariant 对齐，失败路径归零 current accounting。
 - [ ] 跑 `m2.1-v3`、`m2.1-v5`、完整 M2 CTest；建议提交 `fix(storage): bound snapshot pressure and shutdown`。
 
+### Task07 已签署 ownership / lock-order contract（T07.1–T07.2）
+
+Focused registration 固定为 `unit.m3.m2_consistent_snapshot`，`ctest -N -R
+^unit\.m3\.m2_consistent_snapshot$` 必须只发现 1 项；该项同时属于 `m2.1-v0/v1/v2/v3/v5`。
+one-record fixture 的硬上限固定为 `kMinimumSnapshotCowBytes`，时间测试只使用 fake/manual
+clock 与事件 barrier，不用 sleep 推断线程状态。
+
+| 资源/状态 | 唯一 owner 与 guard | 建立/发布 | 唤醒、释放与 rollback |
+|---|---|---|---|
+| Mutation admission/token | public mutation stack frame 持有 token；计数和 gate 由 `lifecycle_mutex_` 保护 | `enter_mutation()` 完成后必须已释放 lifecycle lock，token 覆盖整个多块 write/zero/unmap | public mutation 已释放所有 stripe 后 `leave_mutation()`；close 关闭 gate 后等待 active count 归零 |
+| Block stripe | 当前 block 操作的 `unique_lock`，同线程至多一个 | 读取并冻结 entry identity；只允许 stripe → coordinator/state | capacity wait、Preparing wait、外部 I/O 均不得持有；任何 wake 后必须重新取得并重验 identity |
+| Coordinator mutex | `SnapshotCoordinatorState` 独占；保护 token/frontier、budget、record map、wait queue 与 reservation generation | 只做 bounded predicate/accounting/publication；绝不获取 stripe/state/lifecycle | condition wait 原子释放 mutex；所有 capacity/marker/abort/close 状态变化在 guard 下改 predicate，再 notify |
+| Capacity waiter | coordinator 的 FIFO ticket/registration 拥有，writer 只持可取消 ticket，不持 raw map/entry 指针 | try-reserve 失败时在 coordinator guard 下先登记 waiter，再释放 coordinator 和 stripe，消除 lost wake | consume/rollback/abort/close/cancel/deadline 删除一次；blocked gauge 与 queue size 始终相等；只唤醒队首可满足 waiter，spurious wake 必须重查 predicate |
+| Budget reservation | coordinator record + RAII reservation id 共同拥有；bytes 在 coordinator guard 下计费 | 仅在 token/frontier/member/entry identity 当前有效且容量足够时建立；不把 allocator 指针泄露给 store | publish 转 committed；任何 marker/payload/revalidation/context 失败由同一 reservation id 精确 rollback 并释放全部 bytes |
+| Per-block `Preparing` marker | `BlockEntry` 的 snapshot id + reservation id，stripe 保护；reservation owner 是唯一可清除者 | 成功 budget reservation 后、释放 stripe 前发布；禁止两个 marker 同时拥有同一 block | 普通 reader/mutator 看见 marker后复制 id、释放 stripe，再等待 coordinator marker predicate；publish/rollback 清 marker并通知；abort/close 先唤醒并迫使 owner rollback，再 drain owner，等待时禁止持 stripe |
+| DATA payload | coordinator record 独占一个 budgeted 64 KiB allocation；marker owner只拥有填充权 | marker 已发布后从冻结 entry identity 填充；不得保存跨 unlock 的 block-entry/raw-directory 指针 | committed record 被 batch frontier consume、abort、finish 或 rollback 时释放；ZERO/DISCARD 不持 payload但仍计 record slab |
+| Snapshot token/COW records | coordinator shared state 持有；store 只持 token value，不持 record 引用 | begin cut 后 activate；record 只有 publish 完成后才能被 snapshot reader消费 | frontier advance 精确释放已 consumed records并通知 capacity；stall abort/explicit abort/close 先发布终态并通知，再在无 waiter 可访问后清资源 |
+
+唯一允许的嵌套顺序是：`lifecycle/admission → 至多一个 stripe → coordinator → state_mutex_`
+（实际 mutation token 返回前释放 lifecycle lock）。严禁 coordinator/state → stripe、持 stripe 等
+capacity/Preparing、持 coordinator 做 payload copy 或 callback。wake 后只能使用 token、block index、
+reservation id 与复制的 scalar identity 重查；禁止复用 wake 前的 `BlockEntry*`、map node 或 payload 指针。
+
+T07.1 evidence：commit `b91872b`；Debug/Release focused 各 `1/1`，discovery count `1`。
+T07.2 本表是后续 T07.3–T07.15 的实现约束；若代码需要反向锁序，必须先回到本卡修改并重新签署，
+不得在 production patch 中静默偏离。
+
 ## Task 08 — 独立整盘快照参考模型
 
 **类别：S；oracle 由不同执行者冻结。允许文件：** `tests/model/`、`tests/support/`、测试注册；不改产品实现。

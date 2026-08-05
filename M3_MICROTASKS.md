@@ -146,9 +146,9 @@ gate_result: NOT_RUN / PASS / FAIL / BLOCKED
 前置：Task 06 `DONE`。允许范围仅限 PLAN Task 07 列出的 storage coordinator、
 core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务测试。
 
-- [ ] `T07.1 [M]` 建立 focused registration，先用 `ctest -N` 冻结 exact name/
+- [x] `T07.1 [M]` 建立 focused registration，先用 `ctest -N` 冻结 exact name/
   count；加入 one-record COW budget fixture、fake clock 和 barrier，不改 production。
-- [ ] `T07.2 [H]` 冻结 ownership/lock-order 表：stripe、coordinator mutex、admission、
+- [x] `T07.2 [H]` 冻结 ownership/lock-order 表：stripe、coordinator mutex、admission、
   reservation、Preparing marker、payload、waiter 各由谁持有/释放；未签署前不写逻辑。
 - [ ] `T07.3 [H]` RED：第一 pre-image 填满 budget，第二 writer 到达“容量不足”
   barrier 后保持 blocked；用事件证明它尚未 publish mutation，不得用 sleep。
