@@ -1836,12 +1836,11 @@ TEST_CASE(m2_concurrency_close_drains_blocked_io_worker_and_arena_once) {
     REQUIRE_EQ(entry_at(*store, 5).state, myrd::BlockState::Unresident);
     REQUIRE_EQ(store->stats().loading_blocks, 0ull);
     REQUIRE(old_weak.expired());
-    REQUIRE(!successor_weak.expired());
-    REQUIRE_EQ(memory_api->release_calls(), 0ull);
-
-    store.reset();
     REQUIRE(successor_weak.expired());
     REQUIRE_EQ(lifetime->live_count(), 0ull);
     REQUIRE_EQ(lifetime->destroyed_count(), 2ull);
+    REQUIRE_EQ(memory_api->release_calls(), 0ull);
+
+    store.reset();
     REQUIRE_EQ(memory_api->release_calls(), 1ull);
 }
