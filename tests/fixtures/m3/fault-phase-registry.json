@@ -277,7 +277,7 @@
     },
     {
       "id": "compaction.vhdx.rename.before",
-      "boundary": "Before MoveFileExW write-through rename to final name",
+      "boundary": "After final identity and containment revalidation, immediately before handle-relative write-through rename of the validated temporary VHDX",
       "short": false, "torn": false, "kill": true,
       "gate": "m3-v4",
       "expected_disposition": "NotCommitted"
