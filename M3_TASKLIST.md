@@ -391,6 +391,13 @@ count，使用 test-side SplitMix64，输出 2–64 blocks 与 write/zero/discar
 finish/abort 全七类操作。相同 seed 的 operation、payload、limits 与文本 trace 完全相同，
 不同 seed 不同；10,000-op determinism/range/coverage RED→GREEN，focused `3/3`。
 
+T08.3 evidence：commit `6ec6c45`；oracle 自己实现 immutable cut、ascending cursor、
+payload-before-copy、record limit、finish/abort token lifecycle。test adapter 只在边界把 model
+kind/record 转成 public storage 类型，不共享 production 算法。定向矩阵覆盖 DATA/ZERO/
+DISCARD、post-cut overwrite、post-cut clean→dirty 排除、final short DATA zero padding、
+partial-progress abort/stale token；固定 seed `0xDEADBEEF` 的 2,000-op store/model schedule
+逐 batch 比较 cursor 与 records，focused `7/7`。
+
 ## Task 09 — 签发 M2.1 前置 verdict
 
 **类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。
