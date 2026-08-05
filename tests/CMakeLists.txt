@@ -908,6 +908,21 @@ set_tests_properties(unit.m3.journal_index PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 60)
 
+add_executable(myrd_m3_journal_index_builder_tests
+    unit/m3_journal_index_builder_tests.cpp
+    support/fault_file.cpp
+)
+target_link_libraries(myrd_m3_journal_index_builder_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_journal_index_builder_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_journal_index_builder_tests)
+add_test(NAME unit.m3.journal_index_builder
+    COMMAND myrd_m3_journal_index_builder_tests)
+set_tests_properties(unit.m3.journal_index_builder PROPERTIES
+    LABELS "m3-v1"
+    TIMEOUT 60)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
