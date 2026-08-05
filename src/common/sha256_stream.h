@@ -13,6 +13,7 @@
 #include <bcrypt.h>
 
 #include "result.h"
+#include "sha256.h"
 #include "sha256_stream_state.h"
 
 #include <cstddef>
@@ -46,6 +47,9 @@ public:
 
     /// Finalize and return uppercase hex string.
     Result<std::string> finalize();
+
+    /// Finalize and return the exact 32-byte digest used by wire formats.
+    Result<Sha256Digest> finalize_digest();
 
 private:
     Result<void> initialize();

@@ -208,4 +208,23 @@ Result<std::string> Sha256Stream::finalize() {
     });
 }
 
+Result<Sha256Digest> Sha256Stream::finalize_digest() {
+    return state_.finalize([this]() -> Result<Sha256Digest> {
+        const auto status = BCryptFinishHash(
+            hash_, digest_.data(), static_cast<ULONG>(digest_.size()), 0);
+        if (!BCRYPT_SUCCESS(status)) {
+            hash_finalize_error_.native_code =
+                static_cast<std::uint32_t>(status);
+            return Result<Sha256Digest>::failure(
+                std::move(hash_finalize_error_));
+        }
+
+        Sha256Digest output{};
+        for (std::size_t index = 0; index < output.size(); ++index) {
+            output[index] = static_cast<std::byte>(digest_[index]);
+        }
+        return Result<Sha256Digest>::success(output);
+    });
+}
+
 }  // namespace myrd

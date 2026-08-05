@@ -68,17 +68,18 @@ public:
     }
 
     template <class FinishFn>
-    Result<std::string> finalize(FinishFn&& finish) {
+    auto finalize(FinishFn&& finish) {
+        using FinishResult = std::invoke_result_t<FinishFn>;
         if (terminal_error_.has_value()) {
-            return Result<std::string>::failure(*terminal_error_);
+            return FinishResult::failure(*terminal_error_);
         }
         if (finalized_) {
-            return Result<std::string>::failure(already_finalized_error());
+            return FinishResult::failure(already_finalized_error());
         }
         auto result = finish();
         if (!result.ok()) {
             terminal_error_.emplace(std::move(result.error()));
-            return Result<std::string>::failure(*terminal_error_);
+            return FinishResult::failure(*terminal_error_);
         }
         finalized_ = true;
         return result;

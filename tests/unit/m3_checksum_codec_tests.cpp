@@ -168,6 +168,50 @@ TEST_CASE(m3_sha256_stream_abc_matches_independent_standard_vector) {
         "B00361A396177A9CB410FF61F20015AD");
 }
 
+TEST_CASE(m3_sha256_raw_digest_matches_independent_abc_bytes) {
+    constexpr Sha256Digest expected{
+        std::byte{0xBA}, std::byte{0x78}, std::byte{0x16}, std::byte{0xBF},
+        std::byte{0x8F}, std::byte{0x01}, std::byte{0xCF}, std::byte{0xEA},
+        std::byte{0x41}, std::byte{0x41}, std::byte{0x40}, std::byte{0xDE},
+        std::byte{0x5D}, std::byte{0xAE}, std::byte{0x22}, std::byte{0x23},
+        std::byte{0xB0}, std::byte{0x03}, std::byte{0x61}, std::byte{0xA3},
+        std::byte{0x96}, std::byte{0x17}, std::byte{0x7A}, std::byte{0x9C},
+        std::byte{0xB4}, std::byte{0x10}, std::byte{0xFF}, std::byte{0x61},
+        std::byte{0xF2}, std::byte{0x00}, std::byte{0x15}, std::byte{0xAD}};
+    const auto data = bytes("abc");
+    const auto one_shot = sha256_digest(data);
+    REQUIRE(one_shot.ok());
+    REQUIRE_EQ(one_shot.value(), expected);
+
+    Sha256Stream stream;
+    REQUIRE(stream.update(std::span(data).first(1)).ok());
+    REQUIRE(stream.update(std::span(data).subspan(1)).ok());
+    const auto streamed = stream.finalize_digest();
+    REQUIRE(streamed.ok());
+    REQUIRE_EQ(streamed.value(), expected);
+}
+
+TEST_CASE(m3_sha256_hex_and_raw_finalizers_share_one_terminal_state) {
+    const auto data = bytes("one-finalizer");
+    Sha256Stream raw_first;
+    REQUIRE(raw_first.update(data).ok());
+    REQUIRE(raw_first.finalize_digest().ok());
+    const auto hex_after_raw = raw_first.finalize();
+    REQUIRE(!hex_after_raw.ok());
+    REQUIRE_EQ(hex_after_raw.error().code,
+               static_cast<std::uint32_t>(
+                   Sha256StreamErrorCode::already_finalized));
+
+    Sha256Stream hex_first;
+    REQUIRE(hex_first.update(data).ok());
+    REQUIRE(hex_first.finalize().ok());
+    const auto raw_after_hex = hex_first.finalize_digest();
+    REQUIRE(!raw_after_hex.ok());
+    REQUIRE_EQ(raw_after_hex.error().code,
+               static_cast<std::uint32_t>(
+                   Sha256StreamErrorCode::already_finalized));
+}
+
 TEST_CASE(m3_sha256_stream_unaligned_large_split_matches_one_shot) {
     std::vector<std::byte> data((1U << 20U) + 3U);
     for (std::size_t i = 0; i < data.size(); ++i) {
