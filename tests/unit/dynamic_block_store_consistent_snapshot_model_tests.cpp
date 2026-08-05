@@ -992,9 +992,27 @@ TEST_CASE(m2_1_task08_reducer_keeps_failure_and_only_deletes_operations) {
 }
 
 TEST_CASE(m2_1_task08_one_hundred_generated_seeds_match_cut_model) {
+    std::uint64_t slowest_seed = 0;
+    std::chrono::nanoseconds slowest_duration{};
     for (const auto seed : kGeneratedSeeds) {
+        const auto started = std::chrono::steady_clock::now();
         run_schedule(seed, 1'000);
+        const auto duration =
+            std::chrono::steady_clock::now() - started;
+        if (duration > slowest_duration) {
+            slowest_duration = duration;
+            slowest_seed = seed;
+        }
     }
+    std::cout << "M2_1_MODEL_SUMMARY schema=m3-seed-v1"
+              << " seeds=" << kGeneratedSeeds.size()
+              << " operations=" << kGeneratedSeeds.size() * 1'000
+              << " slowest_seed=0x" << std::hex << slowest_seed
+              << std::dec << " slowest_us="
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     slowest_duration)
+                     .count()
+              << std::endl;
 }
 
 TEST_CASE(m2_1_task08_quick_profile_fixed_seeds_match_cut_model) {
