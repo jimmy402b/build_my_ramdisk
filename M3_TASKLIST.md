@@ -379,6 +379,13 @@ CTest `62/62`。固定 stress seed `0x4D59524453545231`；one-record COW peak
 - [ ] 加定向 schedule 覆盖所有此前竞态，不允许 production author 修改 expected outcome。
 - [ ] 跑 `m2.1-v4` 和 M2 全套；建议提交 `test(storage): model whole disk snapshot cuts`。
 
+T08.1 evidence：commit `49cd72d`；新增 frozen test
+`unit.m3.m2_consistent_snapshot_model`（discovery `1`，label `m2.1-v4`）。oracle
+只包含 test-side 64 KiB geometry、`std::map<block, kind/value/version>` 与独立 immutable
+cut copy，不 include/call coordinator、batch helper 或生产 codec。首个行为 RED 在缺少
+`Kind/write/zero/begin_cut/cut_records` API 时编译失败；GREEN `2/2`，并证明 post-cut
+overwrite 与 clean→dirty 不进入既有 cut。
+
 ## Task 09 — 签发 M2.1 前置 verdict
 
 **类别：O。允许文件：** `docs/validation/m2.1-consistent-snapshot-acceptance.md` 与机器生成 evidence；只修复证据揭示的 M2.1 缺陷。

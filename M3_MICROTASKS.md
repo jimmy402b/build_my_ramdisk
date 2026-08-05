@@ -184,7 +184,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
 `tests/unit/dynamic_block_store_consistent_snapshot_model_tests.cpp`、test CMake。
 生产 snapshot/storage 文件全部禁止修改。
 
-- [ ] `T08.1 [M]` 写纯 map oracle 类型：block→kind/value/version，另存 cut
+- [x] `T08.1 [M]` 写纯 map oracle 类型：block→kind/value/version，另存 cut
   snapshot；不得 include/call coordinator、batch helper 或生产 codec。
 - [ ] `T08.2 [M]` 写确定性 schedule generator：2–64 blocks，write/zero/discard/
   begin/copy/finish/abort；输入只有 seed 和 operation count，失败打印完整 seed。
