@@ -1529,6 +1529,8 @@ TEST_CASE(m2_1_task07_preparing_marker_serializes_reader_publish_and_rollback) {
         REQUIRE(store->validate_invariants_for_test().ok());
 
         myrd::DirtyScanCursor cursor{};
+        myrd::DynamicBlockStoreTestAccess::
+            reset_consistent_snapshot_scan_visits(*store);
         std::optional<
             myrd::Result<std::vector<myrd::DirtyBlockSnapshot>>> copied;
         std::atomic<bool> reader_returned{};
@@ -1562,6 +1564,10 @@ TEST_CASE(m2_1_task07_preparing_marker_serializes_reader_publish_and_rollback) {
         REQUIRE_EQ(copied->value().size(), 1ull);
         REQUIRE_EQ(copied->value().front().block_index, 0ull);
         REQUIRE_EQ(copied->value().front().data, as_vector(cut));
+        REQUIRE_EQ(
+            myrd::DynamicBlockStoreTestAccess::
+                consistent_snapshot_leaf_slot_visits(*store),
+            2ull);
         myrd::BlockEntry after{};
         REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
             *store, 0, after));

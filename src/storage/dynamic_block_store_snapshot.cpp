@@ -563,6 +563,9 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     return snapshot_failure<
                         std::vector<DirtyBlockSnapshot>>(waited.error());
                 }
+                cached_leaf = nullptr;
+                cached_leaf_index =
+                    (std::numeric_limits<std::uint64_t>::max)();
                 continue;
             }
 
