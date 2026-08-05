@@ -255,6 +255,9 @@ bool Model::zero(std::uint64_t offset,
         const bool whole_block = segment_start == block_start &&
             segment_end == block_start + logical_block_size;
         auto& state = blocks_.at(block);
+        if (!whole_block && state.dirty && state.kind != Kind::Data) {
+            continue;
+        }
         std::fill(
             state.value.begin() + static_cast<std::ptrdiff_t>(
                 segment_start - block_start),
@@ -301,6 +304,65 @@ std::optional<CutToken> Model::begin_cut() {
 const std::vector<SnapshotRecord>* Model::cut_records(
     CutToken token) const noexcept {
     return active_cut_ == token ? &cut_records_ : nullptr;
+}
+
+std::optional<std::vector<SnapshotRecord>> Model::copy_cut(
+    CutToken token,
+    std::uint64_t& cursor,
+    std::uint64_t max_payload_bytes,
+    std::size_t record_limit) const {
+    if (active_cut_ != token || cursor > block_count_ ||
+        max_payload_bytes < kBlockBytes ||
+        max_payload_bytes % kBlockBytes != 0 || record_limit == 0) {
+        return std::nullopt;
+    }
+
+    std::vector<SnapshotRecord> batch;
+    std::uint64_t payload_bytes = 0;
+    while (cursor < block_count_ && batch.size() < record_limit) {
+        const auto found = std::lower_bound(
+            cut_records_.begin(),
+            cut_records_.end(),
+            cursor,
+            [](const SnapshotRecord& record, std::uint64_t block_index) {
+                return record.block_index < block_index;
+            });
+        if (found == cut_records_.end()) {
+            cursor = block_count_;
+            break;
+        }
+        if (found->block_index > cursor) {
+            cursor = found->block_index;
+        }
+        if (found->kind == Kind::Data &&
+            max_payload_bytes - payload_bytes < kBlockBytes) {
+            break;
+        }
+        batch.push_back(*found);
+        if (found->kind == Kind::Data) {
+            payload_bytes += kBlockBytes;
+        }
+        ++cursor;
+    }
+    return batch;
+}
+
+bool Model::finish_cut(CutToken token, std::uint64_t cursor) noexcept {
+    if (active_cut_ != token || cursor != block_count_) {
+        return false;
+    }
+    active_cut_.reset();
+    cut_records_.clear();
+    return true;
+}
+
+bool Model::abort_cut(CutToken token) noexcept {
+    if (active_cut_ != token) {
+        return false;
+    }
+    active_cut_.reset();
+    cut_records_.clear();
+    return true;
 }
 
 } // namespace myrd::test::consistent_model

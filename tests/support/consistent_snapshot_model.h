@@ -94,6 +94,13 @@ public:
     std::optional<CutToken> begin_cut();
     const std::vector<SnapshotRecord>* cut_records(
         CutToken token) const noexcept;
+    std::optional<std::vector<SnapshotRecord>> copy_cut(
+        CutToken token,
+        std::uint64_t& cursor,
+        std::uint64_t max_payload_bytes,
+        std::size_t record_limit) const;
+    bool finish_cut(CutToken token, std::uint64_t cursor) noexcept;
+    bool abort_cut(CutToken token) noexcept;
 
 private:
     struct BlockState final {
