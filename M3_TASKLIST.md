@@ -310,12 +310,12 @@ Independent review: 最终 SPEC GO、QUALITY GO，P0/P1/P2 均为 0。未实现 
 
 **类别：O。允许文件：** snapshot pressure/lifecycle 实现、fake clock、资源测试。
 
-- [ ] 红灯填满 COW budget，验证 writer 最多等待配置上限后 snapshot 原子 abort，writer 继续。
-- [ ] writer 不得持有 block stripe 等待 COW capacity：满额时 release stripe → wait → reacquire → revalidate；成功 reservation 先发布 Preparing marker。加入“cursor 正在 blocked block、budget 被另一 block 占满”的死锁回归。
-- [ ] 覆盖释放 consumed pre-image 唤醒 writer、多个 blocked writers、公平性、deadline/cancel 与 spurious wakeup。
-- [ ] close 阻止新 begin/mutation，唤醒等待者，drain active mutation/read，释放 token/COW/handles。
-- [ ] stats current/peak/abort/stall/blocked 必须与 invariant 对齐，失败路径归零 current accounting。
-- [ ] 跑 `m2.1-v3`、`m2.1-v5`、完整 M2 CTest；建议提交 `fix(storage): bound snapshot pressure and shutdown`。
+- [x] 红灯填满 COW budget，验证 writer 最多等待配置上限后 snapshot 原子 abort，writer 继续。
+- [x] writer 不得持有 block stripe 等待 COW capacity：满额时 release stripe → wait → reacquire → revalidate；成功 reservation 先发布 Preparing marker。加入“cursor 正在 blocked block、budget 被另一 block 占满”的死锁回归。
+- [x] 覆盖释放 consumed pre-image 唤醒 writer、多个 blocked writers、公平性、deadline/cancel 与 spurious wakeup。
+- [x] close 阻止新 begin/mutation，唤醒等待者，drain active mutation/read，释放 token/COW/handles。
+- [x] stats current/peak/abort/stall/blocked 必须与 invariant 对齐，失败路径归零 current accounting。
+- [x] 跑 `m2.1-v3`、`m2.1-v5`、完整 M2 CTest；建议提交 `fix(storage): bound snapshot pressure and shutdown`。
 
 ### Task07 已签署 ownership / lock-order contract（T07.1–T07.2）
 
@@ -349,6 +349,13 @@ marker，释放 stripe 与 coordinator 后填充 DATA，重新取目录 entry �
 version/dirty identity 后才 publish；waiter 跨 unlock 只保留标量 identity。确定性测试覆盖
 DATA/ZERO/DISCARD、publish/rollback、cancel、explicit abort、active fill abort 与 close；
 Debug/Release focused 各 `85/85`，各重复 `20/20`，`git diff --check` 退出 0。
+
+T07.14 evidence：候选 `e02c7aa`；focused discovery `1`，Debug/Release focused
+`85/85` 且各重复 `20/20`；`unit.m2.concurrency|stress` `2/2`，`m2-v1`
+`16/16`，`m2-v3` `6/6`，`m2.1-v3` 与 `m2.1-v5` 各 `1/1`，完整 Release
+CTest `62/62`。固定 stress seed `0x4D59524453545231`；one-record COW peak
+`65,792` bytes；Release focused binary SHA-256
+`937C545CB01A10A6F1132D625D1A1584F76BF217166B5145F14697030D4CCDDC`。
 
 ### Task07 close matrix（T07.11）
 

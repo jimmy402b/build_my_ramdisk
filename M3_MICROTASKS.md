@@ -173,7 +173,7 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
   active mutation/read，最后释放 token/COW/pin/handle；不得在 active count 前清 state。
 - [x] `T07.13 [M]` resource invariant tests：所有 current gauges 归零，peak/lifetime
   只按 frozen 事件变化；失败/取消/close/abort 每条路径都检查。
-- [ ] `T07.14 [M]` Debug/Release focused repeat、`unit.m2.concurrency`、
+- [x] `T07.14 [M]` Debug/Release focused repeat、`unit.m2.concurrency`、
   `unit.m2.stress`、`m2-v1/v3`、完整 Release；记录 discovery count、seed、峰值、hash。
 - [ ] `T07.15 [X]` 独立审查 lock order、每个 predicate/notify、Preparing rollback、
   close/accounting；做“持 stripe wait”和“删 notify”mutation proof，P0/P1=0 后 DONE。
