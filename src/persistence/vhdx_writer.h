@@ -26,7 +26,6 @@ class ValidatedPersistenceFile;
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 namespace detail {
 class INativeRenameBackend;
-class INativeSparseBackend;
 }
 #endif
 
@@ -200,7 +199,6 @@ private:
 
 enum class VhdxPublicationPhase : std::uint8_t {
     BeforeCreate,
-    BeforeSparseMark,
     BeforeClose,
     BeforeReopen,
     BeforeRename,
@@ -225,7 +223,6 @@ using VhdxFileWriteHook =
 struct VhdxPublicationTestOptions final {
     VhdxPublicationHook phase_hook{};
     VhdxFileWriteHook file_write_hook{};
-    detail::INativeSparseBackend* sparse_backend{};
     detail::INativeRenameBackend* rename_backend{};
     std::function<Result<void>(ValidatedPersistenceFile&)>
         close_operation{};

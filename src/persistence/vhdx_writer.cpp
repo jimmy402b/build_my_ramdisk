@@ -831,25 +831,9 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base(
         if (!created.ok()) {
             return Result<VhdxPublishedBase>::failure(created.error());
         }
-        phase = publication_phase(
-            context, VhdxPublicationPhase::BeforeSparseMark);
-        if (!phase.ok()) {
-            return Result<VhdxPublishedBase>::failure(phase.error());
-        }
-        Result<void> sparse =
-#if defined(MYRD_ENABLE_TEST_SEAMS)
-            g_publication_options != nullptr &&
-                g_publication_options->sparse_backend != nullptr
-            ? test::mark_validated_bundle_file_sparse_with_backend(
-                  context, writer_lock, created.value(),
-                  *g_publication_options->sparse_backend)
-            :
-#endif
-              mark_validated_bundle_file_sparse(
-                  context, writer_lock, created.value());
-        if (!sparse.ok()) {
-            return Result<VhdxPublishedBase>::failure(sparse.error());
-        }
+        // Virtdisk rejects VHD/VHDX containers carrying the NTFS sparse
+        // attribute (ERROR_VIRTUAL_DISK_LIMITATION). Dynamic sparseness is
+        // represented by absent BAT entries and a short ordinary file.
         auto opened = open_validated_persistence_file(
             created.move_value());
         if (!opened.ok()) {
@@ -1072,7 +1056,6 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base_for_testing(
     const IVhdxPayloadSource& source,
     VhdxPublicationTestOptions options) {
     if ((!options.phase_hook && !options.file_write_hook &&
-         options.sparse_backend == nullptr &&
          options.rename_backend == nullptr && !options.close_operation &&
          !options.before_reopen_operation) ||
         g_publication_options != nullptr) {

@@ -9,7 +9,6 @@
 #include "src/common/sha256_stream.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/native_rename_backend.h"
-#include "src/persistence/native_sparse_backend.h"
 #include "src/persistence/writer_lock.h"
 #include "src/persistence/vhdx_format.h"
 #include "src/persistence/vhdx_reader.h"
@@ -23,7 +22,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <map>
 #include <span>
 #include <stop_token>
@@ -92,26 +90,6 @@ public:
             found->second.begin(), found->second.end(),
             destination.begin());
         return Result<void>::success();
-    }
-};
-
-class ImmediateSparseFailure final
-    : public detail::INativeSparseBackend {
-public:
-    bool begin(
-        HANDLE,
-        FILE_SET_SPARSE_BUFFER*,
-        OVERLAPPED*,
-        DWORD& native_error) noexcept override {
-        native_error = ERROR_ACCESS_DENIED;
-        return false;
-    }
-    DWORD wait(std::span<const HANDLE>, DWORD) noexcept override {
-        return WAIT_FAILED;
-    }
-    void cancel(HANDLE, OVERLAPPED*) noexcept override {}
-    bool complete(HANDLE, OVERLAPPED*, DWORD&) noexcept override {
-        return false;
     }
 };
 
@@ -222,33 +200,6 @@ std::uint64_t decode_u64(const std::span<const std::byte> bytes) {
             std::to_integer<std::uint8_t>(bytes[index])) << (index * 8U);
     }
     return value;
-}
-
-std::vector<FILE_ALLOCATED_RANGE_BUFFER> allocated_ranges(
-    const std::filesystem::path& path,
-    const std::uint64_t file_length) {
-    UniqueHandle file(CreateFileW(
-        path.c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-        nullptr));
-    REQUIRE(static_cast<bool>(file));
-    FILE_ALLOCATED_RANGE_BUFFER query{};
-    query.FileOffset.QuadPart = 0;
-    query.Length.QuadPart = static_cast<LONGLONG>(file_length);
-    std::array<FILE_ALLOCATED_RANGE_BUFFER, 256> output{};
-    DWORD returned{};
-    const auto queried = DeviceIoControl(
-        file.get(), FSCTL_QUERY_ALLOCATED_RANGES, &query, sizeof(query),
-        output.data(), static_cast<DWORD>(sizeof(output)), &returned,
-        nullptr);
-    // This fixed fixture has only a handful of extents. Refuse a truncated
-    // result instead of summing a prefix and producing a sparse false positive.
-    REQUIRE(queried);
-    REQUIRE_EQ(returned % sizeof(FILE_ALLOCATED_RANGE_BUFFER), DWORD{0});
-    return {output.begin(), output.begin() +
-        static_cast<std::ptrdiff_t>(
-            returned / sizeof(FILE_ALLOCATED_RANGE_BUFFER))};
 }
 
 std::unique_ptr<VhdxReader> open_published_reader(
@@ -698,7 +649,7 @@ TEST_CASE(vhdx_writer_actual_io_order_flushes_before_product_readback) {
     REQUIRE(flush < readback);
 }
 
-TEST_CASE(vhdx_writer_publishes_sparse_temp_only_after_product_reopen) {
+TEST_CASE(vhdx_writer_publishes_windows_compatible_dynamic_file_after_reopen) {
     WriterSandbox sandbox;
     auto writer_result = acquire_bundle_writer_lock(
         sandbox.root(), "disk.rdm");
@@ -709,7 +660,7 @@ TEST_CASE(vhdx_writer_publishes_sparse_temp_only_after_product_reopen) {
         0, std::vector<std::byte>(kVhdxDataBlockBytes, std::byte{0x31}));
     const std::vector<std::uint64_t> candidates{0};
     auto plan = plan_sparse_vhdx(
-        OperationContext{}, {2 * kMiB, kLogicalSectorSize512},
+        OperationContext{}, {256 * kMiB, kLogicalSectorSize512},
         writer_identity(), candidates, source, writer_limits());
     REQUIRE(plan.ok());
 
@@ -724,27 +675,14 @@ TEST_CASE(vhdx_writer_publishes_sparse_temp_only_after_product_reopen) {
     const auto attributes = GetFileAttributesW(
         (sandbox.root() / L"base.vhdx").c_str());
     REQUIRE(attributes != INVALID_FILE_ATTRIBUTES);
-    REQUIRE((attributes & FILE_ATTRIBUTE_SPARSE_FILE) != 0);
-    const auto ranges = allocated_ranges(
-        sandbox.root() / L"base.vhdx", published.value().layout().file_length());
-    REQUIRE(!ranges.empty());
-    std::uint64_t allocated_bytes{};
-    std::uint64_t previous_end{};
-    for (const auto& range : ranges) {
-        REQUIRE(range.FileOffset.QuadPart >= 0);
-        REQUIRE(range.Length.QuadPart > 0);
-        const auto offset = static_cast<std::uint64_t>(
-            range.FileOffset.QuadPart);
-        const auto length = static_cast<std::uint64_t>(range.Length.QuadPart);
-        REQUIRE(offset >= previous_end);
-        REQUIRE(offset <= published.value().layout().file_length());
-        REQUIRE(length <= published.value().layout().file_length() - offset);
-        REQUIRE(allocated_bytes <=
-            (std::numeric_limits<std::uint64_t>::max)() - length);
-        allocated_bytes += length;
-        previous_end = offset + length;
-    }
-    REQUIRE(allocated_bytes < published.value().layout().file_length());
+    // Windows Virtdisk rejects VHD/VHDX containers carrying the NTFS sparse
+    // attribute (ERROR_VIRTUAL_DISK_LIMITATION). Dynamic sparseness is encoded
+    // by absent BAT payloads and a short container, not FSCTL_SET_SPARSE.
+    REQUIRE((attributes & FILE_ATTRIBUTE_SPARSE_FILE) == 0);
+    REQUIRE_EQ(
+        std::filesystem::file_size(sandbox.root() / L"base.vhdx"),
+        published.value().layout().file_length());
+    REQUIRE(published.value().layout().file_length() < plan.value().virtual_size());
 }
 
 TEST_CASE(vhdx_writer_published_empty_image_reads_as_product_zero) {
@@ -1033,11 +971,6 @@ TEST_CASE(vhdx_writer_real_publication_stage_failures_never_create_final) {
             sandbox.root() / std::filesystem::path(final)));
     };
 
-    ImmediateSparseFailure sparse_failure;
-    VhdxPublicationTestOptions sparse_options;
-    sparse_options.sparse_backend = &sparse_failure;
-    run(std::move(sparse_options), "sparse-failure");
-
     VhdxPublicationTestOptions close_options;
     close_options.close_operation = [](ValidatedPersistenceFile& file) {
         auto closed = file.close();
@@ -1220,15 +1153,14 @@ TEST_CASE(vhdx_writer_publish_order_is_frozen_before_namespace_commit) {
 
     REQUIRE(result.ok());
     const std::vector<std::string> expected{
-        "p0", "p1", "f0", "f1", "f2", "f3", "f4", "f5", "f6",
-        "p2", "p3", "p4"};
+        "p0", "f0", "f1", "f2", "f3", "f4", "f5", "f6",
+        "p1", "p2", "p3"};
     REQUIRE_EQ(order, expected);
 }
 
 TEST_CASE(vhdx_writer_publication_faults_never_expose_a_final_name) {
     const std::array phases{
         VhdxPublicationPhase::BeforeCreate,
-        VhdxPublicationPhase::BeforeSparseMark,
         VhdxPublicationPhase::BeforeClose,
         VhdxPublicationPhase::BeforeReopen,
         VhdxPublicationPhase::BeforeRename,
