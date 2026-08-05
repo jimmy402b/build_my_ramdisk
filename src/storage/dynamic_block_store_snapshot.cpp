@@ -882,13 +882,26 @@ Result<void> DynamicBlockStore::abort_consistent_snapshot(
 Result<ConsistentSnapshotStatus>
 DynamicBlockStore::consistent_snapshot_status(
     const ConsistentSnapshotToken& token) const {
-    if (closing_requested()) {
+    auto& mutable_store = const_cast<DynamicBlockStore&>(*this);
+    RequestToken request;
+    if (!mutable_store.try_enter_request(request)) {
         return Result<ConsistentSnapshotStatus>::failure(
             consistent_snapshot_error(
                 static_cast<std::uint32_t>(
                     OperationErrorCode::session_closed),
                 L"DynamicBlockStore::consistent_snapshot_status",
                 L"dynamic block store is closed"));
+    }
+    ScopeExit leave([&mutable_store, &request]() {
+        mutable_store.leave_request(request);
+    });
+    if (consistent_snapshot_status_pause_for_test_.load(
+            std::memory_order_acquire)) {
+        consistent_snapshot_status_gap_reached_for_test_.store(
+            true, std::memory_order_release);
+        consistent_snapshot_status_gap_reached_for_test_.notify_all();
+        consistent_snapshot_status_pause_for_test_.wait(
+            true, std::memory_order_acquire);
     }
     return snapshot_coordinator_->status(token);
 }
@@ -949,6 +962,31 @@ release_consistent_snapshot_record_pause(
         store.consistent_snapshot_record_pause_for_test_.exchange(
             false, std::memory_order_acq_rel);
     store.consistent_snapshot_record_pause_for_test_.notify_all();
+    return paused;
+}
+
+bool DynamicBlockStoreTestAccess::pause_consistent_snapshot_status(
+    DynamicBlockStore& store) noexcept {
+    store.consistent_snapshot_status_gap_reached_for_test_.store(
+        false, std::memory_order_release);
+    return !store.consistent_snapshot_status_pause_for_test_.exchange(
+        true, std::memory_order_acq_rel);
+}
+
+bool DynamicBlockStoreTestAccess::
+consistent_snapshot_status_gap_reached(
+    const DynamicBlockStore& store) noexcept {
+    return store.consistent_snapshot_status_gap_reached_for_test_.load(
+        std::memory_order_acquire);
+}
+
+bool DynamicBlockStoreTestAccess::
+release_consistent_snapshot_status_pause(
+    DynamicBlockStore& store) noexcept {
+    const bool paused =
+        store.consistent_snapshot_status_pause_for_test_.exchange(
+            false, std::memory_order_acq_rel);
+    store.consistent_snapshot_status_pause_for_test_.notify_all();
     return paused;
 }
 

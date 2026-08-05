@@ -1870,6 +1870,67 @@ TEST_CASE(m2_1_task07_close_drains_a_paused_preparing_owner) {
     REQUIRE_EQ(stats.snapshot_cow_records, 0ull);
 }
 
+TEST_CASE(m2_1_task07_close_drains_inflight_status_request) {
+    auto lifecycle = std::make_shared<Task07CloseObserver>();
+    auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto args = backing_args(backing, 1, 7);
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.lifecycle_observer = lifecycle;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        std::move(args), std::move(dependencies));
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        pause_consistent_snapshot_status(*store));
+
+    std::optional<myrd::Result<myrd::ConsistentSnapshotStatus>> status;
+    std::jthread status_reader([&] {
+        status.emplace(
+            store->consistent_snapshot_status(begun.value()));
+    });
+    std::jthread closer;
+    myrd::ScopeExit cleanup([&]() noexcept {
+        myrd::DynamicBlockStoreTestAccess::
+            release_consistent_snapshot_status_pause(*store);
+        if (status_reader.joinable()) {
+            status_reader.join();
+        }
+        if (closer.joinable()) {
+            closer.join();
+        }
+    });
+    REQUIRE(wait_until([&] {
+        return myrd::DynamicBlockStoreTestAccess::
+            consistent_snapshot_status_gap_reached(*store);
+    }));
+
+    std::atomic<bool> close_returned{};
+    closer = std::jthread([&] {
+        store->close();
+        close_returned.store(true, std::memory_order_release);
+    });
+    REQUIRE(lifecycle->wait_for(
+        myrd::DynamicBlockStoreLifecycleEvent::WaitersNotified,
+        std::chrono::steady_clock::now() + kWaitBound));
+    REQUIRE(!close_returned.load(std::memory_order_acquire));
+
+    REQUIRE(myrd::DynamicBlockStoreTestAccess::
+        release_consistent_snapshot_status_pause(*store));
+    status_reader.join();
+    closer.join();
+    cleanup.release();
+
+    REQUIRE(status.has_value());
+    REQUIRE(status->ok());
+    REQUIRE_EQ(
+        status->value().state,
+        myrd::ConsistentSnapshotState::Aborted);
+    REQUIRE(close_returned.load(std::memory_order_acquire));
+    REQUIRE(store->is_closed());
+}
+
 TEST_CASE(m2_1_task07_abort_returns_before_active_data_fill_drains) {
     auto observer = std::make_shared<Task07ActiveFillObserver>();
     auto backing = myrd::test::FakeBackingStoreBuilder(7).build();
