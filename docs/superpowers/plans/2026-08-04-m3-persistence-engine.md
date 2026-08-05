@@ -703,11 +703,11 @@ return ManifestCorrupt;
 **Depends on:** 17, 19
 **Files:** Create `src/persistence/journal_reader.h/.cpp`, `tests/unit/m3_journal_reader_tests.cpp`.
 
-- [ ] **Step 1: Red-test DATA, ZERO, DISCARD and absent results** from an immutable root. DATA must validate header/descriptor/payload CRC and exact block index/generation.
-- [ ] **Step 2: Red-test corruption** where the index descriptor is valid but payload/record/type/index mismatches. Expected: `BackingDataCorrupt`, never Absent.
-- [ ] **Step 3: Implement bounded exact reads** and `BlockLoadKind` translation. Reads never cross manifest committed length or use a later physical file tail.
-- [ ] **Step 4: Add cancellation/deadline and concurrent immutable-reader lifetime tests.**
-- [ ] **Step 5: Run journal/index/format tests and commit `feat(persistence): read committed journal blocks`.**
+- [x] **Step 1: Red-test DATA, ZERO, DISCARD and absent results** from an immutable root. DATA must validate header/descriptor/payload CRC and exact block index/generation.
+- [x] **Step 2: Red-test corruption** where the index descriptor is valid but payload/record/type/index mismatches. Expected: `BackingDataCorrupt`, never Absent.
+- [x] **Step 3: Implement bounded exact reads** and `BlockLoadKind` translation. Reads never cross manifest committed length or use a later physical file tail.
+- [x] **Step 4: Add cancellation/deadline and concurrent immutable-reader lifetime tests.**
+- [x] **Step 5: Run journal/index/format tests and commit `feat(persistence): read committed journal blocks` (`de107626c410ff361c7ae9fdb34e501bd85d63bd`).**
 
 ### Task 21: Parse the supported VHDX profile strictly
 

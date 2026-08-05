@@ -1107,3 +1107,53 @@ Task 19 verdict: **DONE**. This authorizes Task 20 to resolve immutable
 committed journal blocks. It does not authorize manifest publication,
 BackingView installation, snapshot acknowledgement or end-to-end checkpoint
 commit.
+
+## Task 20 — Immutable committed journal-reader acceptance
+
+Task 20 is accepted at implementation commit
+`de107626c410ff361c7ae9fdb34e501bd85d63bd`. A `JournalReader` owns one
+immutable `JournalIndexView`, one image geometry and one index cache bounded by
+both bytes and entries. It cannot change roots after creation and keeps the
+underlying file alive until the reader's final reference is released.
+
+The public result is deliberately three-way: `nullopt` is journal Absent,
+`BlockLoadKind::Data` means a fully verified 64 KiB payload was copied, and
+`BlockLoadKind::AllZero` represents either ZERO or DISCARD without modifying
+the destination. Only Absent may be considered for VHDX fallback by future
+Task 25 code.
+
+Every hit is bounded by the immutable manifest committed length before I/O.
+The exact record bytes are decoded and their fixed header, physical length,
+record CRC, payload CRC, type, block index and record generation are compared
+with the index descriptor. DATA reaches the caller buffer only after all
+checks and final context validation pass. A valid descriptor whose record is
+missing, truncated or inconsistent returns `BackingDataCorrupt`; index
+structure damage returns `JournalCorrupt`. Ordinary native I/O failures remain
+`IoError` (or `AccessDenied`), while EOF inside a committed referenced range is
+classified as corruption.
+
+Tests cover DATA/ZERO/DISCARD/Absent, image and final-partial-block boundaries,
+record/header/payload/type/index/generation mutations, ZERO/DISCARD corruption,
+truncated records and roots, short reads for every record kind, cached-root
+post-read cancellation/deadline windows, immutable old-root tail isolation,
+eight concurrent readers and exact file-handle lifetime. Destination buffers
+remain unchanged on Absent, AllZero and every error.
+
+Final Debug `m3-v1` passed 10/10 and complete Release CTest passed 70/70. A
+`BUILD_TESTING=OFF` Release build of the persistence library passed. The first
+independent review found two P1 issues in post-I/O cancellation and overly
+broad corruption mapping; both received targeted red tests and fixes. Final
+independent review returned GO with P0/P1/P2 = 0/0/0.
+
+Evidence SHA-256:
+
+- `journal_reader.cpp`:
+  `872E5B03702052119E98BD857D6E5CDFD3982134233AD3638497825212285655`;
+- journal-reader tests:
+  `A41F9FE8D79E29426D0145B80AB13C78E4A578A803A307EBD4711008AC006038`;
+- Release journal-reader test executable:
+  `8A9600F1BD71839BFC18A976E4D626570F0E5E953FE6D31BECB3049CD1FF6ECA`.
+
+Task 20 verdict: **DONE**. This authorizes Task 25 to compose journal hits with
+future Task 22 VHDX results. It does not implement VHDX parsing, BAT lookup,
+fallback, recovery selection or manifest publication.

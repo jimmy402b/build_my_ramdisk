@@ -166,11 +166,11 @@ Suggested commit:
 | 13 | Persistence 类型、错误、outcome | C | DONE | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | DONE | 13 | M3-V1 |
 | 15 | 完整双槽 candidate 选择 | O | PENDING | 14,20,22 | M3-V2 |
-| 16 | Journal wire format 与 digest | C | PENDING | 13 | M3-V1 |
-| 17 | Immutable B+tree reader | S | PENDING | 11,16 | M3-V1 |
-| 18 | COW index builder | S | PENDING | 17 | M3-V1 |
-| 19 | Journal checkpoint append/readback | S | PENDING | 11,16,18 | M3-V1/V2 |
-| 20 | JournalReader block resolution | S | PENDING | 17,19 | M3-V1 |
+| 16 | Journal wire format 与 digest | C | DONE | 13 | M3-V1 |
+| 17 | Immutable B+tree reader | S | DONE | 11,16 | M3-V1 |
+| 18 | COW index builder | S | DONE | 17 | M3-V1 |
+| 19 | Journal checkpoint append/readback | S | DONE | 11,16,18 | M3-V1/V2 |
+| 20 | JournalReader block resolution | S | DONE | 17,19 | M3-V1 |
 | 21 | Strict VHDX parser | C | PENDING | 10,11,13 | M3-V1 |
 | 22 | Lazy BAT reader | S | PENDING | 21 | M3-V1 |
 | 23 | Sparse dynamic VHDX writer | S | PENDING | 11,21,22 | M3-V1 |
@@ -698,17 +698,27 @@ blocks corpus。Task 08 状态：`DONE`。
 - Fault matrix 覆盖逐 record short I/O、disk-full/torn write、flush、readback/crosscheck corruption、逐 phase+ordinal cancellation/deadline、多节点 ordinal，以及 generation-0/1 committed prefix 逐 byte 不变。
 - Verification：Debug/Release focused writer 通过；`BUILD_TESTING=OFF` Release `myrd_persistence` 编译通过；Release `m3-v1` 9/9、完整 Release CTest 69/69。独立 durability/capability 审查 GO，P0/P1 = 0/0。
 - Boundary：本任务只返回未发布的 `PreparedCheckpoint`；不写 manifest、不 install BackingView、不 ack snapshot。
-- [ ] 建议提交 `feat(persistence): prepare durable journal checkpoints`。
+- [x] 提交 `feat(persistence): prepare durable journal checkpoints`（`5e0fa90`）。
 
 ## Task 20 — JournalReader 解析 committed blocks
 
 **类别：S。允许文件：** `journal_reader.*`、reader tests；corruption policy 由逻辑负责人审查。
 
-- [ ] 红灯覆盖 DATA/ZERO/DISCARD/Absent 和 descriptor-valid/payload-corrupt/type/index/generation mismatch。
-- [ ] DATA exact read 后同时验证 record、descriptor、payload CRC 与 block identity。
-- [ ] 任何损坏返回 `BackingDataCorrupt`，禁止 fallback 为 Absent/older layer。
-- [ ] read 不越 manifest committed length，支持 cancel/deadline 和 immutable concurrent lifetime。
-- [ ] 跑 journal/index/format tests 与 `m3-v1`；建议提交 `feat(persistence): read committed journal blocks`。
+- [x] 红灯覆盖 DATA/ZERO/DISCARD/Absent 和 descriptor-valid/payload-corrupt/type/index/generation mismatch。
+- [x] DATA exact read 后同时验证 record、descriptor、payload CRC 与 block identity。
+- [x] 任何被有效 descriptor 引用的 record 损坏返回 `BackingDataCorrupt`，禁止 fallback 为 Absent/older layer；index 结构损坏返回 `JournalCorrupt`。
+- [x] read 不越 manifest committed length，支持 cancel/deadline 和 immutable concurrent lifetime。
+- [x] 跑 journal/index/format tests 与 `m3-v1`；提交 `feat(persistence): read committed journal blocks`（`de10762`）。
+
+**完成记录（DONE，2026-08-05）：**
+
+- Accepted implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`。
+- `JournalReader` 固定持有 immutable `JournalIndexView`、geometry 和双上限 index cache。`nullopt` 是唯一 Absent；DATA 在全部验证后才复制 64 KiB；ZERO/DISCARD 映射为 `AllZero` 且不改 destination。
+- Descriptor-valid corruption matrix 覆盖 record CRC、payload CRC、type、block index、generation、ZERO/DISCARD record、truncated record/root；损坏不得变成 Absent。旧 root 在后续 generation 已追加时仍只看旧 committed view。
+- Exact I/O 覆盖 DATA/ZERO/DISCARD short read、EOF、普通 NativeError、cancel/deadline before lookup 与 cached-root record I/O 后窗口。EOF 分类为 referenced-data/index corruption，普通 I/O 分类为 `IoError`。
+- 8 个并发 reader 各执行 100 次 DATA/Absent lookup；reader 保持 file lifetime，最后一个引用释放后 handle 关闭。
+- Verification：Debug `m3-v1` 10/10；完整 Release CTest 70/70；`BUILD_TESTING=OFF` Release persistence 编译通过。独立复审最终 GO，P0/P1/P2 = 0/0/0。
+- Boundary：Task20 不读取 VHDX、不做 fallback、不发布 manifest；journal/VHDX composition 仍属于 Task25。
 
 ## Task 21 — Strict VHDX structural parser
 

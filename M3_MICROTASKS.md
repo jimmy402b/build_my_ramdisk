@@ -368,16 +368,20 @@ BackingView install 和 snapshot ack 均在本任务边界之外。
 
 允许：`journal_reader.*`、reader tests。
 
-- [ ] `T20.1 [M]` RED truth table：DATA/ZERO/DISCARD/Absent、boundary/final block；
+- [x] `T20.1 [M]` RED truth table：DATA/ZERO/DISCARD/Absent、boundary/final block；
   DATA 必须重验 descriptor/header/type/index/generation/payload CRC。
-- [ ] `T20.2 [H]` RED corruption matrix：valid index 指向 corrupt/wrong type/wrong
+- [x] `T20.2 [H]` RED corruption matrix：valid index 指向 corrupt/wrong type/wrong
   block/wrong generation/truncated payload；统一 `BackingDataCorrupt`，不得 fallback。
-- [ ] `T20.3 [H]` 实现 bounded exact reads 和 `BlockLoadKind` 映射；任何 read 不得
+- [x] `T20.3 [H]` 实现 bounded exact reads 和 `BlockLoadKind` 映射；任何 read 不得
   越 manifest committed length，物理 tail 不可见。
-- [ ] `T20.4 [M]` 加 cancel/deadline、short read、immutable concurrent readers、
+- [x] `T20.4 [M]` 加 cancel/deadline、short read、immutable concurrent readers、
   handle lifetime tests。
-- [ ] `T20.5 [H]` mutation 去掉任一 descriptor/payload check 必须红；跑 journal/
+- [x] `T20.5 [H]` mutation 去掉任一 descriptor/payload check 必须红；跑 journal/
   index/format Debug/Release focused。
+
+Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
+独立复审 GO（P0/P1/P2=0/0/0）。Task25 之前不得把 Absent 自动解释为零，
+也不得在 record/index corruption 后回退旧 layer。
 
 ### Task 21 — Strict VHDX structural parser
 
