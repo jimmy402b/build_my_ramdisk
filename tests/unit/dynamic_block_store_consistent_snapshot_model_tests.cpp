@@ -15,6 +15,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -159,17 +160,19 @@ bool records_equal(
     return true;
 }
 
+struct ScheduleFailure final {
+    std::size_t index{};
+    myrd::test::consistent_model::Operation operation;
+    std::string message;
+};
+
 [[noreturn]] void fail_schedule(
     std::uint64_t seed,
     std::size_t index,
     const myrd::test::consistent_model::Operation& operation,
     std::string_view message) {
-    std::cerr << "M2_1_MODEL_FAILURE seed=0x" << std::hex << seed
-              << std::dec << " "
-              << myrd::test::consistent_model::describe_operation(
-                     index, operation)
-              << " message=" << message << std::endl;
-    std::_Exit(1);
+    static_cast<void>(seed);
+    throw ScheduleFailure{index, operation, std::string{message}};
 }
 
 void expect_schedule(
@@ -183,10 +186,11 @@ void expect_schedule(
     }
 }
 
-void run_schedule(std::uint64_t seed, std::size_t operation_count) {
+void execute_schedule(
+    const myrd::test::consistent_model::Schedule& schedule) {
     using namespace myrd::test::consistent_model;
     constexpr std::uint64_t generation = 7;
-    const auto schedule = generate_schedule(seed, operation_count);
+    const auto seed = schedule.seed;
     const auto initial = initial_bytes(schedule.logical_size_bytes());
     auto store = make_store(
         schedule.logical_size_bytes(),
@@ -394,6 +398,59 @@ void run_schedule(std::uint64_t seed, std::size_t operation_count) {
             schedule.operations.size() - 1,
             schedule.operations.back(),
             "store invariant failed after schedule");
+    }
+}
+
+std::optional<ScheduleFailure> evaluate_schedule(
+    const myrd::test::consistent_model::Schedule& schedule) {
+    try {
+        execute_schedule(schedule);
+        return std::nullopt;
+    } catch (const ScheduleFailure& failure) {
+        return failure;
+    }
+}
+
+[[noreturn]] void report_schedule_failure(
+    const myrd::test::consistent_model::Schedule& schedule,
+    const ScheduleFailure& failure) {
+    using namespace myrd::test::consistent_model;
+    const auto reduced = reduce_failure(
+        schedule,
+        [&failure](const Schedule& candidate) {
+            const auto replay = evaluate_schedule(candidate);
+            return replay.has_value() &&
+                replay->message == failure.message;
+        });
+
+    std::cerr << "M2_1_MODEL_FAILURE seed=0x" << std::hex
+              << schedule.seed << std::dec << " "
+              << describe_operation(failure.index, failure.operation)
+              << " message=" << failure.message
+              << " original_operations=" << schedule.operations.size()
+              << " reduced_operations="
+              << (reduced ? reduced->operations.size() : 0)
+              << std::endl;
+    if (reduced.has_value()) {
+        for (std::size_t index = 0;
+             index < reduced->operations.size();
+             ++index) {
+            std::cerr << "M2_1_MODEL_REDUCED_TRACE "
+                      << describe_operation(
+                             index, reduced->operations[index])
+                      << std::endl;
+        }
+    }
+    std::_Exit(1);
+}
+
+void run_schedule(std::uint64_t seed, std::size_t operation_count) {
+    const auto schedule =
+        myrd::test::consistent_model::generate_schedule(
+            seed, operation_count);
+    const auto failure = evaluate_schedule(schedule);
+    if (failure.has_value()) {
+        report_schedule_failure(schedule, *failure);
     }
 }
 
@@ -714,7 +771,7 @@ TEST_CASE(m2_1_task08_abort_after_partial_progress_invalidates_both_tokens) {
     REQUIRE(store->validate_invariants_for_test().ok());
 }
 
-TEST_CASE(m2_1_task08_reducer_keeps_failure_and_only_shrinks_trace) {
+TEST_CASE(m2_1_task08_reducer_keeps_failure_and_only_deletes_operations) {
     using namespace myrd::test::consistent_model;
     auto schedule = generate_schedule(0x1234, 8);
     schedule.operations[0] = Operation{
@@ -744,12 +801,11 @@ TEST_CASE(m2_1_task08_reducer_keeps_failure_and_only_shrinks_trace) {
     REQUIRE_EQ(reduced->seed, schedule.seed);
     REQUIRE_EQ(reduced->block_count, schedule.block_count);
     REQUIRE_EQ(reduced->operations.size(), 3ull);
-    REQUIRE_EQ(reduced->operations[0], schedule.operations[0]);
-    REQUIRE_EQ(reduced->operations[1], schedule.operations[1]);
-    REQUIRE_EQ(reduced->operations[2].kind, OperationKind::Write);
-    REQUIRE_EQ(reduced->operations[2].payload_seed, 0xBAD5EEDull);
-    REQUIRE_EQ(reduced->operations[2].offset, kBlockBytes);
-    REQUIRE_EQ(reduced->operations[2].length, kSectorBytes);
+    REQUIRE(std::equal(
+        reduced->operations.begin(),
+        reduced->operations.end(),
+        schedule.operations.begin()));
+    REQUIRE_EQ(reduced->operations[2], schedule.operations[2]);
 
     REQUIRE(!reduce_failure(
         schedule, [](const Schedule&) { return false; }).has_value());

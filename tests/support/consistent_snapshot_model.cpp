@@ -166,35 +166,6 @@ std::optional<Schedule> reduce_failure(
         }
     }
     reduced.operations.resize(low);
-
-    auto& boundary = reduced.operations.back();
-    const bool has_range =
-        boundary.kind == OperationKind::Write ||
-        boundary.kind == OperationKind::Zero ||
-        boundary.kind == OperationKind::Discard ||
-        boundary.kind == OperationKind::Read ||
-        boundary.kind == OperationKind::Load;
-    if (has_range && boundary.length > kSectorBytes &&
-        boundary.length % kSectorBytes == 0) {
-        std::uint64_t low_sectors = 1;
-        std::uint64_t high_sectors = boundary.length / kSectorBytes;
-        while (low_sectors < high_sectors) {
-            const auto middle =
-                low_sectors + (high_sectors - low_sectors) / 2;
-            auto candidate = reduced;
-            candidate.operations.back().length = middle * kSectorBytes;
-            if (still_fails(candidate)) {
-                high_sectors = middle;
-            } else {
-                low_sectors = middle + 1;
-            }
-        }
-        auto candidate = reduced;
-        candidate.operations.back().length = low_sectors * kSectorBytes;
-        if (still_fails(candidate)) {
-            reduced = std::move(candidate);
-        }
-    }
     return reduced;
 }
 
