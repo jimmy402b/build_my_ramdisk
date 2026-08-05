@@ -32,6 +32,7 @@ enum class SnapshotCoordinatorBarrierEvent : std::uint8_t {
     ActivateLocked = 0,
     ReservationInserted = 1,
     PreimagePublished = 2,
+    PreimagePublishBeforeFinalContextCheck = 3,
 };
 
 // Test-only deterministic barrier. It is invoked while the coordinator mutex

@@ -1364,6 +1364,74 @@ TEST_CASE(m2_1_task07_preparing_marker_serializes_reader_publish_and_rollback) {
     }
 }
 
+TEST_CASE(m2_1_task07_cancelled_publish_notifies_preparing_waiter) {
+    auto barrier = std::make_shared<SnapshotCoordinatorBarrier>(
+        myrd::SnapshotCoordinatorBarrierEvent::
+            PreimagePublishBeforeFinalContextCheck);
+    myrd::SnapshotCoordinator coordinator(
+        myrd::kSnapshotCowRecordBudgetBytes, barrier);
+    const auto activated = coordinator.activate(7, 1);
+    REQUIRE(activated.ok());
+    auto reservation = coordinator.reserve_metadata_before_mutation(
+        bounded_context(),
+        activated.value(),
+        metadata_preimage(
+            0, 1, myrd::DirtyRecordKind::Zero, 7, 1));
+    REQUIRE(reservation.ok());
+    REQUIRE_EQ(
+        reservation.value().disposition(),
+        myrd::SnapshotPreimageDisposition::Reserved);
+
+    auto observer = std::make_shared<Task07PreparingObserver>();
+    Task07CompletionEvent reader_done;
+    std::atomic<std::uint32_t> reader_code{kNoResult};
+    std::jthread reader([&] {
+        const auto result = coordinator.wait_for_preparing_resolution(
+            myrd::OperationContext{},
+            activated.value().snapshot_id,
+            0,
+            reservation.value().reservation_id(),
+            observer.get());
+        reader_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+        reader_done.signal();
+    });
+    REQUIRE(observer->wait_reader_ready(
+        std::chrono::steady_clock::now() + kWaitBound));
+
+    std::stop_source publisher_stop;
+    std::atomic<std::uint32_t> publisher_code{kNoResult};
+    std::jthread publisher([&] {
+        const myrd::OperationContext context{
+            publisher_stop.get_token(),
+            std::chrono::steady_clock::time_point::max()};
+        const auto result = coordinator.publish_metadata_preimage(
+            context, reservation.value());
+        publisher_code.store(
+            result.ok() ? 0U : error_code(result.error()),
+            std::memory_order_release);
+    });
+    REQUIRE(wait_until([&] { return barrier->reached(); }));
+    publisher_stop.request_stop();
+    barrier->release();
+    publisher.join();
+
+    const bool woke_without_manual_notify = reader_done.wait(
+        std::chrono::steady_clock::now() + kWaitBound);
+    if (!woke_without_manual_notify) {
+        coordinator.notify_capacity_waiters_for_test();
+    }
+    reader.join();
+
+    REQUIRE(woke_without_manual_notify);
+    REQUIRE_EQ(
+        publisher_code.load(std::memory_order_acquire),
+        static_cast<std::uint32_t>(myrd::OperationErrorCode::cancelled));
+    REQUIRE_EQ(reader_code.load(std::memory_order_acquire), 0u);
+    REQUIRE(coordinator.validate_invariants_for_test().ok());
+}
+
 TEST_CASE(m2_1_task07_metadata_preparing_marker_preserves_zero_and_discard) {
     for (const auto cut_kind :
          {LogicalDirtyKind::Zero, LogicalDirtyKind::Discard}) {

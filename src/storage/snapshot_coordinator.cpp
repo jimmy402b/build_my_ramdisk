@@ -1011,10 +1011,14 @@ Result<void> SnapshotCoordinator::publish_metadata_preimage(
             L"snapshot ended before pre-image publication"));
     }
 
+    state_->pause_for_test(
+        SnapshotCoordinatorBarrierEvent::
+            PreimagePublishBeforeFinalContextCheck);
     const auto publish_live = check_operation_context(context);
     if (!publish_live.ok()) {
         state_->erase_record(record);
         reservation.owner_state_.reset();
+        state_->condition.notify_all();
         return Result<void>::failure(publish_live.error());
     }
     if (state_->pending_reservations == 0) {
