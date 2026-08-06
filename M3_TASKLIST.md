@@ -941,6 +941,7 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 **类别：O。允许文件：** `tests/e2e/Invoke-M3NtfsWorkload.ps1`、frozen harness scenarios、机器生成 evidence；不得顺手改 production 绕过失败。
 
 - [ ] create generation zero，real AIM export 后由 harness 明确识别 scratch disk，再初始化/格式化 NTFS、mount。
+  **当前状态：BLOCKED。** 本机只发现 Disk 0，且为 Boot/System 盘；尚未提供可操作的精确非系统 scratch identity。
 - [ ] 写 deterministic tree、overwrites、sparse、rename/delete；调用文件系统/volume flush 后 checkpoint。
 - [ ] clean stop/reopen，禁止重新分区/格式化，运行声明的 filesystem check 并校验 hashes/metadata；cold memory 小样本读取证明 startup/first-touch bounded，再全量校验。
 - [ ] 再次 flush exact volume 后 compact durable NTFS generation，证明新 base_generation hash 对应该完整 durable view；RAM disk offline 后用 Windows native API read-only open/attach，验证 partition/NTFS，再 detach。禁止拿旧 base 对比新 journal 内容或双写挂载。
