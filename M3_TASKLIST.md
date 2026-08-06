@@ -187,7 +187,7 @@ Suggested commit:
 | 34 | Live extent enumeration | S | DONE | 22,25,29 | M3-V4 |
 | 35 | Base compaction 与 journal rotation | O | DONE | 09,23,29,32,34 | M3-V4 |
 | 36 | Immutable file retention/cleanup | O | DONE | 12,27,35 | M3-V4 |
-| 37 | Inspect/verify/report schema | C | PENDING | 27,33,36 | M3-V2/V4 |
+| 37 | Inspect/verify/report schema | C | DONE | 27,33,36 | M3-V2/V4 |
 | 38 | M3 CLI 与 local fake | C | PENDING | 27,29,30,35,37 | M3-V2/V4 |
 | 39 | M1/M2/M3 provider 集成 | O | PENDING | 28,32,38 | M3-V6 prerequisite |
 | 40 | 真实主机 preflight/E2E harness | C | PENDING | 24,39 | M3-V6 preflight |
@@ -898,12 +898,12 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：C。允许文件：** `image_inspector.*`、`m3_report.*`、`m3_evidence_publisher.*`、report tests。
 
-- [ ] deterministic JSON 红灯覆盖 geometry、A/B slots、selected/fallback、identities、root/commit、corruption、cleanup candidates 和 no selection。
-- [ ] inspect 只读且 bounded，不 repair/truncate/publish/ack/delete。
-- [ ] `verify --full` streaming 校验所有 logically allocated blocks；默认 verify 只做 structural bounded validation。
-- [ ] absolute paths 与用户 block contents 默认不输出；schema/version、operation id、source commit、binary/artifact hashes、enum strings fail-closed。
-- [ ] evidence publisher 使用 unique same-directory temp → exact write → flush → write-through rename，拒绝覆盖，故障保留诊断；不得依赖 proxy session-id helper。
-- [ ] 跑 `m3-v2`、`m3-v4` 中当前可用项与 JSON golden tests；建议提交 `feat(m3): inspect and verify persistent images`。
+- [x] deterministic JSON 红灯覆盖 geometry、A/B slots、selected/fallback、identities、root/commit、corruption、cleanup candidates 和 no selection。
+- [x] inspect 只读且 bounded，不 repair/truncate/publish/ack/delete。
+- [x] `verify --full` streaming 校验所有 logically allocated blocks；默认 verify 只做 structural bounded validation。
+- [x] absolute paths 与用户 block contents 默认不输出；schema/version、operation id、source commit、binary/artifact hashes、enum strings fail-closed。
+- [x] evidence publisher 使用 unique same-directory temp → exact write → flush → handle-anchored write-through no-replace rename，拒绝覆盖，故障保留诊断；不得依赖 proxy session-id helper。
+- [x] Debug/Release `m3-v2`+`m3-v4` 各 25/25，JSON native round-trip、独立复审 P0=0/P1=0；建议提交 `feat(m3): inspect and verify persistent images`。
 
 ## Task 38 — M3 CLI with local fake storage
 

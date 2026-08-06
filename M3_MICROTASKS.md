@@ -708,20 +708,20 @@ publish/resolver 算法。
 
 允许：`image_inspector.*`、`m3_report.*`、`m3_evidence_publisher.*`、report tests。
 
-- [ ] `T37.1 [M]` 冻结 deterministic JSON fixture：geometry、A/B slots、selected/
+- [x] `T37.1 [M]` 冻结 deterministic JSON fixture：geometry、A/B slots、selected/
   fallback、identities、root/commit、corruption provenance、cleanup candidates、no
   selection；字段顺序/enum string/schema version 固定。
-- [ ] `T37.2 [H]` 实现 read-only bounded inspect；用 mutating fake 断言 truncate/
+- [x] `T37.2 [H]` 实现 read-only bounded inspect；用 production bundle 前后字节恒等与只读 recovery boundary 断言 truncate/
   repair/publish/ack/delete calls 全为零。
-- [ ] `T37.3 [H]` 实现 default structural verify 与 `--full` streaming verify；full
+- [x] `T37.3 [H]` 实现 default structural verify 与 `--full` streaming verify；full
   只遍历 logically allocated blocks，内存有预算，corruption 不 fallback。
-- [ ] `T37.4 [M]` 实现 redaction：absolute paths/block contents 默认不输出，显式
+- [x] `T37.4 [M]` 实现 redaction：absolute paths/block contents 默认不输出，显式
   diagnostics opt-in；operation id/source commit/binary/artifact hashes 必填。
-- [ ] `T37.5 [H]` evidence publish RED：same-directory unique temp→exact write→flush→
+- [x] `T37.5 [H]` evidence publish RED：same-directory unique temp→exact write→flush→
   write-through no-overwrite rename；每个 fault 留可诊断 temp，不发布半 JSON。
-- [ ] `T37.6 [M]` `Verify-M3Json` fixture tests：unknown/missing enum、schema/hash/
+- [x] `T37.6 [M]` `Verify-M3Json` fixture tests：unknown/missing enum、schema/hash/
   source mismatch、required SKIP 均 fail closed。
-- [ ] `T37.7 [H]` schema/security/publish-order independent review；Debug/Release
+- [x] `T37.7 [H]` schema/security/publish-order independent review；Debug/Release
   `m3-v2/v4`。
 
 ### Task 38 — M3 CLI with local fake storage

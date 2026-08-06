@@ -1999,3 +1999,50 @@ Final acceptance evidence:
 
 Task 36 verdict: **DONE**. The retained design exposes no general journal append
 API; generation-fenced writable reopening remains an explicit later wiring task.
+
+## Task 37 inspect, verify and evidence acceptance
+
+`inspect_image` adapts the bounded, read-only recovery path into an immutable
+diagnostic snapshot. It reports both physical manifest slots, corruption
+provenance, selection/fallback state and complete format/file identities without
+retaining a writable capability or exposing a bundle path. Corrupt no-selection
+outcomes remain inspectable, while invalid caller limits, cancellation and
+operational I/O failures stay outer failures.
+
+Structural verify performs the same bounded validation. Full verify streams the
+ascending logical candidate set through one 64 KiB buffer, hashes a canonical
+index/length/kind/data representation and reports exact DATA/ZERO counts. It
+refuses to certify any fallback generation, including when a newer journal DATA
+payload is corrupt. Tests cover DATA, ZERO, DISCARD, a 512-byte final partial
+block and a fixed independent SHA-256 fixture.
+
+The management report schema is deterministic and strict UTF-8. Absolute paths
+require explicit opt-in; no API field accepts user block contents. Stable enums,
+source commit, binary hash, artifact hashes, image/file identities and root/
+commit descriptors fail closed in both C++ and `Verify-M3Json.ps1`. A native
+fixture proves the actual C++ serializer and publisher output passes the
+PowerShell verifier.
+
+Evidence publication creates a unique same-directory temporary file, performs
+an exact write and flush, and keeps the same write-through `DELETE` handle while
+executing a no-replace handle rename. The handle denies competing writes and
+deletes through the complete write/flush/rename window. Pre-rename faults retain
+the temporary artifact; an existing final file is never overwritten.
+
+Final acceptance evidence:
+
+- independent review returned **GO (P0=0, P1=0)** after all five first-round
+  P1 findings were closed;
+- final Debug and Release `m3-v2|m3-v4` gates each passed 25/25;
+- complete Debug CTest passed 99/99 and complete Release CTest passed 100/100;
+- `BUILD_TESTING=OFF` built both `myrd_persistence` and
+  `myrd_m3_management` without proxy, driver or M1 dependencies;
+- `git diff --check` passed apart from line-ending conversion notices.
+
+Accepted P2 boundaries: the inspector proves read-only behavior through the
+production recovery boundary and byte-identical artifacts rather than adding a
+second mutating backend abstraction; the generic exact-byte publisher relies on
+the validated serializer/verifier chain for JSON semantics.
+
+Task 37 verdict: **DONE**. Task 38 may expose these production APIs through the
+local fake lifecycle CLI without adding format shortcuts.

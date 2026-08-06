@@ -912,12 +912,12 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 27, 33, 36
 **Files:** Create `src/persistence/image_inspector.h/.cpp`, `src/m3/m3_report.h/.cpp`, `src/m3/m3_evidence_publisher.h/.cpp`, `tests/unit/m3_report_tests.cpp`; reuse `src/poc/json_writer.*` patterns but do not link the persistence library to proxy/Poc report publication.
 
-- [ ] **Step 1: Red-test deterministic JSON** for image geometry, both slot statuses, selected/fallback generation, file identities, journal/root/commit descriptors, corruption provenance, cleanup candidates and no-selection cases.
-- [ ] **Step 2: Implement `inspect` as read-only bounded validation.** It must not truncate, repair, publish, acknowledge or delete anything.
-- [ ] **Step 3: Add `verify --full`** to stream every logically allocated block and report hashes/counts; default verify remains structural and bounded.
-- [ ] **Step 4: Redact absolute paths and block contents by default and add explicit path opt-in for diagnostics. Validate schema/version, operation id, source commit, binary hash, artifact hashes and stable enum strings.**
-- [ ] **Step 5: Add atomic evidence publication tests:** unique same-directory temporary file, exact write, flush, write-through rename, no overwrite, fault retention and no dependency on M1/proxy identifiers.
-- [ ] **Step 6: Commit.** `feat(m3): inspect and verify persistent images`.
+- [x] **Step 1: Red-test deterministic JSON** for image geometry, both slot statuses, selected/fallback generation, file identities, journal/root/commit descriptors, corruption provenance, cleanup candidates and no-selection cases.
+- [x] **Step 2: Implement `inspect` as read-only bounded validation.** It must not truncate, repair, publish, acknowledge or delete anything.
+- [x] **Step 3: Add `verify --full`** to stream every logically allocated block and report hashes/counts; default verify remains structural and bounded.
+- [x] **Step 4: Redact absolute paths and block contents by default and add explicit path opt-in for diagnostics. Validate schema/version, operation id, source commit, binary hash, artifact hashes and stable enum strings.**
+- [x] **Step 5: Add atomic evidence publication tests:** unique same-directory temporary file, exact write, flush, write-through rename, no overwrite, fault retention and no dependency on M1/proxy identifiers.
+- [x] **Step 6: Commit.** `feat(m3): inspect and verify persistent images`.
 
 ### Task 38: Build the M3 CLI against local fake storage
 

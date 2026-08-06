@@ -1311,6 +1311,34 @@ set_tests_properties(integration.m3.retention PROPERTIES
     LABELS "m3-v4"
     TIMEOUT 120)
 
+# ---- M3 deterministic management reports (Task 37) ----------------------
+add_executable(myrd_m3_report_tests
+    unit/m3_report_tests.cpp
+)
+target_link_libraries(myrd_m3_report_tests PRIVATE
+    myrd_test_support myrd_m3_management)
+target_include_directories(myrd_m3_report_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_report_tests)
+add_test(NAME unit.m3.report COMMAND myrd_m3_report_tests)
+set_tests_properties(unit.m3.report PROPERTIES
+    LABELS "m3-v2;m3-v4"
+    TIMEOUT 30)
+add_executable(myrd_m3_report_fixture
+    helpers/m3_report_fixture.cpp)
+target_link_libraries(myrd_m3_report_fixture PRIVATE myrd_m3_management)
+target_include_directories(myrd_m3_report_fixture PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_report_fixture)
+add_test(NAME unit.m3.json_verifier
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m3_json_verifier_tests.ps1"
+        -Verifier "${CMAKE_SOURCE_DIR}/tools/Verify-M3Json.ps1"
+        -FixtureExecutable "$<TARGET_FILE:myrd_m3_report_fixture>")
+set_tests_properties(unit.m3.json_verifier PROPERTIES
+    LABELS "m3-v2;m3-v4"
+    TIMEOUT 30)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
