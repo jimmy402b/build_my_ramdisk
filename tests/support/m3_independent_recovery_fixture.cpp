@@ -21,7 +21,8 @@ namespace myrd::test::m3_recovery_oracle {
 namespace {
 
 constexpr std::uint64_t kMiB = 1024ULL * 1024ULL;
-constexpr std::uint64_t kBaseLength = 4 * kMiB;
+constexpr std::uint64_t kBaseLength = 6 * kMiB;
+constexpr std::uint64_t kPayloadOffset = 4 * kMiB;
 constexpr std::uint64_t kJournalLength = 0x16000;
 constexpr std::uint64_t kDataOffset = 0x1000;
 constexpr std::uint64_t kZeroOffset = 0x12000;
@@ -213,7 +214,9 @@ void put_metadata_entry(const std::span<std::byte> table,
 
 std::vector<std::byte> exact_dynamic_vhdx() {
     // Independently transcribed from the strict exact-byte golden profile in
-    // m3_vhdx_format_tests.cpp; the BAT remains raw zero/Absent throughout.
+    // m3_vhdx_format_tests.cpp. Payload zero is deliberately allocated and
+    // nonzero so journal ZERO/DISCARD cannot accidentally fall through to the
+    // base while still satisfying an AllZero-only oracle.
     std::vector<std::byte> bytes(kBaseLength);
     put_ascii(bytes, 0, "vhdxfile");
     build_vhdx_header(std::span<std::byte>{bytes}.subspan(0x10000, 4096), 10);
@@ -238,6 +241,9 @@ std::vector<std::byte> exact_dynamic_vhdx() {
     put_bytes(items, 16, disk_id);
     put_u32(items, 32, 512);
     put_u32(items, 36, 4096);
+    put_u64(bytes, kMiB, ((kPayloadOffset / kMiB) << 20U) | 6U);
+    std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(kPayloadOffset),
+              bytes.end(), std::byte{0x5d});
     return bytes;
 }
 

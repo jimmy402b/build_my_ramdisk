@@ -31,6 +31,7 @@ enum class OracleBlockKind {
     Data,
     Zero,
     Discard,
+    BaseData,
     BaseAbsent,
 };
 
@@ -131,12 +132,23 @@ void require_all_blocks(const RecoveryOutcome& outcome) {
         REQUIRE(loaded.ok());
         const auto found = oracle.find(block);
         const OracleBlock expected = found == oracle.end()
-            ? OracleBlock{OracleBlockKind::BaseAbsent, {}}
+            ? OracleBlock{
+                  block < (2 * kMiB / golden::kLogicalBlockBytes)
+                      ? OracleBlockKind::BaseData
+                      : OracleBlockKind::BaseAbsent,
+                  {}}
             : found->second;
         if (expected.kind == OracleBlockKind::Data) {
             REQUIRE_EQ(loaded.value().kind, BlockLoadKind::Data);
             REQUIRE(std::equal(destination.begin(), destination.end(),
                                expected.bytes.begin(), expected.bytes.end()));
+        } else if (expected.kind == OracleBlockKind::BaseData) {
+            REQUIRE_EQ(loaded.value().kind, BlockLoadKind::Data);
+            REQUIRE(std::all_of(
+                destination.begin(), destination.end(),
+                [](const std::byte value) {
+                    return value == std::byte{0x5d};
+                }));
         } else {
             REQUIRE_EQ(loaded.value().kind, BlockLoadKind::AllZero);
             REQUIRE(std::all_of(
