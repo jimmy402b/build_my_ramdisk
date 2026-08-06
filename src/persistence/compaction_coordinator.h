@@ -2,7 +2,13 @@
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
+#include "src/persistence/composite_backing_store.h"
 #include "src/persistence/image_session.h"
+#include "src/persistence/journal_writer.h"
+#include "src/persistence/live_extent_enumerator.h"
+#include "src/persistence/manifest_format.h"
+#include "src/persistence/vhdx_writer.h"
+#include "src/persistence/writer_lock.h"
 #include "src/storage/dynamic_block_store.h"
 
 #include <cstddef>
@@ -11,6 +17,9 @@
 #include <functional>
 #endif
 #include <optional>
+#include <filesystem>
+#include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -109,6 +118,46 @@ struct CompactionRecommendation final {
     const CompactionMetrics& metrics,
     const CompactionPolicy& policy) noexcept;
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+using CompactionPhaseHook =
+    std::function<Result<void>(CompactionPhase)>;
+#endif
+
+using CompactionOfflineVhdxValidator = std::function<Result<void>(
+    const OperationContext&,
+    const std::filesystem::path&)>;
+
+struct CompactionArtifactBuildLimits final {
+    std::uint64_t max_live_extents{};
+};
+
+struct CompactionArtifactBuildRequest final {
+    BundleWriterLock* writer_lock{};
+    ManifestSlot active_slot{};
+    std::string base_temporary_name;
+    std::string base_relative_name;
+    VhdxWriterIdentity base_identity{};
+    std::string journal_relative_name;
+    JournalFileIdentity journal_identity{};
+    JournalEpoch journal_epoch{};
+    std::uint64_t operation_id{};
+    LiveExtentEnumeratorOptions extent_options{};
+    VhdxWriterLimits vhdx_limits{};
+    CompactionArtifactBuildLimits limits{};
+    CompactionOfflineVhdxValidator offline_vhdx_validator{};
+};
+
+struct CompactionArtifactBuildMetrics final {
+    BackingGeneration source_generation{};
+    LiveExtentEnumerationMetrics extents{};
+    std::uint64_t candidate_payloads{};
+    std::uint64_t published_base_bytes{};
+    std::uint64_t journal_header_bytes{};
+
+    bool operator==(const CompactionArtifactBuildMetrics&) const noexcept =
+        default;
+};
+
 // Move-only ownership of the compaction gate and the immutable durable source
 // view. Destruction before publication safely aborts the session operation.
 class PreparedCompactionOperation final {
@@ -126,6 +175,23 @@ public:
     [[nodiscard]] const BackingView& captured_view() const noexcept {
         return captured_view_;
     }
+    [[nodiscard]] bool artifacts_ready() const noexcept {
+        return published_base_.has_value() && journal_file_ != nullptr;
+    }
+    [[nodiscard]] const VhdxPublishedBase* published_base() const noexcept {
+        return published_base_ ? &*published_base_ : nullptr;
+    }
+    [[nodiscard]] const JournalHeader* new_journal_header() const noexcept {
+        return journal_file_ ? &journal_header_ : nullptr;
+    }
+    [[nodiscard]] const WindowsFileIdentity*
+    new_journal_windows_identity() const noexcept {
+        return journal_file_ ? &journal_windows_identity_ : nullptr;
+    }
+    [[nodiscard]] Result<CompactionArtifactBuildMetrics>
+    build_artifacts(
+        const OperationContext& context,
+        const CompactionArtifactBuildRequest& request);
     Result<void> abort();
 
 private:
@@ -134,15 +200,20 @@ private:
         PublishOperationLease lease,
         BackingView captured_view) noexcept;
     void abandon_noexcept() noexcept;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    Result<void> emit_phase(CompactionPhase phase);
+#endif
 
     std::optional<PublishOperationLease> lease_{};
     BackingView captured_view_{};
-};
-
 #if defined(MYRD_ENABLE_TEST_SEAMS)
-using CompactionPhaseHook =
-    std::function<Result<void>(CompactionPhase)>;
+    CompactionPhaseHook phase_hook_{};
 #endif
+    std::optional<VhdxPublishedBase> published_base_{};
+    std::shared_ptr<IPersistenceFile> journal_file_{};
+    JournalHeader journal_header_{};
+    WindowsFileIdentity journal_windows_identity_{};
+};
 
 class CompactionCoordinator final {
 public:

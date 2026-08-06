@@ -887,7 +887,7 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 09, 23, 29, 32, 34
 **Files:** Create `src/persistence/compaction_coordinator.h/.cpp`, `tests/integration/m3_compaction_tests.cpp`.
 
-- [ ] **Step 1: Red-test the full SPEC pipeline:** hold the session's single modifying-operation gate and capture durable immutable view G; write/flush/readback/verify a unique sparse VHDX representing G; publish its unique final filename with write-through rename; create and flush journal epoch E+1.
+- [x] **Step 1: Red-test the full SPEC pipeline:** hold the session's single modifying-operation gate and capture durable immutable view G; write/flush/readback/verify a unique sparse VHDX representing G; publish its unique final filename with write-through rename; create and flush journal epoch E+1.
 - [ ] **Step 2: Allow ordinary live mutations** during VHDX construction, but do not allow a checkpoint or second compaction to start. After the new base/journal are ready, require the explicit volume barrier for this operation, establish an M2.1 consistent cut, and stream all current dirty state relative to G into the new journal.
 - [ ] **Step 3: Append the new COW index and a commit for G+1 even when the dirty set is empty**, flush/readback the journal, then use the normal manifest publish, indeterminate-resolution, view-install and conditional-ack sequence. Writes after the cut remain dirty through the normal M2.1 rule.
 - [ ] **Step 4: Fault-test every pre/post-commit phase.** Before manifest publication, old bundle/runtime state remains authoritative and new files are unreferenced artifacts; after commit, recover/install the new view and retain old base/journal for old slots, old readers and reconciliation.

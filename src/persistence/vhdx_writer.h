@@ -10,10 +10,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#if defined(MYRD_ENABLE_TEST_SEAMS)
 #include <functional>
 #include <filesystem>
-#endif
 #include <span>
 #include <string>
 #include <string_view>
@@ -186,7 +184,10 @@ private:
         std::string_view,
         std::string_view,
         const VhdxWritePlan&,
-        const IVhdxPayloadSource&);
+        const IVhdxPayloadSource&,
+        std::function<Result<void>(
+            const OperationContext&,
+            const std::filesystem::path&)>);
 };
 
 [[nodiscard]] Result<VhdxPublishedBase> publish_sparse_vhdx_base(
@@ -195,7 +196,10 @@ private:
     std::string_view temporary_name,
     std::string_view final_name,
     const VhdxWritePlan& plan,
-    const IVhdxPayloadSource& source);
+    const IVhdxPayloadSource& source,
+    std::function<Result<void>(
+        const OperationContext&,
+        const std::filesystem::path&)> pre_rename_validator = {});
 
 enum class VhdxPublicationPhase : std::uint8_t {
     BeforeCreate,
@@ -228,6 +232,9 @@ struct VhdxPublicationTestOptions final {
         close_operation{};
     std::function<Result<void>(const std::filesystem::path&)>
         before_reopen_operation{};
+    std::function<Result<void>(
+        const OperationContext&,
+        const std::filesystem::path&)> pre_rename_validator{};
 };
 
 // Deterministic failure seam compiled only for tests. The hook runs directly

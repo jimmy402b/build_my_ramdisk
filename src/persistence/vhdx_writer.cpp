@@ -798,7 +798,10 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base(
     const std::string_view temporary_name,
     const std::string_view final_name,
     const VhdxWritePlan& plan,
-    const IVhdxPayloadSource& source) {
+    const IVhdxPayloadSource& source,
+    std::function<Result<void>(
+        const OperationContext&,
+        const std::filesystem::path&)> pre_rename_validator) {
     constexpr auto operation = L"publish_sparse_vhdx_base";
     auto temporary_component = validate_image_component(temporary_name);
     if (!temporary_component.ok()) {
@@ -992,6 +995,21 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base(
             }
         }
 
+        if (pre_rename_validator) {
+            Result<void> validated = Result<void>::success();
+            try {
+                validated = pre_rename_validator(context, temporary_path);
+            } catch (...) {
+                validated = writer_failure<void>(
+                    L"VHDX pre-rename validator threw an exception",
+                    PersistenceErrorCode::FatalInternalInvariant,
+                    operation);
+            }
+            if (!validated.ok()) {
+                return Result<VhdxPublishedBase>::failure(validated.error());
+            }
+        }
+
         phase = publication_phase(
             context, VhdxPublicationPhase::BeforeRename);
         if (!phase.ok()) {
@@ -1057,7 +1075,8 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base_for_testing(
     VhdxPublicationTestOptions options) {
     if ((!options.phase_hook && !options.file_write_hook &&
          options.rename_backend == nullptr && !options.close_operation &&
-         !options.before_reopen_operation) ||
+         !options.before_reopen_operation &&
+         !options.pre_rename_validator) ||
         g_publication_options != nullptr) {
         return writer_failure<VhdxPublishedBase>(
             L"VHDX publication test options must be nonempty and nonnested",
@@ -1072,7 +1091,8 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base_for_testing(
         ~ScopedOptions() noexcept { g_publication_options = nullptr; }
     } scoped_options(options);
     return publish_sparse_vhdx_base(
-        context, writer_lock, temporary_name, final_name, plan, source);
+        context, writer_lock, temporary_name, final_name, plan, source,
+        std::move(options.pre_rename_validator));
 }
 #endif
 
