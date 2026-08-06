@@ -624,12 +624,22 @@ Result<VhdxFileIdentity> probe_vhdx_file_identity(
 Result<VhdxLayout> parse_vhdx_layout(
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file) {
-    return parse_vhdx_layout(context, std::move(file), nullptr);
+    return parse_vhdx_layout(
+        context, std::move(file), VhdxParseRequirements{}, nullptr);
 }
 
 Result<VhdxLayout> parse_vhdx_layout(
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file,
+    VhdxParseEvidence* evidence) {
+    return parse_vhdx_layout(
+        context, std::move(file), VhdxParseRequirements{}, evidence);
+}
+
+Result<VhdxLayout> parse_vhdx_layout(
+    const OperationContext& context,
+    std::shared_ptr<IPersistenceFile> file,
+    const VhdxParseRequirements& requirements,
     VhdxParseEvidence* evidence) {
     if (evidence != nullptr) {
         *evidence = {};
@@ -673,6 +683,23 @@ Result<VhdxLayout> parse_vhdx_layout(
 
     if (evidence != nullptr) {
         evidence->identity = header.value().identity;
+    }
+    if (requirements.expected_identity.has_value() &&
+        header.value().identity != *requirements.expected_identity) {
+        return vhdx_failure<VhdxLayout>(
+            L"VHDX identity does not match the required identity",
+            PersistenceErrorCode::BackingDataCorrupt);
+    }
+    if (evidence != nullptr) {
+        evidence->stage = VhdxParseStage::ExpectedLength;
+    }
+    if (requirements.expected_file_length.has_value() &&
+        length.value() != *requirements.expected_file_length) {
+        return vhdx_failure<VhdxLayout>(
+            L"VHDX length does not match the required length",
+            PersistenceErrorCode::BackingDataCorrupt);
+    }
+    if (evidence != nullptr) {
         evidence->stage = VhdxParseStage::Profile;
     }
     if (header.value().version != 1 || header.value().log_version != 0) {

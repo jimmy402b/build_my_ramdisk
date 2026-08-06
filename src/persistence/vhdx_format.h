@@ -49,6 +49,9 @@ private:
     friend Result<VhdxLayout> parse_vhdx_layout(
         const OperationContext&, std::shared_ptr<IPersistenceFile>,
         VhdxParseEvidence*);
+    friend Result<VhdxLayout> parse_vhdx_layout(
+        const OperationContext&, std::shared_ptr<IPersistenceFile>,
+        const struct VhdxParseRequirements&, VhdxParseEvidence*);
 
     VhdxLayout() = default;
 
@@ -72,9 +75,15 @@ private:
 
 enum class VhdxParseStage : std::uint8_t {
     Identity,
+    ExpectedLength,
     Profile,
     Layout,
     Complete,
+};
+
+struct VhdxParseRequirements final {
+    std::optional<VhdxFileIdentity> expected_identity{};
+    std::optional<std::uint64_t> expected_file_length{};
 };
 
 // Optional staged evidence for callers that must preserve a stable
@@ -95,6 +104,12 @@ struct VhdxParseEvidence final {
 [[nodiscard]] Result<VhdxLayout> parse_vhdx_layout(
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file,
+    VhdxParseEvidence* evidence);
+
+[[nodiscard]] Result<VhdxLayout> parse_vhdx_layout(
+    const OperationContext& context,
+    std::shared_ptr<IPersistenceFile> file,
+    const VhdxParseRequirements& requirements,
     VhdxParseEvidence* evidence);
 
 // Minimal identity probe for classifying a structurally valid but unsupported

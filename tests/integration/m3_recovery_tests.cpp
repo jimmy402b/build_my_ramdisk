@@ -1016,6 +1016,10 @@ TEST_CASE(recovery_preserves_vhdx_identity_length_profile_layout_order) {
         REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
                    std::optional{
                        ManifestCandidateCheck::BaseExpectedLength});
+        REQUIRE_EQ(outcome.diagnostics[1].base_structural_read_calls,
+                   std::uint64_t{3});
+        REQUIRE_EQ(outcome.diagnostics[1].base_structural_read_bytes,
+                   std::uint64_t{8200});
     }
     {
         RecoveryFixture fixture;

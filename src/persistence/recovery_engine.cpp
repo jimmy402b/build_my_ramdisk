@@ -525,9 +525,10 @@ void validate_candidate(
     VhdxParseEvidence parse_evidence{};
     auto base_reader = VhdxReader::open(
         context, owned_base_file,
-        {{options.limits.max_bat_cache_bytes,
+         {{options.limits.max_bat_cache_bytes,
           options.limits.max_bat_cache_entries},
          max_payloads, max_payloads},
+        {slot.base_identity, slot.base_expected_length},
         &parse_evidence);
     resources.base_parse_evidence = parse_evidence;
     if (!base_reader.ok()) {
