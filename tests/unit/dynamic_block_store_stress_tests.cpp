@@ -962,7 +962,9 @@ void run_stress_round(std::uint32_t round,
         start.arrive_and_wait();
         try {
             std::uint64_t operation = 0;
-            while (active_roles.load(std::memory_order_acquire) != 0 &&
+            bool pressure_pass_executed = false;
+            while ((!pressure_pass_executed ||
+                    active_roles.load(std::memory_order_acquire) != 0) &&
                    !failure.failed() && operation < 256) {
                 failure.note("pressure", round, operation, "target_blocks=4");
                 const auto pressure =
@@ -979,6 +981,7 @@ void run_stress_round(std::uint32_t round,
                     pressure.scanned_blocks, std::memory_order_relaxed);
                 counters.pressure_evicted_blocks.fetch_add(
                     pressure.evicted_blocks, std::memory_order_relaxed);
+                pressure_pass_executed = true;
                 ++operation;
                 std::this_thread::yield();
             }
@@ -1088,6 +1091,18 @@ TEST_CASE(m2_stress_fixed_seed_multirole_preserves_model_and_invariants) {
     backing.reset();
     FailureState failure;
     StressCounters counters;
+
+    // Seed more clean resident blocks than the pressure target before the
+    // concurrent rounds. Without this deterministic starting condition, a
+    // fast Release run can let all data roles finish while committed bytes are
+    // still at or below the target, causing reclaim_clean_to() to return
+    // without scanning anything. The stress assertions are about the pressure
+    // path, so the path must be scheduled rather than left to a race.
+    for (std::size_t index = 0; index < 8; ++index) {
+        std::array<std::byte, static_cast<std::size_t>(kBlock)> output{};
+        REQUIRE(store->read(
+            bounded_context(), kSelectedBlocks[index] * kBlock, output).ok());
+    }
 
     for (std::uint32_t round = 0; round < kStressRounds; ++round) {
         run_stress_round(

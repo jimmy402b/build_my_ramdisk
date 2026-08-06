@@ -792,6 +792,9 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
   source commit/binary hashes；任一 prerequisite 不满足标 `BLOCKED`。当前机器已执行
   只读检查：管理员权限与 `phdskmnt` Running 满足，但仅有 Disk 0（Boot/System），
   没有可批准的非系统 scratch disk，因此本卡为 `BLOCKED`。
+- [x] `T41.1a [M]` 实现 `Invoke-M3NtfsWorkload.ps1` 的安全编排骨架、WhatIf
+  门禁、exact scratch identity 绑定、机器可读 evidence、AIM status metrics
+  和 fail-closed cleanup ledger；这不改变 T41.1 的当前机器 `BLOCKED` 结论。
 - [ ] `T41.2 [X]` generation 0 经 real AIM export 后，仅对确认 scratch disk 初始化/
   format NTFS；运行 deterministic tree/overwrite/sparse/rename/delete/flush workload。
 - [ ] `T41.3 [X]` filesystem/volume flush 后 checkpoint，记录 RAM/backing counters；

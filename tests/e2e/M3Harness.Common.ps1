@@ -295,6 +295,27 @@ function Get-M3ActualDiskCandidates {
     return @($candidates)
 }
 
+function Assert-M3ExpectedDiskOwnsPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScratchRoot,
+        [Parameter(Mandatory = $true)]$ExpectedIdentity
+    )
+    $full = Get-M3FullPath $ScratchRoot
+    $root = [IO.Path]::GetPathRoot($full)
+    Assert-M3Condition ($root -match '^[A-Za-z]:\\$') `
+        'scratch root must be on a drive volume for disk identity binding'
+    $partitions = @(Get-Partition -DriveLetter $root.Substring(0, 1) -ErrorAction Stop)
+    Assert-M3Condition ($partitions.Count -eq 1) `
+        'scratch root must map to exactly one partition'
+    $diskNumber = [int]$partitions[0].DiskNumber
+    $selected = Select-M3ExactDisk `
+        -Candidates (Get-M3ActualDiskCandidates) `
+        -ExpectedIdentity $ExpectedIdentity
+    Assert-M3Condition ([int]$selected.Number -eq $diskNumber) `
+        'ScratchRoot is not located on the approved exact disk identity'
+    return $selected
+}
+
 function New-M3CleanupLedger {
     return [pscustomobject]@{
         Entries = [Collections.ArrayList]::new()
@@ -362,6 +383,7 @@ function Invoke-M3Preflight {
         disk_identity_valid = $false
         workspace_root_rejected = $false
         actual_disk_identity_match = $false
+        scratch_disk_identity_match = $false
         exact_disk_mutation_permitted = $false
     }
     try {
@@ -392,6 +414,9 @@ function Invoke-M3Preflight {
                 -Candidates (Get-M3ActualDiskCandidates) `
                 -ExpectedIdentity $ExpectedDiskIdentity
             $static.actual_disk_identity_match = $true
+            $null = Assert-M3ExpectedDiskOwnsPath `
+                -ScratchRoot $ScratchRoot -ExpectedIdentity $ExpectedDiskIdentity
+            $static.scratch_disk_identity_match = $true
         }
         catch {
             [void]$reasons.Add("exact disk identity probe failed: $($_.Exception.Message)")

@@ -228,6 +228,16 @@ M3CheckpointOutcome M3AimRuntime::checkpoint(
     return provider_->checkpoint(context, barrier);
 }
 
+DynamicBlockStoreStats M3AimRuntime::storage_stats() const {
+    if (provider_) return provider_->storage_stats();
+    return {};
+}
+
+proxy::SessionSnapshot M3AimRuntime::transport_snapshot() const {
+    if (provider_) return provider_->transport_snapshot();
+    return {};
+}
+
 Result<void> M3AimRuntime::remove_owned_device() {
     if (!owned_device_ || !adapter_) {
         device_removed_ = true;

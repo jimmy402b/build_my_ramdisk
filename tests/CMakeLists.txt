@@ -1408,6 +1408,22 @@ set_tests_properties(unit.m3.harness_preflight PROPERTIES
     TIMEOUT 60)
 
 add_test(
+    NAME unit.m3.ntfs_workload_preflight
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-ntfs-workload.ps1")
+set_tests_properties(unit.m3.ntfs_workload_preflight PROPERTIES
+    LABELS "m3-v5"
+    TIMEOUT 60)
+
+add_test(
+    NAME unit.m3.ntfs_verifier
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-ntfs-verifier.ps1")
+set_tests_properties(unit.m3.ntfs_verifier PROPERTIES
+    LABELS "m3-v5"
+    TIMEOUT 60)
+
+add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-orchestrator-whatif.ps1"

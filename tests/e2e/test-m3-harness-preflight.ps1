@@ -64,6 +64,25 @@ try {
     $candidate = New-TestDiskIdentity
     $selected = Select-M3ExactDisk -Candidates @($candidate) -ExpectedIdentity $identity
     Require-M3Test ($selected.Number -eq 42) 'exact disk selector returned wrong candidate'
+    function Get-Partition {
+        param([char]$DriveLetter)
+        return [pscustomobject]@{ DiskNumber = 42 }
+    }
+    function Get-M3ActualDiskCandidates {
+        return @(New-TestDiskIdentity 42)
+    }
+    $bound = Assert-M3ExpectedDiskOwnsPath -ScratchRoot 'C:\myrd-test\' `
+        -ExpectedIdentity $identity
+    Require-M3Test ($bound.Number -eq 42) 'scratch identity binding returned wrong disk'
+    function Get-Partition {
+        param([char]$DriveLetter)
+        return [pscustomobject]@{ DiskNumber = 43 }
+    }
+    Expect-M3Failure {
+        Assert-M3ExpectedDiskOwnsPath -ScratchRoot 'C:\myrd-test\' `
+            -ExpectedIdentity $identity
+    } 'ScratchRoot is not located on the approved exact disk identity'
+    . (Join-Path $PSScriptRoot 'M3Harness.Common.ps1')
     Expect-M3Failure { Select-M3ExactDisk -Candidates @() -ExpectedIdentity $identity } 'found 0'
     Expect-M3Failure {
         Select-M3ExactDisk -Candidates @($candidate, $candidate) -ExpectedIdentity $identity

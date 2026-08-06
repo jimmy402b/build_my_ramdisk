@@ -61,6 +61,9 @@ public:
         persistence::VolumeBarrierKind barrier);
     Result<void> stop();
 
+    [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
+    [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
+
     [[nodiscard]] const M3AimRuntimeInfo& info() const noexcept {
         return info_;
     }

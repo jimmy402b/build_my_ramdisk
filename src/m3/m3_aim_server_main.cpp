@@ -127,6 +127,48 @@ void print_ready(const M3AimRuntime& runtime) {
               << std::flush;
 }
 
+void print_status(const M3AimRuntime& runtime) {
+    const auto& info = runtime.info();
+    const auto storage = runtime.storage_stats();
+    const auto transport = runtime.transport_snapshot();
+    const auto& requests = transport.requests;
+    std::cout << "{\"event\":\"status\",\"device_id\":"
+              << info.device_id.value
+              << ",\"physical_drive_number\":"
+              << info.disk.physical_drive_number
+              << ",\"storage\":{"
+              << "\"logical_size_bytes\":" << storage.logical_size_bytes
+              << ",\"committed_bytes\":" << storage.committed_bytes
+              << ",\"resident_clean_blocks\":"
+              << storage.resident_clean_blocks
+              << ",\"resident_dirty_blocks\":"
+              << storage.resident_dirty_blocks
+              << ",\"backing_reads_total\":"
+              << storage.backing_reads_total
+              << ",\"backing_read_bytes_total\":"
+              << storage.backing_read_bytes_total
+              << ",\"uncached_reads_total\":"
+              << storage.uncached_reads_total
+              << ",\"evicted_blocks_total\":"
+              << storage.evicted_blocks_total
+              << ",\"backing_generation\":"
+              << storage.backing_generation
+              << ",\"snapshot_cow_current_bytes\":"
+              << storage.snapshot_cow_current_bytes
+              << ",\"snapshot_cow_peak_bytes\":"
+              << storage.snapshot_cow_peak_bytes
+              << "},\"transport\":{"
+              << "\"info\":" << requests.info
+              << ",\"read\":" << requests.read
+              << ",\"write\":" << requests.write
+              << ",\"unmap\":" << requests.unmap
+              << ",\"zero\":" << requests.zero
+              << ",\"close\":" << requests.close
+              << ",\"read_errors\":" << requests.read_errors
+              << ",\"write_errors\":" << requests.write_errors
+              << "}}\n" << std::flush;
+}
+
 int print_checkpoint(const M3CheckpointOutcome& outcome) {
     std::cout << "{\"event\":\"checkpoint\",\"disposition\":\""
               << persistence::to_string(outcome.disposition)
@@ -216,7 +258,7 @@ int wmain(int argc, wchar_t* argv[]) {
         std::string command;
         while (std::getline(std::cin, command)) {
             if (command == "status") {
-                print_ready(*runtime.value());
+                print_status(*runtime.value());
                 continue;
             }
             if (command == "checkpoint volume-flushed" ||

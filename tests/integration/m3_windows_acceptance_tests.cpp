@@ -47,4 +47,19 @@ TEST_CASE(m3_aim_runtime_rejects_non_positive_device_timeout) {
     REQUIRE_EQ(runtime.error().operation, L"M3AimRuntime::create");
 }
 
+TEST_CASE(m3_aim_runtime_exposes_zero_safe_metrics_before_start) {
+    M3AimProviderFactoryConfig config;
+    auto runtime = M3AimRuntime::create(config);
+
+    REQUIRE(runtime);
+    const auto storage = runtime.value()->storage_stats();
+    const auto transport = runtime.value()->transport_snapshot();
+
+    REQUIRE_EQ(storage.logical_size_bytes, 0U);
+    REQUIRE_EQ(storage.committed_bytes, 0U);
+    REQUIRE_EQ(storage.resident_dirty_blocks, 0U);
+    REQUIRE_EQ(transport.requests.read, 0U);
+    REQUIRE_EQ(transport.requests.write, 0U);
+}
+
 } // namespace
