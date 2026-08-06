@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "journal.append.data.before",
+      "event": "Before exact append of a DATA record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.data.after",
+      "event": "After exact DATA record append and before the next record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.zero.before",
+      "event": "Before exact append of a ZERO record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.zero.after",
+      "event": "After exact ZERO record append and before the next record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.discard.before",
+      "event": "Before exact append of a DISCARD record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.discard.after",
+      "event": "After exact DISCARD record append and before the next record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.index_node.before",
+      "event": "Before exact append of an INDEX_NODE record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.append.index_node.after",
+      "event": "After exact INDEX_NODE append and before the next record",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.commit.append.before",
+      "event": "Before exact append of CHECKPOINT_COMMIT",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.commit.append.after",
+      "event": "After CHECKPOINT_COMMIT append and before journal flush",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.flush.before",
+      "event": "Before FlushFileBuffers() on the journal",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.flush.error",
+      "event": "When journal FlushFileBuffers() returns an error",
+      "allowed_recovery": "not_applicable",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.flush.after",
+      "event": "After journal flush succeeds and before readback",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.readback.before",
+      "event": "Before exact readback of all newly committed journal bytes",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.readback.corrupt",
+      "event": "When journal readback CRC or digest validation fails",
+      "allowed_recovery": "not_applicable",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "journal.readback.after",
+      "event": "After complete journal readback validation and before manifest publication",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.slot_write.before",
+      "event": "Before the uncancellable manifest slot-write attempt begins",
+      "allowed_recovery": "old",
+      "survivor_disposition": "not_committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.slot_write.short",
+      "event": "When the manifest slot write returns fewer than 4096 bytes",
+      "allowed_recovery": "not_applicable",
+      "survivor_disposition": "commit_indeterminate",
+      "survivor_phase": "resolving_commit",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.slot_write.torn",
+      "event": "During a sector-aligned torn manifest slot write followed by process termination",
+      "allowed_recovery": "old_or_new",
+      "survivor_disposition": "commit_indeterminate",
+      "survivor_phase": "resolving_commit",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.slot_write.after",
+      "event": "After exact slot write completes and before manifest flush",
+      "allowed_recovery": "old_or_new",
+      "survivor_disposition": "commit_indeterminate",
+      "survivor_phase": "resolving_commit",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.flush.before",
+      "event": "Before FlushFileBuffers() on the manifest after slot-write attempt",
+      "allowed_recovery": "old_or_new",
+      "survivor_disposition": "commit_indeterminate",
+      "survivor_phase": "resolving_commit",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.flush.error",
+      "event": "When manifest FlushFileBuffers() returns an error",
+      "allowed_recovery": "not_applicable",
+      "survivor_disposition": "commit_indeterminate",
+      "survivor_phase": "resolving_commit",
+      "tail_garbage_allowed": true
+    },
+    {
+      "id": "manifest.flush.after",
+      "event": "After manifest flush succeeds at the unique commit point",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "manifest.readback.before",
+      "event": "Before re-reading the durably published manifest slot",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "manifest.readback.corrupt",
+      "event": "When published manifest readback CRC or field validation fails",
+      "allowed_recovery": "not_applicable",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "manifest.readback.after",
+      "event": "After full published-candidate validation succeeds",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "backing.view_install.before",
+      "event": "Before install_backing_view() for the committed generation",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "backing.view_install.after",
+      "event": "After backing view installation and before conditional acknowledgment",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "backing.ack.each.before",
+      "event": "Before each mark_persisted() conditional acknowledgment",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "backing.ack.each.after",
+      "event": "After each mark_persisted() conditional acknowledgment",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "reconciliation.before",
+      "event": "Before resolving committed view installation or acknowledgment state",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed_needs_reconciliation",
+      "survivor_phase": "reconciling",
+      "tail_garbage_allowed": false
+    },
+    {
+      "id": "reconciliation.after",
+      "event": "After reconciliation completes and the session may return Ready",
+      "allowed_recovery": "new",
+      "survivor_disposition": "committed",
+      "survivor_phase": "ready",
+      "tail_garbage_allowed": false
+    }
+  ]
+}
