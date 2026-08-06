@@ -41,6 +41,9 @@ $tempVolumeRoot = [IO.Path]::GetPathRoot($tempRoot)
 $tempPrefix = $tempVolumeRoot.TrimEnd('\') + '\'
 Require-M3LocalE2E ($tempRoot.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) `
     'generated local E2E directory escaped the temporary volume'
+Require-M3LocalE2E (-not [IO.Directory]::Exists($tempRoot) -and
+    -not [IO.File]::Exists($tempRoot)) `
+    'generated local E2E directory already exists'
 
 try {
     $bundle = Join-Path $tempRoot 'bundle'
