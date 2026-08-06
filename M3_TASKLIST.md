@@ -876,11 +876,11 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O。允许文件：** `compaction_coordinator.*`、compaction tests。
 
-- [ ] 整个 compaction 持有 session 的唯一 modifying-operation gate：capture durable view G → write/flush/readback/verify unique VHDX(G) → write-through rename → create/flush journal epoch E+1。
-- [ ] 构建 VHDX 期间普通 live mutation 可继续，但 checkpoint/第二个 compaction 返回 busy；新 base/journal 就绪后验证本 operation 的显式 volume barrier，再建立 M2.1 一致切点。
-- [ ] 把相对 G 的 cut-time dirty DATA/ZERO/DISCARD 流入新 journal，构建 index/commit G+1（即使 dirty set 为空也写 commit），再走正常 manifest publish/indeterminate resolution/install/conditional ack。
+- [x] 整个 compaction 持有 session 的唯一 modifying-operation gate：capture durable view G → write/flush/readback/verify unique VHDX(G) → write-through rename → create/flush journal epoch E+1。
+- [x] 构建 VHDX 期间普通 live mutation 可继续，但 checkpoint/第二个 compaction 返回 busy；新 base/journal 就绪后验证本 operation 的显式 volume barrier，再建立 M2.1 一致切点。
+- [x] 把相对 G 的 cut-time dirty DATA/ZERO/DISCARD 流入新 journal，构建 index/commit G+1（即使 dirty set 为空也写 commit），再走正常 manifest publish/indeterminate resolution/install/conditional ack。
 - [ ] pre-commit failure 保留旧 bundle/runtime authoritative，新文件仅为 unreferenced artifacts；post-commit recover/install new view，旧 files 继续服务旧 slot/reader/reconciliation。
-- [ ] 用 journal physical bytes、journal/base ratio、checkpoint count、index depth 红灯并实现 pure `should_compact()`；只返回建议，不自行调度。
+- [x] 用 journal physical bytes、journal/base ratio、checkpoint count、index depth 红灯并实现 pure `should_compact()`；只返回建议，不自行调度。
 - [ ] 用独立模型比较切点时全盘 logical hash/metadata descriptor，reopen 后完全相等；跑 `m3-v4`。
 - [ ] 建议提交 `feat(persistence): compact committed image generations`。
 

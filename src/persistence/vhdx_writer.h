@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -20,12 +21,18 @@
 namespace myrd::persistence {
 
 class BundleWriterLock;
+class ValidatedBundleFile;
 class ValidatedPersistenceFile;
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 namespace detail {
 class INativeRenameBackend;
 }
 #endif
+
+using VhdxPreRenameValidator = std::function<
+    Result<WindowsFileIdentity>(
+        const OperationContext&,
+        const std::filesystem::path&)>;
 
 struct VhdxWriterGeometry final {
     std::uint64_t virtual_size{};
@@ -167,16 +174,20 @@ public:
     [[nodiscard]] const std::string& relative_name() const noexcept;
     [[nodiscard]] const WindowsFileIdentity& windows_identity() const noexcept;
     [[nodiscard]] const VhdxLayout& layout() const noexcept;
+    [[nodiscard]] const std::shared_ptr<const ValidatedBundleFile>&
+    capability_anchor() const noexcept;
 
 private:
     std::string relative_name_;
     WindowsFileIdentity windows_identity_{};
     VhdxLayout layout_;
+    std::shared_ptr<const ValidatedBundleFile> capability_anchor_;
 
     VhdxPublishedBase(
         std::string relative_name,
         WindowsFileIdentity windows_identity,
-        VhdxLayout layout) noexcept;
+        VhdxLayout layout,
+        std::shared_ptr<const ValidatedBundleFile> capability_anchor) noexcept;
 
     friend Result<VhdxPublishedBase> publish_sparse_vhdx_base(
         const OperationContext&,
@@ -185,9 +196,7 @@ private:
         std::string_view,
         const VhdxWritePlan&,
         const IVhdxPayloadSource&,
-        std::function<Result<void>(
-            const OperationContext&,
-            const std::filesystem::path&)>);
+        VhdxPreRenameValidator);
 };
 
 [[nodiscard]] Result<VhdxPublishedBase> publish_sparse_vhdx_base(
@@ -197,9 +206,7 @@ private:
     std::string_view final_name,
     const VhdxWritePlan& plan,
     const IVhdxPayloadSource& source,
-    std::function<Result<void>(
-        const OperationContext&,
-        const std::filesystem::path&)> pre_rename_validator = {});
+    VhdxPreRenameValidator pre_rename_validator = {});
 
 enum class VhdxPublicationPhase : std::uint8_t {
     BeforeCreate,
@@ -232,9 +239,7 @@ struct VhdxPublicationTestOptions final {
         close_operation{};
     std::function<Result<void>(const std::filesystem::path&)>
         before_reopen_operation{};
-    std::function<Result<void>(
-        const OperationContext&,
-        const std::filesystem::path&)> pre_rename_validator{};
+    VhdxPreRenameValidator pre_rename_validator{};
 };
 
 // Deterministic failure seam compiled only for tests. The hook runs directly

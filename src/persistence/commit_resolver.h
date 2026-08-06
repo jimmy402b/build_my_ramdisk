@@ -21,6 +21,7 @@ namespace myrd::persistence {
 
 class BundleWriterLock;
 class PreparedCheckpointTransaction;
+class ValidatedBundleFile;
 
 // Monotonic knowledge boundary for one manifest publication attempt. The
 // exact slot write changes knowledge from safely-not-committed to unknown;
@@ -44,6 +45,24 @@ struct PreparedManifestCandidate final {
     ManifestSlot slot{};
     ManifestSlotBytes bytes{};
     std::uint64_t file_offset{};
+};
+
+// Compaction replaces both immutable artifacts while publishing the ordinary
+// G -> G+1 checkpoint commit. Checkpoint publication leaves this absent and
+// therefore retains the active slot's base and journal names/identities.
+struct ManifestArtifactReplacement final {
+    ManifestSlot source_active_slot{};
+    BaseGeneration base_generation{};
+    std::string base_relative_name;
+    VhdxFileIdentity base_identity{};
+    WindowsFileIdentity base_windows_identity{};
+    std::uint64_t base_expected_length{};
+    // Pins the verified object against write/delete replacement until the
+    // transaction has published and reconciled the new immutable view.
+    std::shared_ptr<const ValidatedBundleFile> base_capability_anchor;
+    std::string journal_relative_name;
+    JournalFileIdentity journal_identity{};
+    JournalEpoch journal_epoch{};
 };
 
 struct CompleteCandidateValidation final {
@@ -259,7 +278,9 @@ recover_commit_evidence_from_disk(
 [[nodiscard]] Result<PreparedManifestCandidate> prepare_manifest_candidate(
     const ManifestSlot& active_slot,
     const PreparedCheckpoint& checkpoint,
-    std::uint64_t committed_time_100ns);
+    std::uint64_t committed_time_100ns,
+    const std::optional<ManifestArtifactReplacement>& replacement =
+        std::nullopt);
 
 [[nodiscard]] ManifestPublishAttemptOutcome attempt_manifest_publication(
     const OperationContext& context,

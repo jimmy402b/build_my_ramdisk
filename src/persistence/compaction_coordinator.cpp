@@ -39,6 +39,22 @@ Result<void> run_phase_hook(
 }
 #endif
 
+PersistenceErrorCode compaction_error_code(const Error& error) noexcept {
+    if (error.domain == ErrorDomain::persistence) {
+        const auto decoded = decode_persistence_error_code(error.code);
+        if (decoded.has_value()) return *decoded;
+    }
+    if (error.code == static_cast<std::uint32_t>(
+            OperationErrorCode::cancelled)) {
+        return PersistenceErrorCode::Cancelled;
+    }
+    if (error.code == static_cast<std::uint32_t>(
+            OperationErrorCode::timed_out)) {
+        return PersistenceErrorCode::DeadlineExceeded;
+    }
+    return PersistenceErrorCode::IoError;
+}
+
 // Compare a/b with c/d exactly without cross multiplication. Each reciprocal
 // step reverses ordering, and Euclidean reduction guarantees termination.
 int compare_positive_fractions(
@@ -408,6 +424,10 @@ Result<CreatedJournalEpoch> create_journal_epoch(
             PersistenceErrorCode::VerificationFailed,
             L"new journal header readback differs after flush");
     }
+    auto still_live = check_operation_context(context);
+    if (!still_live.ok()) {
+        return Result<CreatedJournalEpoch>::failure(still_live.error());
+    }
     auto* validated = dynamic_cast<ValidatedPersistenceFile*>(file.get());
     if (validated == nullptr) {
         return compaction_failure<CreatedJournalEpoch>(
@@ -421,6 +441,41 @@ Result<CreatedJournalEpoch> create_journal_epoch(
         return compaction_failure<CreatedJournalEpoch>(
             PersistenceErrorCode::VerificationFailed,
             L"new compaction artifact identity differs after readback");
+    }
+    const auto journal_path = validated->observed_final_path();
+    if (journal_path.empty()) {
+        return compaction_failure<CreatedJournalEpoch>(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"new journal lost its validated final path");
+    }
+    auto inspection = open_bundle_file_for_inspection(
+        std::filesystem::path(journal_path).parent_path(),
+        request.journal_relative_name, identity);
+    if (!inspection.ok()) {
+        return Result<CreatedJournalEpoch>::failure(inspection.error());
+    }
+    auto inspection_file = open_validated_persistence_file(
+        inspection.move_value());
+    if (!inspection_file.ok()) {
+        return Result<CreatedJournalEpoch>::failure(
+            inspection_file.error());
+    }
+    JournalHeaderBytes reopened_bytes{};
+    auto reopened_read = inspection_file.value()->read_exact(
+        context, 0, reopened_bytes);
+    if (!reopened_read.ok()) {
+        return Result<CreatedJournalEpoch>::failure(reopened_read.error());
+    }
+    auto reopened_header = decode_journal_header(reopened_bytes);
+    if (!reopened_header.ok() || reopened_header.value() != header) {
+        return compaction_failure<CreatedJournalEpoch>(
+            PersistenceErrorCode::VerificationFailed,
+            L"identity-reopened journal header failed format validation");
+    }
+    auto inspection_closed = inspection_file.value()->close();
+    if (!inspection_closed.ok()) {
+        return Result<CreatedJournalEpoch>::failure(
+            inspection_closed.error());
     }
     return Result<CreatedJournalEpoch>::success(
         {std::move(file), std::move(header), std::move(identity)});
@@ -444,7 +499,10 @@ PreparedCompactionOperation::PreparedCompactionOperation(
       , published_base_(std::move(other.published_base_)),
       journal_file_(std::move(other.journal_file_)),
       journal_header_(std::move(other.journal_header_)),
-      journal_windows_identity_(std::move(other.journal_windows_identity_)) {
+      journal_windows_identity_(std::move(other.journal_windows_identity_)),
+      active_slot_(std::move(other.active_slot_)),
+      journal_relative_name_(std::move(other.journal_relative_name_)),
+      operation_id_(other.operation_id_) {
     other.lease_.reset();
     other.captured_view_ = {};
 }
@@ -463,6 +521,9 @@ PreparedCompactionOperation& PreparedCompactionOperation::operator=(
         journal_header_ = std::move(other.journal_header_);
         journal_windows_identity_ =
             std::move(other.journal_windows_identity_);
+        active_slot_ = std::move(other.active_slot_);
+        journal_relative_name_ = std::move(other.journal_relative_name_);
+        operation_id_ = other.operation_id_;
         other.lease_.reset();
         other.captured_view_ = {};
     }
@@ -481,6 +542,8 @@ bool PreparedCompactionOperation::active() const noexcept {
 Result<void> PreparedCompactionOperation::abort() {
     journal_file_.reset();
     published_base_.reset();
+    journal_relative_name_.clear();
+    operation_id_ = 0;
     captured_view_ = {};
     if (!lease_.has_value()) return Result<void>::success();
     auto result = lease_->abort();
@@ -492,6 +555,8 @@ Result<void> PreparedCompactionOperation::abort() {
 void PreparedCompactionOperation::abandon_noexcept() noexcept {
     journal_file_.reset();
     published_base_.reset();
+    journal_relative_name_.clear();
+    operation_id_ = 0;
     captured_view_ = {};
     if (lease_.has_value()) {
         (void)lease_->abort();
@@ -571,15 +636,24 @@ PreparedCompactionOperation::build_artifacts(
     };
     auto offline_validator = [this, &request, &emit](
         const OperationContext& operation_context,
-        const std::filesystem::path& path) -> Result<void> {
+        const std::filesystem::path& path)
+        -> Result<WindowsFileIdentity> {
         auto phase = emit(CompactionPhase::VhdxValidateAfter);
-        if (!phase.ok()) return phase;
+        if (!phase.ok()) {
+            return Result<WindowsFileIdentity>::failure(phase.error());
+        }
         phase = emit(CompactionPhase::VhdxWindowsValidateBefore);
-        if (!phase.ok()) return phase;
+        if (!phase.ok()) {
+            return Result<WindowsFileIdentity>::failure(phase.error());
+        }
         auto validated = request.offline_vhdx_validator(
             operation_context, path);
         if (!validated.ok()) return validated;
-        return emit(CompactionPhase::VhdxWindowsValidateAfter);
+        phase = emit(CompactionPhase::VhdxWindowsValidateAfter);
+        if (!phase.ok()) {
+            return Result<WindowsFileIdentity>::failure(phase.error());
+        }
+        return validated;
     };
 
     Result<VhdxPublishedBase> published =
@@ -655,6 +729,8 @@ PreparedCompactionOperation::build_artifacts(
     if (!journal.ok()) return fail(journal.error());
     phase = emit(CompactionPhase::FilesReady);
     if (!phase.ok()) return fail(phase.error());
+    live = check_operation_context(operation_context);
+    if (!live.ok()) return fail(live.error());
 
     CompactionArtifactBuildMetrics metrics{};
     metrics.source_generation = captured_view_.generation;
@@ -668,6 +744,9 @@ PreparedCompactionOperation::build_artifacts(
     journal_header_ = std::move(journal.value().header);
     journal_windows_identity_ =
         std::move(journal.value().windows_identity);
+    active_slot_ = request.active_slot;
+    journal_relative_name_ = request.journal_relative_name;
+    operation_id_ = request.operation_id;
     return Result<CompactionArtifactBuildMetrics>::success(metrics);
     } catch (const std::bad_alloc&) {
         return fail(compaction_failure<void>(
@@ -684,6 +763,146 @@ Result<PreparedCompactionOperation> CompactionCoordinator::begin(
         , nullptr
 #endif
     );
+}
+
+CheckpointPrepareOutcome CompactionCoordinator::prepare_delta(
+    const OperationContext& context,
+    PreparedCompactionOperation&& operation,
+    const CompactionDeltaPrepareRequest& request,
+    JournalWriter& journal_writer) {
+    const auto fail = [&](const Error& source) {
+        (void)operation.abort();
+        const auto code = compaction_error_code(source);
+        auto error_context = request.correlation_context.value();
+        error_context.operation = "compaction.prepare";
+        error_context.code = code;
+        error_context.phase = SessionPhase::Compacting;
+        error_context.native_code = source.native_code;
+        error_context.disposition = CommitDisposition::NotCommitted;
+        error_context.safe_context =
+            "pre-manifest compaction delta preparation failed";
+        CheckpointOutcome outcome{};
+        outcome.disposition = CommitDisposition::NotCommitted;
+        outcome.generation = error_context.generation;
+        outcome.error = Error{
+            ErrorDomain::persistence,
+            static_cast<std::uint32_t>(code),
+            L"compaction.prepare",
+            source.message,
+            source.native_code};
+        outcome.error_context = std::move(error_context);
+        return CheckpointPrepareOutcome{
+            CheckpointPrepareFailure{std::move(outcome)}};
+    };
+
+    if (!operation.active() || !operation.artifacts_ready() ||
+        !operation.lease_.has_value() ||
+        operation.lease_->operation() != SessionOperation::Compaction ||
+        operation.journal_file_ == nullptr ||
+        operation.published_base_ == std::nullopt ||
+        operation.operation_id_ == 0) {
+        return fail(compaction_failure<void>(
+            PersistenceErrorCode::OperationBusy,
+            L"compaction artifacts are not ready for a consistent cut")
+            .error());
+    }
+    const auto& correlation = request.correlation_context.value();
+    const auto source_generation = operation.captured_view_.generation;
+    if (source_generation >= kInvalidGeneration - 1 ||
+        correlation.operation != "compaction.prepare" ||
+        correlation.operation_id != operation.operation_id_ ||
+        correlation.image_uuid != operation.journal_header_.image_uuid ||
+        correlation.generation != source_generation + 1 ||
+        correlation.disposition != CommitDisposition::NotCommitted ||
+        request.snapshot_batch_bytes < kM2BlockSize ||
+        request.snapshot_batch_bytes >
+            store_->options().max_snapshot_batch_bytes) {
+        return fail(compaction_failure<void>(
+            PersistenceErrorCode::InvalidFormat,
+            L"compaction delta request does not match prepared artifacts")
+            .error());
+    }
+
+    const auto emit = [&operation](const CompactionPhase phase) {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        return operation.emit_phase(phase);
+#else
+        (void)phase;
+        return Result<void>::success();
+#endif
+    };
+    auto phase = emit(CompactionPhase::BarrierValidateBefore);
+    if (!phase.ok()) return fail(phase.error());
+    if (!is_valid_barrier_for_checkpoint(request.volume_barrier)) {
+        return fail(compaction_failure<void>(
+            PersistenceErrorCode::InvalidFormat,
+            L"compaction volume barrier evidence is missing or unknown")
+            .error());
+    }
+    phase = emit(CompactionPhase::BarrierValidateAfter);
+    if (!phase.ok()) return fail(phase.error());
+    phase = emit(CompactionPhase::SnapshotBeginBefore);
+    if (!phase.ok()) return fail(phase.error());
+
+    JournalCheckpointRequest journal{};
+    journal.file = operation.journal_file_;
+    journal.file_identity = operation.journal_windows_identity_;
+    journal.header = operation.journal_header_;
+    journal.previous_generation = source_generation;
+    journal.previous_digest = operation.journal_header_.predecessor_digest;
+    journal.committed_length = kJournalAlignment;
+    journal.root = {};
+    journal.operation_id = operation.operation_id_;
+
+    CheckpointPrepareRequest checkpoint_request{
+        request.correlation_context};
+    checkpoint_request.volume_barrier = request.volume_barrier;
+    checkpoint_request.journal = std::move(journal);
+    checkpoint_request.snapshot_batch_bytes = request.snapshot_batch_bytes;
+
+    const auto& base = *operation.published_base_;
+    if (!base.capability_anchor() ||
+        !same_file_object(
+            base.capability_anchor()->identity(), base.windows_identity()) ||
+        base.capability_anchor()->identity().size !=
+            base.windows_identity().size) {
+        return fail(compaction_failure<void>(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"published base lost its handle-anchored identity")
+            .error());
+    }
+    ManifestArtifactReplacement replacement{};
+    replacement.source_active_slot = operation.active_slot_;
+    replacement.base_generation = source_generation;
+    replacement.base_relative_name = base.relative_name();
+    replacement.base_identity = base.layout().file_identity();
+    replacement.base_windows_identity = base.windows_identity();
+    replacement.base_expected_length = base.layout().file_length();
+    replacement.base_capability_anchor = base.capability_anchor();
+    replacement.journal_relative_name = operation.journal_relative_name_;
+    replacement.journal_identity = operation.journal_header_.journal_identity;
+    replacement.journal_epoch = operation.journal_header_.epoch;
+
+    auto lease = std::move(*operation.lease_);
+    operation.lease_.reset();
+    CheckpointCoordinator checkpoint(
+        *session_, *store_, journal_writer);
+    auto prepared = checkpoint.prepare_with_lease(
+        context, checkpoint_request, std::move(lease),
+        [&emit]() {
+            auto emitted = emit(CompactionPhase::SnapshotBeginAfter);
+            return emitted.ok()
+                ? emit(CompactionPhase::DeltaWriteBefore) : emitted;
+        },
+        [&emit]() { return emit(CompactionPhase::DeltaWriteAfter); },
+        std::move(replacement));
+
+    operation.journal_file_.reset();
+    operation.published_base_.reset();
+    operation.captured_view_ = {};
+    operation.journal_relative_name_.clear();
+    operation.operation_id_ = 0;
+    return prepared;
 }
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)

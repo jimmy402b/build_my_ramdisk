@@ -2,6 +2,7 @@
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
+#include "src/persistence/checkpoint_coordinator.h"
 #include "src/persistence/composite_backing_store.h"
 #include "src/persistence/image_session.h"
 #include "src/persistence/journal_writer.h"
@@ -123,9 +124,7 @@ using CompactionPhaseHook =
     std::function<Result<void>(CompactionPhase)>;
 #endif
 
-using CompactionOfflineVhdxValidator = std::function<Result<void>(
-    const OperationContext&,
-    const std::filesystem::path&)>;
+using CompactionOfflineVhdxValidator = VhdxPreRenameValidator;
 
 struct CompactionArtifactBuildLimits final {
     std::uint64_t max_live_extents{};
@@ -156,6 +155,16 @@ struct CompactionArtifactBuildMetrics final {
 
     bool operator==(const CompactionArtifactBuildMetrics&) const noexcept =
         default;
+};
+
+struct CompactionDeltaPrepareRequest final {
+    explicit CompactionDeltaPrepareRequest(
+        CompletePersistenceErrorContext correlation) noexcept
+        : correlation_context(std::move(correlation)) {}
+
+    CompletePersistenceErrorContext correlation_context;
+    std::optional<VolumeBarrierKind> volume_barrier{};
+    std::size_t snapshot_batch_bytes{};
 };
 
 // Move-only ownership of the compaction gate and the immutable durable source
@@ -213,6 +222,9 @@ private:
     std::shared_ptr<IPersistenceFile> journal_file_{};
     JournalHeader journal_header_{};
     WindowsFileIdentity journal_windows_identity_{};
+    ManifestSlot active_slot_{};
+    std::string journal_relative_name_;
+    std::uint64_t operation_id_{};
 };
 
 class CompactionCoordinator final {
@@ -227,6 +239,12 @@ public:
 
     [[nodiscard]] Result<PreparedCompactionOperation> begin(
         const OperationContext& context);
+
+    [[nodiscard]] CheckpointPrepareOutcome prepare_delta(
+        const OperationContext& context,
+        PreparedCompactionOperation&& operation,
+        const CompactionDeltaPrepareRequest& request,
+        JournalWriter& journal_writer);
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     [[nodiscard]] Result<PreparedCompactionOperation> begin_for_testing(

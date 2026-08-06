@@ -242,6 +242,80 @@ TEST_CASE(commit_publish_prepares_exact_inactive_slot_without_file_io) {
         active, wrong_generation, 300).ok());
 }
 
+TEST_CASE(compaction_manifest_rejects_case_insensitive_artifact_aliases) {
+    const auto active = active_manifest();
+    ManifestArtifactReplacement replacement{};
+    replacement.source_active_slot = active;
+    replacement.base_generation =
+        active.generation.checkpoint_generation;
+    replacement.base_relative_name = "generation-0005.vhdx";
+    replacement.base_identity.file_write_guid[0] = std::byte{0xA1};
+    replacement.base_identity.data_write_guid[0] = std::byte{0xA2};
+    replacement.base_expected_length = 8ull * 1024 * 1024;
+    replacement.journal_relative_name = "GENERATION-0005.VHDX";
+    replacement.journal_identity.journal_uuid[0] = std::byte{0xA3};
+    replacement.journal_epoch = active.generation.journal.epoch + 1;
+
+    const auto prepared = prepare_manifest_candidate(
+        active, prepared_checkpoint(), 300, replacement);
+    REQUIRE(!prepared.ok());
+    REQUIRE_EQ(prepared.error().code,
+        static_cast<std::uint32_t>(PersistenceErrorCode::InvalidFormat));
+}
+
+TEST_CASE(compaction_manifest_rejects_every_old_and_new_name_alias) {
+    const auto active = active_manifest();
+    constexpr std::array aliases{
+        std::pair{"BASE-0004.VHDX", "journal-e0002.rdj"},
+        std::pair{"JOURNAL-E0001.RDJ", "journal-e0002.rdj"},
+        std::pair{"base-0005.vhdx", "BASE-0004.VHDX"},
+        std::pair{"base-0005.vhdx", "JOURNAL-E0001.RDJ"},
+    };
+    for (const auto& [base_name, journal_name] : aliases) {
+        ManifestArtifactReplacement replacement{};
+        replacement.source_active_slot = active;
+        replacement.base_generation =
+            active.generation.checkpoint_generation;
+        replacement.base_relative_name = base_name;
+        replacement.base_identity.file_write_guid[0] = std::byte{0xA1};
+        replacement.base_identity.data_write_guid[0] = std::byte{0xA2};
+        replacement.base_expected_length = 8ull * 1024 * 1024;
+        replacement.journal_relative_name = journal_name;
+        replacement.journal_identity.journal_uuid[0] = std::byte{0xA3};
+        replacement.journal_epoch = active.generation.journal.epoch + 1;
+
+        const auto prepared = prepare_manifest_candidate(
+            active, prepared_checkpoint(), 300, replacement);
+        REQUIRE(!prepared.ok());
+        REQUIRE_EQ(prepared.error().code,
+            static_cast<std::uint32_t>(
+                PersistenceErrorCode::InvalidFormat));
+    }
+}
+
+TEST_CASE(compaction_manifest_rejects_a_different_source_active_slot) {
+    const auto active = active_manifest();
+    ManifestArtifactReplacement replacement{};
+    replacement.source_active_slot = active;
+    replacement.base_generation =
+        active.generation.checkpoint_generation;
+    replacement.base_relative_name = "base-0005.vhdx";
+    replacement.base_identity.file_write_guid[0] = std::byte{0xA1};
+    replacement.base_identity.data_write_guid[0] = std::byte{0xA2};
+    replacement.base_expected_length = 8ull * 1024 * 1024;
+    replacement.journal_relative_name = "journal-e0002.rdj";
+    replacement.journal_identity.journal_uuid[0] = std::byte{0xA3};
+    replacement.journal_epoch = active.generation.journal.epoch + 1;
+    auto substituted_active = active;
+    substituted_active.committed_time_100ns++;
+
+    const auto prepared = prepare_manifest_candidate(
+        substituted_active, prepared_checkpoint(), 300, replacement);
+    REQUIRE(!prepared.ok());
+    REQUIRE_EQ(prepared.error().code,
+        static_cast<std::uint32_t>(PersistenceErrorCode::InvalidFormat));
+}
+
 ManifestPublishAttemptOutcome run_publication_case(
     const std::vector<test::FaultFileRule>& rules,
     const bool reject_validation = false,

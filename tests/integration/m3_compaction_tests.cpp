@@ -139,12 +139,13 @@ CompactionArtifactBuildRequest make_artifact_request(
     request.vhdx_limits = {4096, 4096, kVhdxDataBlockBytes};
     request.limits.max_live_extents = 4096;
     request.offline_vhdx_validator =
-        [&offline_validation_calls](
+        [&offline_validation_calls, &writer](
             const OperationContext&,
-            const std::filesystem::path& temporary_path) {
+            const std::filesystem::path& temporary_path)
+            -> Result<WindowsFileIdentity> {
             ++offline_validation_calls;
             if (!std::filesystem::exists(temporary_path)) {
-                return Result<void>::failure({
+                return Result<WindowsFileIdentity>::failure({
                     ErrorDomain::persistence,
                     static_cast<std::uint32_t>(
                         PersistenceErrorCode::VerificationFailed),
@@ -152,7 +153,26 @@ CompactionArtifactBuildRequest make_artifact_request(
                     L"temporary VHDX was absent during offline validation",
                     0});
             }
-            return Result<void>::success();
+            auto forbidden_write_reopen = open_bundle_file_for_mutation(
+                writer, temporary_path.filename().string());
+            if (forbidden_write_reopen.ok()) {
+                return Result<WindowsFileIdentity>::failure({
+                    ErrorDomain::persistence,
+                    static_cast<std::uint32_t>(
+                        PersistenceErrorCode::GenerationConflict),
+                    L"m3_compaction_tests",
+                    L"validated VHDX was not pinned against writes",
+                    0});
+            }
+            auto observed = open_bundle_file_for_inspection(
+                temporary_path.parent_path(),
+                temporary_path.filename().string());
+            if (!observed.ok()) {
+                return Result<WindowsFileIdentity>::failure(
+                    observed.error());
+            }
+            return Result<WindowsFileIdentity>::success(
+                observed.value().identity());
         };
     return request;
 }
@@ -229,6 +249,38 @@ std::unique_ptr<DynamicBlockStore> make_composite_data_store(
     });
     REQUIRE(store.ok());
     return store.move_value();
+}
+
+std::unique_ptr<JournalWriter> make_compaction_journal_writer() {
+    JournalWriterOptions options{};
+    options.index_builder = {
+        {64 * kIndexNodeBytes, 64}, 4096, 4096 * kIndexNodeBytes};
+    options.max_checkpoint_records = 8192;
+    options.max_checkpoint_bytes = 64ull * 1024 * 1024;
+    auto writer = JournalWriter::create(std::move(options));
+    REQUIRE(writer.ok());
+    return writer.move_value();
+}
+
+CompactionDeltaPrepareRequest make_delta_request(
+    const RecoveredImage& image,
+    const std::uint64_t operation_id = 3502) {
+    PersistenceErrorContext error_context{};
+    error_context.operation = "compaction.prepare";
+    error_context.code = PersistenceErrorCode::InvalidFormat;
+    error_context.phase = SessionPhase::Compacting;
+    error_context.operation_id = operation_id;
+    error_context.image_uuid = image.image_uuid;
+    error_context.generation = image.checkpoint_generation + 1;
+    error_context.disposition = CommitDisposition::NotCommitted;
+    auto complete = CompletePersistenceErrorContext::create(
+        std::move(error_context));
+    REQUIRE(complete.has_value());
+    CompactionDeltaPrepareRequest request{std::move(*complete)};
+    request.volume_barrier =
+        VolumeBarrierKind::RawBlockTestNoFilesystemCache;
+    request.snapshot_batch_bytes = kM2BlockSize;
+    return request;
 }
 
 TEST_CASE(compaction_phase_contract_is_frozen_in_execution_order) {
@@ -707,14 +759,14 @@ TEST_CASE(compaction_precommit_validation_failure_keeps_old_generation_authorita
         writer.value(), created.value(), ignored_calls);
     request.offline_vhdx_validator = [](
         const OperationContext&,
-        const std::filesystem::path&) {
-        return Result<void>::failure({
-            ErrorDomain::persistence,
-            static_cast<std::uint32_t>(
-                PersistenceErrorCode::VerificationFailed),
-            L"m3_compaction_tests",
-            L"injected offline validation failure",
-            0});
+        const std::filesystem::path& temporary_path) {
+        auto observed = open_bundle_file_for_inspection(
+            temporary_path.parent_path(),
+            temporary_path.filename().string());
+        REQUIRE(observed.ok());
+        auto wrong_object = observed.value().identity();
+        wrong_object.file_id[0] ^= std::byte{0xFF};
+        return Result<WindowsFileIdentity>::success(wrong_object);
     };
 
     const auto failed = operation.build_artifacts(
@@ -738,6 +790,297 @@ TEST_CASE(compaction_precommit_validation_failure_keeps_old_generation_authorita
     REQUIRE_EQ(recovered.image->selected_manifest,
         created.value().selected_manifest);
     REQUIRE(writer.value().close().ok());
+}
+
+TEST_CASE(compaction_files_ready_observes_late_cancellation_and_releases_gate) {
+    CompactionSandbox sandbox;
+    auto create_request = make_create_request(sandbox.root());
+    auto created = create_generation_zero_image(
+        bounded_context(), create_request);
+    REQUIRE(created.ok());
+    auto store = open_recovered_dynamic_store(
+        created.value(), compaction_store_options());
+    REQUIRE(store.ok());
+    auto writer = acquire_bundle_writer_lock(
+        sandbox.root(), create_request.manifest_relative_name);
+    REQUIRE(writer.ok());
+    auto session = ImageSession::ready();
+    CompactionCoordinator coordinator(session, *store.value());
+    std::stop_source stop;
+    auto begun = coordinator.begin_for_testing(
+        bounded_context(),
+        [&stop](const CompactionPhase phase) {
+            if (phase == CompactionPhase::FilesReady) {
+                stop.request_stop();
+            }
+            return Result<void>::success();
+        });
+    REQUIRE(begun.ok());
+    auto operation = begun.move_value();
+    std::uint64_t offline_calls = 0;
+    auto request = make_artifact_request(
+        writer.value(), created.value(), offline_calls);
+    const OperationContext cancelling_context{
+        stop.get_token(),
+        std::chrono::steady_clock::now() + std::chrono::seconds(5)};
+
+    const auto failed = operation.build_artifacts(
+        cancelling_context, request);
+    REQUIRE(!failed.ok());
+    REQUIRE_EQ(failed.error().code,
+        static_cast<std::uint32_t>(OperationErrorCode::cancelled));
+    REQUIRE(!operation.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() / request.base_relative_name));
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() / request.journal_relative_name));
+    REQUIRE(writer.value().close().ok());
+}
+
+TEST_CASE(compaction_cut_streams_dirty_delta_through_the_existing_checkpoint_path) {
+    CompactionSandbox sandbox;
+    auto create_request = make_create_request(sandbox.root());
+    auto created = create_generation_zero_image(
+        bounded_context(), create_request);
+    REQUIRE(created.ok());
+    auto store = open_recovered_dynamic_store(
+        created.value(), compaction_store_options());
+    REQUIRE(store.ok());
+    std::array<std::byte, kM2BlockSize> data{};
+    data.fill(std::byte{0x7B});
+    REQUIRE(store.value()->write(bounded_context(), 0, data).ok());
+    REQUIRE(store.value()->write(
+        bounded_context(), kM2BlockSize, data).ok());
+    REQUIRE(store.value()->write(
+        bounded_context(), 2 * kM2BlockSize, data).ok());
+    const DataRange zero_range{kM2BlockSize, kM2BlockSize};
+    REQUIRE(store.value()->zero(
+        bounded_context(), {&zero_range, 1}).ok());
+    const DataRange discard_range{2 * kM2BlockSize, kM2BlockSize};
+    REQUIRE(store.value()->unmap(
+        bounded_context(), {&discard_range, 1}).ok());
+
+    auto writer_lock = acquire_bundle_writer_lock(
+        sandbox.root(), create_request.manifest_relative_name);
+    REQUIRE(writer_lock.ok());
+    auto session = ImageSession::ready();
+    CompactionCoordinator coordinator(session, *store.value());
+    std::vector<CompactionPhase> phases;
+    auto begun = coordinator.begin_for_testing(
+        bounded_context(),
+        [&phases](const CompactionPhase phase) {
+            phases.push_back(phase);
+            return Result<void>::success();
+        });
+    REQUIRE(begun.ok());
+    auto operation = begun.move_value();
+    std::uint64_t offline_calls = 0;
+    auto artifacts = make_artifact_request(
+        writer_lock.value(), created.value(), offline_calls);
+    REQUIRE(operation.build_artifacts(
+        bounded_context(), artifacts).ok());
+    auto journal_writer = make_compaction_journal_writer();
+    auto delta_request = make_delta_request(created.value());
+
+    auto prepared = coordinator.prepare_delta(
+        bounded_context(), std::move(operation), delta_request,
+        *journal_writer);
+    REQUIRE(prepared.ok());
+    REQUIRE(!operation.active());
+    REQUIRE(prepared.transaction() != nullptr);
+    REQUIRE_EQ(prepared.transaction()->checkpoint().generation, 1ull);
+    REQUIRE_EQ(prepared.transaction()->checkpoint().data_count, 1ull);
+    REQUIRE_EQ(prepared.transaction()->checkpoint().zero_count, 1ull);
+    REQUIRE_EQ(prepared.transaction()->checkpoint().discard_count, 1ull);
+    REQUIRE_EQ(prepared.transaction()->checkpoint().index_node_count, 1ull);
+    REQUIRE(prepared.transaction()->checkpoint().committed_length >
+        kJournalAlignment);
+    REQUIRE_EQ(session.phase(), SessionPhase::Compacting);
+    REQUIRE_EQ(phases[phases.size() - 6],
+        CompactionPhase::BarrierValidateBefore);
+    REQUIRE_EQ(phases[phases.size() - 5],
+        CompactionPhase::BarrierValidateAfter);
+    REQUIRE_EQ(phases[phases.size() - 4],
+        CompactionPhase::SnapshotBeginBefore);
+    REQUIRE_EQ(phases[phases.size() - 3],
+        CompactionPhase::SnapshotBeginAfter);
+    REQUIRE_EQ(phases[phases.size() - 2],
+        CompactionPhase::DeltaWriteBefore);
+    REQUIRE_EQ(phases[phases.size() - 1],
+        CompactionPhase::DeltaWriteAfter);
+
+    auto transaction = prepared.move_transaction();
+    REQUIRE(transaction.abort().ok());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(writer_lock.value().close().ok());
+}
+
+TEST_CASE(compaction_empty_cut_still_writes_index_and_G_plus_one_commit) {
+    CompactionSandbox sandbox;
+    auto create_request = make_create_request(sandbox.root());
+    auto created = create_generation_zero_image(
+        bounded_context(), create_request);
+    REQUIRE(created.ok());
+    auto store = open_recovered_dynamic_store(
+        created.value(), compaction_store_options());
+    REQUIRE(store.ok());
+    auto writer_lock = acquire_bundle_writer_lock(
+        sandbox.root(), create_request.manifest_relative_name);
+    REQUIRE(writer_lock.ok());
+    auto session = ImageSession::ready();
+    CompactionCoordinator coordinator(session, *store.value());
+    auto begun = coordinator.begin(bounded_context());
+    REQUIRE(begun.ok());
+    auto operation = begun.move_value();
+    std::uint64_t offline_calls = 0;
+    auto artifacts = make_artifact_request(
+        writer_lock.value(), created.value(), offline_calls);
+    REQUIRE(operation.build_artifacts(
+        bounded_context(), artifacts).ok());
+    auto journal_writer = make_compaction_journal_writer();
+    auto prepared = coordinator.prepare_delta(
+        bounded_context(), std::move(operation),
+        make_delta_request(created.value()), *journal_writer);
+
+    REQUIRE(prepared.ok());
+    const auto& checkpoint = prepared.transaction()->checkpoint();
+    REQUIRE_EQ(checkpoint.generation, 1ull);
+    REQUIRE_EQ(checkpoint.data_count, 0ull);
+    REQUIRE_EQ(checkpoint.zero_count, 0ull);
+    REQUIRE_EQ(checkpoint.discard_count, 0ull);
+    // The frozen journal format forbids zero-entry physical index nodes.
+    // An all-zero root descriptor is the canonical empty COW index; the
+    // G+1 commit durably publishes that empty index state.
+    REQUIRE_EQ(checkpoint.index_node_count, 0ull);
+    REQUIRE_EQ(checkpoint.root, PersistentIndexRootDescriptor{});
+    REQUIRE_EQ(checkpoint.commit.offset, kJournalAlignment);
+    REQUIRE_EQ(checkpoint.committed_length, 2 * kJournalAlignment);
+    auto transaction = prepared.move_transaction();
+    REQUIRE(transaction.abort().ok());
+    REQUIRE(writer_lock.value().close().ok());
+}
+
+TEST_CASE(compaction_publishes_reopens_installs_and_preserves_post_cut_write) {
+    CompactionSandbox sandbox;
+    auto create_request = make_create_request(sandbox.root());
+    auto created = create_generation_zero_image(
+        bounded_context(), create_request);
+    REQUIRE(created.ok());
+    auto store = open_recovered_dynamic_store(
+        created.value(), compaction_store_options());
+    REQUIRE(store.ok());
+    std::vector<std::byte> cut_data(kM2BlockSize, std::byte{0x72});
+    REQUIRE(store.value()->write(
+        bounded_context(), 0, cut_data).ok());
+
+    auto writer_lock = acquire_bundle_writer_lock(
+        sandbox.root(), create_request.manifest_relative_name);
+    REQUIRE(writer_lock.ok());
+    auto session = ImageSession::ready();
+    CompactionCoordinator coordinator(session, *store.value());
+    auto begun = coordinator.begin(bounded_context());
+    REQUIRE(begun.ok());
+    auto operation = begun.move_value();
+    std::uint64_t offline_calls = 0;
+    auto artifacts = make_artifact_request(
+        writer_lock.value(), created.value(), offline_calls);
+    REQUIRE(operation.build_artifacts(
+        bounded_context(), artifacts).ok());
+    auto observed_base = open_bundle_file_for_inspection(
+        sandbox.root(), artifacts.base_relative_name);
+    REQUIRE(observed_base.ok());
+    const auto expected_base_windows_identity =
+        observed_base.value().identity();
+    auto journal_writer = make_compaction_journal_writer();
+    auto prepared = coordinator.prepare_delta(
+        bounded_context(), std::move(operation),
+        make_delta_request(created.value()), *journal_writer);
+    REQUIRE(prepared.ok());
+    auto transaction = prepared.move_transaction();
+    const auto write_reopen_while_anchored =
+        open_bundle_file_for_mutation(
+            writer_lock.value(), artifacts.base_relative_name);
+    REQUIRE(!write_reopen_while_anchored.ok());
+
+    std::vector<std::byte> post_cut_data(kM2BlockSize, std::byte{0x83});
+    REQUIRE(store.value()->write(
+        bounded_context(), 0, post_cut_data).ok());
+
+    auto manifest_capability = open_locked_manifest_for_mutation(
+        writer_lock.value());
+    REQUIRE(manifest_capability.ok());
+    auto manifest_file = open_validated_persistence_file(
+        manifest_capability.move_value());
+    REQUIRE(manifest_file.ok());
+    CheckpointManifestPublishRequest publish{};
+    publish.manifest_file = manifest_file.move_value();
+    publish.active_slot = created.value().selected_manifest;
+    publish.committed_time_100ns = 223456;
+    publish.complete_validation = CompleteCandidateValidation{
+        sandbox.root(), create_request.manifest_relative_name,
+        create_request.recovery};
+
+    const auto published = transaction.publish_manifest(
+        bounded_context(), std::move(publish));
+    REQUIRE(published.ok());
+    REQUIRE_EQ(published.disposition, CommitDisposition::Committed);
+    REQUIRE_EQ(published.generation, 1ull);
+
+    const auto reconciled = transaction.reconcile(bounded_context());
+    REQUIRE(reconciled.ok());
+    REQUIRE(reconciled.backing_installed);
+    REQUIRE(reconciled.snapshot_finished);
+    REQUIRE_EQ(reconciled.ack.newer_dirty_preserved, 1ull);
+    REQUIRE_EQ(store.value()->backing_generation(), 1ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE_EQ(store.value()->stats().resident_dirty_blocks, 1ull);
+    {
+        auto writable_after_terminal_reconcile =
+            open_bundle_file_for_mutation(
+                writer_lock.value(), artifacts.base_relative_name,
+                expected_base_windows_identity);
+        REQUIRE(writable_after_terminal_reconcile.ok());
+    }
+
+    std::vector<std::byte> live_bytes(kM2BlockSize);
+    REQUIRE(store.value()->read(
+        bounded_context(), 0, live_bytes).ok());
+    REQUIRE_EQ(live_bytes, post_cut_data);
+
+    auto reopened = recover_complete_image(
+        bounded_context(), sandbox.root(),
+        create_request.manifest_relative_name, create_request.recovery);
+    REQUIRE(reopened.ok());
+    REQUIRE(reopened.image.has_value());
+    REQUIRE_EQ(reopened.image->checkpoint_generation, 1ull);
+    REQUIRE_EQ(reopened.image->base_generation, 0ull);
+    REQUIRE_EQ(reopened.image->journal_epoch, 2ull);
+    REQUIRE(same_file_object(
+        reopened.image->backing_identity.base_windows_identity,
+        expected_base_windows_identity));
+    REQUIRE_EQ(reopened.image->backing_identity.base_windows_identity.size,
+        expected_base_windows_identity.size);
+    REQUIRE_EQ(reopened.image->selected_manifest.base_relative_name,
+        artifacts.base_relative_name);
+    REQUIRE_EQ(reopened.image->selected_manifest.journal_relative_name,
+        artifacts.journal_relative_name);
+    std::vector<std::byte> durable_bytes(kM2BlockSize);
+    auto durable = reopened.image->backing_view.store->load_block(
+        bounded_context(), 0, durable_bytes);
+    REQUIRE(durable.ok());
+    REQUIRE_EQ(durable.value().kind, BlockLoadKind::Data);
+    REQUIRE_EQ(durable_bytes, cut_data);
+
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() / create_request.base_relative_name));
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() / create_request.journal_relative_name));
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() / artifacts.base_relative_name));
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() / artifacts.journal_relative_name));
+    REQUIRE(writer_lock.value().close().ok());
 }
 
 }  // namespace

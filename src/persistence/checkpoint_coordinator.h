@@ -18,6 +18,8 @@
 
 namespace myrd::persistence {
 
+class CompactionCoordinator;
+
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 enum class CheckpointReconcileTestPhase : std::uint8_t {
     BeforeRecoverView = 0,
@@ -128,6 +130,7 @@ public:
 
 private:
     friend class CheckpointCoordinator;
+    friend class CompactionCoordinator;
     PreparedCheckpointTransaction(
         ImageSession& session,
         DynamicBlockStore& store,
@@ -140,7 +143,9 @@ private:
         std::uint64_t previous_committed_length,
         CompletePersistenceErrorContext correlation_context,
         VolumeBarrierKind volume_barrier,
-        CheckpointPrepareMetrics metrics) noexcept;
+        CheckpointPrepareMetrics metrics,
+        std::optional<ManifestArtifactReplacement>
+            artifact_replacement = std::nullopt) noexcept;
 
     void abandon_noexcept() noexcept;
 
@@ -164,6 +169,7 @@ private:
     VolumeBarrierKind volume_barrier_{
         VolumeBarrierKind::RawBlockTestNoFilesystemCache};
     CheckpointPrepareMetrics metrics_{};
+    std::optional<ManifestArtifactReplacement> artifact_replacement_{};
 };
 
 struct CheckpointPrepareFailure final {
@@ -210,6 +216,7 @@ public:
 
 private:
     friend class CheckpointCoordinator;
+    friend class CompactionCoordinator;
     explicit CheckpointPrepareOutcome(
         PreparedCheckpointTransaction transaction) noexcept
         : result_(std::in_place_type<PreparedCheckpointTransaction>,
@@ -238,6 +245,22 @@ public:
         const CheckpointPrepareRequest& request);
 
 private:
+    friend class CompactionCoordinator;
+    CheckpointPrepareOutcome prepare_with_lease(
+        const OperationContext& context,
+        const CheckpointPrepareRequest& request,
+        PublishOperationLease lease,
+        std::function<Result<void>()> after_snapshot_begin,
+        std::function<Result<void>()> after_journal_prepare,
+        std::optional<ManifestArtifactReplacement> artifact_replacement);
+    CheckpointPrepareOutcome prepare_impl(
+        const OperationContext& context,
+        const CheckpointPrepareRequest& request,
+        std::optional<PublishOperationLease> existing_lease,
+        std::function<Result<void>()> after_snapshot_begin,
+        std::function<Result<void>()> after_journal_prepare,
+        std::optional<ManifestArtifactReplacement> artifact_replacement);
+
     ImageSession* session_;
     DynamicBlockStore* store_;
     JournalWriter* journal_writer_;

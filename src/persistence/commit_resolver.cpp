@@ -8,6 +8,10 @@
 #include <array>
 #include <utility>
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
 namespace myrd::persistence {
 namespace {
 
@@ -44,7 +48,8 @@ ManifestPublishAttemptOutcome publish_failure(
 Result<PreparedManifestCandidate> prepare_manifest_candidate(
     const ManifestSlot& active_slot,
     const PreparedCheckpoint& checkpoint,
-    const std::uint64_t committed_time_100ns) {
+    const std::uint64_t committed_time_100ns,
+    const std::optional<ManifestArtifactReplacement>& replacement) {
     if (!validate_manifest_slot_semantics(active_slot).ok() ||
         active_slot.slot_index > 1 || committed_time_100ns == 0 ||
         checkpoint.generation == 0 ||
@@ -53,8 +58,9 @@ Result<PreparedManifestCandidate> prepare_manifest_candidate(
             kInvalidGeneration - 1 ||
         checkpoint.generation !=
             active_slot.generation.checkpoint_generation + 1 ||
-        checkpoint.committed_length <
-            active_slot.generation.journal.committed_length ||
+        (!replacement.has_value() &&
+         checkpoint.committed_length <
+             active_slot.generation.journal.committed_length) ||
         checkpoint.commit.length != kJournalAlignment ||
         checkpoint.commit.offset > checkpoint.committed_length ||
         checkpoint.commit.length >
@@ -70,6 +76,56 @@ Result<PreparedManifestCandidate> prepare_manifest_candidate(
     candidate.slot_index = static_cast<std::uint8_t>(
         active_slot.slot_index == 0 ? 1 : 0);
     candidate.generation.checkpoint_generation = checkpoint.generation;
+    if (replacement.has_value()) {
+        const auto& artifacts = *replacement;
+        auto base_name = validate_image_component(
+            artifacts.base_relative_name);
+        auto journal_name = validate_image_component(
+            artifacts.journal_relative_name);
+        auto source_base_name = validate_image_component(
+            artifacts.source_active_slot.base_relative_name);
+        auto source_journal_name = validate_image_component(
+            artifacts.source_active_slot.journal_relative_name);
+        const auto aliases = [](const Result<ImageComponent>& left,
+                                const Result<ImageComponent>& right) {
+            return left.ok() && right.ok() &&
+            CompareStringOrdinal(
+                left.value().wide_name.data(),
+                static_cast<int>(left.value().wide_name.size()),
+                right.value().wide_name.data(),
+                static_cast<int>(right.value().wide_name.size()),
+                TRUE) == CSTR_EQUAL;
+        };
+        const auto names_alias =
+            aliases(base_name, journal_name) ||
+            aliases(base_name, source_base_name) ||
+            aliases(base_name, source_journal_name) ||
+            aliases(journal_name, source_base_name) ||
+            aliases(journal_name, source_journal_name);
+        if (!base_name.ok() || !journal_name.ok() ||
+            !source_base_name.ok() || !source_journal_name.ok() ||
+            artifacts.source_active_slot != active_slot ||
+            artifacts.base_generation !=
+                active_slot.generation.checkpoint_generation ||
+            artifacts.base_expected_length == 0 ||
+            artifacts.journal_epoch == 0 ||
+            active_slot.generation.journal.epoch >= kInvalidGeneration - 1 ||
+            artifacts.journal_epoch !=
+                active_slot.generation.journal.epoch + 1 ||
+            artifacts.base_identity == active_slot.base_identity ||
+            artifacts.journal_identity == active_slot.journal_identity ||
+            names_alias) {
+            return candidate_failure<PreparedManifestCandidate>(
+                L"compaction replacement artifacts are invalid");
+        }
+        candidate.generation.base_generation = artifacts.base_generation;
+        candidate.base_relative_name = artifacts.base_relative_name;
+        candidate.base_identity = artifacts.base_identity;
+        candidate.base_expected_length = artifacts.base_expected_length;
+        candidate.journal_relative_name = artifacts.journal_relative_name;
+        candidate.journal_identity = artifacts.journal_identity;
+        candidate.generation.journal.epoch = artifacts.journal_epoch;
+    }
     candidate.generation.journal.committed_length =
         checkpoint.committed_length;
     candidate.generation.journal.commit = checkpoint.commit;

@@ -667,13 +667,13 @@ publish/resolver 算法。
 - [x] `T35.1 [H]` 冻结 full phase log：single modifying-operation gate→capture durable
   view G→write/flush/readback/verify unique VHDX→write-through publish→create+flush
   journal E+1。
-- [ ] `T35.2 [M]` RED ordinary live mutations 在 VHDX build 期间继续；checkpoint/
+- [x] `T35.2 [M]` RED ordinary live mutations 在 VHDX build 期间继续；checkpoint/
   second compaction 必须 Busy；记录 barrier/snapshot begin 前后 calls。
 - [x] `T35.3 [X]` 实现 pre-cut build against immutable G；禁止将 live RAM 混入 base，
   禁止在 new base/journal fully verified 前建立 cut。
-- [ ] `T35.4 [X]` new files ready 后验证本 operation explicit volume barrier，建立
+- [x] `T35.4 [X]` new files ready 后验证本 operation explicit volume barrier，建立
   Task06 cut，把相对 G 的 cut-time DATA/ZERO/DISCARD 写入 new journal。
-- [ ] `T35.5 [X]` dirty set 即使为空也 append COW index+commit G+1，再严格调用
+- [x] `T35.5 [X]` dirty set 即使为空也 append COW index+commit G+1，再严格调用
   Task31 publish/resolver 和 Task32 install/conditional ack；post-cut writes 保持 dirty。
 - [ ] `T35.6 [H]` pre/post-commit failure matrix：pre 保持 old authoritative、新文件
   unreferenced；post recover/install new，旧文件为 old slots/readers/reconcile 保留。
