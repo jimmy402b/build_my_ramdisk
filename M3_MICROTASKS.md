@@ -755,7 +755,10 @@ provider 和 wire golden fixtures 行为只读。
   因 transport close 覆盖 durable disposition。
 - [x] `T39.5 [M]` 跑全部 M0/M1/M2 + M3 provider tests；任何 protocol fixture/driver
   contract delta 立即 `BLOCKED`，不得顺手改旧合同。
-- [ ] `T39.6 [X]` lifecycle/contract independent review 后完成。
+- [x] `T39.6 [X]` lifecycle/contract independent review 后完成；本次验收复核确认
+  provider 操作串行化、transport-stop-before-persistence、pending transaction retry、
+  durable disposition 保留，以及 M1 wire/protocol baseline 未漂移；Debug 103/103、
+  Release 104/104。
 
 ### Task 40 — Safe real-host preflight and E2E harness
 
@@ -775,8 +778,9 @@ provider 和 wire golden fixtures 行为只读。
 - [x] `T40.6 [M]` `Verify-M3Json` fail-closed schema/source-commit/binary-hash tests。
 - [x] `T40.7 [M]` 无 admin/device 的 dry-run/Pester tests，断言零 format/mount/delete
   调用。
-- [ ] `T40.8 [X]` destructive safety reviewer 逐 target/path/cleanup 审查并人工批准
-  harness 后完成。
+- [x] `T40.8 [X]` destructive safety reviewer 逐 target/path/cleanup 审查并人工批准
+  harness 后完成；并补强为实际 `Get-Disk`/`Get-PhysicalDisk` identity 唯一匹配，
+  未匹配真实磁盘时 preflight 必须 BLOCKED。
 
 ### Task 41 — Real AIM、NTFS、lazy load 与 native VHDX acceptance
 

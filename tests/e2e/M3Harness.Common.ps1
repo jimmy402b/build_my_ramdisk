@@ -247,6 +247,54 @@ function Get-M3ReadOnlyHostProbe {
     }
 }
 
+function Get-M3PageFileDiskNumbers {
+    $numbers = [Collections.Generic.HashSet[int]]::new()
+    $pageFiles = @(Get-CimInstance Win32_PageFileUsage -ErrorAction Stop)
+    foreach ($pageFile in $pageFiles) {
+        $name = [string]$pageFile.Name
+        $root = [IO.Path]::GetPathRoot($name)
+        Assert-M3Condition ($root -match '^[A-Za-z]:\\$') `
+            "pagefile path cannot be mapped to a drive: $name"
+        $partition = Get-Partition -DriveLetter $root.Substring(0, 1) `
+            -ErrorAction Stop
+        foreach ($item in @($partition)) {
+            [void]$numbers.Add([int]$item.DiskNumber)
+        }
+    }
+    return $numbers
+}
+
+function Get-M3ActualDiskCandidates {
+    $getDisk = Get-Command Get-Disk -ErrorAction SilentlyContinue
+    $getPhysicalDisk = Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue
+    Assert-M3Condition ($null -ne $getDisk -and $null -ne $getPhysicalDisk) `
+        'Get-Disk and Get-PhysicalDisk are required for exact disk identity'
+
+    $pageFileDiskNumbers = Get-M3PageFileDiskNumbers
+    $physicalDisks = @(Get-PhysicalDisk -ErrorAction Stop)
+    $candidates = [Collections.ArrayList]::new()
+    foreach ($disk in @(Get-Disk -ErrorAction Stop)) {
+        $physical = @($physicalDisks | Where-Object {
+            [string]$_.DeviceId -eq [string]$disk.Number
+        })
+        # A disk without a unique PhysicalDisk identity is not a safe target.
+        if ($physical.Count -ne 1) { continue }
+        [void]$candidates.Add([pscustomobject]@{
+            Number = [int]$disk.Number
+            SizeBytes = [uint64]$disk.Size
+            BusType = [string]$disk.BusType
+            UniqueId = [string]$disk.UniqueId
+            SerialNumber = [string]$disk.SerialNumber
+            DeviceId = [string]$physical[0].DeviceId
+            IsBoot = [bool]$disk.IsBoot
+            IsSystem = [bool]$disk.IsSystem
+            IsPageFile = $pageFileDiskNumbers.Contains([int]$disk.Number)
+            IsClustered = [bool]$disk.IsClustered
+        })
+    }
+    return @($candidates)
+}
+
 function New-M3CleanupLedger {
     return [pscustomobject]@{
         Entries = [Collections.ArrayList]::new()
@@ -313,6 +361,7 @@ function Invoke-M3Preflight {
         scratch_root_safe = $false
         disk_identity_valid = $false
         workspace_root_rejected = $false
+        actual_disk_identity_match = $false
         exact_disk_mutation_permitted = $false
     }
     try {
@@ -328,6 +377,7 @@ function Invoke-M3Preflight {
     catch { [void]$reasons.Add([string]$_.Exception.Message) }
 
     $hostProbe = $null
+    $actualDisk = $null
     if (-not $WhatIf) {
         try { $hostProbe = Get-M3ReadOnlyHostProbe $ExpectedDriverService $ScratchRoot }
         catch { [void]$reasons.Add("read-only host probe failed: $($_.Exception.Message)") }
@@ -336,6 +386,15 @@ function Invoke-M3Preflight {
         }
         if ($null -ne $hostProbe -and $hostProbe.Driver.ServiceState -ne 'Running') {
             [void]$reasons.Add('accepted AIM driver service is not Running')
+        }
+        try {
+            $actualDisk = Select-M3ExactDisk `
+                -Candidates (Get-M3ActualDiskCandidates) `
+                -ExpectedIdentity $ExpectedDiskIdentity
+            $static.actual_disk_identity_match = $true
+        }
+        catch {
+            [void]$reasons.Add("exact disk identity probe failed: $($_.Exception.Message)")
         }
     }
     $status = if ($reasons.Count -eq 0) { 'PASS' } else { 'BLOCKED' }
@@ -350,6 +409,7 @@ function Invoke-M3Preflight {
         mutation_commands = @()
         static_checks = [pscustomobject]$static
         host = $hostProbe
+        actual_disk_identity = $actualDisk
         expected_disk_identity = ConvertTo-M3DiskIdentity $ExpectedDiskIdentity
         cleanup = [pscustomobject]@{
             attempted = $false

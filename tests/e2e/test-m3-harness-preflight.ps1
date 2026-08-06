@@ -97,6 +97,16 @@ try {
     Require-M3Test (($beforeScratch -join '|') -eq ($afterScratch -join '|')) `
         'WhatIf changed scratch contents'
 
+    $realProbe = Invoke-M3Preflight -Executable $env:ComSpec `
+        -ScratchRoot $scratch -WorkspaceRoot $workspace `
+        -ExpectedDiskIdentity $identity
+    Require-M3Test ($realProbe.status -eq 'BLOCKED') `
+        'preflight accepted an identity that was not matched to a real disk'
+    Require-M3Test (-not $realProbe.static_checks.actual_disk_identity_match) `
+        'unmatched disk identity was reported as matched'
+    Require-M3Test ($realProbe.reason -match 'exact disk identity probe failed') `
+        'unmatched disk identity reason was not recorded'
+
     $ledger = New-M3CleanupLedger
     $count = 0
     Add-M3CleanupEntry -Ledger $ledger -Kind 'marker' -Description 'test marker' `

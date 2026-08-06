@@ -23,6 +23,9 @@ The evidence directory, scratch directory, and disk identity JSON must be
 explicit. The identity JSON is not a disk-number hint; it must contain the
 exact `Number`, `SizeBytes`, `BusType`, `UniqueId`, `SerialNumber`, and
 `DeviceId`, with all boot/system/page-file/cluster flags false when present.
+A non-`WhatIf` preflight also reads the host's `Get-Disk` and
+`Get-PhysicalDisk` inventory and requires exactly one complete identity match;
+a syntactically valid but nonexistent identity is `BLOCKED`.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
