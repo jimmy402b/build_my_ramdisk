@@ -869,6 +869,22 @@ set_tests_properties(unit.m3.manifest_format PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 30)
 
+# ---- M3 complete manifest candidate selector (deferred Task 15) -----------
+add_executable(myrd_m3_manifest_selector_tests
+    unit/m3_manifest_selector_tests.cpp
+    support/m3_reference_model.cpp
+)
+target_link_libraries(myrd_m3_manifest_selector_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_manifest_selector_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_manifest_selector_tests)
+add_test(NAME unit.m3.manifest_selector
+    COMMAND myrd_m3_manifest_selector_tests)
+set_tests_properties(unit.m3.manifest_selector PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 60)
+
 # ---- M3 journal v1 format tests (Task 16) ----------------------------------
 add_executable(myrd_m3_journal_format_tests
     unit/m3_journal_format_tests.cpp

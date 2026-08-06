@@ -159,6 +159,8 @@ add_library(myrd_persistence STATIC
     persistence/persistence_types.cpp
     persistence/manifest_format.h
     persistence/manifest_format.cpp
+    persistence/manifest_selector.h
+    persistence/manifest_selector.cpp
     persistence/journal_format.h
     persistence/journal_format.cpp
     persistence/journal_index.h
