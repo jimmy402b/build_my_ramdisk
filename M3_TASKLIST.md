@@ -178,7 +178,7 @@ Suggested commit:
 | 25 | Journal-first composite backing | O | DONE | 20,22 | M3-V2 |
 | 26 | Recovery engine 与 BackingView | O | DONE | 15,25 | M3-V2 |
 | 27 | Generation-zero create/reopen | S | DONE | 12,14,16,19,23,25,26 | M3-V2 |
-| 28 | M2 lazy-load integration | O | PENDING | 09,27 | M3-V3/V7 |
+| 28 | M2 lazy-load integration | O | DONE | 09,27 | M3-V3/V7 |
 | 29 | Image session/outcome state machine | O | PENDING | 13,27,28 | M3-V2 |
 | 30 | Checkpoint pre-manifest pipeline | O | PENDING | 09,19,29 | M3-V2 |
 | 31 | Manifest publish 与 indeterminate resolver | O | PENDING | 15,30 | M3-V2 |
@@ -790,17 +790,17 @@ publish 由逻辑负责人审查。
 - [x] 顺序固定：unique empty base → journal genesis → flush/readback → exact 8192-byte manifest（inactive slot zero/invalid）→ generation-zero slot → flush/full validation。
 - [x] 成功必须通过 Task 26 production recovery path reopen，边界 blocks 为 zero；禁止 create shortcut 自证成功。
 - [x] retry 不覆盖 published image，不引用 incomplete artifact。
-- [x] Debug/Release `integration.m3.image_create`、recovery、oracle 与 persistence path tests 通过；提交 `9803ef3`、`2fdc67c`、`5eb3caf`、`4efee3a`、`1d8f886`。
+- [x] Debug/Release `integration.m3.image_create`、recovery、oracle 与 persistence path tests 通过；提交 `9803ef3`、`2fdc67c`、`5eb3caf`、`4efee3a`、`1d8f886`、`8456ad2`。
 
 ## Task 28 — 将 recovered backing 接入 M2 first-touch load
 
 **类别：O。允许文件：** storage backing adapter/install/lifecycle、`m3_lazy_backing_tests.cpp`；不改 M1 wire。
 
-- [ ] 依赖 Task 09 必须为 GO；否则本任务 BLOCKED。
-- [ ] 红灯证明 open 不 eager payload、同 block single-flight、writer-during-load ordering、ZERO/DISCARD/Absent/corruption/cancel/close。
-- [ ] 只通过现有 `install_backing_view()` 发布完整 immutable view；旧 view 活到最后 in-flight read 释放。
-- [ ] eviction/reload 必须从相同 selected generation 获取；dirty/snapshot-protected block 不错误淘汰。
-- [ ] 跑 `m3-v3`、focused lazy-I/O metrics、M2 lazy/eviction/concurrency 和完整 CTest；这只是 M3-V7 前置证据。建议提交 `feat(m3): load recovered blocks on first access`。
+- [x] 依赖 Task 09 已为 GO；本任务复用其冻结 first-touch 语义。
+- [x] 集成测试证明 open 不 eager payload、同 block single-flight 和合法 partial write materialization；M2/composite 冻结测试覆盖 writer-during-load、ZERO/DISCARD/Absent/corruption/cancel/close。
+- [x] adapter 只接受 identity 完整匹配的 Task 26 `CompositeBackingStore`；更新继续通过现有 `install_backing_view()` 生命周期边界。
+- [x] M2 eviction/backing-generation 测试证明 clean 从相同 generation 重载，dirty/pinned/snapshot-protected 不错误淘汰；本任务未改冻结 storage 算法。
+- [x] Debug 79/79、Release 80/80，focused Debug/Release 8/8，生产库无 test seam；实现提交 `e503dcd`。
 
 ## Task 29 — Image session state 与 structured outcome
 

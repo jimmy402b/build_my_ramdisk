@@ -1585,7 +1585,7 @@ bundle or treating an indeterminate publication as failure.
 ## Task 27 — Generation-zero creation acceptance
 
 Task 27 is accepted through commits `9803ef3`, `2fdc67c`, `5eb3caf`,
-`4efee3a` and `1d8f886`.
+`4efee3a`, `1d8f886` and `8456ad2`.
 The creator first validates the request, checks the exact empty
 VHDX/genesis-journal/manifest space requirement, then atomically claims a new
 manifest name with `CREATE_NEW` and a writer identity recheck. Existing names
@@ -1609,3 +1609,34 @@ both passed the focused create/recovery/path/oracle set: 4/4 CTest tests and
 Task 27 verdict: **DONE**. This authorizes Task 28 to install the recovered
 immutable `BackingView` into M2's first-touch storage boundary. It does not
 authorize checkpoint, compaction, cleanup or deletion of unreferenced artifacts.
+
+## Task 28 — Recovered first-touch loading acceptance
+
+Task 28 is accepted at `e503dcd`. The new composition adapter creates an M2
+`DynamicBlockStore` in `BackingUnresident` state from a Task 26 recovery view.
+It accepts only a real `CompositeBackingStore` whose embedded immutable identity
+exactly equals the recovered image identity, geometry and generation. A later
+view update is forwarded only through M2's existing `install_backing_view()`
+lifetime and generation boundary.
+
+The storage algorithm itself was deliberately not rewritten: Task 09/M2 already
+implements per-block single-flight loading, private-buffer mutation ordering,
+old-view strong references, cancellation/deadline rollback, close-in-flight,
+generation retry and generation-safe eviction. The new integration tests prove
+that opening performs zero backing loads, 32 concurrent first touches produce
+one composite load, repeated reads stay cached, and a legal partial-sector write
+materializes from the selected recovered view before becoming dirty.
+
+Verification evidence:
+
+- `integration.m3.lazy_backing` passed 4/4 in Debug and Release;
+- focused M2 read/backing-generation/eviction/concurrency plus M3 recovery,
+  oracle, create and lazy tests passed 8/8 in both configurations;
+- complete Debug CTest passed 79/79 and complete Release CTest passed 80/80;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built successfully and exposed
+  no `for_testing` or test-seam symbols;
+- `git diff --check` passed.
+
+Task 28 verdict: **DONE**. This authorizes Task 29 to add image-session state and
+structured outcomes. It is still only an internal M3-V7 prerequisite: real AIM,
+NTFS, checkpoint/reopen and long-run memory evidence remain future gates.

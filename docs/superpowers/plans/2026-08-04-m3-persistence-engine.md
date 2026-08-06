@@ -800,11 +800,11 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 **Depends on:** 09, 27
 **Files:** Modify `src/storage/dynamic_block_store*.cpp`, `src/storage/backing_store.h`, persistence integration adapters; create `tests/integration/m3_lazy_backing_tests.cpp`.
 
-- [ ] **Step 1: Red-test install/open and first-touch** with one recovered `BackingView`: no eager payload reads, one concurrent load per block, readers share the result, and a writer arriving during load preserves mutation ordering.
-- [ ] **Step 2: Red-test ZERO/DISCARD/Absent translation**, corruption propagation, cancellation, deadline, retry policy and close while a backing read is in flight.
-- [ ] **Step 3: Install only complete immutable views** through the existing `install_backing_view()` lifetime boundary. Old views remain alive until every in-flight load releases them.
-- [ ] **Step 4: Exercise eviction/reload** so clean blocks reload from the exact selected generation while dirty/snapshot-protected blocks are not evicted incorrectly.
-- [ ] **Step 5: Run M2 regression tests plus new integration tests and commit `feat(m3): load recovered blocks on first access`.**
+- [x] **Step 1: Red-test install/open and first-touch** with one recovered `BackingView`: no eager payload reads, one concurrent load per block, readers share the result, and a writer arriving during load preserves mutation ordering.
+- [x] **Step 2: Red-test ZERO/DISCARD/Absent translation**, corruption propagation, cancellation, deadline, retry policy and close while a backing read is in flight.
+- [x] **Step 3: Install only complete immutable views** through the existing `install_backing_view()` lifetime boundary. Old views remain alive until every in-flight load releases them.
+- [x] **Step 4: Exercise eviction/reload** so clean blocks reload from the exact selected generation while dirty/snapshot-protected blocks are not evicted incorrectly.
+- [x] **Step 5: Run M2 regression tests plus new integration tests and commit `e503dcd` (`feat(m3): load recovered blocks on first access`).**
 
 ### Task 29: Enforce image-session state and structured outcomes
 

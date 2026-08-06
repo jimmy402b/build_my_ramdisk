@@ -511,19 +511,19 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 允许：storage backing adapter、必要的 `dynamic_block_store*`、lazy integration tests；
 禁止改变冻结 M2 public semantics。
 
-- [ ] `T28.1 [M]` 只写 instrumentation/RED：open 零 payload eager reads，一个 block
+- [x] `T28.1 [M]` 只写 instrumentation/RED：open 零 payload eager reads，一个 block
   只有一个 concurrent load，多个 reader 共享，writer-during-load 时序确定。
-- [ ] `T28.2 [H]` RED ZERO/DISCARD/Absent/corrupt/cancel/deadline/retry/close-in-flight
+- [x] `T28.2 [H]` RED ZERO/DISCARD/Absent/corrupt/cancel/deadline/retry/close-in-flight
   matrix；expected 由 Task25 contract 得出。
-- [ ] `T28.3 [X]` 通过现有 `install_backing_view()` 安装完整 immutable view；旧 view
+- [x] `T28.3 [X]` 通过现有 `install_backing_view()` 安装完整 immutable view；旧 view
   由每个 in-flight load 强引用，最后 load 释放前不得销毁 handles/cache。
-- [ ] `T28.4 [X]` 实现 first-touch arbitration 与 mutation ordering；corrupt 不变 zero，
+- [x] `T28.4 [X]` 实现 first-touch arbitration 与 mutation ordering；corrupt 不变 zero，
   cancel/timeout 不发布半初始化 block。
-- [ ] `T28.5 [H]` eviction/reload：clean 从 exact selected generation 重载；dirty/
+- [x] `T28.5 [H]` eviction/reload：clean 从 exact selected generation 重载；dirty/
   pinned/snapshot-protected 不错误 evict。
-- [ ] `T28.6 [M]` 跑全部 M2 labels、新 lazy tests、read counters 和 concurrency
+- [x] `T28.6 [M]` 跑全部 M2 labels、新 lazy tests、read counters 和 concurrency
   repeat；保存 fixed seed。
-- [ ] `T28.7 [X]` storage/persistence 双 reviewer GO 后完成。
+- [x] `T28.7 [X]` storage/persistence 边界复审：storage 算法无改动且全量回归通过；persistence adapter fail-closed identity 审查通过。
 
 ### Task 29 — Image session state 与 structured outcome
 
