@@ -573,33 +573,33 @@ Task 30 DONE：checkpoint coordinator 只推进到 journal Prepared，manifest/i
 
 允许：`checkpoint_coordinator.*` 的 publish 段、`commit_resolver.*`、publish tests。
 
-- [ ] `T31.1 [M]` 从 frozen fault registry 生成 phase tests：before slot write、short/
+- [x] `T31.1 [M]` 从 frozen fault registry 生成 phase tests：before slot write、short/
   torn write、after write、flush fail/success、readback fail/corrupt；固定 inactive slot，
   `ctest -N` count 与 registry required IDs 必须一一相等。
-- [ ] `T31.2 [X]` 冻结 classification table：write attempt 前=`NotCommitted`；attempt
+- [x] `T31.2 [X]` 冻结 classification table：write attempt 前=`NotCommitted`；attempt
   开始后的 write/flush error=`CommitIndeterminate`；manifest flush success=
   `Committed`；之后 readback/validation fail=`CommittedNeedsReconciliation`。
-- [ ] `T31.3 [H]` 只实现 inactive-slot encode、active/inactive identity 校验和 exact
+- [x] `T31.3 [H]` 只实现 inactive-slot encode、active/inactive identity 校验和 exact
   4096-byte prepared buffer；此卡不写文件。
-- [ ] `T31.4 [X]` 只实现 slot-write attempt 线性化点 + one exact write；进入 attempt
+- [x] `T31.4 [X]` 只实现 slot-write attempt 线性化点 + one exact write；进入 attempt
   后直到 disposition 确定不接受普通 cancellation，不得 overwrite active slot。
-- [ ] `T31.5 [X]` 只实现 manifest flush 与唯一 commit point；flush success 立即把
+- [x] `T31.5 [X]` 只实现 manifest flush 与唯一 commit point；flush success 立即把
   disposition 置 `Committed`，后续错误不能倒退。
-- [ ] `T31.6 [H]` 只实现 post-flush re-read + Task15 full candidate validation；失败
+- [x] `T31.6 [H]` 只实现 post-flush re-read + Task15 full candidate validation；失败
   只升级 `CommittedNeedsReconciliation`。
-- [ ] `T31.7 [X]` resolver 入口只做：冻结 first failure/disposition、关闭旧 handles、
+- [x] `T31.7 [X]` resolver 入口只做：冻结 first failure/disposition、关闭旧 handles、
   重开并调用 normal recovery；禁止读 cached slot bytes。
-- [ ] `T31.8 [X]` resolver 分支 A：N+1 complete→再次 manifest flush；成功后进入
+- [x] `T31.8 [X]` resolver 分支 A：N+1 complete→再次 manifest flush；成功后进入
   Reconciling，失败保持 indeterminate/fault context，不宣称 plain Committed。
-- [ ] `T31.9 [X]` resolver 分支 B：attempted slot 可证明 invalid 且 N 是唯一 complete
+- [x] `T31.9 [X]` resolver 分支 B：attempted slot 可证明 invalid 且 N 是唯一 complete
   candidate→abort token 并返回 `NotCommitted`；“missing evidence”不等于 invalid。
-- [ ] `T31.10 [X]` resolver 分支 C：无法证明 A/B→PersistenceFaulted，禁止猜测、
+- [x] `T31.10 [X]` resolver 分支 C：无法证明 A/B→PersistenceFaulted，禁止猜测、
   fallback mutation 或清理 artifacts。
-- [ ] `T31.11 [H]` resolver retry/idempotence/close tests，first failure 和 disposition
+- [x] `T31.11 [H]` resolver retry/idempotence/close tests，first failure 和 disposition
   不被 readback/cleanup 的后续 error 覆盖。
-- [ ] `T31.12 [H]` crash clone/mutation 调换 write/flush/readback 或四类 disposition
+- [x] `T31.12 [H]` crash clone/mutation 调换 write/flush/readback 或四类 disposition
   必须红；Debug/Release `m3-v2`。
-- [ ] `T31.13 [X]` 独立 commit-point reviewer 对 phase×state×ownership 表签署后完成。
+- [x] `T31.13 [X]` 独立 commit-point reviewer 对 phase×state×ownership 表签署后完成。
 
 ### Task 32 — Install backing、conditional ack 与 reconciliation
 

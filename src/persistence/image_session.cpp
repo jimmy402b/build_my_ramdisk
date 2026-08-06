@@ -447,6 +447,13 @@ Result<void> ImageSession::advance_publication_stage(
             L"publication stage transition is invalid"));
     }
     active_publication_stage_ = target;
+    if (target == PublicationStage::PublishAttempted) {
+        disposition_ = CommitDisposition::CommitIndeterminate;
+    } else if (target == PublicationStage::CommitProven) {
+        disposition_ = operation == SessionOperation::CommitResolution
+            ? CommitDisposition::CommittedNeedsReconciliation
+            : CommitDisposition::Committed;
+    }
     return Result<void>::success();
 }
 

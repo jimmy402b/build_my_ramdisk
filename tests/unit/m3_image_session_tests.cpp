@@ -193,6 +193,8 @@ TEST_CASE(image_session_post_commit_enters_reconciling_without_losing_dispositio
         SessionPhase::Checkpointing, 303);
     REQUIRE(operation.value().note_publish_attempt_started().ok());
     REQUIRE(operation.value().note_durable_commit_proven().ok());
+    REQUIRE_EQ(session.snapshot().disposition,
+               CommitDisposition::Committed);
     auto outcome = operation.value().finish(
         CommitDisposition::CommittedNeedsReconciliation, failure);
     REQUIRE(outcome.ok());
@@ -235,6 +237,8 @@ TEST_CASE(image_session_resolution_and_reconciliation_follow_durable_facts) {
     REQUIRE(new_resolver.ok());
     REQUIRE(new_resolver.value().note_publish_attempt_started().ok());
     REQUIRE(new_resolver.value().note_durable_commit_proven().ok());
+    REQUIRE_EQ(proved_new.snapshot().disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
     REQUIRE(new_resolver.value()
                 .finish(CommitDisposition::CommittedNeedsReconciliation)
                 .ok());

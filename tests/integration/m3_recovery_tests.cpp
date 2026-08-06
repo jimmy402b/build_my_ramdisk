@@ -5,12 +5,14 @@
 #include "test_framework.h"
 
 #include "src/common/crc32c.h"
+#include "src/persistence/commit_resolver.h"
 #include "src/persistence/file_io.h"
 #include "src/persistence/journal_writer.h"
 #include "src/persistence/manifest_format.h"
 #include "src/persistence/recovery_engine.h"
 #include "src/persistence/vhdx_reader.h"
 #include "src/persistence/vhdx_writer.h"
+#include "src/persistence/writer_lock.h"
 #include "src/common/unique_handle.h"
 
 #include <algorithm>
@@ -419,6 +421,149 @@ TEST_CASE(recovery_selects_real_newer_complete_generation_and_isolates_views) {
         [](const std::byte value) { return value == std::byte{0x6a}; }));
     REQUIRE(std::all_of(new_bytes.begin(), new_bytes.end(),
         [](const std::byte value) { return value == std::byte{0x7b}; }));
+}
+
+TEST_CASE(commit_resolver_disk_probe_uses_normal_complete_recovery) {
+    RecoveryFixture fixture;
+    const auto newer_checkpoint = fixture.append_checkpoint();
+    const auto newer = fixture.make_slot(1, newer_checkpoint);
+    fixture.publish(fixture.valid_a, newer);
+
+    const auto evidence = recover_commit_evidence_from_disk(
+        OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+        recovery_options(), make_frozen_publication_identity_for_test(
+            fixture.checkpoint.generation, newer_checkpoint.generation, 1));
+    REQUIRE(evidence.ok());
+    REQUIRE_EQ(evidence.value().finding,
+               CommitRecoveryFinding::NewGenerationComplete);
+    REQUIRE(evidence.value().complete_manifest.has_value());
+    REQUIRE_EQ(evidence.value().complete_manifest->slot_index, 1u);
+    REQUIRE_EQ(evidence.value().complete_manifest->generation
+                   .checkpoint_generation,
+               newer_checkpoint.generation);
+}
+
+TEST_CASE(commit_resolver_disk_probe_requires_proven_invalid_attempted_slot) {
+    RecoveryFixture fixture;
+    fixture.publish(fixture.valid_a, std::nullopt);
+    const auto invalid = recover_commit_evidence_from_disk(
+        OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+        recovery_options(), make_frozen_publication_identity_for_test(
+            fixture.checkpoint.generation,
+            fixture.checkpoint.generation + 1, 1));
+    REQUIRE(invalid.ok());
+    REQUIRE_EQ(invalid.value().finding,
+               CommitRecoveryFinding::OldGenerationOnly);
+    REQUIRE(invalid.value().attempted_slot_provably_invalid);
+
+    auto missing_evidence = fixture.make_slot(1);
+    missing_evidence.generation.checkpoint_generation += 1;
+    missing_evidence.journal_relative_name = "missing-journal.rdj";
+    fixture.publish(fixture.valid_a, missing_evidence);
+    const auto missing = recover_commit_evidence_from_disk(
+        OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+        recovery_options(), make_frozen_publication_identity_for_test(
+            fixture.checkpoint.generation,
+            fixture.checkpoint.generation + 1, 1));
+    REQUIRE(missing.ok());
+    REQUIRE_EQ(missing.value().finding,
+               CommitRecoveryFinding::Ambiguous);
+    REQUIRE(!missing.value().attempted_slot_provably_invalid);
+}
+
+TEST_CASE(commit_resolver_reflushes_reopened_writer_authorized_manifest) {
+    RecoveryFixture fixture;
+    const auto newer_checkpoint = fixture.append_checkpoint();
+    const auto newer = fixture.make_slot(1, newer_checkpoint);
+    fixture.publish(fixture.valid_a, newer);
+    const CompleteCandidateValidation validation{
+        fixture.sandbox.root(), "disk.rdm", recovery_options()};
+    REQUIRE(validate_complete_candidate_from_disk(
+        validation, newer).ok());
+    auto wrong_candidate = newer;
+    wrong_candidate.slot_index = 0;
+    REQUIRE(!validate_complete_candidate_from_disk(
+        validation, wrong_candidate).ok());
+    auto writer = acquire_bundle_writer_lock(
+        fixture.sandbox.root(), "disk.rdm");
+    REQUIRE(writer.ok());
+
+    REQUIRE(reflush_complete_manifest(
+        OperationContext{}, writer.value(), newer).ok());
+    auto stale = newer;
+    stale.committed_time_100ns += 1;
+    const auto mismatch = reflush_complete_manifest(
+        OperationContext{}, writer.value(), stale);
+    REQUIRE(!mismatch.ok());
+    REQUIRE_EQ(mismatch.error().code,
+               static_cast<std::uint32_t>(
+                   PersistenceErrorCode::GenerationConflict));
+    REQUIRE(writer.value().close().ok());
+}
+
+TEST_CASE(commit_publish_crash_clones_recover_only_complete_generations) {
+    RecoveryFixture fixture;
+    const auto newer_checkpoint = fixture.append_checkpoint();
+    const auto newer = fixture.make_slot(1, newer_checkpoint);
+    const auto old_bytes = encode_manifest_slot(fixture.valid_a);
+    const auto new_bytes = encode_manifest_slot(newer);
+    REQUIRE(old_bytes.ok());
+    REQUIRE(new_bytes.ok());
+
+    const auto publish_clone = [&](const std::string& name,
+                                   const std::size_t candidate_prefix) {
+        std::array<std::byte, kManifestFileBytes> clone{};
+        std::copy(old_bytes.value().begin(), old_bytes.value().end(),
+                  clone.begin());
+        std::copy_n(new_bytes.value().begin(), candidate_prefix,
+                    clone.begin() + kManifestSlotBytes);
+        std::ofstream output(
+            fixture.sandbox.root() / std::filesystem::path{name},
+            std::ios::binary | std::ios::trunc);
+        REQUIRE(output.good());
+        output.write(reinterpret_cast<const char*>(clone.data()),
+                     static_cast<std::streamsize>(clone.size()));
+        REQUIRE(output.good());
+    };
+    publish_clone("cut-before-write.rdm", 0);
+    publish_clone("cut-torn-write.rdm", 64);
+    publish_clone("cut-after-write-before-flush.rdm", kManifestSlotBytes);
+    publish_clone("cut-after-flush.rdm", kManifestSlotBytes);
+
+    const auto recovered_generation = [&](const std::string_view name) {
+        const auto outcome = recover_complete_image(
+            OperationContext{}, fixture.sandbox.root(), name,
+            recovery_options());
+        REQUIRE(outcome.ok());
+        return outcome.image->checkpoint_generation;
+    };
+    const std::array observed{
+        recovered_generation("cut-before-write.rdm"),
+        recovered_generation("cut-torn-write.rdm"),
+        recovered_generation("cut-after-write-before-flush.rdm"),
+        recovered_generation("cut-after-flush.rdm"),
+    };
+    const std::array expected{
+        fixture.checkpoint.generation,
+        fixture.checkpoint.generation,
+        newer_checkpoint.generation,
+        newer_checkpoint.generation,
+    };
+    REQUIRE_EQ(observed, expected);
+
+    auto swapped_write_and_flush_cuts = observed;
+    std::swap(swapped_write_and_flush_cuts[0],
+              swapped_write_and_flush_cuts[3]);
+    REQUIRE(swapped_write_and_flush_cuts != expected);
+    auto wrong_post_flush_disposition =
+        classify_manifest_publish_failure(
+            ManifestPublishBoundary::ManifestFlushSucceeded);
+    REQUIRE_EQ(wrong_post_flush_disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    wrong_post_flush_disposition = CommitDisposition::NotCommitted;
+    REQUIRE(wrong_post_flush_disposition !=
+            classify_manifest_publish_failure(
+                ManifestPublishBoundary::ManifestFlushSucceeded));
 }
 
 TEST_CASE(recovery_opens_generation_zero_empty_commit_and_root) {

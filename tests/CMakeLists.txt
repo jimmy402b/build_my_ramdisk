@@ -1163,6 +1163,62 @@ set_tests_properties(integration.m3.checkpoint PROPERTIES
     LABELS "m3-v2;m3-v3"
     TIMEOUT 120)
 
+# ---- M3 manifest publication and commit resolution (Task 31) -------------
+add_executable(myrd_m3_commit_publish_tests
+    integration/m3_commit_publish_tests.cpp
+    support/fault_file.cpp
+)
+target_link_libraries(myrd_m3_commit_publish_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_commit_publish_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m3_commit_publish_tests PRIVATE
+    "MYRD_M3_FAULT_PHASE_REGISTRY_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/fault-phase-registry.json\"")
+myrd_enable_warnings(myrd_m3_commit_publish_tests)
+add_test(NAME integration.m3.commit_publish
+    COMMAND myrd_m3_commit_publish_tests)
+set_tests_properties(integration.m3.commit_publish PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m3_commit_publish_phase_runner
+    integration/m3_commit_publish_phase_runner.cpp
+    support/fault_file.cpp
+)
+target_link_libraries(myrd_m3_commit_publish_phase_runner PRIVATE
+    myrd_persistence)
+target_include_directories(myrd_m3_commit_publish_phase_runner PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_commit_publish_phase_runner)
+file(READ
+    "${CMAKE_SOURCE_DIR}/tests/fixtures/m3/fault-phase-registry.json"
+    myrd_m3_fault_phase_registry_json)
+string(JSON myrd_m3_fault_phase_count LENGTH
+    "${myrd_m3_fault_phase_registry_json}" phases)
+math(EXPR myrd_m3_fault_phase_last "${myrd_m3_fault_phase_count} - 1")
+set(myrd_m3_manifest_fault_phases)
+foreach(index RANGE 0 ${myrd_m3_fault_phase_last})
+    string(JSON phase_id GET
+        "${myrd_m3_fault_phase_registry_json}" phases ${index} id)
+    if(phase_id MATCHES "^manifest\\.")
+        list(APPEND myrd_m3_manifest_fault_phases "${phase_id}")
+    endif()
+endforeach()
+list(LENGTH myrd_m3_manifest_fault_phases
+    myrd_m3_manifest_fault_phase_count)
+if(NOT myrd_m3_manifest_fault_phase_count EQUAL 10)
+    message(FATAL_ERROR
+        "Task31 requires exactly 10 manifest fault registry phases")
+endif()
+foreach(phase IN LISTS myrd_m3_manifest_fault_phases)
+    add_test(
+        NAME integration.m3.commit_publish.phase.${phase}
+        COMMAND myrd_m3_commit_publish_phase_runner ${phase})
+    set_tests_properties(
+        integration.m3.commit_publish.phase.${phase}
+        PROPERTIES LABELS "m3-v2" TIMEOUT 30)
+endforeach()
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

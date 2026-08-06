@@ -1,5 +1,6 @@
 #include "src/persistence/checkpoint_coordinator.h"
 
+#include "src/persistence/image_paths.h"
 #include "src/storage/block_constants.h"
 
 #include <algorithm>
@@ -141,25 +142,35 @@ private:
 }  // namespace
 
 PreparedCheckpointTransaction::PreparedCheckpointTransaction(
+    ImageSession& session,
     DynamicBlockStore& store,
     ConsistentSnapshotToken snapshot_token,
     PublishOperationLease publish_lease,
     PreparedCheckpoint checkpoint,
+    CompletePersistenceErrorContext correlation_context,
     const VolumeBarrierKind volume_barrier,
     CheckpointPrepareMetrics metrics) noexcept
     : store_(&store),
+      session_(&session),
       snapshot_token_(snapshot_token),
       publish_lease_(std::move(publish_lease)),
       checkpoint_(std::move(checkpoint)),
+      correlation_context_(std::move(correlation_context)),
       volume_barrier_(volume_barrier),
       metrics_(metrics) {}
 
 PreparedCheckpointTransaction::PreparedCheckpointTransaction(
     PreparedCheckpointTransaction&& other) noexcept
     : store_(std::exchange(other.store_, nullptr)),
+      session_(std::exchange(other.session_, nullptr)),
       snapshot_token_(std::move(other.snapshot_token_)),
       publish_lease_(std::move(other.publish_lease_)),
+      manifest_file_(std::move(other.manifest_file_)),
       checkpoint_(std::move(other.checkpoint_)),
+      correlation_context_(std::move(other.correlation_context_)),
+      disposition_(other.disposition_),
+      manifest_candidate_verified_(other.manifest_candidate_verified_),
+      publication_identity_(std::move(other.publication_identity_)),
       volume_barrier_(other.volume_barrier_),
       metrics_(other.metrics_) {
     other.snapshot_token_.reset();
@@ -171,9 +182,15 @@ PreparedCheckpointTransaction& PreparedCheckpointTransaction::operator=(
     if (this == &other) return *this;
     abandon_noexcept();
     store_ = std::exchange(other.store_, nullptr);
+    session_ = std::exchange(other.session_, nullptr);
     snapshot_token_ = std::move(other.snapshot_token_);
     publish_lease_ = std::move(other.publish_lease_);
+    manifest_file_ = std::move(other.manifest_file_);
     checkpoint_ = std::move(other.checkpoint_);
+    correlation_context_ = std::move(other.correlation_context_);
+    disposition_ = other.disposition_;
+    manifest_candidate_verified_ = other.manifest_candidate_verified_;
+    publication_identity_ = std::move(other.publication_identity_);
     volume_barrier_ = other.volume_barrier_;
     metrics_ = other.metrics_;
     other.snapshot_token_.reset();
@@ -186,6 +203,11 @@ PreparedCheckpointTransaction::~PreparedCheckpointTransaction() {
 }
 
 Result<void> PreparedCheckpointTransaction::abort() {
+    if (disposition_ != CommitDisposition::NotCommitted) {
+        return checkpoint_failure<void>(
+            L"a published transaction requires resolution or reconciliation",
+            PersistenceErrorCode::OperationBusy);
+    }
     std::optional<Error> first_error;
     if (store_ != nullptr && snapshot_token_.has_value()) {
         auto aborted = store_->abort_consistent_snapshot(*snapshot_token_);
@@ -200,19 +222,276 @@ Result<void> PreparedCheckpointTransaction::abort() {
         publish_lease_.reset();
     }
     store_ = nullptr;
+    session_ = nullptr;
+    manifest_file_.reset();
     if (first_error.has_value()) {
         return Result<void>::failure(std::move(*first_error));
     }
     return Result<void>::success();
 }
 
+CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
+    const OperationContext& context,
+    CheckpointManifestPublishRequest request) {
+    auto build_outcome = [&](const CommitDisposition disposition,
+                             const bool verified,
+                             std::optional<Error> source)
+        -> CheckpointTransactionOutcome {
+        CheckpointTransactionOutcome result{};
+        result.disposition = disposition;
+        result.generation = checkpoint_.generation;
+        result.manifest_candidate_verified = verified;
+        if (source.has_value()) {
+            auto code =
+                disposition == CommitDisposition::CommitIndeterminate
+                    ? PersistenceErrorCode::CommitIndeterminate
+                    : persistence_code_for(*source);
+            if (disposition ==
+                    CommitDisposition::CommittedNeedsReconciliation &&
+                (code == PersistenceErrorCode::Cancelled ||
+                 code == PersistenceErrorCode::DeadlineExceeded)) {
+                // Cancellation cannot undo a successful manifest flush.
+                code = PersistenceErrorCode::VerificationFailed;
+            }
+            auto error_context = correlation_context_.value();
+            error_context.operation = "checkpoint.publish";
+            error_context.code = code;
+            error_context.phase =
+                disposition == CommitDisposition::CommitIndeterminate
+                    ? SessionPhase::ResolvingCommit
+                    : disposition ==
+                          CommitDisposition::CommittedNeedsReconciliation
+                        ? SessionPhase::Reconciling
+                        : SessionPhase::Checkpointing;
+            error_context.native_code = source->native_code;
+            error_context.generation = checkpoint_.generation;
+            error_context.disposition = disposition;
+            error_context.safe_context =
+                "manifest checkpoint publication failed";
+            result.error = Error{
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(code),
+                L"checkpoint.publish", source->message,
+                source->native_code};
+            result.error_context = std::move(error_context);
+        }
+        return result;
+    };
+
+    if (store_ == nullptr || session_ == nullptr ||
+        !snapshot_token_.has_value() || !publish_lease_.has_value() ||
+        disposition_ != CommitDisposition::NotCommitted) {
+        return build_outcome(
+            disposition_, manifest_candidate_verified_,
+            checkpoint_failure<void>(
+                L"prepared checkpoint transaction is not publishable",
+                PersistenceErrorCode::OperationBusy).error());
+    }
+
+    manifest_file_ = std::shared_ptr<IPersistenceFile>(
+        std::move(request.manifest_file));
+    const auto prepared = prepare_manifest_candidate(
+        request.active_slot, checkpoint_, request.committed_time_100ns);
+    ManifestPublishAttemptOutcome attempted{};
+    if (!prepared.ok()) {
+        attempted.error = prepared.error();
+    } else {
+        publication_identity_ = FrozenPublicationIdentity{
+            request.active_slot.generation.checkpoint_generation,
+            checkpoint_.generation,
+            prepared.value().slot.slot_index};
+        ManifestPublishRequest publish_request{};
+        publish_request.manifest_file = manifest_file_;
+        publish_request.active_slot = request.active_slot;
+        publish_request.candidate = prepared.value();
+        publish_request.complete_validation = request.complete_validation;
+        publish_request.record_durable_commit = [this]() {
+            disposition_ = CommitDisposition::Committed;
+            return Result<void>::success();
+        };
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        publish_request.test_validate_candidate =
+            std::move(request.test_validate_candidate);
+#endif
+        attempted = attempt_manifest_publication(
+            context, *publish_lease_, publish_request);
+    }
+    const auto final_disposition = attempted.ok()
+        ? CommitDisposition::Committed
+        : classify_manifest_publish_failure(attempted.boundary);
+    auto result = build_outcome(
+        final_disposition, attempted.candidate_verified, attempted.error);
+
+    if (!attempted.ok()) {
+        std::optional<PersistenceFailure> failure;
+        if (result.error.has_value() && result.error_context.has_value()) {
+            failure = PersistenceFailure{*result.error, *result.error_context};
+        }
+        auto finished = publish_lease_->finish(
+            final_disposition, std::move(failure));
+        if (!finished.ok()) {
+            // The lease destructor will still fail closed according to the
+            // already-recorded publication stage. Never downgrade facts.
+            result = build_outcome(
+                final_disposition, attempted.candidate_verified,
+                finished.error());
+        } else {
+            publish_lease_.reset();
+        }
+    }
+    disposition_ = final_disposition;
+    manifest_candidate_verified_ = attempted.candidate_verified;
+
+    if (final_disposition == CommitDisposition::NotCommitted) {
+        if (snapshot_token_.has_value()) {
+            auto aborted = store_->abort_consistent_snapshot(*snapshot_token_);
+            if (!aborted.ok() && !result.error.has_value()) {
+                result = build_outcome(
+                    final_disposition, false, aborted.error());
+            }
+            snapshot_token_.reset();
+        }
+        store_ = nullptr;
+        session_ = nullptr;
+        if (manifest_file_) {
+            (void)manifest_file_->close();
+            manifest_file_.reset();
+        }
+    }
+    return result;
+}
+
+CheckpointTransactionOutcome PreparedCheckpointTransaction::resolve_commit(
+    const OperationContext& context,
+    const CommitResolutionRequest& request) {
+    auto result = CheckpointTransactionOutcome{};
+    result.disposition = disposition_;
+    result.generation = checkpoint_.generation;
+    result.manifest_candidate_verified = manifest_candidate_verified_;
+    const auto set_error = [&](const Error& source,
+                               const CommitDisposition disposition) {
+        auto code = disposition == CommitDisposition::CommitIndeterminate
+            ? PersistenceErrorCode::CommitIndeterminate
+            : persistence_code_for(source);
+        if (disposition ==
+                CommitDisposition::CommittedNeedsReconciliation &&
+            (code == PersistenceErrorCode::Cancelled ||
+             code == PersistenceErrorCode::DeadlineExceeded)) {
+            code = PersistenceErrorCode::VerificationFailed;
+        }
+        auto error_context = correlation_context_.value();
+        error_context.operation = "checkpoint.resolve";
+        error_context.code = code;
+        error_context.phase =
+            disposition ==
+                    CommitDisposition::CommittedNeedsReconciliation
+                ? SessionPhase::Reconciling
+                : SessionPhase::ResolvingCommit;
+        error_context.native_code = source.native_code;
+        error_context.generation = checkpoint_.generation;
+        error_context.disposition = disposition;
+        error_context.safe_context = "commit resolution failed closed";
+        result.error = Error{
+            ErrorDomain::persistence, static_cast<std::uint32_t>(code),
+            L"checkpoint.resolve", source.message, source.native_code};
+        result.error_context = std::move(error_context);
+    };
+    if (store_ == nullptr || session_ == nullptr ||
+        !snapshot_token_.has_value() || publish_lease_.has_value() ||
+        !publication_identity_.has_value() ||
+        disposition_ != CommitDisposition::CommitIndeterminate) {
+        set_error(checkpoint_failure<void>(
+            L"transaction is not waiting for commit resolution",
+            PersistenceErrorCode::OperationBusy).error(), disposition_);
+        return result;
+    }
+    auto lease_result = session_->begin_commit_resolution();
+    if (!lease_result.ok()) {
+        set_error(lease_result.error(), disposition_);
+        return result;
+    }
+    if (manifest_file_) {
+        const auto closed = manifest_file_->close();
+        manifest_file_.reset();
+        if (!closed.ok()) {
+            set_error(closed.error(), disposition_);
+            return result;
+        }
+    }
+    auto lease = lease_result.move_value();
+    CommitResolutionOutcome resolved{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (request.test_recover && request.test_reflush_manifest) {
+        resolved = resolve_indeterminate_commit(
+            context, lease,
+            CommitResolutionAttemptRequest{
+                publication_identity_->old_generation(),
+                publication_identity_->attempted_generation(),
+                publication_identity_->attempted_slot_index(),
+                request.test_recover, request.test_reflush_manifest});
+    } else
+#endif
+    {
+        resolved = resolve_indeterminate_commit_from_disk(
+            context, lease,
+            request.filesystem.value_or(FilesystemCommitResolution{}),
+            *publication_identity_);
+    }
+    result.disposition = resolved.disposition;
+    result.manifest_candidate_verified =
+        resolved.recovery_evidence_complete &&
+        resolved.disposition ==
+            CommitDisposition::CommittedNeedsReconciliation;
+    std::optional<PersistenceFailure> failure;
+    if (resolved.error.has_value()) {
+        set_error(*resolved.error, resolved.disposition);
+        failure = PersistenceFailure{*result.error, *result.error_context};
+    }
+    auto finished = lease.finish(resolved.disposition, std::move(failure));
+    if (!finished.ok() && !result.error.has_value()) {
+        set_error(finished.error(), resolved.disposition);
+    }
+    disposition_ = resolved.disposition;
+    manifest_candidate_verified_ = result.manifest_candidate_verified;
+    if (resolved.disposition == CommitDisposition::NotCommitted) {
+        auto aborted = store_->abort_consistent_snapshot(*snapshot_token_);
+        if (!aborted.ok() && !result.error.has_value()) {
+            set_error(aborted.error(), resolved.disposition);
+        }
+        snapshot_token_.reset();
+        store_ = nullptr;
+        session_ = nullptr;
+    }
+    return result;
+}
+
 void PreparedCheckpointTransaction::abandon_noexcept() noexcept {
     try {
-        (void)abort();
+        if (disposition_ == CommitDisposition::NotCommitted) {
+            (void)abort();
+            return;
+        }
+        // A published transaction may not be rolled back, but its in-memory
+        // snapshot cut can always be retired without acknowledging any dirty
+        // member. Destroying an active lease then moves the session to the
+        // fail-closed phase implied by its publication stage.
+        if (store_ != nullptr && snapshot_token_.has_value()) {
+            abort_snapshot(*store_, *snapshot_token_);
+            snapshot_token_.reset();
+        }
+        publish_lease_.reset();
+        if (manifest_file_) {
+            (void)manifest_file_->close();
+            manifest_file_.reset();
+        }
+        store_ = nullptr;
+        session_ = nullptr;
     } catch (...) {
         snapshot_token_.reset();
         publish_lease_.reset();
+        manifest_file_.reset();
         store_ = nullptr;
+        session_ = nullptr;
     }
 }
 
@@ -396,7 +675,8 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare(
     }
 
     PreparedCheckpointTransaction transaction{
-        *store_, token, std::move(lease), prepared.move_value(),
+        *session_, *store_, token, std::move(lease), prepared.move_value(),
+        request.correlation_context,
         *request.volume_barrier, metrics};
     snapshot_guard.release();
     return CheckpointPrepareOutcome{std::move(transaction)};

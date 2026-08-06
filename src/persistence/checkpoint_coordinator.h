@@ -2,6 +2,7 @@
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
+#include "src/persistence/commit_resolver.h"
 #include "src/persistence/image_session.h"
 #include "src/persistence/journal_writer.h"
 #include "src/storage/dynamic_block_store.h"
@@ -59,8 +60,7 @@ public:
         return checkpoint_;
     }
     [[nodiscard]] bool active() const noexcept {
-        return store_ != nullptr && snapshot_token_.has_value() &&
-               publish_lease_.has_value();
+        return store_ != nullptr && snapshot_token_.has_value();
     }
     [[nodiscard]] VolumeBarrierKind volume_barrier() const noexcept {
         return volume_barrier_;
@@ -69,29 +69,43 @@ public:
         return permits_filesystem_durability_claim(volume_barrier_);
     }
     [[nodiscard]] CommitDisposition disposition() const noexcept {
-        return CommitDisposition::NotCommitted;
+        return disposition_;
     }
     [[nodiscard]] const CheckpointPrepareMetrics& metrics() const noexcept {
         return metrics_;
     }
     Result<void> abort();
+    [[nodiscard]] CheckpointTransactionOutcome publish_manifest(
+        const OperationContext& context,
+        CheckpointManifestPublishRequest request);
+    [[nodiscard]] CheckpointTransactionOutcome resolve_commit(
+        const OperationContext& context,
+        const CommitResolutionRequest& request);
 
 private:
     friend class CheckpointCoordinator;
     PreparedCheckpointTransaction(
+        ImageSession& session,
         DynamicBlockStore& store,
         ConsistentSnapshotToken snapshot_token,
         PublishOperationLease publish_lease,
         PreparedCheckpoint checkpoint,
+        CompletePersistenceErrorContext correlation_context,
         VolumeBarrierKind volume_barrier,
         CheckpointPrepareMetrics metrics) noexcept;
 
     void abandon_noexcept() noexcept;
 
     DynamicBlockStore* store_{nullptr};
+    ImageSession* session_{nullptr};
     std::optional<ConsistentSnapshotToken> snapshot_token_{};
     std::optional<PublishOperationLease> publish_lease_{};
+    std::shared_ptr<IPersistenceFile> manifest_file_{};
     PreparedCheckpoint checkpoint_{};
+    CompletePersistenceErrorContext correlation_context_;
+    CommitDisposition disposition_{CommitDisposition::NotCommitted};
+    bool manifest_candidate_verified_{};
+    std::optional<FrozenPublicationIdentity> publication_identity_{};
     VolumeBarrierKind volume_barrier_{
         VolumeBarrierKind::RawBlockTestNoFilesystemCache};
     CheckpointPrepareMetrics metrics_{};

@@ -1722,3 +1722,40 @@ Final verification on the accepted source:
 Task 30 verdict: **DONE**. This authorizes Task 31 manifest publication work;
 durable commit classification, backing installation and conditional dirty
 acknowledgment remain explicitly unimplemented in Task 30.
+
+## Task 31 — Manifest publication and indeterminate-commit acceptance
+
+Task 31 publishes exactly one prepared 4096-byte inactive manifest slot. The
+slot-write attempt is the knowledge boundary: failures before it are
+`NotCommitted`, write/flush failures after it are `CommitIndeterminate`, and a
+successful manifest flush is the unique durable commit point. The session
+records `Committed` at that flush before any post-commit readback or full normal
+recovery validation; later failures can only become
+`CommittedNeedsReconciliation`.
+
+The resolver closes the publication handle before collecting evidence through
+fresh normal recovery handles. Its publication identity is a move-only
+capability constructed only by `PreparedCheckpointTransaction`; production
+callers cannot supply old/new generations or the attempted slot. A complete new
+generation is re-flushed through a fresh writer-authorized handle, a uniquely
+complete old generation is accepted only when the attempted slot is
+deterministically invalid, and missing/I/O/access/cancellation evidence remains
+ambiguous and fails closed.
+
+Final verification on the accepted source:
+
+- the frozen registry generated exactly 10 distinct manifest phase tests;
+- crash-clone tests recovered fresh before-write, torn-write,
+  after-write/before-flush and after-flush manifest copies;
+- close failure, branch A/B/C, first-failure preservation and production
+  test-seam isolation were covered;
+- complete Debug CTest passed 92/92 and complete Release CTest passed 93/93;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built successfully; its disk
+  resolver requires `FrozenPublicationIdentity`, while callback resolver and
+  test-factory symbols are absent;
+- two independent final reviewers returned GO and `git diff --check` passed
+  apart from Git's existing LF/CRLF conversion notices.
+
+Task 31 verdict: **DONE**. This authorizes Task 32 to install the recovered
+committed view and conditionally acknowledge the exact snapshot cut. Task 31
+does not install backing state or clear dirty members itself.

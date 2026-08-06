@@ -180,8 +180,8 @@ Suggested commit:
 | 27 | Generation-zero create/reopen | S | DONE | 12,14,16,19,23,25,26 | M3-V2 |
 | 28 | M2 lazy-load integration | O | DONE | 09,27 | M3-V3/V7 |
 | 29 | Image session/outcome state machine | O | DONE | 13,27,28 | M3-V2 |
-| 30 | Checkpoint pre-manifest pipeline | O | PENDING | 09,19,29 | M3-V2 |
-| 31 | Manifest publish 与 indeterminate resolver | O | PENDING | 15,30 | M3-V2 |
+| 30 | Checkpoint pre-manifest pipeline | O | DONE | 09,19,29 | M3-V2 |
+| 31 | Manifest publish 与 indeterminate resolver | O | DONE | 15,30 | M3-V2 |
 | 32 | Install backing、ack、reconcile | O | PENDING | 06,28,31 | M3-V2/V3 |
 | 33 | 独立 checkpoint crash matrix | O | PENDING | 31,32 | M3-V2 |
 | 34 | Live extent enumeration | S | PENDING | 22,25,29 | M3-V4 |
@@ -832,12 +832,12 @@ checkpoint index root、`DirtyBlockSnapshot::dirty_epoch` 及 M2 publication pin
 
 **类别：O；crash oracle 独立冻结。允许文件：** 扩展 coordinator、`commit_resolver.*`、publish tests。
 
-- [ ] alternate-slot exact 4096-byte write 的 before/during/after、flush、readback 全 phase fault 红灯。
-- [ ] 顺序固定：inactive slot encode → exact write → flush manifest → reread → full candidate validation。
-- [ ] slot-write attempt 前失败为 `NotCommitted`；attempt 后 slot write/manifest flush 报错为 `CommitIndeterminate`；manifest flush 成功即建立 `Committed`。其后 readback/validation 失败只能是 `CommittedNeedsReconciliation`。
-- [ ] resolver 关闭/重开 handles、走 normal recovery，并在新 candidate 完整时重做 manifest flush；新代完整且 flush 成功则 reconcile，attempted slot 被证明无效且旧代唯一完整才 abort 为 `NotCommitted`，其余 PersistenceFaulted。
-- [ ] 禁止依据 cache、write 返回值或 FlushFileBuffers 返回值猜测 durable generation。
-- [ ] 跑 `m3-v2`；建议提交 `feat(persistence): publish and resolve checkpoint commits`。
+- [x] alternate-slot exact 4096-byte write 的 before/during/after、flush、readback 全 phase fault 红灯。
+- [x] 顺序固定：inactive slot encode → exact write → flush manifest → reread → full candidate validation。
+- [x] slot-write attempt 前失败为 `NotCommitted`；attempt 后 slot write/manifest flush 报错为 `CommitIndeterminate`；manifest flush 成功即建立 `Committed`。其后 readback/validation 失败只能是 `CommittedNeedsReconciliation`。
+- [x] resolver 关闭/重开 handles、走 normal recovery，并在新 candidate 完整时重做 manifest flush；新代完整且 flush 成功则 reconcile，attempted slot 被证明无效且旧代唯一完整才 abort 为 `NotCommitted`，其余 PersistenceFaulted。
+- [x] 禁止依据 cache、write 返回值或 FlushFileBuffers 返回值猜测 durable generation。
+- [x] 跑 `m3-v2`；建议提交 `feat(persistence): publish and resolve checkpoint commits`。
 
 ## Task 32 — Install backing、conditional ack 与 reconciliation
 

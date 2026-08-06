@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,6 +19,17 @@
 
 namespace myrd::persistence {
 namespace {
+
+template <class T>
+concept CallerCanSupplyPublicationIdentity = requires(T request) {
+    request.old_generation;
+    request.attempted_generation;
+    request.attempted_slot_index;
+};
+
+static_assert(!CallerCanSupplyPublicationIdentity<CommitResolutionRequest>);
+static_assert(!std::default_initializable<FrozenPublicationIdentity>);
+static_assert(!std::copy_constructible<FrozenPublicationIdentity>);
 
 JournalHeader make_header(
     const std::uint64_t virtual_bytes = 4 * kM2BlockSize) {
@@ -174,6 +186,42 @@ CheckpointPrepareRequest make_checkpoint_request(
     request.journal = journal;
     request.snapshot_batch_bytes = kM2BlockSize;
     return request;
+}
+
+ManifestSlot make_active_manifest(const JournalHeader& header) {
+    ManifestSlot slot{};
+    slot.slot_index = 0;
+    slot.image_uuid = header.image_uuid;
+    slot.generation.checkpoint_generation = 0;
+    slot.generation.base_generation = 0;
+    slot.generation.journal.epoch = header.epoch;
+    slot.generation.journal.committed_length = 2 * kJournalAlignment;
+    slot.generation.journal.commit = {
+        kJournalAlignment, kJournalAlignment, 0x12345678,
+        header.predecessor_digest};
+    slot.geometry = header.geometry;
+    slot.base_relative_name = "base-0000.vhdx";
+    slot.base_identity.file_write_guid[0] = std::byte{0x31};
+    slot.base_identity.data_write_guid[0] = std::byte{0x41};
+    slot.base_expected_length = 8ull * 1024 * 1024;
+    slot.journal_relative_name = "journal-e0001.rdj";
+    slot.journal_identity = header.journal_identity;
+    slot.created_time_100ns = 100;
+    slot.committed_time_100ns = 100;
+    REQUIRE(validate_manifest_slot_semantics(slot).ok());
+    return slot;
+}
+
+std::unique_ptr<IPersistenceFile> make_manifest_file(
+    const ManifestSlot& active,
+    const std::vector<test::FaultFileRule>& rules = {},
+    std::shared_ptr<test::FaultFileState>* state_out = nullptr) {
+    auto fault = test::make_fault_file(kManifestFileBytes, rules);
+    if (state_out != nullptr) *state_out = fault.state;
+    const auto encoded = encode_manifest_slot(active);
+    REQUIRE(encoded.ok());
+    REQUIRE(fault.file->write_exact(0, encoded.value()).ok());
+    return std::move(fault.file);
 }
 
 TEST_CASE(checkpoint_prepare_requires_barrier_before_snapshot_begin) {
@@ -385,6 +433,198 @@ TEST_CASE(checkpoint_prepare_holds_atomic_install_and_ack_fence) {
         *store, 0, still_dirty));
     REQUIRE_EQ(still_dirty.state, BlockState::ResidentDirty);
     REQUIRE_EQ(still_dirty.version, cut_entry.version);
+}
+
+TEST_CASE(checkpoint_publish_preattempt_failure_aborts_cut) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+
+    const auto outcome = transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 0, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }});
+    REQUIRE_EQ(outcome.disposition, CommitDisposition::NotCommitted);
+    REQUIRE(outcome.error.has_value());
+    REQUIRE(outcome.error_context.has_value());
+    REQUIRE(!transaction.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    const auto retry = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(retry.ok());
+    REQUIRE(store->abort_consistent_snapshot(retry.value()).ok());
+}
+
+TEST_CASE(checkpoint_publish_indeterminate_resolves_old_without_clearing_dirty) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    std::shared_ptr<test::FaultFileState> stale_manifest_state;
+    auto manifest = make_manifest_file(active, {
+        {test::FaultFilePhase::Flush, 1, std::nullopt,
+         test::FaultFileAction::FlushError, 1117}},
+        &stale_manifest_state);
+
+    const auto published = transaction.publish_manifest(
+        bounded_context(),
+        {std::move(manifest), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }});
+    REQUIRE_EQ(published.disposition,
+               CommitDisposition::CommitIndeterminate);
+    REQUIRE(published.error_context.has_value());
+    REQUIRE_EQ(published.error_context->code,
+               PersistenceErrorCode::CommitIndeterminate);
+    REQUIRE(transaction.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::ResolvingCommit);
+    REQUIRE(!transaction.abort().ok());
+
+    bool reflushed = false;
+    const auto resolved = transaction.resolve_commit(
+        bounded_context(),
+        {std::nullopt,
+         [active, stale_manifest_state](const OperationContext&)
+             -> Result<CommitRecoveryEvidence> {
+             REQUIRE(stale_manifest_state->closed());
+             return Result<CommitRecoveryEvidence>::success({
+                 CommitRecoveryFinding::OldGenerationOnly,
+                 active, true});
+         },
+         [&reflushed](const OperationContext&, const ManifestSlot&)
+             -> Result<void> {
+             reflushed = true;
+             return Result<void>::success();
+         }});
+    REQUIRE_EQ(resolved.disposition, CommitDisposition::NotCommitted);
+    REQUIRE(!reflushed);
+    REQUIRE(!transaction.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(session.snapshot().first_failure.has_value());
+    REQUIRE_EQ(session.snapshot().first_failure->context.code,
+               PersistenceErrorCode::CommitIndeterminate);
+    const auto duplicate_resolution = transaction.resolve_commit(
+        bounded_context(), {});
+    REQUIRE_EQ(duplicate_resolution.disposition,
+               CommitDisposition::NotCommitted);
+    REQUIRE(duplicate_resolution.error.has_value());
+    REQUIRE(duplicate_resolution.error_context.has_value());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+
+    BlockEntry entry{};
+    REQUIRE(DynamicBlockStoreTestAccess::snapshot_entry(*store, 0, entry));
+    REQUIRE_EQ(entry.state, BlockState::ResidentDirty);
+}
+
+TEST_CASE(checkpoint_resolution_manifest_close_failure_fails_closed) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    auto manifest = make_manifest_file(active, {
+        {test::FaultFilePhase::Flush, 1, std::nullopt,
+         test::FaultFileAction::FlushError, 1117},
+        {test::FaultFilePhase::Close, 1, std::nullopt,
+         test::FaultFileAction::CloseError, 5}});
+
+    const auto published = transaction.publish_manifest(
+        bounded_context(),
+        {std::move(manifest), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }});
+    REQUIRE_EQ(published.disposition,
+               CommitDisposition::CommitIndeterminate);
+    REQUIRE(transaction.active());
+
+    bool recovery_called = false;
+    const auto resolved = transaction.resolve_commit(
+        bounded_context(),
+        {std::nullopt,
+         [&recovery_called](const OperationContext&)
+             -> Result<CommitRecoveryEvidence> {
+             recovery_called = true;
+             return Result<CommitRecoveryEvidence>::failure({
+                 ErrorDomain::persistence,
+                 static_cast<std::uint32_t>(
+                     PersistenceErrorCode::FatalInternalInvariant),
+                 L"m3_checkpoint_tests", L"must not recover", 0});
+         },
+         [](const OperationContext&, const ManifestSlot&)
+             -> Result<void> {
+             return Result<void>::success();
+         }});
+
+    REQUIRE(!recovery_called);
+    REQUIRE_EQ(resolved.disposition,
+               CommitDisposition::CommitIndeterminate);
+    REQUIRE(resolved.error.has_value());
+    REQUIRE_EQ(resolved.error->native_code, 5u);
+    REQUIRE(resolved.error_context.has_value());
+    REQUIRE_EQ(resolved.error_context->disposition,
+               CommitDisposition::CommitIndeterminate);
+    REQUIRE(transaction.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::PersistenceFaulted);
+    REQUIRE_EQ(session.snapshot().disposition,
+               CommitDisposition::CommitIndeterminate);
+}
+
+TEST_CASE(checkpoint_publish_success_hands_commit_proof_to_task32) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    {
+        auto transaction = prepared_result.move_transaction();
+        const auto active = make_active_manifest(writer.request.header);
+        const auto published = transaction.publish_manifest(
+            bounded_context(),
+            {make_manifest_file(active), active, 200, std::nullopt,
+             [](const ManifestSlot&, std::span<const std::byte>) {
+                 return Result<void>::success();
+             }});
+        REQUIRE(published.ok());
+        REQUIRE_EQ(transaction.disposition(),
+                   CommitDisposition::Committed);
+        REQUIRE(transaction.active());
+        REQUIRE_EQ(session.phase(), SessionPhase::Checkpointing);
+        REQUIRE_EQ(session.snapshot().publication_stage,
+                   PublicationStage::CommitProven);
+        REQUIRE(!transaction.abort().ok());
+    }
+    REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+    const auto retry = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(retry.ok());
+    REQUIRE(store->abort_consistent_snapshot(retry.value()).ok());
 }
 
 TEST_CASE(checkpoint_prepare_journals_cut_preimage_when_ram_is_overwritten) {

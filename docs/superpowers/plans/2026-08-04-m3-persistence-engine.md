@@ -836,11 +836,11 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 **Depends on:** 15, 30
 **Files:** Modify `checkpoint_coordinator.*`; create `src/persistence/commit_resolver.h/.cpp`, `tests/integration/m3_commit_publish_tests.cpp`.
 
-- [ ] **Step 1: Red-test alternate-slot publication** with exact phase injection before write, during short/torn write, after write, during flush, after flush and during readback.
-- [ ] **Step 2: Implement publication:** encode generation N+1 into the inactive slot, issue one exact 4096-byte write, flush manifest, re-read slot, and run full candidate validation.
-- [ ] **Step 3: Classify outcomes exactly at the SPEC commit point:** failures before the slot-write attempt are `NotCommitted`; slot-write or manifest-flush errors after the attempt begins are `CommitIndeterminate`; successful manifest `FlushFileBuffers()` establishes `Committed`. A later readback/validation failure is post-commit and therefore `CommittedNeedsReconciliation`, never `CommitIndeterminate` or `NotCommitted`.
-- [ ] **Step 4: Implement resolver** by closing/reopening file handles, validating the candidate through normal recovery, and re-executing the manifest flush when the new candidate is complete. If N+1 is complete and that flush succeeds, enter reconciliation; if the attempted slot is provably invalid and N is the only complete candidate, abort the token as `NotCommitted`; otherwise enter PersistenceFaulted.
-- [ ] **Step 5: Prove the resolver never guesses from cached bytes or the return value of `FlushFileBuffers`; commit `feat(persistence): publish and resolve checkpoint commits`.**
+- [x] **Step 1: Red-test alternate-slot publication** with exact phase injection before write, during short/torn write, after write, during flush, after flush and during readback.
+- [x] **Step 2: Implement publication:** encode generation N+1 into the inactive slot, issue one exact 4096-byte write, flush manifest, re-read slot, and run full candidate validation.
+- [x] **Step 3: Classify outcomes exactly at the SPEC commit point:** failures before the slot-write attempt are `NotCommitted`; slot-write or manifest-flush errors after the attempt begins are `CommitIndeterminate`; successful manifest `FlushFileBuffers()` establishes `Committed`. A later readback/validation failure is post-commit and therefore `CommittedNeedsReconciliation`, never `CommitIndeterminate` or `NotCommitted`.
+- [x] **Step 4: Implement resolver** by closing/reopening file handles, validating the candidate through normal recovery, and re-executing the manifest flush when the new candidate is complete. If N+1 is complete and that flush succeeds, enter reconciliation; if the attempted slot is provably invalid and N is the only complete candidate, abort the token as `NotCommitted`; otherwise enter PersistenceFaulted.
+- [x] **Step 5: Prove the resolver never guesses from cached bytes or the return value of `FlushFileBuffers`; commit `feat(persistence): publish and resolve checkpoint commits`.**
 
 ### Task 32: Install the committed view and reconcile snapshot state
 
