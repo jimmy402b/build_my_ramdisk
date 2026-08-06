@@ -242,4 +242,53 @@ TEST_CASE(generation_zero_concurrent_creators_have_one_complete_winner) {
     REQUIRE_EQ(recovered.image->checkpoint_generation, std::uint64_t{0});
 }
 
+TEST_CASE(generation_zero_phase_fault_matrix_stops_at_every_boundary) {
+    constexpr std::array phases{
+        GenerationZeroCreatePhase::BeforeManifestClaim,
+        GenerationZeroCreatePhase::AfterManifestClaim,
+        GenerationZeroCreatePhase::BeforeBasePublish,
+        GenerationZeroCreatePhase::AfterBasePublish,
+        GenerationZeroCreatePhase::BeforeJournalCreate,
+        GenerationZeroCreatePhase::BeforeJournalFlush,
+        GenerationZeroCreatePhase::BeforeJournalReadback,
+        GenerationZeroCreatePhase::BeforeManifestInitialization,
+        GenerationZeroCreatePhase::BeforeManifestSlotWrite,
+        GenerationZeroCreatePhase::BeforeManifestSlotFlush,
+        GenerationZeroCreatePhase::BeforeManifestSlotReadback,
+        GenerationZeroCreatePhase::BeforeRecovery};
+
+    for (const auto target : phases) {
+        CreateSandbox sandbox;
+        const auto request = create_request(sandbox.root());
+        std::size_t hits{};
+        auto result = create_generation_zero_image_for_testing(
+            OperationContext{}, request,
+            [&](const GenerationZeroCreatePhase observed) {
+                if (observed != target) return Result<void>::success();
+                ++hits;
+                return Result<void>::failure({
+                    ErrorDomain::persistence,
+                    static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
+                    L"generation_zero_phase_fault_matrix",
+                    L"injected phase failure"});
+            });
+        REQUIRE(!result.ok());
+        REQUIRE_EQ(hits, std::size_t{1});
+        if (target == GenerationZeroCreatePhase::BeforeManifestClaim) {
+            REQUIRE(std::filesystem::is_empty(sandbox.root()));
+        } else {
+            REQUIRE(!std::filesystem::is_empty(sandbox.root()));
+        }
+        if (target == GenerationZeroCreatePhase::BeforeRecovery) {
+            auto recovered = recover_complete_image(
+                OperationContext{}, sandbox.root(), "disk.rdm",
+                request.recovery);
+            REQUIRE(recovered.ok());
+            REQUIRE_EQ(
+                recovered.image->checkpoint_generation,
+                std::uint64_t{0});
+        }
+    }
+}
+
 }  // namespace

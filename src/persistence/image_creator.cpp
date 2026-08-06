@@ -31,6 +31,21 @@ Result<T> create_failure(
         native_code});
 }
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+thread_local const GenerationZeroCreateHook* g_create_hook{};
+
+Result<void> create_phase(const GenerationZeroCreatePhase phase) {
+    if (g_create_hook == nullptr) return Result<void>::success();
+    try {
+        return (*g_create_hook)(phase);
+    } catch (...) {
+        return create_failure<void>(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"generation-zero creation test hook threw");
+    }
+}
+#endif
+
 class EmptyPayloadSource final : public IVhdxPayloadSource {
 public:
     Result<void> read_payload(
@@ -82,6 +97,10 @@ Result<void> write_and_verify_genesis_journal(
     const GenerationZeroCreateRequest& request,
     const JournalHeader& header,
     JournalCommitDescriptor& descriptor) {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    auto phase = create_phase(GenerationZeroCreatePhase::BeforeJournalCreate);
+    if (!phase.ok()) return phase;
+#endif
     auto capability = create_bundle_file_for_mutation(
         writer, request.journal_relative_name);
     if (!capability.ok()) return Result<void>::failure(capability.error());
@@ -122,11 +141,19 @@ Result<void> write_and_verify_genesis_journal(
     written = file->write_exact(
         context, kJournalAlignment, commit_bytes.value());
     if (!written.ok()) return written;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::BeforeJournalFlush);
+    if (!phase.ok()) return phase;
+#endif
     auto flushed = file->flush(context);
     if (!flushed.ok()) return flushed;
 
     JournalHeaderBytes header_readback{};
     std::array<std::byte, kJournalAlignment> commit_readback{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::BeforeJournalReadback);
+    if (!phase.ok()) return phase;
+#endif
     auto read = file->read_exact(context, 0, header_readback);
     if (!read.ok()) return read;
     read = file->read_exact(
@@ -157,6 +184,11 @@ Result<void> publish_manifest_slot(
     const OperationContext& context,
     BundleWriterLock& writer,
     const ManifestSlot& slot) {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    auto phase = create_phase(
+        GenerationZeroCreatePhase::BeforeManifestInitialization);
+    if (!phase.ok()) return phase;
+#endif
     auto capability = open_locked_manifest_for_mutation(writer);
     if (!capability.ok()) return Result<void>::failure(capability.error());
     auto opened = open_validated_persistence_file(capability.move_value());
@@ -180,8 +212,16 @@ Result<void> publish_manifest_slot(
 
     auto encoded = encode_manifest_slot(slot);
     if (!encoded.ok()) return Result<void>::failure(encoded.error());
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::BeforeManifestSlotWrite);
+    if (!phase.ok()) return phase;
+#endif
     written = file->write_exact(context, 0, encoded.value());
     if (!written.ok()) return written;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::BeforeManifestSlotFlush);
+    if (!phase.ok()) return phase;
+#endif
     flushed = file->flush(context);
     if (!flushed.ok()) {
         return create_failure<void>(
@@ -190,6 +230,10 @@ Result<void> publish_manifest_slot(
             flushed.error().native_code);
     }
     ManifestSlotBytes readback{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::BeforeManifestSlotReadback);
+    if (!phase.ok()) return phase;
+#endif
     read = file->read_exact(context, 0, readback);
     if (!read.ok()) {
         return create_failure<void>(
@@ -216,6 +260,11 @@ Result<RecoveredImage> create_generation_zero_image(
     }
     auto live = check_operation_context(context);
     if (!live.ok()) return Result<RecoveredImage>::failure(live.error());
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    auto phase = create_phase(GenerationZeroCreatePhase::BeforeManifestClaim);
+    if (!phase.ok()) return Result<RecoveredImage>::failure(phase.error());
+#endif
 
     EmptyPayloadSource source;
     const std::vector<std::uint64_t> no_payloads;
@@ -262,10 +311,20 @@ Result<RecoveredImage> create_generation_zero_image(
         return Result<RecoveredImage>::failure(writer_result.error());
     }
     auto writer = writer_result.move_value();
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::AfterManifestClaim);
+    if (!phase.ok()) return Result<RecoveredImage>::failure(phase.error());
+    phase = create_phase(GenerationZeroCreatePhase::BeforeBasePublish);
+    if (!phase.ok()) return Result<RecoveredImage>::failure(phase.error());
+#endif
     auto base = publish_sparse_vhdx_base(
         context, writer, request.base_temporary_name,
         request.base_relative_name, plan.value(), source);
     if (!base.ok()) return Result<RecoveredImage>::failure(base.error());
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::AfterBasePublish);
+    if (!phase.ok()) return Result<RecoveredImage>::failure(phase.error());
+#endif
 
     JournalHeader header{};
     header.image_uuid = request.image_uuid;
@@ -325,6 +384,10 @@ Result<RecoveredImage> create_generation_zero_image(
         return Result<RecoveredImage>::failure(closed.error());
     }
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = create_phase(GenerationZeroCreatePhase::BeforeRecovery);
+    if (!phase.ok()) return Result<RecoveredImage>::failure(phase.error());
+#endif
     auto recovered = recover_complete_image(
         context, request.bundle_root, request.manifest_relative_name,
         request.recovery);
@@ -345,5 +408,25 @@ Result<RecoveredImage> create_generation_zero_image(
     return Result<RecoveredImage>::success(
         std::move(*recovered.image));
 }
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+Result<RecoveredImage> create_generation_zero_image_for_testing(
+    const OperationContext& context,
+    const GenerationZeroCreateRequest& request,
+    GenerationZeroCreateHook hook) {
+    if (!hook || g_create_hook != nullptr) {
+        return create_failure<RecoveredImage>(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"generation-zero test hook must be nonempty and nonnested");
+    }
+    struct ScopedHook final {
+        explicit ScopedHook(const GenerationZeroCreateHook& value) noexcept {
+            g_create_hook = &value;
+        }
+        ~ScopedHook() noexcept { g_create_hook = nullptr; }
+    } scoped(hook);
+    return create_generation_zero_image(context, request);
+}
+#endif
 
 }  // namespace myrd::persistence

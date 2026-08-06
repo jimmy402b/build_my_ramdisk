@@ -8,6 +8,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+#include <functional>
+#endif
 
 namespace myrd::persistence {
 
@@ -38,5 +41,31 @@ struct GenerationZeroCreateRequest final {
 [[nodiscard]] Result<RecoveredImage> create_generation_zero_image(
     const OperationContext& context,
     const GenerationZeroCreateRequest& request);
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+enum class GenerationZeroCreatePhase : std::uint8_t {
+    BeforeManifestClaim,
+    AfterManifestClaim,
+    BeforeBasePublish,
+    AfterBasePublish,
+    BeforeJournalCreate,
+    BeforeJournalFlush,
+    BeforeJournalReadback,
+    BeforeManifestInitialization,
+    BeforeManifestSlotWrite,
+    BeforeManifestSlotFlush,
+    BeforeManifestSlotReadback,
+    BeforeRecovery,
+};
+
+using GenerationZeroCreateHook =
+    std::function<Result<void>(GenerationZeroCreatePhase)>;
+
+[[nodiscard]] Result<RecoveredImage>
+create_generation_zero_image_for_testing(
+    const OperationContext& context,
+    const GenerationZeroCreateRequest& request,
+    GenerationZeroCreateHook hook);
+#endif
 
 }  // namespace myrd::persistence
