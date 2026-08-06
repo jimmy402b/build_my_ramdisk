@@ -451,16 +451,26 @@ void validate_candidate(
     }
     pass(evidence, ManifestCandidateCheck::SlotSupport);
     auto semantics = validate_manifest_slot_semantics(*evidence.slot);
-    if (!semantics.ok() ||
-        inspected_m2_block_size != kM2BlockSize ||
-        evidence.slot->slot_index != physical_slot) {
+    if (!semantics.ok()) {
         fail(evidence, ManifestCandidateCheck::SlotSemantics,
              ManifestCandidateCheckStatus::Corrupt,
-             semantics.ok()
-                 ? std::optional<Error>{recovery_error(
-                       PersistenceErrorCode::ManifestCorrupt,
-                       L"manifest slot index does not match its position")}
-                 : std::optional<Error>{semantics.error()});
+             semantics.error());
+        return;
+    }
+    if (inspected_m2_block_size != kM2BlockSize) {
+        fail(evidence, ManifestCandidateCheck::SlotSemantics,
+             ManifestCandidateCheckStatus::Corrupt,
+             recovery_error(
+                 PersistenceErrorCode::ManifestCorrupt,
+                 L"manifest M2 block size is unsupported"));
+        return;
+    }
+    if (evidence.slot->slot_index != physical_slot) {
+        fail(evidence, ManifestCandidateCheck::SlotSemantics,
+             ManifestCandidateCheckStatus::Corrupt,
+             recovery_error(
+                 PersistenceErrorCode::ManifestCorrupt,
+                 L"manifest slot index does not match its position"));
         return;
     }
     if (evidence.slot->geometry.virtual_bytes >
