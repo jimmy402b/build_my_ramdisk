@@ -3,6 +3,33 @@
 namespace myrd::persistence {
 namespace {
 
+template <class T>
+Result<T> compaction_failure(
+    const PersistenceErrorCode code,
+    const wchar_t* message) {
+    return Result<T>::failure({
+        ErrorDomain::persistence,
+        static_cast<std::uint32_t>(code),
+        L"CompactionCoordinator::begin",
+        message,
+        0});
+}
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+Result<void> run_phase_hook(
+    const CompactionPhaseHook* hook,
+    const CompactionPhase phase) {
+    if (hook == nullptr || !*hook) return Result<void>::success();
+    try {
+        return (*hook)(phase);
+    } catch (...) {
+        return compaction_failure<void>(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"compaction phase hook threw an exception");
+    }
+}
+#endif
+
 // Compare a/b with c/d exactly without cross multiplication. Each reciprocal
 // step reverses ordering, and Euclidean reduction guarantees termination.
 int compare_positive_fractions(
@@ -40,6 +67,130 @@ int compare_positive_fractions(
 }
 
 }  // namespace
+
+PreparedCompactionOperation::PreparedCompactionOperation(
+    PublishOperationLease lease,
+    BackingView captured_view) noexcept
+    : lease_(std::move(lease)),
+      captured_view_(std::move(captured_view)) {}
+
+PreparedCompactionOperation::PreparedCompactionOperation(
+    PreparedCompactionOperation&& other) noexcept
+    : lease_(std::move(other.lease_)),
+      captured_view_(std::move(other.captured_view_)) {
+    other.lease_.reset();
+    other.captured_view_ = {};
+}
+
+PreparedCompactionOperation& PreparedCompactionOperation::operator=(
+    PreparedCompactionOperation&& other) noexcept {
+    if (this != &other) {
+        abandon_noexcept();
+        lease_ = std::move(other.lease_);
+        captured_view_ = std::move(other.captured_view_);
+        other.lease_.reset();
+        other.captured_view_ = {};
+    }
+    return *this;
+}
+
+PreparedCompactionOperation::~PreparedCompactionOperation() {
+    abandon_noexcept();
+}
+
+bool PreparedCompactionOperation::active() const noexcept {
+    return lease_.has_value() && lease_->active() &&
+        captured_view_.store != nullptr;
+}
+
+Result<void> PreparedCompactionOperation::abort() {
+    captured_view_ = {};
+    if (!lease_.has_value()) return Result<void>::success();
+    auto result = lease_->abort();
+    lease_.reset();
+    if (!result.ok()) return Result<void>::failure(result.error());
+    return Result<void>::success();
+}
+
+void PreparedCompactionOperation::abandon_noexcept() noexcept {
+    captured_view_ = {};
+    if (lease_.has_value()) {
+        (void)lease_->abort();
+        lease_.reset();
+    }
+}
+
+Result<PreparedCompactionOperation> CompactionCoordinator::begin(
+    const OperationContext& context) {
+    return begin_impl(context
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        , nullptr
+#endif
+    );
+}
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+Result<PreparedCompactionOperation>
+CompactionCoordinator::begin_for_testing(
+    const OperationContext& context,
+    CompactionPhaseHook hook) {
+    if (!hook) {
+        return compaction_failure<PreparedCompactionOperation>(
+            PersistenceErrorCode::InvalidFormat,
+            L"compaction test phase hook is empty");
+    }
+    return begin_impl(context, &hook);
+}
+#endif
+
+Result<PreparedCompactionOperation> CompactionCoordinator::begin_impl(
+    const OperationContext& context
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    , const CompactionPhaseHook* hook
+#endif
+) {
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<PreparedCompactionOperation>::failure(live.error());
+    }
+    auto begun = session_->begin_compaction();
+    if (!begun.ok()) {
+        return Result<PreparedCompactionOperation>::failure(begun.error());
+    }
+    auto lease = begun.move_value();
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    auto phase = run_phase_hook(
+        hook, CompactionPhase::OperationGateAcquired);
+    if (!phase.ok()) {
+        return Result<PreparedCompactionOperation>::failure(phase.error());
+    }
+#endif
+
+    auto captured = store_->capture_backing_view();
+    if (captured.store == nullptr ||
+        captured.generation == kInvalidGeneration) {
+        return compaction_failure<PreparedCompactionOperation>(
+            PersistenceErrorCode::InvalidFormat,
+            L"compaction requires a valid immutable durable backing view");
+    }
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    phase = run_phase_hook(
+        hook, CompactionPhase::DurableViewCaptured);
+    if (!phase.ok()) {
+        return Result<PreparedCompactionOperation>::failure(phase.error());
+    }
+#endif
+
+    live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<PreparedCompactionOperation>::failure(live.error());
+    }
+    return Result<PreparedCompactionOperation>::success(
+        PreparedCompactionOperation{
+            std::move(lease), std::move(captured)});
+}
 
 CompactionRecommendation should_compact(
     const CompactionMetrics& metrics,

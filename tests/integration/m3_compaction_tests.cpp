@@ -1,15 +1,48 @@
 #include "test_framework.h"
 
 #include "src/persistence/compaction_coordinator.h"
+#include "tests/support/fake_backing_store.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace myrd::persistence {
 namespace {
+
+OperationContext bounded_context() {
+    return OperationContext{
+        {}, std::chrono::steady_clock::now() + std::chrono::seconds(5)};
+}
+
+std::unique_ptr<DynamicBlockStore> make_live_store(
+    const BackingGeneration generation = 7) {
+    DynamicBlockStoreOptions options{
+        2 * kM2BlockSize,
+        3 * kM2BlockSize,
+        kM2BlockSize,
+        2 * kM2BlockSize,
+        8,
+        64,
+        2 * kMinimumSnapshotCowBytes,
+        std::chrono::milliseconds{250},
+    };
+    auto created = DynamicBlockStore::create({
+        4 * kM2BlockSize,
+        512,
+        options,
+        InitialBlockState::BackingUnresident,
+        test::FakeBackingStoreBuilder(91).build(),
+        generation,
+    });
+    REQUIRE(created.ok());
+    return created.move_value();
+}
 
 TEST_CASE(compaction_phase_contract_is_frozen_in_execution_order) {
     constexpr std::array expected{
@@ -205,6 +238,87 @@ TEST_CASE(invalid_ratio_fails_closed_even_when_another_threshold_matches) {
     REQUIRE(!result.policy_valid);
     REQUIRE(result.journal_physical_bytes);
     REQUIRE(!result.recommended);
+}
+
+TEST_CASE(compaction_begin_holds_the_single_gate_but_live_mutations_continue) {
+    auto session = ImageSession::ready();
+    auto store = make_live_store();
+    CompactionCoordinator coordinator(session, *store);
+    std::vector<CompactionPhase> phases;
+
+    auto begun = coordinator.begin_for_testing(
+        bounded_context(),
+        [&phases](const CompactionPhase phase) {
+            phases.push_back(phase);
+            return Result<void>::success();
+        });
+    REQUIRE(begun.ok());
+    auto operation = begun.move_value();
+    REQUIRE(operation.active());
+    REQUIRE_EQ(operation.captured_view().generation, 7ull);
+    REQUIRE(operation.captured_view().store != nullptr);
+    REQUIRE_EQ(phases, (std::vector<CompactionPhase>{
+        CompactionPhase::OperationGateAcquired,
+        CompactionPhase::DurableViewCaptured}));
+
+    std::array<std::byte, kM2BlockSize> data{};
+    data.fill(std::byte{0x5A});
+    REQUIRE(store->write(bounded_context(), 0, data).ok());
+
+    const auto checkpoint = session.begin_checkpoint();
+    REQUIRE(!checkpoint.ok());
+    REQUIRE_EQ(checkpoint.error().code,
+        static_cast<std::uint32_t>(PersistenceErrorCode::OperationBusy));
+    const auto second_compaction = session.begin_compaction();
+    REQUIRE(!second_compaction.ok());
+    REQUIRE_EQ(second_compaction.error().code,
+        static_cast<std::uint32_t>(PersistenceErrorCode::OperationBusy));
+    REQUIRE_EQ(session.phase(), SessionPhase::Compacting);
+
+    REQUIRE(operation.abort().ok());
+    REQUIRE(!operation.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+}
+
+TEST_CASE(compaction_begin_failure_releases_gate_and_frozen_view) {
+    auto session = ImageSession::ready();
+    auto store = make_live_store(11);
+    CompactionCoordinator coordinator(session, *store);
+
+    const auto failed = coordinator.begin_for_testing(
+        bounded_context(),
+        [](const CompactionPhase phase) -> Result<void> {
+            if (phase == CompactionPhase::DurableViewCaptured) {
+                return Result<void>::failure({
+                    ErrorDomain::persistence,
+                    static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
+                    L"m3_compaction_tests",
+                    L"injected capture-boundary failure",
+                    0});
+            }
+            return Result<void>::success();
+        });
+    REQUIRE(!failed.ok());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    auto checkpoint = session.begin_checkpoint();
+    REQUIRE(checkpoint.ok());
+    REQUIRE(checkpoint.value().abort().ok());
+}
+
+TEST_CASE(compaction_begin_rejects_cancelled_context_before_taking_gate) {
+    auto session = ImageSession::ready();
+    auto store = make_live_store();
+    CompactionCoordinator coordinator(session, *store);
+    std::stop_source stop;
+    stop.request_stop();
+
+    const auto result = coordinator.begin(OperationContext{
+        stop.get_token(),
+        std::chrono::steady_clock::now() + std::chrono::seconds(5)});
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(result.error().code,
+        static_cast<std::uint32_t>(OperationErrorCode::cancelled));
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
 }
 
 }  // namespace

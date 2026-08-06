@@ -1,9 +1,18 @@
 #pragma once
 
+#include "src/common/operation_context.h"
+#include "src/common/result.h"
+#include "src/persistence/image_session.h"
+#include "src/storage/dynamic_block_store.h"
+
 #include <cstddef>
 #include <cstdint>
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+#include <functional>
+#endif
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace myrd::persistence {
 
@@ -99,6 +108,72 @@ struct CompactionRecommendation final {
 [[nodiscard]] CompactionRecommendation should_compact(
     const CompactionMetrics& metrics,
     const CompactionPolicy& policy) noexcept;
+
+// Move-only ownership of the compaction gate and the immutable durable source
+// view. Destruction before publication safely aborts the session operation.
+class PreparedCompactionOperation final {
+public:
+    PreparedCompactionOperation() = delete;
+    PreparedCompactionOperation(const PreparedCompactionOperation&) = delete;
+    PreparedCompactionOperation& operator=(
+        const PreparedCompactionOperation&) = delete;
+    PreparedCompactionOperation(PreparedCompactionOperation&&) noexcept;
+    PreparedCompactionOperation& operator=(
+        PreparedCompactionOperation&&) noexcept;
+    ~PreparedCompactionOperation();
+
+    [[nodiscard]] bool active() const noexcept;
+    [[nodiscard]] const BackingView& captured_view() const noexcept {
+        return captured_view_;
+    }
+    Result<void> abort();
+
+private:
+    friend class CompactionCoordinator;
+    PreparedCompactionOperation(
+        PublishOperationLease lease,
+        BackingView captured_view) noexcept;
+    void abandon_noexcept() noexcept;
+
+    std::optional<PublishOperationLease> lease_{};
+    BackingView captured_view_{};
+};
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+using CompactionPhaseHook =
+    std::function<Result<void>(CompactionPhase)>;
+#endif
+
+class CompactionCoordinator final {
+public:
+    CompactionCoordinator(
+        ImageSession& session,
+        DynamicBlockStore& store) noexcept
+        : session_(&session), store_(&store) {}
+
+    CompactionCoordinator(const CompactionCoordinator&) = delete;
+    CompactionCoordinator& operator=(const CompactionCoordinator&) = delete;
+
+    [[nodiscard]] Result<PreparedCompactionOperation> begin(
+        const OperationContext& context);
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    [[nodiscard]] Result<PreparedCompactionOperation> begin_for_testing(
+        const OperationContext& context,
+        CompactionPhaseHook hook);
+#endif
+
+private:
+    [[nodiscard]] Result<PreparedCompactionOperation> begin_impl(
+        const OperationContext& context
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        , const CompactionPhaseHook* hook
+#endif
+    );
+
+    ImageSession* session_;
+    DynamicBlockStore* store_;
+};
 
 constexpr std::string_view to_string(const CompactionPhase phase) noexcept {
     switch (phase) {
