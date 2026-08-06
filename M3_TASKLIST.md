@@ -175,7 +175,7 @@ Suggested commit:
 | 22 | Lazy BAT reader | S | DONE | 21 | M3-V1 |
 | 23 | Sparse dynamic VHDX writer | S | DONE | 11,21,22 | M3-V1 |
 | 24 | Windows native VHDX gate | C | DONE | 23 | M3-V5 |
-| 25 | Journal-first composite backing | O | PENDING | 20,22 | M3-V2 |
+| 25 | Journal-first composite backing | O | DONE | 20,22 | M3-V2 |
 | 26 | Recovery engine 与 BackingView | O | PENDING | 15,25 | M3-V2 |
 | 27 | Generation-zero create/reopen | S | PENDING | 12,14,16,19,23,25,26 | M3-V2 |
 | 28 | M2 lazy-load integration | O | PENDING | 09,27 | M3-V3/V7 |
@@ -764,11 +764,11 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：O。允许文件：** `composite_backing_store.*`、truth-table/instrumentation tests。
 
-- [ ] 独立冻结 Journal DATA/ZERO/DISCARD/Absent × VHDX data/zero/absent 真值表。
-- [ ] DATA 胜出；ZERO/DISCARD 遮蔽旧 base；只有 Absent 才 fallback；corruption 永不 fallback。
-- [ ] immutable view/cache identity 隔离红灯：旧 reader 与新 generation 并发时各自看到固定映射。
-- [ ] 计数证明 open 只做有界 metadata/index read，first touch 只读相关 BAT/index/payload。
-- [ ] 跑 `m3-v2` 中 recovery/layering 项；建议提交 `feat(persistence): compose immutable backing layers`。
+- [x] 独立冻结 Journal DATA/ZERO/DISCARD/Absent × VHDX data/zero/absent 真值表。
+- [x] DATA 胜出；ZERO/DISCARD 遮蔽旧 base；只有 Absent 才 fallback；corruption 永不 fallback。
+- [x] immutable view/cache identity 隔离红灯：旧 reader 与新 generation 并发时各自看到固定映射。
+- [x] 计数证明 open 只做有界 metadata/index read，first touch 只读相关 BAT/index/payload。
+- [x] Debug/Release `m3-v2`、Debug 全量与独立复审通过；实现提交 `6594907`。
 
 ## Task 26 — Recovery engine 与 immutable BackingView
 

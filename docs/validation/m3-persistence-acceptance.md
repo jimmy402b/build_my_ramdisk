@@ -1414,3 +1414,66 @@ Task 24 verdict: **DONE**. Windows accepts and attaches product-written dynamic
 VHDX bases, and the product parser/reader accepts a Windows-created compatible
 VHDX. This authorizes Task 25; it does not yet compose journal-first fallback,
 recover manifests or create complete generation-zero image bundles.
+
+## Task 25 — Journal-first immutable composite backing acceptance
+
+Task 25 is accepted at implementation commit `6594907`. A separate oracle
+froze the complete 4x3 journal DATA/ZERO/DISCARD/Absent by VHDX
+data/zero/absent truth table before production resolution was implemented.
+Journal DATA is authoritative, ZERO and DISCARD both return logical zero and
+suppress older base data, and only an explicit journal Absent reaches VHDX.
+Journal or base corruption, I/O failure, cancellation and deadline errors keep
+their original `Error` provenance and are never reinterpreted as Absent.
+
+Each composite owns one immutable JournalReader/VhdxReader pair and a complete
+identity containing image geometry and UUID, generations, Windows and format
+file identities, VHDX virtual-disk ID and length, journal epoch/committed
+length/commit/root, root generation and feature flags. Old and new generation
+views remain isolated under concurrent reads. Diagnostic counters are atomic
+and monotonic; their multi-field sample is explicitly approximate rather than
+a transactional snapshot.
+
+The production-adapter lazy gate creates real journal and VHDX files through
+the product writers and opens the product readers. VHDX open is frozen at 11
+fixed structural metadata reads totaling 204,848 bytes; JournalReader open
+does not read an index, and CompositeBackingStore creation performs no I/O.
+One first-touch journal miss reads exactly one 4 KiB index root, one 4 KiB BAT
+page and one 64 KiB payload range. BAT and payload counters are both one and
+peak BAT cache use is one 4 KiB page. Real ZERO and DISCARD journal records
+also prove that the production adapter never touches older VHDX payload data.
+
+The first independent implementation review returned NO-GO with P0/P1/P2 =
+0/2/2. It correctly found that the initial lazy gate used only fakes; that was
+replaced by the real-reader range gate above. Its DISCARD-statistics finding
+became inapplicable after inaccurate hit-kind statistics were removed: the
+accepted `IBackingStore` contract exposes Data/AllZero, while the journal wire
+format still preserves ZERO versus DISCARD. Identity-factory ownership and
+non-transactional statistics were documented. The final independent review
+returned **GO** with P0/P1/P2 = 0/0/0.
+
+Final verification evidence:
+
+- initial focused RED failed because `composite_backing_store.h` was absent;
+- Debug and Release `unit.m3.composite_backing` passed all 11 cases;
+- final complete Debug CTest passed 74/74, including native M3-V5;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built successfully;
+- production `dumpbin /symbols` found zero `create_for_testing` symbols;
+- `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `composite_backing_store.h`:
+  `BD9AB0F2DD155A6E25D15D74F83DA8D3EE79266C995C9233B0EE2AB2FB4D6B55`;
+- `composite_backing_store.cpp`:
+  `70E0A2F41C7F2552F1C6E055E9DD5CAE091324DF878C228B5FD62A3998591EBC`;
+- composite tests:
+  `A3E934B4D1C17EBE8B173DE230C74EBECBEA67D65630188533B070674C809A60`;
+- Release composite test executable:
+  `D5EF538655861DF7A7F050421C8ECC9E0BB61A8880CDE85C0BCD2011F9E49869`;
+- production persistence library:
+  `AA2C23A160D1C2131A8158EE9DA2C16698B74A6C0FE803DAB250A28F03DA2EE2`.
+
+Task 25 verdict: **DONE**. This authorizes Task 26 to validate manifest
+candidates and construct immutable recovery views. It does not yet select a
+recoverable generation, create a generation-zero image bundle or install the
+backing into M2.

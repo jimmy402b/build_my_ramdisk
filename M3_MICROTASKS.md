@@ -458,17 +458,17 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 
 允许：`composite_backing_store.*`、对应 tests。
 
-- [ ] `T25.1 [H]` 独立作者冻结 4×3 truth table：journal DATA/ZERO/DISCARD/
+- [x] `T25.1 [H]` 独立作者冻结 4×3 truth table：journal DATA/ZERO/DISCARD/
   Absent × VHDX data/zero/absent；只有 journal Absent fallback，corrupt 永不 fallback。
-- [ ] `T25.2 [M]` 建 fake readers/counters 和 RED tests，覆盖 cancel/deadline、稳定
+- [x] `T25.2 [M]` 建 fake readers/counters 和 RED tests，覆盖 cancel/deadline、稳定
   corruption provenance、one-block output。
-- [ ] `T25.3 [X]` 实现 resolution precedence 与错误传播；禁止把 ZERO/DISCARD 当
+- [x] `T25.3 [X]` 实现 resolution precedence 与错误传播；禁止把 ZERO/DISCARD 当
   Absent，禁止读旧 layer 掩盖新 layer corruption。
-- [ ] `T25.4 [H]` 实现 immutable view/cache identity binding；publish 新 generation
+- [x] `T25.4 [H]` 实现 immutable view/cache identity binding；publish 新 generation
   后旧 reader 仍只见旧 base/journal/root。
-- [ ] `T25.5 [M]` lazy-I/O gate：open bounded metadata reads；一个 uncached block 只
+- [x] `T25.5 [M]` lazy-I/O gate：open bounded metadata reads；一个 uncached block 只
   读相关 index/BAT/payload；记录 calls/bytes/peak cache。
-- [ ] `T25.6 [X]` truth-table 与 lifetime independent review 后完成。
+- [x] `T25.6 [X]` truth-table 与 lifetime independent review 后完成。
 
 ### Task 26 — Recovery engine 与 immutable BackingView
 

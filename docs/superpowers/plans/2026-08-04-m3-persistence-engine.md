@@ -763,11 +763,11 @@ return ManifestCorrupt;
 **Depends on:** 20, 22
 **Files:** Create `src/persistence/composite_backing_store.h/.cpp`, `tests/unit/m3_composite_backing_store_tests.cpp`.
 
-- [ ] **Step 1: Have a separate test author build a truth table** for journal DATA/ZERO/DISCARD/Absent over VHDX data/zero/absent. DATA wins; ZERO and DISCARD suppress older VHDX data; only journal Absent falls through.
-- [ ] **Step 2: Red-test immutable view isolation:** an old reader remains bound to its old base/journal/root while a new generation is published. Cache keys must include complete backing identity.
-- [ ] **Step 3: Implement one-block resolution** with cancellation/deadline propagation and stable corruption provenance. Never interpret corruption as Absent or retry from an older layer.
-- [ ] **Step 4: Prove lazy behavior** with read counters: opening performs bounded metadata/index reads; reading one uncached 64 KiB block reads only the relevant index/BAT/payload ranges.
-- [ ] **Step 5: Commit.** `feat(persistence): compose immutable backing layers`.
+- [x] **Step 1: Have a separate test author build a truth table** for journal DATA/ZERO/DISCARD/Absent over VHDX data/zero/absent. DATA wins; ZERO and DISCARD suppress older VHDX data; only journal Absent falls through.
+- [x] **Step 2: Red-test immutable view isolation:** an old reader remains bound to its old base/journal/root while a new generation is published. Cache keys must include complete backing identity.
+- [x] **Step 3: Implement one-block resolution** with cancellation/deadline propagation and stable corruption provenance. Never interpret corruption as Absent or retry from an older layer.
+- [x] **Step 4: Prove lazy behavior** with read counters: opening performs bounded metadata/index reads; reading one uncached 64 KiB block reads only the relevant index/BAT/payload ranges.
+- [x] **Step 5: Commit.** `6594907` `feat(persistence): compose immutable backing layers`.
 
 ### Task 26: Recover the highest complete generation into a `BackingView`
 
