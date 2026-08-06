@@ -35,6 +35,10 @@ struct RecoveryCandidateDiagnostic final {
     bool has_error_provenance{};
     bool selected{};
     std::string safe_context{};
+    std::uint64_t base_structural_read_calls{};
+    std::uint64_t base_structural_read_bytes{};
+    std::uint64_t base_bat_read_calls_at_open{};
+    std::uint64_t base_payload_read_calls_at_open{};
 };
 
 struct RecoveredImage final {

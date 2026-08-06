@@ -239,28 +239,11 @@ Result<ParsedHeader> select_header(
         return vhdx_failure<ParsedHeader>(
             L"current VHDX header has nonzero reserved bytes");
     }
-    if (selected.version != 1 || selected.log_version != 0) {
-        return vhdx_failure<ParsedHeader>(
-            L"VHDX header version is outside the M3 profile",
-            PersistenceErrorCode::UnsupportedVhdx);
-    }
-    if (!is_nil(selected.log_guid)) {
-        return vhdx_failure<ParsedHeader>(
-            L"active VHDX logs are outside the M3 profile",
-            PersistenceErrorCode::UnsupportedVhdx);
-    }
     if (is_nil(selected.identity.file_write_guid) ||
         is_nil(selected.identity.data_write_guid)) {
         return vhdx_failure<ParsedHeader>(L"VHDX identity GUID is nil");
     }
-    std::uint64_t log_end = 0;
-    if (selected.log_length == 0 || selected.log_length % kMiB != 0 ||
-        selected.log_offset < kHeaderSectionBytes ||
-        selected.log_offset % kMiB != 0 ||
-        !checked_end(selected.log_offset, selected.log_length, log_end) ||
-        log_end > file_length) {
-        return vhdx_failure<ParsedHeader>(L"VHDX log range is invalid");
-    }
+    (void)file_length;
     return Result<ParsedHeader>::success(std::move(selected));
 }
 
@@ -474,9 +457,14 @@ Result<std::vector<MetadataEntry>> decode_metadata_table(
 Result<ParsedMetadata> read_metadata(
     const OperationContext& context,
     const std::shared_ptr<IPersistenceFile>& file,
-    const Region& region) {
+    const Region& region,
+    VhdxParseEvidence* evidence) {
     if (region.length < kMetadataTableBytes) {
         return vhdx_failure<ParsedMetadata>(L"metadata region is too small");
+    }
+    if (evidence != nullptr) {
+        ++evidence->structural_read_calls;
+        evidence->structural_read_bytes += kMetadataTableBytes;
     }
     auto table = read_array<kMetadataTableBytes>(context, file, region.offset);
     if (!table.ok()) return Result<ParsedMetadata>::failure(table.error());
@@ -486,6 +474,10 @@ Result<ParsedMetadata> read_metadata(
     ParsedMetadata result{};
     for (const auto& entry : entries.value()) {
         std::array<std::byte, 16> value{};
+        if (evidence != nullptr) {
+            ++evidence->structural_read_calls;
+            evidence->structural_read_bytes += entry.length;
+        }
         auto read = file->read_exact(
             context, region.offset + entry.offset,
             std::span(value).first(entry.length));
@@ -632,42 +624,119 @@ Result<VhdxFileIdentity> probe_vhdx_file_identity(
 Result<VhdxLayout> parse_vhdx_layout(
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file) {
+    return parse_vhdx_layout(context, std::move(file), nullptr);
+}
+
+Result<VhdxLayout> parse_vhdx_layout(
+    const OperationContext& context,
+    std::shared_ptr<IPersistenceFile> file,
+    VhdxParseEvidence* evidence) {
+    if (evidence != nullptr) {
+        *evidence = {};
+    }
     try {
     if (!file) return vhdx_failure<VhdxLayout>(L"VHDX file is null");
     auto live = check_operation_context(context);
     if (!live.ok()) return Result<VhdxLayout>::failure(live.error());
     auto length = file->length(context);
     if (!length.ok()) return translate_read_error<VhdxLayout>(length.error());
+    if (evidence != nullptr) {
+        evidence->file_length = length.value();
+    }
     if (length.value() < kHeaderSectionBytes) {
         return vhdx_failure<VhdxLayout>(L"VHDX header section is truncated");
+    }
+    if (evidence != nullptr) {
+        ++evidence->structural_read_calls;
+        evidence->structural_read_bytes += 8;
     }
     auto identifier = read_array<8>(context, file, 0);
     if (!identifier.ok()) return Result<VhdxLayout>::failure(identifier.error());
     if (!signature(identifier.value(), "vhdxfile")) {
         return vhdx_failure<VhdxLayout>(L"VHDX identifier is invalid");
     }
+    if (evidence != nullptr) {
+        ++evidence->structural_read_calls;
+        evidence->structural_read_bytes += kHeaderBytes;
+    }
     auto first_header = read_array<kHeaderBytes>(context, file, kHeader1Offset);
     if (!first_header.ok()) return Result<VhdxLayout>::failure(first_header.error());
+    if (evidence != nullptr) {
+        ++evidence->structural_read_calls;
+        evidence->structural_read_bytes += kHeaderBytes;
+    }
     auto second_header = read_array<kHeaderBytes>(context, file, kHeader2Offset);
     if (!second_header.ok()) return Result<VhdxLayout>::failure(second_header.error());
     auto header = select_header(
         first_header.value(), second_header.value(), length.value());
     if (!header.ok()) return Result<VhdxLayout>::failure(header.error());
 
+    if (evidence != nullptr) {
+        evidence->identity = header.value().identity;
+        evidence->stage = VhdxParseStage::Profile;
+    }
+    if (header.value().version != 1 || header.value().log_version != 0) {
+        return vhdx_failure<VhdxLayout>(
+            L"VHDX header version is outside the M3 profile",
+            PersistenceErrorCode::UnsupportedVhdx);
+    }
+    if (!is_nil(header.value().log_guid)) {
+        return vhdx_failure<VhdxLayout>(
+            L"active VHDX logs are outside the M3 profile",
+            PersistenceErrorCode::UnsupportedVhdx);
+    }
+    if (evidence != nullptr) {
+        evidence->stage = VhdxParseStage::Layout;
+    }
+    std::uint64_t log_end = 0;
+    if (header.value().log_length == 0 ||
+        header.value().log_length % kMiB != 0 ||
+        header.value().log_offset < kHeaderSectionBytes ||
+        header.value().log_offset % kMiB != 0 ||
+        !checked_end(header.value().log_offset,
+                     header.value().log_length, log_end) ||
+        log_end > length.value()) {
+        return vhdx_failure<VhdxLayout>(L"VHDX log range is invalid");
+    }
+
+    if (evidence != nullptr) {
+        ++evidence->structural_read_calls;
+        evidence->structural_read_bytes += kRegionTableBytes;
+    }
     auto first_region = read_array<kRegionTableBytes>(
         context, file, kRegion1Offset);
     if (!first_region.ok()) return Result<VhdxLayout>::failure(first_region.error());
+    if (evidence != nullptr) {
+        ++evidence->structural_read_calls;
+        evidence->structural_read_bytes += kRegionTableBytes;
+    }
     auto second_region = read_array<kRegionTableBytes>(
         context, file, kRegion2Offset);
     if (!second_region.ok()) return Result<VhdxLayout>::failure(second_region.error());
     auto regions = select_regions(
         first_region.value(), second_region.value(), header.value(),
         length.value());
-    if (!regions.ok()) return Result<VhdxLayout>::failure(regions.error());
+    if (!regions.ok()) {
+        if (evidence != nullptr &&
+            regions.error().domain == ErrorDomain::persistence &&
+            regions.error().code == static_cast<std::uint32_t>(
+                PersistenceErrorCode::UnsupportedVhdx)) {
+            evidence->stage = VhdxParseStage::Profile;
+        }
+        return Result<VhdxLayout>::failure(regions.error());
+    }
 
     auto metadata = read_metadata(
-        context, file, regions.value().metadata);
-    if (!metadata.ok()) return Result<VhdxLayout>::failure(metadata.error());
+        context, file, regions.value().metadata, evidence);
+    if (!metadata.ok()) {
+        if (evidence != nullptr &&
+            metadata.error().domain == ErrorDomain::persistence &&
+            metadata.error().code == static_cast<std::uint32_t>(
+                PersistenceErrorCode::UnsupportedVhdx)) {
+            evidence->stage = VhdxParseStage::Profile;
+        }
+        return Result<VhdxLayout>::failure(metadata.error());
+    }
 
     const auto payload_blocks =
         (metadata.value().virtual_size - 1) / metadata.value().block_size + 1;
@@ -706,6 +775,9 @@ Result<VhdxLayout> parse_vhdx_layout(
     result.log_offset_ = header.value().log_offset;
     result.log_length_ = header.value().log_length;
     result.file_length_ = length.value();
+    if (evidence != nullptr) {
+        evidence->stage = VhdxParseStage::Complete;
+    }
     return Result<VhdxLayout>::success(std::move(result));
     } catch (const std::bad_alloc&) {
         return vhdx_failure<VhdxLayout>(

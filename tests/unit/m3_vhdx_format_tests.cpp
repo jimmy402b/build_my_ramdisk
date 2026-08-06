@@ -284,6 +284,47 @@ TEST_CASE(vhdx_parser_accepts_independent_strict_dynamic_golden_bytes) {
         image.header2.begin() + 32));
 }
 
+TEST_CASE(vhdx_parser_reports_staged_identity_profile_layout_evidence) {
+    {
+        auto image = golden_vhdx();
+        auto opened = open_fixture(image);
+        VhdxParseEvidence evidence{};
+        auto parsed = parse_vhdx_layout(
+            OperationContext{}, std::move(opened.file), &evidence);
+        REQUIRE(parsed.ok());
+        REQUIRE_EQ(evidence.stage, VhdxParseStage::Complete);
+        REQUIRE(evidence.identity.has_value());
+        REQUIRE_EQ(evidence.identity.value(), parsed.value().file_identity());
+        REQUIRE_EQ(evidence.file_length,
+                   std::optional<std::uint64_t>{kFixtureLength});
+        REQUIRE_EQ(evidence.structural_read_calls, std::uint64_t{11});
+        REQUIRE_EQ(evidence.structural_read_bytes, std::uint64_t{204848});
+    }
+    {
+        auto image = golden_vhdx();
+        put_u16(image.header2, 66, 2);
+        seal_checksum(image.header2);
+        auto opened = open_fixture(image);
+        VhdxParseEvidence evidence{};
+        auto parsed = parse_vhdx_layout(
+            OperationContext{}, std::move(opened.file), &evidence);
+        REQUIRE(!parsed.ok());
+        REQUIRE_EQ(evidence.stage, VhdxParseStage::Profile);
+        REQUIRE(evidence.identity.has_value());
+    }
+    {
+        auto image = golden_vhdx();
+        image.metadata_table[0] ^= std::byte{1};
+        auto opened = open_fixture(image);
+        VhdxParseEvidence evidence{};
+        auto parsed = parse_vhdx_layout(
+            OperationContext{}, std::move(opened.file), &evidence);
+        REQUIRE(!parsed.ok());
+        REQUIRE_EQ(evidence.stage, VhdxParseStage::Layout);
+        REQUIRE(evidence.identity.has_value());
+    }
+}
+
 TEST_CASE(vhdx_parser_selects_highest_valid_header_and_surviving_region_copy) {
     auto image = golden_vhdx();
     image.header2[100] ^= std::byte{1};

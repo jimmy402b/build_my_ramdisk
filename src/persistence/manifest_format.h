@@ -70,6 +70,10 @@ enum class ManifestSlotInspectionStatus : std::uint8_t {
 struct ManifestSlotInspection final {
     ManifestSlotInspectionStatus status{
         ManifestSlotInspectionStatus::DecodedV1};
+    // Preserved separately because ManifestSlot freezes the product block
+    // size rather than exposing it as mutable state. Recovery classifies a
+    // wrong on-disk value at SlotSemantics, after CRC and support.
+    std::uint32_t m2_block_size{};
     std::optional<ManifestSlot> slot{};
 };
 

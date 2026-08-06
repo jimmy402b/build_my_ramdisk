@@ -57,7 +57,8 @@ public:
     static Result<std::unique_ptr<VhdxReader>> open(
         const OperationContext& context,
         std::unique_ptr<ValidatedPersistenceFile>& file,
-        VhdxReaderOptions options);
+        VhdxReaderOptions options,
+        VhdxParseEvidence* evidence = nullptr);
 
     static Result<std::unique_ptr<VhdxReader>> create(
         std::unique_ptr<ValidatedPersistenceFile> file,

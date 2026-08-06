@@ -92,6 +92,49 @@ private:
     std::filesystem::path root_;
 };
 
+class LockedFileRange final {
+public:
+    LockedFileRange(const std::filesystem::path& path,
+                    const std::uint64_t offset,
+                    const std::uint64_t length)
+        : length_(length) {
+        handle_.reset(CreateFileW(
+            path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED |
+                FILE_FLAG_RANDOM_ACCESS,
+            nullptr));
+        REQUIRE(static_cast<bool>(handle_));
+        overlapped_.Offset = static_cast<DWORD>(offset);
+        overlapped_.OffsetHigh = static_cast<DWORD>(offset >> 32U);
+        REQUIRE(LockFileEx(
+            handle_.get(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0, static_cast<DWORD>(length),
+            static_cast<DWORD>(length >> 32U), &overlapped_));
+        locked_ = true;
+    }
+
+    ~LockedFileRange() noexcept {
+        if (locked_) {
+            static_cast<void>(UnlockFileEx(
+                handle_.get(), 0,
+                static_cast<DWORD>(length_),
+                static_cast<DWORD>(length_ >> 32U), &overlapped_));
+        }
+    }
+
+    LockedFileRange(const LockedFileRange&) = delete;
+    LockedFileRange& operator=(const LockedFileRange&) = delete;
+
+private:
+    UniqueHandle handle_;
+    OVERLAPPED overlapped_{};
+    std::uint64_t length_{};
+    bool locked_{};
+};
+
 class PayloadSource final : public IVhdxPayloadSource {
 public:
     std::map<std::uint64_t, std::vector<std::byte>> payloads;
@@ -444,6 +487,14 @@ TEST_CASE(recovery_view_reads_journal_first_then_base_without_eager_payload) {
         OperationContext{}, fixture.sandbox.root(), "disk.rdm",
         recovery_options());
     require_selected(outcome, 0);
+    REQUIRE_EQ(outcome.diagnostics[0].base_structural_read_calls,
+               std::uint64_t{11});
+    REQUIRE_EQ(outcome.diagnostics[0].base_structural_read_bytes,
+               std::uint64_t{204848});
+    REQUIRE_EQ(outcome.diagnostics[0].base_bat_read_calls_at_open,
+               std::uint64_t{0});
+    REQUIRE_EQ(outcome.diagnostics[0].base_payload_read_calls_at_open,
+               std::uint64_t{0});
     std::array<std::byte, kM2BlockSize> bytes{};
 
     auto journal = outcome.image->backing_view.store->load_block(
@@ -541,6 +592,71 @@ TEST_CASE(recovery_never_uses_operational_error_as_fallback_authority) {
     REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
                std::optional{ManifestCandidateCheck::BaseOpen});
     REQUIRE(!outcome.diagnostics[0].selected);
+}
+
+TEST_CASE(recovery_root_io_error_in_newer_generation_blocks_fallback) {
+    RecoveryFixture fixture;
+    const auto newer_checkpoint = fixture.append_checkpoint();
+    auto newer = fixture.make_slot(1, newer_checkpoint);
+    fixture.publish(fixture.valid_a, newer);
+    LockedFileRange locked{
+        fixture.journal_path, newer_checkpoint.root.offset,
+        newer_checkpoint.root.length};
+
+    auto outcome = recover_complete_image(
+        OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+        recovery_options());
+
+    REQUIRE(!outcome.ok());
+    REQUIRE(!outcome.image.has_value());
+    REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+               std::optional{ManifestCandidateCheck::JournalRoot});
+    REQUIRE_EQ(outcome.diagnostics[1].status,
+               ManifestCandidateCheckStatus::IoError);
+    REQUIRE(!outcome.diagnostics[0].selected);
+}
+
+TEST_CASE(recovery_digest_io_error_in_newer_generation_blocks_fallback) {
+    RecoveryFixture fixture;
+    const auto newer_checkpoint = fixture.append_checkpoint();
+    auto newer = fixture.make_slot(1, newer_checkpoint);
+    fixture.publish(fixture.valid_a, newer);
+    LockedFileRange locked{
+        fixture.journal_path, fixture.checkpoint.committed_length,
+        kJournalAlignment};
+
+    auto outcome = recover_complete_image(
+        OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+        recovery_options());
+
+    REQUIRE(!outcome.ok());
+    REQUIRE(!outcome.image.has_value());
+    REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+               std::optional{ManifestCandidateCheck::JournalDigest});
+    REQUIRE_EQ(outcome.diagnostics[1].status,
+               ManifestCandidateCheckStatus::IoError);
+    REQUIRE(!outcome.diagnostics[0].selected);
+}
+
+TEST_CASE(recovery_manifest_slot_read_error_preserves_slot_provenance) {
+    RecoveryFixture fixture;
+    auto b = fixture.make_slot(1);
+    fixture.publish(fixture.valid_a, b);
+    LockedFileRange locked{
+        fixture.manifest_path, kManifestSlotBytes, kManifestSlotBytes};
+
+    auto outcome = recover_complete_image(
+        OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+        recovery_options());
+
+    REQUIRE(!outcome.ok());
+    REQUIRE(!outcome.image.has_value());
+    REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+               std::optional{ManifestCandidateCheck::SlotDecode});
+    REQUIRE_EQ(outcome.diagnostics[1].status,
+               ManifestCandidateCheckStatus::IoError);
+    REQUIRE(outcome.diagnostics[1].has_error_provenance);
+    REQUIRE(!outcome.diagnostics[1].safe_context.empty());
 }
 
 TEST_CASE(recovery_treats_handle_proven_hardlink_as_path_corruption) {
@@ -757,6 +873,28 @@ TEST_CASE(recovery_separates_slot_support_semantics_and_path_evidence) {
     }
     {
         RecoveryFixture fixture;
+        auto b = fixture.make_slot(1);
+        auto encoded = encode_manifest_slot(b);
+        REQUIRE(encoded.ok());
+        write_u32(encoded.value(), 72,
+                  static_cast<std::uint32_t>(kM2BlockSize / 2));
+        refresh_manifest_crc(encoded.value());
+        auto manifest = open_windows_persistence_file(
+            fixture.manifest_path, FileOpenMode::ReadWriteExisting);
+        REQUIRE(manifest.ok());
+        REQUIRE(manifest.value()->write_exact(
+            kManifestSlotBytes, encoded.value()).ok());
+        REQUIRE(manifest.value()->close().ok());
+        auto outcome = recover_complete_image(
+            OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+            recovery_options());
+        require_selected(outcome, 0, false);
+        REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+                   std::optional{ManifestCandidateCheck::SlotSemantics});
+        REQUIRE(!outcome.diagnostics[1].generation.has_value());
+    }
+    {
+        RecoveryFixture fixture;
         auto physical_b_with_a_index = fixture.make_slot(0);
         fixture.publish(fixture.valid_a, physical_b_with_a_index);
         auto outcome = recover_complete_image(
@@ -854,6 +992,55 @@ TEST_CASE(recovery_reports_unsupported_vhdx_at_profile_boundary) {
                std::optional{ManifestCandidateCheck::BaseProfile});
     REQUIRE_EQ(outcome.diagnostics[1].status,
                ManifestCandidateCheckStatus::Unsupported);
+}
+
+TEST_CASE(recovery_preserves_vhdx_identity_length_profile_layout_order) {
+    {
+        RecoveryFixture fixture;
+        const auto short_path = fixture.sandbox.root() / L"short.vhdx";
+        std::filesystem::copy_file(fixture.base_path, short_path);
+        auto short_file = open_windows_persistence_file(
+            short_path, FileOpenMode::ReadWriteExisting);
+        REQUIRE(short_file.ok());
+        REQUIRE(short_file.value()->truncate(2 * kMiB).ok());
+        REQUIRE(short_file.value()->close().ok());
+        auto newer = fixture.make_slot(1);
+        newer.generation.checkpoint_generation += 1;
+        newer.base_relative_name = "short.vhdx";
+        fixture.publish(fixture.valid_a, newer);
+
+        auto outcome = recover_complete_image(
+            OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+            recovery_options());
+        require_selected(outcome, 0, true);
+        REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+                   std::optional{
+                       ManifestCandidateCheck::BaseExpectedLength});
+    }
+    {
+        RecoveryFixture fixture;
+        const auto corrupt_path = fixture.sandbox.root() / L"layout.vhdx";
+        std::filesystem::copy_file(fixture.base_path, corrupt_path);
+        auto corrupt_file = open_windows_persistence_file(
+            corrupt_path, FileOpenMode::ReadWriteExisting);
+        REQUIRE(corrupt_file.ok());
+        std::array<std::byte, 1> byte{};
+        REQUIRE(corrupt_file.value()->read_exact(2 * kMiB, byte).ok());
+        byte[0] ^= std::byte{1};
+        REQUIRE(corrupt_file.value()->write_exact(2 * kMiB, byte).ok());
+        REQUIRE(corrupt_file.value()->close().ok());
+        auto newer = fixture.make_slot(1);
+        newer.generation.checkpoint_generation += 1;
+        newer.base_relative_name = "layout.vhdx";
+        fixture.publish(fixture.valid_a, newer);
+
+        auto outcome = recover_complete_image(
+            OperationContext{}, fixture.sandbox.root(), "disk.rdm",
+            recovery_options());
+        require_selected(outcome, 0, true);
+        REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+                   std::optional{ManifestCandidateCheck::BaseLayout});
+    }
 }
 
 TEST_CASE(recovery_detects_journal_identity_header_root_and_digest_mutations) {

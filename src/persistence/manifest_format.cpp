@@ -362,8 +362,8 @@ Result<ManifestSlotInspection> inspect_manifest_slot(
               read_integer(input, kBaseNameLengthOffset, base_name_length) &&
               read_integer(input, kJournalNameLengthOffset,
                            journal_name_length);
-    if (!ok || m2_block_size != kM2BlockSize ||
-        base_name_length == 0 || base_name_length > kMaxRelativeNameBytes ||
+    if (!ok || base_name_length == 0 ||
+        base_name_length > kMaxRelativeNameBytes ||
         journal_name_length == 0 ||
         journal_name_length > kMaxRelativeNameBytes) {
         return format_failure<ManifestSlotInspection>(
@@ -422,6 +422,7 @@ Result<ManifestSlotInspection> inspect_manifest_slot(
 
     ManifestSlotInspection inspection{};
     inspection.status = ManifestSlotInspectionStatus::DecodedV1;
+    inspection.m2_block_size = m2_block_size;
     inspection.slot = std::move(slot);
     return Result<ManifestSlotInspection>::success(std::move(inspection));
 }
@@ -516,6 +517,10 @@ Result<ManifestSlot> decode_manifest_slot(
         !inspected.value().slot.has_value()) {
         return format_failure<ManifestSlot>(
             L"decode_manifest_slot", L"unsupported manifest version");
+    }
+    if (inspected.value().m2_block_size != kM2BlockSize) {
+        return format_failure<ManifestSlot>(
+            L"decode_manifest_slot", L"geometry or name length is invalid");
     }
     auto slot = std::move(*inspected.value().slot);
     auto validation = validate_slot(slot, L"decode_manifest_slot");

@@ -584,7 +584,8 @@ VhdxReader& VhdxReader::operator=(VhdxReader&&) noexcept = default;
 Result<std::unique_ptr<VhdxReader>> VhdxReader::open(
     const OperationContext& context,
     std::unique_ptr<ValidatedPersistenceFile>& file,
-    const VhdxReaderOptions options) {
+    const VhdxReaderOptions options,
+    VhdxParseEvidence* evidence) {
     constexpr auto operation = L"VhdxReader::open";
     auto live = check_operation_context(context);
     if (!live.ok()) {
@@ -598,7 +599,7 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::open(
     const auto identity = file->observed_identity();
     const std::shared_ptr<IPersistenceFile> parse_view(
         file.get(), [](IPersistenceFile*) noexcept {});
-    auto layout = parse_vhdx_layout(context, parse_view);
+    auto layout = parse_vhdx_layout(context, parse_view, evidence);
     if (!layout.ok()) {
         return Result<std::unique_ptr<VhdxReader>>::failure(layout.error());
     }

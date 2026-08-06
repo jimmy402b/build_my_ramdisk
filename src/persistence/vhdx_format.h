@@ -9,8 +9,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace myrd::persistence {
+
+struct VhdxParseEvidence;
 
 // Immutable, validated description of the M3 v1 VHDX subset.  Construction
 // is intentionally limited to parse_vhdx_layout(); later readers can retain
@@ -43,6 +46,9 @@ public:
 private:
     friend Result<VhdxLayout> parse_vhdx_layout(
         const OperationContext&, std::shared_ptr<IPersistenceFile>);
+    friend Result<VhdxLayout> parse_vhdx_layout(
+        const OperationContext&, std::shared_ptr<IPersistenceFile>,
+        VhdxParseEvidence*);
 
     VhdxLayout() = default;
 
@@ -64,9 +70,32 @@ private:
     std::uint32_t block_size_{};
 };
 
+enum class VhdxParseStage : std::uint8_t {
+    Identity,
+    Profile,
+    Layout,
+    Complete,
+};
+
+// Optional staged evidence for callers that must preserve a stable
+// Identity -> ExpectedLength -> Profile -> Layout diagnostic order without
+// reparsing or reopening the validated file.
+struct VhdxParseEvidence final {
+    VhdxParseStage stage{VhdxParseStage::Identity};
+    std::optional<VhdxFileIdentity> identity{};
+    std::optional<std::uint64_t> file_length{};
+    std::uint64_t structural_read_calls{};
+    std::uint64_t structural_read_bytes{};
+};
+
 [[nodiscard]] Result<VhdxLayout> parse_vhdx_layout(
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file);
+
+[[nodiscard]] Result<VhdxLayout> parse_vhdx_layout(
+    const OperationContext& context,
+    std::shared_ptr<IPersistenceFile> file,
+    VhdxParseEvidence* evidence);
 
 // Minimal identity probe for classifying a structurally valid but unsupported
 // profile. It validates identifier, header checksums/sequence/reserved bytes

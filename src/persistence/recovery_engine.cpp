@@ -208,6 +208,8 @@ struct CandidateResources final {
     WindowsFileIdentity journal_windows_identity{};
     JournalHeader journal_header{};
     CheckpointCommitRecord journal_commit{};
+    VhdxParseEvidence base_parse_evidence{};
+    VhdxReaderStats base_stats_at_open{};
 };
 
 std::uint64_t read_u64_le(const std::span<const std::byte> bytes,
@@ -437,6 +439,8 @@ void validate_candidate(
                             L"supported manifest has no decoded fields"));
         return;
     }
+    const auto inspected_m2_block_size =
+        inspected.value().m2_block_size;
     evidence.slot = std::move(*inspected.value().slot);
     if ((evidence.slot->feature_flags & kManifestMandatoryFeatureMask) != 0) {
         fail(evidence, ManifestCandidateCheck::SlotSupport,
@@ -447,7 +451,9 @@ void validate_candidate(
     }
     pass(evidence, ManifestCandidateCheck::SlotSupport);
     auto semantics = validate_manifest_slot_semantics(*evidence.slot);
-    if (!semantics.ok() || evidence.slot->slot_index != physical_slot) {
+    if (!semantics.ok() ||
+        inspected_m2_block_size != kM2BlockSize ||
+        evidence.slot->slot_index != physical_slot) {
         fail(evidence, ManifestCandidateCheck::SlotSemantics,
              ManifestCandidateCheckStatus::Corrupt,
              semantics.ok()
@@ -516,52 +522,53 @@ void validate_candidate(
     const auto max_payloads =
         options.limits.max_virtual_bytes / kVhdxDataBlockBytes + 1;
     auto owned_base_file = base_file.move_value();
+    VhdxParseEvidence parse_evidence{};
     auto base_reader = VhdxReader::open(
         context, owned_base_file,
         {{options.limits.max_bat_cache_bytes,
           options.limits.max_bat_cache_entries},
-         max_payloads, max_payloads});
+         max_payloads, max_payloads},
+        &parse_evidence);
+    resources.base_parse_evidence = parse_evidence;
     if (!base_reader.ok()) {
-        if (base_reader.error().domain == ErrorDomain::persistence &&
-            base_reader.error().code == static_cast<std::uint32_t>(
-                PersistenceErrorCode::UnsupportedVhdx) &&
-            owned_base_file) {
-            const std::shared_ptr<IPersistenceFile> identity_view(
-                owned_base_file.get(), [](IPersistenceFile*) noexcept {});
-            auto probed = probe_vhdx_file_identity(context, identity_view);
-            if (!probed.ok()) {
-                fail(evidence, ManifestCandidateCheck::BaseIdentity,
-                     probed.error());
-                return;
-            }
-            if (probed.value() != slot.base_identity) {
-                fail(evidence, ManifestCandidateCheck::BaseIdentity,
-                     ManifestCandidateCheckStatus::Corrupt,
-                     recovery_error(PersistenceErrorCode::BackingDataCorrupt,
-                                    L"VHDX identity does not match manifest"));
-                return;
-            }
-            pass(evidence, ManifestCandidateCheck::BaseIdentity);
-            if (resources.base_windows_identity.size !=
-                slot.base_expected_length) {
-                fail(evidence,
-                     ManifestCandidateCheck::BaseExpectedLength,
-                     ManifestCandidateCheckStatus::Corrupt,
-                     recovery_error(PersistenceErrorCode::BackingDataCorrupt,
-                                    L"VHDX length does not match manifest"));
-                return;
-            }
-            pass(evidence, ManifestCandidateCheck::BaseExpectedLength);
-            fail(evidence, ManifestCandidateCheck::BaseProfile,
-                 ManifestCandidateCheckStatus::Unsupported,
+        if (!parse_evidence.identity.has_value()) {
+            fail(evidence, ManifestCandidateCheck::BaseIdentity,
                  base_reader.error());
             return;
         }
-        fail(evidence, ManifestCandidateCheck::BaseIdentity,
+        if (*parse_evidence.identity != slot.base_identity) {
+            fail(evidence, ManifestCandidateCheck::BaseIdentity,
+                 ManifestCandidateCheckStatus::Corrupt,
+                 recovery_error(PersistenceErrorCode::BackingDataCorrupt,
+                                L"VHDX identity does not match manifest"));
+            return;
+        }
+        pass(evidence, ManifestCandidateCheck::BaseIdentity);
+        if (!parse_evidence.file_length.has_value() ||
+            *parse_evidence.file_length != slot.base_expected_length ||
+            resources.base_windows_identity.size !=
+                slot.base_expected_length) {
+            fail(evidence, ManifestCandidateCheck::BaseExpectedLength,
+                 ManifestCandidateCheckStatus::Corrupt,
+                 recovery_error(PersistenceErrorCode::BackingDataCorrupt,
+                                L"VHDX length does not match manifest"));
+            return;
+        }
+        pass(evidence, ManifestCandidateCheck::BaseExpectedLength);
+        if (parse_evidence.stage == VhdxParseStage::Profile) {
+            fail(evidence, ManifestCandidateCheck::BaseProfile,
+                 status_from_error(base_reader.error()),
+                 base_reader.error());
+            return;
+        }
+        pass(evidence, ManifestCandidateCheck::BaseProfile);
+        fail(evidence, ManifestCandidateCheck::BaseLayout,
+             status_from_error(base_reader.error()),
              base_reader.error());
         return;
     }
     const auto& layout = base_reader.value()->layout();
+    resources.base_stats_at_open = base_reader.value()->stats();
     if (layout.file_identity() != slot.base_identity) {
         fail(evidence, ManifestCandidateCheck::BaseIdentity,
              ManifestCandidateCheckStatus::Corrupt,
@@ -757,15 +764,18 @@ void validate_candidate(
         auto root = index_reader.value()->read_node(
             context, root_view, root_view.root.offset,
             root_view.root.crc32c);
-        if (!root.ok() ||
-            root.value().node.common.checkpoint_generation !=
-                slot.generation.checkpoint_generation) {
+        if (!root.ok()) {
+            fail(evidence, ManifestCandidateCheck::JournalRoot,
+                 root.error());
+            return;
+        }
+        if (root.value().node.common.checkpoint_generation !=
+            slot.generation.checkpoint_generation) {
             fail(evidence, ManifestCandidateCheck::JournalRoot,
                  ManifestCandidateCheckStatus::Corrupt,
-                 root.ok() ? std::optional<Error>{recovery_error(
-                                 PersistenceErrorCode::JournalCorrupt,
-                                 L"journal root generation does not match")}
-                           : std::optional<Error>{root.error()});
+                 recovery_error(
+                     PersistenceErrorCode::JournalCorrupt,
+                     L"journal root generation does not match"));
             return;
         }
     }
@@ -773,14 +783,18 @@ void validate_candidate(
     auto digest = validate_checkpoint_digest(
         context, resources.journal_file, header.value(), commit.value(),
         options.limits);
-    if (!digest.ok() || digest.value() != commit.value() ||
+    if (!digest.ok()) {
+        fail(evidence, ManifestCandidateCheck::JournalDigest,
+             digest.error());
+        return;
+    }
+    if (digest.value() != commit.value() ||
         digest.value().new_chain_digest != commit_descriptor.chain_digest) {
         fail(evidence, ManifestCandidateCheck::JournalDigest,
              ManifestCandidateCheckStatus::Corrupt,
-             digest.ok() ? std::optional<Error>{recovery_error(
-                               PersistenceErrorCode::JournalCorrupt,
-                               L"journal checkpoint digest does not match")}
-                         : std::optional<Error>{digest.error()});
+             recovery_error(
+                 PersistenceErrorCode::JournalCorrupt,
+                 L"journal checkpoint digest does not match"));
         return;
     }
     pass(evidence, ManifestCandidateCheck::JournalDigest);
@@ -908,6 +922,18 @@ RecoveryOutcome recover_complete_image(
                 static_cast<std::size_t>(slot) * kManifestSlotBytes,
                 kManifestSlotBytes));
         if (!read.ok()) {
+            auto& diagnostic = outcome.diagnostics[slot];
+            diagnostic.first_failed_check =
+                ManifestCandidateCheck::SlotDecode;
+            diagnostic.status = status_from_error(read.error());
+            diagnostic.error_domain = read.error().domain;
+            diagnostic.error_code = read.error().code;
+            diagnostic.native_code = read.error().native_code;
+            diagnostic.has_error_provenance = true;
+            diagnostic.safe_context =
+                "slot=" + std::string(1, slot == 0 ? 'A' : 'B') +
+                ";check=slot_decode;status=" +
+                status_name(diagnostic.status);
             outcome.error = read.error();
             return outcome;
         }
@@ -926,6 +952,16 @@ RecoveryOutcome recover_complete_image(
     auto selected = select_complete_manifest_generation(evidence);
     outcome.diagnostics = {
         redact(selected.diagnostics[0]), redact(selected.diagnostics[1])};
+    for (std::size_t slot = 0; slot < resources.size(); ++slot) {
+        outcome.diagnostics[slot].base_structural_read_calls =
+            resources[slot].base_parse_evidence.structural_read_calls;
+        outcome.diagnostics[slot].base_structural_read_bytes =
+            resources[slot].base_parse_evidence.structural_read_bytes;
+        outcome.diagnostics[slot].base_bat_read_calls_at_open =
+            resources[slot].base_stats_at_open.bat_read_calls;
+        outcome.diagnostics[slot].base_payload_read_calls_at_open =
+            resources[slot].base_stats_at_open.payload_read_calls;
+    }
     std::optional<CheckpointGeneration> selected_generation{};
     if (selected.selection.has_value()) {
         selected_generation =
