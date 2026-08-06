@@ -114,6 +114,10 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_bundle_file_for_append(
+        BundleWriterLock&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
     friend Result<ValidatedBundleFile> open_bundle_file_for_offline_validation(
         const std::filesystem::path&,
         std::string_view,
@@ -313,6 +317,16 @@ open_bundle_file_for_inspection(
 
 [[nodiscard]] Result<ValidatedBundleFile>
 open_bundle_file_for_mutation(
+    BundleWriterLock& writer_lock,
+    std::string_view relative_name,
+    std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
+
+// Append-only journal capability: permits read/write I/O while coexisting
+// with an installed runtime backing view. It deliberately does not request
+// DELETE access; namespace mutation continues to require the stronger
+// open_bundle_file_for_mutation() capability.
+[[nodiscard]] Result<ValidatedBundleFile>
+open_bundle_file_for_append(
     BundleWriterLock& writer_lock,
     std::string_view relative_name,
     std::optional<WindowsFileIdentity> expected_identity = std::nullopt);

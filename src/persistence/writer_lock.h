@@ -101,6 +101,10 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_bundle_file_for_append(
+        BundleWriterLock&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
     friend Result<ValidatedBundleFile> open_bundle_file_for_immutable_anchor(
         BundleWriterLock&,
         std::string_view,

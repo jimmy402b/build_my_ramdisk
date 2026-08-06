@@ -1649,6 +1649,39 @@ Result<ValidatedBundleFile> open_bundle_file_for_mutation(
     return Result<ValidatedBundleFile>::success(std::move(capability));
 }
 
+Result<ValidatedBundleFile> open_bundle_file_for_append(
+    BundleWriterLock& writer_lock,
+    const std::string_view relative_name,
+    const std::optional<WindowsFileIdentity> expected_identity) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::WriterLockInvalid,
+            L"image_path.open_appendable",
+            L"appendable bundle file requires a live writer lock");
+    }
+    std::scoped_lock lock(writer_state->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*writer_state);
+    if (!writer_valid.ok()) {
+        return Result<ValidatedBundleFile>::failure(writer_valid.error());
+    }
+    auto opened = open_bundle_file_handles(
+        writer_state->root_path, relative_name, expected_identity, true, false,
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE);
+    if (!opened.ok()) {
+        return Result<ValidatedBundleFile>::failure(opened.error());
+    }
+    auto value = opened.move_value();
+    ValidatedBundleFile capability(
+        std::move(value.root_handle), std::move(value.file_handle),
+        std::move(value.root_identity), std::move(value.file_identity),
+        std::move(value.root_final_path), std::move(value.file_final_path),
+        std::move(value.relative_name), true, false);
+    capability.writer_authority_ = writer_state;
+    return Result<ValidatedBundleFile>::success(std::move(capability));
+}
+
 Result<ValidatedBundleFile> open_bundle_file_for_immutable_anchor(
     BundleWriterLock& writer_lock,
     const std::string_view relative_name,

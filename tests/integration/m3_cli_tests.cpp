@@ -39,7 +39,7 @@ std::vector<std::wstring> common(std::wstring command) {
         L"--max-index-cache-bytes", L"65536",
         L"--max-index-cache-entries", L"4",
         L"--max-bat-cache-bytes", L"65536",
-        L"--max-bat-cache-entries", L"1024",
+        L"--max-bat-cache-entries", L"16",
         L"--max-io-scratch-bytes", L"65536",
         L"--max-verify-batch-bytes", L"65536",
     };

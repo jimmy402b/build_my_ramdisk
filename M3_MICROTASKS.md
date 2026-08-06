@@ -732,13 +732,13 @@ publish/resolver 算法。
   fault-matrix、help/invalid args、exit code、stdout JSON vs stderr diagnostics。
 - [x] `T38.2 [M]` 实现纯 argument/value validation：geometry/path/timeout/barrier；
   默认 non-destructive，无命令推断/format Windows volume。
-- [ ] `T38.3 [H]` route commands 只调用 production session/recovery/coordinator，
+- [x] `T38.3 [H]` route commands 只调用 production session/recovery/coordinator，
   禁止 command-specific codec/publish shortcut。
-- [ ] `T38.4 [M]` JSON 必含 stable error + `CommitDisposition`，normal output 无 secrets/
+- [x] `T38.4 [M]` JSON 必含 stable error + `CommitDisposition`，normal output 无 secrets/
   full path/block bytes；fake phase injection 可由显式 test 参数使用。
-- [ ] `T38.5 [H]` lifecycle runner cleanup/close/result precedence review；local fake
+- [x] `T38.5 [H]` lifecycle runner cleanup/close/result precedence review；local fake
   integration 中每个 command 重开验证。
-- [ ] `T38.6 [M]` Debug/Release CLI + `m3-v2/v4` current gates，binary/help hashes。
+- [x] `T38.6 [M]` Debug/Release CLI + `m3-v2/v4` current gates，binary/help hashes。
 
 ### Task 39 — Integrate M3 with M1/M2 provider
 

@@ -1353,6 +1353,19 @@ set_tests_properties(integration.m3.cli PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+add_executable(myrd_m3_lifecycle_runner_tests
+    integration/m3_lifecycle_runner_tests.cpp)
+target_link_libraries(myrd_m3_lifecycle_runner_tests PRIVATE
+    myrd_test_support myrd_m3_management)
+target_include_directories(myrd_m3_lifecycle_runner_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_lifecycle_runner_tests)
+add_test(NAME integration.m3.lifecycle_runner
+    COMMAND myrd_m3_lifecycle_runner_tests)
+set_tests_properties(integration.m3.lifecycle_runner PROPERTIES
+    LABELS "m3-v2;m3-v4"
+    TIMEOUT 120)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

@@ -188,7 +188,7 @@ Suggested commit:
 | 35 | Base compaction 与 journal rotation | O | DONE | 09,23,29,32,34 | M3-V4 |
 | 36 | Immutable file retention/cleanup | O | DONE | 12,27,35 | M3-V4 |
 | 37 | Inspect/verify/report schema | C | DONE | 27,33,36 | M3-V2/V4 |
-| 38 | M3 CLI 与 local fake | C | PENDING | 27,29,30,35,37 | M3-V2/V4 |
+| 38 | M3 CLI 与 local fake | C | DONE | 27,29,30,35,37 | M3-V2/V4 |
 | 39 | M1/M2/M3 provider 集成 | O | PENDING | 28,32,38 | M3-V6 prerequisite |
 | 40 | 真实主机 preflight/E2E harness | C | PENDING | 24,39 | M3-V6 preflight |
 | 41 | AIM+NTFS+lazy+VHDX 真机验收 | O | PENDING | 24,32,35,40 | M3-V6 |
@@ -909,11 +909,11 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：C（workflow 由逻辑负责人审查）。允许文件：** `src/m3/m3_cli.*`、`src/m3/m3_lifecycle_runner.*`、thin `src/m3/main.cpp`、CLI tests、CMake。
 
-- [ ] 红灯覆盖 SPEC 的 `create/inspect/verify/checkpoint/compact/recover-test/fault-matrix`、invalid args、exit codes、JSON/stdout/stderr。
-- [ ] geometry/path/timeout 全显式；CLI 不识别、初始化或格式化 Windows volume。
-- [ ] 命令必须走 production session/recovery path，不写 command-specific shortcut。
-- [ ] JSON 显示 CommitDisposition/stable error，默认不泄漏完整路径。
-- [ ] 跑 local fake lifecycle、`m3-v2` 和 `m3-v4` 中当前可用项；建议提交 `feat(m3): add persistence lifecycle cli`。
+- [x] 红灯覆盖 SPEC 的 `create/inspect/verify/checkpoint/compact/recover-test/fault-matrix`、invalid args、exit codes、JSON/stdout/stderr。
+- [x] geometry/path/timeout 全显式；CLI 不识别、初始化或格式化 Windows volume。
+- [x] 命令必须走 production session/recovery path，不写 command-specific shortcut。
+- [x] JSON 显示 CommitDisposition/stable error，默认不泄漏完整路径。
+- [x] 跑 local fake lifecycle、`m3-v2` 和 `m3-v4` 中当前可用项；建议提交 `feat(m3): add persistence lifecycle cli`。
 
 ## Task 39 — Integrate M3 with M1/M2 provider
 

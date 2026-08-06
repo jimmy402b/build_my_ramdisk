@@ -1,6 +1,7 @@
 #include "src/m3/m3_cli.h"
 
 #include "src/persistence/image_paths.h"
+#include "src/persistence/vhdx_reader.h"
 
 #include <limits>
 #include <string>
@@ -385,6 +386,12 @@ Result<M3CliConfig> parse_m3_cli(
         persistence::LimitsStatus::Ok) {
         return Result<M3CliConfig>::failure(
             usage_error(L"persistence limits are invalid"));
+    }
+    if (result.persistence_limits.max_bat_cache_entries >
+        result.persistence_limits.max_bat_cache_bytes /
+            persistence::kVhdxBatPageBytes) {
+        return Result<M3CliConfig>::failure(
+            usage_error(L"BAT cache entries exceed the VHDX page budget"));
     }
     if (result.command == M3CliCommand::Create) {
         if (!seen.virtual_bytes || !seen.logical_sector ||
