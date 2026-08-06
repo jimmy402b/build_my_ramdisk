@@ -629,9 +629,9 @@ public:
 **Depends on:** 14, 20, 22 (tests may scaffold earlier; final implementation waits)
 **Files:** Create `src/persistence/manifest_selector.h/.cpp`, `tests/support/m3_reference_model.h/.cpp`, `tests/unit/m3_manifest_selector_tests.cpp`.
 
-- [ ] **Step 1: Have the independent executor build candidate fixtures** representing A/B valid/invalid, equal generation with conflicting identity, higher slot with bad VHDX/journal/root/commit, path escape, and predecessor fallback.
-- [ ] **Step 2: Run red tests.** Expected: selector missing.
-- [ ] **Step 3: Implement selection as full validation, not CRC sorting:**
+- [x] **Step 1: Have the independent executor build candidate fixtures** representing A/B valid/invalid, equal generation with conflicting identity, higher slot with bad VHDX/journal/root/commit, path escape, and predecessor fallback.
+- [x] **Step 2: Run red tests.** Expected: selector missing.
+- [x] **Step 3: Implement selection as full validation, not CRC sorting:**
 
 ```cpp
 for (candidate : candidates_sorted_high_to_low) {
@@ -644,8 +644,8 @@ for (candidate : candidates_sorted_high_to_low) {
 return ManifestCorrupt;
 ```
 
-- [ ] **Step 4: Reject equal-generation split-brain slots** unless every durable identity/root/commit field is byte-equivalent. Record fallback reason.
-- [ ] **Step 5: Verify the selector against the independent oracle and fault fixtures; commit `feat(persistence): select complete manifest generations`.**
+- [x] **Step 4: Reject equal-generation split-brain slots** unless every durable identity/root/commit field is byte-equivalent. Record fallback reason.
+- [x] **Step 5: Verify the selector against the independent oracle and fault fixtures; commit `ea02e0a` (`feat(persistence): select complete manifest generations`).**
 
 ### Task 16: Implement journal header, records, commit and chain-digest codec
 

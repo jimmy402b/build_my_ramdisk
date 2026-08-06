@@ -1477,3 +1477,65 @@ Task 25 verdict: **DONE**. This authorizes Task 26 to validate manifest
 candidates and construct immutable recovery views. It does not yet select a
 recoverable generation, create a generation-zero image bundle or install the
 backing into M2.
+
+## Task 15 — Highest fully valid dual-slot candidate acceptance
+
+Task 15 is accepted at implementation commit `ea02e0a`. The selector consumes
+explicit evidence for a fixed sequence of 19 checks covering slot decoding and
+support, durable semantics, referenced paths, VHDX presence/open/identity/
+length/profile/layout, and journal presence/open/identity/header/committed
+length/commit/root/digest. A candidate is complete only when every check is
+explicitly passed; missing, corruption, unsupported data, I/O, cancellation,
+deadline and conflict statuses remain distinguishable and retain the original
+error provenance.
+
+Generation is trusted only after slot decode, version support and durable
+semantic validation all pass. Selection chooses the highest complete trusted
+generation. A lower complete generation is reported as fallback only when a
+higher *trusted* candidate is rejected. Equal trusted generations with any
+unequal durable identity, geometry, base/journal generation, commit, root,
+digest, expected length or feature flag fail closed as split-brain, including
+the asymmetric complete-versus-rejected case. Slot index and diagnostic clocks
+are deliberately excluded from durable equality; equivalent ties canonicalize
+to slot A.
+
+An independent reference oracle defines its own check/status/verdict types and
+compares the complete A/B decision matrix, all 19 first-failure positions, all
+18 adjacent priority pairs, seven status classes symmetrically across both
+slots, 21 durable-field mutations and malformed evidence shapes. Three review
+rounds were performed. The final independent review returned **GO** with
+P0/P1/P2 = 0/0/1. The non-blocking P2 records that the oracle groups one
+embedded slot-index mismatch into the public `FatalInternalInvariant` result
+instead of exposing another public subcode; all malformed shapes are still
+tested to fail closed.
+
+Final verification evidence:
+
+- Debug and Release `unit.m3.manifest_selector` passed all 10 cases;
+- current `m3-v2` selector/composite set passed 2/2;
+- complete Debug CTest passed 75/75;
+- the previously observed snapshot timeout did not reproduce and that test
+  completed in 1.56 seconds in the final full run;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built successfully;
+- `git diff --check` passed.
+
+Evidence SHA-256:
+
+- `manifest_selector.h`:
+  `3CD1E944B15CF4E641A4B70CF32F7BB21FAB0CA2E6DCA01137EAD8352E829790`;
+- `manifest_selector.cpp`:
+  `C842DE030137E7099FF0CF4132FA8CD84C3FA09820D6123D302F74AD41831DA3`;
+- independent reference model header/source:
+  `32A22C4204D3CD57F5D4A3BE78435BE460EEA63F3718AD74A86433B11C36B92C` /
+  `5D28714C981E126CB6EDB5EB985DE3F1B16A4B77C0464663E052B15F8AB36591`;
+- selector tests:
+  `BA299A1DABAA98D756FEF958228CF2BFEFE1E111F350BA0AE8ACC7E54F1DBF62`;
+- Release selector test executable:
+  `795994D59B059A29DB8104EBC8414033FCEBA7F0831393ABBAB46E00EEFE09D5`;
+- production persistence library:
+  `7A1650185E7944E971CD1CA9F39154D1A9C04EB90B206FA407025C7ABE0C8DC2`.
+
+Task 15 verdict: **DONE**. Together with completed Tasks 20, 22 and 25, this
+authorizes Task 26 to validate real referenced files and construct the selected
+immutable recovery `BackingView`. It does not itself open files or recover an
+image session.

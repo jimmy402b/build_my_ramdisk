@@ -273,18 +273,18 @@ Task 10–12 必须先 `DONE`。所有格式字段、offset、reserved bytes、C
 允许：`manifest_selector.*`、selector/recovery fixture tests；不得修改 journal/VHDX
 codec 来迎合 selector。
 
-- [ ] `T15.1 [H]` 冻结 candidate validation 输入：slot 自身、referenced file identity、
+- [x] `T15.1 [H]` 冻结 candidate validation 输入：slot 自身、referenced file identity、
   journal header/commit/root、VHDX identity/geometry 都是同一个完整 verdict。
-- [ ] `T15.2 [M]` 建立 A/B matrix fixture：valid/invalid/missing/corrupt/unsupported/
+- [x] `T15.2 [M]` 建立 A/B matrix fixture：valid/invalid/missing/corrupt/unsupported/
   identity mismatch/generation ties；只写 fake validator 与期望。
-- [ ] `T15.3 [X]` 实现“先完整验证每个 candidate，再从完整有效集合选最高 generation”；
+- [x] `T15.3 [X]` 实现“先完整验证每个 candidate，再从完整有效集合选最高 generation”；
   禁止先按 generation 选 slot 后才验证，禁止把 corrupt 当 missing。
-- [ ] `T15.4 [X]` 实现 fallback diagnostics：高代无效、低代完整时选择低代并保留
+- [x] `T15.4 [X]` 实现 fallback diagnostics：高代无效、低代完整时选择低代并保留
   高代失败 provenance；同代内容冲突/混代引用必须 fail closed。
-- [ ] `T15.5 [H]` 加 mutation tests：跳过任一 journal/root/base identity 检查时必须
+- [x] `T15.5 [H]` 加 mutation tests：跳过任一 journal/root/base identity 检查时必须
   失败；selector 不得读取 manifest committed length 之外。
-- [ ] `T15.6 [M]` Debug/Release focused + `m3-v2` 当前可用项，保存每格 verdict。
-- [ ] `T15.7 [X]` 独立 recovery reviewer GO 后才可 `DONE`。
+- [x] `T15.6 [M]` Debug/Release focused + `m3-v2` 当前可用项，保存每格 verdict。
+- [x] `T15.7 [X]` 独立 recovery reviewer GO 后才可 `DONE`。
 
 ### Task 16 — Journal header、records、commit 与 chain digest
 

@@ -165,7 +165,7 @@ Suggested commit:
 | 12 | 路径、文件身份、writer lock | C | DONE | 11 | M3-V1 |
 | 13 | Persistence 类型、错误、outcome | C | DONE | 10,11,12 | M3-V1 |
 | 14 | 4096-byte manifest codec | C | DONE | 13 | M3-V1 |
-| 15 | 完整双槽 candidate 选择 | O | PENDING | 14,20,22 | M3-V2 |
+| 15 | 完整双槽 candidate 选择 | O | DONE | 14,20,22 | M3-V2 |
 | 16 | Journal wire format 与 digest | C | DONE | 13 | M3-V1 |
 | 17 | Immutable B+tree reader | S | DONE | 11,16 | M3-V1 |
 | 18 | COW index builder | S | DONE | 17 | M3-V1 |
@@ -607,11 +607,11 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：O。允许文件：** `manifest_selector.*`、独立 reference model/fixtures/tests；不改 wire format。
 
-- [ ] 独立执行者冻结 A/B valid/invalid、equal generation conflict、higher incomplete、fallback、path escape fixtures。
-- [ ] selector 先按 generation 倒序，但只有 manifest、VHDX identity/layout、journal commit/digest/root/length 全部有效才可选择。
-- [ ] equal-generation durable fields 不完全相同时返回 split-brain corruption，不凭 slot index 猜。
-- [ ] 记录每个 rejected slot 的第一稳定原因和 fallback；corruption 不能当作不存在。
-- [ ] 跑 oracle/corruption tests 与 `m3-v2` 中当前可用项目；建议提交 `feat(persistence): select complete manifest generations`。
+- [x] 独立执行者冻结 A/B valid/invalid、equal generation conflict、higher incomplete、fallback、path escape fixtures。
+- [x] selector 先按 generation 倒序，但只有 manifest、VHDX identity/layout、journal commit/digest/root/length 全部有效才可选择。
+- [x] equal-generation durable fields 不完全相同时返回 split-brain corruption，不凭 slot index 猜。
+- [x] 记录每个 rejected slot 的第一稳定原因和 fallback；corruption 不能当作不存在。
+- [x] 跑 oracle/corruption tests 与 `m3-v2` 中当前可用项目；实现提交 `ea02e0a`（`feat(persistence): select complete manifest generations`）。
 
 ## Task 16 — Journal header、records、commit 与 chain digest
 
