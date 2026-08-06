@@ -882,3 +882,7 @@ Blocking evidence: <command/file/test>
 Decision required: <one precise question>
 No out-of-scope files changed: yes/no
 ```
+
+## Local execution record
+
+- [x] T38.7: Debug/Release local CLI E2E runs execute `create -> inspect -> verify --full -> recover-test` and confirm temporary-directory cleanup. This does not replace real AIM/NTFS acceptance.

@@ -1424,6 +1424,15 @@ set_tests_properties(unit.m3.ntfs_verifier PROPERTIES
     TIMEOUT 60)
 
 add_test(
+    NAME integration.m3.cli_local_e2e
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-cli-local-e2e.ps1"
+        -Configuration "$<CONFIG>")
+set_tests_properties(integration.m3.cli_local_e2e PROPERTIES
+    LABELS "m3-v5"
+    TIMEOUT 60)
+
+add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m2-orchestrator-whatif.ps1"
