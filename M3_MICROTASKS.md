@@ -474,19 +474,19 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 
 允许：`recovery_engine.*`、recovery tests/fixtures；recovery 绝不写盘。
 
-- [ ] `T26.1 [M]` 独立 fixtures：A only/B only/both/newer torn+valid predecessor/
+- [x] `T26.1 [M]` 独立 fixtures：A only/B only/both/newer torn+valid predecessor/
   both invalid/missing/replaced/truncated committed/valid tail/split-brain/unsupported。
-- [ ] `T26.2 [H]` 冻结每个 slot 的 first stable rejection reason 与 selected/fallback
+- [x] `T26.2 [H]` 冻结每个 slot 的 first stable rejection reason 与 selected/fallback
   期望；fixture oracle 不 include selector/production codec。
-- [ ] `T26.3 [X]` 实现 bounded candidate validation：base identity/layout、journal
+- [x] `T26.3 [X]` 实现 bounded candidate validation：base identity/layout、journal
   identity/header、commit/digest/root/committed length 全通过才进入 valid set。
-- [ ] `T26.4 [X]` 只从 selector 结果构造一个 immutable `BackingView` + owned handles；
+- [x] `T26.4 [X]` 只从 selector 结果构造一个 immutable `BackingView` + owned handles；
   recovery 禁止 truncate/repair/publish/ack/delete。
-- [ ] `T26.5 [M]` 实现 redacted structured diagnostics，逐 slot 保存 provenance，
+- [x] `T26.5 [M]` 实现 redacted structured diagnostics，逐 slot 保存 provenance，
   默认无 absolute path/block content。
-- [ ] `T26.6 [H]` independent oracle 比 selection 与所有 block reads；mutation 跳过
+- [x] `T26.6 [H]` independent oracle 比 selection 与所有 block reads；mutation 跳过
   任一 identity/root/digest check 必须红。
-- [ ] `T26.7 [X]` recovery reviewer GO + Debug/Release `m3-v2` 后完成。
+- [x] `T26.7 [X]` recovery reviewer GO + Debug/Release `m3-v2` 后完成。
 
 ### Task 27 — Generation-zero create/reopen
 

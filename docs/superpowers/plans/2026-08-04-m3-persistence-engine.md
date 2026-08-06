@@ -775,11 +775,11 @@ return ManifestCorrupt;
 **Depends on:** 15, 25
 **Files:** Create `src/persistence/recovery_engine.h/.cpp`, `tests/integration/m3_recovery_tests.cpp`.
 
-- [ ] **Step 1: Build red fixtures** for valid A only, valid B only, both valid, newer torn/corrupt with valid predecessor, both invalid, missing/replaced files, truncated committed tail, valid ignorable tail, split-brain and unsupported version.
-- [ ] **Step 2: Implement bounded candidate validation** using the manifest selector. A candidate is selectable only after base identity/layout, journal identity/header, commit, digest, root and committed length all validate.
-- [ ] **Step 3: Construct one immutable `BackingView`** from the selected candidate and open handles. Do not mutate files, truncate tails, repair slots or acknowledge dirty data during recovery.
-- [ ] **Step 4: Return structured fallback diagnostics** naming each rejected slot and first stable reason without leaking absolute paths by default.
-- [ ] **Step 5: Compare selection/read results with the independent reference oracle and commit `feat(persistence): recover complete image generations`.**
+- [x] **Step 1: Build red fixtures** for valid A only, valid B only, both valid, newer torn/corrupt with valid predecessor, both invalid, missing/replaced files, truncated committed tail, valid ignorable tail, split-brain and unsupported version.
+- [x] **Step 2: Implement bounded candidate validation** using the manifest selector. A candidate is selectable only after base identity/layout, journal identity/header, commit, digest, root and committed length all validate.
+- [x] **Step 3: Construct one immutable `BackingView`** from the selected candidate and open handles. Do not mutate files, truncate tails, repair slots or acknowledge dirty data during recovery.
+- [x] **Step 4: Return structured fallback diagnostics** naming each rejected slot and first stable reason without leaking absolute paths by default.
+- [x] **Step 5: Compare selection/read results with the independent reference oracle and commit `1bddc2b`, with acceptance fixes through `e619a65`.**
 
 ### Task 27: Create and reopen generation zero
 

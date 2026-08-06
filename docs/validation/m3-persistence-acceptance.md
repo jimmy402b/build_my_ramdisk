@@ -1539,3 +1539,45 @@ Task 15 verdict: **DONE**. Together with completed Tasks 20, 22 and 25, this
 authorizes Task 26 to validate real referenced files and construct the selected
 immutable recovery `BackingView`. It does not itself open files or recover an
 image session.
+
+## Task 26 — Complete image recovery acceptance
+
+Task 26 is accepted through implementation commits `1bddc2b`, `a75ebd7`,
+`104f91e`, `f818e40`, `6d8a744` and `e619a65`. Recovery validates each
+manifest candidate in a frozen order, preserves operational failures instead
+of reclassifying them as corruption, selects only a fully validated generation
+and constructs one immutable `BackingView` backed by owned handles. The path is
+read-only: it does not truncate, repair, publish, acknowledge or delete data.
+
+VHDX recovery uses one staged parse on the validated handle. Expected identity
+and length failures stop before region/metadata traversal, while successful
+recovery records bounded structural reads separately from lazy BAT and payload
+reads. Manifest, root and digest failures retain the first stable per-slot
+provenance, and default diagnostics do not expose absolute paths or block data.
+
+The independent oracle does not call the production writer, manifest codec,
+selector, CRC or SHA implementation. Its raw strict VHDX fixture uses non-zero
+base payload together with journal DATA, ZERO and DISCARD records, preventing
+an incorrect ZERO/DISCARD fallback from being masked by an all-zero base.
+
+Independent review initially returned NO-GO for operational-failure fallback,
+missing independent fixtures, VHDX stage ordering and missing lazy-I/O counts.
+After correction, the final review returned **GO** with P0/P1/P2 = 0/0/1; the
+sole diagnostic-provenance P2 was then corrected in `e619a65`.
+
+Final verification evidence:
+
+- complete Debug CTest passed 77/77;
+- focused Debug and Release manifest/selector/VHDX/composite/recovery/oracle
+  suites passed 7/7 in each configuration;
+- Debug and Release independent recovery oracle passed;
+- the Windows byte-range-lock operational-failure tests passed 20/20 repeated
+  runs;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built successfully and its
+  symbols contained no test-seam entry points;
+- `git diff --check` passed.
+
+Task 26 verdict: **DONE**. This authorizes Task 27 to create and publish a
+generation-zero bundle and prove success only by reopening it through this
+production recovery path. It does not itself authorize overwriting an existing
+bundle or treating an indeterminate publication as failure.

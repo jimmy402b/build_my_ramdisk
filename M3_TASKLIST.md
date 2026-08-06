@@ -176,7 +176,7 @@ Suggested commit:
 | 23 | Sparse dynamic VHDX writer | S | DONE | 11,21,22 | M3-V1 |
 | 24 | Windows native VHDX gate | C | DONE | 23 | M3-V5 |
 | 25 | Journal-first composite backing | O | DONE | 20,22 | M3-V2 |
-| 26 | Recovery engine 与 BackingView | O | PENDING | 15,25 | M3-V2 |
+| 26 | Recovery engine 与 BackingView | O | DONE | 15,25 | M3-V2 |
 | 27 | Generation-zero create/reopen | S | PENDING | 12,14,16,19,23,25,26 | M3-V2 |
 | 28 | M2 lazy-load integration | O | PENDING | 09,27 | M3-V3/V7 |
 | 29 | Image session/outcome state machine | O | PENDING | 13,27,28 | M3-V2 |
@@ -774,11 +774,11 @@ blocks corpus。Task 08 状态：`DONE`。
 
 **类别：O；oracle 由不同执行者冻结。允许文件：** `recovery_engine.*`、recovery tests/fixtures。
 
-- [ ] fixture 覆盖 A/B valid、newer torn fallback、both invalid、missing/replaced/truncated、ignorable tail、split-brain、unsupported。
-- [ ] 每个 slot 依次做完整 bounded validation；只有 manifest/base/journal/commit/digest/root/length 全有效才候选。
-- [ ] selected candidate 构造 immutable BackingView 和持有的 handles；recovery 只读，不 truncate/repair/ack/delete。
-- [ ] diagnostics 记录 rejected reason/fallback，默认不泄漏 absolute path。
-- [ ] 与独立 oracle 比较并跑 `m3-v2`；建议提交 `feat(persistence): recover complete image generations`。
+- [x] fixture 覆盖 A/B valid、newer torn fallback、both invalid、missing/replaced/truncated、ignorable tail、split-brain、unsupported。
+- [x] 每个 slot 依次做完整 bounded validation；只有 manifest/base/journal/commit/digest/root/length 全有效才候选。
+- [x] selected candidate 构造 immutable BackingView 和持有的 handles；recovery 只读，不 truncate/repair/ack/delete。
+- [x] diagnostics 记录 rejected reason/fallback，默认不泄漏 absolute path。
+- [x] 与独立 oracle 比较并跑 `m3-v2`；实现提交 `1bddc2b`、`a75ebd7`、`104f91e`、`f818e40`、`6d8a744`、`e619a65`。
 
 ## Task 27 — Generation-zero image create/reopen
 
