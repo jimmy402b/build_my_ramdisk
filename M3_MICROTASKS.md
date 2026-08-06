@@ -605,20 +605,20 @@ Task 30 DONE：checkpoint coordinator 只推进到 journal Prepared，manifest/i
 
 允许：checkpoint coordinator/session/storage adapter/reconcile tests；不得删除旧文件。
 
-- [ ] `T32.1 [H]` 冻结 success call order：durable proof→recover/construct new immutable
+- [x] `T32.1 [H]` 冻结 success call order：durable proof→recover/construct new immutable
   view→install backing→按 exact dirty identity conditional ack→finish token→report。
-- [ ] `T32.2 [M]` RED overwritten-after-cut：old pre-image 已 checkpoint，但 newer
+- [x] `T32.2 [M]` RED overwritten-after-cut：old pre-image 已 checkpoint，但 newer
   dirty_epoch 仍 dirty；为每种 DATA/ZERO/DISCARD 建表。
-- [ ] `T32.3 [X]` 实现 install + bounded ack-stream replay；ack 只匹配 version/kind/
+- [x] `T32.3 [X]` 实现 install + bounded ack-stream replay；ack 只匹配 version/kind/
   generation/dirty_epoch，禁止 broad “generation persisted” 清脏。
-- [ ] `T32.4 [X]` install/ack/finish 任一 post-commit failure 返回
+- [x] `T32.4 [X]` install/ack/finish 任一 post-commit failure 返回
   `CommittedNeedsReconciliation`；reopen 选新 generation，retry reconcile 幂等；仅
   runtime reconciliation 完整后可普通 `Committed`。
-- [ ] `T32.5 [X]` COW pre-image 仅在对应 member 已 conditional ack 或已证明更新
+- [x] `T32.5 [X]` COW pre-image 仅在对应 member 已 conditional ack 或已证明更新
   dirty 仍保留后释放；close/cancel 不得提前释放。
-- [ ] `T32.6 [H]` no-resurrection/lock-order/failure matrix mutation proof；运行完整
+- [x] `T32.6 [H]` no-resurrection/lock-order/failure matrix mutation proof；运行完整
   M2 + `m3-v2/v3`。
-- [ ] `T32.7 [X]` persistence/storage 双独立 reviewer GO。
+- [x] `T32.7 [X]` persistence/storage 双独立 reviewer GO。
 
 ### Task 33 — Independent checkpoint crash model
 

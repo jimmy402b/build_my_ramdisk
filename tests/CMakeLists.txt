@@ -1219,6 +1219,22 @@ foreach(phase IN LISTS myrd_m3_manifest_fault_phases)
         PROPERTIES LABELS "m3-v2" TIMEOUT 30)
 endforeach()
 
+# ---- M3 checkpoint runtime reconciliation (Task 32) -----------------------
+add_executable(myrd_m3_checkpoint_reconcile_tests
+    integration/m3_checkpoint_reconcile_tests.cpp
+    support/fault_file.cpp
+)
+target_link_libraries(myrd_m3_checkpoint_reconcile_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_checkpoint_reconcile_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_checkpoint_reconcile_tests)
+add_test(NAME integration.m3.checkpoint_reconcile
+    COMMAND myrd_m3_checkpoint_reconcile_tests)
+set_tests_properties(integration.m3.checkpoint_reconcile PROPERTIES
+    LABELS "m3-v2;m3-v3"
+    TIMEOUT 120)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

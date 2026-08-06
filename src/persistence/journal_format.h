@@ -268,6 +268,15 @@ struct JournalHeader final {
     std::uint64_t committed_bound,
     const ImageGeometry& geometry);
 
+// Bounded stream readers may inspect one fixed header before allocating the
+// full record buffer. The returned physical length is fixed by the format and
+// never comes from an untrusted on-disk length field.
+[[nodiscard]] Result<JournalRecordType> decode_journal_record_type_prefix(
+    std::span<const std::byte> bytes);
+
+[[nodiscard]] Result<std::uint64_t> journal_record_physical_length(
+    JournalRecordType type);
+
 [[nodiscard]] Result<std::array<std::byte, kIndexNodeBytes>>
 encode_index_node(const JournalIndexNode& node,
                   std::uint64_t record_offset,

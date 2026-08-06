@@ -2,6 +2,8 @@
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
+#include "src/persistence/checkpoint_reconciler.h"
+#include "src/persistence/composite_backing_store.h"
 #include "src/persistence/commit_resolver.h"
 #include "src/persistence/image_session.h"
 #include "src/persistence/journal_writer.h"
@@ -9,11 +11,49 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <variant>
 
 namespace myrd::persistence {
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+enum class CheckpointReconcileTestPhase : std::uint8_t {
+    BeforeRecoverView = 0,
+    BeforeInstallBacking,
+    BeforeAckReplay,
+    BeforeFinishSnapshot,
+    BeforeReportSuccess,
+};
+using CheckpointReconcileTestHook = std::function<Result<void>(
+    CheckpointReconcileTestPhase)>;
+#endif
+
+struct CheckpointReconcileRequest final {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    std::optional<BackingView> test_committed_view{};
+    std::optional<CompositeBackingIdentity> test_committed_identity{};
+    std::optional<JournalAckRecordStreamDescriptor> test_ack_stream{};
+    CheckpointReconcileTestHook test_phase_hook{};
+#endif
+};
+
+struct CheckpointReconcileOutcome final {
+    CommitDisposition disposition{
+        CommitDisposition::CommittedNeedsReconciliation};
+    CheckpointGeneration generation{};
+    CheckpointAckReplayMetrics ack{};
+    bool backing_installed{};
+    bool snapshot_finished{};
+    std::optional<Error> error{};
+    std::optional<PersistenceErrorContext> error_context{};
+
+    [[nodiscard]] bool ok() const noexcept {
+        return disposition == CommitDisposition::Committed &&
+               snapshot_finished && !error.has_value();
+    }
+};
 
 struct CheckpointPrepareRequest final {
     explicit CheckpointPrepareRequest(
@@ -60,7 +100,8 @@ public:
         return checkpoint_;
     }
     [[nodiscard]] bool active() const noexcept {
-        return store_ != nullptr && snapshot_token_.has_value();
+        return store_ != nullptr &&
+               (snapshot_token_.has_value() || runtime_reconciled_);
     }
     [[nodiscard]] VolumeBarrierKind volume_barrier() const noexcept {
         return volume_barrier_;
@@ -81,6 +122,9 @@ public:
     [[nodiscard]] CheckpointTransactionOutcome resolve_commit(
         const OperationContext& context,
         const CommitResolutionRequest& request);
+    [[nodiscard]] CheckpointReconcileOutcome reconcile(
+        const OperationContext& context,
+        const CheckpointReconcileRequest& request = {});
 
 private:
     friend class CheckpointCoordinator;
@@ -90,6 +134,10 @@ private:
         ConsistentSnapshotToken snapshot_token,
         PublishOperationLease publish_lease,
         PreparedCheckpoint checkpoint,
+        std::shared_ptr<IPersistenceFile> journal_file,
+        JournalHeader journal_header,
+        WindowsFileIdentity journal_file_identity,
+        std::uint64_t previous_committed_length,
         CompletePersistenceErrorContext correlation_context,
         VolumeBarrierKind volume_barrier,
         CheckpointPrepareMetrics metrics) noexcept;
@@ -101,11 +149,18 @@ private:
     std::optional<ConsistentSnapshotToken> snapshot_token_{};
     std::optional<PublishOperationLease> publish_lease_{};
     std::shared_ptr<IPersistenceFile> manifest_file_{};
+    std::shared_ptr<IPersistenceFile> journal_file_{};
     PreparedCheckpoint checkpoint_{};
+    JournalHeader journal_header_{};
+    WindowsFileIdentity journal_file_identity_{};
+    std::uint64_t previous_committed_length_{};
     CompletePersistenceErrorContext correlation_context_;
     CommitDisposition disposition_{CommitDisposition::NotCommitted};
     bool manifest_candidate_verified_{};
+    bool runtime_reconciled_{};
+    std::optional<ManifestSlot> published_candidate_{};
     std::optional<FrozenPublicationIdentity> publication_identity_{};
+    std::optional<CompleteCandidateValidation> recovery_validation_{};
     VolumeBarrierKind volume_barrier_{
         VolumeBarrierKind::RawBlockTestNoFilesystemCache};
     CheckpointPrepareMetrics metrics_{};

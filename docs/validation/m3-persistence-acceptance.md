@@ -1759,3 +1759,48 @@ Final verification on the accepted source:
 Task 31 verdict: **DONE**. This authorizes Task 32 to install the recovered
 committed view and conditionally acknowledge the exact snapshot cut. Task 31
 does not install backing state or clear dirty members itself.
+
+## Task 32 — Committed-view reconciliation acceptance
+
+Task 32 closes the post-commit runtime gap. A transaction with durable commit
+proof reopens normal recovery state, binds the complete published manifest and
+journal identity, validates the exact record/index/commit layout, installs the
+immutable committed backing view, replays the durable acknowledgment stream,
+finishes the consistent snapshot, and only then reports ordinary `Committed`.
+
+Acknowledgment is exact rather than generation-wide: block version, record
+kind, base generation and dirty epoch must all match. DATA, ZERO and DISCARD
+members modified after the cut remain dirty as `NewerDirtyPreserved`; a clean
+idempotent retry is accepted only for the same complete identity. The backing
+generation is rechecked inside the final state transition, closing the
+generation-change TOCTOU. The replay holds at most one bounded record and
+validates CRC, sequence, operation identity and checkpoint generation.
+
+Every failure after durable commit remains
+`CommittedNeedsReconciliation`. Install, acknowledgment, snapshot finish and
+success-report failures are retryable; after snapshot finish, a report-only
+retry does not reinstall the backing or replay acknowledgments. Empty
+checkpoints, cancellation before install, transaction abandonment, mixed
+identity, truncated descriptors and repeated failures are covered. COW
+pre-images transfer into a bounded synchronous journal batch before their
+directory record is released; pre-commit abort leaves the newer live mutation
+dirty, while a committed journal becomes the durable authority.
+
+Final verification on the accepted source:
+
+- focused checkpoint, reconciliation and image-session tests passed 3/3;
+- complete Debug CTest passed 93/93;
+- complete Release CTest passed 94/94;
+- `BUILD_TESTING=OFF` product build passed with test seams excluded;
+- `git diff --check` passed apart from existing LF/CRLF conversion notices;
+- independent persistence and storage reviewers both returned GO with zero P0
+  and zero P1 findings.
+
+Accepted P2 follow-ups are test-depth and responsiveness work: expand the
+production identity and descriptor mutation matrices, inject direct exact-ack
+finish/abort/close races, and propagate reconciliation cancellation/deadline
+into a single exact-ack pin wait. They do not expose a known data-correctness
+failure and do not block the independent Task 33 crash model.
+
+Task 32 verdict: **DONE**. This authorizes Task 33 to validate checkpoint
+atomicity from cloned durable bytes with an independent oracle.

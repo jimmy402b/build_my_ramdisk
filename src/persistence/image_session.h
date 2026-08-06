@@ -232,7 +232,9 @@ constexpr bool ImageSession::is_valid_transition(
                to == SessionPhase::Closing ||
                to == SessionPhase::PersistenceFaulted;
     case SessionPhase::Reconciling:
-        return to == SessionPhase::Ready || to == SessionPhase::Closing ||
+        return to == SessionPhase::Ready ||
+               to == SessionPhase::Reconciling ||
+               to == SessionPhase::Closing ||
                to == SessionPhase::PersistenceFaulted;
     case SessionPhase::Closing:
         return to == SessionPhase::Closed || to == SessionPhase::PersistenceFaulted;

@@ -152,6 +152,12 @@ struct DirtyBlockSnapshot {
     std::vector<std::byte> data;
 };
 
+enum class SnapshotMemberAck : std::uint8_t {
+    Acknowledged = 0,
+    AlreadyPersisted,
+    NewerDirtyPreserved,
+};
+
 struct DirtyScanCursor {
     std::uint64_t next_block_index{};
 };

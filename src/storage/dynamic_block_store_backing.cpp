@@ -39,10 +39,10 @@ Error generation_conflict(std::wstring operation, std::wstring message) {
         std::move(message));
 }
 
-Error version_conflict(std::wstring message) {
+Error version_conflict(std::wstring operation, std::wstring message) {
     return backing_error(
         static_cast<std::uint32_t>(OperationErrorCode::version_changed),
-        L"DynamicBlockStore::mark_persisted",
+        std::move(operation),
         std::move(message));
 }
 
@@ -72,6 +72,11 @@ BackingGeneration DynamicBlockStore::backing_generation() const {
 Result<void> DynamicBlockStore::install_backing_view(
     BackingView next_view) {
     return install_backing_view_impl(std::nullopt, std::move(next_view));
+}
+
+BackingView DynamicBlockStore::capture_backing_view() const {
+    std::scoped_lock lock(state_mutex_);
+    return backing_view_;
 }
 
 Result<void> DynamicBlockStore::install_backing_view_for_snapshot(
@@ -164,9 +169,11 @@ Result<void> DynamicBlockStore::mark_persisted(
     std::uint64_t expected_version,
     DirtyRecordKind expected_kind,
     BackingGeneration persisted_generation) {
-    return mark_persisted_impl(
+    auto result = mark_persisted_impl(
         std::nullopt, block_index, expected_version, expected_kind,
-        persisted_generation);
+        std::nullopt, std::nullopt, persisted_generation);
+    if (!result.ok()) return Result<void>::failure(result.error());
+    return Result<void>::success();
 }
 
 Result<void> DynamicBlockStore::mark_persisted_for_snapshot(
@@ -175,21 +182,58 @@ Result<void> DynamicBlockStore::mark_persisted_for_snapshot(
     const std::uint64_t expected_version,
     const DirtyRecordKind expected_kind,
     const BackingGeneration persisted_generation) {
+    auto result = mark_persisted_impl(
+        token, block_index, expected_version, expected_kind,
+        std::nullopt, std::nullopt, persisted_generation);
+    if (!result.ok()) return Result<void>::failure(result.error());
+    return Result<void>::success();
+}
+
+Result<SnapshotMemberAck> DynamicBlockStore::acknowledge_snapshot_member(
+    const ConsistentSnapshotToken& token,
+    const std::uint64_t block_index,
+    const std::uint64_t expected_version,
+    const DirtyRecordKind expected_kind,
+    const BackingGeneration expected_base_generation,
+    const std::uint64_t expected_dirty_epoch,
+    const BackingGeneration persisted_generation) {
     return mark_persisted_impl(
         token, block_index, expected_version, expected_kind,
+        expected_base_generation, expected_dirty_epoch,
         persisted_generation);
 }
 
-Result<void> DynamicBlockStore::mark_persisted_impl(
+Result<SnapshotMemberAck> DynamicBlockStore::mark_persisted_impl(
     const std::optional<ConsistentSnapshotToken>& token,
     std::uint64_t block_index,
     std::uint64_t expected_version,
     DirtyRecordKind expected_kind,
+    std::optional<BackingGeneration> expected_base_generation,
+    std::optional<std::uint64_t> expected_dirty_epoch,
     BackingGeneration persisted_generation) {
+    const bool exact = expected_base_generation.has_value() &&
+                       expected_dirty_epoch.has_value();
+    const std::wstring operation = exact
+        ? L"DynamicBlockStore::acknowledge_snapshot_member"
+        : L"DynamicBlockStore::mark_persisted";
+    if (expected_base_generation.has_value() !=
+            expected_dirty_epoch.has_value() ||
+        (exact && (!token.has_value() || expected_version == 0 ||
+                   *expected_dirty_epoch == 0 ||
+                   *expected_dirty_epoch > token->cutoff_dirty_epoch ||
+                   *expected_base_generation >
+                       token->source_backing_generation ||
+                   persisted_generation <= *expected_base_generation ||
+                   persisted_generation <=
+                       token->source_backing_generation))) {
+        return Result<SnapshotMemberAck>::failure(backing_error(
+            static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
+            operation, L"snapshot acknowledgement identity is invalid"));
+    }
     RequestToken request;
     if (!try_enter_request(request)) {
-        return Result<void>::failure(closed_backing(
-            L"DynamicBlockStore::mark_persisted"));
+        return Result<SnapshotMemberAck>::failure(
+            closed_backing(operation));
     }
     ScopeExit leave([this, &request]() { leave_request(request); });
 
@@ -200,7 +244,7 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
             std::chrono::steady_clock::time_point::max()},
         snapshot_sensitive_operation);
     if (!admitted.ok()) {
-        return admitted;
+        return Result<SnapshotMemberAck>::failure(admitted.error());
     }
     ScopeExit leave_snapshot_sensitive_operation(
         [this, &snapshot_sensitive_operation]() noexcept {
@@ -211,21 +255,21 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
         auto acquired =
             snapshot_coordinator_->acquire_publication_pin(*token);
         if (!acquired.ok()) {
-            return Result<void>::failure(acquired.error());
+            return Result<SnapshotMemberAck>::failure(acquired.error());
         }
         publication_pin = acquired.move_value();
     } else if (snapshot_coordinator_->snapshot().active_token.has_value()) {
-        return Result<void>::failure(backing_error(
+        return Result<SnapshotMemberAck>::failure(backing_error(
             static_cast<std::uint32_t>(
                 DynamicBlockStoreErrorCode::SnapshotBusy),
-            L"DynamicBlockStore::mark_persisted",
+            operation,
             L"acknowledgement requires the active snapshot token"));
     }
 
     if (block_index >= geometry_.total_blocks) {
-        return Result<void>::failure(backing_error(
+        return Result<SnapshotMemberAck>::failure(backing_error(
             static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
-            L"DynamicBlockStore::mark_persisted",
+            operation,
             L"block index is outside the logical device"));
     }
 
@@ -233,8 +277,8 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
     if (entry == nullptr) {
         std::scoped_lock state_lock(state_mutex_);
         ++stats_.snapshot_version_conflicts;
-        return Result<void>::failure(version_conflict(
-            L"dirty block metadata no longer exists"));
+        return Result<SnapshotMemberAck>::failure(version_conflict(
+            operation, L"dirty block metadata no longer exists"));
     }
 
     auto& stripe = stripes_->stripe_for(block_index);
@@ -257,23 +301,67 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
         });
     }
     if (closing_requested()) {
-        return Result<void>::failure(closed_backing(
-            L"DynamicBlockStore::mark_persisted"));
+        return Result<SnapshotMemberAck>::failure(
+            closed_backing(operation));
     }
 
     const bool resident_dirty = entry->state == BlockState::ResidentDirty;
     const bool zero_dirty = entry->state == BlockState::ZeroDirty;
+    const bool dirty = resident_dirty || zero_dirty;
+    std::unique_lock<std::mutex> exact_generation_lock;
+    if (exact) {
+        exact_generation_lock = std::unique_lock<std::mutex>(state_mutex_);
+        if (backing_view_.generation != persisted_generation) {
+            ++stats_.backing_generation_conflicts;
+            return Result<SnapshotMemberAck>::failure(generation_conflict(
+                operation,
+                L"exact acknowledgement requires the installed generation"));
+        }
+        if (!dirty) {
+            const bool clean = entry->state == BlockState::Unresident ||
+                entry->state == BlockState::ResidentClean ||
+                entry->state == BlockState::ZeroClean;
+            const bool same_identity =
+                entry->version == expected_version &&
+                entry->dirty_kind == expected_kind &&
+                entry->dirty_base_generation ==
+                    *expected_base_generation &&
+                entry->dirty_epoch == *expected_dirty_epoch;
+            if (clean && same_identity &&
+                entry->clean_generation == persisted_generation) {
+                return Result<SnapshotMemberAck>::success(
+                    SnapshotMemberAck::AlreadyPersisted);
+            }
+            ++stats_.snapshot_version_conflicts;
+            return Result<SnapshotMemberAck>::failure(version_conflict(
+                operation,
+                L"clean snapshot member identity does not match the retry"));
+        }
+        if (entry->dirty_epoch > token->cutoff_dirty_epoch &&
+            entry->dirty_epoch > *expected_dirty_epoch) {
+            return Result<SnapshotMemberAck>::success(
+                SnapshotMemberAck::NewerDirtyPreserved);
+        }
+    }
     const bool snapshot_epoch_changed = token.has_value() &&
         entry->dirty_epoch > token->cutoff_dirty_epoch;
-    if ((!resident_dirty && !zero_dirty) ||
-        entry->version != expected_version ||
+    const bool identity_changed = entry->version != expected_version ||
         entry->dirty_kind != expected_kind ||
-        snapshot_epoch_changed) {
-        std::scoped_lock state_lock(state_mutex_);
-        ++stats_.snapshot_version_conflicts;
-        return Result<void>::failure(version_conflict(
-            L"dirty state, version, record kind, or snapshot epoch changed"));
+        (exact &&
+         (entry->dirty_base_generation != *expected_base_generation ||
+          entry->dirty_epoch != *expected_dirty_epoch));
+    if (!dirty || identity_changed || snapshot_epoch_changed) {
+        if (exact_generation_lock.owns_lock()) {
+            ++stats_.snapshot_version_conflicts;
+        } else {
+            std::scoped_lock state_lock(state_mutex_);
+            ++stats_.snapshot_version_conflicts;
+        }
+        return Result<SnapshotMemberAck>::failure(version_conflict(
+            operation,
+            L"dirty state or exact snapshot identity changed"));
     }
+    if (exact_generation_lock.owns_lock()) exact_generation_lock.unlock();
 
     bool test_transition_active = false;
     const auto original_state = entry->state;
@@ -282,20 +370,23 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
     if (pause_after_validation) {
         {
             std::scoped_lock state_lock(state_mutex_);
-            if (persisted_generation <= entry->dirty_base_generation ||
-                persisted_generation > backing_view_.generation) {
+            const bool generation_invalid = exact
+                ? backing_view_.generation != persisted_generation
+                : persisted_generation <= entry->dirty_base_generation ||
+                  persisted_generation > backing_view_.generation;
+            if (generation_invalid) {
                 ++stats_.backing_generation_conflicts;
-                return Result<void>::failure(generation_conflict(
-                    L"DynamicBlockStore::mark_persisted",
+                return Result<SnapshotMemberAck>::failure(generation_conflict(
+                    operation,
                     L"persisted generation is not an installed successor"));
             }
         }
         const auto owner = next_epoch(transition_epoch_);
         if (owner == 0) {
-            return Result<void>::failure(backing_error(
+            return Result<SnapshotMemberAck>::failure(backing_error(
                 static_cast<std::uint32_t>(
                     DynamicBlockStoreErrorCode::FatalInternalInvariant),
-                L"DynamicBlockStore::mark_persisted/test-gate",
+                operation + L"/test-gate",
                 L"transition epoch wrapped"));
         }
         {
@@ -340,16 +431,19 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
             test_transition_active = false;
             block_lock.unlock();
             stripe.condition.notify_all();
-            return Result<void>::failure(closed_backing(
-                L"DynamicBlockStore::mark_persisted"));
+            return Result<SnapshotMemberAck>::failure(
+                closed_backing(operation));
         }
     }
 
     bool generation_conflicted = false;
     {
         std::scoped_lock state_lock(state_mutex_);
-        if (persisted_generation <= entry->dirty_base_generation ||
-            persisted_generation > backing_view_.generation) {
+        const bool generation_invalid = exact
+            ? backing_view_.generation != persisted_generation
+            : persisted_generation <= entry->dirty_base_generation ||
+              persisted_generation > backing_view_.generation;
+        if (generation_invalid) {
             ++stats_.backing_generation_conflicts;
             generation_conflicted = true;
             if (test_transition_active) {
@@ -387,8 +481,8 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
             block_lock.unlock();
             stripe.condition.notify_all();
         }
-        return Result<void>::failure(generation_conflict(
-            L"DynamicBlockStore::mark_persisted",
+        return Result<SnapshotMemberAck>::failure(generation_conflict(
+            operation,
             L"persisted generation is not an installed successor"));
     }
     entry->transition_owner = 0;
@@ -402,7 +496,8 @@ Result<void> DynamicBlockStore::mark_persisted_impl(
         // newly eligible clean victim without committing another block.
         signal_eviction_worker_if_needed();
     }
-    return Result<void>::success();
+    return Result<SnapshotMemberAck>::success(
+        SnapshotMemberAck::Acknowledged);
 }
 
 bool DynamicBlockStoreTestAccess::persisted_ack_gap_reached(

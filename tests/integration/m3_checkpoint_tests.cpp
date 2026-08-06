@@ -212,6 +212,23 @@ ManifestSlot make_active_manifest(const JournalHeader& header) {
     return slot;
 }
 
+CompositeBackingIdentity make_committed_identity(
+    const JournalCheckpointRequest& journal,
+    const PreparedCheckpoint& checkpoint) {
+    CompositeBackingIdentity identity{};
+    identity.image_uuid = journal.header.image_uuid;
+    identity.geometry = journal.header.geometry;
+    identity.checkpoint_generation = checkpoint.generation;
+    identity.journal_windows_identity = journal.file_identity;
+    identity.journal_windows_identity.size = checkpoint.committed_length;
+    identity.journal_identity = journal.header.journal_identity;
+    identity.journal_epoch = journal.header.epoch;
+    identity.journal_committed_length = checkpoint.committed_length;
+    identity.commit = checkpoint.commit;
+    identity.root = checkpoint.root;
+    return identity;
+}
+
 std::unique_ptr<IPersistenceFile> make_manifest_file(
     const ManifestSlot& active,
     const std::vector<test::FaultFileRule>& rules = {},
@@ -624,7 +641,467 @@ TEST_CASE(checkpoint_publish_success_hands_commit_proof_to_task32) {
     REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
     const auto retry = store->begin_consistent_snapshot(bounded_context());
     REQUIRE(retry.ok());
+    DirtyScanCursor retry_cursor{};
+    std::uint64_t retry_records = 0;
+    while (retry_cursor.next_block_index < store->total_blocks()) {
+        auto batch = store->copy_consistent_snapshot_batch(
+            bounded_context(), retry.value(), retry_cursor, kM2BlockSize);
+        REQUIRE(batch.ok());
+        retry_records += batch.value().size();
+    }
+    REQUIRE_EQ(retry_records, 4ull);
     REQUIRE(store->abort_consistent_snapshot(retry.value()).ok());
+}
+
+TEST_CASE(checkpoint_reconcile_installs_acks_finishes_in_frozen_order) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    const auto published = transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }});
+    REQUIRE(published.ok());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xA5).build();
+    std::vector<CheckpointReconcileTestPhase> phases;
+    CheckpointReconcileRequest reconcile_request{};
+    reconcile_request.test_committed_view = BackingView{1, successor};
+    reconcile_request.test_phase_hook =
+        [&phases](const CheckpointReconcileTestPhase phase) {
+            phases.push_back(phase);
+            return Result<void>::success();
+        };
+    const auto reconciled = transaction.reconcile(
+        bounded_context(), reconcile_request);
+    REQUIRE(reconciled.ok());
+    REQUIRE(reconciled.backing_installed);
+    REQUIRE(reconciled.snapshot_finished);
+    REQUIRE_EQ(reconciled.ack.records_verified, 4ull);
+    REQUIRE_EQ(reconciled.ack.acknowledged, 4ull);
+    const std::vector<CheckpointReconcileTestPhase> expected_phases{
+        CheckpointReconcileTestPhase::BeforeRecoverView,
+        CheckpointReconcileTestPhase::BeforeInstallBacking,
+        CheckpointReconcileTestPhase::BeforeAckReplay,
+        CheckpointReconcileTestPhase::BeforeFinishSnapshot,
+        CheckpointReconcileTestPhase::BeforeReportSuccess};
+    REQUIRE_EQ(phases, expected_phases);
+    REQUIRE_EQ(store->backing_generation(), 1ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(!transaction.active());
+
+    auto clean_token = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(clean_token.ok());
+    DirtyScanCursor cursor{};
+    std::uint64_t records = 0;
+    while (cursor.next_block_index < store->total_blocks()) {
+        auto batch = store->copy_consistent_snapshot_batch(
+            bounded_context(), clean_token.value(), cursor, kM2BlockSize);
+        REQUIRE(batch.ok());
+        records += batch.value().size();
+    }
+    REQUIRE_EQ(records, 0ull);
+    REQUIRE(store->abort_consistent_snapshot(clean_token.value()).ok());
+}
+
+TEST_CASE(checkpoint_reconcile_accepts_a_complete_empty_checkpoint) {
+    auto store = make_store();
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    REQUIRE_EQ(transaction.checkpoint().ack_stream.record_count, 0ull);
+    const auto active = make_active_manifest(writer.request.header);
+    REQUIRE(transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }}).ok());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xA3).build();
+    CheckpointReconcileRequest reconcile_request{};
+    reconcile_request.test_committed_view = BackingView{1, successor};
+    const auto reconciled = transaction.reconcile(
+        bounded_context(), reconcile_request);
+    REQUIRE(reconciled.ok());
+    REQUIRE_EQ(reconciled.ack.records_verified, 0ull);
+    REQUIRE(reconciled.snapshot_finished);
+    REQUIRE_EQ(store->backing_generation(), 1ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+}
+
+TEST_CASE(checkpoint_reconcile_rejects_missing_durable_commit_proof) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xA4).build();
+    CheckpointReconcileRequest reconcile_request{};
+    reconcile_request.test_committed_view = BackingView{1, successor};
+    const auto rejected = transaction.reconcile(
+        bounded_context(), reconcile_request);
+    REQUIRE(!rejected.ok());
+    REQUIRE_EQ(rejected.disposition, CommitDisposition::NotCommitted);
+    REQUIRE(rejected.error.has_value());
+    REQUIRE(!rejected.backing_installed);
+    REQUIRE(!rejected.snapshot_finished);
+    REQUIRE_EQ(rejected.ack.records_verified, 0ull);
+    REQUIRE_EQ(store->backing_generation(), 0ull);
+    REQUIRE_EQ(transaction.disposition(), CommitDisposition::NotCommitted);
+    REQUIRE_EQ(session.phase(), SessionPhase::Checkpointing);
+    REQUIRE(transaction.abort().ok());
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+}
+
+TEST_CASE(checkpoint_reconcile_observes_cancellation_before_install) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    REQUIRE(transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }}).ok());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xA2).build();
+    CheckpointReconcileRequest reconcile_request{};
+    reconcile_request.test_committed_view = BackingView{1, successor};
+    std::stop_source stop;
+    stop.request_stop();
+    const auto cancelled = transaction.reconcile(
+        OperationContext{stop.get_token()}, reconcile_request);
+    REQUIRE_EQ(cancelled.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(cancelled.error.has_value());
+    REQUIRE(!cancelled.backing_installed);
+    REQUIRE_EQ(cancelled.ack.records_verified, 0ull);
+    REQUIRE_EQ(store->backing_generation(), 0ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+
+    const auto retry = transaction.reconcile(
+        bounded_context(), reconcile_request);
+    REQUIRE(retry.ok());
+    REQUIRE_EQ(retry.ack.acknowledged, 4ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+}
+
+TEST_CASE(checkpoint_reconcile_retry_is_idempotent_after_install_and_ack) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    REQUIRE(transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }}).ok());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xA6).build();
+    CheckpointReconcileRequest first_request{};
+    first_request.test_committed_view = BackingView{1, successor};
+    first_request.test_phase_hook =
+        [](const CheckpointReconcileTestPhase phase) -> Result<void> {
+            if (phase !=
+                CheckpointReconcileTestPhase::BeforeFinishSnapshot) {
+                return Result<void>::success();
+            }
+            return Result<void>::failure({
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
+                L"m3_checkpoint_tests",
+                L"injected finish failure", 31});
+        };
+    const auto first = transaction.reconcile(
+        bounded_context(), first_request);
+    REQUIRE_EQ(first.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(first.error.has_value());
+    REQUIRE_EQ(first.ack.acknowledged, 4ull);
+    REQUIRE(transaction.active());
+    REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+    REQUIRE_EQ(store->backing_generation(), 1ull);
+
+    CheckpointReconcileRequest second_failure_request{};
+    second_failure_request.test_committed_view = BackingView{1, successor};
+    second_failure_request.test_phase_hook = first_request.test_phase_hook;
+    const auto second_failure = transaction.reconcile(
+        bounded_context(), second_failure_request);
+    REQUIRE_EQ(second_failure.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(second_failure.error.has_value());
+    REQUIRE_EQ(second_failure.ack.already_persisted, 4ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+    REQUIRE(transaction.active());
+
+    CheckpointReconcileRequest retry_request{};
+    retry_request.test_committed_view = BackingView{1, successor};
+    const auto retry = transaction.reconcile(
+        bounded_context(), retry_request);
+    REQUIRE(retry.ok());
+    REQUIRE_EQ(retry.ack.records_verified, 4ull);
+    REQUIRE_EQ(retry.ack.already_persisted, 4ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(!transaction.active());
+}
+
+TEST_CASE(checkpoint_reconcile_phase_failures_stop_at_the_frozen_boundary) {
+    const std::array failure_cases{
+        std::pair{CheckpointReconcileTestPhase::BeforeRecoverView, 0ull},
+        std::pair{CheckpointReconcileTestPhase::BeforeInstallBacking, 0ull},
+        std::pair{CheckpointReconcileTestPhase::BeforeAckReplay, 1ull},
+    };
+
+    for (const auto& [failure_phase, expected_generation] : failure_cases) {
+        auto store = make_store();
+        make_mixed_dirty_image(*store);
+        auto writer = make_writer();
+        auto session = ImageSession::ready();
+        CheckpointCoordinator coordinator(session, *store, *writer.writer);
+        auto request = make_checkpoint_request(
+            writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+        auto prepared_result = coordinator.prepare(bounded_context(), request);
+        REQUIRE(prepared_result.ok());
+        auto transaction = prepared_result.move_transaction();
+        const auto active = make_active_manifest(writer.request.header);
+        REQUIRE(transaction.publish_manifest(
+            bounded_context(),
+            {make_manifest_file(active), active, 200, std::nullopt,
+             [](const ManifestSlot&, std::span<const std::byte>) {
+                 return Result<void>::success();
+             }}).ok());
+
+        auto successor = myrd::test::FakeBackingStoreBuilder(0xA7).build();
+        CheckpointReconcileRequest failed_request{};
+        failed_request.test_committed_view = BackingView{1, successor};
+        failed_request.test_phase_hook =
+            [failure_phase](const CheckpointReconcileTestPhase phase)
+                -> Result<void> {
+                if (phase != failure_phase) return Result<void>::success();
+                return Result<void>::failure({
+                    ErrorDomain::persistence,
+                    static_cast<std::uint32_t>(
+                        PersistenceErrorCode::IoError),
+                    L"m3_checkpoint_tests",
+                    L"injected reconcile phase failure", 32});
+            };
+
+        const auto failed = transaction.reconcile(
+            bounded_context(), failed_request);
+        REQUIRE_EQ(failed.disposition,
+                   CommitDisposition::CommittedNeedsReconciliation);
+        REQUIRE(failed.error.has_value());
+        REQUIRE_EQ(failed.ack.records_verified, 0ull);
+        REQUIRE(!failed.snapshot_finished);
+        REQUIRE(transaction.active());
+        REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+        REQUIRE_EQ(store->backing_generation(), expected_generation);
+        REQUIRE_EQ(failed.backing_installed, expected_generation == 1);
+
+        CheckpointReconcileRequest retry_request{};
+        retry_request.test_committed_view = BackingView{1, successor};
+        const auto retry = transaction.reconcile(
+            bounded_context(), retry_request);
+        REQUIRE(retry.ok());
+        REQUIRE_EQ(retry.ack.records_verified, 4ull);
+        REQUIRE_EQ(retry.ack.acknowledged, 4ull);
+        REQUIRE(retry.snapshot_finished);
+        REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+        REQUIRE(!transaction.active());
+    }
+}
+
+TEST_CASE(checkpoint_reconcile_install_failure_is_retryable_without_ack) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    REQUIRE(transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }}).ok());
+
+    auto wrong_store = myrd::test::FakeBackingStoreBuilder(0xB1).build();
+    CheckpointReconcileRequest wrong_request{};
+    wrong_request.test_committed_view = BackingView{2, wrong_store};
+    const auto failed = transaction.reconcile(
+        bounded_context(), wrong_request);
+    REQUIRE_EQ(failed.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(failed.error.has_value());
+    REQUIRE_EQ(failed.ack.records_verified, 0ull);
+    REQUIRE(!failed.backing_installed);
+    REQUIRE(!failed.snapshot_finished);
+    REQUIRE_EQ(store->backing_generation(), 0ull);
+    REQUIRE(transaction.active());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xB2).build();
+    CheckpointReconcileRequest retry_request{};
+    retry_request.test_committed_view = BackingView{1, successor};
+    const auto retry = transaction.reconcile(
+        bounded_context(), retry_request);
+    REQUIRE(retry.ok());
+    REQUIRE_EQ(retry.ack.acknowledged, 4ull);
+    REQUIRE_EQ(store->backing_generation(), 1ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(!transaction.active());
+}
+
+TEST_CASE(checkpoint_reconcile_rejects_mixed_identity_and_truncated_ack_stream) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    REQUIRE(transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }}).ok());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xB4).build();
+    auto wrong_identity = make_committed_identity(
+        writer.request, transaction.checkpoint());
+    ++wrong_identity.journal_epoch;
+    CheckpointReconcileRequest identity_request{};
+    identity_request.test_committed_view = BackingView{1, successor};
+    identity_request.test_committed_identity = wrong_identity;
+    const auto identity_failed = transaction.reconcile(
+        bounded_context(), identity_request);
+    REQUIRE_EQ(identity_failed.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(identity_failed.error.has_value());
+    REQUIRE(!identity_failed.backing_installed);
+    REQUIRE_EQ(store->backing_generation(), 0ull);
+
+    auto truncated = transaction.checkpoint().ack_stream;
+    truncated.record_count = 0;
+    truncated.end_offset = truncated.begin_offset;
+    CheckpointReconcileRequest stream_request{};
+    stream_request.test_committed_view = BackingView{1, successor};
+    stream_request.test_ack_stream = truncated;
+    const auto stream_failed = transaction.reconcile(
+        bounded_context(), stream_request);
+    REQUIRE_EQ(stream_failed.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(stream_failed.error.has_value());
+    REQUIRE(!stream_failed.backing_installed);
+    REQUIRE_EQ(store->backing_generation(), 0ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+
+    CheckpointReconcileRequest retry_request{};
+    retry_request.test_committed_view = BackingView{1, successor};
+    const auto retry = transaction.reconcile(
+        bounded_context(), retry_request);
+    REQUIRE(retry.ok());
+    REQUIRE_EQ(retry.ack.acknowledged, 4ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+}
+
+TEST_CASE(checkpoint_reconcile_report_failure_retries_without_replaying_ack) {
+    auto store = make_store();
+    make_mixed_dirty_image(*store);
+    auto writer = make_writer();
+    auto session = ImageSession::ready();
+    CheckpointCoordinator coordinator(session, *store, *writer.writer);
+    auto request = make_checkpoint_request(
+        writer.request, VolumeBarrierKind::WindowsVolumeFlushed);
+    auto prepared_result = coordinator.prepare(bounded_context(), request);
+    REQUIRE(prepared_result.ok());
+    auto transaction = prepared_result.move_transaction();
+    const auto active = make_active_manifest(writer.request.header);
+    REQUIRE(transaction.publish_manifest(
+        bounded_context(),
+        {make_manifest_file(active), active, 200, std::nullopt,
+         [](const ManifestSlot&, std::span<const std::byte>) {
+             return Result<void>::success();
+         }}).ok());
+
+    auto successor = myrd::test::FakeBackingStoreBuilder(0xB3).build();
+    CheckpointReconcileRequest failed_request{};
+    failed_request.test_committed_view = BackingView{1, successor};
+    failed_request.test_phase_hook =
+        [](const CheckpointReconcileTestPhase phase) -> Result<void> {
+            if (phase != CheckpointReconcileTestPhase::BeforeReportSuccess) {
+                return Result<void>::success();
+            }
+            return Result<void>::failure({
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
+                L"m3_checkpoint_tests",
+                L"injected report failure", 33});
+        };
+    const auto failed = transaction.reconcile(
+        bounded_context(), failed_request);
+    REQUIRE_EQ(failed.disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE(failed.backing_installed);
+    REQUIRE(failed.snapshot_finished);
+    REQUIRE_EQ(failed.ack.acknowledged, 4ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
+    REQUIRE(transaction.active());
+
+    const auto retry = transaction.reconcile(bounded_context(), {});
+    REQUIRE(retry.ok());
+    REQUIRE(retry.backing_installed);
+    REQUIRE(retry.snapshot_finished);
+    REQUIRE_EQ(retry.ack.records_verified, 0ull);
+    REQUIRE_EQ(session.phase(), SessionPhase::Ready);
+    REQUIRE(!transaction.active());
 }
 
 TEST_CASE(checkpoint_prepare_journals_cut_preimage_when_ram_is_overwritten) {
@@ -672,6 +1149,16 @@ TEST_CASE(checkpoint_prepare_journals_cut_preimage_when_ram_is_overwritten) {
                cut_entry.version);
     REQUIRE(std::equal(
         before.begin(), before.end(), decoded.value().payload.begin()));
+    BlockEntry newer_entry{};
+    REQUIRE(DynamicBlockStoreTestAccess::snapshot_entry(
+        *store, 0, newer_entry));
+    REQUIRE_EQ(newer_entry.state, BlockState::ResidentDirty);
+    REQUIRE(newer_entry.dirty_epoch > cut_entry.dirty_epoch);
+    REQUIRE(prepared.abort().ok());
+    REQUIRE_EQ(store->stats().snapshot_cow_current_bytes, 0ull);
+    std::array<std::byte, kM2BlockSize> visible{};
+    REQUIRE(store->read(bounded_context(), 0, visible).ok());
+    REQUIRE_EQ(visible, after);
 }
 
 TEST_CASE(checkpoint_prepare_cancelled_context_leaks_no_gate_or_snapshot) {

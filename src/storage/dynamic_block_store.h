@@ -68,6 +68,7 @@ public:
         std::span<const DataRange> ranges) override;
 
     BackingGeneration backing_generation() const;
+    BackingView capture_backing_view() const;
     Result<void> install_backing_view(BackingView next_view);
     Result<void> install_backing_view_for_snapshot(
         const ConsistentSnapshotToken& token,
@@ -87,6 +88,14 @@ public:
         std::uint64_t block_index,
         std::uint64_t expected_version,
         DirtyRecordKind expected_kind,
+        BackingGeneration persisted_generation);
+    Result<SnapshotMemberAck> acknowledge_snapshot_member(
+        const ConsistentSnapshotToken& token,
+        std::uint64_t block_index,
+        std::uint64_t expected_version,
+        DirtyRecordKind expected_kind,
+        BackingGeneration expected_base_generation,
+        std::uint64_t expected_dirty_epoch,
         BackingGeneration persisted_generation);
 
     // ---- M2.1 consistent snapshot API --------------------------------------
@@ -134,11 +143,13 @@ private:
     Result<void> install_backing_view_impl(
         const std::optional<ConsistentSnapshotToken>& token,
         BackingView next_view);
-    Result<void> mark_persisted_impl(
+    Result<SnapshotMemberAck> mark_persisted_impl(
         const std::optional<ConsistentSnapshotToken>& token,
         std::uint64_t block_index,
         std::uint64_t expected_version,
         DirtyRecordKind expected_kind,
+        std::optional<BackingGeneration> expected_base_generation,
+        std::optional<std::uint64_t> expected_dirty_epoch,
         BackingGeneration persisted_generation);
     friend class EvictionManager;
     friend class DynamicBlockStoreTestAccess;

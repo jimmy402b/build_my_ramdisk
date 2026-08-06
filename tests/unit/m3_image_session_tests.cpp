@@ -25,8 +25,9 @@ constexpr std::array<SessionPhase, 9> kPhases{
     SessionPhase::PersistenceFaulted,
 };
 
-// This is the normative Task 29 table. The extra Verifying phase is a
-// read-only phase already defined by Task 13 and is tested separately below.
+// Task 32 extends the Task 29 table with the Reconciling self-transition:
+// a failed reconciliation attempt may end while the durable state still
+// requires another bounded retry. The extra Verifying phase is tested below.
 constexpr std::array<std::array<bool, 9>, 9> kAllowed{{
     //                         Open Ready Check Compact Resolve Recon Close Closed Fault
     /* Opening            */ {false, true, false, false, false, false, true, true, false},
@@ -34,7 +35,7 @@ constexpr std::array<std::array<bool, 9>, 9> kAllowed{{
     /* Checkpointing      */ {false, true, false, false, true, true, false, false, true},
     /* Compacting         */ {false, true, false, false, true, true, false, false, true},
     /* ResolvingCommit    */ {false, true, false, false, false, true, true, false, true},
-    /* Reconciling        */ {false, true, false, false, false, false, true, false, true},
+    /* Reconciling        */ {false, true, false, false, false, true, true, false, true},
     /* Closing            */ {false, false, false, false, false, false, false, true, true},
     /* Closed             */ {true, false, false, false, false, false, false, false, false},
     /* PersistenceFaulted */ {false, false, false, false, false, false, true, false, false},

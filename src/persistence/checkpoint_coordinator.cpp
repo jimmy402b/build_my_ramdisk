@@ -1,5 +1,6 @@
 #include "src/persistence/checkpoint_coordinator.h"
 
+#include "src/persistence/composite_backing_store.h"
 #include "src/persistence/image_paths.h"
 #include "src/storage/block_constants.h"
 
@@ -147,6 +148,10 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
     ConsistentSnapshotToken snapshot_token,
     PublishOperationLease publish_lease,
     PreparedCheckpoint checkpoint,
+    std::shared_ptr<IPersistenceFile> journal_file,
+    JournalHeader journal_header,
+    WindowsFileIdentity journal_file_identity,
+    const std::uint64_t previous_committed_length,
     CompletePersistenceErrorContext correlation_context,
     const VolumeBarrierKind volume_barrier,
     CheckpointPrepareMetrics metrics) noexcept
@@ -154,7 +159,11 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
       session_(&session),
       snapshot_token_(snapshot_token),
       publish_lease_(std::move(publish_lease)),
+      journal_file_(std::move(journal_file)),
       checkpoint_(std::move(checkpoint)),
+      journal_header_(std::move(journal_header)),
+      journal_file_identity_(std::move(journal_file_identity)),
+      previous_committed_length_(previous_committed_length),
       correlation_context_(std::move(correlation_context)),
       volume_barrier_(volume_barrier),
       metrics_(metrics) {}
@@ -166,11 +175,18 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
       snapshot_token_(std::move(other.snapshot_token_)),
       publish_lease_(std::move(other.publish_lease_)),
       manifest_file_(std::move(other.manifest_file_)),
+      journal_file_(std::move(other.journal_file_)),
       checkpoint_(std::move(other.checkpoint_)),
+      journal_header_(std::move(other.journal_header_)),
+      journal_file_identity_(std::move(other.journal_file_identity_)),
+      previous_committed_length_(other.previous_committed_length_),
       correlation_context_(std::move(other.correlation_context_)),
       disposition_(other.disposition_),
       manifest_candidate_verified_(other.manifest_candidate_verified_),
+      runtime_reconciled_(other.runtime_reconciled_),
+      published_candidate_(std::move(other.published_candidate_)),
       publication_identity_(std::move(other.publication_identity_)),
+      recovery_validation_(std::move(other.recovery_validation_)),
       volume_barrier_(other.volume_barrier_),
       metrics_(other.metrics_) {
     other.snapshot_token_.reset();
@@ -186,11 +202,18 @@ PreparedCheckpointTransaction& PreparedCheckpointTransaction::operator=(
     snapshot_token_ = std::move(other.snapshot_token_);
     publish_lease_ = std::move(other.publish_lease_);
     manifest_file_ = std::move(other.manifest_file_);
+    journal_file_ = std::move(other.journal_file_);
     checkpoint_ = std::move(other.checkpoint_);
+    journal_header_ = std::move(other.journal_header_);
+    journal_file_identity_ = std::move(other.journal_file_identity_);
+    previous_committed_length_ = other.previous_committed_length_;
     correlation_context_ = std::move(other.correlation_context_);
     disposition_ = other.disposition_;
     manifest_candidate_verified_ = other.manifest_candidate_verified_;
+    runtime_reconciled_ = other.runtime_reconciled_;
+    published_candidate_ = std::move(other.published_candidate_);
     publication_identity_ = std::move(other.publication_identity_);
+    recovery_validation_ = std::move(other.recovery_validation_);
     volume_barrier_ = other.volume_barrier_;
     metrics_ = other.metrics_;
     other.snapshot_token_.reset();
@@ -224,6 +247,7 @@ Result<void> PreparedCheckpointTransaction::abort() {
     store_ = nullptr;
     session_ = nullptr;
     manifest_file_.reset();
+    journal_file_.reset();
     if (first_error.has_value()) {
         return Result<void>::failure(std::move(*first_error));
     }
@@ -290,12 +314,14 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
 
     manifest_file_ = std::shared_ptr<IPersistenceFile>(
         std::move(request.manifest_file));
+    recovery_validation_ = request.complete_validation;
     const auto prepared = prepare_manifest_candidate(
         request.active_slot, checkpoint_, request.committed_time_100ns);
     ManifestPublishAttemptOutcome attempted{};
     if (!prepared.ok()) {
         attempted.error = prepared.error();
     } else {
+        published_candidate_ = prepared.value().slot;
         publication_identity_ = FrozenPublicationIdentity{
             request.active_slot.generation.checkpoint_generation,
             checkpoint_.generation,
@@ -453,6 +479,14 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::resolve_commit(
     }
     disposition_ = resolved.disposition;
     manifest_candidate_verified_ = result.manifest_candidate_verified;
+    if (resolved.disposition ==
+            CommitDisposition::CommittedNeedsReconciliation &&
+        request.filesystem.has_value()) {
+        recovery_validation_ = CompleteCandidateValidation{
+            request.filesystem->bundle_root,
+            request.filesystem->manifest_relative_name,
+            request.filesystem->options};
+    }
     if (resolved.disposition == CommitDisposition::NotCommitted) {
         auto aborted = store_->abort_consistent_snapshot(*snapshot_token_);
         if (!aborted.ok() && !result.error.has_value()) {
@@ -463,6 +497,393 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::resolve_commit(
         session_ = nullptr;
     }
     return result;
+}
+
+CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
+    const OperationContext& context,
+    const CheckpointReconcileRequest& request) {
+#if !defined(MYRD_ENABLE_TEST_SEAMS)
+    (void)request;
+#endif
+    CheckpointReconcileOutcome result{};
+    result.disposition = disposition_;
+    result.generation = checkpoint_.generation;
+    const auto set_error = [&](const Error& source,
+                               const CommitDisposition disposition) {
+        const auto code = persistence_code_for(source);
+        auto error_context = correlation_context_.value();
+        error_context.operation = "checkpoint.reconcile";
+        error_context.code = code;
+        error_context.phase = disposition == CommitDisposition::NotCommitted
+            ? SessionPhase::Checkpointing
+            : SessionPhase::Reconciling;
+        error_context.native_code = source.native_code;
+        error_context.generation = checkpoint_.generation;
+        error_context.disposition = disposition;
+        error_context.safe_context = disposition ==
+                CommitDisposition::CommittedNeedsReconciliation
+            ? "durable checkpoint requires runtime reconciliation"
+            : "checkpoint is not eligible for reconciliation";
+        result.error = Error{
+            ErrorDomain::persistence, static_cast<std::uint32_t>(code),
+            L"checkpoint.reconcile", source.message, source.native_code};
+        result.error_context = std::move(error_context);
+        result.disposition = disposition;
+    };
+    const bool durable = disposition_ == CommitDisposition::Committed ||
+        disposition_ == CommitDisposition::CommittedNeedsReconciliation;
+    const bool runtime_state_valid = runtime_reconciled_
+        ? !snapshot_token_.has_value()
+        : snapshot_token_.has_value() && journal_file_;
+    if (!durable || store_ == nullptr || session_ == nullptr ||
+        !runtime_state_valid) {
+        set_error(checkpoint_failure<void>(
+            L"transaction has no durable checkpoint to reconcile",
+            PersistenceErrorCode::OperationBusy).error(), disposition_);
+        return result;
+    }
+
+    if (!publish_lease_.has_value()) {
+        auto begun = session_->begin_reconciliation();
+        if (!begun.ok()) {
+            set_error(begun.error(), disposition_);
+            return result;
+        }
+        publish_lease_ = begun.move_value();
+    }
+    auto* lease = &*publish_lease_;
+
+    std::stop_source combined_stop;
+    const auto request_stop = [&combined_stop]() noexcept {
+        combined_stop.request_stop();
+    };
+    std::stop_callback caller_stop(context.stop_token, request_stop);
+    std::stop_callback session_stop(lease->stop_token(), request_stop);
+    const OperationContext operation_context{
+        combined_stop.get_token(), context.deadline};
+
+    const auto fail = [&](const Error& source) {
+        set_error(source,
+                  CommitDisposition::CommittedNeedsReconciliation);
+        std::optional<PersistenceFailure> failure;
+        if (result.error.has_value() && result.error_context.has_value()) {
+            failure = PersistenceFailure{
+                *result.error, *result.error_context};
+        }
+        const auto finished = lease->finish(
+            CommitDisposition::CommittedNeedsReconciliation,
+            std::move(failure));
+        if (finished.ok()) publish_lease_.reset();
+        disposition_ =
+            CommitDisposition::CommittedNeedsReconciliation;
+        return result;
+    };
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    const auto injected = [&](const CheckpointReconcileTestPhase phase)
+        -> std::optional<Error> {
+        if (!request.test_phase_hook) return std::nullopt;
+        try {
+            auto outcome = request.test_phase_hook(phase);
+            if (!outcome.ok()) return outcome.error();
+        } catch (...) {
+            return checkpoint_failure<void>(
+                L"checkpoint reconcile phase hook threw",
+                PersistenceErrorCode::FatalInternalInvariant).error();
+        }
+        return std::nullopt;
+    };
+#endif
+
+    const auto report_success = [&]() -> CheckpointReconcileOutcome {
+        auto session_finished = lease->finish(CommitDisposition::Committed);
+        if (!session_finished.ok()) {
+            set_error(session_finished.error(),
+                      CommitDisposition::CommittedNeedsReconciliation);
+            disposition_ =
+                CommitDisposition::CommittedNeedsReconciliation;
+            return result;
+        }
+        publish_lease_.reset();
+        disposition_ = CommitDisposition::Committed;
+        result.disposition = CommitDisposition::Committed;
+        result.error.reset();
+        result.error_context.reset();
+        store_ = nullptr;
+        session_ = nullptr;
+        journal_file_.reset();
+        manifest_file_.reset();
+        return result;
+    };
+
+    const auto initially_live = check_operation_context(operation_context);
+    if (!initially_live.ok()) return fail(initially_live.error());
+
+    if (runtime_reconciled_) {
+        result.backing_installed = true;
+        result.snapshot_finished = true;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        if (const auto failure = injected(
+                CheckpointReconcileTestPhase::BeforeReportSuccess)) {
+            return fail(*failure);
+        }
+#endif
+        return report_success();
+    }
+
+    if (manifest_file_) {
+        const auto closed = manifest_file_->close();
+        manifest_file_.reset();
+        if (!closed.ok()) return fail(closed.error());
+    }
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (const auto failure = injected(
+            CheckpointReconcileTestPhase::BeforeRecoverView)) {
+        return fail(*failure);
+    }
+#endif
+
+    BackingView committed_view{};
+    std::optional<CompositeBackingIdentity> committed_identity;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (request.test_committed_view.has_value()) {
+        committed_view = *request.test_committed_view;
+        committed_identity = request.test_committed_identity;
+    } else
+#endif
+    {
+        if (!recovery_validation_.has_value()) {
+            return fail(checkpoint_failure<void>(
+                L"checkpoint reconciliation has no recovery descriptor",
+                PersistenceErrorCode::InvalidFormat).error());
+        }
+        auto recovered = recover_complete_image(
+            operation_context, recovery_validation_->bundle_root,
+            recovery_validation_->manifest_relative_name,
+            recovery_validation_->options);
+        if (!recovered.ok() || !recovered.image.has_value()) {
+            return fail(recovered.error.value_or(
+                checkpoint_failure<void>(
+                    L"normal recovery did not return the committed view",
+                    PersistenceErrorCode::VerificationFailed).error()));
+        }
+        const auto& image = *recovered.image;
+        const auto& identity = image.backing_identity;
+        const auto same_geometry = [](const ImageGeometry& left,
+                                      const ImageGeometry& right) noexcept {
+            return left.virtual_bytes == right.virtual_bytes &&
+                left.logical_sector_size == right.logical_sector_size &&
+                left.physical_sector_size == right.physical_sector_size;
+        };
+        if (!published_candidate_.has_value() ||
+            image.selected_manifest != *published_candidate_ ||
+            image.checkpoint_generation != checkpoint_.generation ||
+            image.backing_view.generation != checkpoint_.generation ||
+            image.image_uuid != journal_header_.image_uuid ||
+            !same_geometry(image.geometry, journal_header_.geometry) ||
+            identity.image_uuid != journal_header_.image_uuid ||
+            !same_geometry(identity.geometry, journal_header_.geometry) ||
+            identity.checkpoint_generation != checkpoint_.generation ||
+            !same_file_object(identity.journal_windows_identity,
+                              journal_file_identity_) ||
+            identity.journal_windows_identity.size <
+                checkpoint_.committed_length ||
+            identity.journal_identity != journal_header_.journal_identity ||
+            identity.journal_epoch != journal_header_.epoch ||
+            identity.journal_committed_length !=
+                checkpoint_.committed_length ||
+            identity.commit != checkpoint_.commit ||
+            identity.root != checkpoint_.root) {
+            return fail(checkpoint_failure<void>(
+                L"normal recovery selected a different immutable identity",
+                PersistenceErrorCode::GenerationConflict).error());
+        }
+        committed_view = image.backing_view;
+        committed_identity = identity;
+    }
+    if (!committed_view.store ||
+        committed_view.generation != checkpoint_.generation) {
+        return fail(checkpoint_failure<void>(
+            L"recovered backing view does not match the durable generation",
+            PersistenceErrorCode::GenerationConflict).error());
+    }
+    if (committed_identity.has_value()) {
+        const auto& identity = *committed_identity;
+        const auto same_geometry = [](const ImageGeometry& left,
+                                      const ImageGeometry& right) noexcept {
+            return left.virtual_bytes == right.virtual_bytes &&
+                left.logical_sector_size == right.logical_sector_size &&
+                left.physical_sector_size == right.physical_sector_size;
+        };
+        if (identity.image_uuid != journal_header_.image_uuid ||
+            !same_geometry(identity.geometry, journal_header_.geometry) ||
+            identity.checkpoint_generation != checkpoint_.generation ||
+            !same_file_object(identity.journal_windows_identity,
+                              journal_file_identity_) ||
+            identity.journal_windows_identity.size <
+                checkpoint_.committed_length ||
+            identity.journal_identity != journal_header_.journal_identity ||
+            identity.journal_epoch != journal_header_.epoch ||
+            identity.journal_committed_length !=
+                checkpoint_.committed_length ||
+            identity.commit != checkpoint_.commit ||
+            identity.root != checkpoint_.root) {
+            return fail(checkpoint_failure<void>(
+                L"committed backing identity does not match the transaction",
+                PersistenceErrorCode::GenerationConflict).error());
+        }
+    }
+
+    auto stream = checkpoint_.ack_stream;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (request.test_ack_stream.has_value()) {
+        stream = *request.test_ack_stream;
+    }
+#endif
+    const auto checked_add = [](const std::uint64_t left,
+                                const std::uint64_t right,
+                                std::uint64_t& output) noexcept {
+        if (right > (std::numeric_limits<std::uint64_t>::max)() - left) {
+            return false;
+        }
+        output = left + right;
+        return true;
+    };
+    const auto checked_mul = [](const std::uint64_t left,
+                                const std::uint64_t right,
+                                std::uint64_t& output) noexcept {
+        if (left != 0 &&
+            right > (std::numeric_limits<std::uint64_t>::max)() / left) {
+            return false;
+        }
+        output = left * right;
+        return true;
+    };
+    std::uint64_t metadata_count = 0;
+    std::uint64_t expected_record_count = 0;
+    std::uint64_t data_bytes = 0;
+    std::uint64_t metadata_bytes = 0;
+    std::uint64_t index_bytes = 0;
+    std::uint64_t expected_ack_end = 0;
+    std::uint64_t expected_commit_offset = 0;
+    std::uint64_t root_end = 0;
+    std::uint64_t commit_end = 0;
+    const bool empty_root = checkpoint_.root.offset == 0 &&
+        checkpoint_.root.length == 0 && checkpoint_.root.crc32c == 0;
+    const bool descriptor_complete =
+        checked_add(checkpoint_.zero_count, checkpoint_.discard_count,
+                    metadata_count) &&
+        checked_add(checkpoint_.data_count, metadata_count,
+                    expected_record_count) &&
+        checked_mul(checkpoint_.data_count, kDataRecordBytes, data_bytes) &&
+        checked_mul(metadata_count, kFixedRecordBytes, metadata_bytes) &&
+        checked_mul(checkpoint_.index_node_count, kIndexNodeBytes,
+                    index_bytes) &&
+        checked_add(previous_committed_length_, data_bytes,
+                    expected_ack_end) &&
+        checked_add(expected_ack_end, metadata_bytes, expected_ack_end) &&
+        checked_add(expected_ack_end, index_bytes,
+                    expected_commit_offset) &&
+        checked_add(checkpoint_.root.offset, checkpoint_.root.length,
+                    root_end) &&
+        checked_add(checkpoint_.commit.offset, checkpoint_.commit.length,
+                    commit_end) &&
+        stream.record_count == expected_record_count &&
+        stream.begin_offset == previous_committed_length_ &&
+        stream.end_offset == expected_ack_end &&
+        stream.begin_offset % kJournalAlignment == 0 &&
+        stream.end_offset % kJournalAlignment == 0 &&
+        checkpoint_.commit.offset == expected_commit_offset &&
+        checkpoint_.commit.length == kFixedRecordBytes &&
+        (checkpoint_.index_node_count == 0
+             ? empty_root &&
+                   stream.end_offset == checkpoint_.commit.offset
+             : !empty_root &&
+                   checkpoint_.root.length == kIndexNodeBytes &&
+                   checkpoint_.root.offset >= stream.end_offset &&
+                   (checkpoint_.root.offset - stream.end_offset) %
+                           kIndexNodeBytes == 0 &&
+                   root_end <= checkpoint_.commit.offset) &&
+        commit_end == checkpoint_.committed_length &&
+        checkpoint_.chain_digest == checkpoint_.commit.chain_digest;
+    if (!descriptor_complete) {
+        return fail(checkpoint_failure<void>(
+            L"ack stream does not completely cover the prepared checkpoint",
+            PersistenceErrorCode::VerificationFailed).error());
+    }
+    const auto before_install_live =
+        check_operation_context(operation_context);
+    if (!before_install_live.ok()) return fail(before_install_live.error());
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (const auto failure = injected(
+            CheckpointReconcileTestPhase::BeforeInstallBacking)) {
+        return fail(*failure);
+    }
+#endif
+    const auto current_view = store_->capture_backing_view();
+    if (current_view.generation < committed_view.generation) {
+        auto installed = store_->install_backing_view_for_snapshot(
+            *snapshot_token_, committed_view);
+        if (!installed.ok()) return fail(installed.error());
+    } else if (current_view.generation == committed_view.generation) {
+        bool equivalent = current_view.store == committed_view.store;
+        if (!equivalent && current_view.store && committed_view.store) {
+            const auto current_composite =
+                std::dynamic_pointer_cast<const CompositeBackingStore>(
+                    current_view.store);
+            const auto committed_composite =
+                std::dynamic_pointer_cast<const CompositeBackingStore>(
+                    committed_view.store);
+            equivalent = current_composite && committed_composite &&
+                current_composite->identity() ==
+                    committed_composite->identity();
+        }
+        if (!equivalent) {
+            return fail(checkpoint_failure<void>(
+                L"installed generation has a different backing identity",
+                PersistenceErrorCode::GenerationConflict).error());
+        }
+    } else {
+        return fail(checkpoint_failure<void>(
+            L"live backing generation is newer than the transaction",
+            PersistenceErrorCode::GenerationConflict).error());
+    }
+    result.backing_installed = true;
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (const auto failure = injected(
+            CheckpointReconcileTestPhase::BeforeAckReplay)) {
+        return fail(*failure);
+    }
+#endif
+    auto replayed = replay_checkpoint_ack_stream(
+        operation_context,
+        {journal_file_, journal_header_, stream,
+         store_, *snapshot_token_});
+    if (!replayed.ok()) return fail(replayed.error());
+    result.ack = replayed.move_value();
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (const auto failure = injected(
+            CheckpointReconcileTestPhase::BeforeFinishSnapshot)) {
+        return fail(*failure);
+    }
+#endif
+    auto snapshot_finished =
+        store_->finish_consistent_snapshot(*snapshot_token_);
+    if (!snapshot_finished.ok()) return fail(snapshot_finished.error());
+    snapshot_token_.reset();
+    runtime_reconciled_ = true;
+    result.snapshot_finished = true;
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (const auto failure = injected(
+            CheckpointReconcileTestPhase::BeforeReportSuccess)) {
+        return fail(*failure);
+    }
+#endif
+    return report_success();
 }
 
 void PreparedCheckpointTransaction::abandon_noexcept() noexcept {
@@ -484,12 +905,14 @@ void PreparedCheckpointTransaction::abandon_noexcept() noexcept {
             (void)manifest_file_->close();
             manifest_file_.reset();
         }
+        journal_file_.reset();
         store_ = nullptr;
         session_ = nullptr;
     } catch (...) {
         snapshot_token_.reset();
         publish_lease_.reset();
         manifest_file_.reset();
+        journal_file_.reset();
         store_ = nullptr;
         session_ = nullptr;
     }
@@ -648,8 +1071,15 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare(
                 metrics.peak_batch_payload_bytes, payload_bytes);
             auto consumed = consume(inputs);
             if (!consumed.ok()) return consumed;
-            // copied/inputs are iteration-local. Their payloads cease to be
-            // retained immediately after consume() returns.
+            // Advancing the M2 frontier transfers any COW pre-image into
+            // copied; it does not discard the last authoritative bytes.
+            // consume() synchronously writes that bounded ownership into the
+            // journal. If any later pre-commit step fails, the snapshot is
+            // aborted and the post-cut live version remains dirty. If commit
+            // succeeds, Task32 replays the durable record identity and either
+            // exact-acks the old member or proves that newer dirty state still
+            // exists. Holding every COW payload until manifest publication
+            // would violate the bounded-memory/stall contract.
         }
         return Result<void>::success();
     };
@@ -676,6 +1106,8 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare(
 
     PreparedCheckpointTransaction transaction{
         *session_, *store_, token, std::move(lease), prepared.move_value(),
+        request.journal.file, request.journal.header,
+        request.journal.file_identity, request.journal.committed_length,
         request.correlation_context,
         *request.volume_barrier, metrics};
     snapshot_guard.release();

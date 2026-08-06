@@ -843,11 +843,11 @@ checkpoint index root、`DirtyBlockSnapshot::dirty_epoch` 及 M2 publication pin
 
 **类别：O。允许文件：** coordinator/session/storage integration、reconcile tests。
 
-- [ ] 红灯锁定 durable proof → recover/build new view → install → exact conditional ack → finish token → success。
-- [ ] after-cut mutation：旧 pre-image 已提交，但更新后的 dirty epoch 仍 Dirty。
-- [ ] durable commit 后 install/ack/finish failure 返回 `CommittedNeedsReconciliation`；reopen 必须选新 generation，可重试。仅全部必要 reconciliation 完成后返回 `Committed`。
-- [ ] COW pre-images 只在每个 token member 已 conditional ack 或已确认 newer dirty 后释放。
-- [ ] 跑 `m3-v2`、`m3-v3` 中 ack concurrency 项、M2 ack/eviction 与完整 CTest；建议提交 `feat(m3): reconcile durable checkpoints with live memory`。
+- [x] 红灯锁定 durable proof → recover/build new view → install → exact conditional ack → finish token → success。
+- [x] after-cut mutation：旧 pre-image 已提交，但更新后的 dirty epoch 仍 Dirty。
+- [x] durable commit 后 install/ack/finish failure 返回 `CommittedNeedsReconciliation`；reopen 必须选新 generation，可重试。仅全部必要 reconciliation 完成后返回 `Committed`。
+- [x] COW pre-images 只在每个 token member 已 conditional ack 或已确认 newer dirty 后释放。
+- [x] 跑 `m3-v2`、`m3-v3` 中 ack concurrency 项、M2 ack/eviction 与完整 CTest；建议提交 `feat(m3): reconcile durable checkpoints with live memory`。
 
 ## Task 33 — 独立 checkpoint crash model
 

@@ -1497,6 +1497,21 @@ Result<void> validate_digest_context(
 
 }  // namespace
 
+Result<JournalRecordType> decode_journal_record_type_prefix(
+    const std::span<const std::byte> bytes) {
+    return peek_record_type(bytes, L"decode_journal_record_type_prefix");
+}
+
+Result<std::uint64_t> journal_record_physical_length(
+    const JournalRecordType type) {
+    if (!block_type(type) && type != JournalRecordType::IndexNode &&
+        type != JournalRecordType::CheckpointCommit) {
+        return journal_failure<std::uint64_t>(
+            L"journal_record_physical_length", L"record type is unknown");
+    }
+    return Result<std::uint64_t>::success(physical_length(type));
+}
+
 struct CheckpointChainDigest::Impl final {
     Sha256Stream stream{};
     bool finalized{false};

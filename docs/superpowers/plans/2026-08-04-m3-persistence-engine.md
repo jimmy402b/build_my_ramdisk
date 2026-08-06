@@ -848,11 +848,11 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 **Depends on:** 06, 28, 31
 **Files:** Modify `checkpoint_coordinator.*`, `image_session.*`, storage integration; create `tests/integration/m3_checkpoint_reconcile_tests.cpp`.
 
-- [ ] **Step 1: Red-test successful order:** durable commit proof, construct/recover new immutable view, install backing view, acknowledge token records conditionally by `dirty_epoch`, finish snapshot, then report success.
-- [ ] **Step 2: Red-test a block modified after the cut.** Its old pre-image is checkpointed, but `mark_persisted()` must leave the newer dirty epoch dirty.
-- [ ] **Step 3: Red-test install/ack/finish failures after durable commit.** Return `CommittedNeedsReconciliation`; reopen must recover the new generation and reconciliation must be safely retryable. Return plain `Committed` only after required runtime reconciliation completes.
-- [ ] **Step 4: Ensure COW pre-images are released only after each token member is either conditionally acknowledged or preserved as newer dirty data.**
-- [ ] **Step 5: Commit.** `feat(m3): reconcile durable checkpoints with live memory`.
+- [x] **Step 1: Red-test successful order:** durable commit proof, construct/recover new immutable view, install backing view, acknowledge token records conditionally by `dirty_epoch`, finish snapshot, then report success.
+- [x] **Step 2: Red-test a block modified after the cut.** Its old pre-image is checkpointed, but `mark_persisted()` must leave the newer dirty epoch dirty.
+- [x] **Step 3: Red-test install/ack/finish failures after durable commit.** Return `CommittedNeedsReconciliation`; reopen must recover the new generation and reconciliation must be safely retryable. Return plain `Committed` only after required runtime reconciliation completes.
+- [x] **Step 4: Ensure COW pre-images are released only after each token member is either conditionally acknowledged or preserved as newer dirty data.**
+- [x] **Step 5: Commit.** `feat(m3): reconcile durable checkpoints with live memory`.
 
 ### Task 33: Validate checkpoint atomicity with an independent crash matrix
 
