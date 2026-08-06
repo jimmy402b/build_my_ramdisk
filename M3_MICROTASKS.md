@@ -490,19 +490,20 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 
 ### Task 27 — Generation-zero create/reopen
 
-允许：`image_creator.*`、create tests；只能通过 Task26 recovery 判定成功。
+允许：`image_creator.*`、create tests，以及原子 `CREATE_NEW` manifest claim 所需的
+`image_paths.*`/`writer_lock.*` 前置 API；只能通过 Task26 recovery 判定成功。
 
-- [ ] `T27.1 [M]` RED matrix：geometry/existing/path escape/low disk/every I/O phase/
+- [x] `T27.1 [M]` RED matrix：geometry/existing/path escape/low disk/every I/O phase/
   concurrent creators；记录 artifacts 与 writer ownership。
-- [ ] `T27.2 [M]` 建 unique-name artifact planner：base、journal、8192-byte manifest；
+- [x] `T27.2 [M]` 建 unique-name artifact planner：base、journal、8192-byte manifest；
   inactive slot 保持 zero/invalid，不覆盖已发布路径。
-- [ ] `T27.3 [X]` 实现 generation-zero durability：base flush+readback→journal genesis
+- [x] `T27.3 [X]` 实现 generation-zero durability：base flush+readback→journal genesis
   flush+readback→manifest exact create→一个 slot publish+flush+full-slot readback。
-- [ ] `T27.4 [X]` 关闭 creation handles 后只调用 Task26 reopen；仅当 recovery 选择
+- [x] `T27.4 [X]` 关闭 creation handles 后只调用 Task26 reopen；仅当 recovery 选择
   generation 0 且 boundary blocks 为 zero 才返回成功。
-- [ ] `T27.5 [H]` retry/concurrent/failure artifact tests：已发布 image 永不覆盖；
+- [x] `T27.5 [H]` retry/concurrent/failure artifact tests：已发布 image 永不覆盖；
   unreferenced artifacts 可诊断，但此任务不自动删除。
-- [ ] `T27.6 [X]` publish-order mutation proof + independent review；Debug/Release
+- [x] `T27.6 [X]` publish-order mutation proof + independent review；Debug/Release
   `m3-v2`。
 
 ### Task 28 — Recovered backing 接入 M2 first-touch load

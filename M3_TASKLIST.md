@@ -177,7 +177,7 @@ Suggested commit:
 | 24 | Windows native VHDX gate | C | DONE | 23 | M3-V5 |
 | 25 | Journal-first composite backing | O | DONE | 20,22 | M3-V2 |
 | 26 | Recovery engine 与 BackingView | O | DONE | 15,25 | M3-V2 |
-| 27 | Generation-zero create/reopen | S | PENDING | 12,14,16,19,23,25,26 | M3-V2 |
+| 27 | Generation-zero create/reopen | S | DONE | 12,14,16,19,23,25,26 | M3-V2 |
 | 28 | M2 lazy-load integration | O | PENDING | 09,27 | M3-V3/V7 |
 | 29 | Image session/outcome state machine | O | PENDING | 13,27,28 | M3-V2 |
 | 30 | Checkpoint pre-manifest pipeline | O | PENDING | 09,19,29 | M3-V2 |
@@ -782,13 +782,15 @@ blocks corpus。Task 08 状态：`DONE`。
 
 ## Task 27 — Generation-zero image create/reopen
 
-**类别：S。允许文件：** `image_creator.*`、create integration tests；首次 publish 由逻辑负责人审查。
+**类别：S。允许文件：** `image_creator.*`、create integration tests，以及为
+`CREATE_NEW` manifest claim 必需的 `image_paths.*`/`writer_lock.*` 前置 API；首次
+publish 由逻辑负责人审查。
 
-- [ ] 红灯覆盖 geometry、existing/path escape/low-space/all I/O faults/concurrent creators。
-- [ ] 顺序固定：unique empty base → journal genesis → flush/readback → exact 8192-byte manifest（inactive slot zero/invalid）→ generation-zero slot → flush/full validation。
-- [ ] 成功必须通过 Task 26 production recovery path reopen，边界 blocks 为 zero；禁止 create shortcut 自证成功。
-- [ ] retry 不覆盖 published image，不引用 incomplete artifact。
-- [ ] 跑 `m3-v2` 中 create/recovery 项；建议提交 `feat(persistence): create generation zero images`。
+- [x] 红灯覆盖 geometry、existing/path escape/low-space/all I/O faults/concurrent creators。
+- [x] 顺序固定：unique empty base → journal genesis → flush/readback → exact 8192-byte manifest（inactive slot zero/invalid）→ generation-zero slot → flush/full validation。
+- [x] 成功必须通过 Task 26 production recovery path reopen，边界 blocks 为 zero；禁止 create shortcut 自证成功。
+- [x] retry 不覆盖 published image，不引用 incomplete artifact。
+- [x] Debug/Release `integration.m3.image_create`、recovery、oracle 与 persistence path tests 通过；提交 `9803ef3`、`2fdc67c`、`5eb3caf`、`4efee3a`、`1d8f886`。
 
 ## Task 28 — 将 recovered backing 接入 M2 first-touch load
 

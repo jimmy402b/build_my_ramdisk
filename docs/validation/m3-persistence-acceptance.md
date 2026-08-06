@@ -1581,3 +1581,31 @@ Task 26 verdict: **DONE**. This authorizes Task 27 to create and publish a
 generation-zero bundle and prove success only by reopening it through this
 production recovery path. It does not itself authorize overwriting an existing
 bundle or treating an indeterminate publication as failure.
+
+## Task 27 — Generation-zero creation acceptance
+
+Task 27 is accepted through commits `9803ef3`, `2fdc67c`, `5eb3caf`,
+`4efee3a` and `1d8f886`.
+The creator first validates the request, checks the exact empty
+VHDX/genesis-journal/manifest space requirement, then atomically claims a new
+manifest name with `CREATE_NEW` and a writer identity recheck. Existing names
+are never opened for mutation by the create API; failed attempts leave only
+unreferenced, diagnosable artifacts.
+
+The durable order is: empty dynamic VHDX publish and readback, genesis journal
+header/commit write-flush-readback, exact 8192-byte manifest initialization with
+slot B zeroed, slot A generation-zero write-flush-full-readback, close all
+creation handles, and finally Task 26 production recovery. Success is refused
+unless recovery selects slot A generation zero and boundary M2 blocks resolve
+as zero. First-publication write/flush/readback uncertainty is classified as
+`CommitIndeterminate`.
+
+The phase-fault matrix injects failures before each claim, base, journal,
+manifest and recovery boundary. Existing destination, path escape, low-space,
+retry/non-overwrite and concurrent-creator cases are covered. Debug and Release
+both passed the focused create/recovery/path/oracle set: 4/4 CTest tests and
+9/9 image-creation cases. `git diff --check` passed.
+
+Task 27 verdict: **DONE**. This authorizes Task 28 to install the recovered
+immutable `BackingView` into M2's first-touch storage boundary. It does not
+authorize checkpoint, compaction, cleanup or deletion of unreferenced artifacts.

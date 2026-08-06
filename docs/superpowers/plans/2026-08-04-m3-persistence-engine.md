@@ -785,13 +785,14 @@ return ManifestCorrupt;
 
 **Class:** S — Claude scaffolds creation; logic owner reviews first durable publication
 **Depends on:** 12, 14, 16, 19, 23, 25, 26
-**Files:** Create `src/persistence/image_creator.h/.cpp`, `tests/integration/m3_image_create_tests.cpp`.
+**Files:** Create `src/persistence/image_creator.h/.cpp`, `tests/integration/m3_image_create_tests.cpp`;
+extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest claim.
 
-- [ ] **Step 1: Red-test image creation** for valid geometry, existing destination, path escape, low disk space, every injected I/O failure, and concurrent creators.
-- [ ] **Step 2: Create a unique empty base VHDX and journal genesis**, flush/read back both, create an exact 8192-byte manifest with the inactive slot zeroed/invalid, then publish one manifest slot as generation zero and flush/read back the full slot.
-- [ ] **Step 3: Reopen only through the Task 26 production recovery path** and read boundary blocks as zero. Creation succeeds only if recovery independently selects generation zero.
-- [ ] **Step 4: Assert retries never overwrite a published image** and incomplete unreferenced artifacts are diagnosable and safely removable.
-- [ ] **Step 5: Commit.** `feat(persistence): create generation zero images`.
+- [x] **Step 1: Red-test image creation** for valid geometry, existing destination, path escape, low disk space, every injected I/O failure, and concurrent creators.
+- [x] **Step 2: Create a unique empty base VHDX and journal genesis**, flush/read back both, create an exact 8192-byte manifest with the inactive slot zeroed/invalid, then publish one manifest slot as generation zero and flush/read back the full slot.
+- [x] **Step 3: Reopen only through the Task 26 production recovery path** and read boundary blocks as zero. Creation succeeds only if recovery independently selects generation zero.
+- [x] **Step 4: Assert retries never overwrite a published image** and incomplete unreferenced artifacts are diagnosable and safely removable.
+- [x] **Step 5: Commits.** `9803ef3`, `2fdc67c`, `5eb3caf`, `4efee3a`, `1d8f886`.
 
 ### Task 28: Integrate recovered backing with lazy block loading
 
