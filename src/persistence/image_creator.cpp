@@ -217,10 +217,20 @@ Result<void> publish_manifest_slot(
     if (!phase.ok()) return phase;
 #endif
     written = file->write_exact(context, 0, encoded.value());
-    if (!written.ok()) return written;
+    if (!written.ok()) {
+        return create_failure<void>(
+            PersistenceErrorCode::CommitIndeterminate,
+            L"manifest slot write failed after publication may have begun",
+            written.error().native_code);
+    }
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     phase = create_phase(GenerationZeroCreatePhase::BeforeManifestSlotFlush);
-    if (!phase.ok()) return phase;
+    if (!phase.ok()) {
+        return create_failure<void>(
+            PersistenceErrorCode::CommitIndeterminate,
+            L"manifest slot publication stopped before durability was proven",
+            phase.error().native_code);
+    }
 #endif
     flushed = file->flush(context);
     if (!flushed.ok()) {
@@ -232,7 +242,12 @@ Result<void> publish_manifest_slot(
     ManifestSlotBytes readback{};
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     phase = create_phase(GenerationZeroCreatePhase::BeforeManifestSlotReadback);
-    if (!phase.ok()) return phase;
+    if (!phase.ok()) {
+        return create_failure<void>(
+            PersistenceErrorCode::CommitIndeterminate,
+            L"manifest slot durability was not read back",
+            phase.error().native_code);
+    }
 #endif
     read = file->read_exact(context, 0, readback);
     if (!read.ok()) {

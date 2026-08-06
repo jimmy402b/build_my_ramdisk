@@ -274,6 +274,13 @@ TEST_CASE(generation_zero_phase_fault_matrix_stops_at_every_boundary) {
             });
         REQUIRE(!result.ok());
         REQUIRE_EQ(hits, std::size_t{1});
+        if (target == GenerationZeroCreatePhase::BeforeManifestSlotFlush ||
+            target == GenerationZeroCreatePhase::BeforeManifestSlotReadback) {
+            REQUIRE_EQ(
+                result.error().code,
+                static_cast<std::uint32_t>(
+                    PersistenceErrorCode::CommitIndeterminate));
+        }
         if (target == GenerationZeroCreatePhase::BeforeManifestClaim) {
             REQUIRE(std::filesystem::is_empty(sandbox.root()));
         } else {
