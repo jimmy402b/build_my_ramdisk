@@ -189,6 +189,8 @@ add_library(myrd_persistence STATIC
     persistence/image_session.cpp
     persistence/checkpoint_coordinator.h
     persistence/checkpoint_coordinator.cpp
+    persistence/compaction_coordinator.h
+    persistence/compaction_coordinator.cpp
     persistence/checkpoint_reconciler.cpp
     persistence/commit_resolver.cpp
     persistence/file_io.h

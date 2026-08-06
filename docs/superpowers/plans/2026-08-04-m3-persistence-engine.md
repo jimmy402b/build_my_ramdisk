@@ -891,7 +891,7 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 - [ ] **Step 2: Allow ordinary live mutations** during VHDX construction, but do not allow a checkpoint or second compaction to start. After the new base/journal are ready, require the explicit volume barrier for this operation, establish an M2.1 consistent cut, and stream all current dirty state relative to G into the new journal.
 - [ ] **Step 3: Append the new COW index and a commit for G+1 even when the dirty set is empty**, flush/readback the journal, then use the normal manifest publish, indeterminate-resolution, view-install and conditional-ack sequence. Writes after the cut remain dirty through the normal M2.1 rule.
 - [ ] **Step 4: Fault-test every pre/post-commit phase.** Before manifest publication, old bundle/runtime state remains authoritative and new files are unreferenced artifacts; after commit, recover/install the new view and retain old base/journal for old slots, old readers and reconciliation.
-- [ ] **Step 5: Implement and red-test pure `should_compact()` policy output** from explicit journal physical bytes, journal/base ratio, checkpoint count and index depth. It reports a recommendation only; it never schedules work.
+- [x] **Step 5: Implement and red-test pure `should_compact()` policy output** from explicit journal physical bytes, journal/base ratio, checkpoint count and index depth. It reports a recommendation only; it never schedules work.
 - [ ] **Step 6: Verify the cut-time logical disk against an independent model and verify byte-for-byte logical equivalence after reopen; commit `feat(persistence): compact committed image generations`.**
 
 ### Task 36: Retain and clean obsolete immutable files safely
