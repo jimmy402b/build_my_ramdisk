@@ -183,6 +183,8 @@ add_library(myrd_persistence STATIC
     persistence/image_creator.cpp
     persistence/recovered_store_adapter.h
     persistence/recovered_store_adapter.cpp
+    persistence/image_session.h
+    persistence/image_session.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h

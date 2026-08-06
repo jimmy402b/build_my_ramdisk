@@ -1133,6 +1133,20 @@ set_tests_properties(unit.m3.boundary PROPERTIES
     LABELS "m3-v0"
     TIMEOUT 20)
 
+# ---- M3 image session state machine (Task 29) -------------------------------
+add_executable(myrd_m3_image_session_tests
+    unit/m3_image_session_tests.cpp
+)
+target_link_libraries(myrd_m3_image_session_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_image_session_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_image_session_tests)
+add_test(NAME unit.m3.image_session COMMAND myrd_m3_image_session_tests)
+set_tests_properties(unit.m3.image_session PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 30)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
