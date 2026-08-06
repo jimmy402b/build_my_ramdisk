@@ -75,16 +75,15 @@ TEST_CASE(image_session_exposes_exhaustive_transition_table) {
     }
 }
 
-TEST_CASE(image_session_verifying_is_read_only_and_returns_to_ready) {
-    ImageSession session(SessionPhase::Verifying);
+TEST_CASE(image_session_ready_allows_immutable_read_without_phase_change) {
+    auto session = ImageSession::ready();
     auto read = session.begin_immutable_read();
     REQUIRE(read.ok());
-    REQUIRE(!session.begin_checkpoint().ok());
     read.value().release();
 }
 
 TEST_CASE(image_session_serializes_publish_affecting_operations) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto checkpoint = session.begin_checkpoint();
     REQUIRE(checkpoint.ok());
     auto compact = session.begin_compaction();
@@ -93,17 +92,19 @@ TEST_CASE(image_session_serializes_publish_affecting_operations) {
     REQUIRE_EQ(compact.error().code,
                static_cast<std::uint32_t>(PersistenceErrorCode::OperationBusy));
 
-    REQUIRE(checkpoint.value().finish(CommitDisposition::NotCommitted, false).ok());
+    REQUIRE(checkpoint.value().finish(CommitDisposition::NotCommitted).ok());
     auto compact_after = session.begin_compaction();
     REQUIRE(compact_after.ok());
-    auto committed = compact_after.value().finish(CommitDisposition::Committed, true);
+    REQUIRE(compact_after.value().note_publish_attempt_started().ok());
+    REQUIRE(compact_after.value().note_durable_commit_proven().ok());
+    auto committed = compact_after.value().finish(CommitDisposition::Committed);
     REQUIRE(committed.ok());
     REQUIRE(committed.value().durable_success);
     REQUIRE_EQ(session.phase(), SessionPhase::Ready);
 }
 
 TEST_CASE(image_session_concurrent_publish_race_has_exactly_one_winner) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     constexpr std::size_t thread_count = 32;
     std::atomic<std::size_t> attempted{0};
     std::atomic<std::size_t> acquired{0};
@@ -126,7 +127,7 @@ TEST_CASE(image_session_concurrent_publish_race_has_exactly_one_winner) {
                 std::this_thread::yield();
             }
             REQUIRE(operation.value()
-                        .finish(CommitDisposition::NotCommitted, false)
+                        .finish(CommitDisposition::NotCommitted)
                         .ok());
         });
     }
@@ -137,7 +138,7 @@ TEST_CASE(image_session_concurrent_publish_race_has_exactly_one_winner) {
 }
 
 TEST_CASE(image_session_allows_immutable_reads_during_publish_operation) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto operation = session.begin_checkpoint();
     REQUIRE(operation.ok());
     auto first = session.begin_immutable_read();
@@ -147,18 +148,19 @@ TEST_CASE(image_session_allows_immutable_reads_during_publish_operation) {
     REQUIRE_EQ(session.snapshot().active_immutable_reads, std::size_t{2});
     second.value().release();
     first.value().release();
-    REQUIRE(operation.value().finish(CommitDisposition::NotCommitted, false).ok());
+    REQUIRE(operation.value().finish(CommitDisposition::NotCommitted).ok());
 }
 
 TEST_CASE(image_session_indeterminate_preserves_first_failure_and_blocks_mutation) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto operation = session.begin_checkpoint();
     REQUIRE(operation.ok());
     const auto first_failure = sample_failure(
         PersistenceErrorCode::CommitIndeterminate,
         SessionPhase::Checkpointing, 101);
+    REQUIRE(operation.value().note_publish_attempt_started().ok());
     auto outcome = operation.value().finish(
-        CommitDisposition::CommitIndeterminate, false, first_failure);
+        CommitDisposition::CommitIndeterminate, first_failure);
     REQUIRE(outcome.ok());
     REQUIRE_EQ(session.phase(), SessionPhase::ResolvingCommit);
     REQUIRE_EQ(session.snapshot().disposition,
@@ -176,21 +178,23 @@ TEST_CASE(image_session_indeterminate_preserves_first_failure_and_blocks_mutatio
     const auto later_failure = sample_failure(
         PersistenceErrorCode::IoError, SessionPhase::ResolvingCommit, 202);
     REQUIRE(resolver.value().finish(
-                CommitDisposition::CommitIndeterminate, false, later_failure)
+                CommitDisposition::CommitIndeterminate, later_failure)
                 .ok());
     REQUIRE_EQ(session.phase(), SessionPhase::PersistenceFaulted);
     REQUIRE_EQ(session.snapshot().first_failure->context.operation_id, 101ULL);
 }
 
 TEST_CASE(image_session_post_commit_enters_reconciling_without_losing_disposition) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto operation = session.begin_checkpoint();
     REQUIRE(operation.ok());
     const auto failure = sample_failure(
         PersistenceErrorCode::IoError,
         SessionPhase::Checkpointing, 303);
+    REQUIRE(operation.value().note_publish_attempt_started().ok());
+    REQUIRE(operation.value().note_durable_commit_proven().ok());
     auto outcome = operation.value().finish(
-        CommitDisposition::CommittedNeedsReconciliation, true, failure);
+        CommitDisposition::CommittedNeedsReconciliation, failure);
     REQUIRE(outcome.ok());
     REQUIRE_EQ(session.phase(), SessionPhase::Reconciling);
     REQUIRE_EQ(session.snapshot().disposition,
@@ -199,41 +203,45 @@ TEST_CASE(image_session_post_commit_enters_reconciling_without_losing_dispositio
 }
 
 TEST_CASE(image_session_resolution_and_reconciliation_follow_durable_facts) {
-    ImageSession proved_old(SessionPhase::Ready);
+    auto proved_old = ImageSession::ready();
     auto old_checkpoint = proved_old.begin_checkpoint();
     REQUIRE(old_checkpoint.ok());
+    REQUIRE(old_checkpoint.value().note_publish_attempt_started().ok());
     REQUIRE(old_checkpoint.value()
-                .finish(CommitDisposition::CommitIndeterminate, false,
+                .finish(CommitDisposition::CommitIndeterminate,
                         sample_failure(PersistenceErrorCode::CommitIndeterminate,
                                        SessionPhase::Checkpointing, 401))
                 .ok());
     auto old_resolver = proved_old.begin_commit_resolution();
     REQUIRE(old_resolver.ok());
     REQUIRE(old_resolver.value()
-                .finish(CommitDisposition::NotCommitted, false)
+                .finish(CommitDisposition::NotCommitted)
                 .ok());
     REQUIRE_EQ(proved_old.phase(), SessionPhase::Ready);
     REQUIRE_EQ(proved_old.snapshot().disposition,
                CommitDisposition::NotCommitted);
     REQUIRE_EQ(proved_old.snapshot().first_failure->context.operation_id, 401ULL);
 
-    ImageSession proved_new(SessionPhase::Ready);
+    auto proved_new = ImageSession::ready();
     auto new_checkpoint = proved_new.begin_checkpoint();
     REQUIRE(new_checkpoint.ok());
+    REQUIRE(new_checkpoint.value().note_publish_attempt_started().ok());
     REQUIRE(new_checkpoint.value()
-                .finish(CommitDisposition::CommitIndeterminate, false,
+                .finish(CommitDisposition::CommitIndeterminate,
                         sample_failure(PersistenceErrorCode::CommitIndeterminate,
                                        SessionPhase::Checkpointing, 402))
                 .ok());
     auto new_resolver = proved_new.begin_commit_resolution();
     REQUIRE(new_resolver.ok());
+    REQUIRE(new_resolver.value().note_publish_attempt_started().ok());
+    REQUIRE(new_resolver.value().note_durable_commit_proven().ok());
     REQUIRE(new_resolver.value()
-                .finish(CommitDisposition::CommittedNeedsReconciliation, true)
+                .finish(CommitDisposition::CommittedNeedsReconciliation)
                 .ok());
     REQUIRE_EQ(proved_new.phase(), SessionPhase::Reconciling);
     auto reconcile = proved_new.begin_reconciliation();
     REQUIRE(reconcile.ok());
-    auto reconciled = reconcile.value().finish(CommitDisposition::Committed, true);
+    auto reconciled = reconcile.value().finish(CommitDisposition::Committed);
     REQUIRE(reconciled.ok());
     REQUIRE(reconciled.value().durable_success);
     REQUIRE_EQ(proved_new.phase(), SessionPhase::Ready);
@@ -241,18 +249,98 @@ TEST_CASE(image_session_resolution_and_reconciliation_follow_durable_facts) {
 }
 
 TEST_CASE(image_session_committed_requires_explicit_durable_proof) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto operation = session.begin_checkpoint();
     REQUIRE(operation.ok());
-    auto not_proven = operation.value().finish(CommitDisposition::Committed, false);
+    auto not_proven = operation.value().finish(CommitDisposition::Committed);
     REQUIRE(!not_proven.ok());
     REQUIRE_EQ(session.snapshot().disposition, CommitDisposition::NotCommitted);
     REQUIRE(operation.value().abort().ok());
     REQUIRE_EQ(session.phase(), SessionPhase::Ready);
 }
 
+TEST_CASE(image_session_resets_outcome_scope_for_each_new_checkpoint) {
+    auto session = ImageSession::ready();
+    auto first = session.begin_checkpoint();
+    REQUIRE(first.ok());
+    REQUIRE(first.value().note_publish_attempt_started().ok());
+    REQUIRE(first.value().note_durable_commit_proven().ok());
+    REQUIRE(first.value().finish(CommitDisposition::Committed).ok());
+
+    auto second = session.begin_checkpoint();
+    REQUIRE(second.ok());
+    REQUIRE_EQ(session.snapshot().disposition, CommitDisposition::NotCommitted);
+    REQUIRE(!session.snapshot().first_failure.has_value());
+    REQUIRE(second.value()
+                .finish(CommitDisposition::NotCommitted,
+                        sample_failure(PersistenceErrorCode::IoError,
+                                       SessionPhase::Checkpointing, 501))
+                .ok());
+
+    auto third = session.begin_checkpoint();
+    REQUIRE(third.ok());
+    REQUIRE(!session.snapshot().first_failure.has_value());
+    REQUIRE(third.value().note_publish_attempt_started().ok());
+    REQUIRE(third.value().note_durable_commit_proven().ok());
+    auto success = third.value().finish(CommitDisposition::Committed);
+    REQUIRE(success.ok());
+    REQUIRE(!success.value().first_failure.has_value());
+}
+
+TEST_CASE(image_session_abandon_is_fail_closed_at_publication_boundaries) {
+    auto attempted = ImageSession::ready();
+    {
+        auto operation = attempted.begin_checkpoint();
+        REQUIRE(operation.ok());
+        REQUIRE(operation.value().note_publish_attempt_started().ok());
+        REQUIRE(!operation.value().abort().ok());
+    }
+    REQUIRE_EQ(attempted.phase(), SessionPhase::ResolvingCommit);
+    REQUIRE_EQ(attempted.snapshot().disposition,
+               CommitDisposition::CommitIndeterminate);
+    REQUIRE(!attempted.begin_checkpoint().ok());
+
+    auto proven = ImageSession::ready();
+    {
+        auto operation = proven.begin_checkpoint();
+        REQUIRE(operation.ok());
+        REQUIRE(operation.value().note_publish_attempt_started().ok());
+        REQUIRE(operation.value().note_durable_commit_proven().ok());
+    }
+    REQUIRE_EQ(proven.phase(), SessionPhase::Reconciling);
+    REQUIRE_EQ(proven.snapshot().disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
+}
+
+TEST_CASE(image_session_lease_fails_safely_after_owner_destruction) {
+    auto orphan = [] {
+        auto session = ImageSession::ready();
+        auto operation = session.begin_checkpoint();
+        REQUIRE(operation.ok());
+        return operation.move_value();
+    }();
+    REQUIRE(orphan.active());
+    REQUIRE(!orphan.abort().ok());
+    REQUIRE(!orphan.active());
+}
+
+TEST_CASE(image_session_close_stop_callback_may_reenter_without_deadlock) {
+    auto session = ImageSession::ready();
+    auto operation = session.begin_checkpoint();
+    REQUIRE(operation.ok());
+    bool callback_ran = false;
+    std::stop_callback callback(operation.value().stop_token(), [&] {
+        callback_ran = true;
+        REQUIRE(operation.value().abort().ok());
+    });
+    auto closed = session.close();
+    REQUIRE(callback_ran);
+    REQUIRE(closed.ok());
+    REQUIRE_EQ(session.phase(), SessionPhase::Closed);
+}
+
 TEST_CASE(image_session_close_is_idempotent_and_drains_operation_and_reads) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto operation = session.begin_checkpoint();
     REQUIRE(operation.ok());
     auto read = session.begin_immutable_read();
@@ -276,7 +364,7 @@ TEST_CASE(image_session_close_is_idempotent_and_drains_operation_and_reads) {
     REQUIRE(operation.value().stop_token().stop_requested());
     REQUIRE(!session.begin_compaction().ok());
     REQUIRE(!session.begin_immutable_read().ok());
-    REQUIRE(operation.value().finish(CommitDisposition::NotCommitted, false).ok());
+    REQUIRE(operation.value().finish(CommitDisposition::NotCommitted).ok());
     read.value().release();
     closer.join();
     REQUIRE(close_returned.load(std::memory_order_acquire));
@@ -291,7 +379,7 @@ TEST_CASE(image_session_close_is_idempotent_and_drains_operation_and_reads) {
 }
 
 TEST_CASE(image_session_close_wait_observes_cancel_and_remains_sticky) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto operation = session.begin_checkpoint();
     REQUIRE(operation.ok());
 
@@ -313,7 +401,7 @@ TEST_CASE(image_session_close_wait_observes_cancel_and_remains_sticky) {
 }
 
 TEST_CASE(image_session_close_wait_observes_deadline) {
-    ImageSession session(SessionPhase::Ready);
+    auto session = ImageSession::ready();
     auto read = session.begin_immutable_read();
     REQUIRE(read.ok());
 

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <stop_token>
 
@@ -23,12 +24,19 @@ enum class SessionOperation : std::uint8_t {
     Reconciliation = 3,
 };
 
+enum class PublicationStage : std::uint8_t {
+    PrePublication = 0,
+    PublishAttempted = 1,
+    CommitProven = 2,
+};
+
 struct SessionSnapshot final {
     SessionPhase phase{SessionPhase::Closed};
     CommitDisposition disposition{CommitDisposition::NotCommitted};
     std::optional<PersistenceFailure> first_failure;
     std::size_t active_immutable_reads{0};
     bool publish_operation_active{false};
+    PublicationStage publication_stage{PublicationStage::PrePublication};
     bool close_requested{false};
 };
 
@@ -44,9 +52,11 @@ struct SessionCloseOutcome final : SessionOutcome {
 };
 
 class ImageSession;
+struct ImageSessionLeaseAnchor;
 
-/// Move-only lease for the single publish-affecting operation gate. The owning
-/// ImageSession must outlive every lease, as enforced by the lifecycle owner.
+/// Move-only lease for the single publish-affecting operation gate. A lease
+/// fails safely if its owner was already destroyed; concurrent owner
+/// destruction is unsupported, so the lifecycle owner must still drain/join.
 class PublishOperationLease final {
 public:
     PublishOperationLease() = delete;
@@ -57,15 +67,21 @@ public:
     ~PublishOperationLease();
 
     [[nodiscard]] SessionOperation operation() const noexcept { return operation_; }
-    [[nodiscard]] bool active() const noexcept { return session_ != nullptr; }
+    [[nodiscard]] bool active() const noexcept { return anchor_ != nullptr; }
     [[nodiscard]] std::stop_token stop_token() const noexcept { return stop_token_; }
 
-    /// Finish the operation at a durable boundary. `durable_verified` must
-    /// come from actual flush/readback evidence; an in-memory state change is
-    /// never sufficient to report durable success.
+    /// Record the point after which NotCommitted is no longer a safe claim.
+    Result<void> note_publish_attempt_started();
+
+    /// Record that successful manifest FlushFileBuffers proved the new
+    /// generation durable. Task 31 must call this immediately at that commit
+    /// point; a later readback failure is reconciliation, not indeterminate.
+    Result<void> note_durable_commit_proven();
+
+    /// Finish with a disposition compatible with the recorded publication
+    /// stage. An in-memory phase change alone cannot produce Committed.
     Result<SessionOutcome> finish(
         CommitDisposition disposition,
-        bool durable_verified,
         std::optional<PersistenceFailure> failure = std::nullopt);
 
     /// Abort before publication. The destructor uses the same conservative
@@ -74,13 +90,13 @@ public:
 
 private:
     friend class ImageSession;
-    PublishOperationLease(ImageSession* session,
+    PublishOperationLease(std::shared_ptr<ImageSessionLeaseAnchor> anchor,
                            SessionOperation operation,
                            std::uint64_t operation_id,
                            std::stop_token stop_token) noexcept;
     void abandon_noexcept() noexcept;
 
-    ImageSession* session_;
+    std::shared_ptr<ImageSessionLeaseAnchor> anchor_;
     SessionOperation operation_;
     std::uint64_t operation_id_;
     std::stop_token stop_token_;
@@ -88,7 +104,8 @@ private:
 
 /// Move-only read lease. Immutable reads do not contend with the publish gate,
 /// but close waits for them before releasing the session's persistence state.
-/// The owning ImageSession must outlive every lease.
+/// Owner-first destruction is detected safely; concurrent owner destruction
+/// remains outside the supported lifecycle and must be prevented by drain/join.
 class ImmutableReadLease final {
 public:
     ImmutableReadLease() = delete;
@@ -98,15 +115,16 @@ public:
     ImmutableReadLease& operator=(ImmutableReadLease&& other) noexcept;
     ~ImmutableReadLease();
 
-    [[nodiscard]] bool active() const noexcept { return session_ != nullptr; }
+    [[nodiscard]] bool active() const noexcept { return anchor_ != nullptr; }
     void release() noexcept;
 
 private:
     friend class ImageSession;
-    explicit ImmutableReadLease(ImageSession* session) noexcept
-        : session_(session) {}
+    explicit ImmutableReadLease(
+        std::shared_ptr<ImageSessionLeaseAnchor> anchor) noexcept
+        : anchor_(std::move(anchor)) {}
 
-    ImageSession* session_;
+    std::shared_ptr<ImageSessionLeaseAnchor> anchor_;
 };
 
 /// Lifecycle and concurrency contract for one persistent image.
@@ -117,10 +135,11 @@ private:
 /// operation is active, resolving, reconciling or persistence-faulted.
 class ImageSession final {
 public:
-    explicit ImageSession(SessionPhase initial_phase = SessionPhase::Closed);
+    ImageSession();
+    [[nodiscard]] static ImageSession ready();
     ImageSession(const ImageSession&) = delete;
     ImageSession& operator=(const ImageSession&) = delete;
-    ~ImageSession() = default;
+    ~ImageSession();
 
     /// Normative exhaustive transition table. It is intentionally pure so it
     /// can be independently checked without touching session state.
@@ -151,8 +170,11 @@ private:
         std::uint64_t operation_id,
         SessionOperation operation,
         CommitDisposition disposition,
-        bool durable_verified,
         std::optional<PersistenceFailure> failure);
+    Result<void> advance_publication_stage(
+        std::uint64_t operation_id,
+        SessionOperation operation,
+        PublicationStage target);
     Result<SessionOutcome> abandon_operation(
         std::uint64_t operation_id, SessionOperation operation);
     void abandon_operation_noexcept(
@@ -165,6 +187,8 @@ private:
     SessionOutcome outcome_locked(bool durable_success) const;
     void notify_if_drained_locked() noexcept;
 
+    explicit ImageSession(SessionPhase initial_phase);
+
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     SessionPhase phase_;
@@ -176,7 +200,9 @@ private:
     std::uint64_t active_operation_id_{0};
     std::uint64_t next_operation_id_{1};
     std::stop_source active_operation_stop_source_{};
+    PublicationStage active_publication_stage_{PublicationStage::PrePublication};
     bool close_requested_{false};
+    std::shared_ptr<ImageSessionLeaseAnchor> lease_anchor_;
 };
 
 constexpr bool ImageSession::is_valid_transition(

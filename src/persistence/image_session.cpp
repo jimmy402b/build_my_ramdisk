@@ -4,6 +4,12 @@
 #include <utility>
 
 namespace myrd::persistence {
+
+struct ImageSessionLeaseAnchor final {
+    std::mutex mutex;
+    ImageSession* session{nullptr};
+};
+
 namespace {
 
 bool is_checkpoint_like(const SessionOperation operation) noexcept {
@@ -21,6 +27,36 @@ bool is_valid_finish(const SessionOperation operation,
     }
     return disposition == CommitDisposition::Committed ||
            disposition == CommitDisposition::CommittedNeedsReconciliation;
+}
+
+bool disposition_matches_stage(const SessionOperation operation,
+                               const PublicationStage stage,
+                               const CommitDisposition disposition) noexcept {
+    if (is_checkpoint_like(operation)) {
+        switch (stage) {
+        case PublicationStage::PrePublication:
+            return disposition == CommitDisposition::NotCommitted;
+        case PublicationStage::PublishAttempted:
+            return disposition == CommitDisposition::CommitIndeterminate;
+        case PublicationStage::CommitProven:
+            return disposition == CommitDisposition::Committed ||
+                   disposition ==
+                       CommitDisposition::CommittedNeedsReconciliation;
+        }
+    }
+    if (operation == SessionOperation::CommitResolution) {
+        if (disposition == CommitDisposition::NotCommitted) {
+            return stage == PublicationStage::PrePublication;
+        }
+        if (disposition == CommitDisposition::CommitIndeterminate) {
+            return stage != PublicationStage::CommitProven;
+        }
+        return disposition == CommitDisposition::CommittedNeedsReconciliation &&
+               stage == PublicationStage::CommitProven;
+    }
+    return stage == PublicationStage::CommitProven &&
+           (disposition == CommitDisposition::Committed ||
+            disposition == CommitDisposition::CommittedNeedsReconciliation);
 }
 
 SessionPhase phase_after_finish(const SessionOperation operation,
@@ -60,14 +96,16 @@ SessionPhase phase_after_finish(const SessionOperation operation,
 } // namespace
 
 PublishOperationLease::PublishOperationLease(
-    ImageSession* session, const SessionOperation operation,
+    std::shared_ptr<ImageSessionLeaseAnchor> anchor,
+    const SessionOperation operation,
     const std::uint64_t operation_id, std::stop_token stop_token) noexcept
-    : session_(session), operation_(operation), operation_id_(operation_id),
+    : anchor_(std::move(anchor)), operation_(operation),
+      operation_id_(operation_id),
       stop_token_(std::move(stop_token)) {}
 
 PublishOperationLease::PublishOperationLease(
     PublishOperationLease&& other) noexcept
-    : session_(std::exchange(other.session_, nullptr)),
+    : anchor_(std::move(other.anchor_)),
       operation_(other.operation_),
       operation_id_(other.operation_id_),
       stop_token_(std::move(other.stop_token_)) {}
@@ -76,7 +114,7 @@ PublishOperationLease& PublishOperationLease::operator=(
     PublishOperationLease&& other) noexcept {
     if (this != &other) {
         abandon_noexcept();
-        session_ = std::exchange(other.session_, nullptr);
+        anchor_ = std::move(other.anchor_);
         operation_ = other.operation_;
         operation_id_ = other.operation_id_;
         stop_token_ = std::move(other.stop_token_);
@@ -89,46 +127,108 @@ PublishOperationLease::~PublishOperationLease() {
 }
 
 Result<SessionOutcome> PublishOperationLease::finish(
-    const CommitDisposition disposition, const bool durable_verified,
+    const CommitDisposition disposition,
     std::optional<PersistenceFailure> failure) {
-    if (session_ == nullptr) {
+    if (anchor_ == nullptr) {
         return Result<SessionOutcome>::failure(ImageSession::state_error(
             PersistenceErrorCode::FatalInternalInvariant,
             L"image_session.finish", L"operation lease is inactive"));
     }
-    auto result = session_->finish_operation(
-        operation_id_, operation_, disposition, durable_verified,
-        std::move(failure));
-    if (result.ok()) session_ = nullptr;
+    auto anchor = anchor_;
+    std::unique_lock anchor_lock(anchor->mutex);
+    if (anchor->session == nullptr) {
+        anchor_lock.unlock();
+        anchor_.reset();
+        return Result<SessionOutcome>::failure(ImageSession::state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.finish", L"owning session no longer exists"));
+    }
+    auto result = anchor->session->finish_operation(
+        operation_id_, operation_, disposition, std::move(failure));
+    anchor_lock.unlock();
+    if (result.ok()) anchor_.reset();
     return result;
 }
 
+Result<void> PublishOperationLease::note_publish_attempt_started() {
+    if (anchor_ == nullptr) {
+        return Result<void>::failure(ImageSession::state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.publish", L"operation lease is inactive"));
+    }
+    auto anchor = anchor_;
+    std::lock_guard anchor_lock(anchor->mutex);
+    if (anchor->session == nullptr) {
+        return Result<void>::failure(ImageSession::state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.publish", L"owning session no longer exists"));
+    }
+    return anchor->session->advance_publication_stage(
+        operation_id_, operation_, PublicationStage::PublishAttempted);
+}
+
+Result<void> PublishOperationLease::note_durable_commit_proven() {
+    if (anchor_ == nullptr) {
+        return Result<void>::failure(ImageSession::state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.commit", L"operation lease is inactive"));
+    }
+    auto anchor = anchor_;
+    std::lock_guard anchor_lock(anchor->mutex);
+    if (anchor->session == nullptr) {
+        return Result<void>::failure(ImageSession::state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.commit", L"owning session no longer exists"));
+    }
+    return anchor->session->advance_publication_stage(
+        operation_id_, operation_, PublicationStage::CommitProven);
+}
+
 Result<SessionOutcome> PublishOperationLease::abort() {
-    if (session_ == nullptr) {
+    if (anchor_ == nullptr) {
         return Result<SessionOutcome>::failure(ImageSession::state_error(
             PersistenceErrorCode::FatalInternalInvariant,
             L"image_session.abort", L"operation lease is inactive"));
     }
-    auto result = session_->abandon_operation(operation_id_, operation_);
-    if (result.ok()) session_ = nullptr;
+    auto anchor = anchor_;
+    std::unique_lock anchor_lock(anchor->mutex);
+    if (anchor->session == nullptr) {
+        anchor_lock.unlock();
+        anchor_.reset();
+        return Result<SessionOutcome>::failure(ImageSession::state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.abort", L"owning session no longer exists"));
+    }
+    auto result = anchor->session->abandon_operation(
+        operation_id_, operation_);
+    anchor_lock.unlock();
+    if (result.ok()) anchor_.reset();
     return result;
 }
 
 void PublishOperationLease::abandon_noexcept() noexcept {
-    if (session_ != nullptr) {
-        session_->abandon_operation_noexcept(operation_id_, operation_);
-        session_ = nullptr;
+    if (anchor_ != nullptr) {
+        try {
+            auto anchor = anchor_;
+            std::lock_guard anchor_lock(anchor->mutex);
+            if (anchor->session != nullptr) {
+                anchor->session->abandon_operation_noexcept(
+                    operation_id_, operation_);
+            }
+        } catch (...) {
+        }
+        anchor_.reset();
     }
 }
 
 ImmutableReadLease::ImmutableReadLease(ImmutableReadLease&& other) noexcept
-    : session_(std::exchange(other.session_, nullptr)) {}
+    : anchor_(std::move(other.anchor_)) {}
 
 ImmutableReadLease& ImmutableReadLease::operator=(
     ImmutableReadLease&& other) noexcept {
     if (this != &other) {
         release();
-        session_ = std::exchange(other.session_, nullptr);
+        anchor_ = std::move(other.anchor_);
     }
     return *this;
 }
@@ -138,14 +238,37 @@ ImmutableReadLease::~ImmutableReadLease() {
 }
 
 void ImmutableReadLease::release() noexcept {
-    if (session_ != nullptr) {
-        session_->release_read();
-        session_ = nullptr;
+    if (anchor_ != nullptr) {
+        try {
+            auto anchor = anchor_;
+            std::lock_guard anchor_lock(anchor->mutex);
+            if (anchor->session != nullptr) anchor->session->release_read();
+        } catch (...) {
+        }
+        anchor_.reset();
     }
 }
 
+ImageSession::ImageSession()
+    : phase_(SessionPhase::Closed),
+      lease_anchor_(std::make_shared<ImageSessionLeaseAnchor>()) {
+    lease_anchor_->session = this;
+}
+
 ImageSession::ImageSession(const SessionPhase initial_phase)
-    : phase_(initial_phase) {}
+    : phase_(initial_phase),
+      lease_anchor_(std::make_shared<ImageSessionLeaseAnchor>()) {
+    lease_anchor_->session = this;
+}
+
+ImageSession::~ImageSession() {
+    std::lock_guard anchor_lock(lease_anchor_->mutex);
+    lease_anchor_->session = nullptr;
+}
+
+ImageSession ImageSession::ready() {
+    return ImageSession(SessionPhase::Ready);
+}
 
 SessionPhase ImageSession::phase() const {
     std::lock_guard lock(mutex_);
@@ -156,7 +279,7 @@ SessionSnapshot ImageSession::snapshot() const {
     std::lock_guard lock(mutex_);
     return {
         phase_, disposition_, first_failure_, active_immutable_reads_,
-        publish_operation_active_, close_requested_};
+        publish_operation_active_, active_publication_stage_, close_requested_};
 }
 
 Error ImageSession::state_error(const PersistenceErrorCode code,
@@ -214,6 +337,10 @@ Result<PublishOperationLease> ImageSession::begin_operation(
         }
         phase_ = operation == SessionOperation::Checkpoint
             ? SessionPhase::Checkpointing : SessionPhase::Compacting;
+        // Commit disposition and first failure are operation-scoped. A new
+        // independent checkpoint must not inherit the previous outcome.
+        disposition_ = CommitDisposition::NotCommitted;
+        first_failure_.reset();
     } else if (operation == SessionOperation::CommitResolution) {
         if (phase_ != SessionPhase::ResolvingCommit) {
             return Result<PublishOperationLease>::failure(state_error(
@@ -234,8 +361,12 @@ Result<PublishOperationLease> ImageSession::begin_operation(
     publish_operation_active_ = true;
     active_operation_ = operation;
     active_operation_id_ = operation_id;
+    active_publication_stage_ =
+        operation == SessionOperation::Reconciliation
+            ? PublicationStage::CommitProven
+            : PublicationStage::PrePublication;
     return Result<PublishOperationLease>::success(
-        PublishOperationLease(this, operation, operation_id,
+        PublishOperationLease(lease_anchor_, operation, operation_id,
                               active_operation_stop_source_.get_token()));
 }
 
@@ -248,12 +379,13 @@ Result<ImmutableReadLease> ImageSession::begin_immutable_read() {
             L"immutable state is not available"));
     }
     ++active_immutable_reads_;
-    return Result<ImmutableReadLease>::success(ImmutableReadLease(this));
+    return Result<ImmutableReadLease>::success(
+        ImmutableReadLease(lease_anchor_));
 }
 
 Result<SessionOutcome> ImageSession::finish_operation(
     const std::uint64_t operation_id, const SessionOperation operation,
-    const CommitDisposition disposition, const bool durable_verified,
+    const CommitDisposition disposition,
     std::optional<PersistenceFailure> failure) {
     std::lock_guard lock(mutex_);
     if (!publish_operation_active_ || active_operation_id_ != operation_id ||
@@ -263,21 +395,13 @@ Result<SessionOutcome> ImageSession::finish_operation(
             L"image_session.finish", L"operation ownership mismatch"));
     }
     if (!is_valid_finish(operation, disposition) ||
-        !is_valid_disposition_transition(disposition_, disposition)) {
+        !is_valid_disposition_transition(disposition_, disposition) ||
+        !disposition_matches_stage(
+            operation, active_publication_stage_, disposition)) {
         return Result<SessionOutcome>::failure(state_error(
             PersistenceErrorCode::FatalInternalInvariant,
             L"image_session.finish", L"invalid structured outcome transition"));
     }
-    const bool committed_disposition =
-        disposition == CommitDisposition::Committed ||
-        disposition == CommitDisposition::CommittedNeedsReconciliation;
-    if (durable_verified != committed_disposition) {
-        return Result<SessionOutcome>::failure(state_error(
-            PersistenceErrorCode::FatalInternalInvariant,
-            L"image_session.finish",
-            L"commit disposition and durable proof disagree"));
-    }
-
     const auto next_phase = phase_after_finish(operation, disposition);
     if (!is_valid_transition(phase_, next_phase)) {
         return Result<SessionOutcome>::failure(state_error(
@@ -293,10 +417,37 @@ Result<SessionOutcome> ImageSession::finish_operation(
     publish_operation_active_ = false;
     active_operation_id_ = 0;
     active_operation_stop_source_ = std::stop_source{};
+    active_publication_stage_ = PublicationStage::PrePublication;
     notify_if_drained_locked();
     return Result<SessionOutcome>::success(
-        outcome_locked(disposition == CommitDisposition::Committed &&
-                       durable_verified));
+        outcome_locked(disposition == CommitDisposition::Committed));
+}
+
+Result<void> ImageSession::advance_publication_stage(
+    const std::uint64_t operation_id, const SessionOperation operation,
+    const PublicationStage target) {
+    std::lock_guard lock(mutex_);
+    if (!publish_operation_active_ || active_operation_id_ != operation_id ||
+        active_operation_ != operation ||
+        operation == SessionOperation::Reconciliation) {
+        return Result<void>::failure(state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.publication_stage",
+            L"operation cannot advance publication stage"));
+    }
+    const bool valid =
+        (active_publication_stage_ == PublicationStage::PrePublication &&
+         target == PublicationStage::PublishAttempted) ||
+        (active_publication_stage_ == PublicationStage::PublishAttempted &&
+         target == PublicationStage::CommitProven);
+    if (!valid) {
+        return Result<void>::failure(state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.publication_stage",
+            L"publication stage transition is invalid"));
+    }
+    active_publication_stage_ = target;
+    return Result<void>::success();
 }
 
 Result<SessionOutcome> ImageSession::abandon_operation(
@@ -308,16 +459,19 @@ Result<SessionOutcome> ImageSession::abandon_operation(
             PersistenceErrorCode::FatalInternalInvariant,
             L"image_session.abort", L"operation ownership mismatch"));
     }
-    const auto next_phase = is_checkpoint_like(operation)
-        ? SessionPhase::Ready : SessionPhase::PersistenceFaulted;
-    if (!is_valid_transition(phase_, next_phase)) {
-        phase_ = SessionPhase::PersistenceFaulted;
-    } else {
-        phase_ = next_phase;
+    if (!is_checkpoint_like(operation) ||
+        active_publication_stage_ != PublicationStage::PrePublication) {
+        return Result<SessionOutcome>::failure(state_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"image_session.abort",
+            L"only a pre-publication checkpoint may be aborted"));
     }
+    phase_ = SessionPhase::Ready;
+    disposition_ = CommitDisposition::NotCommitted;
     publish_operation_active_ = false;
     active_operation_id_ = 0;
     active_operation_stop_source_ = std::stop_source{};
+    active_publication_stage_ = PublicationStage::PrePublication;
     notify_if_drained_locked();
     return Result<SessionOutcome>::success(outcome_locked(false));
 }
@@ -332,13 +486,34 @@ void ImageSession::abandon_operation_noexcept(
             active_operation_ != operation) {
             return;
         }
-        const auto next_phase = is_checkpoint_like(operation)
-            ? SessionPhase::Ready : SessionPhase::PersistenceFaulted;
-        phase_ = is_valid_transition(phase_, next_phase)
-            ? next_phase : SessionPhase::PersistenceFaulted;
+        if (is_checkpoint_like(operation)) {
+            switch (active_publication_stage_) {
+            case PublicationStage::PrePublication:
+                phase_ = SessionPhase::Ready;
+                disposition_ = CommitDisposition::NotCommitted;
+                break;
+            case PublicationStage::PublishAttempted:
+                phase_ = SessionPhase::ResolvingCommit;
+                disposition_ = CommitDisposition::CommitIndeterminate;
+                break;
+            case PublicationStage::CommitProven:
+                phase_ = SessionPhase::Reconciling;
+                disposition_ =
+                    CommitDisposition::CommittedNeedsReconciliation;
+                break;
+            }
+        } else if (operation == SessionOperation::CommitResolution &&
+                   active_publication_stage_ ==
+                       PublicationStage::CommitProven) {
+            phase_ = SessionPhase::Reconciling;
+            disposition_ = CommitDisposition::CommittedNeedsReconciliation;
+        } else {
+            phase_ = SessionPhase::PersistenceFaulted;
+        }
         publish_operation_active_ = false;
         active_operation_id_ = 0;
         active_operation_stop_source_ = std::stop_source{};
+        active_publication_stage_ = PublicationStage::PrePublication;
         notify_if_drained_locked();
     } catch (...) {
         // A move-only lease destructor cannot report. Normal callers should
@@ -378,7 +553,13 @@ Result<SessionCloseOutcome> ImageSession::close(
         return Result<SessionCloseOutcome>::success(std::move(outcome));
     }
     close_requested_ = true;
-    active_operation_stop_source_.request_stop();
+    // request_stop() synchronously invokes callbacks. Copy the shared stop
+    // state, then invoke callbacks without holding the session mutex so a
+    // callback may safely finish/abort its lease.
+    auto operation_stop_source = active_operation_stop_source_;
+    lock.unlock();
+    operation_stop_source.request_stop();
+    lock.lock();
     const auto drained = [this] {
         return !publish_operation_active_ && active_immutable_reads_ == 0;
     };
