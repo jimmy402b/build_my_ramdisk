@@ -126,6 +126,7 @@ public:
     [[nodiscard]] M3ProviderState state() const noexcept;
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] std::uint64_t generation() const;
+    [[nodiscard]] persistence::ImageGeometry geometry() const;
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
     [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
     [[nodiscard]] proxy::ProxyObjectNames names() const;

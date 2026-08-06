@@ -1392,6 +1392,12 @@ set_tests_properties(integration.m3.windows_acceptance PROPERTIES
     LABELS "m3-v2;m3-v5"
     TIMEOUT 120)
 
+add_test(NAME integration.m3.aim_server_cli
+    COMMAND myrd-m3-aim-server --help)
+set_tests_properties(integration.m3.aim_server_cli PROPERTIES
+    LABELS "m3-v5"
+    TIMEOUT 30)
+
 # ---- M3 safe real-host preflight harness (Task 40) ------------------------
 add_test(
     NAME unit.m3.harness_preflight

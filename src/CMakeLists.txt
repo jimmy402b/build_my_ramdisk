@@ -242,7 +242,8 @@ add_library(myrd_m3_windows STATIC
     m3/m3_windows_acceptance.cpp
 )
 target_include_directories(myrd_m3_windows PUBLIC "${CMAKE_SOURCE_DIR}")
-target_link_libraries(myrd_m3_windows PUBLIC myrd_m3_management myrd_m1)
+target_link_libraries(myrd_m3_windows PUBLIC
+    myrd_m3_management myrd_m1 myrd_driver)
 myrd_enable_warnings(myrd_m3_windows)
 
 add_executable(myrd_m3_e2e
@@ -250,3 +251,9 @@ add_executable(myrd_m3_e2e
 target_include_directories(myrd_m3_e2e PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m3_e2e PRIVATE myrd_m3_management)
 myrd_enable_warnings(myrd_m3_e2e)
+
+add_executable(myrd-m3-aim-server
+    m3/m3_aim_server_main.cpp)
+target_include_directories(myrd-m3-aim-server PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd-m3-aim-server PRIVATE myrd_m3_windows)
+myrd_enable_warnings(myrd-m3-aim-server)

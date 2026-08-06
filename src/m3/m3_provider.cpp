@@ -607,6 +607,11 @@ std::uint64_t M3Provider::generation() const {
     return image_.checkpoint_generation;
 }
 
+persistence::ImageGeometry M3Provider::geometry() const {
+    std::scoped_lock lock(operation_mutex_);
+    return image_.geometry;
+}
+
 DynamicBlockStoreStats M3Provider::storage_stats() const {
     std::scoped_lock lock(operation_mutex_);
     if (store_) return store_->stats();
