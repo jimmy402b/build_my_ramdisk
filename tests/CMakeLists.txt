@@ -1379,6 +1379,15 @@ set_tests_properties(integration.m3.provider PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+# ---- M3 safe real-host preflight harness (Task 40) ------------------------
+add_test(
+    NAME unit.m3.harness_preflight
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-harness-preflight.ps1")
+set_tests_properties(unit.m3.harness_preflight PROPERTIES
+    LABELS "m3-v5"
+    TIMEOUT 60)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

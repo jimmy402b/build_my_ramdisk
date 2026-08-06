@@ -929,12 +929,12 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：C。允许文件：** `tests/e2e/M3Harness.Common.ps1`、`tests/e2e/test-m3-harness-preflight.ps1`、`tests/e2e/run-m3-persistence.ps1`、`tools/Invoke-M3Verification.ps1`、`tools/Verify-M3Json.ps1`、`docs/testing/m3-e2e.md`。
 
-- [ ] probe admin、AIM interface、artifacts、filesystem、space、power policy、Virtual Disk API，输出 JSON+summary。
-- [ ] 必须显式 scratch root 和 test disk identity；拒绝 system volume、workspace root、用户数据盘、ambiguous path。
-- [ ] finally 清理 provider/proxy/device/drive letter/VHDX attach/temp；残留给出人工恢复命令。
-- [ ] verification wrapper 暴露 Local/Preflight/RealFunctional/Crash/Soak；尚未实现的 tier 必须 BLOCKED/nonzero。JSON verifier 拒绝 schema/source commit/binary hash 不匹配和 required SKIP。
-- [ ] 非管理员 dry-run 测所有拒绝规则；destructive step 前再次核对 exact disk identity。
-- [ ] 跑 script safety/preflight tests；preflight 通过不是官方 M3-V6 功能通过。建议提交 `test(m3): add safe real-host e2e harness`。
+- [x] probe admin、AIM interface、artifacts、filesystem、space、power policy、Virtual Disk API，输出 JSON+summary。
+- [x] 必须显式 scratch root 和 test disk identity；拒绝 system volume、workspace root、用户数据盘、ambiguous path。
+- [x] finally 清理 provider/proxy/device/drive letter/VHDX attach/temp；残留给出人工恢复命令。
+- [x] verification wrapper 暴露 Local/Preflight/RealFunctional/Crash/Soak；尚未实现的 tier 必须 BLOCKED/nonzero。JSON verifier 拒绝 schema/source commit/binary hash 不匹配和 required SKIP。
+- [x] 非管理员 dry-run 测所有拒绝规则；destructive step 前再次核对 exact disk identity。
+- [x] 跑 script safety/preflight tests；preflight 通过不是官方 M3-V6 功能通过。建议提交 `test(m3): add safe real-host e2e harness`。
 
 ## Task 41 — Real AIM、NTFS、lazy load and VHDX acceptance
 

@@ -762,18 +762,18 @@ provider 和 wire golden fixtures 行为只读。
 允许：PLAN Task40 列出的 PowerShell、JSON verifier、testing docs；默认 dry-run，未经
 用户明确 scratch identity 不执行 destructive action。
 
-- [ ] `T40.1 [M]` 实现只读 probe：admin、AIM driver/interface、artifacts、filesystem
+- [x] `T40.1 [M]` 实现只读 probe：admin、AIM driver/interface、artifacts、filesystem
   capability/free space/power policy/native VHDX APIs；输出 JSON+human summary。
-- [ ] `T40.2 [H]` 冻结 target rejection tests：system volume/workspace root/ambiguous
+- [x] `T40.2 [H]` 冻结 target rejection tests：system volume/workspace root/ambiguous
   device/mounted user data/outside scratch/mismatched disk identity 全拒绝。
-- [ ] `T40.3 [M]` 实现 explicit scratch directory + disk identity parsing；不接受
+- [x] `T40.3 [M]` 实现 explicit scratch directory + disk identity parsing；不接受
   wildcard、环境变量推断、默认磁盘号或当前目录。
-- [ ] `T40.4 [H]` 实现 finally cleanup ledger：provider/proxy/device/drive letter/VHDX/
+- [x] `T40.4 [H]` 实现 finally cleanup ledger：provider/proxy/device/drive letter/VHDX/
   temp files；每一步 idempotent，残留输出 exact manual recovery commands。
-- [ ] `T40.5 [M]` 实现 verification routing Local/Preflight/RealFunctional/Crash/Soak；
+- [x] `T40.5 [M]` 实现 verification routing Local/Preflight/RealFunctional/Crash/Soak；
   未实现 tier 返回 `BLOCKED` nonzero，required SKIP 不可 PASS。
-- [ ] `T40.6 [M]` `Verify-M3Json` fail-closed schema/source-commit/binary-hash tests。
-- [ ] `T40.7 [M]` 无 admin/device 的 dry-run/Pester tests，断言零 format/mount/delete
+- [x] `T40.6 [M]` `Verify-M3Json` fail-closed schema/source-commit/binary-hash tests。
+- [x] `T40.7 [M]` 无 admin/device 的 dry-run/Pester tests，断言零 format/mount/delete
   调用。
 - [ ] `T40.8 [X]` destructive safety reviewer 逐 target/path/cleanup 审查并人工批准
   harness 后完成。

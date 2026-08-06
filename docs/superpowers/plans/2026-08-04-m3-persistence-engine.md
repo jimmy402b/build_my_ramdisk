@@ -937,11 +937,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 28, 32, 38
 **Files:** Create `src/m3/m3_provider.h/.cpp`, `src/m3/m3_windows_acceptance.h/.cpp`, `tests/integration/m3_provider_integration_tests.cpp`; modify only the M3 lifecycle composition root and CMake. Existing M1/M2 providers remain behaviorally unchanged.
 
-- [ ] **Step 1: Red-test provider startup** from a recovered image, reads through lazy backing, live writes, TRIM/zero, checkpoint, reconnect and reopen. Keep all M1 wire golden tests unchanged.
-- [ ] **Step 2: Inject `ImageSession` and `DynamicBlockStore`** at the composition root. Persistence code must not depend on AIM driver/proxy types; provider transport remains unaware of VHDX/journal formats.
-- [ ] **Step 3: Preserve stop order:** stop accepting external mutations, flush upper layers when orchestrated, checkpoint if requested, resolve any indeterminate commit, drain provider/store/session and close handles.
-- [ ] **Step 4: Run all M0/M1/M2 tests. Any protocol fixture or driver contract delta is a design stop, not an opportunistic edit.**
-- [ ] **Step 5: Commit.** `feat(m3): integrate persistence with provider lifecycle`.
+- [x] **Step 1: Red-test provider startup** from a recovered image, reads through lazy backing, live writes, TRIM/zero, checkpoint, reconnect and reopen. Keep all M1 wire golden tests unchanged.
+- [x] **Step 2: Inject `ImageSession` and `DynamicBlockStore`** at the composition root. Persistence code must not depend on AIM driver/proxy types; provider transport remains unaware of VHDX/journal formats.
+- [x] **Step 3: Preserve stop order:** stop accepting external mutations, flush upper layers when orchestrated, checkpoint if requested, resolve any indeterminate commit, drain provider/store/session and close handles.
+- [x] **Step 4: Run all M0/M1/M2 tests. Any protocol fixture or driver contract delta is a design stop, not an opportunistic edit.**
+- [x] **Step 5: Commit.** `feat(m3): integrate persistence with provider lifecycle`.
 
 ### Task 40: Add a destructive real-host preflight and cleanup harness
 
@@ -949,11 +949,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 24, 39
 **Files:** Create `tests/e2e/M3Harness.Common.ps1`, `tests/e2e/test-m3-harness-preflight.ps1`, `tests/e2e/run-m3-persistence.ps1`, `tools/Invoke-M3Verification.ps1`, `tools/Verify-M3Json.ps1`, `docs/testing/m3-e2e.md`.
 
-- [ ] **Step 1: Probe administrator rights, AIM driver/device interface, build artifacts, filesystem capabilities, free space, power policy and native VHDX APIs. Emit JSON plus human summary.**
-- [ ] **Step 2: Require an explicit scratch directory and test disk identity.** Refuse system volumes, workspace roots, ambiguous device paths, mounted user data and paths outside the declared scratch root.
-- [ ] **Step 3: Implement finally-style cleanup** for provider process, proxy/disk device, drive letter, VHDX attachment and temporary files. Record anything left behind with manual recovery commands.
-- [ ] **Step 4: Add stable verification routing and fail-closed JSON validation.** `Invoke-M3Verification.ps1` exposes Local, Preflight, RealFunctional, Crash and Soak tiers; unavailable implementations return BLOCKED/nonzero until their tasks land. `Verify-M3Json.ps1` rejects schema/source-commit/binary-hash mismatches and required SKIP.
-- [ ] **Step 5: Dry-run test all safety checks without administrator/device access; add Pester or script-level tests for target rejection.**
+- [x] **Step 1: Probe administrator rights, AIM driver/device interface, build artifacts, filesystem capabilities, free space, power policy and native VHDX APIs. Emit JSON plus human summary.**
+- [x] **Step 2: Require an explicit scratch directory and test disk identity.** Refuse system volumes, workspace roots, ambiguous device paths, mounted user data and paths outside the declared scratch root.
+- [x] **Step 3: Implement finally-style cleanup** for provider process, proxy/disk device, drive letter, VHDX attachment and temporary files. Record anything left behind with manual recovery commands.
+- [x] **Step 4: Add stable verification routing and fail-closed JSON validation.** `Invoke-M3Verification.ps1` exposes Local, Preflight, RealFunctional, Crash and Soak tiers; unavailable implementations return BLOCKED/nonzero until their tasks land. `Verify-M3Json.ps1` rejects schema/source-commit/binary-hash mismatches and required SKIP.
+- [x] **Step 5: Dry-run test all safety checks without administrator/device access; add Pester or script-level tests for target rejection.**
 - [ ] **Step 6: Commit.** `test(m3): add safe real-host e2e harness`.
 
 ### Task 41: Prove real AIM, NTFS, lazy loading and native VHDX compatibility
