@@ -507,7 +507,8 @@ struct OpenedBundleFile final {
     const std::filesystem::path& bundle_root,
     const std::string_view relative_name,
     const std::optional<WindowsFileIdentity>& expected_identity,
-    const bool mutable_access) {
+    const bool mutable_access,
+    const bool create_new = false) {
     auto component = validate_image_component(relative_name);
     if (!component.ok()) {
         return Result<OpenedBundleFile>::failure(
@@ -568,17 +569,20 @@ struct OpenedBundleFile final {
         target_path.append(component.value().wide_name);
 
         const DWORD access = mutable_access
-            ? (GENERIC_READ | GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES)
+            ? (GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES |
+               (create_new ? 0 : DELETE))
             : (GENERIC_READ | FILE_READ_ATTRIBUTES);
         const DWORD sharing = mutable_access
-            ? FILE_SHARE_READ
+            ? (create_new
+                ? FILE_SHARE_READ | FILE_SHARE_WRITE
+                : FILE_SHARE_READ)
             : (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
         UniqueHandle file_handle(CreateFileW(
             target_path.c_str(),
             access,
             sharing,
             nullptr,
-            OPEN_EXISTING,
+            create_new ? CREATE_NEW : OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
                 FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS,
             nullptr));
@@ -1276,6 +1280,28 @@ WindowsFileIdentity ValidatedPersistenceFile::observed_identity() const {
         return {};
     }
     return impl_->capability.identity_;
+}
+
+Result<ValidatedBundleFile> detail_create_manifest_for_writer_acquire(
+    const std::filesystem::path& bundle_root,
+    const std::string_view manifest_relative_name) {
+    auto opened = open_bundle_file_handles(
+        bundle_root, manifest_relative_name, std::nullopt, true, true);
+    if (!opened.ok()) {
+        return Result<ValidatedBundleFile>::failure(
+            std::move(opened.error()));
+    }
+    auto value = opened.move_value();
+    return Result<ValidatedBundleFile>::success(ValidatedBundleFile(
+        std::move(value.root_handle),
+        std::move(value.file_handle),
+        std::move(value.root_identity),
+        std::move(value.file_identity),
+        std::move(value.root_final_path),
+        std::move(value.file_final_path),
+        std::move(value.relative_name),
+        true,
+        false));
 }
 
 std::wstring ValidatedPersistenceFile::observed_final_path() const {

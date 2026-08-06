@@ -130,7 +130,19 @@ private:
         BundleWriterLock&, ValidatedBundleFile&);
     friend Result<BundleWriterLock> acquire_bundle_writer_lock(
         const std::filesystem::path&, std::string_view);
+    friend Result<ValidatedBundleFile>
+        detail_create_manifest_for_writer_acquire(
+            const std::filesystem::path&, std::string_view);
 };
+
+// Internal bootstrap capability used only to atomically claim a previously
+// absent manifest name before a BundleWriterLock exists. The returned handle
+// stays open without delete sharing while writer acquisition revalidates the
+// same file identity, preventing a namespace swap in between.
+[[nodiscard]] Result<ValidatedBundleFile>
+detail_create_manifest_for_writer_acquire(
+    const std::filesystem::path& bundle_root,
+    std::string_view manifest_relative_name);
 
 // Owns both the validated capability and a DuplicateHandle-backed Task 11
 // exact-I/O view. Codecs can consume this as IPersistenceFile without ever

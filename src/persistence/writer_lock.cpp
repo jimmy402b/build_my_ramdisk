@@ -411,6 +411,39 @@ Result<BundleWriterLock> acquire_bundle_writer_lock(
     }
 }
 
+Result<BundleWriterLock> create_bundle_manifest_and_acquire_writer(
+    const std::filesystem::path& bundle_root,
+    const std::string_view manifest_relative_name) {
+    auto claimed = detail_create_manifest_for_writer_acquire(
+        bundle_root, manifest_relative_name);
+    if (!claimed.ok()) {
+        auto error = claimed.error();
+        if (error.native_code == ERROR_FILE_EXISTS ||
+            error.native_code == ERROR_ALREADY_EXISTS) {
+            error.code = static_cast<std::uint32_t>(
+                ImagePathErrorCode::ImageInUse);
+            error.operation = L"writer_lock.create";
+            error.message = L"the manifest name is already claimed";
+        }
+        return Result<BundleWriterLock>::failure(std::move(error));
+    }
+    const auto claimed_identity = claimed.value().identity();
+    auto writer = acquire_bundle_writer_lock(
+        bundle_root, manifest_relative_name);
+    if (!writer.ok()) {
+        return writer;
+    }
+    if (!same_file_object(
+            claimed_identity, writer.value().manifest_identity())) {
+        static_cast<void>(writer.value().close());
+        return writer_failure<BundleWriterLock>(
+            ImagePathErrorCode::IdentityMismatch,
+            L"writer_lock.create",
+            L"the claimed manifest identity changed during acquisition");
+    }
+    return writer;
+}
+
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 namespace test {
 

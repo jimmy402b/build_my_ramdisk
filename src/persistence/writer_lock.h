@@ -94,6 +94,9 @@ private:
 
     friend Result<BundleWriterLock> acquire_bundle_writer_lock(
         const std::filesystem::path&, std::string_view);
+    friend Result<BundleWriterLock>
+        create_bundle_manifest_and_acquire_writer(
+            const std::filesystem::path&, std::string_view);
     friend Result<ValidatedBundleFile> open_bundle_file_for_mutation(
         BundleWriterLock&,
         std::string_view,
@@ -129,6 +132,15 @@ private:
 };
 
 [[nodiscard]] Result<BundleWriterLock> acquire_bundle_writer_lock(
+    const std::filesystem::path& bundle_root,
+    std::string_view manifest_relative_name);
+
+// Atomically claims a new manifest name (CREATE_NEW) and acquires writer
+// authority over that exact file object. Existing names are never opened for
+// mutation by this API. A failure after creation deliberately leaves an
+// unreferenced, diagnosable artifact for the later cleanup policy.
+[[nodiscard]] Result<BundleWriterLock>
+create_bundle_manifest_and_acquire_writer(
     const std::filesystem::path& bundle_root,
     std::string_view manifest_relative_name);
 

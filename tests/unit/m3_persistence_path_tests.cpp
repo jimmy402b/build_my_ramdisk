@@ -13,6 +13,7 @@
 #include "validated_rename_test_seam.h"
 #include "validated_sparse_test_seam.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -40,6 +41,7 @@ namespace {
 using myrd::persistence::ImagePathErrorCode;
 using myrd::persistence::WindowsFileIdentity;
 using myrd::persistence::acquire_bundle_writer_lock;
+using myrd::persistence::create_bundle_manifest_and_acquire_writer;
 using myrd::persistence::delete_validated_bundle_file;
 using myrd::persistence::is_image_path_error;
 using myrd::persistence::is_direct_bundle_child;
@@ -2353,6 +2355,64 @@ TEST_CASE(task12_test_cleanup_cannot_release_production_quarantine) {
     REQUIRE_EQ(
         myrd::persistence::test::native_rename_slots_in_use(),
         slots_before + 1);
+}
+
+TEST_CASE(task27_new_manifest_claim_is_create_new_and_identity_bound) {
+    TemporarySandbox sandbox;
+    const auto manifest = sandbox.bundle() / L"new-disk.rdm";
+
+    auto claimed = create_bundle_manifest_and_acquire_writer(
+        sandbox.bundle(), "new-disk.rdm");
+
+    REQUIRE(claimed.ok());
+    REQUIRE(std::filesystem::exists(manifest));
+    REQUIRE_EQ(std::filesystem::file_size(manifest), std::uintmax_t{0});
+    REQUIRE_EQ(claimed.value().manifest_identity(), identity_of(manifest));
+    REQUIRE(claimed.value().verify().ok());
+
+    auto collision = create_bundle_manifest_and_acquire_writer(
+        sandbox.bundle(), "new-disk.rdm");
+    REQUIRE(is_image_path_error(
+        collision, ImagePathErrorCode::ImageInUse));
+    REQUIRE_EQ(std::filesystem::file_size(manifest), std::uintmax_t{0});
+}
+
+TEST_CASE(task27_concurrent_manifest_claim_has_exactly_one_winner) {
+    TemporarySandbox sandbox;
+    constexpr std::size_t contenders = 8;
+    std::array<bool, contenders> won{};
+    std::array<bool, contenders> expected_failure{};
+    std::array<std::thread, contenders> threads{};
+    std::atomic<bool> start{};
+
+    for (std::size_t index = 0; index < contenders; ++index) {
+        threads[index] = std::thread([&, index] {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            auto result = create_bundle_manifest_and_acquire_writer(
+                sandbox.bundle(), "race.rdm");
+            won[index] = result.ok();
+            if (result.ok()) {
+                won[index] = result.value().verify().ok();
+            } else {
+                expected_failure[index] = is_image_path_error(
+                    result, ImagePathErrorCode::ImageInUse);
+            }
+        });
+    }
+    start.store(true, std::memory_order_release);
+    for (auto& thread : threads) thread.join();
+
+    REQUIRE_EQ(
+        std::count(won.begin(), won.end(), true),
+        std::ptrdiff_t{1});
+    REQUIRE_EQ(
+        std::count(expected_failure.begin(), expected_failure.end(), true),
+        static_cast<std::ptrdiff_t>(contenders - 1));
+    REQUIRE_EQ(
+        std::filesystem::file_size(sandbox.bundle() / L"race.rdm"),
+        std::uintmax_t{0});
 }
 
 } // namespace
