@@ -1640,3 +1640,44 @@ Verification evidence:
 Task 28 verdict: **DONE**. This authorizes Task 29 to add image-session state and
 structured outcomes. It is still only an internal M3-V7 prerequisite: real AIM,
 NTFS, checkpoint/reopen and long-run memory evidence remain future gates.
+
+## Task 29 — Image-session state and structured outcome acceptance
+
+Task 29 is accepted through commits `551c1c9` and `a039b09`. `ImageSession`
+implements the exhaustive nine-state transition contract and one move-only
+publish-affecting operation gate. Immutable reads may coexist with checkpoint or
+compaction, while a 32-thread start race has exactly one owner. New independent
+checkpoint/compaction operations reset their own disposition and first-failure
+scope; resolution and reconciliation retain the original failure chain.
+
+The operation lease records `PrePublication`, `PublishAttempted` and
+`CommitProven`. `NotCommitted`, `CommitIndeterminate`, `Committed` and
+`CommittedNeedsReconciliation` are accepted only at compatible boundaries. A
+lease abandoned before publication returns Ready, after a publish attempt moves
+to ResolvingCommit, and after the manifest commit point moves to Reconciling.
+Successful manifest `FlushFileBuffers()` is the Task 31 commit point; later
+readback failure cannot downgrade that durable fact.
+
+Close is sticky and idempotent: it first rejects new operations and reads,
+requests the active operation to stop without holding the session mutex, then
+drains the publish lease and immutable reads. Its wait observes cancellation and
+deadline. A lifecycle anchor makes an orphaned lease fail safely if its owner was
+already destroyed; actual concurrent destruction remains forbidden and must be
+handled by lifecycle drain/join.
+
+Independent review initially returned NO-GO for three P1 defects: cross-operation
+outcome inheritance, publication-blind RAII abandon, and lock-held synchronous
+stop callbacks. All three were fixed and the same reviewer returned GO. Final
+evidence on the fixed commits:
+
+- image-session tests passed 16/16 in Debug and Release;
+- Debug focused concurrency repeated 100 times without failure;
+- `m3-v2` passed 6/6 in Debug and Release;
+- complete Debug CTest passed 80/80 and complete Release CTest passed 81/81;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built and exposed no
+  `for_testing` or test-seam symbols;
+- `git diff --check` passed.
+
+Task 29 verdict: **DONE**. This authorizes Task 30 to implement only the
+pre-manifest checkpoint durability pipeline; manifest publication, backing-view
+installation and dirty acknowledgment remain Tasks 31–32.

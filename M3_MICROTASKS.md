@@ -529,18 +529,18 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 
 允许：`image_session.*`、state tests；不得实现 checkpoint/compaction 算法。
 
-- [ ] `T29.1 [M]` 手工 transition table 覆盖 Opening/Ready/Checkpointing/
+- [x] `T29.1 [M]` 手工 transition table 覆盖 Opening/Ready/Checkpointing/
   Compacting/ResolvingCommit/Reconciling/Closing/Closed/PersistenceFaulted 的每对边。
-- [ ] `T29.2 [H]` RED concurrent operation gate：immutable reads 可并发；checkpoint/
+- [x] `T29.2 [H]` RED concurrent operation gate：immutable reads 可并发；checkpoint/
   compaction/close 的允许、busy、closing 顺序全部确定。
-- [ ] `T29.3 [X]` 实现 serialized publish-affecting gate 和 state transition invariant；
+- [x] `T29.3 [X]` 实现 serialized publish-affecting gate 和 state transition invariant；
   禁止普通 bool 代替状态/operation ownership。
-- [ ] `T29.4 [X]` 保存 first failure + `CommitDisposition`；Indeterminate 必须进入
+- [x] `T29.4 [X]` 保存 operation-scoped first failure + `CommitDisposition`；Indeterminate 必须进入
   ResolvingCommit 并阻止新 mutation/checkpoint，不能被后续 cleanup error 覆盖。
-- [ ] `T29.5 [H]` close idempotence/drain tests：结果不能仅因内存 state 更新宣称
+- [x] `T29.5 [H]` close idempotence/drain tests：结果不能仅因内存 state 更新宣称
   durable success。
-- [ ] `T29.6 [X]` exhaustive transition/lock-order/outcome independent review +
-  Debug/Release focused。
+- [x] `T29.6 [X]` exhaustive transition/lock-order/outcome independent review 首轮 NO-GO，
+  修复 3 个 P1 后复审 GO；Debug/Release focused、Debug repeat 100 与 full CTest 通过。
 
 ## 7. 阶段五：Checkpoint、commit 与 reconciliation（Task 30–33）
 

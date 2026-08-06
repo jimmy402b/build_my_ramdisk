@@ -179,7 +179,7 @@ Suggested commit:
 | 26 | Recovery engine 与 BackingView | O | DONE | 15,25 | M3-V2 |
 | 27 | Generation-zero create/reopen | S | DONE | 12,14,16,19,23,25,26 | M3-V2 |
 | 28 | M2 lazy-load integration | O | DONE | 09,27 | M3-V3/V7 |
-| 29 | Image session/outcome state machine | O | PENDING | 13,27,28 | M3-V2 |
+| 29 | Image session/outcome state machine | O | DONE | 13,27,28 | M3-V2 |
 | 30 | Checkpoint pre-manifest pipeline | O | PENDING | 09,19,29 | M3-V2 |
 | 31 | Manifest publish 与 indeterminate resolver | O | PENDING | 15,30 | M3-V2 |
 | 32 | Install backing、ack、reconcile | O | PENDING | 06,28,31 | M3-V2/V3 |
@@ -806,11 +806,12 @@ publish 由逻辑负责人审查。
 
 **类别：O。允许文件：** `image_session.*`、state tests。
 
-- [ ] table-driven 红灯穷举 Opening/Ready/Checkpointing/Compacting/ResolvingCommit/Reconciling/Closing/Closed/PersistenceFaulted 转换。
-- [ ] serialized operation gate 阻止第二个 publish-affecting operation，但 immutable reads 可继续。
-- [ ] first failure 与 CommitDisposition 贯穿 API；Indeterminate 进入 ResolvingCommit 并阻止 mutation/checkpoint。
-- [ ] close 幂等并按规定 drain，不能用内存 state 伪装 durable success。
-- [ ] 跑 `m3-v2` 中 session/outcome 项；建议提交 `feat(persistence): enforce image session state`。
+- [x] table-driven 红灯穷举 Opening/Ready/Checkpointing/Compacting/ResolvingCommit/Reconciling/Closing/Closed/PersistenceFaulted 的 81 对转换。
+- [x] serialized operation gate 以 move-only ownership 阻止第二个 publish-affecting operation；32 线程只有一个 winner，immutable reads 可并发。
+- [x] 每次新 checkpoint/compaction 重置 operation-scoped first failure/CommitDisposition；Indeterminate 进入 ResolvingCommit 并阻止新 mutation/checkpoint。
+- [x] PrePublication/PublishAttempted/CommitProven 边界约束 disposition；lease 遗漏 finish 时 fail-closed 到 Ready/ResolvingCommit/Reconciling。
+- [x] close 幂等，阻止新 operation/read，锁外 request_stop 后 drain；cancel/deadline、callback 重入和 owner-first destruction 均覆盖。
+- [x] 独立审查首轮 NO-GO 的 3 个 P1 已修复并复审 GO；Debug 80/80、Release 81/81，focused 16/16 且 Debug repeat 100 次；提交 `551c1c9`、`a039b09`。
 
 ## Task 30 — Checkpoint 的 pre-manifest durability pipeline
 

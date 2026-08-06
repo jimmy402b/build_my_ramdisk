@@ -812,11 +812,11 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 **Depends on:** 13, 27, 28
 **Files:** Create `src/persistence/image_session.h/.cpp`, `tests/unit/m3_image_session_tests.cpp`.
 
-- [ ] **Step 1: Red-test every allowed and forbidden state transition** among Opening, Ready, Checkpointing, Compacting, ResolvingCommit, Reconciling, Closing, Closed and PersistenceFaulted.
-- [ ] **Step 2: Implement a serialized operation gate** for publish-affecting operations while allowing immutable backing reads. Reject concurrent checkpoint/compaction/close with stable busy/closing errors.
-- [ ] **Step 3: Preserve `CommitDisposition` and first failure** in every public result. `CommitIndeterminate` must transition to ResolvingCommit and block new mutations/checkpoints until resolved.
-- [ ] **Step 4: Prove close is idempotent**, drains operations in documented order and never reports durable success based only on an in-memory state update.
-- [ ] **Step 5: Commit.** `feat(persistence): enforce image session state`.
+- [x] **Step 1: Red-test every allowed and forbidden state transition** among Opening, Ready, Checkpointing, Compacting, ResolvingCommit, Reconciling, Closing, Closed and PersistenceFaulted.
+- [x] **Step 2: Implement a serialized operation gate** for publish-affecting operations while allowing immutable backing reads. Reject concurrent checkpoint/compaction/close with stable busy/closing errors.
+- [x] **Step 3: Preserve operation-scoped `CommitDisposition` and first failure** in every public result. `CommitIndeterminate` transitions to ResolvingCommit and blocks new mutations/checkpoints until resolved. Explicit publication stages make abandoned leases fail closed.
+- [x] **Step 4: Prove close is idempotent**, drains operations in documented order, invokes stop callbacks outside the session lock, observes cancel/deadline, and never reports durable success based only on an in-memory state update.
+- [x] **Step 5: Commits.** `551c1c9` (`feat(persistence): enforce image session state`) and `a039b09` (`fix(persistence): harden image session boundaries`).
 
 ### Task 30: Prepare a checkpoint through the pre-manifest durability boundary
 
