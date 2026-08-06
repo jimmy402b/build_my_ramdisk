@@ -919,11 +919,11 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O。允许文件：** `src/m3/m3_provider.*`、`src/m3/m3_windows_acceptance.*`、M3 lifecycle composition root、provider integration tests、CMake；禁止改 M1/M2 provider 行为和 M1 wire fixture。
 
-- [ ] 红灯覆盖 recovered startup、lazy reads、writes、TRIM/zero、checkpoint、provider reconnect、process reopen。
-- [ ] 在 composition root 注入 ImageSession/DynamicBlockStore；persistence 不依赖 AIM types，transport 不知道 file formats。
-- [ ] stop 顺序：停止外部 mutation → 上层按编排 flush → optional checkpoint → resolve indeterminate → drain/close。
-- [ ] 全部 M1 wire golden tests 原样通过；任何 protocol/driver delta 立即 BLOCKED。
-- [ ] 跑 M0/M1/M2 完整回归和 provider 本地 integration subset；这不是官方 M3-V6。建议提交 `feat(m3): integrate persistence with provider lifecycle`。
+- [x] 红灯覆盖 recovered startup、lazy reads、writes、TRIM/zero、checkpoint、provider reconnect、process reopen。
+- [x] 在 composition root 注入 ImageSession/DynamicBlockStore；persistence 不依赖 AIM types，transport 不知道 file formats。
+- [x] stop 顺序：停止外部 mutation → 上层按编排 flush → optional checkpoint → resolve indeterminate → drain/close。
+- [x] 全部 M1 wire golden tests 原样通过；任何 protocol/driver delta 立即 BLOCKED。
+- [x] 跑 M0/M1/M2 完整回归和 provider 本地 integration subset；这不是官方 M3-V6。建议提交 `feat(m3): integrate persistence with provider lifecycle`。
 
 ## Task 40 — Safe real-host preflight and E2E harness
 

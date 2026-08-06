@@ -223,13 +223,16 @@ add_library(myrd_m3_management STATIC
     m3/m3_cli.cpp
     m3/m3_lifecycle_runner.h
     m3/m3_lifecycle_runner.cpp
+    m3/m3_provider.h
+    m3/m3_provider.cpp
     m3/m3_report.h
     m3/m3_report.cpp
     m3/m3_evidence_publisher.h
     m3/m3_evidence_publisher.cpp
 )
 target_include_directories(myrd_m3_management PUBLIC "${CMAKE_SOURCE_DIR}")
-target_link_libraries(myrd_m3_management PUBLIC myrd_persistence myrd_common)
+target_link_libraries(myrd_m3_management PUBLIC
+    myrd_persistence myrd_common myrd_proxy)
 myrd_enable_warnings(myrd_m3_management)
 
 add_executable(myrd_m3_e2e

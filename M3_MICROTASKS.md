@@ -745,15 +745,15 @@ publish/resolver 算法。
 允许：M3 composition root/provider/windows adapter、integration tests/CMake；M1/M2
 provider 和 wire golden fixtures 行为只读。
 
-- [ ] `T39.1 [M]` RED lifecycle scenario：recovered startup→lazy read→write/TRIM/zero→
+- [x] `T39.1 [M]` RED lifecycle scenario：recovered startup→lazy read→write/TRIM/zero→
   checkpoint→reconnect→reopen；保存全部 M1 wire golden hash 作为不变基线。
-- [ ] `T39.2 [H]` 建 composition interfaces，把 `ImageSession`、`DynamicBlockStore`、
+- [x] `T39.2 [H]` 建 composition interfaces，把 `ImageSession`、`DynamicBlockStore`、
   accepted M1 provider 注入；persistence target 禁止 include AIM/proxy types。
-- [ ] `T39.3 [X]` 实现 stop order：stop new external mutations→按 orchestrator 要求
+- [x] `T39.3 [X]` 实现 stop order：stop new external mutations→按 orchestrator 要求
   flush/checkpoint→resolve indeterminate→drain provider/store/session→close handles。
-- [ ] `T39.4 [X]` 并发 close/checkpoint/driver disconnect/error precedence tests；不得
+- [x] `T39.4 [X]` 并发 close/checkpoint/driver disconnect/error precedence tests；不得
   因 transport close 覆盖 durable disposition。
-- [ ] `T39.5 [M]` 跑全部 M0/M1/M2 + M3 provider tests；任何 protocol fixture/driver
+- [x] `T39.5 [M]` 跑全部 M0/M1/M2 + M3 provider tests；任何 protocol fixture/driver
   contract delta 立即 `BLOCKED`，不得顺手改旧合同。
 - [ ] `T39.6 [X]` lifecycle/contract independent review 后完成。
 
