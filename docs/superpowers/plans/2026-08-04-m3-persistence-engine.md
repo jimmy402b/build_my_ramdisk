@@ -860,11 +860,11 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 **Depends on:** 31, 32
 **Files:** Create `tests/model/m3_checkpoint_crash_model_tests.cpp`, `tests/fixtures/m3/crash-matrix.json`; modify test registration.
 
-- [ ] **Step 1: Enumerate every durable primitive boundary** for records, nodes, commit, journal flush/readback, manifest write/flush/readback, view install and acknowledgment. Include short writes and sector-aligned torn slots.
-- [ ] **Step 2: For every crash point**, discard process memory and recover from cloned bytes only. Expected state is exactly old generation or complete new generation, never a mixed mapping.
-- [ ] **Step 3: Compare every block with a simple independent map model** that knows only the SPEC transaction rules, not production codecs or selectors.
-- [ ] **Step 4: Require deterministic seeds and persist the seed/phase on failure. Run at least 10,000 randomized schedules in CI-friendly mode and a larger stress profile manually.**
-- [ ] **Step 5: Commit.** `test(m3): prove checkpoint crash atomicity`.
+- [x] **Step 1: Enumerate every durable primitive boundary** for records, nodes, commit, journal flush/readback, manifest write/flush/readback, view install and acknowledgment. Include short writes and sector-aligned torn slots.
+- [x] **Step 2: For every crash point**, discard process memory and recover from cloned bytes only. Expected state is exactly old generation or complete new generation, never a mixed mapping.
+- [x] **Step 3: Compare every block with a simple independent map model** that knows only the SPEC transaction rules, not production codecs or selectors.
+- [x] **Step 4: Require deterministic seeds and persist the seed/phase on failure. Run at least 10,000 randomized schedules in CI-friendly mode and a larger stress profile manually.**
+- [x] **Step 5: Commit.** `test(m3): prove checkpoint crash atomicity`.
 
 ### Task 34: Enumerate the live image for base compaction
 

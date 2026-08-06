@@ -1235,6 +1235,40 @@ set_tests_properties(integration.m3.checkpoint_reconcile PROPERTIES
     LABELS "m3-v2;m3-v3"
     TIMEOUT 120)
 
+# ---- M3 independent checkpoint crash model (Task 33) ----------------------
+execute_process(
+    COMMAND git log -1 --format=%H -- src
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE MYRD_M3_TASK33_SOURCE_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT MYRD_M3_TASK33_SOURCE_COMMIT)
+    set(MYRD_M3_TASK33_SOURCE_COMMIT "source-archive")
+endif()
+add_executable(myrd_m3_checkpoint_crash_model_tests
+    model/m3_checkpoint_crash_model_tests.cpp
+)
+target_link_libraries(myrd_m3_checkpoint_crash_model_tests PRIVATE
+    myrd_test_support
+    myrd_persistence
+    myrd_storage
+)
+target_include_directories(myrd_m3_checkpoint_crash_model_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+)
+target_compile_definitions(myrd_m3_checkpoint_crash_model_tests PRIVATE
+    "MYRD_M3_CHECKPOINT_CRASH_MATRIX_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/m3/crash-matrix.json\""
+    "MYRD_M3_FAULT_PHASE_REGISTRY_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/m3/fault-phase-registry.json\""
+    "MYRD_M3_TASK33_SOURCE_COMMIT=\"${MYRD_M3_TASK33_SOURCE_COMMIT}\""
+)
+myrd_enable_warnings(myrd_m3_checkpoint_crash_model_tests)
+add_test(NAME model.m3.checkpoint_crash
+    COMMAND myrd_m3_checkpoint_crash_model_tests)
+set_tests_properties(model.m3.checkpoint_crash PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 180)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

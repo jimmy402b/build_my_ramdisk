@@ -1804,3 +1804,52 @@ failure and do not block the independent Task 33 crash model.
 
 Task 32 verdict: **DONE**. This authorizes Task 33 to validate checkpoint
 atomicity from cloned durable bytes with an independent oracle.
+
+## Task 33 — Independent checkpoint crash-model acceptance
+
+Task 33 freezes 32 checkpoint boundaries using the exact IDs from the Task13
+fault-phase registry. The independently authored oracle fixture was committed
+first as `4de15e8`; `crash-matrix.json` has SHA-256
+`BCCA9EABE466103610661633456B546BF95030A066FCDE1857A9E8A814EBDB4C`
+and remained byte-identical during executor implementation. Five non-kill
+error phases are explicitly `not_applicable` for crash recovery rather than
+being assigned an invented durable outcome.
+
+The real-file executor creates an old complete VHDX/journal/manifest bundle,
+appends a new DATA/ZERO/DISCARD checkpoint, then materializes each crash clone
+from durable bytes only. Normal production recovery reopens fresh handles and
+must select an outcome allowed by the independent matrix. Every one of the 128
+logical blocks is compared against a fixed old or new map; generation-only
+checks, mixed maps and silent post-commit fallback are rejected. Physical
+coverage includes representative journal short cuts around headers, payloads,
+CRC boundaries and final bytes, every 512-byte-aligned manifest torn cut, tail
+garbage and reordered simulated durability.
+
+The fast independent model uses its own byte format, hash, decoder, selector
+rules and fixed maps; it does not call production journal/manifest codecs or
+selectors to calculate expected outcomes. The `m3-seed-v1` protocol runs the
+four fixed quick seeds plus seeds derived from the low 64 bits of
+`SHA256(source-code-commit | 33 | i)`. CI runs at least 10,000 schedules; a
+100,000-schedule manual profile also passed. A failing case records source
+commit, card ID, seed, profile, operation count, phase, cloned-byte hashes and
+a greedily minimized still-failing trace without changing the expected cut.
+
+Mutation tests prove that commit-classification changes, manifest-before-
+journal flush reordering, acknowledgment before manifest commit, corrupted
+post-commit fallback and a mixed-generation map all turn the oracle red.
+
+Final verification on the accepted source:
+
+- `model.m3.checkpoint_crash` passed 6/6 in Debug and Release;
+- the 100,000-schedule Debug manual profile passed;
+- complete `m3-v2` passed 20/20 in Debug and Release;
+- `git diff --check` passed apart from existing LF/CRLF conversion notices;
+- Task33 changed no production file under `src/`;
+- the independent final reviewer returned GO with zero P0 and zero P1.
+
+Accepted P2 follow-ups are a frozen SHA-256 seed known-answer vector and a
+stricter same-stage before/after ordering assertion in the matrix validator.
+They do not permit an incorrect durable generation or mixed block map.
+
+Task 33 verdict: **DONE**. This authorizes Task 34 live-image extent
+enumeration for compaction.

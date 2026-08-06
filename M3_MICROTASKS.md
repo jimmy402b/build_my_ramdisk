@@ -625,17 +625,17 @@ Task 30 DONE：checkpoint coordinator 只推进到 journal Prepared，manifest/i
 允许：`tests/model/m3_checkpoint_crash_model_tests.cpp`、独立 fixtures/JSON、test
 registration；production 代码禁止修改，production author 禁止改 expected outcome。
 
-- [ ] `T33.1 [M]` 从 SPEC 列出每个 durable primitive boundary：records/nodes/commit/
+- [x] `T33.1 [M]` 从 SPEC 列出每个 durable primitive boundary：records/nodes/commit/
   journal flush+readback/manifest write+flush+readback/install/ack，给稳定 scenario ID。
-- [ ] `T33.2 [H]` 独立 oracle 只接受 cloned bytes + transaction rules；每个 crash 后
+- [x] `T33.2 [H]` 独立 oracle 只接受 cloned bytes + transaction rules；每个 crash 后
   丢弃 process memory，期望只能 old complete generation 或 new complete generation。
-- [ ] `T33.3 [M]` 加 short writes、sector-aligned torn slots、tail garbage、reordered
+- [x] `T33.3 [M]` 加 short writes、sector-aligned torn slots、tail garbage、reordered
   simulated durability；输出 seed/phase/byte hashes。
-- [ ] `T33.4 [H]` 每个 recovered block 与 simple map 比较；mixed mapping、silent
+- [x] `T33.4 [H]` 每个 recovered block 与 simple map 比较；mixed mapping、silent
   corrupt fallback、unresolved indeterminate 一律失败。
-- [ ] `T33.5 [M]` CI profile 跑 10,000 deterministic schedules，保存最小 failure
+- [x] `T33.5 [M]` CI profile 跑 10,000 deterministic schedules，保存最小 failure
   trace；manual profile 更大但不替代 CI gate。
-- [ ] `T33.6 [H]` mutation 破坏 commit classification/flush order/ack order 必须使
+- [x] `T33.6 [H]` mutation 破坏 commit classification/flush order/ack order 必须使
   oracle 红；独立 reviewer 确认无 production codec/selector 复用。
 
 ## 8. 阶段六：Compaction 与 retention（Task 34–36）

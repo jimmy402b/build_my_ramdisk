@@ -853,11 +853,11 @@ checkpoint index root、`DirtyBlockSnapshot::dirty_epoch` 及 M2 publication pin
 
 **类别：O；expected outcomes 由非生产实现作者维护。允许文件：** `tests/model/m3_checkpoint_crash_model_tests.cpp`、crash fixture、test registration；不改 production。
 
-- [ ] 枚举 record/node/commit/journal flush/readback/manifest write/flush/readback/install/ack 每个 durability boundary 与 torn/short write。
-- [ ] 每个点丢弃全部进程内存，从 cloned bytes 新进程式恢复；结果只能旧完整代或新完整代。
-- [ ] 独立 map oracle 不调用 production codec/selector；全盘 block compare，禁止只比 generation number。
-- [ ] CI 至少 10,000 deterministic schedules，失败保存 seed/phase/bytes hash。
-- [ ] 跑 `m3-v2`；建议提交 `test(m3): prove checkpoint crash atomicity`。
+- [x] 枚举 record/node/commit/journal flush/readback/manifest write/flush/readback/install/ack 每个 durability boundary 与 torn/short write。
+- [x] 每个点丢弃全部进程内存，从 cloned bytes 新进程式恢复；结果只能旧完整代或新完整代。
+- [x] 独立 map oracle 不调用 production codec/selector；全盘 block compare，禁止只比 generation number。
+- [x] CI 至少 10,000 deterministic schedules，失败保存 seed/phase/bytes hash。
+- [x] 跑 `m3-v2`；建议提交 `test(m3): prove checkpoint crash atomicity`。
 
 ## Task 34 — Enumerate live extents for compaction
 
