@@ -687,22 +687,18 @@ TEST_CASE(journal_writer_split_nodes_check_cancel_and_deadline_per_ordinal) {
         configure_split_index_checkpoint(fixture);
         const auto old_prefix = read_committed_prefix(fixture);
         bool hook_hit = false;
+        OperationContext context{};
         auto options = writer_options();
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
         options.phase_hook = [&](const JournalWriterPhaseEvent& event) {
             if (event.phase == target.phase &&
                 event.ordinal == target.ordinal) {
                 hook_hit = true;
-                std::this_thread::sleep_until(
-                    deadline + std::chrono::milliseconds(2));
+                context.deadline = std::chrono::steady_clock::now();
             }
             return Result<void>::success();
         };
         auto writer = JournalWriter::create(std::move(options));
         REQUIRE(writer.ok());
-        OperationContext context{};
-        context.deadline = deadline;
         const auto result = writer.value()->prepare(context, fixture.request);
         REQUIRE(hook_hit);
         REQUIRE(!result.ok());
@@ -779,22 +775,18 @@ TEST_CASE(journal_writer_checks_cancellation_at_every_named_phase) {
         auto fixture = make_fixture();
         const auto old_prefix = read_committed_prefix(fixture);
         bool hook_hit = false;
+        OperationContext context{};
         auto options = writer_options();
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
         options.phase_hook = [&](const JournalWriterPhaseEvent& event) {
             if (event.phase == target.phase &&
                 event.ordinal == target.ordinal) {
                 hook_hit = true;
-                std::this_thread::sleep_until(
-                    deadline + std::chrono::milliseconds(2));
+                context.deadline = std::chrono::steady_clock::now();
             }
             return Result<void>::success();
         };
         auto writer = JournalWriter::create(std::move(options));
         REQUIRE(writer.ok());
-        OperationContext context{};
-        context.deadline = deadline;
         auto result = writer.value()->prepare(context, fixture.request);
         REQUIRE(hook_hit);
         REQUIRE(!result.ok());
