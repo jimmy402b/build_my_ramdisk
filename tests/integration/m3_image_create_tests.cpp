@@ -4,6 +4,7 @@
 
 #include "src/persistence/image_creator.h"
 #include "src/persistence/image_paths.h"
+#include "src/persistence/composite_backing_store.h"
 #include "src/persistence/manifest_format.h"
 #include "src/persistence/persistence_types.h"
 #include "src/persistence/vhdx_reader.h"
@@ -97,6 +98,11 @@ TEST_CASE(generation_zero_create_reopens_only_through_recovery) {
     REQUIRE_EQ(created.value().base_generation, std::uint64_t{0});
     REQUIRE_EQ(created.value().selected_slot, std::uint8_t{0});
     REQUIRE(created.value().backing_view.store != nullptr);
+    const auto reopened = std::dynamic_pointer_cast<
+        const CompositeBackingStore>(
+            created.value().backing_view.store);
+    REQUIRE(reopened != nullptr);
+    REQUIRE_EQ(reopened->stats().load_calls, std::uint64_t{2});
     REQUIRE(std::filesystem::exists(sandbox.root() / L"disk.rdm"));
     REQUIRE(std::filesystem::exists(sandbox.root() / L"base-0000.vhdx"));
     REQUIRE(std::filesystem::exists(sandbox.root() / L"journal-e0001.rdj"));

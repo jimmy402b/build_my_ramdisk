@@ -433,6 +433,23 @@ Result<RecoveredImage> create_generation_zero_image(
             PersistenceErrorCode::VerificationFailed,
             L"recovery did not select generation-zero slot A");
     }
+    std::array<std::byte, kM2BlockSize> boundary{};
+    auto first = recovered.image->backing_view.store->load_block(
+        context, 0, boundary);
+    if (!first.ok() || first.value().kind != BlockLoadKind::AllZero) {
+        return create_failure<RecoveredImage>(
+            PersistenceErrorCode::VerificationFailed,
+            L"generation-zero first block did not reopen as zero");
+    }
+    const auto last_block =
+        (request.geometry.virtual_bytes - 1) / kM2BlockSize;
+    auto last = recovered.image->backing_view.store->load_block(
+        context, last_block, boundary);
+    if (!last.ok() || last.value().kind != BlockLoadKind::AllZero) {
+        return create_failure<RecoveredImage>(
+            PersistenceErrorCode::VerificationFailed,
+            L"generation-zero last block did not reopen as zero");
+    }
     return Result<RecoveredImage>::success(
         std::move(*recovered.image));
 }
