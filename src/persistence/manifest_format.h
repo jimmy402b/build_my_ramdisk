@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <string>
 
 namespace myrd::persistence {
@@ -56,6 +57,30 @@ struct ManifestSlot final {
                committed_time_100ns == other.committed_time_100ns;
     }
 };
+
+enum class ManifestSlotInspectionStatus : std::uint8_t {
+    DecodedV1,
+    Unsupported,
+};
+
+// Structural inspection verifies exact size, magic, declared slot length and
+// CRC before classifying support. For supported v1 bytes it decodes fields but
+// deliberately leaves semantic and path checks to the recovery evidence
+// pipeline. The legacy decode_manifest_slot API below remains fully strict.
+struct ManifestSlotInspection final {
+    ManifestSlotInspectionStatus status{
+        ManifestSlotInspectionStatus::DecodedV1};
+    std::optional<ManifestSlot> slot{};
+};
+
+[[nodiscard]] Result<ManifestSlotInspection> inspect_manifest_slot(
+    std::span<const std::byte> bytes);
+
+[[nodiscard]] Result<void> validate_manifest_slot_semantics(
+    const ManifestSlot& slot);
+
+[[nodiscard]] Result<void> validate_manifest_slot_paths(
+    const ManifestSlot& slot);
 
 [[nodiscard]] Result<ManifestSlotBytes> encode_manifest_slot(
     const ManifestSlot& slot);

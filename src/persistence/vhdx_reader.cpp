@@ -581,6 +581,32 @@ VhdxReader::~VhdxReader() = default;
 VhdxReader::VhdxReader(VhdxReader&&) noexcept = default;
 VhdxReader& VhdxReader::operator=(VhdxReader&&) noexcept = default;
 
+Result<std::unique_ptr<VhdxReader>> VhdxReader::open(
+    const OperationContext& context,
+    std::unique_ptr<ValidatedPersistenceFile>& file,
+    const VhdxReaderOptions options) {
+    constexpr auto operation = L"VhdxReader::open";
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<std::unique_ptr<VhdxReader>>::failure(live.error());
+    }
+    if (!file) {
+        return reader_failure<std::unique_ptr<VhdxReader>>(
+            L"validated VHDX file is missing",
+            PersistenceErrorCode::InvalidFormat, 0, operation);
+    }
+    const auto identity = file->observed_identity();
+    const std::shared_ptr<IPersistenceFile> parse_view(
+        file.get(), [](IPersistenceFile*) noexcept {});
+    auto layout = parse_vhdx_layout(context, parse_view);
+    if (!layout.ok()) {
+        return Result<std::unique_ptr<VhdxReader>>::failure(layout.error());
+    }
+    return create_parsed(
+        context, std::unique_ptr<IPersistenceFile>(std::move(file)),
+        identity, layout.move_value(), options);
+}
+
 Result<std::unique_ptr<VhdxReader>> VhdxReader::create(
     std::unique_ptr<ValidatedPersistenceFile> file,
     VhdxLayout layout,
@@ -669,6 +695,34 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create_owned(
                 L"VHDX file does not match the supplied immutable layout",
                 PersistenceErrorCode::BackingDataCorrupt, 0, operation);
         }
+        return create_parsed(
+            context, std::move(file), std::move(windows_identity),
+            std::move(layout), options);
+    } catch (const std::bad_alloc&) {
+        return reader_failure<std::unique_ptr<VhdxReader>>(
+            L"allocating VHDX reader failed",
+            PersistenceErrorCode::IoError, 0, operation);
+    }
+}
+
+Result<std::unique_ptr<VhdxReader>> VhdxReader::create_parsed(
+    const OperationContext& context,
+    std::unique_ptr<IPersistenceFile> file,
+    WindowsFileIdentity windows_identity,
+    VhdxLayout layout,
+    const VhdxReaderOptions options) {
+    constexpr auto operation = L"VhdxReader::create";
+    if (!file || options.bat_cache.max_entries == 0 ||
+        options.bat_cache.max_bytes < kVhdxBatPageBytes ||
+        options.bat_cache.max_entries >
+            options.bat_cache.max_bytes / kVhdxBatPageBytes ||
+        options.max_extents == 0 || options.max_observed_payloads == 0 ||
+        windows_identity.size != layout.file_length()) {
+        return reader_failure<std::unique_ptr<VhdxReader>>(
+            L"VHDX reader options are invalid",
+            PersistenceErrorCode::InvalidFormat, 0, operation);
+    }
+    try {
         auto impl = std::make_unique<Impl>(
             std::move(file), std::move(windows_identity),
             std::move(layout), options);
@@ -883,6 +937,14 @@ VhdxReaderStats VhdxReader::stats() const {
     if (!impl_) return {};
     std::scoped_lock lock(impl_->mutex);
     return impl_->statistics;
+}
+
+const VhdxLayout& VhdxReader::layout() const noexcept {
+    return impl_->layout;
+}
+
+WindowsFileIdentity VhdxReader::windows_identity() const noexcept {
+    return impl_ ? impl_->windows_identity : WindowsFileIdentity{};
 }
 
 void VhdxReader::clear_cache() {

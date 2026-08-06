@@ -474,6 +474,28 @@ TEST_CASE(manifest_selector_matches_independent_ab_reference_matrix) {
     }
 }
 
+TEST_CASE(manifest_selector_accepts_structurally_decoded_unsupported_slot) {
+    auto unsupported = ManifestCandidateEvidence{};
+    unsupported.slot_index = 1;
+    unsupported.checks[static_cast<std::size_t>(
+        ManifestCandidateCheck::SlotDecode)].status =
+            ManifestCandidateCheckStatus::Passed;
+    unsupported.checks[static_cast<std::size_t>(
+        ManifestCandidateCheck::SlotSupport)].status =
+            ManifestCandidateCheckStatus::Unsupported;
+    const std::array candidates{complete_candidate(0, 7), unsupported};
+
+    const auto outcome = select_complete_manifest_generation(candidates);
+
+    REQUIRE(outcome.ok());
+    REQUIRE_EQ(outcome.selection->slot_index, std::uint8_t{0});
+    REQUIRE(!outcome.selection->fallback);
+    REQUIRE_EQ(outcome.diagnostics[1].first_failed_check,
+               std::optional{ManifestCandidateCheck::SlotSupport});
+    REQUIRE_EQ(outcome.diagnostics[1].status,
+               ManifestCandidateCheckStatus::Unsupported);
+}
+
 TEST_CASE(manifest_selector_matches_symmetric_independent_status_matrix) {
     using R = test::ReferenceManifestStatus;
     const std::array statuses{R::Missing, R::Corrupt, R::Unsupported,

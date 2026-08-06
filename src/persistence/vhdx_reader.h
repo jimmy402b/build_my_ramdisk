@@ -51,6 +51,14 @@ struct VhdxAllocatedExtent final {
 
 class VhdxReader final {
 public:
+    // Parse and bind one validated handle exactly once. Recovery uses this
+    // entry point so startup performs one fixed structural capture rather
+    // than parsing once for validation and again for reader construction.
+    static Result<std::unique_ptr<VhdxReader>> open(
+        const OperationContext& context,
+        std::unique_ptr<ValidatedPersistenceFile>& file,
+        VhdxReaderOptions options);
+
     static Result<std::unique_ptr<VhdxReader>> create(
         std::unique_ptr<ValidatedPersistenceFile> file,
         VhdxLayout layout,
@@ -90,12 +98,20 @@ public:
         const OperationContext& context) const;
 
     [[nodiscard]] VhdxReaderStats stats() const;
+    [[nodiscard]] const VhdxLayout& layout() const noexcept;
+    [[nodiscard]] WindowsFileIdentity windows_identity() const noexcept;
     void clear_cache();
 
 private:
     struct Impl;
     explicit VhdxReader(std::unique_ptr<Impl> impl) noexcept;
     static Result<std::unique_ptr<VhdxReader>> create_owned(
+        const OperationContext& context,
+        std::unique_ptr<IPersistenceFile> file,
+        WindowsFileIdentity windows_identity,
+        VhdxLayout layout,
+        VhdxReaderOptions options);
+    static Result<std::unique_ptr<VhdxReader>> create_parsed(
         const OperationContext& context,
         std::unique_ptr<IPersistenceFile> file,
         WindowsFileIdentity windows_identity,

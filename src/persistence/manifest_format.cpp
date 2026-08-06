@@ -291,16 +291,16 @@ Result<ManifestSlotBytes> encode_manifest_slot(const ManifestSlot& slot) {
     return Result<ManifestSlotBytes>::success(std::move(bytes));
 }
 
-Result<ManifestSlot> decode_manifest_slot(
+Result<ManifestSlotInspection> inspect_manifest_slot(
     std::span<const std::byte> input) {
     if (input.size() != kManifestSlotBytes) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"slot must be exactly 4096 bytes");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"slot must be exactly 4096 bytes");
     }
     if (!std::equal(kManifestMagic.begin(), kManifestMagic.end(),
                     input.begin())) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"manifest magic mismatch");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"manifest magic mismatch");
     }
 
     std::uint32_t major = 0;
@@ -311,12 +311,12 @@ Result<ManifestSlot> decode_manifest_slot(
         !read_integer(input, kMinorOffset, minor) ||
         !read_integer(input, kSlotLengthOffset, slot_length) ||
         !read_integer(input, kCrcOffset, stored_crc)) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"fixed header is truncated");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"fixed header is truncated");
     }
-    if (major != kM3FormatMajor || slot_length != kManifestSlotBytes) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"unsupported version or slot length");
+    if (slot_length != kManifestSlotBytes) {
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"declared slot length is invalid");
     }
     (void)minor;
 
@@ -325,8 +325,14 @@ Result<ManifestSlot> decode_manifest_slot(
     std::fill_n(crc_bytes.begin() + kCrcOffset, sizeof(stored_crc),
                 std::byte{0});
     if (crc32c(crc_bytes) != stored_crc) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"manifest CRC32C mismatch");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"manifest CRC32C mismatch");
+    }
+    if (major != kM3FormatMajor) {
+        ManifestSlotInspection inspection{};
+        inspection.status = ManifestSlotInspectionStatus::Unsupported;
+        return Result<ManifestSlotInspection>::success(
+            std::move(inspection));
     }
 
     if (!reserved_zero(input, 21, 3) || !reserved_zero(input, 28, 4) ||
@@ -334,8 +340,8 @@ Result<ManifestSlot> decode_manifest_slot(
         !reserved_zero(input, 700, 4) || !reserved_zero(input, 756, 4) ||
         !reserved_zero(input, kSemanticBytes,
                        kManifestSlotBytes - kSemanticBytes)) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"reserved bytes are nonzero");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"reserved bytes are nonzero");
     }
 
     ManifestSlot slot{};
@@ -360,15 +366,15 @@ Result<ManifestSlot> decode_manifest_slot(
         base_name_length == 0 || base_name_length > kMaxRelativeNameBytes ||
         journal_name_length == 0 ||
         journal_name_length > kMaxRelativeNameBytes) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"geometry or name length is invalid");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"geometry or name length is invalid");
     }
     if (!reserved_zero(input, kBaseNameOffset + base_name_length,
                        kNameAreaBytes - base_name_length) ||
         !reserved_zero(input, kJournalNameOffset + journal_name_length,
                        kNameAreaBytes - journal_name_length)) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"name padding is nonzero");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"name padding is nonzero");
     }
     slot.base_relative_name.assign(
         reinterpret_cast<const char*>(input.data() + kBaseNameOffset),
@@ -410,10 +416,108 @@ Result<ManifestSlot> decode_manifest_slot(
          read_integer(input, kCommittedTimeOffset,
                       slot.committed_time_100ns);
     if (!ok) {
-        return format_failure<ManifestSlot>(
-            L"decode_manifest_slot", L"fixed manifest fields are truncated");
+        return format_failure<ManifestSlotInspection>(
+            L"inspect_manifest_slot", L"fixed manifest fields are truncated");
     }
 
+    ManifestSlotInspection inspection{};
+    inspection.status = ManifestSlotInspectionStatus::DecodedV1;
+    inspection.slot = std::move(slot);
+    return Result<ManifestSlotInspection>::success(std::move(inspection));
+}
+
+Result<void> validate_manifest_slot_semantics(const ManifestSlot& slot) {
+    constexpr auto operation = L"validate_manifest_slot_semantics";
+    if (slot.slot_index > 1) {
+        return format_failure<void>(operation, L"slot index must be A or B");
+    }
+    if (slot.image_uuid.is_nil()) {
+        return format_failure<void>(operation, L"image UUID is nil");
+    }
+    if (validate_geometry(slot.geometry) != GeometryStatus::Ok) {
+        return format_failure<void>(operation, L"image geometry is invalid");
+    }
+    if (slot.generation.checkpoint_generation == kInvalidGeneration ||
+        slot.generation.base_generation == kInvalidGeneration ||
+        slot.generation.base_generation >
+            slot.generation.checkpoint_generation) {
+        return format_failure<void>(
+            operation, L"manifest generation relation is invalid");
+    }
+    if (slot.generation.journal.epoch == 0 ||
+        slot.generation.journal.epoch == kInvalidGeneration) {
+        return format_failure<void>(operation, L"journal epoch is invalid");
+    }
+    if (slot.base_expected_length == 0 ||
+        is_nil(slot.base_identity.file_write_guid) ||
+        is_nil(slot.base_identity.data_write_guid) ||
+        is_nil(slot.journal_identity.journal_uuid)) {
+        return format_failure<void>(operation, L"file identity is invalid");
+    }
+    const auto& journal = slot.generation.journal;
+    if (journal.committed_length < 2 * kJournalAlignment ||
+        !aligned(journal.committed_length) ||
+        journal.commit.offset < kJournalAlignment ||
+        journal.commit.length != kJournalAlignment ||
+        !aligned(journal.commit.offset) ||
+        !range_within(journal.commit.offset, journal.commit.length,
+                      journal.committed_length) ||
+        journal.commit.offset + journal.commit.length !=
+            journal.committed_length) {
+        return format_failure<void>(
+            operation, L"journal commit range is invalid");
+    }
+    const bool empty_root = journal.root.offset == 0 &&
+                            journal.root.length == 0;
+    if ((!empty_root &&
+         (journal.root.offset < kJournalAlignment ||
+          journal.root.length != kIndexNodeBytes ||
+          !aligned(journal.root.offset) ||
+          !range_within(journal.root.offset, journal.root.length,
+                        journal.commit.offset))) ||
+        ((journal.root.offset == 0) != (journal.root.length == 0)) ||
+        (empty_root && journal.root.crc32c != 0)) {
+        return format_failure<void>(operation, L"journal root range is invalid");
+    }
+    return Result<void>::success();
+}
+
+Result<void> validate_manifest_slot_paths(const ManifestSlot& slot) {
+    constexpr auto operation = L"validate_manifest_slot_paths";
+    auto base = validate_name(slot.base_relative_name, operation);
+    if (!base.ok()) return base;
+    return validate_name(slot.journal_relative_name, operation);
+}
+
+Result<ManifestSlot> decode_manifest_slot(
+    const std::span<const std::byte> input) {
+    // Preserve the original strict decoder's stable error precedence for
+    // existing callers. Recovery uses inspect_manifest_slot(), where CRC is
+    // intentionally established before support classification.
+    if (input.size() == kManifestSlotBytes &&
+        std::equal(kManifestMagic.begin(), kManifestMagic.end(),
+                   input.begin())) {
+        std::uint32_t major{};
+        std::uint32_t slot_length{};
+        if (read_integer(input, kMajorOffset, major) &&
+            read_integer(input, kSlotLengthOffset, slot_length) &&
+            (major != kM3FormatMajor ||
+             slot_length != kManifestSlotBytes)) {
+            return format_failure<ManifestSlot>(
+                L"decode_manifest_slot",
+                L"unsupported version or slot length");
+        }
+    }
+    auto inspected = inspect_manifest_slot(input);
+    if (!inspected.ok()) {
+        return Result<ManifestSlot>::failure(inspected.error());
+    }
+    if (inspected.value().status != ManifestSlotInspectionStatus::DecodedV1 ||
+        !inspected.value().slot.has_value()) {
+        return format_failure<ManifestSlot>(
+            L"decode_manifest_slot", L"unsupported manifest version");
+    }
+    auto slot = std::move(*inspected.value().slot);
     auto validation = validate_slot(slot, L"decode_manifest_slot");
     if (!validation.ok()) {
         return Result<ManifestSlot>::failure(validation.error());

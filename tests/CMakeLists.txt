@@ -1052,6 +1052,20 @@ set_tests_properties(unit.m3.composite_backing PROPERTIES
     LABELS "m3-v2"
     TIMEOUT 60)
 
+# ---- M3 complete-generation recovery (Task 26) -----------------------------
+add_executable(myrd_m3_recovery_tests
+    integration/m3_recovery_tests.cpp
+)
+target_link_libraries(myrd_m3_recovery_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_recovery_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_recovery_tests)
+add_test(NAME integration.m3.recovery COMMAND myrd_m3_recovery_tests)
+set_tests_properties(integration.m3.recovery PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 90)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp

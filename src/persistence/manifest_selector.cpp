@@ -106,9 +106,12 @@ ManifestSelectionOutcome select_complete_manifest_generation(
             candidate.checks[static_cast<std::size_t>(
                 ManifestCandidateCheck::SlotSemantics)].status ==
                 ManifestCandidateCheckStatus::Passed;
+        const auto slot_support = candidate.checks[static_cast<std::size_t>(
+            ManifestCandidateCheck::SlotSupport)].status;
         if ((slot_decode == ManifestCandidateCheckStatus::Passed &&
+             slot_support == ManifestCandidateCheckStatus::Passed &&
              !candidate.slot.has_value()) ||
-            (candidate.slot.has_value() &&
+            (trust_checks_passed && candidate.slot.has_value() &&
              candidate.slot->slot_index != candidate.slot_index) ||
             (candidate.trusted_generation.has_value() !=
                  (trust_checks_passed && candidate.slot.has_value())) ||

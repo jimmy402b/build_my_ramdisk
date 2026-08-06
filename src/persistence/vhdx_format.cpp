@@ -571,6 +571,64 @@ const VhdxFileIdentity& VhdxLayout::file_identity() const noexcept {
 const std::array<std::byte, 16>& VhdxLayout::virtual_disk_id() const noexcept {
     return virtual_disk_id_;
 }
+
+Result<VhdxFileIdentity> probe_vhdx_file_identity(
+    const OperationContext& context,
+    std::shared_ptr<IPersistenceFile> file) {
+    if (!file) {
+        return vhdx_failure<VhdxFileIdentity>(L"VHDX file is null");
+    }
+    auto length = file->length(context);
+    if (!length.ok()) {
+        return translate_read_error<VhdxFileIdentity>(length.error());
+    }
+    if (length.value() < kHeaderSectionBytes) {
+        return vhdx_failure<VhdxFileIdentity>(
+            L"VHDX header section is truncated");
+    }
+    auto identifier = read_array<8>(context, file, 0);
+    if (!identifier.ok()) {
+        return Result<VhdxFileIdentity>::failure(identifier.error());
+    }
+    if (!signature(identifier.value(), "vhdxfile")) {
+        return vhdx_failure<VhdxFileIdentity>(
+            L"VHDX identifier is invalid");
+    }
+    auto first_bytes = read_array<kHeaderBytes>(
+        context, file, kHeader1Offset);
+    if (!first_bytes.ok()) {
+        return Result<VhdxFileIdentity>::failure(first_bytes.error());
+    }
+    auto second_bytes = read_array<kHeaderBytes>(
+        context, file, kHeader2Offset);
+    if (!second_bytes.ok()) {
+        return Result<VhdxFileIdentity>::failure(second_bytes.error());
+    }
+    const auto first = decode_checksum_valid_header(first_bytes.value());
+    const auto second = decode_checksum_valid_header(second_bytes.value());
+    if (!first && !second) {
+        return vhdx_failure<VhdxFileIdentity>(
+            L"both VHDX headers are invalid");
+    }
+    if (first && second && first->sequence == second->sequence) {
+        return vhdx_failure<VhdxFileIdentity>(
+            L"valid VHDX headers have conflicting sequence numbers");
+    }
+    const bool choose_first = first &&
+        (!second || first->sequence > second->sequence);
+    const auto& selected = choose_first ? *first : *second;
+    const auto& selected_bytes = choose_first
+        ? first_bytes.value() : second_bytes.value();
+    if (require_zero(std::span(selected_bytes).subspan(80)) !=
+            ByteCodecError::none ||
+        is_nil(selected.identity.file_write_guid) ||
+        is_nil(selected.identity.data_write_guid)) {
+        return vhdx_failure<VhdxFileIdentity>(
+            L"current VHDX identity header is invalid");
+    }
+    return Result<VhdxFileIdentity>::success(selected.identity);
+}
+
 Result<VhdxLayout> parse_vhdx_layout(
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file) {

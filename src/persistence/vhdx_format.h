@@ -68,4 +68,11 @@ private:
     const OperationContext& context,
     std::shared_ptr<IPersistenceFile> file);
 
+// Minimal identity probe for classifying a structurally valid but unsupported
+// profile. It validates identifier, header checksums/sequence/reserved bytes
+// and non-nil identity GUIDs, but deliberately does not accept a VHDX layout.
+[[nodiscard]] Result<VhdxFileIdentity> probe_vhdx_file_identity(
+    const OperationContext& context,
+    std::shared_ptr<IPersistenceFile> file);
+
 }  // namespace myrd::persistence
