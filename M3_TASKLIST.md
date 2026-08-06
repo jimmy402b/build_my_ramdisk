@@ -182,10 +182,10 @@ Suggested commit:
 | 29 | Image session/outcome state machine | O | DONE | 13,27,28 | M3-V2 |
 | 30 | Checkpoint pre-manifest pipeline | O | DONE | 09,19,29 | M3-V2 |
 | 31 | Manifest publish 与 indeterminate resolver | O | DONE | 15,30 | M3-V2 |
-| 32 | Install backing、ack、reconcile | O | PENDING | 06,28,31 | M3-V2/V3 |
-| 33 | 独立 checkpoint crash matrix | O | PENDING | 31,32 | M3-V2 |
-| 34 | Live extent enumeration | S | PENDING | 22,25,29 | M3-V4 |
-| 35 | Base compaction 与 journal rotation | O | PENDING | 09,23,29,32,34 | M3-V4 |
+| 32 | Install backing、ack、reconcile | O | DONE | 06,28,31 | M3-V2/V3 |
+| 33 | 独立 checkpoint crash matrix | O | DONE | 31,32 | M3-V2 |
+| 34 | Live extent enumeration | S | DONE | 22,25,29 | M3-V4 |
+| 35 | Base compaction 与 journal rotation | O | DONE | 09,23,29,32,34 | M3-V4 |
 | 36 | Immutable file retention/cleanup | O | PENDING | 12,27,35 | M3-V4 |
 | 37 | Inspect/verify/report schema | C | PENDING | 27,33,36 | M3-V2/V4 |
 | 38 | M3 CLI 与 local fake | C | PENDING | 27,29,30,35,37 | M3-V2/V4 |
@@ -879,10 +879,10 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 - [x] 整个 compaction 持有 session 的唯一 modifying-operation gate：capture durable view G → write/flush/readback/verify unique VHDX(G) → write-through rename → create/flush journal epoch E+1。
 - [x] 构建 VHDX 期间普通 live mutation 可继续，但 checkpoint/第二个 compaction 返回 busy；新 base/journal 就绪后验证本 operation 的显式 volume barrier，再建立 M2.1 一致切点。
 - [x] 把相对 G 的 cut-time dirty DATA/ZERO/DISCARD 流入新 journal，构建 index/commit G+1（即使 dirty set 为空也写 commit），再走正常 manifest publish/indeterminate resolution/install/conditional ack。
-- [ ] pre-commit failure 保留旧 bundle/runtime authoritative，新文件仅为 unreferenced artifacts；post-commit recover/install new view，旧 files 继续服务旧 slot/reader/reconciliation。
+- [x] pre-commit failure 保留旧 bundle/runtime authoritative，新文件仅为 unreferenced artifacts；post-commit recover/install new view，旧 files 继续服务旧 slot/reader/reconciliation。
 - [x] 用 journal physical bytes、journal/base ratio、checkpoint count、index depth 红灯并实现 pure `should_compact()`；只返回建议，不自行调度。
-- [ ] 用独立模型比较切点时全盘 logical hash/metadata descriptor，reopen 后完全相等；跑 `m3-v4`。
-- [ ] 建议提交 `feat(persistence): compact committed image generations`。
+- [x] 用独立模型比较切点时全盘 logical hash/metadata descriptor，reopen 后完全相等；跑 `m3-v4`。
+- [x] 建议提交 `feat(persistence): compact committed image generations`。
 
 ## Task 36 — Safe retention and cleanup of immutable files
 

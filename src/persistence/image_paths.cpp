@@ -508,7 +508,9 @@ struct OpenedBundleFile final {
     const std::string_view relative_name,
     const std::optional<WindowsFileIdentity>& expected_identity,
     const bool mutable_access,
-    const bool create_new = false) {
+    const bool create_new = false,
+    const std::optional<DWORD> access_override = std::nullopt,
+    const std::optional<DWORD> sharing_override = std::nullopt) {
     auto component = validate_image_component(relative_name);
     if (!component.ok()) {
         return Result<OpenedBundleFile>::failure(
@@ -568,15 +570,17 @@ struct OpenedBundleFile final {
         }
         target_path.append(component.value().wide_name);
 
-        const DWORD access = mutable_access
-            ? (GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES |
-               (create_new ? 0 : DELETE))
-            : (GENERIC_READ | FILE_READ_ATTRIBUTES);
-        const DWORD sharing = mutable_access
-            ? (create_new
-                ? FILE_SHARE_READ | FILE_SHARE_WRITE
-                : FILE_SHARE_READ)
-            : (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        const DWORD access = access_override.value_or(
+            mutable_access
+                ? (GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES |
+                   (create_new ? 0 : DELETE))
+                : (GENERIC_READ | FILE_READ_ATTRIBUTES));
+        const DWORD sharing = sharing_override.value_or(
+            mutable_access
+                ? (create_new
+                    ? FILE_SHARE_READ | FILE_SHARE_WRITE
+                    : FILE_SHARE_READ)
+                : (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE));
         UniqueHandle file_handle(CreateFileW(
             target_path.c_str(),
             access,
@@ -1497,6 +1501,26 @@ Result<ValidatedBundleFile> open_bundle_file_for_inspection(
         false));
 }
 
+Result<ValidatedBundleFile> open_bundle_file_for_offline_validation(
+    const std::filesystem::path& bundle_root,
+    const std::string_view relative_name,
+    const std::optional<WindowsFileIdentity> expected_identity) {
+    auto opened = open_bundle_file_handles(
+        bundle_root, relative_name, expected_identity, false, false,
+        GENERIC_READ | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_DELETE);
+    if (!opened.ok()) {
+        return Result<ValidatedBundleFile>::failure(opened.error());
+    }
+    auto value = opened.move_value();
+    return Result<ValidatedBundleFile>::success(ValidatedBundleFile(
+        std::move(value.root_handle), std::move(value.file_handle),
+        std::move(value.root_identity), std::move(value.file_identity),
+        std::move(value.root_final_path),
+        std::move(value.file_final_path),
+        std::move(value.relative_name), false, false));
+}
+
 Result<ValidatedBundleFile> open_bundle_file_for_mutation(
     BundleWriterLock& writer_lock,
     const std::string_view relative_name,
@@ -1536,6 +1560,39 @@ Result<ValidatedBundleFile> open_bundle_file_for_mutation(
         true);
     capability.writer_authority_ = writer_state;
     return Result<ValidatedBundleFile>::success(std::move(capability));
+}
+
+Result<ValidatedBundleFile> open_bundle_file_for_immutable_anchor(
+    BundleWriterLock& writer_lock,
+    const std::string_view relative_name,
+    const std::optional<WindowsFileIdentity> expected_identity) {
+    auto writer_state = writer_lock.snapshot_state();
+    if (writer_state == nullptr) {
+        return path_failure<ValidatedBundleFile>(
+            ImagePathErrorCode::WriterLockInvalid,
+            L"image_path.open_immutable_anchor",
+            L"immutable anchor requires a live writer lock");
+    }
+    std::scoped_lock lock(writer_state->mutex);
+    auto writer_valid = detail::verify_writer_state_locked(*writer_state);
+    if (!writer_valid.ok()) {
+        return Result<ValidatedBundleFile>::failure(writer_valid.error());
+    }
+    auto opened = open_bundle_file_handles(
+        writer_state->root_path, relative_name, expected_identity,
+        false, false,
+        GENERIC_READ | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ);
+    if (!opened.ok()) {
+        return Result<ValidatedBundleFile>::failure(opened.error());
+    }
+    auto value = opened.move_value();
+    return Result<ValidatedBundleFile>::success(ValidatedBundleFile(
+        std::move(value.root_handle), std::move(value.file_handle),
+        std::move(value.root_identity), std::move(value.file_identity),
+        std::move(value.root_final_path),
+        std::move(value.file_final_path),
+        std::move(value.relative_name), false, false));
 }
 
 Result<ValidatedBundleFile> create_bundle_file_for_mutation(

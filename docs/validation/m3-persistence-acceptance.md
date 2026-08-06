@@ -1910,3 +1910,41 @@ Final verification on the accepted source:
 
 Task 34 verdict: **DONE**. This authorizes Task 35 to build and publish a new
 base VHDX and journal epoch from the accepted immutable extent stream.
+
+## Task 35 compaction acceptance
+
+The accepted compaction path builds a sparse VHDX from immutable durable view
+G, validates it through the real Windows `OpenVirtualDisk` API while holding a
+read-only identity pin, and then reacquires the same NTFS file identity for the
+write-through no-replace rename. The final name is reopened by exact identity
+with an immutable anchor retained through manifest publication and runtime
+reconciliation.
+
+The post-build cut reuses the M2.1 consistent-snapshot contract. It writes the
+cut-time DATA/ZERO/DISCARD delta and a G+1 commit into the new journal even for
+an empty dirty set, then reuses the existing manifest publish, recovery,
+backing-install and exact conditional-ack algorithms. Post-cut writes remain
+dirty.
+
+Acceptance evidence on the reviewed source:
+
+- every named compaction phase has a one-shot failure case; failures before
+  `ManifestPublishAfter` preserve the exact old manifest bytes and generation,
+  while failures at or after that boundary recover G+1 and reconcile on retry;
+- an independent 8 MiB full-disk oracle covers DATA/ZERO/DISCARD transitions,
+  VHDX payload boundaries and the final partial payload, then compares every
+  reopened block and a streaming SHA-256 digest;
+- bounded-resource and immutable-source-corruption cases fail closed without
+  changing the authoritative generation;
+- complete Debug CTest passed 96/96 and complete Release CTest passed 97/97;
+- `BUILD_TESTING=OFF` built the production `myrd_persistence` target;
+- `git diff --check` passed apart from line-ending conversion notices.
+
+The independent final reviewer returned GO with zero P0 and zero P1. One P2
+about allocation exceptions during observer composition was fixed before
+acceptance and the focused compaction test passed again in Debug and Release.
+The remaining P2 suggestions ask for broader combined-oracle coverage; they do
+not identify a correctness defect in the accepted implementation.
+
+Task 35 verdict: **DONE**. Task 36 may now implement identity-safe retention of
+obsolete immutable generation files.

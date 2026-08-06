@@ -107,6 +107,14 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_bundle_file_for_offline_validation(
+        const std::filesystem::path&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_bundle_file_for_immutable_anchor(
+        BundleWriterLock&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
     friend Result<ValidatedBundleFile> create_bundle_file_for_mutation(
         BundleWriterLock&,
         std::string_view);
@@ -220,6 +228,23 @@ open_bundle_file_for_inspection(
 
 [[nodiscard]] Result<ValidatedBundleFile>
 open_bundle_file_for_mutation(
+    BundleWriterLock& writer_lock,
+    std::string_view relative_name,
+    std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
+
+// Read pin for offline validation: denies content writes while allowing native
+// read-only VHDX validation handles to coexist. The caller releases this pin
+// before reacquiring the same identity for write-through publication.
+[[nodiscard]] Result<ValidatedBundleFile>
+open_bundle_file_for_offline_validation(
+    const std::filesystem::path& bundle_root,
+    std::string_view relative_name,
+    std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
+
+// Final immutable anchor denies write/delete sharing. Exact identity catches
+// any namespace swap between rename and this final reopen.
+[[nodiscard]] Result<ValidatedBundleFile>
+open_bundle_file_for_immutable_anchor(
     BundleWriterLock& writer_lock,
     std::string_view relative_name,
     std::optional<WindowsFileIdentity> expected_identity = std::nullopt);

@@ -101,6 +101,10 @@ private:
         BundleWriterLock&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
+    friend Result<ValidatedBundleFile> open_bundle_file_for_immutable_anchor(
+        BundleWriterLock&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
     friend Result<ValidatedBundleFile> create_bundle_file_for_mutation(
         BundleWriterLock&, std::string_view);
     friend Result<ValidatedBundleFile> open_locked_manifest_for_mutation(

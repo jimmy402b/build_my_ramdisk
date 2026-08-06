@@ -1000,68 +1000,93 @@ Result<VhdxPublishedBase> publish_sparse_vhdx_base(
             }
         }
 
-        // Reacquire the exact object with no write/delete sharing before the
-        // external Windows validator runs. This pins both namespace and bytes
-        // through validation and the write-through rename.
-        auto mutation = open_bundle_file_for_mutation(
-            writer_lock, temporary_name, expected_identity);
-        if (!mutation.ok()) {
-            return Result<VhdxPublishedBase>::failure(mutation.error());
-        }
-        auto retained_capability =
-            std::make_shared<ValidatedBundleFile>(mutation.move_value());
+        // Keep a read-only identity pin while the system VHDX validator has the
+        // file open. A GENERIC_WRITE/DELETE handle with share-read only is
+        // intentionally not used here: OpenVirtualDisk cannot coexist with
+        // that share contract.
+        {
+            auto validation_anchor = open_bundle_file_for_offline_validation(
+                bundle_root, temporary_name, expected_identity);
+            if (!validation_anchor.ok()) {
+                return Result<VhdxPublishedBase>::failure(
+                    validation_anchor.error());
+            }
+            if (pre_rename_validator) {
+                auto validated = Result<WindowsFileIdentity>::failure(
+                    writer_failure<void>(
+                        L"VHDX pre-rename validator did not execute",
+                        PersistenceErrorCode::FatalInternalInvariant,
+                        operation).error());
+                try {
+                    validated = pre_rename_validator(context, temporary_path);
+                } catch (...) {
+                    return writer_failure<VhdxPublishedBase>(
+                        L"VHDX pre-rename validator threw an exception",
+                        PersistenceErrorCode::FatalInternalInvariant,
+                        operation);
+                }
+                if (!validated.ok()) {
+                    return Result<VhdxPublishedBase>::failure(
+                        validated.error());
+                }
+                if (!same_file_object(validated.value(), expected_identity) ||
+                    validated.value().size != expected_identity.size) {
+                    return writer_failure<VhdxPublishedBase>(
+                        L"VHDX offline validation observed a different file object",
+                        PersistenceErrorCode::GenerationConflict, operation);
+                }
+            }
 
-        if (pre_rename_validator) {
-            auto validated = Result<WindowsFileIdentity>::failure(
-                writer_failure<void>(
-                    L"VHDX pre-rename validator did not execute",
-                    PersistenceErrorCode::FatalInternalInvariant,
-                    operation).error());
-            try {
-                validated = pre_rename_validator(context, temporary_path);
-            } catch (...) {
-                return writer_failure<VhdxPublishedBase>(
-                    L"VHDX pre-rename validator threw an exception",
-                    PersistenceErrorCode::FatalInternalInvariant, operation);
-            }
-            if (!validated.ok()) {
-                return Result<VhdxPublishedBase>::failure(validated.error());
-            }
-            if (!same_file_object(validated.value(), expected_identity) ||
-                validated.value().size != expected_identity.size) {
-                return writer_failure<VhdxPublishedBase>(
-                    L"VHDX offline validation observed a different file object",
-                    PersistenceErrorCode::GenerationConflict, operation);
-            }
         }
 
-        phase = publication_phase(
-            context, VhdxPublicationPhase::BeforeRename);
-        if (!phase.ok()) {
-            return Result<VhdxPublishedBase>::failure(phase.error());
-        }
-        // Allocate and assemble the success value before the namespace commit.
-        // After rename succeeds, returning this object performs only noexcept
-        // moves and cannot turn a published final name into an ordinary error.
-        auto published = Result<VhdxPublishedBase>::success(
-            VhdxPublishedBase(
-                std::string{final_name}, retained_capability->identity(),
-                std::move(parsed_layout), retained_capability));
-        Result<void> renamed =
+        // Validation has released every external VHDX handle. Reacquire the
+        // same object with write/delete authority because FlushFileBuffers on
+        // the renamed file requires write access. The expected identity check
+        // rejects a namespace substitution between the two pins.
+        {
+            auto rename_capability = open_bundle_file_for_mutation(
+                writer_lock, temporary_name, expected_identity);
+            if (!rename_capability.ok()) {
+                return Result<VhdxPublishedBase>::failure(
+                    rename_capability.error());
+            }
+            phase = publication_phase(
+                context, VhdxPublicationPhase::BeforeRename);
+            if (!phase.ok()) {
+                return Result<VhdxPublishedBase>::failure(phase.error());
+            }
+            Result<void> renamed =
 #if defined(MYRD_ENABLE_TEST_SEAMS)
-            g_publication_options != nullptr &&
-                g_publication_options->rename_backend != nullptr
-            ? test::write_through_rename_validated_bundle_file_with_backend(
-                  context, writer_lock, *retained_capability, final_name,
-                  *g_publication_options->rename_backend)
-            :
+                g_publication_options != nullptr &&
+                    g_publication_options->rename_backend != nullptr
+                ? test::write_through_rename_validated_bundle_file_with_backend(
+                      context, writer_lock, rename_capability.value(), final_name,
+                      *g_publication_options->rename_backend)
+                :
 #endif
-              write_through_rename_validated_bundle_file(
-                  context, writer_lock, *retained_capability, final_name);
-        if (!renamed.ok()) {
-            return Result<VhdxPublishedBase>::failure(renamed.error());
+                  write_through_rename_validated_bundle_file(
+                      context, writer_lock, rename_capability.value(),
+                      final_name);
+            if (!renamed.ok()) {
+                return Result<VhdxPublishedBase>::failure(renamed.error());
+            }
         }
-        return published;
+
+        // The validation and rename handles are now closed.  Reopen the exact
+        // renamed object with no write/delete sharing and retain that anchor
+        // through manifest commit/reconciliation.  Identity validation closes
+        // the small namespace-swap window between rename and this reopen.
+        auto final_anchor = open_bundle_file_for_immutable_anchor(
+            writer_lock, final_name, expected_identity);
+        if (!final_anchor.ok()) {
+            return Result<VhdxPublishedBase>::failure(final_anchor.error());
+        }
+        auto retained_anchor = std::make_shared<ValidatedBundleFile>(
+            final_anchor.move_value());
+        const auto final_identity = retained_anchor->identity();
+        return Result<VhdxPublishedBase>::success(VhdxPublishedBase(
+            std::string{final_name}, final_identity,
+            std::move(parsed_layout), std::move(retained_anchor)));
     } catch (const std::bad_alloc&) {
         return writer_failure<VhdxPublishedBase>(
             L"allocating VHDX publication state failed",

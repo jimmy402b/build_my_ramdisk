@@ -883,18 +883,68 @@ CheckpointPrepareOutcome CompactionCoordinator::prepare_delta(
     replacement.journal_identity = operation.journal_header_.journal_identity;
     replacement.journal_epoch = operation.journal_header_.epoch;
 
+    CheckpointTransactionObservers observers{};
+    std::function<Result<void>()> after_snapshot_begin;
+    std::function<Result<void>()> after_journal_prepare;
+    try {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        auto retained_hook =
+            std::make_shared<CompactionPhaseHook>(operation.phase_hook_);
+        const auto observe = [retained_hook](const CompactionPhase phase) {
+            return run_phase_hook(retained_hook.get(), phase);
+        };
+        observers.before_manifest_publish = [observe]() {
+            return observe(CompactionPhase::ManifestPublishBefore);
+        };
+        observers.after_manifest_publish = [observe]() {
+            return observe(CompactionPhase::ManifestPublishAfter);
+        };
+        observers.before_backing_install = [observe]() {
+            return observe(CompactionPhase::BackingInstallBefore);
+        };
+        observers.after_backing_install = [observe]() {
+            return observe(CompactionPhase::BackingInstallAfter);
+        };
+        observers.before_conditional_ack = [observe]() {
+            return observe(CompactionPhase::ConditionalAckBefore);
+        };
+        observers.after_conditional_ack = [observe]() {
+            return observe(CompactionPhase::ConditionalAckAfter);
+        };
+        observers.before_snapshot_finish = [observe]() {
+            return observe(CompactionPhase::SnapshotFinishBefore);
+        };
+        observers.after_snapshot_finish = [observe]() {
+            return observe(CompactionPhase::SnapshotFinishAfter);
+        };
+        observers.complete = [observe]() {
+            return observe(CompactionPhase::Complete);
+        };
+#endif
+        after_snapshot_begin = [&emit]() {
+            auto emitted = emit(CompactionPhase::SnapshotBeginAfter);
+            return emitted.ok()
+                ? emit(CompactionPhase::DeltaWriteBefore) : emitted;
+        };
+        after_journal_prepare = [&emit]() {
+            return emit(CompactionPhase::DeltaWriteAfter);
+        };
+    } catch (const std::bad_alloc&) {
+        return fail(compaction_failure<void>(
+            PersistenceErrorCode::IoError,
+            L"allocating compaction transaction observers failed")
+            .error());
+    }
+
     auto lease = std::move(*operation.lease_);
     operation.lease_.reset();
     CheckpointCoordinator checkpoint(
         *session_, *store_, journal_writer);
     auto prepared = checkpoint.prepare_with_lease(
         context, checkpoint_request, std::move(lease),
-        [&emit]() {
-            auto emitted = emit(CompactionPhase::SnapshotBeginAfter);
-            return emitted.ok()
-                ? emit(CompactionPhase::DeltaWriteBefore) : emitted;
-        },
-        [&emit]() { return emit(CompactionPhase::DeltaWriteAfter); },
+        std::move(after_snapshot_begin),
+        std::move(after_journal_prepare),
+        std::move(observers),
         std::move(replacement));
 
     operation.journal_file_.reset();

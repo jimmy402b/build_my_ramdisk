@@ -80,6 +80,21 @@ struct CheckpointPrepareMetrics final {
     std::uint64_t peak_batch_payload_bytes{0};
 };
 
+// Private composition callbacks used by compaction to project its phase
+// contract onto the already-frozen checkpoint publish/reconcile algorithm.
+// Ordinary checkpoint callers cannot supply these observers.
+struct CheckpointTransactionObservers final {
+    std::function<Result<void>()> before_manifest_publish;
+    std::function<Result<void>()> after_manifest_publish;
+    std::function<Result<void>()> before_backing_install;
+    std::function<Result<void>()> after_backing_install;
+    std::function<Result<void>()> before_conditional_ack;
+    std::function<Result<void>()> after_conditional_ack;
+    std::function<Result<void>()> before_snapshot_finish;
+    std::function<Result<void>()> after_snapshot_finish;
+    std::function<Result<void>()> complete;
+};
+
 // Move-only handoff between Task30 (journal Prepared), Task31 (manifest
 // publication), and Task32 (install/ack/finish). Until a later task completes
 // it, destruction conservatively aborts the M2 snapshot and session operation.
@@ -144,6 +159,7 @@ private:
         CompletePersistenceErrorContext correlation_context,
         VolumeBarrierKind volume_barrier,
         CheckpointPrepareMetrics metrics,
+        CheckpointTransactionObservers observers = {},
         std::optional<ManifestArtifactReplacement>
             artifact_replacement = std::nullopt) noexcept;
 
@@ -169,6 +185,7 @@ private:
     VolumeBarrierKind volume_barrier_{
         VolumeBarrierKind::RawBlockTestNoFilesystemCache};
     CheckpointPrepareMetrics metrics_{};
+    CheckpointTransactionObservers observers_{};
     std::optional<ManifestArtifactReplacement> artifact_replacement_{};
 };
 
@@ -252,6 +269,7 @@ private:
         PublishOperationLease lease,
         std::function<Result<void>()> after_snapshot_begin,
         std::function<Result<void>()> after_journal_prepare,
+        CheckpointTransactionObservers observers,
         std::optional<ManifestArtifactReplacement> artifact_replacement);
     CheckpointPrepareOutcome prepare_impl(
         const OperationContext& context,
@@ -259,6 +277,7 @@ private:
         std::optional<PublishOperationLease> existing_lease,
         std::function<Result<void>()> after_snapshot_begin,
         std::function<Result<void>()> after_journal_prepare,
+        CheckpointTransactionObservers observers,
         std::optional<ManifestArtifactReplacement> artifact_replacement);
 
     ImageSession* session_;

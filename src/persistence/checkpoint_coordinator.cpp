@@ -94,6 +94,19 @@ CheckpointPrepareFailure prepare_failure(
     return {std::move(outcome)};
 }
 
+Result<void> run_transaction_observer(
+    const std::function<Result<void>()>& observer,
+    const wchar_t* exception_message) {
+    if (!observer) return Result<void>::success();
+    try {
+        return observer();
+    } catch (...) {
+        return checkpoint_failure<void>(
+            exception_message,
+            PersistenceErrorCode::FatalInternalInvariant);
+    }
+}
+
 void finish_not_committed(
     PublishOperationLease& lease,
     const CheckpointPrepareFailure& failure) noexcept {
@@ -159,6 +172,7 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
     CompletePersistenceErrorContext correlation_context,
     const VolumeBarrierKind volume_barrier,
     CheckpointPrepareMetrics metrics,
+    CheckpointTransactionObservers observers,
     std::optional<ManifestArtifactReplacement> artifact_replacement) noexcept
     : store_(&store),
       session_(&session),
@@ -172,6 +186,7 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
       correlation_context_(std::move(correlation_context)),
       volume_barrier_(volume_barrier),
       metrics_(metrics),
+      observers_(std::move(observers)),
       artifact_replacement_(std::move(artifact_replacement)) {}
 
 PreparedCheckpointTransaction::PreparedCheckpointTransaction(
@@ -195,6 +210,7 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
       recovery_validation_(std::move(other.recovery_validation_)),
       volume_barrier_(other.volume_barrier_),
       metrics_(other.metrics_),
+      observers_(std::move(other.observers_)),
       artifact_replacement_(std::move(other.artifact_replacement_)) {
     other.snapshot_token_.reset();
     other.publish_lease_.reset();
@@ -223,6 +239,7 @@ PreparedCheckpointTransaction& PreparedCheckpointTransaction::operator=(
     recovery_validation_ = std::move(other.recovery_validation_);
     volume_barrier_ = other.volume_barrier_;
     metrics_ = other.metrics_;
+    observers_ = std::move(other.observers_);
     artifact_replacement_ = std::move(other.artifact_replacement_);
     other.snapshot_token_.reset();
     other.publish_lease_.reset();
@@ -326,36 +343,49 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
                 PersistenceErrorCode::OperationBusy).error());
     }
 
-    manifest_file_ = std::shared_ptr<IPersistenceFile>(
-        std::move(request.manifest_file));
-    recovery_validation_ = request.complete_validation;
-    const auto prepared = prepare_manifest_candidate(
-        request.active_slot, checkpoint_, request.committed_time_100ns,
-        artifact_replacement_);
     ManifestPublishAttemptOutcome attempted{};
-    if (!prepared.ok()) {
-        attempted.error = prepared.error();
+    auto observed = run_transaction_observer(
+        observers_.before_manifest_publish,
+        L"before-manifest observer threw");
+    if (!observed.ok()) {
+        attempted.error = observed.error();
     } else {
-        published_candidate_ = prepared.value().slot;
-        publication_identity_ = FrozenPublicationIdentity{
-            request.active_slot.generation.checkpoint_generation,
-            checkpoint_.generation,
-            prepared.value().slot.slot_index};
-        ManifestPublishRequest publish_request{};
-        publish_request.manifest_file = manifest_file_;
-        publish_request.active_slot = request.active_slot;
-        publish_request.candidate = prepared.value();
-        publish_request.complete_validation = request.complete_validation;
-        publish_request.record_durable_commit = [this]() {
-            disposition_ = CommitDisposition::Committed;
-            return Result<void>::success();
-        };
+        manifest_file_ = std::shared_ptr<IPersistenceFile>(
+            std::move(request.manifest_file));
+        recovery_validation_ = request.complete_validation;
+        const auto prepared = prepare_manifest_candidate(
+            request.active_slot, checkpoint_, request.committed_time_100ns,
+            artifact_replacement_);
+        if (!prepared.ok()) {
+            attempted.error = prepared.error();
+        } else {
+            published_candidate_ = prepared.value().slot;
+            publication_identity_ = FrozenPublicationIdentity{
+                request.active_slot.generation.checkpoint_generation,
+                checkpoint_.generation,
+                prepared.value().slot.slot_index};
+            ManifestPublishRequest publish_request{};
+            publish_request.manifest_file = manifest_file_;
+            publish_request.active_slot = request.active_slot;
+            publish_request.candidate = prepared.value();
+            publish_request.complete_validation = request.complete_validation;
+            publish_request.record_durable_commit = [this]() {
+                disposition_ = CommitDisposition::Committed;
+                return Result<void>::success();
+            };
 #if defined(MYRD_ENABLE_TEST_SEAMS)
-        publish_request.test_validate_candidate =
-            std::move(request.test_validate_candidate);
+            publish_request.test_validate_candidate =
+                std::move(request.test_validate_candidate);
 #endif
-        attempted = attempt_manifest_publication(
-            context, *publish_lease_, publish_request);
+            attempted = attempt_manifest_publication(
+                context, *publish_lease_, publish_request);
+            if (attempted.ok()) {
+                observed = run_transaction_observer(
+                    observers_.after_manifest_publish,
+                    L"after-manifest observer threw");
+                if (!observed.ok()) attempted.error = observed.error();
+            }
+        }
     }
     const auto final_disposition = attempted.ok()
         ? CommitDisposition::Committed
@@ -658,6 +688,9 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
             return fail(*failure);
         }
 #endif
+        auto observed = run_transaction_observer(
+            observers_.complete, L"compaction-complete observer threw");
+        if (!observed.ok()) return fail(observed.error());
         return report_success();
     }
 
@@ -861,6 +894,11 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
         check_operation_context(operation_context);
     if (!before_install_live.ok()) return fail(before_install_live.error());
 
+    auto observed = run_transaction_observer(
+        observers_.before_backing_install,
+        L"before-backing-install observer threw");
+    if (!observed.ok()) return fail(observed.error());
+
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     if (const auto failure = injected(
             CheckpointReconcileTestPhase::BeforeInstallBacking)) {
@@ -896,6 +934,15 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
             PersistenceErrorCode::GenerationConflict).error());
     }
     result.backing_installed = true;
+    observed = run_transaction_observer(
+        observers_.after_backing_install,
+        L"after-backing-install observer threw");
+    if (!observed.ok()) return fail(observed.error());
+
+    observed = run_transaction_observer(
+        observers_.before_conditional_ack,
+        L"before-conditional-ack observer threw");
+    if (!observed.ok()) return fail(observed.error());
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     if (const auto failure = injected(
@@ -909,6 +956,15 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
          store_, *snapshot_token_});
     if (!replayed.ok()) return fail(replayed.error());
     result.ack = replayed.move_value();
+    observed = run_transaction_observer(
+        observers_.after_conditional_ack,
+        L"after-conditional-ack observer threw");
+    if (!observed.ok()) return fail(observed.error());
+
+    observed = run_transaction_observer(
+        observers_.before_snapshot_finish,
+        L"before-snapshot-finish observer threw");
+    if (!observed.ok()) return fail(observed.error());
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     if (const auto failure = injected(
@@ -922,6 +978,10 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
     snapshot_token_.reset();
     runtime_reconciled_ = true;
     result.snapshot_finished = true;
+    observed = run_transaction_observer(
+        observers_.after_snapshot_finish,
+        L"after-snapshot-finish observer threw");
+    if (!observed.ok()) return fail(observed.error());
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     if (const auto failure = injected(
@@ -929,6 +989,9 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
         return fail(*failure);
     }
 #endif
+    observed = run_transaction_observer(
+        observers_.complete, L"compaction-complete observer threw");
+    if (!observed.ok()) return fail(observed.error());
     return report_success();
 }
 
@@ -968,7 +1031,7 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare(
     const OperationContext& context,
     const CheckpointPrepareRequest& request) {
     return prepare_impl(
-        context, request, std::nullopt, {}, {}, std::nullopt);
+        context, request, std::nullopt, {}, {}, {}, std::nullopt);
 }
 
 CheckpointPrepareOutcome CheckpointCoordinator::prepare_with_lease(
@@ -977,12 +1040,14 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare_with_lease(
     PublishOperationLease lease,
     std::function<Result<void>()> after_snapshot_begin,
     std::function<Result<void>()> after_journal_prepare,
+    CheckpointTransactionObservers observers,
     std::optional<ManifestArtifactReplacement> artifact_replacement) {
     return prepare_impl(
         context, request,
         std::optional<PublishOperationLease>{std::move(lease)},
         std::move(after_snapshot_begin),
         std::move(after_journal_prepare),
+        std::move(observers),
         std::move(artifact_replacement));
 }
 
@@ -992,6 +1057,7 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare_impl(
     std::optional<PublishOperationLease> existing_lease,
     std::function<Result<void>()> after_snapshot_begin,
     std::function<Result<void>()> after_journal_prepare,
+    CheckpointTransactionObservers observers,
     std::optional<ManifestArtifactReplacement> artifact_replacement) {
     const bool compaction = existing_lease.has_value();
     const auto fail_before_snapshot = [&](const Error& error) {
@@ -1256,7 +1322,7 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare_impl(
         request.journal.file, request.journal.header,
         request.journal.file_identity, request.journal.committed_length,
         request.correlation_context,
-        *request.volume_barrier, metrics,
+        *request.volume_barrier, metrics, std::move(observers),
         std::move(artifact_replacement)};
     snapshot_guard.release();
     return CheckpointPrepareOutcome{std::move(transaction)};

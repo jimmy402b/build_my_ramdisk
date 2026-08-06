@@ -675,13 +675,13 @@ publish/resolver 算法。
   Task06 cut，把相对 G 的 cut-time DATA/ZERO/DISCARD 写入 new journal。
 - [x] `T35.5 [X]` dirty set 即使为空也 append COW index+commit G+1，再严格调用
   Task31 publish/resolver 和 Task32 install/conditional ack；post-cut writes 保持 dirty。
-- [ ] `T35.6 [H]` pre/post-commit failure matrix：pre 保持 old authoritative、新文件
+- [x] `T35.6 [H]` pre/post-commit failure matrix：pre 保持 old authoritative、新文件
   unreferenced；post recover/install new，旧文件为 old slots/readers/reconcile 保留。
 - [x] `T35.7 [M]` pure `should_compact()` tests：physical bytes、ratio、checkpoint
   count、index depth、overflow/boundary；只 recommendation，绝不自动 schedule。
-- [ ] `T35.8 [H]` independent logical hash 比 cut-time model，reopen 后 full disk 等价；
+- [x] `T35.8 [H]` independent logical hash 比 cut-time model，reopen 后 full disk 等价；
   Debug/Release `m3-v4`。
-- [ ] `T35.9 [X]` compaction/commit reviewer GO 后完成。
+- [x] `T35.9 [X]` compaction/commit reviewer GO 后完成。
 
 ### Task 36 — Safe retention and cleanup
 
