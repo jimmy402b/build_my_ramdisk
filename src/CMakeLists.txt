@@ -173,6 +173,8 @@ add_library(myrd_persistence STATIC
     persistence/vhdx_reader.cpp
     persistence/vhdx_writer.h
     persistence/vhdx_writer.cpp
+    persistence/composite_backing_store.h
+    persistence/composite_backing_store.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h

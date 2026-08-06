@@ -1020,6 +1020,22 @@ set_tests_properties(integration.m3.windows_vhdx PROPERTIES
     LABELS "m3-v5"
     TIMEOUT 240)
 
+# ---- M3 journal-first composite backing (Task 25) -------------------------
+add_executable(myrd_m3_composite_backing_store_tests
+    unit/m3_composite_backing_store_tests.cpp
+    support/fault_file.cpp
+)
+target_link_libraries(myrd_m3_composite_backing_store_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_composite_backing_store_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_composite_backing_store_tests)
+add_test(NAME unit.m3.composite_backing
+    COMMAND myrd_m3_composite_backing_store_tests)
+set_tests_properties(unit.m3.composite_backing PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 60)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
