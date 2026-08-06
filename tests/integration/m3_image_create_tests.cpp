@@ -142,6 +142,22 @@ TEST_CASE(generation_zero_retry_never_overwrites_published_bundle) {
     REQUIRE_EQ(read_all(sandbox.root() / L"journal-e0001.rdj"), journal_before);
 }
 
+TEST_CASE(generation_zero_plans_operation_unique_temporary_artifact) {
+    CreateSandbox sandbox;
+    auto request = create_request(sandbox.root());
+    request.base_temporary_name.clear();
+
+    auto created = create_generation_zero_image(
+        OperationContext{}, request);
+
+    REQUIRE(created.ok());
+    REQUIRE(!std::filesystem::exists(sandbox.root() / L"base.create.tmp"));
+    REQUIRE(std::filesystem::exists(
+        sandbox.root() /
+        (L"base-0000.vhdx.create-" +
+         std::to_wstring(request.operation_id) + L".tmp")) == false);
+}
+
 TEST_CASE(generation_zero_invalid_request_creates_no_artifacts) {
     CreateSandbox sandbox;
     auto request = create_request(sandbox.root());

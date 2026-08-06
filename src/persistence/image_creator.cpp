@@ -82,13 +82,26 @@ Result<void> validate_request(const GenerationZeroCreateRequest& request) {
     }
     for (const auto name : {
              std::string_view{request.manifest_relative_name},
-             std::string_view{request.base_temporary_name},
              std::string_view{request.base_relative_name},
              std::string_view{request.journal_relative_name}}) {
         auto component = validate_image_component(name);
         if (!component.ok()) return Result<void>::failure(component.error());
     }
+    if (!request.base_temporary_name.empty()) {
+        auto component = validate_image_component(
+            request.base_temporary_name);
+        if (!component.ok()) return Result<void>::failure(component.error());
+    }
     return Result<void>::success();
+}
+
+std::string planned_base_temporary_name(
+    const GenerationZeroCreateRequest& request) {
+    if (!request.base_temporary_name.empty()) {
+        return request.base_temporary_name;
+    }
+    return request.base_relative_name + ".create-" +
+        std::to_string(request.operation_id) + ".tmp";
 }
 
 Result<void> write_and_verify_genesis_journal(
@@ -333,7 +346,7 @@ Result<RecoveredImage> create_generation_zero_image(
     if (!phase.ok()) return Result<RecoveredImage>::failure(phase.error());
 #endif
     auto base = publish_sparse_vhdx_base(
-        context, writer, request.base_temporary_name,
+        context, writer, planned_base_temporary_name(request),
         request.base_relative_name, plan.value(), source);
     if (!base.ok()) return Result<RecoveredImage>::failure(base.error());
 #if defined(MYRD_ENABLE_TEST_SEAMS)
