@@ -186,7 +186,7 @@ Suggested commit:
 | 33 | 独立 checkpoint crash matrix | O | DONE | 31,32 | M3-V2 |
 | 34 | Live extent enumeration | S | DONE | 22,25,29 | M3-V4 |
 | 35 | Base compaction 与 journal rotation | O | DONE | 09,23,29,32,34 | M3-V4 |
-| 36 | Immutable file retention/cleanup | O | PENDING | 12,27,35 | M3-V4 |
+| 36 | Immutable file retention/cleanup | O | DONE | 12,27,35 | M3-V4 |
 | 37 | Inspect/verify/report schema | C | PENDING | 27,33,36 | M3-V2/V4 |
 | 38 | M3 CLI 与 local fake | C | PENDING | 27,29,30,35,37 | M3-V2/V4 |
 | 39 | M1/M2/M3 provider 集成 | O | PENDING | 28,32,38 | M3-V6 prerequisite |
@@ -888,11 +888,11 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O。允许文件：** `retention_manager.*`、retention/race tests。
 
-- [ ] reference set 同时包含两个 fully valid manifest slots 与全部 live BackingView identities。
-- [ ] unknown/replaced/hard-linked/path-escaping file 永不自动删除；identity 必须归属当前 bundle。
-- [ ] 仅当无 valid slot、无 live view 引用时可删；sharing violation/crash 只留下 harmless artifact 和 diagnostics。
-- [ ] concurrent read/close/recovery/compaction races 证明最后 handle/reference 释放前不开始 deletion。
-- [ ] 跑 `m3-v4`；建议提交 `feat(persistence): retain immutable generation files safely`。
+- [x] reference set 同时包含两个 fully valid manifest slots 与全部 live BackingView identities。
+- [x] unknown/replaced/hard-linked/path-escaping file 永不自动删除；identity 必须归属当前 bundle。
+- [x] 仅当无 valid slot、无 live view 引用时可删；sharing violation/crash 只留下 harmless artifact 和 diagnostics。
+- [x] concurrent read/close/recovery/compaction races 证明最后 handle/reference 释放前不开始 deletion。
+- [x] 跑 `m3-v4`；独立复审 P0=0/P1=0，Debug 97/97、Release 98/98、retention repeat 20/20；建议提交 `feat(persistence): retain immutable generation files safely`。
 
 ## Task 37 — Inspect、verify 与 machine-readable report
 

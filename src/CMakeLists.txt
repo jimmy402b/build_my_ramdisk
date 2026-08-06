@@ -191,6 +191,8 @@ add_library(myrd_persistence STATIC
     persistence/checkpoint_coordinator.cpp
     persistence/compaction_coordinator.h
     persistence/compaction_coordinator.cpp
+    persistence/retention_manager.h
+    persistence/retention_manager.cpp
     persistence/checkpoint_reconciler.cpp
     persistence/commit_resolver.cpp
     persistence/file_io.h

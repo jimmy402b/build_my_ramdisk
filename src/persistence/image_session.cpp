@@ -17,9 +17,17 @@ bool is_checkpoint_like(const SessionOperation operation) noexcept {
            operation == SessionOperation::Compaction;
 }
 
+bool begins_from_ready(const SessionOperation operation) noexcept {
+    return is_checkpoint_like(operation) ||
+           operation == SessionOperation::Cleanup;
+}
+
 bool is_valid_finish(const SessionOperation operation,
                      const CommitDisposition disposition) noexcept {
     if (is_checkpoint_like(operation)) return true;
+    if (operation == SessionOperation::Cleanup) {
+        return disposition == CommitDisposition::NotCommitted;
+    }
     if (operation == SessionOperation::CommitResolution) {
         return disposition == CommitDisposition::NotCommitted ||
                disposition == CommitDisposition::CommittedNeedsReconciliation ||
@@ -43,6 +51,10 @@ bool disposition_matches_stage(const SessionOperation operation,
                    disposition ==
                        CommitDisposition::CommittedNeedsReconciliation;
         }
+    }
+    if (operation == SessionOperation::Cleanup) {
+        return stage == PublicationStage::PrePublication &&
+               disposition == CommitDisposition::NotCommitted;
     }
     if (operation == SessionOperation::CommitResolution) {
         if (disposition == CommitDisposition::NotCommitted) {
@@ -71,6 +83,10 @@ SessionPhase phase_after_finish(const SessionOperation operation,
         case CommitDisposition::CommittedNeedsReconciliation:
             return SessionPhase::Reconciling;
         }
+    }
+    if (operation == SessionOperation::Cleanup) {
+        return disposition == CommitDisposition::NotCommitted
+            ? SessionPhase::Ready : SessionPhase::PersistenceFaulted;
     }
     if (operation == SessionOperation::CommitResolution) {
         switch (disposition) {
@@ -305,6 +321,10 @@ Result<PublishOperationLease> ImageSession::begin_reconciliation() {
     return begin_operation(SessionOperation::Reconciliation);
 }
 
+Result<PublishOperationLease> ImageSession::begin_cleanup() {
+    return begin_operation(SessionOperation::Cleanup);
+}
+
 Result<PublishOperationLease> ImageSession::begin_operation(
     const SessionOperation operation) {
     std::lock_guard lock(mutex_);
@@ -319,7 +339,7 @@ Result<PublishOperationLease> ImageSession::begin_operation(
             PersistenceErrorCode::OperationBusy, L"image_session.begin",
             L"another publish-affecting operation is active"));
     }
-    if (is_checkpoint_like(operation)) {
+    if (begins_from_ready(operation)) {
         if (phase_ == SessionPhase::ResolvingCommit) {
             return Result<PublishOperationLease>::failure(state_error(
                 PersistenceErrorCode::CommitIndeterminate, L"image_session.begin",
@@ -335,8 +355,17 @@ Result<PublishOperationLease> ImageSession::begin_operation(
                 PersistenceErrorCode::OperationBusy, L"image_session.begin",
                 L"session is not ready for mutation"));
         }
+        if (operation == SessionOperation::Cleanup &&
+            active_immutable_reads_ != 0) {
+            return Result<PublishOperationLease>::failure(state_error(
+                PersistenceErrorCode::OperationBusy,
+                L"image_session.cleanup",
+                L"immutable readers must drain before cleanup"));
+        }
         phase_ = operation == SessionOperation::Checkpoint
-            ? SessionPhase::Checkpointing : SessionPhase::Compacting;
+            ? SessionPhase::Checkpointing
+            : operation == SessionOperation::Cleanup
+                ? SessionPhase::Verifying : SessionPhase::Compacting;
         // Commit disposition and first failure are operation-scoped. A new
         // independent checkpoint must not inherit the previous outcome.
         disposition_ = CommitDisposition::NotCommitted;
@@ -373,6 +402,7 @@ Result<PublishOperationLease> ImageSession::begin_operation(
 Result<ImmutableReadLease> ImageSession::begin_immutable_read() {
     std::lock_guard lock(mutex_);
     if (close_requested_ || phase_ == SessionPhase::Opening ||
+        phase_ == SessionPhase::Verifying ||
         phase_ == SessionPhase::Closing || phase_ == SessionPhase::Closed) {
         return Result<ImmutableReadLease>::failure(state_error(
             PersistenceErrorCode::OperationBusy, L"image_session.read",
@@ -429,7 +459,8 @@ Result<void> ImageSession::advance_publication_stage(
     std::lock_guard lock(mutex_);
     if (!publish_operation_active_ || active_operation_id_ != operation_id ||
         active_operation_ != operation ||
-        operation == SessionOperation::Reconciliation) {
+        operation == SessionOperation::Reconciliation ||
+        operation == SessionOperation::Cleanup) {
         return Result<void>::failure(state_error(
             PersistenceErrorCode::FatalInternalInvariant,
             L"image_session.publication_stage",
@@ -466,7 +497,8 @@ Result<SessionOutcome> ImageSession::abandon_operation(
             PersistenceErrorCode::FatalInternalInvariant,
             L"image_session.abort", L"operation ownership mismatch"));
     }
-    if (!is_checkpoint_like(operation) ||
+    if ((!is_checkpoint_like(operation) &&
+         operation != SessionOperation::Cleanup) ||
         active_publication_stage_ != PublicationStage::PrePublication) {
         return Result<SessionOutcome>::failure(state_error(
             PersistenceErrorCode::FatalInternalInvariant,
@@ -493,7 +525,10 @@ void ImageSession::abandon_operation_noexcept(
             active_operation_ != operation) {
             return;
         }
-        if (is_checkpoint_like(operation)) {
+        if (operation == SessionOperation::Cleanup) {
+            phase_ = SessionPhase::Ready;
+            disposition_ = CommitDisposition::NotCommitted;
+        } else if (is_checkpoint_like(operation)) {
             switch (active_publication_stage_) {
             case PublicationStage::PrePublication:
                 phase_ = SessionPhase::Ready;

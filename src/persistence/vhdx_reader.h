@@ -15,6 +15,9 @@
 
 namespace myrd::persistence {
 
+class CompositeBackingStore;
+namespace detail { class BackingViewBindingState; }
+
 class ValidatedPersistenceFile;
 
 inline constexpr std::uint64_t kVhdxBatPageBytes = 4096;
@@ -103,6 +106,7 @@ public:
         const OperationContext& context,
         std::uint64_t first_block) const;
 
+
     Result<std::vector<VhdxAllocatedExtent>> enumerate_allocated_extents(
         const OperationContext& context) const;
 
@@ -112,6 +116,9 @@ public:
     void clear_cache();
 
 private:
+    [[nodiscard]] std::shared_ptr<
+        const detail::BackingViewBindingState>
+    backing_view_binding() const noexcept;
     struct Impl;
     explicit VhdxReader(std::unique_ptr<Impl> impl) noexcept;
     static Result<std::unique_ptr<VhdxReader>> create_owned(
@@ -127,6 +134,7 @@ private:
         VhdxLayout layout,
         VhdxReaderOptions options);
     std::unique_ptr<Impl> impl_;
+    friend class CompositeBackingStore;
 };
 
 }  // namespace myrd::persistence

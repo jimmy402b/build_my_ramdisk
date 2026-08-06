@@ -1948,3 +1948,54 @@ not identify a correctness defect in the accepted implementation.
 
 Task 35 verdict: **DONE**. Task 36 may now implement identity-safe retention of
 obsolete immutable generation files.
+
+## Task 36 retention acceptance
+
+Retention accepts only explicit validated ownership records; it never scans a
+directory and deletes by pattern. The pure decision accounts for both fully
+valid manifest slots, live `BackingView` weak lifetimes, and prepared or
+reconciling artifacts. Invalid names, reparse points, hard links and unknown
+ownership fail closed.
+
+Execution requires the new cleanup operation on the image session's single
+publish-affecting gate. This excludes checkpoint, compaction, commit resolution
+and reconciliation for the complete decision/delete window. A candidate that
+survives the reference decision is reopened by exact Windows file identity,
+its VHDX or journal format identity is revalidated while that object remains
+pinned, and deletion is issued only through the writer-authorized handle.
+Sharing violations, replacements, corruption and all per-file failures keep a
+harmless artifact with path-redacted diagnostics.
+
+Acceptance evidence on the reviewed source:
+
+- `integration.m3.retention` passed 18/18 tests for both manifest slots, live
+  and in-flight references, VHDX/journal deletion, hard links, reparse/path
+  rejection, sharing retry, TOCTOU replacement, corruption, dry-run and bounds;
+- complete Debug CTest passed 97/97;
+- complete serial Release CTest passed 98/98;
+- a four-way parallel Release run had one transient failure in the pre-existing
+  `unit.m2.backing_generation`; that test passed immediately in isolation and
+  in the complete serial run, while all Task 36 tests passed in both runs;
+- `BUILD_TESTING=OFF` built the production `myrd_persistence` target;
+- `git diff --check` passed apart from line-ending conversion notices.
+
+The review findings were closed by replacing caller-attested provenance with an
+opaque `BackingViewBindingState`. Each validated reader and its no-DELETE guard
+must share the exact same hidden binding, and `CompositeBackingStore` owns those
+guards for its complete lifetime. Checkpoint and recovery retain equivalent
+guards across publication and reconciliation. The proposed journal append
+reopen capability was removed after review showed that a stale generation could
+otherwise overwrite a newer committed prefix; a future writable product path
+must instead use a generation-fenced, revocable, session-exclusive append lease.
+
+Final acceptance evidence:
+
+- the independent final review returned **GO (P0=0, P1=0)**;
+- complete Debug CTest passed 97/97 and complete Release CTest passed 98/98;
+- the focused retention suite passed 20 consecutive Debug repetitions;
+- `BUILD_TESTING=OFF` built the production `myrd_persistence` target;
+- no test-only `create_for_testing` symbol was present in the product library;
+- `git diff --check` passed apart from line-ending conversion notices.
+
+Task 36 verdict: **DONE**. The retained design exposes no general journal append
+API; generation-fenced writable reopening remains an explicit later wiring task.

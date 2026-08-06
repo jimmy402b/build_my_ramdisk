@@ -1,4 +1,5 @@
 #include "src/persistence/journal_reader.h"
+#include "src/persistence/image_paths.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -61,6 +62,15 @@ JournalReader::JournalReader(std::unique_ptr<Impl> impl) noexcept
 JournalReader::~JournalReader() = default;
 JournalReader::JournalReader(JournalReader&&) noexcept = default;
 JournalReader& JournalReader::operator=(JournalReader&&) noexcept = default;
+
+std::shared_ptr<const detail::BackingViewBindingState>
+JournalReader::backing_view_binding() const noexcept {
+    if (impl_ == nullptr || !impl_->options.view.file) return {};
+    const auto* validated = dynamic_cast<const ValidatedPersistenceFile*>(
+        impl_->options.view.file.get());
+    return validated != nullptr
+        ? validated->backing_view_binding() : nullptr;
+}
 
 Result<std::unique_ptr<JournalReader>> JournalReader::create(
     JournalReaderOptions options) {

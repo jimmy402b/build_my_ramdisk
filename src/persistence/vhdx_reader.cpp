@@ -606,6 +606,15 @@ VhdxReader::~VhdxReader() = default;
 VhdxReader::VhdxReader(VhdxReader&&) noexcept = default;
 VhdxReader& VhdxReader::operator=(VhdxReader&&) noexcept = default;
 
+std::shared_ptr<const detail::BackingViewBindingState>
+VhdxReader::backing_view_binding() const noexcept {
+    if (impl_ == nullptr || !impl_->file) return {};
+    const auto* validated = dynamic_cast<const ValidatedPersistenceFile*>(
+        impl_->file.get());
+    return validated != nullptr
+        ? validated->backing_view_binding() : nullptr;
+}
+
 Result<std::unique_ptr<VhdxReader>> VhdxReader::open(
     const OperationContext& context,
     std::unique_ptr<ValidatedPersistenceFile>& file,

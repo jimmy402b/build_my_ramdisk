@@ -271,6 +271,10 @@ public:
         DynamicBlockStore& store);
     static bool begin_backing_publication(DynamicBlockStore& store);
     static bool end_backing_publication(DynamicBlockStore& store);
+    static bool track_retired_backing_view_for_test(
+        DynamicBlockStore& store,
+        BackingGeneration generation,
+        const std::shared_ptr<const IBackingStore>& backing_store);
     static bool snapshot_wait_gap_reached(
         const DynamicBlockStore& store) noexcept;
     static bool release_snapshot_wait_gap(DynamicBlockStore& store) noexcept;

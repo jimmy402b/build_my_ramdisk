@@ -22,6 +22,7 @@ enum class SessionOperation : std::uint8_t {
     Compaction = 1,
     CommitResolution = 2,
     Reconciliation = 3,
+    Cleanup = 4,
 };
 
 enum class PublicationStage : std::uint8_t {
@@ -153,6 +154,10 @@ public:
     Result<PublishOperationLease> begin_compaction();
     Result<PublishOperationLease> begin_commit_resolution();
     Result<PublishOperationLease> begin_reconciliation();
+    // Cleanup holds the same single publish-affecting gate but never advances
+    // the manifest publication stage. Its lease is completed with abort() once
+    // best-effort immutable artifact deletion finishes.
+    Result<PublishOperationLease> begin_cleanup();
     Result<ImmutableReadLease> begin_immutable_read();
 
     /// Idempotent close. It waits for the active publish operation and all

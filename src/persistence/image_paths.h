@@ -4,6 +4,7 @@
 #include "src/common/unique_handle.h"
 #include "src/persistence/file_identity.h"
 #include "src/persistence/file_io.h"
+#include "src/persistence/persistence_types.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -40,6 +41,7 @@ validate_image_component(std::string_view utf8_name);
 
 namespace detail {
 struct WriterAuthorityState;
+class BackingViewBindingState;
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 class INativeRenameBackend;
 class INativeSparseBackend;
@@ -47,6 +49,9 @@ class INativeSparseBackend;
 }
 
 class BundleWriterLock;
+class BackingDeleteGuard;
+class OpenedBackingViewFile;
+class CompositeBackingStore;
 class ValidatedPersistenceFile;
 
 // An unforgeable, handle-anchored observation of one direct bundle child.
@@ -81,6 +86,8 @@ private:
     std::wstring final_path_;
     std::string relative_name_;
     std::weak_ptr<detail::WriterAuthorityState> writer_authority_;
+    std::shared_ptr<const detail::BackingViewBindingState>
+        backing_view_binding_{};
     bool deleted_{};
     bool mutable_access_{};
     bool cleanup_authorized_{};
@@ -108,6 +115,10 @@ private:
         std::string_view,
         std::optional<WindowsFileIdentity>);
     friend Result<ValidatedBundleFile> open_bundle_file_for_offline_validation(
+        const std::filesystem::path&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
+    friend Result<OpenedBackingViewFile> open_bundle_file_for_backing_view(
         const std::filesystem::path&,
         std::string_view,
         std::optional<WindowsFileIdentity>);
@@ -141,6 +152,75 @@ private:
     friend Result<ValidatedBundleFile>
         detail_create_manifest_for_writer_acquire(
             const std::filesystem::path&, std::string_view);
+};
+
+// Opaque, move-only Windows namespace-retention anchor. Only the backing-view
+// factory can create one, and no public API exposes or closes its HANDLE.
+// CompositeBackingStore consumes and owns these anchors for its full lifetime.
+class BackingDeleteGuard final {
+public:
+    BackingDeleteGuard(const BackingDeleteGuard&) = delete;
+    BackingDeleteGuard& operator=(const BackingDeleteGuard&) = delete;
+    BackingDeleteGuard(BackingDeleteGuard&&) noexcept = default;
+    BackingDeleteGuard& operator=(BackingDeleteGuard&&) noexcept = default;
+    ~BackingDeleteGuard() noexcept = default;
+
+    [[nodiscard]] const WindowsFileIdentity& identity() const noexcept {
+        return bound_identity();
+    }
+
+private:
+    std::shared_ptr<const detail::BackingViewBindingState> binding_{};
+
+    explicit BackingDeleteGuard(
+        std::shared_ptr<const detail::BackingViewBindingState>
+            binding) noexcept
+        : binding_(std::move(binding)) {}
+
+    [[nodiscard]] bool active() const noexcept;
+    [[nodiscard]] const WindowsFileIdentity& bound_identity() const noexcept;
+
+    friend class CompositeBackingStore;
+    friend Result<OpenedBackingViewFile> open_bundle_file_for_backing_view(
+        const std::filesystem::path&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
+};
+
+// The reader capability and its independent no-DELETE anchor originate from
+// duplicate handles to the same validated file object. Callers may hand the
+// reader to a codec without giving that codec authority to release the guard.
+class OpenedBackingViewFile final {
+public:
+    OpenedBackingViewFile(const OpenedBackingViewFile&) = delete;
+    OpenedBackingViewFile& operator=(const OpenedBackingViewFile&) = delete;
+    OpenedBackingViewFile(OpenedBackingViewFile&&) noexcept = default;
+    OpenedBackingViewFile& operator=(OpenedBackingViewFile&&) noexcept = default;
+    ~OpenedBackingViewFile() noexcept = default;
+
+    [[nodiscard]] const WindowsFileIdentity& identity() const noexcept {
+        return guard_.identity();
+    }
+    [[nodiscard]] ValidatedBundleFile take_file() noexcept {
+        return std::move(file_);
+    }
+    [[nodiscard]] BackingDeleteGuard take_delete_guard() noexcept {
+        return std::move(guard_);
+    }
+
+private:
+    ValidatedBundleFile file_;
+    BackingDeleteGuard guard_;
+
+    OpenedBackingViewFile(
+        ValidatedBundleFile file,
+        BackingDeleteGuard guard) noexcept
+        : file_(std::move(file)), guard_(std::move(guard)) {}
+
+    friend Result<OpenedBackingViewFile> open_bundle_file_for_backing_view(
+        const std::filesystem::path&,
+        std::string_view,
+        std::optional<WindowsFileIdentity>);
 };
 
 // Internal bootstrap capability used only to atomically claim a previously
@@ -209,9 +289,14 @@ private:
     writer_authority_for_mutation(const wchar_t* operation) const;
     [[nodiscard]] Result<void> refresh_identity_after_mutation(
         const std::shared_ptr<detail::WriterAuthorityState>& authority);
+    [[nodiscard]] std::shared_ptr<
+        const detail::BackingViewBindingState>
+    backing_view_binding() const noexcept;
 
     friend Result<std::unique_ptr<ValidatedPersistenceFile>>
         open_validated_persistence_file(ValidatedBundleFile&&);
+    friend class JournalReader;
+    friend class VhdxReader;
 };
 
 [[nodiscard]] Result<std::wstring>
@@ -229,6 +314,15 @@ open_bundle_file_for_inspection(
 [[nodiscard]] Result<ValidatedBundleFile>
 open_bundle_file_for_mutation(
     BundleWriterLock& writer_lock,
+    std::string_view relative_name,
+    std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
+
+// Runtime backing views may coexist with checkpoint appends but never with
+// namespace deletion. The kernel sharing contract is the final retention
+// backstop even if higher-level reference accounting is mis-composed.
+[[nodiscard]] Result<OpenedBackingViewFile>
+open_bundle_file_for_backing_view(
+    const std::filesystem::path& bundle_root,
     std::string_view relative_name,
     std::optional<WindowsFileIdentity> expected_identity = std::nullopt);
 

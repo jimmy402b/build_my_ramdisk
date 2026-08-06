@@ -69,6 +69,12 @@ public:
 
     BackingGeneration backing_generation() const;
     BackingView capture_backing_view() const;
+    // Returns the current view plus every retired view whose backing store is
+    // still strongly held by an in-flight read or an external captured view.
+    // The explicit bound makes lifecycle accounting fail closed instead of
+    // allocating an attacker-controlled history snapshot.
+    Result<std::vector<BackingView>> capture_live_backing_views(
+        std::size_t max_view_count) const;
     Result<void> install_backing_view(BackingView next_view);
     Result<void> install_backing_view_for_snapshot(
         const ConsistentSnapshotToken& token,
@@ -285,6 +291,11 @@ private:
     mutable std::mutex state_mutex_;
     std::condition_variable backing_view_condition_;
     BackingView backing_view_{};
+    struct RetiredBackingView final {
+        BackingGeneration generation{};
+        std::weak_ptr<const IBackingStore> store{};
+    };
+    mutable std::vector<RetiredBackingView> retired_backing_views_{};
     DynamicBlockStoreStats stats_{};
     // Correctness-owned commit accounting. stats_.committed_bytes is only
     // its observable mirror and is never consulted for admission decisions.

@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <limits>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -79,6 +80,41 @@ BackingView DynamicBlockStore::capture_backing_view() const {
     return backing_view_;
 }
 
+Result<std::vector<BackingView>>
+DynamicBlockStore::capture_live_backing_views(
+    const std::size_t max_view_count) const {
+    std::scoped_lock lock(state_mutex_);
+    try {
+        std::erase_if(retired_backing_views_, [](const auto& retired) {
+            return retired.store.expired();
+        });
+        const std::size_t current_count = backing_view_.store ? 1U : 0U;
+        if (max_view_count == 0 ||
+            retired_backing_views_.size() + current_count > max_view_count) {
+            return Result<std::vector<BackingView>>::failure(backing_error(
+                static_cast<std::uint32_t>(
+                    DynamicBlockStoreErrorCode::SnapshotResourceExhausted),
+                L"DynamicBlockStore::capture_live_backing_views",
+                L"live backing view count exceeds the caller budget"));
+        }
+        std::vector<BackingView> views;
+        views.reserve(retired_backing_views_.size() + current_count);
+        if (backing_view_.store) views.push_back(backing_view_);
+        for (const auto& retired : retired_backing_views_) {
+            if (auto store = retired.store.lock()) {
+                views.push_back({retired.generation, std::move(store)});
+            }
+        }
+        return Result<std::vector<BackingView>>::success(std::move(views));
+    } catch (const std::bad_alloc&) {
+        return Result<std::vector<BackingView>>::failure(backing_error(
+            static_cast<std::uint32_t>(
+                DynamicBlockStoreErrorCode::SnapshotResourceExhausted),
+            L"DynamicBlockStore::capture_live_backing_views",
+            L"allocating the live backing view snapshot failed"));
+    }
+}
+
 Result<void> DynamicBlockStore::install_backing_view_for_snapshot(
     const ConsistentSnapshotToken& token,
     BackingView next_view) {
@@ -147,6 +183,26 @@ Result<void> DynamicBlockStore::install_backing_view_impl(
             return Result<void>::failure(generation_conflict(
                 L"DynamicBlockStore::install_backing_view",
                 L"backing view must be non-null and strictly newer"));
+        }
+
+        // Record the old shared object before publication. Every capture and
+        // every in-flight read keeps that same shared object alive, so this
+        // weak history is complete without requiring callers to register
+        // their copies. Expired entries are removed without allocation.
+        std::erase_if(retired_backing_views_, [](const auto& retired) {
+            return retired.store.expired();
+        });
+        if (backing_view_.store) {
+            try {
+                retired_backing_views_.push_back(
+                    {backing_view_.generation, backing_view_.store});
+            } catch (const std::bad_alloc&) {
+                return Result<void>::failure(backing_error(
+                    static_cast<std::uint32_t>(
+                        DynamicBlockStoreErrorCode::SnapshotResourceExhausted),
+                    L"DynamicBlockStore::install_backing_view",
+                    L"recording the retired backing lifetime failed"));
+            }
         }
 
         retired_view = std::move(backing_view_);
@@ -536,6 +592,21 @@ bool DynamicBlockStoreTestAccess::end_backing_publication(
     }
     store.backing_view_condition_.notify_all();
     return true;
+}
+
+bool DynamicBlockStoreTestAccess::track_retired_backing_view_for_test(
+    DynamicBlockStore& store,
+    const BackingGeneration generation,
+    const std::shared_ptr<const IBackingStore>& backing_store) {
+    if (!backing_store) return false;
+    std::scoped_lock lock(store.state_mutex_);
+    try {
+        store.retired_backing_views_.push_back(
+            {generation, backing_store});
+        return true;
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
 }
 
 } // namespace myrd

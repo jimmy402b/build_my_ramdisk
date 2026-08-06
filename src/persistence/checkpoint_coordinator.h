@@ -6,6 +6,7 @@
 #include "src/persistence/composite_backing_store.h"
 #include "src/persistence/commit_resolver.h"
 #include "src/persistence/image_session.h"
+#include "src/persistence/image_paths.h"
 #include "src/persistence/journal_writer.h"
 #include "src/storage/dynamic_block_store.h"
 
@@ -171,6 +172,7 @@ private:
     std::optional<PublishOperationLease> publish_lease_{};
     std::shared_ptr<IPersistenceFile> manifest_file_{};
     std::shared_ptr<IPersistenceFile> journal_file_{};
+    std::optional<BackingDeleteGuard> journal_delete_guard_{};
     PreparedCheckpoint checkpoint_{};
     JournalHeader journal_header_{};
     WindowsFileIdentity journal_file_identity_{};

@@ -29,6 +29,29 @@
 #include <vector>
 
 namespace myrd::persistence {
+namespace detail {
+
+class BackingViewBindingState final {
+public:
+    BackingViewBindingState(
+        UniqueHandle guard_handle,
+        WindowsFileIdentity identity) noexcept
+        : guard_handle_(std::move(guard_handle)),
+          identity_(std::move(identity)) {}
+
+    [[nodiscard]] bool active() const noexcept {
+        return static_cast<bool>(guard_handle_);
+    }
+    [[nodiscard]] const WindowsFileIdentity& identity() const noexcept {
+        return identity_;
+    }
+private:
+    UniqueHandle guard_handle_;
+    WindowsFileIdentity identity_{};
+};
+
+} // namespace detail
+
 namespace {
 
 [[nodiscard]] Error path_error(
@@ -943,6 +966,16 @@ ValidatedBundleFile::ValidatedBundleFile(
       cleanup_authorized_(cleanup_authorized),
       manifest_identity_bound_(manifest_identity_bound) {}
 
+bool BackingDeleteGuard::active() const noexcept {
+    return binding_ != nullptr && binding_->active();
+}
+
+const WindowsFileIdentity&
+BackingDeleteGuard::bound_identity() const noexcept {
+    static const WindowsFileIdentity invalid{};
+    return binding_ != nullptr ? binding_->identity() : invalid;
+}
+
 bool ValidatedBundleFile::writer_authorized() const noexcept {
     auto authority = writer_authority_.lock();
     if (authority == nullptr) {
@@ -1286,6 +1319,20 @@ WindowsFileIdentity ValidatedPersistenceFile::observed_identity() const {
     return impl_->capability.identity_;
 }
 
+std::shared_ptr<const detail::BackingViewBindingState>
+ValidatedPersistenceFile::backing_view_binding() const noexcept {
+    if (impl_ == nullptr) return {};
+    try {
+        std::scoped_lock lock(impl_->mutex);
+        if (impl_->closed || impl_->released || impl_->file == nullptr) {
+            return {};
+        }
+        return impl_->capability.backing_view_binding_;
+    } catch (...) {
+        return {};
+    }
+}
+
 Result<ValidatedBundleFile> detail_create_manifest_for_writer_acquire(
     const std::filesystem::path& bundle_root,
     const std::string_view manifest_relative_name) {
@@ -1499,6 +1546,46 @@ Result<ValidatedBundleFile> open_bundle_file_for_inspection(
         std::move(value.relative_name),
         false,
         false));
+}
+
+Result<OpenedBackingViewFile> open_bundle_file_for_backing_view(
+    const std::filesystem::path& bundle_root,
+    const std::string_view relative_name,
+    const std::optional<WindowsFileIdentity> expected_identity) {
+    auto opened = open_bundle_file_handles(
+        bundle_root, relative_name, expected_identity, false, false,
+        GENERIC_READ | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE);
+    if (!opened.ok()) {
+        return Result<OpenedBackingViewFile>::failure(opened.error());
+    }
+    auto value = opened.move_value();
+    auto guard_handle = duplicate_capability_handle(
+        value.file_handle.get(), L"image_path.open_backing_view");
+    if (!guard_handle.ok()) {
+        return Result<OpenedBackingViewFile>::failure(
+            guard_handle.error());
+    }
+    try {
+        auto binding = std::shared_ptr<const detail::BackingViewBindingState>(
+            new detail::BackingViewBindingState(
+                guard_handle.move_value(), value.file_identity));
+        auto file = ValidatedBundleFile(
+            std::move(value.root_handle), std::move(value.file_handle),
+            std::move(value.root_identity), std::move(value.file_identity),
+            std::move(value.root_final_path),
+            std::move(value.file_final_path),
+            std::move(value.relative_name), false, false, false);
+        file.backing_view_binding_ = binding;
+        return Result<OpenedBackingViewFile>::success(OpenedBackingViewFile(
+            std::move(file), BackingDeleteGuard(std::move(binding))));
+    } catch (const std::bad_alloc&) {
+        return path_failure<OpenedBackingViewFile>(
+            ImagePathErrorCode::IoError,
+            L"image_path.open_backing_view",
+            L"allocating backing-view binding failed",
+            ERROR_NOT_ENOUGH_MEMORY);
+    }
 }
 
 Result<ValidatedBundleFile> open_bundle_file_for_offline_validation(

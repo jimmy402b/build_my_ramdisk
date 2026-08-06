@@ -1,5 +1,6 @@
 #include "src/persistence/composite_backing_store.h"
 
+#include "src/persistence/image_paths.h"
 #include "src/persistence/journal_reader.h"
 #include "src/persistence/vhdx_reader.h"
 
@@ -129,6 +130,10 @@ bool CompositeBackingIdentity::operator==(
 
 struct CompositeBackingStore::Impl final {
     CompositeBackingIdentity identity;
+    // Declared before the layers so reverse member destruction closes every
+    // reader alias first and releases the no-DELETE anchors last.
+    std::unique_ptr<BackingDeleteGuard> journal_guard;
+    std::unique_ptr<BackingDeleteGuard> base_guard;
     std::unique_ptr<detail::ICompositeJournalLayer> journal;
     std::unique_ptr<detail::ICompositeBaseLayer> base;
     mutable std::atomic<std::uint64_t> load_calls{};
@@ -147,6 +152,43 @@ Result<std::unique_ptr<CompositeBackingStore>>
 CompositeBackingStore::create(
     CompositeBackingIdentity identity,
     std::unique_ptr<JournalReader> journal,
+    std::unique_ptr<VhdxReader> base,
+    BackingDeleteGuard journal_guard,
+    BackingDeleteGuard base_guard) {
+    if (!journal || !base || !journal_guard.active() ||
+        !base_guard.active() ||
+        journal->backing_view_binding() != journal_guard.binding_ ||
+        base->backing_view_binding() != base_guard.binding_ ||
+        !same_file_object(
+            journal_guard.identity(), identity.journal_windows_identity) ||
+        !same_file_object(
+            base_guard.identity(), identity.base_windows_identity) ||
+        base_guard.identity().size != identity.base_expected_length) {
+        return invalid_argument<std::unique_ptr<CompositeBackingStore>>(
+            L"journal and base require matching live delete guards");
+    }
+    try {
+        return create_layers(
+            std::move(identity),
+            std::make_unique<JournalReaderLayer>(std::move(journal)),
+            std::make_unique<VhdxReaderLayer>(std::move(base)),
+            std::make_unique<BackingDeleteGuard>(std::move(journal_guard)),
+            std::make_unique<BackingDeleteGuard>(std::move(base_guard)));
+    } catch (const std::bad_alloc&) {
+        return Result<std::unique_ptr<CompositeBackingStore>>::failure(Error{
+            ErrorDomain::persistence,
+            static_cast<std::uint32_t>(
+                PersistenceErrorCode::FatalInternalInvariant),
+            L"CompositeBackingStore::create",
+            L"allocation failed"});
+    }
+}
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+Result<std::unique_ptr<CompositeBackingStore>>
+CompositeBackingStore::create_for_testing(
+    CompositeBackingIdentity identity,
+    std::unique_ptr<JournalReader> journal,
     std::unique_ptr<VhdxReader> base) {
     if (!journal || !base) {
         return invalid_argument<std::unique_ptr<CompositeBackingStore>>(
@@ -162,12 +204,11 @@ CompositeBackingStore::create(
             ErrorDomain::persistence,
             static_cast<std::uint32_t>(
                 PersistenceErrorCode::FatalInternalInvariant),
-            L"CompositeBackingStore::create",
+            L"CompositeBackingStore::create_for_testing",
             L"allocation failed"});
     }
 }
 
-#if defined(MYRD_ENABLE_TEST_SEAMS)
 Result<std::unique_ptr<CompositeBackingStore>>
 CompositeBackingStore::create_for_testing(
     CompositeBackingIdentity identity,
@@ -182,7 +223,9 @@ Result<std::unique_ptr<CompositeBackingStore>>
 CompositeBackingStore::create_layers(
     CompositeBackingIdentity identity,
     std::unique_ptr<detail::ICompositeJournalLayer> journal,
-    std::unique_ptr<detail::ICompositeBaseLayer> base) {
+    std::unique_ptr<detail::ICompositeBaseLayer> base,
+    std::unique_ptr<BackingDeleteGuard> journal_guard,
+    std::unique_ptr<BackingDeleteGuard> base_guard) {
     if (!valid_identity(identity)) {
         return invalid_argument<std::unique_ptr<CompositeBackingStore>>(
             L"composite backing identity is invalid");
@@ -196,6 +239,8 @@ CompositeBackingStore::create_layers(
         impl->identity = std::move(identity);
         impl->journal = std::move(journal);
         impl->base = std::move(base);
+        impl->journal_guard = std::move(journal_guard);
+        impl->base_guard = std::move(base_guard);
         return Result<std::unique_ptr<CompositeBackingStore>>::success(
             std::unique_ptr<CompositeBackingStore>(
                 new CompositeBackingStore(std::move(impl))));

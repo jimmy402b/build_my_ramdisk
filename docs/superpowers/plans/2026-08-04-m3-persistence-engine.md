@@ -900,11 +900,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 12, 27, 35
 **Files:** Create `src/persistence/retention_manager.h/.cpp`, `tests/integration/m3_retention_tests.cpp`.
 
-- [ ] **Step 1: Red-test reference accounting** from both valid manifest slots plus live `BackingView` handle identities. Unknown, replaced, hard-linked or path-escaping files are never deleted automatically.
-- [ ] **Step 2: Implement cleanup eligibility:** a file is obsolete only when no fully valid slot references it, no live view references it, and its validated image identity belongs to this manifest.
-- [ ] **Step 3: Make deletion best-effort and recoverable.** A sharing violation or crash leaves harmless files and emits diagnostics; it cannot invalidate the current generation.
-- [ ] **Step 4: Run races with concurrent reads, close, recovery and compaction publication. Confirm deletion starts only after the final handle/reference release.**
-- [ ] **Step 5: Commit.** `feat(persistence): retain immutable generation files safely`.
+- [x] **Step 1: Red-test reference accounting** from both valid manifest slots plus live `BackingView` handle identities. Unknown, replaced, hard-linked or path-escaping files are never deleted automatically.
+- [x] **Step 2: Implement cleanup eligibility:** a file is obsolete only when no fully valid slot references it, no live view references it, and its validated image identity belongs to this manifest.
+- [x] **Step 3: Make deletion best-effort and recoverable.** A sharing violation or crash leaves harmless files and emits diagnostics; it cannot invalidate the current generation.
+- [x] **Step 4: Run races with concurrent reads, close, recovery and compaction publication. Confirm deletion starts only after the final handle/reference release.**
+- [x] **Step 5: Commit.** `feat(persistence): retain immutable generation files safely`.
 
 ### Task 37: Add inspect, verify and machine-readable reports
 

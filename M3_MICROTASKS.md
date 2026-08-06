@@ -687,19 +687,19 @@ publish/resolver 算法。
 
 允许：`retention_manager.*`、retention/race tests；删除仅限测试 scratch bundle。
 
-- [ ] `T36.1 [H]` 独立 reference oracle：两个 fully-valid slots + 全部 live
+- [x] `T36.1 [H]` 独立 reference oracle：两个 fully-valid slots + 全部 live
   `BackingView` handle identities + reconciliation/in-flight ownership。
-- [ ] `T36.2 [M]` RED matrix：referenced/unreferenced/unknown/replaced/hard-linked/
+- [x] `T36.2 [M]` RED matrix：referenced/unreferenced/unknown/replaced/hard-linked/
   reparse/path escape/sharing violation；后五类永不自动删除。
-- [ ] `T36.3 [X]` 实现 eligibility pure decision：无 valid slot、无 live view/inflight/
+- [x] `T36.3 [X]` 实现 eligibility pure decision：无 valid slot、无 live view/inflight/
   reconcile reference，且 exact identity 属于当前 bundle/manifest，才返回 eligible。
-- [ ] `T36.4 [X]` 实现 handle-anchored best-effort delete；重验 writer/path/identity，
+- [x] `T36.4 [X]` 实现 handle-anchored best-effort delete；重验 writer/path/identity，
   sharing/crash 只留 harmless artifact+diagnostic，不能伤当前 generation。
-- [ ] `T36.5 [H]` deterministic races：read/close/recovery/compaction publication；最后
+- [x] `T36.5 [H]` deterministic races：read/close/recovery/compaction publication；最后
   handle/reference 释放前 delete backend call 必须为零。
-- [ ] `T36.6 [M]` cleanup dry-run report 列候选与拒绝原因；默认不含 absolute path，
+- [x] `T36.6 [M]` cleanup dry-run report 列候选与拒绝原因；默认不含 absolute path，
   不允许 broad glob/recursive delete。
-- [ ] `T36.7 [X]` destructive target、TOCTOU、reference completeness 独立审查；
+- [x] `T36.7 [X]` destructive target、TOCTOU、reference completeness 独立审查；
   Debug/Release `m3-v4`，P0/P1=0 后完成。
 
 ## 9. 阶段七：产品面、真机与最终验收（Task 37–44）

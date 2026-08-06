@@ -1370,13 +1370,15 @@ TEST_CASE(compaction_publishes_reopens_installs_and_preserves_post_cut_write) {
     REQUIRE_EQ(session.phase(), SessionPhase::Ready);
     REQUIRE_EQ(store.value()->stats().resident_dirty_blocks, 1ull);
     REQUIRE_EQ(phases, all_compaction_phases());
-    {
-        auto writable_after_terminal_reconcile =
-            open_bundle_file_for_mutation(
-                writer_lock.value(), artifacts.base_relative_name,
-                expected_base_windows_identity);
-        REQUIRE(writable_after_terminal_reconcile.ok());
-    }
+    // The temporary construction anchor is gone, but the installed runtime
+    // BackingView now owns the stronger invariant: a namespace-mutating
+    // handle (DELETE access) remains denied until the final view releases.
+    auto namespace_mutation_while_live = open_bundle_file_for_mutation(
+        writer_lock.value(), artifacts.base_relative_name,
+        expected_base_windows_identity);
+    REQUIRE(!namespace_mutation_while_live.ok());
+    REQUIRE_EQ(namespace_mutation_while_live.error().native_code,
+               static_cast<std::uint32_t>(ERROR_SHARING_VIOLATION));
 
     std::vector<std::byte> live_bytes(kM2BlockSize);
     REQUIRE(store.value()->read(

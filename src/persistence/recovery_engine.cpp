@@ -202,9 +202,11 @@ std::string status_name(const ManifestCandidateCheckStatus status) {
 
 struct CandidateResources final {
     std::unique_ptr<VhdxReader> base_reader{};
+    std::optional<BackingDeleteGuard> base_delete_guard{};
     std::optional<VhdxLayout> base_layout{};
     WindowsFileIdentity base_windows_identity{};
     std::shared_ptr<IPersistenceFile> journal_file{};
+    std::optional<BackingDeleteGuard> journal_delete_guard{};
     WindowsFileIdentity journal_windows_identity{};
     JournalHeader journal_header{};
     CheckpointCommitRecord journal_commit{};
@@ -502,7 +504,7 @@ void validate_candidate(
     }
     pass(evidence, ManifestCandidateCheck::JournalPath);
 
-    auto base_capability = open_bundle_file_for_inspection(
+    auto base_capability = open_bundle_file_for_backing_view(
         bundle_root, slot.base_relative_name);
     if (!base_capability.ok()) {
         const auto status = status_from_error(base_capability.error());
@@ -520,10 +522,13 @@ void validate_candidate(
         }
         return;
     }
-    resources.base_windows_identity = base_capability.value().identity();
+    auto opened_base = base_capability.move_value();
+    resources.base_windows_identity = opened_base.identity();
+    resources.base_delete_guard.emplace(
+        opened_base.take_delete_guard());
     pass(evidence, ManifestCandidateCheck::BasePresence);
     auto base_file = open_validated_persistence_file(
-        base_capability.move_value());
+        opened_base.take_file());
     if (!base_file.ok()) {
         fail(evidence, ManifestCandidateCheck::BaseOpen, base_file.error());
         return;
@@ -621,7 +626,7 @@ void validate_candidate(
     resources.base_layout = layout;
     resources.base_reader = base_reader.move_value();
 
-    auto journal_capability = open_bundle_file_for_inspection(
+    auto journal_capability = open_bundle_file_for_backing_view(
         bundle_root, slot.journal_relative_name);
     if (!journal_capability.ok()) {
         const auto status = status_from_error(journal_capability.error());
@@ -639,10 +644,13 @@ void validate_candidate(
         }
         return;
     }
-    resources.journal_windows_identity = journal_capability.value().identity();
+    auto opened_journal = journal_capability.move_value();
+    resources.journal_windows_identity = opened_journal.identity();
+    resources.journal_delete_guard.emplace(
+        opened_journal.take_delete_guard());
     pass(evidence, ManifestCandidateCheck::JournalPresence);
     auto journal_unique = open_validated_persistence_file(
-        journal_capability.move_value());
+        opened_journal.take_file());
     if (!journal_unique.ok()) {
         fail(evidence, ManifestCandidateCheck::JournalOpen,
              journal_unique.error());
@@ -1057,9 +1065,18 @@ RecoveryOutcome recover_complete_image(
     identity.commit = slot.generation.journal.commit;
     identity.root = slot.generation.journal.root;
     identity.feature_flags = slot.feature_flags;
+    if (!resource.journal_delete_guard.has_value() ||
+        !resource.base_delete_guard.has_value()) {
+        outcome.error = recovery_error(
+            PersistenceErrorCode::FatalInternalInvariant,
+            L"selected recovery candidate lost its delete guards");
+        return outcome;
+    }
     auto composite = CompositeBackingStore::create(
         identity, journal_reader.move_value(),
-        std::move(resource.base_reader));
+        std::move(resource.base_reader),
+        std::move(*resource.journal_delete_guard),
+        std::move(*resource.base_delete_guard));
     if (!composite.ok()) {
         outcome.error = composite.error();
         return outcome;

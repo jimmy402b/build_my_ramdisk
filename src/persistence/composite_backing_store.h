@@ -18,6 +18,7 @@ namespace myrd::persistence {
 
 class JournalReader;
 class VhdxReader;
+class BackingDeleteGuard;
 
 inline constexpr std::uint32_t kCompositeBackingIdentitySchema = 1;
 
@@ -115,9 +116,15 @@ public:
     static Result<std::unique_ptr<CompositeBackingStore>> create(
         CompositeBackingIdentity identity,
         std::unique_ptr<JournalReader> journal,
-        std::unique_ptr<VhdxReader> base);
+        std::unique_ptr<VhdxReader> base,
+        BackingDeleteGuard journal_guard,
+        BackingDeleteGuard base_guard);
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
+    static Result<std::unique_ptr<CompositeBackingStore>> create_for_testing(
+        CompositeBackingIdentity identity,
+        std::unique_ptr<JournalReader> journal,
+        std::unique_ptr<VhdxReader> base);
     static Result<std::unique_ptr<CompositeBackingStore>> create_for_testing(
         CompositeBackingIdentity identity,
         std::unique_ptr<detail::ICompositeJournalLayer> journal,
@@ -155,7 +162,9 @@ private:
     static Result<std::unique_ptr<CompositeBackingStore>> create_layers(
         CompositeBackingIdentity identity,
         std::unique_ptr<detail::ICompositeJournalLayer> journal,
-        std::unique_ptr<detail::ICompositeBaseLayer> base);
+        std::unique_ptr<detail::ICompositeBaseLayer> base,
+        std::unique_ptr<BackingDeleteGuard> journal_guard = {},
+        std::unique_ptr<BackingDeleteGuard> base_guard = {});
 
     std::unique_ptr<Impl> impl_;
 };

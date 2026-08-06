@@ -12,6 +12,9 @@
 
 namespace myrd::persistence {
 
+class CompositeBackingStore;
+namespace detail { class BackingViewBindingState; }
+
 struct JournalReaderOptions final {
     JournalIndexView view{};
     ImageGeometry geometry{};
@@ -41,10 +44,15 @@ public:
         const OperationContext& context,
         std::uint64_t first_block) const;
 
+
 private:
+    [[nodiscard]] std::shared_ptr<
+        const detail::BackingViewBindingState>
+    backing_view_binding() const noexcept;
     struct Impl;
     explicit JournalReader(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
+    friend class CompositeBackingStore;
 };
 
 }  // namespace myrd::persistence

@@ -197,6 +197,7 @@ PreparedCheckpointTransaction::PreparedCheckpointTransaction(
       publish_lease_(std::move(other.publish_lease_)),
       manifest_file_(std::move(other.manifest_file_)),
       journal_file_(std::move(other.journal_file_)),
+      journal_delete_guard_(std::move(other.journal_delete_guard_)),
       checkpoint_(std::move(other.checkpoint_)),
       journal_header_(std::move(other.journal_header_)),
       journal_file_identity_(std::move(other.journal_file_identity_)),
@@ -226,6 +227,7 @@ PreparedCheckpointTransaction& PreparedCheckpointTransaction::operator=(
     publish_lease_ = std::move(other.publish_lease_);
     manifest_file_ = std::move(other.manifest_file_);
     journal_file_ = std::move(other.journal_file_);
+    journal_delete_guard_ = std::move(other.journal_delete_guard_);
     checkpoint_ = std::move(other.checkpoint_);
     journal_header_ = std::move(other.journal_header_);
     journal_file_identity_ = std::move(other.journal_file_identity_);
@@ -273,6 +275,7 @@ Result<void> PreparedCheckpointTransaction::abort() {
     session_ = nullptr;
     manifest_file_.reset();
     journal_file_.reset();
+    journal_delete_guard_.reset();
     if (artifact_replacement_.has_value()) {
         artifact_replacement_->base_capability_anchor.reset();
     }
@@ -364,6 +367,49 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
                 request.active_slot.generation.checkpoint_generation,
                 checkpoint_.generation,
                 prepared.value().slot.slot_index};
+            // Journal construction is complete and durable. Drop the
+            // writer/delete capability before normal recovery validates the
+            // candidate, then retain a read capability that denies namespace
+            // deletion until normal recovery installs the complete runtime
+            // BackingView with its own opaque guards.
+            if (request.complete_validation.has_value()) {
+                auto closed = journal_file_->close();
+                journal_file_.reset();
+                if (!closed.ok()) {
+                    attempted.error = closed.error();
+                } else {
+                    auto capability = open_bundle_file_for_backing_view(
+                        request.complete_validation->bundle_root,
+                        prepared.value().slot.journal_relative_name);
+                    if (!capability.ok()) {
+                        attempted.error = capability.error();
+                    } else {
+                        auto opened = capability.move_value();
+                        if (!same_file_object(
+                                   opened.identity(),
+                                   journal_file_identity_) ||
+                               opened.identity().size !=
+                                   checkpoint_.committed_length) {
+                            attempted.error = checkpoint_failure<void>(
+                                L"reopened journal identity changed before publish",
+                                PersistenceErrorCode::GenerationConflict).error();
+                        } else {
+                            journal_file_identity_ = opened.identity();
+                            auto reopened = open_validated_persistence_file(
+                                opened.take_file());
+                            if (!reopened.ok()) {
+                                attempted.error = reopened.error();
+                            } else {
+                                journal_delete_guard_.emplace(
+                                    opened.take_delete_guard());
+                                journal_file_ =
+                                    std::shared_ptr<IPersistenceFile>(
+                                        reopened.move_value());
+                            }
+                        }
+                    }
+                }
+            }
             ManifestPublishRequest publish_request{};
             publish_request.manifest_file = manifest_file_;
             publish_request.active_slot = request.active_slot;
@@ -377,8 +423,10 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
             publish_request.test_validate_candidate =
                 std::move(request.test_validate_candidate);
 #endif
-            attempted = attempt_manifest_publication(
-                context, *publish_lease_, publish_request);
+            if (!attempted.error.has_value()) {
+                attempted = attempt_manifest_publication(
+                    context, *publish_lease_, publish_request);
+            }
             if (attempted.ok()) {
                 observed = run_transaction_observer(
                     observers_.after_manifest_publish,
@@ -669,6 +717,7 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
         store_ = nullptr;
         session_ = nullptr;
         journal_file_.reset();
+        journal_delete_guard_.reset();
         manifest_file_.reset();
         if (artifact_replacement_.has_value()) {
             artifact_replacement_->base_capability_anchor.reset();
@@ -1015,6 +1064,7 @@ void PreparedCheckpointTransaction::abandon_noexcept() noexcept {
             manifest_file_.reset();
         }
         journal_file_.reset();
+        journal_delete_guard_.reset();
         store_ = nullptr;
         session_ = nullptr;
     } catch (...) {
@@ -1022,6 +1072,7 @@ void PreparedCheckpointTransaction::abandon_noexcept() noexcept {
         publish_lease_.reset();
         manifest_file_.reset();
         journal_file_.reset();
+        journal_delete_guard_.reset();
         store_ = nullptr;
         session_ = nullptr;
     }

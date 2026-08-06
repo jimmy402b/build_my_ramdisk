@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "src/persistence/composite_backing_store.h"
+#include "src/persistence/image_paths.h"
 #include "src/persistence/journal_reader.h"
 #include "src/persistence/journal_writer.h"
 #include "src/persistence/vhdx_reader.h"
@@ -13,6 +14,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <map>
 #include <optional>
@@ -732,7 +735,7 @@ TEST_CASE(composite_backing_real_readers_touch_only_relevant_lazy_ranges) {
     identity.commit = journal.prepared.commit;
     identity.root = journal.prepared.root;
     identity.feature_flags = journal.header.feature_flags;
-    auto store_result = CompositeBackingStore::create(
+    auto store_result = CompositeBackingStore::create_for_testing(
         identity, std::move(journal.reader), std::move(base.reader));
     REQUIRE(store_result.ok());
     auto store = store_result.move_value();
@@ -843,6 +846,104 @@ TEST_CASE(composite_backing_rejects_invalid_construction_and_requests) {
         REQUIRE_EQ(layers.journal_raw->calls, std::uint64_t{0});
         REQUIRE_EQ(layers.base_raw->calls, std::uint64_t{0});
     }
+}
+
+TEST_CASE(composite_backing_rejects_readers_bound_to_different_guards) {
+    const auto root = std::filesystem::temp_directory_path() /
+        (L"myrd-composite-binding-" +
+         std::to_wstring(GetCurrentProcessId()) + L"-" +
+         std::to_wstring(GetTickCount64()));
+    std::filesystem::create_directories(root);
+    struct Cleanup final {
+        std::filesystem::path root;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(root, ignored);
+        }
+    } cleanup{root};
+    const auto make_file = [&](const wchar_t* name, std::uint64_t size) {
+        std::ofstream output(
+            root / name, std::ios::binary | std::ios::trunc);
+        REQUIRE(output.good());
+        output.seekp(static_cast<std::streamoff>(size - 1));
+        output.put('\0');
+        REQUIRE(output.good());
+    };
+
+    auto layout_source = make_real_vhdx_reader();
+    const auto base_length = layout_source.layout->file_length();
+    make_file(L"journal-a.rdj", 64 * 1024);
+    make_file(L"journal-b.rdj", 64 * 1024);
+    CompositePayloadSource physical_source;
+    physical_source.payloads.emplace(
+        0, std::vector<std::byte>(
+               kVhdxDataBlockBytes, std::byte{0x5b}));
+    const std::vector<std::uint64_t> physical_candidates{0};
+    auto physical_plan = plan_sparse_vhdx(
+        OperationContext{}, {8 * kCompositeTestMiB, 512},
+        layout_source.writer_identity, physical_candidates,
+        physical_source, {8, 8, kVhdxDataBlockBytes});
+    REQUIRE(physical_plan.ok());
+    auto physical_file = open_windows_persistence_file(
+        root / L"base-b.vhdx", FileOpenMode::CreateNewReadWrite);
+    REQUIRE(physical_file.ok());
+    auto physical_written = write_sparse_vhdx_file(
+        OperationContext{}, physical_plan.value(), physical_source,
+        physical_file.move_value());
+    REQUIRE(physical_written.ok());
+    auto closed_physical = physical_written.value().release_file();
+    REQUIRE(closed_physical->close().ok());
+
+    auto journal_a = open_bundle_file_for_backing_view(
+        root, "journal-a.rdj");
+    auto journal_b = open_bundle_file_for_backing_view(
+        root, "journal-b.rdj");
+    auto base_b = open_bundle_file_for_backing_view(root, "base-b.vhdx");
+    REQUIRE(journal_a.ok());
+    REQUIRE(journal_b.ok());
+    REQUIRE(base_b.ok());
+    auto journal_a_opened = journal_a.move_value();
+    auto journal_b_opened = journal_b.move_value();
+    auto base_b_opened = base_b.move_value();
+
+    auto journal_file = open_validated_persistence_file(
+        journal_a_opened.take_file());
+    REQUIRE(journal_file.ok());
+    JournalReaderOptions journal_options{};
+    journal_options.view.file = std::shared_ptr<IPersistenceFile>(
+        journal_file.move_value());
+    journal_options.view.file_identity = journal_a_opened.identity();
+    journal_options.view.journal_identity.journal_uuid[0] = std::byte{0x71};
+    journal_options.view.epoch = 7;
+    journal_options.view.root_generation = 7;
+    journal_options.view.committed_length = 64 * 1024;
+    journal_options.geometry = {8 * 1024 * 1024, 512, 4096};
+    journal_options.index_cache = {4 * kIndexNodeBytes, 4};
+    auto journal_reader = JournalReader::create(std::move(journal_options));
+    REQUIRE(journal_reader.ok());
+
+    auto base_file = open_validated_persistence_file(
+        base_b_opened.take_file());
+    REQUIRE(base_file.ok());
+    auto base_reader = VhdxReader::create_for_testing(
+        base_file.move_value(), base_b_opened.identity(),
+        *layout_source.layout,
+        {{4 * kVhdxBatPageBytes, 4}, 8, 8});
+    REQUIRE(base_reader.ok());
+
+    auto identity = valid_identity();
+    identity.base_windows_identity = base_b_opened.identity();
+    identity.base_expected_length = base_length;
+    identity.base_vhdx_identity =
+        layout_source.layout->file_identity();
+    identity.virtual_disk_id = layout_source.layout->virtual_disk_id();
+    identity.journal_windows_identity = journal_b_opened.identity();
+    identity.journal_committed_length = 64 * 1024;
+    auto rejected = CompositeBackingStore::create(
+        identity, journal_reader.move_value(), base_reader.move_value(),
+        journal_b_opened.take_delete_guard(),
+        base_b_opened.take_delete_guard());
+    REQUIRE(!rejected.ok());
 }
 
 }  // namespace
