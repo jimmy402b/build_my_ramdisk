@@ -954,7 +954,7 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 - [x] **Step 3: Implement finally-style cleanup** for provider process, proxy/disk device, drive letter, VHDX attachment and temporary files. Record anything left behind with manual recovery commands.
 - [x] **Step 4: Add stable verification routing and fail-closed JSON validation.** `Invoke-M3Verification.ps1` exposes Local, Preflight, RealFunctional, Crash and Soak tiers; unavailable implementations return BLOCKED/nonzero until their tasks land. `Verify-M3Json.ps1` rejects schema/source-commit/binary-hash mismatches and required SKIP.
 - [x] **Step 5: Dry-run test all safety checks without administrator/device access; add Pester or script-level tests for target rejection.**
-- [ ] **Step 6: Commit.** `test(m3): add safe real-host e2e harness`.
+- [x] **Step 6: Commit.** `test(m3): add safe real-host e2e harness` (`0164773`).
 
 ### Task 41: Prove real AIM, NTFS, lazy loading and native VHDX compatibility
 
