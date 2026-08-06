@@ -1066,6 +1066,29 @@ set_tests_properties(integration.m3.recovery PROPERTIES
     LABELS "m3-v2"
     TIMEOUT 90)
 
+# ---- M3 independent complete-recovery oracle (Task 26) ---------------------
+add_executable(myrd_m3_recovery_oracle_tests
+    integration/m3_recovery_oracle_tests.cpp
+    support/m3_independent_recovery_fixture.cpp
+)
+target_link_libraries(myrd_m3_recovery_oracle_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_recovery_oracle_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m3_recovery_oracle_tests PRIVATE
+    "MYRD_M3_RECOVERY_HEADER_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-header-v1.hex\""
+    "MYRD_M3_RECOVERY_DATA_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-data-v1.hex\""
+    "MYRD_M3_RECOVERY_ZERO_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-zero-v1.hex\""
+    "MYRD_M3_RECOVERY_DISCARD_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-discard-v1.hex\""
+    "MYRD_M3_RECOVERY_INDEX_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-index-v1.hex\""
+    "MYRD_M3_RECOVERY_COMMIT_FIXTURE_PATH=\"${CMAKE_SOURCE_DIR}/tests/fixtures/m3/journal-commit-v1.hex\"")
+myrd_enable_warnings(myrd_m3_recovery_oracle_tests)
+add_test(NAME integration.m3.recovery_oracle
+    COMMAND myrd_m3_recovery_oracle_tests)
+set_tests_properties(integration.m3.recovery_oracle PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 90)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
