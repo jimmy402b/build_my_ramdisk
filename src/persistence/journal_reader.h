@@ -37,6 +37,10 @@ public:
         std::uint64_t block_index,
         std::span<std::byte> destination) const;
 
+    Result<std::optional<std::uint64_t>> next_indexed_block(
+        const OperationContext& context,
+        std::uint64_t first_block) const;
+
 private:
     struct Impl;
     explicit JournalReader(std::unique_ptr<Impl> impl) noexcept;

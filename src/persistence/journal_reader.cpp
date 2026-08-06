@@ -228,4 +228,41 @@ Result<std::optional<BlockLoadResult>> JournalReader::read_block(
         BlockLoadResult{BlockLoadKind::AllZero});
 }
 
+Result<std::optional<std::uint64_t>> JournalReader::next_indexed_block(
+    const OperationContext& context,
+    const std::uint64_t first_block) const {
+    constexpr auto operation = L"JournalReader::next_indexed_block";
+    if (!impl_) {
+        return reader_failure<std::optional<std::uint64_t>>(
+            L"reader is moved from",
+            PersistenceErrorCode::FatalInternalInvariant, 0, operation);
+    }
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(live.error());
+    }
+    const auto last_block =
+        (impl_->options.geometry.virtual_bytes - 1) / kM2BlockSize;
+    if (first_block > last_block) {
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
+    }
+    auto next = impl_->index->next_block_index(
+        context, impl_->options.view, first_block);
+    if (!next.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(next.error());
+    }
+    live = check_operation_context(context);
+    if (!live.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(live.error());
+    }
+    if (next.value().has_value() &&
+        (next.value().value() < first_block ||
+         next.value().value() > last_block)) {
+        return reader_failure<std::optional<std::uint64_t>>(
+            L"journal index candidate is outside image geometry",
+            PersistenceErrorCode::BackingDataCorrupt, 0, operation);
+    }
+    return next;
+}
+
 }  // namespace myrd::persistence

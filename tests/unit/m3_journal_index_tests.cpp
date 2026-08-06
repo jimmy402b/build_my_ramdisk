@@ -246,6 +246,44 @@ TEST_CASE(journal_index_multilevel_lookup_checks_boundaries_and_gaps) {
     }
 }
 
+TEST_CASE(journal_index_next_block_uses_tree_lower_bound_across_gaps) {
+    auto fixture = make_tree_fixture();
+    auto reader = JournalIndexReader::create({3 * kIndexNodeBytes, 3});
+    REQUIRE(reader.ok());
+    for (const auto& [first, expected] :
+         std::vector<std::pair<std::uint64_t,
+                               std::optional<std::uint64_t>>>{
+             {0, 0}, {1, 10}, {10, 10}, {11, 20}, {19, 20},
+             {20, 20}, {21, 30}, {30, 30}, {31, std::nullopt},
+             {UINT64_MAX, std::nullopt}}) {
+        const auto result = reader.value()->next_block_index(
+            OperationContext{}, fixture.view, first);
+        REQUIRE(result.ok());
+        REQUIRE(result.value() == expected);
+    }
+
+    auto empty_fixture = make_leaf_fixture();
+    empty_fixture.view.root = {};
+    empty_fixture.view.root_generation = 0;
+    const auto reads_before = empty_fixture.state->calls(
+        test::FaultFilePhase::Read);
+    const auto empty = reader.value()->next_block_index(
+        OperationContext{}, empty_fixture.view, 0);
+    REQUIRE(empty.ok());
+    REQUIRE(!empty.value().has_value());
+    REQUIRE_EQ(empty_fixture.state->calls(test::FaultFilePhase::Read),
+               reads_before);
+
+    std::stop_source stop;
+    stop.request_stop();
+    const auto cancelled = reader.value()->next_block_index(
+        OperationContext{stop.get_token()}, fixture.view, 0);
+    REQUIRE(!cancelled.ok());
+    REQUIRE_EQ(cancelled.error().domain, ErrorDomain::storage);
+    REQUIRE_EQ(cancelled.error().code, static_cast<std::uint32_t>(
+                                           OperationErrorCode::cancelled));
+}
+
 TEST_CASE(journal_index_accepts_exactly_eight_levels) {
     constexpr std::uint64_t leaf_offset = 0x12000;
     constexpr std::uint64_t root_offset = 0x19000;

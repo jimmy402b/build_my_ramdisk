@@ -870,13 +870,16 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 
 **Class:** S — Claude can build streaming enumerator; logic owner reviews snapshot identity
 **Depends on:** 22, 25, 29
-**Files:** Create `src/persistence/live_extent_enumerator.h/.cpp`, `tests/unit/m3_live_extent_tests.cpp`.
+**Files:** Create `src/persistence/live_extent_enumerator.h/.cpp`; extend
+`journal_index.*`, `journal_reader.*`, `vhdx_reader.*` and
+`composite_backing_store.*` with bounded ordered candidate streaming; add
+focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 
-- [ ] **Step 1: Red-test merged logical extents** across journal DATA/ZERO/DISCARD and VHDX BAT mappings, including shadowed base payloads and final partial blocks.
-- [ ] **Step 2: Implement enumeration against one immutable `BackingView`** captured at compaction start. Stream block descriptors in ascending order with bounded memory; do not enumerate live mutable RAM state.
-- [ ] **Step 3: Skip logical zero ranges** while preserving exact nonzero data; validate each DATA source before handing it to the VHDX writer.
-- [ ] **Step 4: Compare all descriptors and payload hashes with a full-map oracle over randomized sparse images.**
-- [ ] **Step 5: Commit.** `feat(persistence): enumerate live image extents`.
+- [x] **Step 1: Red-test merged logical extents** across journal DATA/ZERO/DISCARD and VHDX BAT mappings, including shadowed base payloads and final partial blocks.
+- [x] **Step 2: Implement enumeration against one immutable `BackingView`** captured at compaction start. Merge journal-index lower bounds and VHDX BAT allocated candidates with two one-element lookaheads; never scan every 64 KiB logical block or enumerate live mutable RAM state.
+- [x] **Step 3: Skip logical zero ranges** while preserving exact nonzero data; validate each DATA source before handing it to the VHDX writer.
+- [x] **Step 4: Compare all descriptors and payload hashes with a full-map oracle over randomized sparse images.**
+- [x] **Step 5: Commit.** `feat(persistence): enumerate live image extents`.
 
 ### Task 35: Compact into a new base and journal epoch
 

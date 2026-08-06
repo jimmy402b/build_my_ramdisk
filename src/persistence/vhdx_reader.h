@@ -96,6 +96,13 @@ public:
         std::uint64_t block_index,
         std::span<std::byte> destination) const;
 
+    // Returns the first M2 block >= first_block covered by a FullyPresent BAT
+    // payload. Empty VHDX payload ranges are skipped by BAT metadata, not by
+    // reading every logical 64 KiB block.
+    Result<std::optional<std::uint64_t>> next_allocated_block(
+        const OperationContext& context,
+        std::uint64_t first_block) const;
+
     Result<std::vector<VhdxAllocatedExtent>> enumerate_allocated_extents(
         const OperationContext& context) const;
 

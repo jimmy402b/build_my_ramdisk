@@ -177,6 +177,8 @@ add_library(myrd_persistence STATIC
     persistence/vhdx_writer.cpp
     persistence/composite_backing_store.h
     persistence/composite_backing_store.cpp
+    persistence/live_extent_enumerator.h
+    persistence/live_extent_enumerator.cpp
     persistence/recovery_engine.h
     persistence/recovery_engine.cpp
     persistence/image_creator.h

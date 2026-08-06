@@ -1269,6 +1269,20 @@ set_tests_properties(model.m3.checkpoint_crash PROPERTIES
     LABELS "m3-v2"
     TIMEOUT 180)
 
+# ---- M3 immutable live-extent enumeration (Task 34) -----------------------
+add_executable(myrd_m3_live_extent_tests
+    unit/m3_live_extent_tests.cpp
+)
+target_link_libraries(myrd_m3_live_extent_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_live_extent_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_live_extent_tests)
+add_test(NAME unit.m3.live_extents COMMAND myrd_m3_live_extent_tests)
+set_tests_properties(unit.m3.live_extents PROPERTIES
+    LABELS "m3-v4"
+    TIMEOUT 120)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

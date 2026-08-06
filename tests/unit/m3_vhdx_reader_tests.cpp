@@ -269,6 +269,70 @@ TEST_CASE(vhdx_reader_resolves_all_dynamic_payload_states) {
     REQUIRE(destination == expected);
 }
 
+TEST_CASE(vhdx_reader_next_allocated_block_skips_empty_bat_ranges) {
+    auto image = make_image();
+    set_payload_entry(image, 0, 6, 4);
+    set_payload_entry(image, 3, 6, 8);
+    const auto blocks_per_payload =
+        image.layout->block_size() / kM2BlockSize;
+    auto reader = open_reader(image);
+
+    for (const auto& [first, expected] :
+         std::vector<std::pair<std::uint64_t,
+                               std::optional<std::uint64_t>>>{
+             {0, 0},
+             {1, 1},
+             {blocks_per_payload, 3 * blocks_per_payload},
+             {3 * blocks_per_payload, 3 * blocks_per_payload},
+             {3 * blocks_per_payload + 1, 3 * blocks_per_payload + 1},
+             {4 * blocks_per_payload, std::nullopt}}) {
+        const auto result = reader->next_allocated_block(
+            OperationContext{}, first);
+        REQUIRE(result.ok());
+        REQUIRE(result.value() == expected);
+    }
+    REQUIRE_EQ(reader->stats().payload_read_calls, 0ull);
+
+    auto empty_image = make_image();
+    auto empty_reader = open_reader(empty_image);
+    const auto empty = empty_reader->next_allocated_block(
+        OperationContext{}, 0);
+    REQUIRE(empty.ok());
+    REQUIRE(!empty.value().has_value());
+
+    std::stop_source stop;
+    stop.request_stop();
+    const auto cancelled = reader->next_allocated_block(
+        OperationContext{stop.get_token()}, 0);
+    REQUIRE(!cancelled.ok());
+    REQUIRE_EQ(cancelled.error().domain, ErrorDomain::storage);
+    REQUIRE_EQ(cancelled.error().code, static_cast<std::uint32_t>(
+                                           OperationErrorCode::cancelled));
+}
+
+TEST_CASE(vhdx_reader_next_allocated_block_scales_with_bat_not_m2_capacity) {
+    constexpr std::uint64_t virtual_size = 1ull << 30;
+    auto image = make_image(virtual_size);
+    const auto payload_count = image.layout->payload_block_count();
+    REQUIRE(payload_count > 1);
+    set_payload_entry(image, payload_count - 1, 6, 4);
+    const auto blocks_per_payload =
+        image.layout->block_size() / kM2BlockSize;
+    auto reader = open_reader(
+        image, reader_options(4, payload_count + 1, payload_count + 1));
+
+    const auto first = reader->next_allocated_block(
+        OperationContext{}, 0);
+    REQUIRE(first.ok());
+    REQUIRE(first.value() == std::optional<std::uint64_t>{
+        (payload_count - 1) * blocks_per_payload});
+    const auto stats = reader->stats();
+    REQUIRE(stats.bat_read_calls <= 2ull);
+    REQUIRE_EQ(stats.payload_read_calls, 0ull);
+    REQUIRE(stats.bat_read_calls * kVhdxBatPageBytes <
+            virtual_size / 1000);
+}
+
 TEST_CASE(vhdx_reader_rejects_reserved_partial_and_reserved_bits) {
     for (const auto state : {4U, 5U}) {
         auto image = make_image();
@@ -473,6 +537,37 @@ TEST_CASE(vhdx_reader_normal_reads_latch_touched_physical_alias_corruption) {
     REQUIRE(destination == before);
     require_corrupt(reader->read_block(
         OperationContext{}, 0, destination));
+}
+
+TEST_CASE(vhdx_reader_ordered_physical_ranges_check_both_neighbors) {
+    struct RangeCase final {
+        std::array<std::uint64_t, 3> offsets_mb;
+        bool third_succeeds;
+    };
+    for (const auto& range_case : std::array{
+             RangeCase{{4, 8, 6}, true},
+             RangeCase{{4, 8, 5}, false},
+             RangeCase{{4, 8, 7}, false}}) {
+        auto image = make_image();
+        for (std::uint64_t payload = 0; payload < 3; ++payload) {
+            set_payload_entry(
+                image, payload, 6,
+                range_case.offsets_mb[static_cast<std::size_t>(payload)]);
+        }
+        auto reader = open_reader(image);
+        std::array<std::byte, kM2BlockSize> destination{};
+        REQUIRE(reader->read_block(
+            OperationContext{}, 0, destination).ok());
+        REQUIRE(reader->read_block(
+            OperationContext{}, 32, destination).ok());
+        const auto third = reader->read_block(
+            OperationContext{}, 64, destination);
+        if (range_case.third_succeeds) {
+            REQUIRE(third.ok());
+        } else {
+            require_corrupt(third);
+        }
+    }
 }
 
 TEST_CASE(vhdx_reader_bat_cache_is_bounded_and_identity_isolated) {

@@ -861,13 +861,16 @@ checkpoint index root、`DirtyBlockSnapshot::dirty_epoch` 及 M2 publication pin
 
 ## Task 34 — Enumerate live extents for compaction
 
-**类别：S。允许文件：** `live_extent_enumerator.*`、extent tests；snapshot identity 由逻辑负责人审查。
+**类别：S。允许文件：** `live_extent_enumerator.*`、`journal_index.*`、
+`journal_reader.*`、`vhdx_reader.*`、`composite_backing_store.*` 及对应
+reader/composite/extent tests；snapshot identity 与 sparse candidate merge
+由逻辑负责人审查。
 
-- [ ] 红灯覆盖 journal DATA/ZERO/DISCARD 遮蔽 VHDX、final partial、contiguous merge 与 sparse holes。
-- [ ] 捕获一个 immutable BackingView 后按 block ascending bounded stream；禁止读取 live mutable RAM 作为 compaction source。
-- [ ] zero ranges 不写 payload，每个 DATA 在交给 writer 前完成 source integrity validation。
-- [ ] randomized full-map oracle 比较 descriptors 和 payload hashes。
-- [ ] 跑 `m3-v4`；建议提交 `feat(persistence): enumerate live image extents`。
+- [x] 红灯覆盖 journal DATA/ZERO/DISCARD 遮蔽 VHDX、final partial、contiguous merge 与 sparse holes。
+- [x] 捕获一个 immutable BackingView 后，将 journal-index lower-bound 与 VHDX BAT allocated candidates 用两个 lookahead 做 ascending/deduplicated bounded stream；禁止逐个扫描全部 64 KiB logical blocks，禁止读取 live mutable RAM 作为 compaction source。
+- [x] zero ranges 不写 payload，每个 DATA 在交给 writer 前完成 source integrity validation。
+- [x] randomized full-map oracle 比较 descriptors 和 payload hashes。
+- [x] 跑 `m3-v4`；建议提交 `feat(persistence): enumerate live image extents`。
 
 ## Task 35 — Compact to a new base and journal epoch
 

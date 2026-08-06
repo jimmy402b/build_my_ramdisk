@@ -33,6 +33,7 @@ public:
     std::byte data_byte{std::byte{0x31}};
     std::stop_source* stop_after_read{};
     std::chrono::milliseconds delay{};
+    std::optional<std::uint64_t> candidate;
     mutable std::uint64_t calls{};
     mutable std::uint64_t requested_bytes{};
     mutable std::uint64_t largest_request{};
@@ -54,6 +55,20 @@ public:
         }
         return Result<detail::CompositeJournalRead>::success(next);
     }
+
+    Result<std::optional<std::uint64_t>> next_candidate_block(
+        const OperationContext& context,
+        const std::uint64_t first_block) const override {
+        auto live = check_operation_context(context);
+        if (!live.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                live.error());
+        }
+        if (candidate.has_value() && candidate.value() >= first_block) {
+            return Result<std::optional<std::uint64_t>>::success(candidate);
+        }
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
+    }
 };
 
 class FakeBaseLayer final : public detail::ICompositeBaseLayer {
@@ -61,6 +76,7 @@ public:
     detail::CompositeBaseRead next{};
     std::optional<Error> failure;
     std::byte data_byte{std::byte{0x52}};
+    std::optional<std::uint64_t> candidate;
     mutable std::uint64_t calls{};
     mutable std::uint64_t requested_bytes{};
     mutable std::uint64_t largest_request{};
@@ -79,6 +95,20 @@ public:
             std::fill(destination.begin(), destination.end(), data_byte);
         }
         return Result<detail::CompositeBaseRead>::success(next);
+    }
+
+    Result<std::optional<std::uint64_t>> next_candidate_block(
+        const OperationContext& context,
+        const std::uint64_t first_block) const override {
+        auto live = check_operation_context(context);
+        if (!live.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                live.error());
+        }
+        if (candidate.has_value() && candidate.value() >= first_block) {
+            return Result<std::optional<std::uint64_t>>::success(candidate);
+        }
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
     }
 };
 
@@ -451,6 +481,51 @@ TEST_CASE(composite_backing_checks_context_before_each_layer) {
         REQUIRE_EQ(layers.journal_raw->calls, std::uint64_t{1});
         REQUIRE_EQ(layers.base_raw->calls, std::uint64_t{0});
     }
+}
+
+TEST_CASE(composite_backing_merges_ordered_journal_and_bat_candidates) {
+    Layers layers;
+    layers.journal_raw->candidate = 90;
+    layers.base_raw->candidate = 10;
+    auto store = create_store(layers);
+
+    std::vector<std::uint64_t> candidates;
+    auto merged = store->enumerate_candidate_blocks(
+        OperationContext{}, [&candidates](const std::uint64_t block) {
+            candidates.push_back(block);
+            return Result<void>::success();
+        });
+    REQUIRE(merged.ok());
+    REQUIRE(candidates == std::vector<std::uint64_t>({10, 90}));
+
+    layers.base_raw->candidate = 90;
+    candidates.clear();
+    auto deduplicated = store->enumerate_candidate_blocks(
+        OperationContext{}, [&candidates](const std::uint64_t block) {
+            candidates.push_back(block);
+            return Result<void>::success();
+        });
+    REQUIRE(deduplicated.ok());
+    REQUIRE(candidates == std::vector<std::uint64_t>({90}));
+
+    layers.journal_raw->candidate = 999;
+    layers.base_raw->candidate.reset();
+    auto invalid = store->enumerate_candidate_blocks(
+        OperationContext{}, [](const std::uint64_t) {
+            return Result<void>::success();
+        });
+    REQUIRE(!invalid.ok());
+    REQUIRE_EQ(invalid.error().domain, ErrorDomain::persistence);
+    REQUIRE_EQ(invalid.error().code, static_cast<std::uint32_t>(
+                                         PersistenceErrorCode::BackingDataCorrupt));
+
+    std::stop_source stop;
+    stop.request_stop();
+    auto cancelled = store->enumerate_candidate_blocks(
+        OperationContext{stop.get_token()},
+        [](const std::uint64_t) { return Result<void>::success(); });
+    REQUIRE(!cancelled.ok());
+    REQUIRE_EQ(cancelled.error().domain, ErrorDomain::storage);
 }
 
 TEST_CASE(composite_backing_preserves_immutable_generation_views) {

@@ -64,6 +64,12 @@ public:
         return Result<detail::CompositeJournalRead>::success({kind});
     }
 
+    Result<std::optional<std::uint64_t>> next_candidate_block(
+        const OperationContext& context,
+        const std::uint64_t first_block) const override {
+        return reader_->next_indexed_block(context, first_block);
+    }
+
 private:
     std::unique_ptr<JournalReader> reader_;
 };
@@ -85,6 +91,12 @@ public:
             ? detail::CompositeBaseKind::Data
             : detail::CompositeBaseKind::Zero;
         return Result<detail::CompositeBaseRead>::success({kind});
+    }
+
+    Result<std::optional<std::uint64_t>> next_candidate_block(
+        const OperationContext& context,
+        const std::uint64_t first_block) const override {
+        return reader_->next_allocated_block(context, first_block);
     }
 
 private:
@@ -246,6 +258,105 @@ Result<BlockLoadResult> CompositeBackingStore::load_block(
         return Result<BlockLoadResult>::success({BlockLoadKind::Data});
     }
     return Result<BlockLoadResult>::success({BlockLoadKind::AllZero});
+}
+
+Result<void> CompositeBackingStore::enumerate_candidate_blocks(
+    const OperationContext& context,
+    const CompositeCandidateConsumer& consume) const {
+    constexpr auto operation =
+        L"CompositeBackingStore::enumerate_candidate_blocks";
+    if (!consume) {
+        return Result<void>::failure({
+            ErrorDomain::persistence,
+            static_cast<std::uint32_t>(PersistenceErrorCode::InvalidFormat),
+            operation, L"candidate consumer is required"});
+    }
+    const auto last_block =
+        (impl_->identity.geometry.virtual_bytes - 1) / kM2BlockSize;
+    std::uint64_t journal_first{};
+    std::uint64_t base_first{};
+    std::optional<std::uint64_t> journal_candidate;
+    std::optional<std::uint64_t> base_candidate;
+    bool journal_loaded{};
+    bool base_loaded{};
+    bool journal_exhausted{};
+    bool base_exhausted{};
+
+    const auto invalid = [last_block](
+        const std::uint64_t first,
+        const std::optional<std::uint64_t>& candidate) {
+        return candidate.has_value() &&
+               (candidate.value() < first ||
+                candidate.value() > last_block);
+    };
+
+    while (!journal_exhausted || !base_exhausted) {
+        auto live = check_operation_context(context);
+        if (!live.ok()) return live;
+        if (!journal_loaded && !journal_exhausted) {
+            auto next = impl_->journal->next_candidate_block(
+                context, journal_first);
+            if (!next.ok()) return Result<void>::failure(next.error());
+            if (invalid(journal_first, next.value())) {
+                return Result<void>::failure({
+                    ErrorDomain::persistence,
+                    static_cast<std::uint32_t>(
+                        PersistenceErrorCode::BackingDataCorrupt),
+                    operation,
+                    L"journal candidate is out of order or range"});
+            }
+            journal_candidate = next.value();
+            journal_loaded = journal_candidate.has_value();
+            journal_exhausted = !journal_loaded;
+        }
+        if (!base_loaded && !base_exhausted) {
+            auto next = impl_->base->next_candidate_block(
+                context, base_first);
+            if (!next.ok()) return Result<void>::failure(next.error());
+            if (invalid(base_first, next.value())) {
+                return Result<void>::failure({
+                    ErrorDomain::persistence,
+                    static_cast<std::uint32_t>(
+                        PersistenceErrorCode::BackingDataCorrupt),
+                    operation, L"base candidate is out of order or range"});
+            }
+            base_candidate = next.value();
+            base_loaded = base_candidate.has_value();
+            base_exhausted = !base_loaded;
+        }
+        live = check_operation_context(context);
+        if (!live.ok()) return live;
+        if (!journal_loaded && !base_loaded) break;
+
+        const auto selected = !journal_loaded
+            ? base_candidate.value()
+            : !base_loaded
+                ? journal_candidate.value()
+                : (std::min)(journal_candidate.value(),
+                             base_candidate.value());
+        auto consumed = consume(selected);
+        if (!consumed.ok()) return consumed;
+        live = check_operation_context(context);
+        if (!live.ok()) return live;
+
+        if (journal_loaded && journal_candidate.value() == selected) {
+            journal_loaded = false;
+            if (selected == last_block) {
+                journal_exhausted = true;
+            } else {
+                journal_first = selected + 1;
+            }
+        }
+        if (base_loaded && base_candidate.value() == selected) {
+            base_loaded = false;
+            if (selected == last_block) {
+                base_exhausted = true;
+            } else {
+                base_first = selected + 1;
+            }
+        }
+    }
+    return check_operation_context(context);
 }
 
 CompositeBackingIdentity CompositeBackingStore::identity() const noexcept {

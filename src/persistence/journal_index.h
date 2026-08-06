@@ -76,6 +76,14 @@ public:
         const JournalIndexView& view,
         std::uint64_t block_index);
 
+    // Returns the smallest indexed block >= first_block, or nullopt when the
+    // immutable root has no later entry. Traversal is bounded by tree depth;
+    // it does not scan intervening logical block numbers.
+    Result<std::optional<std::uint64_t>> next_block_index(
+        const OperationContext& context,
+        const JournalIndexView& view,
+        std::uint64_t first_block);
+
     Result<DecodedJournalIndexNode> read_node(
         const OperationContext& context,
         const JournalIndexView& view,

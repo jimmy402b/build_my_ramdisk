@@ -9,7 +9,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace myrd::persistence {
@@ -54,6 +56,9 @@ struct CompositeBackingStats final {
     std::uint64_t fallback_calls{};
 };
 
+using CompositeCandidateConsumer =
+    std::function<Result<void>(std::uint64_t block_index)>;
+
 namespace detail {
 
 enum class CompositeJournalKind : std::uint8_t {
@@ -84,6 +89,9 @@ public:
         const OperationContext& context,
         std::uint64_t block_index,
         std::span<std::byte> destination) const = 0;
+    virtual Result<std::optional<std::uint64_t>> next_candidate_block(
+        const OperationContext& context,
+        std::uint64_t first_block) const = 0;
 };
 
 class ICompositeBaseLayer {
@@ -93,6 +101,9 @@ public:
         const OperationContext& context,
         std::uint64_t block_index,
         std::span<std::byte> destination) const = 0;
+    virtual Result<std::optional<std::uint64_t>> next_candidate_block(
+        const OperationContext& context,
+        std::uint64_t first_block) const = 0;
 };
 
 }  // namespace detail
@@ -123,6 +134,14 @@ public:
         const OperationContext& context,
         std::uint64_t block_index,
         std::span<std::byte> destination) const override;
+
+    // Streams the ascending, deduplicated union of blocks referenced by the
+    // frozen journal index and frozen VHDX BAT. Two one-element lookaheads
+    // prevent repeated BAT gap scans while keeping memory constant. Journal
+    // ZERO/DISCARD remain candidates because they shadow older base DATA.
+    Result<void> enumerate_candidate_blocks(
+        const OperationContext& context,
+        const CompositeCandidateConsumer& consume) const;
 
     [[nodiscard]] CompositeBackingIdentity identity() const noexcept;
     // Monotonic diagnostic counters.  Each field is atomic, but the returned

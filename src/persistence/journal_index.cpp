@@ -455,6 +455,116 @@ Result<JournalIndexLookupResult> JournalIndexReader::lookup(
     return lookup(OperationContext{}, view, block_index);
 }
 
+Result<std::optional<std::uint64_t>> JournalIndexReader::next_block_index(
+    const OperationContext& context,
+    const JournalIndexView& view,
+    const std::uint64_t first_block) {
+    constexpr auto operation = L"JournalIndexReader::next_block_index";
+    if (!impl_) {
+        return index_failure<std::optional<std::uint64_t>>(
+            operation, L"reader is moved from",
+            PersistenceErrorCode::FatalInternalInvariant);
+    }
+    auto context_result = check_operation_context(context);
+    if (!context_result.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(
+            context_result.error());
+    }
+    const auto view_validation = validate_view(view);
+    if (!view_validation.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(
+            view_validation.error());
+    }
+    if (empty_root(view.root)) {
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
+    }
+
+    std::array<std::uint64_t, kMaxIndexDepth> visited{};
+    std::size_t visited_count = 0;
+    auto node_offset = view.root.offset;
+    ExpectedNode expected{view.root.crc32c, view.root_generation,
+                          std::nullopt, std::nullopt, std::nullopt};
+
+    for (std::uint32_t depth = 0; depth < kMaxIndexDepth; ++depth) {
+        context_result = check_operation_context(context);
+        if (!context_result.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                context_result.error());
+        }
+        const auto cycle = validate_visited_offset(
+            std::span<const std::uint64_t>{visited}.first(visited_count),
+            node_offset);
+        if (!cycle.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                cycle.error());
+        }
+        visited[visited_count++] = node_offset;
+
+        auto loaded = impl_->load_node(context, view, node_offset);
+        if (!loaded.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                loaded.error());
+        }
+        const auto& decoded = *loaded.value();
+        const auto& node = decoded.node;
+        if (decoded.record_crc32c != expected.crc32c ||
+            node.common.checkpoint_generation != expected.generation ||
+            (expected.level.has_value() &&
+             node.level != expected.level.value()) ||
+            (expected.minimum_key.has_value() &&
+             decoded.minimum_key != expected.minimum_key.value()) ||
+            (expected.maximum_key.has_value() &&
+             decoded.maximum_key != expected.maximum_key.value())) {
+            return index_failure<std::optional<std::uint64_t>>(
+                operation, L"index descriptor does not match decoded node");
+        }
+        if (first_block > decoded.maximum_key) {
+            return Result<std::optional<std::uint64_t>>::success(
+                std::nullopt);
+        }
+        if (node.level == 0) {
+            const auto entry = std::lower_bound(
+                node.leaf_entries.begin(), node.leaf_entries.end(),
+                first_block,
+                [](const JournalIndexLeafEntry& candidate,
+                   const std::uint64_t key) {
+                    return candidate.block_index < key;
+                });
+            if (entry == node.leaf_entries.end()) {
+                return Result<std::optional<std::uint64_t>>::success(
+                    std::nullopt);
+            }
+            if (!lookup_kind(entry->record_type).has_value()) {
+                return index_failure<std::optional<std::uint64_t>>(
+                    operation, L"leaf descriptor type is invalid");
+            }
+            return Result<std::optional<std::uint64_t>>::success(
+                entry->block_index);
+        }
+
+        const auto child = std::find_if(
+            node.internal_entries.begin(), node.internal_entries.end(),
+            [first_block](const JournalIndexInternalEntry& candidate) {
+                return candidate.maximum_key >= first_block;
+            });
+        if (child == node.internal_entries.end()) {
+            return Result<std::optional<std::uint64_t>>::success(
+                std::nullopt);
+        }
+        const auto depth_validation = validate_descent_depth(depth, node.level);
+        if (!depth_validation.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                depth_validation.error());
+        }
+        node_offset = child->child_offset;
+        expected = {child->child_crc32c, child->child_generation,
+                    static_cast<std::uint16_t>(node.level - 1),
+                    child->minimum_key, child->maximum_key};
+    }
+    return index_failure<std::optional<std::uint64_t>>(
+        operation, L"index exceeds maximum depth");
+}
+
 Result<DecodedJournalIndexNode> JournalIndexReader::read_node(
     const OperationContext& context,
     const JournalIndexView& view,

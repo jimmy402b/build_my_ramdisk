@@ -217,6 +217,8 @@ struct VhdxReader::Impl final {
     };
     mutable std::mutex integrity_mutex;
     mutable std::map<std::uint64_t, ObservedPayload> observed_payloads;
+    mutable std::map<std::uint64_t, std::uint64_t>
+        observed_physical_ranges;
     mutable bool integrity_corrupt{};
 
     Result<void> verify_length(
@@ -534,18 +536,17 @@ struct VhdxReader::Impl final {
                 return Result<void>::success();
             }
             if (entry.file_offset != 0) {
-                for (const auto& [other_payload, observed] :
-                     observed_payloads) {
-                    (void)other_payload;
-                    if (observed.file_offset != 0 &&
-                        entry.file_offset < observed.file_end &&
-                        observed.file_offset < file_end) {
-                        integrity_corrupt = true;
-                        return reader_failure<void>(
-                            L"touched VHDX payload ranges overlap",
-                            PersistenceErrorCode::BackingDataCorrupt, 0,
-                            operation);
-                    }
+                const auto next = observed_physical_ranges.lower_bound(
+                    entry.file_offset);
+                if ((next != observed_physical_ranges.end() &&
+                     next->first < file_end) ||
+                    (next != observed_physical_ranges.begin() &&
+                     std::prev(next)->second > entry.file_offset)) {
+                    integrity_corrupt = true;
+                    return reader_failure<void>(
+                        L"touched VHDX payload ranges overlap",
+                        PersistenceErrorCode::BackingDataCorrupt, 0,
+                        operation);
                 }
             }
             if (observed_payloads.size() >=
@@ -554,9 +555,33 @@ struct VhdxReader::Impl final {
                     L"observed BAT integrity state exceeds caller budget",
                     PersistenceErrorCode::IoError, 0, operation);
             }
-            observed_payloads.emplace(
+            const auto inserted = observed_payloads.emplace(
                 payload_index,
                 ObservedPayload{raw, entry.file_offset, file_end});
+            if (!inserted.second) {
+                return reader_failure<void>(
+                    L"observed payload insertion conflicted",
+                    PersistenceErrorCode::FatalInternalInvariant, 0,
+                    operation);
+            }
+            if (entry.file_offset != 0) {
+                try {
+                    const auto range_inserted =
+                        observed_physical_ranges.emplace(
+                            entry.file_offset, file_end);
+                    if (!range_inserted.second) {
+                        observed_payloads.erase(inserted.first);
+                        integrity_corrupt = true;
+                        return reader_failure<void>(
+                            L"observed physical range insertion conflicted",
+                            PersistenceErrorCode::BackingDataCorrupt, 0,
+                            operation);
+                    }
+                } catch (...) {
+                    observed_payloads.erase(inserted.first);
+                    throw;
+                }
+            }
             return Result<void>::success();
         } catch (const std::bad_alloc&) {
             return reader_failure<void>(
@@ -831,6 +856,107 @@ Result<BlockLoadResult> VhdxReader::read_block(
             L"allocating bounded payload scratch failed",
             PersistenceErrorCode::IoError, 0, operation);
     }
+}
+
+Result<std::optional<std::uint64_t>> VhdxReader::next_allocated_block(
+    const OperationContext& context,
+    const std::uint64_t first_block) const {
+    constexpr auto operation = L"VhdxReader::next_allocated_block";
+    if (!impl_) {
+        return reader_failure<std::optional<std::uint64_t>>(
+            L"VHDX reader is moved from",
+            PersistenceErrorCode::FatalInternalInvariant, 0, operation);
+    }
+    auto integrity = impl_->check_integrity_latch(operation);
+    if (!integrity.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(
+            integrity.error());
+    }
+    auto length = impl_->verify_length(context, operation);
+    if (!length.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(
+            length.error());
+    }
+    if (impl_->layout.block_size() % kM2BlockSize != 0) {
+        return reader_failure<std::optional<std::uint64_t>>(
+            L"VHDX payload block is not aligned to the M2 block size",
+            PersistenceErrorCode::BackingDataCorrupt, 0, operation);
+    }
+    const auto last_block =
+        (impl_->layout.virtual_size() - 1) / kM2BlockSize;
+    if (first_block > last_block) {
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
+    }
+    const auto first_offset = first_block * kM2BlockSize;
+    const auto first_payload =
+        first_offset / impl_->layout.block_size();
+    auto relevant_bitmaps = impl_->validate_relevant_bitmap_entries(
+        context, first_payload, operation);
+    if (!relevant_bitmaps.ok()) {
+        return Result<std::optional<std::uint64_t>>::failure(
+            relevant_bitmaps.error());
+    }
+
+    for (auto payload = first_payload;
+         payload < impl_->layout.payload_block_count(); ++payload) {
+        auto live = check_operation_context(context);
+        if (!live.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                live.error());
+        }
+        auto bat_index = impl_->payload_bat_index(payload, operation);
+        if (!bat_index.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                bat_index.error());
+        }
+        if (payload != 0 &&
+            payload % impl_->layout.chunk_ratio() == 0) {
+            auto bitmap = impl_->validate_bitmap_entry(
+                context, bat_index.value() - 1, operation);
+            if (!bitmap.ok()) {
+                return Result<std::optional<std::uint64_t>>::failure(
+                    bitmap.error());
+            }
+        }
+        auto raw = impl_->read_bat_entry(
+            context, bat_index.value(), operation);
+        if (!raw.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                raw.error());
+        }
+        auto entry = impl_->decode_payload_entry(raw.value(), operation);
+        if (!entry.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                entry.error());
+        }
+        auto observed = impl_->observe_payload_entry(
+            payload, raw.value(), entry.value(), operation);
+        if (!observed.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                observed.error());
+        }
+        live = check_operation_context(context);
+        if (!live.ok()) {
+            return Result<std::optional<std::uint64_t>>::failure(
+                live.error());
+        }
+        if (entry.value().state != PayloadState::FullyPresent) continue;
+
+        std::uint64_t payload_offset = 0;
+        if (!checked_mul(payload, impl_->layout.block_size(),
+                         payload_offset)) {
+            return reader_failure<std::optional<std::uint64_t>>(
+                L"VHDX payload virtual offset overflows",
+                PersistenceErrorCode::BackingDataCorrupt, 0, operation);
+        }
+        const auto candidate_offset =
+            (std::max)(first_offset, payload_offset);
+        const auto candidate_block = candidate_offset / kM2BlockSize;
+        if (candidate_block > last_block) break;
+        return Result<std::optional<std::uint64_t>>::success(
+            candidate_block);
+    }
+    return Result<std::optional<std::uint64_t>>::success(std::nullopt);
 }
 
 Result<std::vector<VhdxAllocatedExtent>>

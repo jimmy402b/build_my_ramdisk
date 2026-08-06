@@ -642,17 +642,21 @@ registration；production 代码禁止修改，production author 禁止改 expec
 
 ### Task 34 — Live extent enumeration
 
-允许：`live_extent_enumerator.*`、extent tests。
+允许：`live_extent_enumerator.*`、`journal_index.*`、`journal_reader.*`、
+`vhdx_reader.*`、`composite_backing_store.*` 与对应 reader/composite/extent
+tests。
 
-- [ ] `T34.1 [M]` RED merged extents：journal DATA/ZERO/DISCARD shadow VHDX、base
+- [x] `T34.1 [M]` RED merged extents：journal DATA/ZERO/DISCARD shadow VHDX、base
   payload shadowing、holes、adjacent ranges、final partial。
-- [ ] `T34.2 [H]` 冻结 capture contract：只枚举 compaction start 的一个 immutable
+- [x] `T34.2 [H]` 冻结 capture contract：只枚举 compaction start 的一个 immutable
   `BackingView`，禁止读取 live mutable RAM 或跟随 later generation。
-- [ ] `T34.3 [H]` 实现 ascending bounded descriptor stream；logical zero skip，DATA
-  source 交 writer 前复核 identity/CRC，内存与 extent count 无关。
-- [ ] `T34.4 [M]` random sparse full-map oracle，比较 descriptors、payload hashes、
+- [x] `T34.3 [H]` 实现 journal lower-bound + BAT next-allocated + Composite
+  two-lookahead ascending/deduplicated candidate stream；禁止 full-capacity 64 KiB
+  scan；logical zero skip，DATA source 交 writer 前复核 identity/CRC，枚举器内存与
+  extent count 无关。
+- [x] `T34.4 [M]` random sparse full-map oracle，比较 descriptors、payload hashes、
   sorted/nonoverlap；记录 calls/peak bytes。
-- [ ] `T34.5 [H]` view lifetime/cancel/deadline/corruption tests + Debug/Release
+- [x] `T34.5 [H]` view lifetime/cancel/deadline/corruption tests + Debug/Release
   `m3-v4` current gates。
 
 ### Task 35 — Compact to new base and journal epoch

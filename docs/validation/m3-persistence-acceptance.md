@@ -1853,3 +1853,60 @@ They do not permit an incorrect durable generation or mixed block map.
 
 Task 33 verdict: **DONE**. This authorizes Task 34 live-image extent
 enumeration for compaction.
+
+## Task 34 — Sparse immutable live-extent enumeration acceptance
+
+Task 34 enumerates the exact logical DATA image from one captured immutable
+`BackingView`; it never consults mutable RAM or follows a later backing
+generation. Construction requires a real `CompositeBackingStore` and compares
+the complete image, checkpoint, base, journal, file and commit identity before
+retaining shared ownership of that view.
+
+The first implementation was rejected because it called `load_block()` for
+every 64 KiB block in the virtual capacity. The accepted design instead adds a
+strict B-tree lower-bound query to the frozen journal index and a BAT-based
+next-allocated query to the frozen VHDX reader. `CompositeBackingStore` merges
+those two ordered sources with one lookahead each, emits an ascending
+deduplicated candidate stream, and retains a far BAT candidate while earlier
+journal candidates are consumed. ZERO/DISCARD candidates remain in the union
+so they can suppress older base DATA; resolved zero and all-zero DATA are then
+omitted from the output.
+
+Adjacent nonzero 64 KiB blocks are merged only while logically contiguous and
+within the finite caller extent bound. Each descriptor binds image UUID,
+checkpoint/backing generation, offset, length, CRC32C and SHA-256. Payload
+readback uses the same frozen view and must revalidate identity, CRC32C and
+SHA-256 before a successful caller result. Final partial blocks are hashed and
+copied only to their exact logical length. Enumerator-owned memory remains one
+block scratch buffer, two hash states and one pending descriptor, independent
+of emitted extent count.
+
+Cancellation and deadlines are checked before and after candidate lookup,
+payload reads and consumer callbacks, and again before successful return. Tests
+cover cancellation and deadline expiry during the final DATA read, proving no
+descriptor consumer call and no false success. VHDX observed physical ranges
+use ordered predecessor/successor checks rather than an O(N) scan per payload;
+tests cover predecessor overlap, successor overlap and exact adjacency.
+
+The independent randomized sparse oracle builds a complete logical byte map,
+derives exact extent boundaries and max-size splits, calculates CRC32C and
+SHA-256, and compares the complete descriptor vector before reconstructing the
+image. Additional tests cover journal DATA/ZERO/DISCARD shadowing, VHDX holes,
+all-zero DATA, corruption, generation/lifetime isolation, final partial blocks,
+consumer failure/exception, invalid inputs, a 1 GiB sparse virtual image, and a
+far BAT lookahead retained across 64 journal candidates.
+
+Final verification on the accepted source:
+
+- focused journal-index, VHDX-reader, composite-backing and live-extent tests
+  passed 4/4 in Debug and Release;
+- complete Debug CTest passed 95/95 and complete Release CTest passed 96/96;
+- `m3-v4` passed in Debug and Release;
+- `BUILD_TESTING=OFF` Release product build passed with no dependency on test
+  seams;
+- `git diff --check` passed apart from existing LF/CRLF conversion notices;
+- the second independent reviewer returned GO with zero P0 and zero P1; its
+  two P2 test-depth suggestions were added before acceptance.
+
+Task 34 verdict: **DONE**. This authorizes Task 35 to build and publish a new
+base VHDX and journal epoch from the accepted immutable extent stream.
