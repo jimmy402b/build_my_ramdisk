@@ -179,6 +179,8 @@ add_library(myrd_persistence STATIC
     persistence/composite_backing_store.cpp
     persistence/recovery_engine.h
     persistence/recovery_engine.cpp
+    persistence/image_creator.h
+    persistence/image_creator.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h

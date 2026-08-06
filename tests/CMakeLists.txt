@@ -1089,6 +1089,21 @@ set_tests_properties(integration.m3.recovery_oracle PROPERTIES
     LABELS "m3-v2"
     TIMEOUT 90)
 
+# ---- M3 generation-zero image creation (Task 27) --------------------------
+add_executable(myrd_m3_image_create_tests
+    integration/m3_image_create_tests.cpp
+)
+target_link_libraries(myrd_m3_image_create_tests PRIVATE
+    myrd_test_support myrd_persistence)
+target_include_directories(myrd_m3_image_create_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_image_create_tests)
+add_test(NAME integration.m3.image_create
+    COMMAND myrd_m3_image_create_tests)
+set_tests_properties(integration.m3.image_create PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 120)
+
 # ---- M3 persistence boundary test (Task 00) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
