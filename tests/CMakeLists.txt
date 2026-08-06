@@ -1379,6 +1379,19 @@ set_tests_properties(integration.m3.provider PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+add_executable(myrd_m3_windows_acceptance_tests
+    integration/m3_windows_acceptance_tests.cpp)
+target_link_libraries(myrd_m3_windows_acceptance_tests PRIVATE
+    myrd_test_support myrd_m3_windows)
+target_include_directories(myrd_m3_windows_acceptance_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_windows_acceptance_tests)
+add_test(NAME integration.m3.windows_acceptance
+    COMMAND myrd_m3_windows_acceptance_tests)
+set_tests_properties(integration.m3.windows_acceptance PROPERTIES
+    LABELS "m3-v2;m3-v5"
+    TIMEOUT 120)
+
 # ---- M3 safe real-host preflight harness (Task 40) ------------------------
 add_test(
     NAME unit.m3.harness_preflight

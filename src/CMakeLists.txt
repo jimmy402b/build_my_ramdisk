@@ -235,6 +235,16 @@ target_link_libraries(myrd_m3_management PUBLIC
     myrd_persistence myrd_common myrd_proxy)
 myrd_enable_warnings(myrd_m3_management)
 
+# AIM-facing composition is an upper-layer adapter. It may depend on the
+# accepted M1 lifecycle contract, but persistence itself remains driver-free.
+add_library(myrd_m3_windows STATIC
+    m3/m3_windows_acceptance.h
+    m3/m3_windows_acceptance.cpp
+)
+target_include_directories(myrd_m3_windows PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_m3_windows PUBLIC myrd_m3_management myrd_m1)
+myrd_enable_warnings(myrd_m3_windows)
+
 add_executable(myrd_m3_e2e
     m3/main.cpp)
 target_include_directories(myrd_m3_e2e PRIVATE "${CMAKE_SOURCE_DIR}")
