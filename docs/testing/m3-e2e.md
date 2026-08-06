@@ -10,6 +10,9 @@ identity.
 `tools/Invoke-M3Verification.ps1` exposes five explicit routes:
 
 - `Local`: runs the configured CTest regression.
+- The local regression also runs `integration.m3.cli_local_e2e`, which executes
+  `create -> inspect -> verify --full -> recover-test` in a unique temporary
+  bundle and verifies cleanup.
 - `Preflight`: performs the read-only host/artifact/path/identity probe.
 - `RealFunctional`: invokes `tests/e2e/Invoke-M3NtfsWorkload.ps1` and requires
   an approved non-system scratch-disk identity, explicit bundle/mount paths,
