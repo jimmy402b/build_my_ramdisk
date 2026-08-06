@@ -755,10 +755,11 @@ provider 和 wire golden fixtures 行为只读。
   因 transport close 覆盖 durable disposition。
 - [x] `T39.5 [M]` 跑全部 M0/M1/M2 + M3 provider tests；任何 protocol fixture/driver
   contract delta 立即 `BLOCKED`，不得顺手改旧合同。
-- [x] `T39.6 [X]` lifecycle/contract independent review 后完成；本次验收复核确认
-  provider 操作串行化、transport-stop-before-persistence、pending transaction retry、
-  durable disposition 保留，以及 M1 wire/protocol baseline 未漂移；Debug 103/103、
-  Release 104/104。
+- [ ] `T39.6 [X]` lifecycle/contract independent review 后完成。当前复核发现
+  M3 provider 的默认 SHM transport 尚未接入 M1 的真实 AIM lifecycle composition root；
+  因此本卡保持 `BLOCKED`，不能把本地 provider integration 当作 real AIM E2E。
+  已确认的 provider 串行化、pending transaction retry、durable disposition 和
+  M1 wire/protocol baseline 证据仍有效；Debug 103/103、Release 104/104。
 
 ### Task 40 — Safe real-host preflight and E2E harness
 
@@ -788,7 +789,9 @@ provider 和 wire golden fixtures 行为只读。
 scenario manifests、生成 evidence；产品代码缺陷另开卡。
 
 - [ ] `T41.1 [M]` 运行 preflight 并记录 admin/driver/version/disk identity/free space/
-  source commit/binary hashes；任一 prerequisite 不满足标 `BLOCKED`。
+  source commit/binary hashes；任一 prerequisite 不满足标 `BLOCKED`。当前机器已执行
+  只读检查：管理员权限与 `phdskmnt` Running 满足，但仅有 Disk 0（Boot/System），
+  没有可批准的非系统 scratch disk，因此本卡为 `BLOCKED`。
 - [ ] `T41.2 [X]` generation 0 经 real AIM export 后，仅对确认 scratch disk 初始化/
   format NTFS；运行 deterministic tree/overwrite/sparse/rename/delete/flush workload。
 - [ ] `T41.3 [X]` filesystem/volume flush 后 checkpoint，记录 RAM/backing counters；
