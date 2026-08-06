@@ -344,6 +344,10 @@ public:
         std::uint64_t block_index) noexcept;
     static std::uint64_t snapshot_capacity_waiters(
         const DynamicBlockStore& store) noexcept;
+    static std::uint64_t snapshot_publication_pins(
+        const DynamicBlockStore& store) noexcept;
+    static std::uint64_t snapshot_publication_end_waiters(
+        const DynamicBlockStore& store) noexcept;
     static void notify_snapshot_capacity_waiters(
         DynamicBlockStore& store) noexcept;
     static bool signal_eviction_if_needed(DynamicBlockStore& store);

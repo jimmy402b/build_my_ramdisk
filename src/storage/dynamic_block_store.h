@@ -69,12 +69,21 @@ public:
 
     BackingGeneration backing_generation() const;
     Result<void> install_backing_view(BackingView next_view);
+    Result<void> install_backing_view_for_snapshot(
+        const ConsistentSnapshotToken& token,
+        BackingView next_view);
 
     Result<std::vector<DirtyBlockSnapshot>> copy_dirty_batch(
         const OperationContext& context,
         DirtyScanCursor& cursor,
         std::size_t max_bytes);
     Result<void> mark_persisted(
+        std::uint64_t block_index,
+        std::uint64_t expected_version,
+        DirtyRecordKind expected_kind,
+        BackingGeneration persisted_generation);
+    Result<void> mark_persisted_for_snapshot(
+        const ConsistentSnapshotToken& token,
         std::uint64_t block_index,
         std::uint64_t expected_version,
         DirtyRecordKind expected_kind,
@@ -122,6 +131,15 @@ public:
     std::uint64_t backing_install_waiter_count_for_test() const noexcept;
 
 private:
+    Result<void> install_backing_view_impl(
+        const std::optional<ConsistentSnapshotToken>& token,
+        BackingView next_view);
+    Result<void> mark_persisted_impl(
+        const std::optional<ConsistentSnapshotToken>& token,
+        std::uint64_t block_index,
+        std::uint64_t expected_version,
+        DirtyRecordKind expected_kind,
+        BackingGeneration persisted_generation);
     friend class EvictionManager;
     friend class DynamicBlockStoreTestAccess;
 

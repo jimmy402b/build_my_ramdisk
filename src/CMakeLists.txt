@@ -185,6 +185,8 @@ add_library(myrd_persistence STATIC
     persistence/recovered_store_adapter.cpp
     persistence/image_session.h
     persistence/image_session.cpp
+    persistence/checkpoint_coordinator.h
+    persistence/checkpoint_coordinator.cpp
     persistence/file_io.h
     persistence/file_io.cpp
     persistence/file_identity.h

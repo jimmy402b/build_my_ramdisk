@@ -1681,3 +1681,44 @@ evidence on the fixed commits:
 Task 29 verdict: **DONE**. This authorizes Task 30 to implement only the
 pre-manifest checkpoint durability pipeline; manifest publication, backing-view
 installation and dirty acknowledgment remain Tasks 31–32.
+
+## Task 30 — Checkpoint pre-manifest durability acceptance
+
+Task 30 is accepted at the journal `Prepared` boundary. `CheckpointCoordinator`
+validates barrier/correlation/store identity, begins one M2.1 consistent cut,
+streams every token member through `JournalWriter`, flushes and fully reads back
+records/index/commit, then returns a move-only prepared transaction. It does not
+write a manifest slot, install a successor backing view, or acknowledge dirty
+state. Missing/unknown barriers fail before snapshot begin and every failure is
+a valid structured `NotCommitted` outcome with operation-local correlation.
+
+Necessary dependency closure expanded the original file list: JournalWriter now
+accepts bounded synchronous batches and rejects escaped/concurrent consumers;
+clean checkpoints either retain an empty root or re-home a non-empty root;
+`DirtyBlockSnapshot` carries the exact dirty epoch; and M2 uses a move-only
+publication pin so ordinary install/ack cannot race an active snapshot. The pin
+closes admission once finish/abort starts, drains safely during close, and may
+outlive its coordinator state. The prepared transaction never exposes the token
+or publication lease, reserving install/ack for Task 32.
+
+Coverage includes DATA/ZERO/DISCARD, clean and final-partial images,
+overwrite-after-cut, cancellation/deadline, all 13 pre-manifest writer phases,
+malformed correlation, escaped/concurrent streaming consumers, token-bound
+install/ack fencing, finish/abort/close interleavings, and C++ exception unwind.
+Independent reviews repeatedly returned NO-GO for structured-outcome,
+consumer-lifetime, generation, snapshot-pin and correlation defects; each was
+red-tested and fixed, and both final reviewers returned GO.
+
+Final verification on the accepted source:
+
+- focused consistent-snapshot suite passed 97/97 and a 50-run Debug repeat;
+- checkpoint passed 9/9, JournalWriter 22/22 and index builder 6/6;
+- complete Debug CTest passed 81/81;
+- complete Release CTest passed 82/82;
+- `BUILD_TESTING=OFF` Release `myrd_persistence` built successfully and exposed
+  no `for_testing`, `test_seam` or `phase_hook` symbols;
+- `git diff --check` passed apart from Git's existing LF/CRLF conversion notices.
+
+Task 30 verdict: **DONE**. This authorizes Task 31 manifest publication work;
+durable commit classification, backing installation and conditional dirty
+acknowledgment remain explicitly unimplemented in Task 30.

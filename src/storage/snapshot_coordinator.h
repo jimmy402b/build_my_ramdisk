@@ -117,6 +117,33 @@ private:
     std::uint64_t reservation_id_{};
 };
 
+// Short-lived capability held across one backing installation or persisted
+// acknowledgement. Snapshot finish/abort cannot retire the owning token until
+// every pin has been released.
+class SnapshotPublicationPin final {
+public:
+    SnapshotPublicationPin() noexcept = default;
+    ~SnapshotPublicationPin() noexcept;
+
+    SnapshotPublicationPin(const SnapshotPublicationPin&) = delete;
+    SnapshotPublicationPin& operator=(const SnapshotPublicationPin&) = delete;
+    SnapshotPublicationPin(SnapshotPublicationPin&& other) noexcept;
+    SnapshotPublicationPin& operator=(
+        SnapshotPublicationPin&& other) noexcept;
+
+private:
+    friend class SnapshotCoordinator;
+    friend class SnapshotCoordinatorState;
+
+    SnapshotPublicationPin(
+        std::shared_ptr<SnapshotCoordinatorState> owner_state,
+        std::uint64_t snapshot_id) noexcept;
+    void reset() noexcept;
+
+    std::shared_ptr<SnapshotCoordinatorState> owner_state_{};
+    std::uint64_t snapshot_id_{};
+};
+
 struct SnapshotCoordinatorSnapshot {
     std::optional<ConsistentSnapshotToken> active_token;
     std::optional<ConsistentSnapshotState> active_state;
@@ -129,6 +156,8 @@ struct SnapshotCoordinatorSnapshot {
     std::uint64_t capacity_waiters{};
     std::uint64_t writer_stalls_total{};
     std::uint64_t auto_aborts_total{};
+    std::uint64_t publication_pins{};
+    std::uint64_t publication_end_waiters{};
 };
 
 // Lock order is lifecycle/admission -> at most one block stripe -> this
@@ -206,6 +235,9 @@ public:
         std::uint64_t expected_scan_block,
         std::uint64_t next_scan_block,
         std::uint64_t total_blocks);
+
+    Result<SnapshotPublicationPin> acquire_publication_pin(
+        const ConsistentSnapshotToken& token);
 
     Result<void> finish(
         const ConsistentSnapshotToken& token,

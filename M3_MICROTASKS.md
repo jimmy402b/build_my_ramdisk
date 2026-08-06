@@ -549,19 +549,25 @@ Task 20 implementation：`de107626c410ff361c7ae9fdb34e501bd85d63bd`；
 允许：`checkpoint_coordinator.*`、checkpoint tests/fakes；禁止写 manifest slot、安装
 new backing 或 ack dirty state。
 
-- [ ] `T30.1 [H]` 冻结 phase oracle：validate barrier→begin snapshot→copy each token
+- [x] `T30.1 [H]` 冻结 phase oracle：validate barrier→begin snapshot→copy each token
   member once→append records/index/commit→journal flush→full readback→Prepared；此时
   manifest write/install/ack calls 必须为零。
-- [ ] `T30.2 [M]` RED matrix：DATA/ZERO/DISCARD、overwritten-after-cut、clean image、
+- [x] `T30.2 [M]` RED matrix：DATA/ZERO/DISCARD、overwritten-after-cut、clean image、
   final partial、cancel/deadline、每个 pre-manifest injected failure。
-- [ ] `T30.3 [H]` RED unknown/missing `VolumeBarrierKind`：必须在 snapshot begin 前
+- [x] `T30.3 [H]` RED unknown/missing `VolumeBarrierKind`：必须在 snapshot begin 前
   返回，raw-test 标记传播到 outcome/report 且不声称 filesystem durability。
-- [ ] `T30.4 [X]` 实现 bounded streaming batch→JournalWriter；不 materialize whole
+- [x] `T30.4 [X]` 实现 bounded streaming batch→JournalWriter；不 materialize whole
   disk，不在 durable append 后保留 payload；cursor/frontier/partial batch 只按 Task06。
-- [ ] `T30.5 [X]` 所有 pre-manifest failure abort token、保留 old manifest/view、返回
+- [x] `T30.5 [X]` 所有 pre-manifest failure abort token、保留 old manifest/view、返回
   `NotCommitted`；journal 新 bytes 只是 ignorable tail，禁止 ack/cleanup。
-- [ ] `T30.6 [H]` call-order mutation proof、peak memory/read-write counters、Debug/
+- [x] `T30.6 [H]` call-order mutation proof、peak memory/read-write counters、Debug/
   Release `m3-v2`；独立 durability reviewer GO。
+
+Task 30 DONE：checkpoint coordinator 只推进到 journal Prepared，manifest/install/ack
+仍为零；为封闭该边界，JournalWriter 增加 bounded streaming，M2 snapshot identity
+补充 dirty epoch，并以 publication pin 原子阻止活动 token 期间的普通 install/ack。
+双独立复审最终 GO；Debug 81/81、Release 82/82、snapshot repeat 50 次及
+`BUILD_TESTING=OFF` production build 通过。
 
 ### Task 31 — Manifest publish 与 CommitIndeterminate resolver
 

@@ -2390,6 +2390,74 @@ TEST_CASE(m2_1_coordinator_preserves_once_and_uses_only_monotonic_frontier) {
     REQUIRE_EQ(coordinator.snapshot().next_scan_block, 999'999ull);
 }
 
+TEST_CASE(m2_1_snapshot_publication_pin_serializes_finish_and_abort) {
+    for (const bool finish : {true, false}) {
+        myrd::SnapshotCoordinator coordinator(
+            myrd::kMinimumSnapshotCowBytes);
+        const auto activated = coordinator.activate(7, 11);
+        REQUIRE(activated.ok());
+        const auto token = activated.value();
+        REQUIRE(coordinator.advance_scan_frontier(token, 0, 1, 1).ok());
+
+        auto acquired = coordinator.acquire_publication_pin(token);
+        REQUIRE(acquired.ok());
+        auto pin = acquired.move_value();
+        REQUIRE_EQ(coordinator.snapshot().publication_pins, 1ull);
+
+        std::atomic<std::uint32_t> end_code{kNoResult};
+        std::thread ending([&] {
+            const auto result = finish
+                ? coordinator.finish(token, 1)
+                : coordinator.abort(token);
+            end_code.store(result.ok() ? 0 : error_code(result.error()),
+                           std::memory_order_release);
+        });
+        const bool waiter_visible = wait_until([&] {
+            return coordinator.snapshot().publication_end_waiters == 1;
+        });
+        const auto while_pinned = coordinator.snapshot();
+        const auto end_code_while_pinned =
+            end_code.load(std::memory_order_acquire);
+        auto late_acquire = coordinator.acquire_publication_pin(token);
+        const bool late_acquire_rejected = !late_acquire.ok() &&
+            error_code(late_acquire.error()) ==
+                static_cast<std::uint32_t>(
+                    myrd::DynamicBlockStoreErrorCode::SnapshotBusy);
+        if (late_acquire.ok()) {
+            auto unexpected_pin = late_acquire.move_value();
+            unexpected_pin = myrd::SnapshotPublicationPin{};
+        }
+
+        pin = myrd::SnapshotPublicationPin{};
+        ending.join();
+        REQUIRE(waiter_visible);
+        REQUIRE_EQ(end_code_while_pinned, kNoResult);
+        REQUIRE(while_pinned.active_token.has_value());
+        REQUIRE_EQ(while_pinned.publication_pins, 1ull);
+        REQUIRE(late_acquire_rejected);
+        REQUIRE_EQ(end_code.load(std::memory_order_acquire), 0u);
+        const auto ended = coordinator.snapshot();
+        REQUIRE(!ended.active_token.has_value());
+        REQUIRE_EQ(ended.publication_pins, 0ull);
+        REQUIRE_EQ(ended.publication_end_waiters, 0ull);
+    }
+
+    myrd::SnapshotPublicationPin surviving_pin;
+    {
+        myrd::SnapshotCoordinator coordinator(
+            myrd::kMinimumSnapshotCowBytes);
+        const auto activated = coordinator.activate(9, 13);
+        REQUIRE(activated.ok());
+        REQUIRE(coordinator.advance_scan_frontier(
+            activated.value(), 0, 1, 1).ok());
+        auto acquired =
+            coordinator.acquire_publication_pin(activated.value());
+        REQUIRE(acquired.ok());
+        surviving_pin = acquired.move_value();
+    }
+    surviving_pin = myrd::SnapshotPublicationPin{};
+}
+
 TEST_CASE(m2_1_coordinator_charges_metadata_and_rolls_back_reservations) {
     myrd::SnapshotCoordinator coordinator(
         myrd::kSnapshotCowRecordBudgetBytes);
@@ -5012,6 +5080,8 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
         const auto record = copied.value().front();
         REQUIRE_EQ(record.kind, cut_record.kind);
         REQUIRE_EQ(record.version, cut_record.version);
+        REQUIRE_EQ(record.dirty_epoch, cut_record.dirty_epoch);
+        REQUIRE_EQ(record.base_generation, cut_record.base_generation);
         REQUIRE(record.data.empty());
         REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
 
@@ -5019,8 +5089,10 @@ TEST_CASE(m2_1_zero_discard_exact_ack_keeps_predecessor_data_unreachable) {
                              *predecessor)
                              .all_zero_block(0)
                              .build();
-        REQUIRE(store->install_backing_view({8, successor}).ok());
-        const auto stale_ack = store->mark_persisted(
+        REQUIRE(store->install_backing_view_for_snapshot(
+            begun.value(), {8, successor}).ok());
+        const auto stale_ack = store->mark_persisted_for_snapshot(
+            begun.value(),
             cut_record.block_index,
             cut_record.version,
             cut_record.kind,
@@ -5557,6 +5629,12 @@ TEST_CASE(m2_1_task06_blocks_publication_until_the_cut_is_fully_scanned) {
     REQUIRE_EQ(error_code(early_ack.error()),
                static_cast<std::uint32_t>(
                    myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+    const auto early_owned_ack = store->mark_persisted_for_snapshot(
+        begun.value(), 0, cut.version, cut.dirty_kind, 8);
+    REQUIRE(!early_owned_ack.ok());
+    REQUIRE_EQ(error_code(early_owned_ack.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
     auto successor = myrd::test::FakeBackingStoreBuilder::successor_of(
                          *predecessor)
                          .all_zero_block(0)
@@ -5566,6 +5644,21 @@ TEST_CASE(m2_1_task06_blocks_publication_until_the_cut_is_fully_scanned) {
     REQUIRE_EQ(error_code(early_install.error()),
                static_cast<std::uint32_t>(
                    myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+    const auto early_owned_install =
+        store->install_backing_view_for_snapshot(
+            begun.value(), {8, successor});
+    REQUIRE(!early_owned_install.ok());
+    REQUIRE_EQ(error_code(early_owned_install.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+    auto forged_token = begun.value();
+    ++forged_token.snapshot_id;
+    const auto forged_install = store->install_backing_view_for_snapshot(
+        forged_token, {8, successor});
+    REQUIRE(!forged_install.ok());
+    REQUIRE_EQ(error_code(forged_install.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
 
     const auto early_finish = store->finish_consistent_snapshot(begun.value());
     REQUIRE(!early_finish.ok());
@@ -5582,13 +5675,35 @@ TEST_CASE(m2_1_task06_blocks_publication_until_the_cut_is_fully_scanned) {
     REQUIRE(copied.ok());
     REQUIRE_EQ(copied.value().size(), 1ull);
     REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
-    REQUIRE(store->install_backing_view({8, successor}).ok());
-    REQUIRE(store->mark_persisted(
+    const auto late_install = store->install_backing_view({8, successor});
+    REQUIRE(!late_install.ok());
+    REQUIRE_EQ(error_code(late_install.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+    REQUIRE(store->install_backing_view_for_snapshot(
+        begun.value(), {8, successor}).ok());
+    const auto late_ack = store->mark_persisted(
+        copied.value().front().block_index,
+        copied.value().front().version,
+        copied.value().front().kind,
+        8);
+    REQUIRE(!late_ack.ok());
+    REQUIRE_EQ(error_code(late_ack.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotBusy));
+    REQUIRE(store->mark_persisted_for_snapshot(
+        begun.value(),
         copied.value().front().block_index,
         copied.value().front().version,
         copied.value().front().kind,
         8).ok());
     REQUIRE(store->finish_consistent_snapshot(begun.value()).ok());
+    const auto stale_token_ack = store->mark_persisted_for_snapshot(
+        begun.value(), 0, cut.version, cut.dirty_kind, 8);
+    REQUIRE(!stale_token_ack.ok());
+    REQUIRE_EQ(error_code(stale_token_ack.error()),
+               static_cast<std::uint32_t>(
+                   myrd::DynamicBlockStoreErrorCode::SnapshotTokenInvalid));
     const auto duplicate_abort = store->abort_consistent_snapshot(begun.value());
     REQUIRE(!duplicate_abort.ok());
     REQUIRE_EQ(error_code(duplicate_abort.error()),
@@ -5621,8 +5736,10 @@ TEST_CASE(m2_1_task06_ack_rechecks_the_cutoff_dirty_epoch) {
                          *predecessor)
                          .all_zero_block(0)
                          .build();
-    REQUIRE(store->install_backing_view({8, successor}).ok());
-    const auto rejected = store->mark_persisted(
+    REQUIRE(store->install_backing_view_for_snapshot(
+        begun.value(), {8, successor}).ok());
+    const auto rejected = store->mark_persisted_for_snapshot(
+        begun.value(),
         copied.value().front().block_index,
         copied.value().front().version,
         copied.value().front().kind,
@@ -5635,6 +5752,159 @@ TEST_CASE(m2_1_task06_ack_rechecks_the_cutoff_dirty_epoch) {
     REQUIRE(myrd::DynamicBlockStoreTestAccess::snapshot_entry(
         *store, 0, still_dirty));
     REQUIRE_EQ(still_dirty.state, myrd::BlockState::ZeroDirty);
+}
+
+TEST_CASE(m2_1_task06_finish_and_abort_wait_for_token_bound_ack) {
+    for (const bool finish : {true, false}) {
+        const auto data = block_data(finish ? 0x81 : 0x92);
+        auto predecessor =
+            myrd::test::FakeBackingStoreBuilder(7).build();
+        auto successor =
+            myrd::test::FakeBackingStoreBuilder::successor_of(*predecessor)
+                .data_block(0, data)
+                .build();
+        myrd::DynamicBlockStoreTestDependencies dependencies{};
+        dependencies.pause_after_persisted_validation = true;
+        auto created = myrd::DynamicBlockStore::create_for_testing(
+            backing_args(predecessor, 2, 7), dependencies);
+        REQUIRE(created.ok());
+        auto store = created.move_value();
+        REQUIRE(store->write(bounded_context(), 0, data).ok());
+        const auto begun =
+            store->begin_consistent_snapshot(bounded_context());
+        REQUIRE(begun.ok());
+        myrd::DirtyScanCursor cursor{};
+        const auto copied = store->copy_consistent_snapshot_batch(
+            bounded_context(), begun.value(), cursor,
+            myrd::kBlockSizeBytes);
+        REQUIRE(copied.ok());
+        REQUIRE_EQ(copied.value().size(), 1ull);
+        REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+        REQUIRE(store->install_backing_view_for_snapshot(
+            begun.value(), {8, successor}).ok());
+
+        const auto record = copied.value().front();
+        std::atomic<std::uint32_t> ack_code{kNoResult};
+        std::thread acknowledger([&] {
+            const auto result = store->mark_persisted_for_snapshot(
+                begun.value(), record.block_index, record.version,
+                record.kind, 8);
+            ack_code.store(result.ok() ? 0 : error_code(result.error()),
+                           std::memory_order_release);
+        });
+        const bool acknowledgement_paused = wait_until([&] {
+            return myrd::DynamicBlockStoreTestAccess::
+                persisted_ack_gap_reached(*store);
+        });
+        const auto pins_while_acknowledging =
+            myrd::DynamicBlockStoreTestAccess::snapshot_publication_pins(
+                *store);
+
+        std::atomic<std::uint32_t> end_code{kNoResult};
+        std::thread ending([&] {
+            const auto result = finish
+                ? store->finish_consistent_snapshot(begun.value())
+                : store->abort_consistent_snapshot(begun.value());
+            end_code.store(result.ok() ? 0 : error_code(result.error()),
+                           std::memory_order_release);
+        });
+        const bool end_waiter_visible = wait_until([&] {
+            return myrd::DynamicBlockStoreTestAccess::
+                snapshot_publication_end_waiters(*store) == 1;
+        });
+        const auto end_code_while_pinned =
+            end_code.load(std::memory_order_acquire);
+        const bool acknowledgement_released =
+            myrd::DynamicBlockStoreTestAccess::
+                release_persisted_ack_gap(*store);
+        acknowledger.join();
+        ending.join();
+
+        REQUIRE(acknowledgement_paused);
+        REQUIRE_EQ(pins_while_acknowledging, 1ull);
+        REQUIRE(end_waiter_visible);
+        REQUIRE_EQ(end_code_while_pinned, kNoResult);
+        REQUIRE(acknowledgement_released);
+        REQUIRE_EQ(ack_code.load(std::memory_order_acquire), 0u);
+        REQUIRE_EQ(end_code.load(std::memory_order_acquire), 0u);
+        REQUIRE(!store->consistent_snapshot_status(begun.value()).ok());
+        REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::
+                       snapshot_publication_pins(*store),
+                   0ull);
+        REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::
+                       snapshot_publication_end_waiters(*store),
+                   0ull);
+    }
+}
+
+TEST_CASE(m2_1_task06_close_drains_token_bound_ack_pin) {
+    const auto data = block_data(0xA3);
+    auto predecessor = myrd::test::FakeBackingStoreBuilder(7).build();
+    auto successor =
+        myrd::test::FakeBackingStoreBuilder::successor_of(*predecessor)
+            .data_block(0, data)
+            .build();
+    myrd::DynamicBlockStoreTestDependencies dependencies{};
+    dependencies.pause_after_persisted_validation = true;
+    auto created = myrd::DynamicBlockStore::create_for_testing(
+        backing_args(predecessor, 2, 7), dependencies);
+    REQUIRE(created.ok());
+    auto store = created.move_value();
+    REQUIRE(store->write(bounded_context(), 0, data).ok());
+    const auto begun = store->begin_consistent_snapshot(bounded_context());
+    REQUIRE(begun.ok());
+    myrd::DirtyScanCursor cursor{};
+    const auto copied = store->copy_consistent_snapshot_batch(
+        bounded_context(), begun.value(), cursor, myrd::kBlockSizeBytes);
+    REQUIRE(copied.ok());
+    REQUIRE_EQ(copied.value().size(), 1ull);
+    REQUIRE_EQ(cursor.next_block_index, store->total_blocks());
+    REQUIRE(store->install_backing_view_for_snapshot(
+        begun.value(), {8, successor}).ok());
+
+    const auto record = copied.value().front();
+    std::atomic<std::uint32_t> ack_code{kNoResult};
+    std::atomic<bool> close_done{};
+    std::thread acknowledger([&] {
+        const auto result = store->mark_persisted_for_snapshot(
+            begun.value(), record.block_index, record.version,
+            record.kind, 8);
+        ack_code.store(result.ok() ? 0 : error_code(result.error()),
+                       std::memory_order_release);
+    });
+    const bool acknowledgement_paused = wait_until([&] {
+        return myrd::DynamicBlockStoreTestAccess::
+            persisted_ack_gap_reached(*store);
+    });
+    const auto pins_while_acknowledging =
+        myrd::DynamicBlockStoreTestAccess::snapshot_publication_pins(*store);
+    std::thread closer([&] {
+        store->close();
+        close_done.store(true, std::memory_order_release);
+    });
+    const bool close_completed = wait_until([&] {
+        return close_done.load(std::memory_order_acquire);
+    });
+    if (!close_completed) {
+        (void)myrd::DynamicBlockStoreTestAccess::
+            release_persisted_ack_gap(*store);
+    }
+    acknowledger.join();
+    closer.join();
+
+    REQUIRE(acknowledgement_paused);
+    REQUIRE_EQ(pins_while_acknowledging, 1ull);
+    REQUIRE(close_completed);
+    REQUIRE_EQ(ack_code.load(std::memory_order_acquire),
+               static_cast<std::uint32_t>(
+                   myrd::OperationErrorCode::session_closed));
+    REQUIRE(store->is_closed());
+    REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::
+                   snapshot_publication_pins(*store),
+               0ull);
+    REQUIRE_EQ(myrd::DynamicBlockStoreTestAccess::
+                   snapshot_publication_end_waiters(*store),
+               0ull);
 }
 
 TEST_CASE(m2_1_task06_mutation_continues_while_token_is_fully_scanned) {
@@ -5685,7 +5955,8 @@ TEST_CASE(m2_1_task06_post_cut_successor_block_can_be_written_twice) {
                          *backing)
                          .all_zero_block(1)
                          .build();
-    REQUIRE(store->install_backing_view({8, successor}).ok());
+    REQUIRE(store->install_backing_view_for_snapshot(
+        begun.value(), {8, successor}).ok());
     const auto first = block_data(0xC8);
     const auto second = block_data(0xD9);
     REQUIRE(store->write(

@@ -220,6 +220,7 @@ DynamicBlockStore::copy_dirty_batch(
                         entry->version,
                         entry->dirty_kind,
                         entry->dirty_base_generation,
+                        entry->dirty_epoch,
                         {},
                     };
                     block_lock.unlock();
@@ -274,6 +275,7 @@ DynamicBlockStore::copy_dirty_batch(
                 const auto version = entry->version;
                 const auto kind = entry->dirty_kind;
                 const auto base_generation = entry->dirty_base_generation;
+                const auto dirty_epoch = entry->dirty_epoch;
                 ++entry->pin_count;
                 bool pin_needs_release = true;
                 ScopeExit release_pin([&]() noexcept {
@@ -333,6 +335,7 @@ DynamicBlockStore::copy_dirty_batch(
                     version,
                     kind,
                     base_generation,
+                    dirty_epoch,
                     std::move(payload),
                 });
                 payload_bytes += static_cast<std::size_t>(kBlockSizeBytes);
@@ -657,6 +660,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     preimage->version,
                     preimage->kind,
                     preimage->base_generation,
+                    preimage->dirty_epoch,
                     std::move(preimage->data),
                 };
                 if (record.kind == DirtyRecordKind::Data) {
@@ -701,6 +705,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                     entry->version,
                     entry->dirty_kind,
                     entry->dirty_base_generation,
+                    entry->dirty_epoch,
                     {},
                 };
                 block_lock.unlock();
@@ -730,6 +735,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
             const auto version = entry->version;
             const auto kind = entry->dirty_kind;
             const auto base_generation = entry->dirty_base_generation;
+            const auto dirty_epoch = entry->dirty_epoch;
             ++entry->pin_count;
             bool pin_needs_release = true;
             ScopeExit release_pin([&]() noexcept {
@@ -780,6 +786,7 @@ DynamicBlockStore::copy_consistent_snapshot_batch(
                 version,
                 kind,
                 base_generation,
+                dirty_epoch,
                 std::move(payload),
             });
             payload_bytes += static_cast<std::size_t>(kBlockSizeBytes);
@@ -1093,6 +1100,17 @@ bool DynamicBlockStoreTestAccess::snapshot_preimage_lookup_entered(
 std::uint64_t DynamicBlockStoreTestAccess::snapshot_capacity_waiters(
     const DynamicBlockStore& store) noexcept {
     return store.snapshot_coordinator_->snapshot().capacity_waiters;
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::snapshot_publication_pins(
+    const DynamicBlockStore& store) noexcept {
+    return store.snapshot_coordinator_->snapshot().publication_pins;
+}
+
+std::uint64_t DynamicBlockStoreTestAccess::
+snapshot_publication_end_waiters(
+    const DynamicBlockStore& store) noexcept {
+    return store.snapshot_coordinator_->snapshot().publication_end_waiters;
 }
 
 void DynamicBlockStoreTestAccess::notify_snapshot_capacity_waiters(

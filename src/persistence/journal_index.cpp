@@ -620,6 +620,56 @@ public:
             return Result<JournalIndexBuildPlan>::failure(context.error());
         }
 
+        // A clean checkpoint over an empty image needs no index node. For a
+        // non-empty image, re-home the root in the new generation while its
+        // unchanged children/leaf records continue to reference older,
+        // already committed records.
+        if (updates_.empty()) {
+            if (empty_root(view_.root)) {
+                return Result<JournalIndexBuildPlan>::success(
+                    std::move(plan_));
+            }
+            auto decoded = reader_.read_node(
+                context_, view_, view_.root.offset, view_.root.crc32c);
+            if (!decoded.ok()) {
+                return Result<JournalIndexBuildPlan>::failure(
+                    decoded.error());
+            }
+            if (decoded.value().node.common.checkpoint_generation !=
+                view_.root_generation) {
+                return index_failure<JournalIndexBuildPlan>(
+                    L"JournalIndexBuilder::plan",
+                    L"root generation does not match immutable view");
+            }
+            JournalIndexPlanNode cloned{};
+            cloned.level = decoded.value().node.level;
+            try {
+                if (cloned.level == 0) {
+                    cloned.leaf_entries =
+                        decoded.value().node.leaf_entries;
+                } else {
+                    cloned.children.reserve(
+                        decoded.value().node.internal_entries.size());
+                    for (const auto& child :
+                         decoded.value().node.internal_entries) {
+                        cloned.children.push_back(physical_child(
+                            child,
+                            static_cast<std::uint16_t>(cloned.level - 1)));
+                    }
+                }
+            } catch (const std::bad_alloc&) {
+                return allocation_failure<JournalIndexBuildPlan>(
+                    L"JournalIndexBuilder::plan");
+            }
+            auto cloned_root = add_node(std::move(cloned));
+            if (!cloned_root.ok()) {
+                return Result<JournalIndexBuildPlan>::failure(
+                    cloned_root.error());
+            }
+            plan_.root = cloned_root.value();
+            return Result<JournalIndexBuildPlan>::success(std::move(plan_));
+        }
+
         std::vector<JournalIndexPlanChild> roots;
         if (empty_root(view_.root)) {
             auto leaves = make_leaf_nodes(updates_);
@@ -1018,12 +1068,6 @@ Result<JournalIndexBuildPlan> JournalIndexBuilder::plan(
             L"new checkpoint identity is invalid",
             PersistenceErrorCode::InvalidFormat);
     }
-    if (updates.empty()) {
-        return index_failure<JournalIndexBuildPlan>(
-            L"JournalIndexBuilder::plan",
-            L"empty checkpoint update batch is invalid",
-            PersistenceErrorCode::InvalidFormat);
-    }
     JournalIndexPlanBuilderDetail builder(
         *impl_->reader, impl_->options, context, base_view,
         new_generation, operation_id);
@@ -1100,10 +1144,17 @@ Result<JournalIndexAssignedPlan> JournalIndexBuilder::assign_offsets(
             PersistenceErrorCode::InvalidFormat);
     }
     if (plan.nodes.empty()) {
-        return index_failure<JournalIndexAssignedPlan>(
-            L"JournalIndexBuilder::assign_offsets",
-            L"empty index build plan is invalid",
-            PersistenceErrorCode::InvalidFormat);
+        if (!empty_root(plan.base.root)) {
+            return index_failure<JournalIndexAssignedPlan>(
+                L"JournalIndexBuilder::assign_offsets",
+                L"non-empty root lacks a replacement node",
+                PersistenceErrorCode::FatalInternalInvariant);
+        }
+        JournalIndexAssignedPlan assigned{};
+        assigned.root = plan.base.root;
+        assigned.next_offset = first_offset;
+        return Result<JournalIndexAssignedPlan>::success(
+            std::move(assigned));
     }
 
     for (const auto& node : plan.nodes) {

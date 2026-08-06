@@ -148,6 +148,7 @@ struct DirtyBlockSnapshot {
     std::uint64_t version{};
     DirtyRecordKind kind{DirtyRecordKind::Data};
     BackingGeneration base_generation{};
+    std::uint64_t dirty_epoch{};
     std::vector<std::byte> data;
 };
 

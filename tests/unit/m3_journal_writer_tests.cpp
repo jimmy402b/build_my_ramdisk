@@ -5,12 +5,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <stop_token>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -227,6 +229,213 @@ TEST_CASE(journal_writer_prepares_flushes_and_reads_back_checkpoint) {
     REQUIRE(fixture.request.file->read_exact(0, header_bytes).ok());
     REQUIRE_EQ(header_bytes,
                encode_journal_header(fixture.request.header).value());
+}
+
+TEST_CASE(journal_writer_streams_batches_without_retaining_payloads) {
+    auto expected_fixture = make_fixture();
+    auto expected_writer = JournalWriter::create(writer_options());
+    REQUIRE(expected_writer.ok());
+    const auto expected = expected_writer.value()->prepare(
+        OperationContext{}, expected_fixture.request);
+    REQUIRE(expected.ok());
+
+    auto fixture = make_fixture();
+    fixture.request.blocks = {};
+    std::size_t consumed_batches = 0;
+    auto producer = [&fixture, &consumed_batches](
+        const OperationContext&,
+        const JournalCheckpointBatchConsumer& consume) -> Result<void> {
+        for (std::size_t index = 0; index < fixture.blocks.size(); ++index) {
+            const auto consumed = consume(
+                std::span<const JournalCheckpointBlockInput>(
+                    fixture.blocks.data() + index, 1));
+            if (!consumed.ok()) return consumed;
+            ++consumed_batches;
+            if (index == 0) {
+                // DATA may become invalid immediately after consume returns.
+                fixture.payload->fill(std::byte{0xA5});
+            }
+        }
+        return Result<void>::success();
+    };
+
+    auto writer = JournalWriter::create(writer_options());
+    REQUIRE(writer.ok());
+    const auto prepared = writer.value()->prepare_streaming(
+        OperationContext{}, fixture.request, producer);
+    REQUIRE(prepared.ok());
+    REQUIRE_EQ(prepared.value(), expected.value());
+    REQUIRE_EQ(consumed_batches, 3ull);
+}
+
+TEST_CASE(journal_writer_prepares_clean_checkpoint_from_empty_stream) {
+    auto fixture = make_fixture();
+    fixture.request.blocks = {};
+    std::size_t source_calls = 0;
+    auto writer = JournalWriter::create(writer_options());
+    REQUIRE(writer.ok());
+    const auto prepared = writer.value()->prepare_streaming(
+        OperationContext{}, fixture.request,
+        [&](const OperationContext&,
+            const JournalCheckpointBatchConsumer&) -> Result<void> {
+            ++source_calls;
+            return Result<void>::success();
+        });
+    REQUIRE(prepared.ok());
+    REQUIRE_EQ(source_calls, 1ull);
+    REQUIRE_EQ(prepared.value().data_count, 0ull);
+    REQUIRE_EQ(prepared.value().zero_count, 0ull);
+    REQUIRE_EQ(prepared.value().discard_count, 0ull);
+    REQUIRE_EQ(prepared.value().ack_stream.record_count, 0ull);
+    REQUIRE_EQ(fixture.state->calls(test::FaultFilePhase::Flush), 1ull);
+}
+
+TEST_CASE(journal_writer_rejects_cross_batch_ordering_violation) {
+    auto fixture = make_fixture();
+    fixture.blocks[1].block_index = fixture.blocks[0].block_index;
+    fixture.request.blocks = {};
+    std::size_t source_call = 0;
+    auto writer = JournalWriter::create(writer_options());
+    REQUIRE(writer.ok());
+    const auto prepared = writer.value()->prepare_streaming(
+        OperationContext{}, fixture.request,
+        [&](const OperationContext&,
+            const JournalCheckpointBatchConsumer& consume) -> Result<void> {
+            while (source_call < 2) {
+                const auto consumed = consume(
+                    std::span<const JournalCheckpointBlockInput>(
+                        fixture.blocks.data() + source_call++, 1));
+                if (!consumed.ok()) return consumed;
+            }
+            return Result<void>::success();
+        });
+    REQUIRE(!prepared.ok());
+    REQUIRE_EQ(fixture.state->calls(test::FaultFilePhase::Flush), 0ull);
+}
+
+TEST_CASE(journal_writer_streaming_failure_is_sticky_and_exceptions_do_not_escape) {
+    auto fixture = make_fixture();
+    fixture.request.blocks = {};
+    auto writer = JournalWriter::create(writer_options());
+    REQUIRE(writer.ok());
+    const auto ignored_error = writer.value()->prepare_streaming(
+        OperationContext{}, fixture.request,
+        [](const OperationContext&,
+           const JournalCheckpointBatchConsumer& consume) -> Result<void> {
+            (void)consume({});
+            return Result<void>::success();
+        });
+    REQUIRE(!ignored_error.ok());
+    REQUIRE_EQ(fixture.state->calls(test::FaultFilePhase::Flush), 0ull);
+
+    auto throwing_fixture = make_fixture();
+    throwing_fixture.request.blocks = {};
+    const auto thrown = writer.value()->prepare_streaming(
+        OperationContext{}, throwing_fixture.request,
+        [](const OperationContext&,
+           const JournalCheckpointBatchConsumer&) -> Result<void> {
+            throw std::runtime_error("producer fault");
+        });
+    REQUIRE(!thrown.ok());
+    REQUIRE_EQ(thrown.error().code,
+               static_cast<std::uint32_t>(
+                   PersistenceErrorCode::FatalInternalInvariant));
+}
+
+TEST_CASE(journal_writer_streaming_reentry_is_busy_and_writer_is_reusable) {
+    auto fixture = make_fixture();
+    auto streaming_request = fixture.request;
+    streaming_request.blocks = {};
+    auto writer = JournalWriter::create(writer_options());
+    REQUIRE(writer.ok());
+    bool saw_busy = false;
+    const auto outer = writer.value()->prepare_streaming(
+        OperationContext{}, streaming_request,
+        [&](const OperationContext&,
+            const JournalCheckpointBatchConsumer&) -> Result<void> {
+            const auto nested = writer.value()->prepare(
+                OperationContext{}, fixture.request);
+            saw_busy = !nested.ok() &&
+                nested.error().code == static_cast<std::uint32_t>(
+                    PersistenceErrorCode::OperationBusy);
+            return Result<void>::failure(nested.error());
+        });
+    REQUIRE(saw_busy);
+    REQUIRE(!outer.ok());
+
+    auto retry = make_fixture();
+    REQUIRE(writer.value()->prepare(
+        OperationContext{}, retry.request).ok());
+}
+
+TEST_CASE(journal_writer_retained_consumer_fails_safely_after_prepare) {
+    auto fixture = make_fixture();
+    fixture.request.blocks = {};
+    JournalCheckpointBatchConsumer retained;
+    auto writer = JournalWriter::create(writer_options());
+    REQUIRE(writer.ok());
+    const auto prepared = writer.value()->prepare_streaming(
+        OperationContext{}, fixture.request,
+        [&](const OperationContext&,
+            const JournalCheckpointBatchConsumer& consume) -> Result<void> {
+            retained = consume;
+            return Result<void>::success();
+        });
+    REQUIRE(prepared.ok());
+    REQUIRE(static_cast<bool>(retained));
+    const auto late = retained({});
+    REQUIRE(!late.ok());
+    REQUIRE_EQ(late.error().code,
+               static_cast<std::uint32_t>(
+                   PersistenceErrorCode::FatalInternalInvariant));
+}
+
+TEST_CASE(journal_writer_rejects_concurrent_consumer_invocation) {
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    auto fixture = make_fixture();
+    fixture.request.blocks = {};
+    std::atomic<bool> first_entered{false};
+    std::atomic<bool> release_first{false};
+    std::atomic<bool> first_ok{false};
+    std::atomic<bool> concurrent_failed{false};
+    auto options = writer_options();
+    options.phase_hook = [&](const JournalWriterPhaseEvent& event) {
+        if (event.phase == JournalWriterPhase::BeforeBlockWrite &&
+            event.ordinal == 0) {
+            first_entered.store(true, std::memory_order_release);
+            first_entered.notify_all();
+            release_first.wait(false, std::memory_order_acquire);
+        }
+        return Result<void>::success();
+    };
+    auto writer = JournalWriter::create(std::move(options));
+    REQUIRE(writer.ok());
+    const auto prepared = writer.value()->prepare_streaming(
+        OperationContext{}, fixture.request,
+        [&](const OperationContext&,
+            const JournalCheckpointBatchConsumer& consume) -> Result<void> {
+            std::jthread first([&]() {
+                const auto result = consume(
+                    std::span<const JournalCheckpointBlockInput>(
+                        fixture.blocks.data(), 1));
+                first_ok.store(result.ok(), std::memory_order_release);
+            });
+            first_entered.wait(false, std::memory_order_acquire);
+            const auto concurrent = consume(
+                std::span<const JournalCheckpointBlockInput>(
+                    fixture.blocks.data() + 1, 1));
+            concurrent_failed.store(
+                !concurrent.ok(), std::memory_order_release);
+            release_first.store(true, std::memory_order_release);
+            release_first.notify_all();
+            first.join();
+            return Result<void>::success();
+        });
+    REQUIRE(first_ok.load(std::memory_order_acquire));
+    REQUIRE(concurrent_failed.load(std::memory_order_acquire));
+    REQUIRE(!prepared.ok());
+    REQUIRE_EQ(fixture.state->calls(test::FaultFilePhase::Flush), 0ull);
+#endif
 }
 
 TEST_CASE(journal_writer_real_io_is_inside_the_named_durability_phases) {

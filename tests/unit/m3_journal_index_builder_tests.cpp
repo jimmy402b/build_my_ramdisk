@@ -172,6 +172,53 @@ TEST_CASE(journal_index_builder_is_pure_deterministic_and_rejects_duplicates) {
                JournalIndexLookupKind::Data);
 }
 
+TEST_CASE(journal_index_builder_clean_checkpoint_preserves_or_rehomes_root) {
+    auto fixture = empty_fixture(0x40000);
+    auto builder = make_builder();
+
+    const std::vector<JournalIndexLeafEntry> no_updates;
+    auto empty_plan = builder->plan(
+        OperationContext{}, fixture.view, no_updates, 1, 70);
+    REQUIRE(empty_plan.ok());
+    auto empty_assigned = builder->assign_offsets(
+        empty_plan.value(), fixture.view, 0x1000, 0, 0x2000);
+    REQUIRE(empty_assigned.ok());
+    REQUIRE(empty_assigned.value().nodes.empty());
+    REQUIRE_EQ(empty_assigned.value().root,
+               PersistentIndexRootDescriptor{});
+
+    const std::vector<JournalIndexLeafEntry> initial{
+        zero_update(9, 1, 0x1000)};
+    auto initial_plan = builder->plan(
+        OperationContext{}, fixture.view, initial, 1, 71);
+    REQUIRE(initial_plan.ok());
+    auto initial_assigned = builder->assign_offsets(
+        initial_plan.value(), fixture.view, 0x2000, 1, 0x3000);
+    REQUIRE(initial_assigned.ok());
+    write_assigned(fixture.view, initial_assigned.value());
+    auto generation_one = committed_view(
+        fixture.view, initial_assigned.value(), 1, 0x3000);
+
+    auto clean_plan = builder->plan(
+        OperationContext{}, generation_one, no_updates, 2, 72);
+    REQUIRE(clean_plan.ok());
+    auto clean_assigned = builder->assign_offsets(
+        clean_plan.value(), generation_one, 0x3000, 0, 0x4000);
+    REQUIRE(clean_assigned.ok());
+    REQUIRE_EQ(clean_assigned.value().nodes.size(), 1ull);
+    REQUIRE(clean_assigned.value().root.offset >=
+            generation_one.committed_length);
+    write_assigned(generation_one, clean_assigned.value());
+
+    auto generation_two = committed_view(
+        generation_one, clean_assigned.value(), 2, 0x4000);
+    auto reader = JournalIndexReader::create({4 * kIndexNodeBytes, 4});
+    REQUIRE(reader.ok());
+    const auto lookup = reader.value()->lookup(generation_two, 9);
+    REQUIRE(lookup.ok());
+    REQUIRE_EQ(lookup.value().kind, JournalIndexLookupKind::Zero);
+}
+
 TEST_CASE(journal_index_builder_splits_and_reuses_unchanged_subtree) {
     constexpr std::uint64_t update_count = kJournalIndexMaxEntries + 1;
     constexpr std::uint64_t first_node =
@@ -239,7 +286,7 @@ TEST_CASE(journal_index_builder_fails_closed_on_limits_context_and_bad_plan) {
         {{kIndexNodeBytes, 1}, 2, kIndexNodeBytes}).ok());
     const std::vector<JournalIndexLeafEntry> update{
         zero_update(1, 1, 0x1000)};
-    REQUIRE(!builder->plan(OperationContext{}, fixture.view, {}, 1, 1).ok());
+    REQUIRE(builder->plan(OperationContext{}, fixture.view, {}, 1, 1).ok());
     REQUIRE(!builder->plan(OperationContext{}, fixture.view, update, 0, 1).ok());
     auto skipped = update;
     skipped[0].record_generation = 2;

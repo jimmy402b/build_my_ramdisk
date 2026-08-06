@@ -1147,6 +1147,22 @@ set_tests_properties(unit.m3.image_session PROPERTIES
     LABELS "m3-v2"
     TIMEOUT 30)
 
+# ---- M3 pre-manifest checkpoint preparation (Task 30) ---------------------
+add_executable(myrd_m3_checkpoint_tests
+    integration/m3_checkpoint_tests.cpp
+    support/fault_file.cpp
+)
+target_link_libraries(myrd_m3_checkpoint_tests PRIVATE
+    myrd_test_support myrd_persistence myrd_storage)
+target_include_directories(myrd_m3_checkpoint_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/support")
+myrd_enable_warnings(myrd_m3_checkpoint_tests)
+add_test(NAME integration.m3.checkpoint COMMAND myrd_m3_checkpoint_tests)
+set_tests_properties(integration.m3.checkpoint PROPERTIES
+    LABELS "m3-v2;m3-v3"
+    TIMEOUT 120)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

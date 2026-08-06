@@ -824,11 +824,11 @@ extend `image_paths.*`/`writer_lock.*` only for the atomic `CREATE_NEW` manifest
 **Depends on:** 09, 19, 29
 **Files:** Create `src/persistence/checkpoint_coordinator.h/.cpp`, `tests/integration/m3_checkpoint_tests.cpp`.
 
-- [ ] **Step 1: Red-test preconditions and ordered phases:** an unknown/missing volume barrier fails before snapshot begin; then begin stable snapshot, stream each token member once, append records/index/commit, flush journal, read back, and become Prepared. Manifest and dirty acknowledgment must not occur yet.
-- [ ] **Step 2: Cover DATA/ZERO/DISCARD**, overwritten-after-cut blocks, clean image, partial final block, cancellation/deadline and every injected pre-manifest failure.
-- [ ] **Step 3: Implement bounded streaming** from `copy_snapshot_batch(token)` to `JournalWriter`; do not materialize a disk-sized snapshot or retain copied block payloads after durable append.
-- [ ] **Step 4: On pre-manifest failure**, abort snapshot, preserve old manifest/view and return `NotCommitted`; appended bytes are an ignorable tail.
-- [ ] **Step 5: Commit.** `feat(persistence): prepare checkpoint durability`.
+- [x] **Step 1: Red-test preconditions and ordered phases:** an unknown/missing volume barrier fails before snapshot begin; then begin stable snapshot, stream each token member once, append records/index/commit, flush journal, read back, and become Prepared. Manifest and dirty acknowledgment must not occur yet.
+- [x] **Step 2: Cover DATA/ZERO/DISCARD**, overwritten-after-cut blocks, clean image, partial final block, cancellation/deadline and every injected pre-manifest failure.
+- [x] **Step 3: Implement bounded streaming** from `copy_snapshot_batch(token)` to `JournalWriter`; do not materialize a disk-sized snapshot or retain copied block payloads after durable append.
+- [x] **Step 4: On pre-manifest failure**, abort snapshot, preserve old manifest/view and return `NotCommitted`; appended bytes are an ignorable tail.
+- [x] **Step 5: Commit.** `feat(persistence): prepare checkpoint durability`.
 
 ### Task 31: Publish a manifest slot and resolve indeterminate commits
 

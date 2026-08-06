@@ -817,11 +817,16 @@ publish 由逻辑负责人审查。
 
 **类别：O。允许文件：** `checkpoint_coordinator.*`、checkpoint integration tests；不实现 manifest publish。
 
-- [ ] 依赖 Task 09 GO；missing/unknown volume barrier 在 begin 前失败；红灯锁定 begin snapshot → stream token once → append records/index/commit → flush → readback → Prepared。
-- [ ] DATA/ZERO/DISCARD、overwrite-after-cut、clean image、partial final、cancel/deadline、每个 fault phase 全覆盖。
-- [ ] batch bounded streaming，不建立 disk-sized snapshot；持久 append 后立即释放临时 payload。
-- [ ] 任一 pre-manifest-attempt failure abort token、保留旧 view/manifest、返回 `NotCommitted`，tail 可忽略。
-- [ ] 跑 `m3-v2` 中当前 checkpoint 项和 M2.1 snapshot gates；建议提交 `feat(persistence): prepare checkpoint durability`。
+- [x] 依赖 Task 09 GO；missing/unknown volume barrier 在 begin 前失败；红灯锁定 begin snapshot → stream token once → append records/index/commit → flush → readback → Prepared。
+- [x] DATA/ZERO/DISCARD、overwrite-after-cut、clean image、partial final、cancel/deadline、每个 fault phase 全覆盖。
+- [x] batch bounded streaming，不建立 disk-sized snapshot；持久 append 后立即释放临时 payload。
+- [x] 任一 pre-manifest-attempt failure abort token、保留旧 view/manifest、返回 `NotCommitted`，tail 可忽略。
+- [x] `m3-v2` checkpoint、M2.1 snapshot、完整 Debug/Release CTest、production build 与双独立审查通过；提交 `feat(persistence): prepare checkpoint durability`。
+
+Task 30 验收说明：实现范围因真实依赖补充了 JournalWriter streaming、clean
+checkpoint index root、`DirtyBlockSnapshot::dirty_epoch` 及 M2 publication pin。
+这些变更只封闭 pre-manifest 边界；Task 30 自身不写 manifest、不安装 backing、
+不 ack dirty state。Task 31–32 必须持有 transaction 内部能力后才能继续发布。
 
 ## Task 31 — Manifest publish 与 CommitIndeterminate resolver
 

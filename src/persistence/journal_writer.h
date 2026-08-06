@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace myrd::persistence {
@@ -20,6 +21,13 @@ struct JournalCheckpointBlockInput final {
     std::uint64_t dirty_epoch{0};
     std::span<const std::byte> payload{};
 };
+
+// The producer may synchronously submit multiple bounded batches. Every span
+// and borrowed DATA payload may be destroyed as soon as consume() returns.
+using JournalCheckpointBatchConsumer = std::function<Result<void>(
+    std::span<const JournalCheckpointBlockInput>)>;
+using JournalCheckpointBatchProducer = std::function<Result<void>(
+    const OperationContext&, const JournalCheckpointBatchConsumer&)>;
 
 struct JournalCheckpointRequest final {
     std::shared_ptr<IPersistenceFile> file{};
@@ -115,6 +123,15 @@ public:
     Result<PreparedCheckpoint> prepare(
         const OperationContext& context,
         const JournalCheckpointRequest& request);
+
+    // Durably consumes producer-submitted bounded batches. request.blocks must
+    // be empty. Inputs must be globally strictly increasing across batches.
+    // The producer is synchronous and must not retain or invoke consume after
+    // returning; producer/consumer failure leaves an uncommitted journal tail.
+    Result<PreparedCheckpoint> prepare_streaming(
+        const OperationContext& context,
+        const JournalCheckpointRequest& request,
+        const JournalCheckpointBatchProducer& producer);
 
 private:
     struct Impl;

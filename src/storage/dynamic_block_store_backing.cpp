@@ -71,6 +71,18 @@ BackingGeneration DynamicBlockStore::backing_generation() const {
 
 Result<void> DynamicBlockStore::install_backing_view(
     BackingView next_view) {
+    return install_backing_view_impl(std::nullopt, std::move(next_view));
+}
+
+Result<void> DynamicBlockStore::install_backing_view_for_snapshot(
+    const ConsistentSnapshotToken& token,
+    BackingView next_view) {
+    return install_backing_view_impl(token, std::move(next_view));
+}
+
+Result<void> DynamicBlockStore::install_backing_view_impl(
+    const std::optional<ConsistentSnapshotToken>& token,
+    BackingView next_view) {
     RequestToken request;
     if (!try_enter_request(request)) {
         return Result<void>::failure(closed_backing(
@@ -91,14 +103,20 @@ Result<void> DynamicBlockStore::install_backing_view(
         [this, &snapshot_sensitive_operation]() noexcept {
             leave_mutation(snapshot_sensitive_operation);
         });
-    const auto snapshot = snapshot_coordinator_->snapshot();
-    if (snapshot.active_token.has_value() &&
-        snapshot.active_state != ConsistentSnapshotState::FullyScanned) {
+    SnapshotPublicationPin publication_pin;
+    if (token.has_value()) {
+        auto acquired =
+            snapshot_coordinator_->acquire_publication_pin(*token);
+        if (!acquired.ok()) {
+            return Result<void>::failure(acquired.error());
+        }
+        publication_pin = acquired.move_value();
+    } else if (snapshot_coordinator_->snapshot().active_token.has_value()) {
         return Result<void>::failure(backing_error(
             static_cast<std::uint32_t>(
                 DynamicBlockStoreErrorCode::SnapshotBusy),
             L"DynamicBlockStore::install_backing_view",
-            L"backing publication is blocked until the snapshot is fully scanned"));
+            L"backing publication requires the active snapshot token"));
     }
 
     BackingView retired_view;
@@ -131,6 +149,10 @@ Result<void> DynamicBlockStore::install_backing_view(
         stats_.backing_generation = backing_view_.generation;
         ++stats_.backing_view_installs_total;
     }
+    // The backing pointer/generation swap is the publication side effect.
+    // Release its snapshot pin before destroying a user-provided retired
+    // backing object, whose destructor may perform reentrant diagnostics.
+    publication_pin = SnapshotPublicationPin{};
     // shared_ptr destruction may execute a user-provided backing destructor.
     // Keep it outside state_mutex_ so reentrant diagnostics cannot deadlock.
     retired_view.store.reset();
@@ -138,6 +160,28 @@ Result<void> DynamicBlockStore::install_backing_view(
 }
 
 Result<void> DynamicBlockStore::mark_persisted(
+    std::uint64_t block_index,
+    std::uint64_t expected_version,
+    DirtyRecordKind expected_kind,
+    BackingGeneration persisted_generation) {
+    return mark_persisted_impl(
+        std::nullopt, block_index, expected_version, expected_kind,
+        persisted_generation);
+}
+
+Result<void> DynamicBlockStore::mark_persisted_for_snapshot(
+    const ConsistentSnapshotToken& token,
+    const std::uint64_t block_index,
+    const std::uint64_t expected_version,
+    const DirtyRecordKind expected_kind,
+    const BackingGeneration persisted_generation) {
+    return mark_persisted_impl(
+        token, block_index, expected_version, expected_kind,
+        persisted_generation);
+}
+
+Result<void> DynamicBlockStore::mark_persisted_impl(
+    const std::optional<ConsistentSnapshotToken>& token,
     std::uint64_t block_index,
     std::uint64_t expected_version,
     DirtyRecordKind expected_kind,
@@ -162,14 +206,20 @@ Result<void> DynamicBlockStore::mark_persisted(
         [this, &snapshot_sensitive_operation]() noexcept {
             leave_mutation(snapshot_sensitive_operation);
         });
-    const auto snapshot = snapshot_coordinator_->snapshot();
-    if (snapshot.active_token.has_value() &&
-        snapshot.active_state != ConsistentSnapshotState::FullyScanned) {
+    SnapshotPublicationPin publication_pin;
+    if (token.has_value()) {
+        auto acquired =
+            snapshot_coordinator_->acquire_publication_pin(*token);
+        if (!acquired.ok()) {
+            return Result<void>::failure(acquired.error());
+        }
+        publication_pin = acquired.move_value();
+    } else if (snapshot_coordinator_->snapshot().active_token.has_value()) {
         return Result<void>::failure(backing_error(
             static_cast<std::uint32_t>(
                 DynamicBlockStoreErrorCode::SnapshotBusy),
             L"DynamicBlockStore::mark_persisted",
-            L"acknowledgement is blocked until the snapshot is fully scanned"));
+            L"acknowledgement requires the active snapshot token"));
     }
 
     if (block_index >= geometry_.total_blocks) {
@@ -213,10 +263,8 @@ Result<void> DynamicBlockStore::mark_persisted(
 
     const bool resident_dirty = entry->state == BlockState::ResidentDirty;
     const bool zero_dirty = entry->state == BlockState::ZeroDirty;
-    const bool snapshot_epoch_changed =
-        snapshot.active_token.has_value() &&
-        entry->dirty_epoch >
-            snapshot.active_token->cutoff_dirty_epoch;
+    const bool snapshot_epoch_changed = token.has_value() &&
+        entry->dirty_epoch > token->cutoff_dirty_epoch;
     if ((!resident_dirty && !zero_dirty) ||
         entry->version != expected_version ||
         entry->dirty_kind != expected_kind ||

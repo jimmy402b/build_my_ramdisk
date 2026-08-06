@@ -413,10 +413,14 @@ public:
     }
 
     ~SnapshotCoordinatorState() noexcept {
+        if (publication_pins != 0 || publication_end_waiters != 0) {
+            std::terminate();
+        }
         clear_records();
     }
 
     void abandon(SnapshotMetadataReservation& reservation) noexcept;
+    void release_publication_pin(SnapshotPublicationPin& pin) noexcept;
 
     std::chrono::steady_clock::time_point now() const noexcept {
         return pressure_clock ? pressure_clock->now()
@@ -557,6 +561,8 @@ public:
     std::uint64_t next_capacity_ticket{1};
     std::uint64_t writer_stalls_total{};
     std::uint64_t auto_aborts_total{};
+    std::uint64_t publication_pins{};
+    std::uint64_t publication_end_waiters{};
     bool abort_finalize_requested{};
     bool closing{};
     std::atomic<bool> preimage_lookup_entered_for_test{};
@@ -605,6 +611,60 @@ void SnapshotMetadataReservation::reset() noexcept {
         owner_state->abandon(*this);
     }
     owner_state_.reset();
+}
+
+SnapshotPublicationPin::SnapshotPublicationPin(
+    std::shared_ptr<SnapshotCoordinatorState> owner_state,
+    const std::uint64_t snapshot_id) noexcept
+    : owner_state_(std::move(owner_state)), snapshot_id_(snapshot_id) {}
+
+SnapshotPublicationPin::~SnapshotPublicationPin() noexcept {
+    reset();
+}
+
+SnapshotPublicationPin::SnapshotPublicationPin(
+    SnapshotPublicationPin&& other) noexcept
+    : owner_state_(std::move(other.owner_state_)),
+      snapshot_id_(std::exchange(other.snapshot_id_, 0)) {}
+
+SnapshotPublicationPin& SnapshotPublicationPin::operator=(
+    SnapshotPublicationPin&& other) noexcept {
+    if (this != &other) {
+        reset();
+        owner_state_ = std::move(other.owner_state_);
+        snapshot_id_ = std::exchange(other.snapshot_id_, 0);
+    }
+    return *this;
+}
+
+void SnapshotPublicationPin::reset() noexcept {
+    // Keep the state alive until release_publication_pin() has returned even
+    // when the coordinator was already destroyed and this pin owns the last
+    // shared reference.
+    auto owner_state = owner_state_;
+    if (owner_state) {
+        owner_state->release_publication_pin(*this);
+    }
+    owner_state_.reset();
+    snapshot_id_ = 0;
+}
+
+void SnapshotCoordinatorState::release_publication_pin(
+    SnapshotPublicationPin& pin) noexcept {
+    try {
+        std::scoped_lock lock(mutex);
+        if (pin.snapshot_id_ == 0 || publication_pins == 0 ||
+            !active_token.has_value() ||
+            active_token->snapshot_id != pin.snapshot_id_) {
+            std::terminate();
+        }
+        --publication_pins;
+        pin.owner_state_.reset();
+        pin.snapshot_id_ = 0;
+        condition.notify_all();
+    } catch (...) {
+        std::terminate();
+    }
 }
 
 SnapshotCoordinator::SnapshotCoordinator(
@@ -1446,10 +1506,36 @@ Result<void> SnapshotCoordinator::advance_scan_frontier(
     return Result<void>::success();
 }
 
+Result<SnapshotPublicationPin>
+SnapshotCoordinator::acquire_publication_pin(
+    const ConsistentSnapshotToken& token) {
+    std::scoped_lock lock(state_->mutex);
+    if (!state_->token_matches(token)) {
+        return Result<SnapshotPublicationPin>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
+            L"snapshot token does not own this coordinator"));
+    }
+    if (state_->active_state != ConsistentSnapshotState::FullyScanned ||
+        state_->closing || state_->publication_end_waiters != 0) {
+        return Result<SnapshotPublicationPin>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::SnapshotBusy,
+            L"snapshot publication requires a fully scanned active token"));
+    }
+    if (state_->publication_pins ==
+        (std::numeric_limits<std::uint64_t>::max)()) {
+        return Result<SnapshotPublicationPin>::failure(coordinator_error(
+            DynamicBlockStoreErrorCode::FatalInternalInvariant,
+            L"snapshot publication pin count overflowed"));
+    }
+    ++state_->publication_pins;
+    return Result<SnapshotPublicationPin>::success(
+        SnapshotPublicationPin{state_, token.snapshot_id});
+}
+
 Result<void> SnapshotCoordinator::finish(
     const ConsistentSnapshotToken& token,
     std::uint64_t total_blocks) {
-    std::scoped_lock lock(state_->mutex);
+    std::unique_lock lock(state_->mutex);
     if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
@@ -1460,6 +1546,29 @@ Result<void> SnapshotCoordinator::finish(
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotNotFullyScanned,
             L"snapshot cannot finish before its frontier reaches the end"));
+    }
+    if (state_->publication_pins != 0) {
+        if (state_->publication_end_waiters ==
+            (std::numeric_limits<std::uint64_t>::max)()) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"snapshot publication waiter count overflowed"));
+        }
+        ++state_->publication_end_waiters;
+        ScopeExit remove_waiter([state = state_.get()]() noexcept {
+            --state->publication_end_waiters;
+            state->condition.notify_all();
+        });
+        state_->condition.wait(lock, [state = state_.get()] {
+            return state->publication_pins == 0;
+        });
+        if (!state_->token_matches(token) || state_->closing ||
+            state_->active_state !=
+                ConsistentSnapshotState::FullyScanned) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotAborted,
+                L"snapshot ended while waiting for publication pins"));
+        }
     }
     state_->clear_records();
     state_->active_token.reset();
@@ -1472,11 +1581,32 @@ Result<void> SnapshotCoordinator::finish(
 
 Result<void> SnapshotCoordinator::abort(
     const ConsistentSnapshotToken& token) {
-    std::scoped_lock lock(state_->mutex);
+    std::unique_lock lock(state_->mutex);
     if (!state_->token_matches(token)) {
         return Result<void>::failure(coordinator_error(
             DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
             L"snapshot token does not own this coordinator"));
+    }
+    if (state_->publication_pins != 0) {
+        if (state_->publication_end_waiters ==
+            (std::numeric_limits<std::uint64_t>::max)()) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::FatalInternalInvariant,
+                L"snapshot publication waiter count overflowed"));
+        }
+        ++state_->publication_end_waiters;
+        ScopeExit remove_waiter([state = state_.get()]() noexcept {
+            --state->publication_end_waiters;
+            state->condition.notify_all();
+        });
+        state_->condition.wait(lock, [state = state_.get()] {
+            return state->publication_pins == 0;
+        });
+        if (!state_->token_matches(token)) {
+            return Result<void>::failure(coordinator_error(
+                DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
+                L"snapshot ended while waiting for publication pins"));
+        }
     }
     state_->active_state = ConsistentSnapshotState::Aborted;
     state_->abort_reason = DynamicBlockStoreErrorCode::SnapshotAborted;
@@ -1519,6 +1649,8 @@ SnapshotCoordinatorSnapshot SnapshotCoordinator::snapshot() const {
         static_cast<std::uint64_t>(state_->capacity_waiters.size()),
         state_->writer_stalls_total,
         state_->auto_aborts_total,
+        state_->publication_pins,
+        state_->publication_end_waiters,
     };
 }
 
@@ -1573,9 +1705,18 @@ Result<void> SnapshotCoordinator::validate_invariants_for_test() const {
                state_->abort_reason.has_value() ||
                state_->abort_finalize_requested ||
                !state_->capacity_waiters.empty() ||
-               state_->capacity_grant.has_value()) {
+               state_->capacity_grant.has_value() ||
+               state_->publication_pins != 0 ||
+               state_->publication_end_waiters != 0) {
         return invariant_failure(
             L"inactive snapshot retained coordinator state");
+    }
+    if (state_->publication_pins != 0 &&
+        state_->active_state != ConsistentSnapshotState::FullyScanned &&
+        !(state_->closing && state_->active_state ==
+              ConsistentSnapshotState::Aborted)) {
+        return invariant_failure(
+            L"snapshot publication pin lacks a fully scanned owner");
     }
 
     std::uint64_t previous_ticket = 0;
@@ -1746,16 +1887,18 @@ void SnapshotCoordinator::request_close() noexcept {
 void SnapshotCoordinator::finalize_close() noexcept {
     try {
         std::scoped_lock lock(state_->mutex);
-        if (!state_->closing || !state_->capacity_waiters.empty()) {
+        if (!state_->closing || !state_->capacity_waiters.empty() ||
+            state_->publication_pins != 0 ||
+            state_->publication_end_waiters != 0) {
             std::terminate();
         }
         state_->clear_records();
         state_->capacity_grant.reset();
-    state_->active_token.reset();
-    state_->active_state.reset();
-    state_->abort_reason.reset();
-    state_->next_scan_block = 0;
-    state_->abort_finalize_requested = false;
+        state_->active_token.reset();
+        state_->active_state.reset();
+        state_->abort_reason.reset();
+        state_->next_scan_block = 0;
+        state_->abort_finalize_requested = false;
         state_->condition.notify_all();
     } catch (...) {
         std::terminate();

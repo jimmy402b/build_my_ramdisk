@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -32,6 +33,91 @@ bool checked_add(const std::uint64_t left,
     output = left + right;
     return true;
 }
+
+// A producer receives only a shared gate, never the writer's stack-bound
+// consumer directly. close() waits for an in-flight invocation and erases the
+// handler before prepare_streaming returns, so a retained callback can fail
+// safely instead of dereferencing expired stack state.
+class JournalConsumerInvocationGate final {
+public:
+    explicit JournalConsumerInvocationGate(
+        JournalCheckpointBatchConsumer handler)
+        : handler_(std::move(handler)) {}
+
+    Result<void> invoke(
+        const std::span<const JournalCheckpointBlockInput> batch) {
+        JournalCheckpointBatchConsumer handler;
+        {
+            std::unique_lock lock(mutex_);
+            if (!active_) {
+                return writer_failure<void>(
+                    L"checkpoint consumer was invoked after producer return",
+                    PersistenceErrorCode::FatalInternalInvariant);
+            }
+            if (invoking_) {
+                if (!protocol_failure_.has_value()) {
+                    protocol_failure_ = writer_failure<void>(
+                        L"checkpoint consumer was invoked concurrently",
+                        PersistenceErrorCode::OperationBusy).error();
+                }
+                return Result<void>::failure(*protocol_failure_);
+            }
+            invoking_ = true;
+            try {
+                handler = handler_;
+            } catch (const std::bad_alloc&) {
+                auto failure = writer_failure<void>(
+                    L"copying checkpoint consumer failed",
+                    PersistenceErrorCode::IoError).error();
+                if (!protocol_failure_.has_value()) {
+                    protocol_failure_ = failure;
+                }
+                invoking_ = false;
+                condition_.notify_all();
+                return Result<void>::failure(std::move(failure));
+            }
+        }
+
+        auto result = [&]() -> Result<void> {
+            try {
+                return handler(batch);
+            } catch (const std::bad_alloc&) {
+                return writer_failure<void>(
+                    L"checkpoint consumer allocation failed",
+                    PersistenceErrorCode::IoError);
+            } catch (...) {
+                return writer_failure<void>(
+                    L"checkpoint consumer threw an exception",
+                    PersistenceErrorCode::FatalInternalInvariant);
+            }
+        }();
+        {
+            std::lock_guard lock(mutex_);
+            if (!result.ok() && !protocol_failure_.has_value()) {
+                protocol_failure_ = result.error();
+            }
+            invoking_ = false;
+        }
+        condition_.notify_all();
+        return result;
+    }
+
+    std::optional<Error> close() {
+        std::unique_lock lock(mutex_);
+        active_ = false;
+        condition_.wait(lock, [this]() noexcept { return !invoking_; });
+        handler_ = {};
+        return protocol_failure_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool active_{true};
+    bool invoking_{false};
+    std::optional<Error> protocol_failure_{};
+    JournalCheckpointBatchConsumer handler_{};
+};
 
 template <typename Buffer>
 bool all_zero(const Buffer& bytes) noexcept {
@@ -153,6 +239,41 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
             L"writer is moved from",
             PersistenceErrorCode::FatalInternalInvariant);
     }
+    if (request.blocks.empty()) {
+        return writer_failure<PreparedCheckpoint>(
+            L"checkpoint block inputs are empty");
+    }
+    if (request.blocks.size() > impl_->options.max_checkpoint_records) {
+        return writer_failure<PreparedCheckpoint>(
+            L"checkpoint record limit exceeded",
+            PersistenceErrorCode::SnapshotResourceExhausted);
+    }
+    for (std::size_t index = 1; index < request.blocks.size(); ++index) {
+        if (request.blocks[index - 1].block_index >=
+            request.blocks[index].block_index) {
+            return writer_failure<PreparedCheckpoint>(
+                L"checkpoint block inputs are not strictly ordered");
+        }
+    }
+    auto streaming_request = request;
+    streaming_request.blocks = {};
+    JournalCheckpointBatchProducer producer =
+        [&request](const OperationContext&,
+                   const JournalCheckpointBatchConsumer& consume) {
+        return consume(request.blocks);
+    };
+    return prepare_streaming(context, streaming_request, producer);
+}
+
+Result<PreparedCheckpoint> JournalWriter::prepare_streaming(
+    const OperationContext& context,
+    const JournalCheckpointRequest& request,
+    const JournalCheckpointBatchProducer& producer) {
+    if (!impl_) {
+        return writer_failure<PreparedCheckpoint>(
+            L"writer is moved from",
+            PersistenceErrorCode::FatalInternalInvariant);
+    }
     std::unique_lock writer_lock(impl_->mutex, std::try_to_lock);
     if (!writer_lock.owns_lock()) {
         return writer_failure<PreparedCheckpoint>(
@@ -163,8 +284,8 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
     if (!context_result.ok()) {
         return Result<PreparedCheckpoint>::failure(context_result.error());
     }
-    if (!request.file || request.operation_id == 0 || request.blocks.empty() ||
-        request.blocks.size() > impl_->options.max_checkpoint_records ||
+    if (!request.file || request.operation_id == 0 || !request.blocks.empty() ||
+        !producer ||
         request.committed_length < kJournalAlignment ||
         request.committed_length % kJournalAlignment != 0 ||
         all_zero(request.file_identity.file_id) ||
@@ -189,13 +310,6 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
             return writer_failure<PreparedCheckpoint>(
                 L"journal file identity does not match mutation capability",
                 PersistenceErrorCode::AccessDenied);
-        }
-    }
-    for (std::size_t index = 1; index < request.blocks.size(); ++index) {
-        if (request.blocks[index - 1].block_index >=
-            request.blocks[index].block_index) {
-            return writer_failure<PreparedCheckpoint>(
-                L"checkpoint block inputs are not strictly ordered");
         }
     }
     auto next_generation = request.previous_generation;
@@ -253,86 +367,161 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
     }
 
     std::vector<JournalIndexLeafEntry> updates;
-    try {
-        updates.reserve(request.blocks.size());
-    } catch (const std::bad_alloc&) {
-        return Result<PreparedCheckpoint>::failure({
-            ErrorDomain::internal,
-            static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
-            L"JournalWriter::prepare", L"allocating checkpoint state failed",
-            0});
-    }
 
     std::uint64_t cursor = request.committed_length;
     std::uint64_t data_count = 0;
     std::uint64_t zero_count = 0;
     std::uint64_t discard_count = 0;
-    for (std::size_t index = 0; index < request.blocks.size(); ++index) {
-        const auto& input = request.blocks[index];
-        BlockJournalRecord record{};
-        record.common = {input.type, next_generation, request.operation_id,
-                         static_cast<std::uint64_t>(index), 0};
-        record.block_index = input.block_index;
-        record.snapshot_version = input.snapshot_version;
-        record.source_generation = input.source_generation;
-        record.dirty_epoch = input.dirty_epoch;
-        auto encoded = encode_block_record(
-            record, input.payload, request.header.geometry);
-        if (!encoded.ok()) {
-            return Result<PreparedCheckpoint>::failure(encoded.error());
+    std::uint64_t block_count = 0;
+    std::optional<std::uint64_t> previous_block_index;
+    std::optional<Error> consumer_failure;
+    const auto remember_failure = [&consumer_failure](Error error) {
+        if (!consumer_failure.has_value()) {
+            consumer_failure = std::move(error);
         }
-        std::uint64_t end = 0;
-        if (!checked_add(cursor, encoded.value().size(), end) ||
-            end - request.committed_length >
-                impl_->options.max_checkpoint_bytes) {
-            return writer_failure<PreparedCheckpoint>(
-                L"checkpoint byte limit exceeded",
-                PersistenceErrorCode::SnapshotResourceExhausted);
+        return Result<void>::failure(*consumer_failure);
+    };
+    JournalCheckpointBatchConsumer consume_impl =
+        [&](const std::span<const JournalCheckpointBlockInput> batch)
+        -> Result<void> {
+        if (consumer_failure.has_value()) {
+            return Result<void>::failure(*consumer_failure);
         }
-        auto frozen = decode_block_record(
-            encoded.value(), cursor, end, request.header.geometry);
-        if (!frozen.ok()) {
-            return Result<PreparedCheckpoint>::failure(frozen.error());
+        auto source_context = check_operation_context(context);
+        if (!source_context.ok()) {
+            return remember_failure(source_context.error());
         }
-        auto phase = impl_->phase(
-            context, JournalWriterPhase::BeforeBlockWrite, index, cursor,
-            encoded.value().size());
-        if (!phase.ok()) {
-            return Result<PreparedCheckpoint>::failure(phase.error());
+        if (batch.empty()) {
+            return remember_failure(writer_failure<void>(
+                L"checkpoint producer submitted an empty batch").error());
         }
-        auto write = request.file->write_exact(context, cursor,
-                                               encoded.value());
-        if (!write.ok()) {
-            return Result<PreparedCheckpoint>::failure(write.error());
+        if (batch.size() >
+            impl_->options.max_checkpoint_records - block_count) {
+            return remember_failure(writer_failure<void>(
+                L"checkpoint record limit exceeded",
+                PersistenceErrorCode::SnapshotResourceExhausted).error());
         }
-        phase = impl_->phase(
-            context, JournalWriterPhase::AfterBlockWrite, index, cursor,
-            encoded.value().size());
-        if (!phase.ok()) {
-            return Result<PreparedCheckpoint>::failure(phase.error());
+        auto ordered_after = previous_block_index;
+        for (const auto& input : batch) {
+            if (ordered_after.has_value() &&
+                *ordered_after >= input.block_index) {
+                return remember_failure(writer_failure<void>(
+                    L"checkpoint block inputs are not strictly ordered")
+                                            .error());
+            }
+            ordered_after = input.block_index;
         }
-        auto append = digest.value().append_non_commit_record(encoded.value());
-        if (!append.ok()) {
-            return Result<PreparedCheckpoint>::failure(append.error());
+        for (const auto& input : batch) {
+            BlockJournalRecord record{};
+            record.common = {input.type, next_generation,
+                             request.operation_id, block_count, 0};
+            record.block_index = input.block_index;
+            record.snapshot_version = input.snapshot_version;
+            record.source_generation = input.source_generation;
+            record.dirty_epoch = input.dirty_epoch;
+            auto encoded = encode_block_record(
+                record, input.payload, request.header.geometry);
+            if (!encoded.ok()) {
+                return remember_failure(encoded.error());
+            }
+            std::uint64_t end = 0;
+            if (!checked_add(cursor, encoded.value().size(), end) ||
+                end - request.committed_length >
+                    impl_->options.max_checkpoint_bytes) {
+                return remember_failure(writer_failure<void>(
+                    L"checkpoint byte limit exceeded",
+                    PersistenceErrorCode::SnapshotResourceExhausted).error());
+            }
+            auto frozen = decode_block_record(
+                encoded.value(), cursor, end, request.header.geometry);
+            if (!frozen.ok()) {
+                return remember_failure(frozen.error());
+            }
+            auto phase = impl_->phase(
+                context, JournalWriterPhase::BeforeBlockWrite, block_count,
+                cursor, encoded.value().size());
+            if (!phase.ok()) return remember_failure(phase.error());
+            auto write = request.file->write_exact(
+                context, cursor, encoded.value());
+            if (!write.ok()) return remember_failure(write.error());
+            phase = impl_->phase(
+                context, JournalWriterPhase::AfterBlockWrite, block_count,
+                cursor, encoded.value().size());
+            if (!phase.ok()) return remember_failure(phase.error());
+            auto append = digest.value().append_non_commit_record(
+                encoded.value());
+            if (!append.ok()) return remember_failure(append.error());
+            try {
+                updates.push_back({
+                    frozen.value().metadata.block_index,
+                    frozen.value().metadata.common.type,
+                    frozen.value().payload_crc32c, cursor,
+                    static_cast<std::uint64_t>(encoded.value().size()),
+                    next_generation});
+            } catch (const std::bad_alloc&) {
+                return remember_failure({
+                    ErrorDomain::internal,
+                    static_cast<std::uint32_t>(
+                        PersistenceErrorCode::IoError),
+                    L"JournalWriter::prepare_streaming",
+                    L"allocating index updates failed", 0});
+            }
+            if (input.type == JournalRecordType::Data) ++data_count;
+            else if (input.type == JournalRecordType::Zero) ++zero_count;
+            else ++discard_count;
+            cursor = end;
+            ++block_count;
         }
+        previous_block_index = ordered_after;
+        return Result<void>::success();
+    };
+
+    std::shared_ptr<JournalConsumerInvocationGate> invocation_gate;
+    try {
+        invocation_gate = std::make_shared<JournalConsumerInvocationGate>(
+            std::move(consume_impl));
+    } catch (const std::bad_alloc&) {
+        return writer_failure<PreparedCheckpoint>(
+            L"allocating checkpoint invocation gate failed",
+            PersistenceErrorCode::IoError);
+    }
+    JournalCheckpointBatchConsumer consume =
+        [invocation_gate](
+            const std::span<const JournalCheckpointBlockInput> batch) {
+        return invocation_gate->invoke(batch);
+    };
+
+    auto produced = [&]() -> Result<void> {
         try {
-            updates.push_back({
-                frozen.value().metadata.block_index,
-                frozen.value().metadata.common.type,
-                frozen.value().payload_crc32c, cursor,
-                static_cast<std::uint64_t>(encoded.value().size()),
-                next_generation});
+            return producer(context, consume);
         } catch (const std::bad_alloc&) {
-            return Result<PreparedCheckpoint>::failure({
+            return Result<void>::failure({
                 ErrorDomain::internal,
                 static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
-                L"JournalWriter::prepare",
-                L"allocating index updates failed", 0});
+                L"JournalWriter::prepare_streaming",
+                L"checkpoint producer allocation failed", 0});
+        } catch (...) {
+            return Result<void>::failure({
+                ErrorDomain::internal,
+                static_cast<std::uint32_t>(
+                    PersistenceErrorCode::FatalInternalInvariant),
+                L"JournalWriter::prepare_streaming",
+            L"checkpoint producer threw an exception", 0});
         }
-        if (input.type == JournalRecordType::Data) ++data_count;
-        else if (input.type == JournalRecordType::Zero) ++zero_count;
-        else ++discard_count;
-        cursor = end;
+    }();
+    const auto gate_failure = invocation_gate->close();
+    if (consumer_failure.has_value()) {
+        return Result<PreparedCheckpoint>::failure(*consumer_failure);
+    }
+    if (gate_failure.has_value()) {
+        return Result<PreparedCheckpoint>::failure(*gate_failure);
+    }
+    if (!produced.ok()) {
+        return Result<PreparedCheckpoint>::failure(produced.error());
+    }
+    auto producer_context = check_operation_context(context);
+    if (!producer_context.ok()) {
+        return Result<PreparedCheckpoint>::failure(producer_context.error());
     }
     const auto ack_end = cursor;
 
@@ -343,7 +532,7 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
     }
     const auto node_count = plan.value().planned_nodes().size();
     if (node_count > impl_->options.max_checkpoint_records -
-                         request.blocks.size()) {
+                         block_count) {
         return writer_failure<PreparedCheckpoint>(
             L"checkpoint record limit exceeded",
             PersistenceErrorCode::SnapshotResourceExhausted);
@@ -363,7 +552,7 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
             PersistenceErrorCode::SnapshotResourceExhausted);
     }
     auto assigned = impl_->index_builder->assign_offsets(
-        plan.value(), base_view, cursor, request.blocks.size(),
+        plan.value(), base_view, cursor, block_count,
         committed_end);
     if (!assigned.ok()) {
         return Result<PreparedCheckpoint>::failure(assigned.error());
@@ -403,7 +592,7 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
     commit.common = {
         JournalRecordType::CheckpointCommit, next_generation,
         request.operation_id,
-        static_cast<std::uint64_t>(request.blocks.size() + node_count), 0};
+        block_count + node_count, 0};
     commit.image_uuid = request.header.image_uuid;
     commit.journal_identity = request.header.journal_identity;
     commit.journal_epoch = request.header.epoch;
@@ -419,7 +608,7 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
     commit.checkpoint_begin_offset = request.committed_length;
     commit.journal_committed_end = committed_end;
     commit.geometry_digest = request.header.geometry_digest;
-    commit.input_record_count = request.blocks.size() + node_count;
+    commit.input_record_count = block_count + node_count;
     auto provisional = encode_checkpoint_commit(
         commit, request.header, commit_offset, committed_end);
     if (!provisional.ok()) {
@@ -515,9 +704,10 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
         return Result<void>::success();
     };
     std::uint64_t ordinal = 0;
-    for (const auto& input : request.blocks) {
+    for (const auto& update : updates) {
         auto verified = readback_record(ordinal++,
-                                        block_record_length(input.type));
+                                        block_record_length(
+                                            update.record_type));
         if (!verified.ok()) {
             return Result<PreparedCheckpoint>::failure(verified.error());
         }
@@ -596,7 +786,7 @@ Result<PreparedCheckpoint> JournalWriter::prepare(
     prepared.index_node_count = node_count;
     prepared.ack_stream = {
         request.header.journal_identity, request.header.epoch,
-        request.committed_length, ack_end, request.blocks.size(),
+        request.committed_length, ack_end, block_count,
         next_generation, request.operation_id};
     return Result<PreparedCheckpoint>::success(std::move(prepared));
 }
