@@ -219,6 +219,8 @@ myrd_enable_warnings(myrd_persistence)
 # Management/reporting remains above persistence and cannot introduce proxy,
 # driver, M1 or M2 dependencies into the persistence core.
 add_library(myrd_m3_management STATIC
+    m3/m3_cli.h
+    m3/m3_cli.cpp
     m3/m3_report.h
     m3/m3_report.cpp
     m3/m3_evidence_publisher.h

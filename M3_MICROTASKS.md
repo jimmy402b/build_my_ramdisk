@@ -728,9 +728,9 @@ publish/resolver 算法。
 
 允许：`m3_cli.*`、`m3_lifecycle_runner.*`、thin `main.cpp`、CLI tests/CMake。
 
-- [ ] `T38.1 [M]` RED parse matrix：create/inspect/verify/checkpoint/compact/recover-test/
+- [x] `T38.1 [M]` RED parse matrix：create/inspect/verify/checkpoint/compact/recover-test/
   fault-matrix、help/invalid args、exit code、stdout JSON vs stderr diagnostics。
-- [ ] `T38.2 [M]` 实现纯 argument/value validation：geometry/path/timeout/barrier；
+- [x] `T38.2 [M]` 实现纯 argument/value validation：geometry/path/timeout/barrier；
   默认 non-destructive，无命令推断/format Windows volume。
 - [ ] `T38.3 [H]` route commands 只调用 production session/recovery/coordinator，
   禁止 command-specific codec/publish shortcut。
