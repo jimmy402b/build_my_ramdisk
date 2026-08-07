@@ -189,10 +189,10 @@ Suggested commit:
 | 36 | Immutable file retention/cleanup | O | DONE | 12,27,35 | M3-V4 |
 | 37 | Inspect/verify/report schema | C | DONE | 27,33,36 | M3-V2/V4 |
 | 38 | M3 CLI 与 local fake | C | DONE | 27,29,30,35,37 | M3-V2/V4 |
-| 39 | M1/M2/M3 provider 集成 | O | PENDING | 28,32,38 | M3-V6 prerequisite |
-| 40 | 真实主机 preflight/E2E harness | C | PENDING | 24,39 | M3-V6 preflight |
-| 41 | AIM+NTFS+lazy+VHDX 真机验收 | O | PENDING | 24,32,35,40 | M3-V6 |
-| 42 | 模拟/进程 crash matrix | O | PENDING | 33,40,41 | M3-V2/V6/V7 |
+| 39 | M1/M2/M3 provider 集成 | O | DONE | 28,32,38 | M3-V6 prerequisite |
+| 40 | 真实主机 preflight/E2E harness | C | DONE | 24,39 | M3-V6 preflight |
+| 41 | AIM+NTFS+lazy+VHDX 真机验收 | O | DONE | 24,32,35,40 | M3-V6 |
+| 42 | 模拟/进程 crash matrix | O | DOING | 33,40,41 | M3-V2/V6/V7 |
 | 43 | Soak、资源、性能、最终 M3 verdict | O | PENDING | 36,41,42 | M3-V7 |
 | 44 | 文档、许可、最终偏航审计 | C/O | PENDING | 43 | 全门禁 |
 
@@ -940,13 +940,40 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O。允许文件：** `tests/e2e/Invoke-M3NtfsWorkload.ps1`、frozen harness scenarios、机器生成 evidence；不得顺手改 production 绕过失败。
 
-- [ ] create generation zero，real AIM export 后由 harness 明确识别 scratch disk，再初始化/格式化 NTFS、mount。
-  **当前状态：BLOCKED。** 本机只发现 Disk 0，且为 Boot/System 盘；尚未提供可操作的精确非系统 scratch identity。
-- [ ] 写 deterministic tree、overwrites、sparse、rename/delete；调用文件系统/volume flush 后 checkpoint。
-- [ ] clean stop/reopen，禁止重新分区/格式化，运行声明的 filesystem check 并校验 hashes/metadata；cold memory 小样本读取证明 startup/first-touch bounded，再全量校验。
-- [ ] 再次 flush exact volume 后 compact durable NTFS generation，证明新 base_generation hash 对应该完整 durable view；RAM disk offline 后用 Windows native API read-only open/attach，验证 partition/NTFS，再 detach。禁止拿旧 base 对比新 journal 内容或双写挂载。
-- [ ] 记录版本、命令、seed、I/O/memory counters、hash、cleanup。格式化仅是 E2E setup，不是 M3 API。
-- [ ] `m3-v6` 所有 required scenario 通过；不满足环境写 BLOCKED，不写 GO。
+- [x] create generation zero，real AIM export 后由 harness 明确识别 scratch disk，再初始化/格式化 NTFS、mount。
+- [x] 写 deterministic tree、overwrites、sparse、rename/delete；调用文件系统/volume flush 后 checkpoint。
+- [x] clean stop/reopen，禁止重新分区/格式化，运行声明的 filesystem check 并校验 hashes/metadata；cold memory 小样本读取证明 startup/first-touch bounded，再全量校验。
+- [x] 再次 flush exact volume 后 compact durable NTFS generation，证明新 base_generation hash 对应该完整 durable view；RAM disk offline 后用 Windows native API read-only open/attach，验证 partition/NTFS，再 detach。禁止拿旧 base 对比新 journal 内容或双写挂载。
+- [x] 记录版本、命令、seed、I/O/memory counters、hash、cleanup。格式化仅是 E2E setup，不是 M3 API。
+- [x] `m3-v6` 所有 required scenario 通过；不满足环境写 BLOCKED，不写 GO。
+
+**完成记录（DONE，2026-08-07，accepted implementation `078f44b`）：**
+
+- Formal source was a clean detached clone of Git bundle commit
+  `078f44b5427d14ac78eec0894877bd714da87eb5` in the Windows 11 VMware guest.
+  Imported Release server/image SHA-256 values were respectively
+  `91BA3D3B736515183317231A06BCAF674C795E331979BDA9F9DD2D61AEBE382E` and
+  `EF71152B693DAEB88B66599C382F1E0761AC9713E8B49A7E96BFDF44A823217D`.
+- The exact approved non-system scratch identity was guest Disk 1 (64 GiB,
+  NVMe); Disk 0 remained Boot/System and was never an automatic target.
+- `RealFunctional` passed generation-zero creation, real AIM export,
+  GPT/NTFS format, deterministic write/overwrite/sparse/rename/delete,
+  flushed and quiescent generation 1 checkpoint, stop/reopen without
+  reformat, complete corpus hashes, bounded first-touch backing-read delta,
+  generation 2 checkpoint, generation 3 compaction, and native Windows
+  read-only VHDX attach as NTFS.
+- Final report:
+  `E:\myrd-task41\evidence\real-functional-20260807-121026-5513085-8889752842b1403386c77862e80a068e\m3-ntfs-report.json`, SHA-256
+  `C08A2B8304A4C20A58506E5E631F5EBFBF37680814F4D732E509B0ACA10D607E`.
+  Fail-closed JSON validation passed; final cleanup was attempted/succeeded,
+  residual count was zero, and no server process remained.
+- Independent `verify --full` reopened generation 3 and returned `ok=true`.
+  The elevated imported provider integration executable also passed `9/9`,
+  including the unchanged M1 wire contract. The same test's host-only failure
+  was independently reduced to the intentional SYSTEM/Administrators shared-
+  memory DACL under a non-elevated Medium Integrity token (`ERROR_ACCESS_DENIED`).
+- Task 41 closes M3-V6 normal-path acceptance only. Task 42 real process/power
+  interruption and Task 43 soak/resource gates remain mandatory before M3 GO.
 
 ## Task 42 — Simulated and real-process crash matrix
 

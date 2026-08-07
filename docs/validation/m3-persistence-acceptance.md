@@ -2046,3 +2046,45 @@ the validated serializer/verifier chain for JSON semantics.
 
 Task 37 verdict: **DONE**. Task 38 may expose these production APIs through the
 local fake lifecycle CLI without adding format shortcuts.
+
+## Tasks 39-41 provider and real AIM/NTFS acceptance
+
+The accepted provider composition keeps persistence behind the existing M1
+shared-memory wire contract and the M2 dynamic store. The real-host harness is
+fail-closed around an exact non-system scratch identity, repository/scratch
+containment, reparse points, destructive-boundary classification, and a LIFO
+cleanup ledger. Acceptance-only NTFS quiescence waits for delayed filesystem
+maintenance writes before defining the expected checkpoint corpus; it does not
+promise persistence for writes issued after the checkpoint cut.
+
+Formal verification used a clean Windows 11 guest clone at commit
+`078f44b5427d14ac78eec0894877bd714da87eb5`. The imported Release server and
+image SHA-256 values were
+`91BA3D3B736515183317231A06BCAF674C795E331979BDA9F9DD2D61AEBE382E` and
+`EF71152B693DAEB88B66599C382F1E0761AC9713E8B49A7E96BFDF44A823217D`.
+The approved target was guest Disk 1 (64 GiB, non-Boot/non-System); guest Disk 0
+remained the protected Boot/System disk.
+
+The `RealFunctional` route passed:
+
+- generation-zero bundle creation and real AIM PhysicalDrive publication;
+- GPT/NTFS format followed by deterministic DATA, overwrite, sparse, rename,
+  delete and exact-volume flush workload;
+- complete generation 1 checkpoint, clean stop and generation 1 reopen without
+  reformat, complete file hashes, and a bounded first-touch backing-read delta;
+- complete generation 2 checkpoint, generation 3 compaction, and independent
+  `verify --full` recovery of generation 3;
+- Windows native read-only VHDX attach exposing exactly one NTFS volume;
+- final cleanup with zero residuals and no remaining server process.
+
+The fail-closed report verifier accepted
+`m3-ntfs-report.json` with SHA-256
+`C08A2B8304A4C20A58506E5E631F5EBFBF37680814F4D732E509B0ACA10D607E`.
+An independently imported elevated provider integration executable passed
+`9/9`, including the unchanged M1 wire contract. Its reproducible failure under
+the non-elevated host token was traced to the intentional SYSTEM/Administrators
+shared-memory DACL (`ERROR_ACCESS_DENIED`), not to provider behavior.
+
+Tasks 39, 40 and 41 verdict: **DONE**. This is M3-V6 normal-path acceptance,
+not M3 GO. Task 42 real interruption recovery and Task 43 M3-V7 soak/resource
+evidence remain mandatory.
