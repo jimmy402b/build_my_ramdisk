@@ -1494,6 +1494,15 @@ add_test(
     NAME unit.m3.real_crash_aggregate
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-real-crash-aggregate.ps1")
+
+# ---- M3 Task43 soak evidence verifier -------------------------------------
+add_test(
+    NAME unit.m3.soak_verifier
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-soak-verifier.ps1")
+set_tests_properties(unit.m3.soak_verifier PROPERTIES
+    LABELS "m3-v7"
+    TIMEOUT 60)
 set_tests_properties(unit.m3.real_crash_aggregate PROPERTIES
     LABELS "m3-v2;m3-v6"
     TIMEOUT 60)

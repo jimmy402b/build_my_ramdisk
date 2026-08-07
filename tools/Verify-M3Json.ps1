@@ -4,6 +4,10 @@ param(
     [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
     [string]$ExpectedBinarySha256 = '',
     [string]$Executable = '',
+    [string]$StdoutPath = '',
+    [string]$StderrPath = '',
+    [string]$RealFunctionalReportPath = '',
+    [string]$CrashAggregateReportPath = '',
     [switch]$AllowAbsolutePath
 )
 
@@ -40,6 +44,300 @@ function Require-NonEmptyString($Value, [string]$Name) {
     Require (-not [string]::IsNullOrWhiteSpace($Value)) "$Name is empty"
 }
 
+function Read-StrictJsonFile([string]$CandidatePath, [string]$Name) {
+    Require-NonEmptyString $CandidatePath "$Name path"
+    $candidateFullPath = [IO.Path]::GetFullPath($CandidatePath)
+    Require ([IO.File]::Exists($candidateFullPath)) "$Name does not exist"
+    $attributes = [IO.File]::GetAttributes($candidateFullPath)
+    Require (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        "$Name cannot be a reparse point"
+    $encoding = [Text.UTF8Encoding]::new($false, $true)
+    $candidateRaw = [IO.File]::ReadAllText($candidateFullPath, $encoding)
+    Require (-not [string]::IsNullOrWhiteSpace($candidateRaw)) "$Name is empty"
+    return [pscustomobject]@{
+        Path = $candidateFullPath
+        Json = ($candidateRaw | ConvertFrom-Json)
+        Sha256 = (Get-FileHash -LiteralPath $candidateFullPath -Algorithm SHA256).Hash
+    }
+}
+
+function Require-SoakLog(
+    [string]$CandidatePath,
+    [string]$ExpectedHash,
+    [string]$Name
+) {
+    Require-NonEmptyString $CandidatePath "$Name path"
+    $candidateFullPath = [IO.Path]::GetFullPath($CandidatePath)
+    Require ([IO.File]::Exists($candidateFullPath)) "$Name does not exist"
+    $attributes = [IO.File]::GetAttributes($candidateFullPath)
+    Require (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        "$Name cannot be a reparse point"
+    Require-Hash $ExpectedHash $Name
+    $actualHash = (Get-FileHash -LiteralPath $candidateFullPath -Algorithm SHA256).Hash
+    Require ($actualHash -ieq [string]$ExpectedHash) "$Name SHA-256 mismatch"
+    return $actualHash
+}
+
+function Verify-M3SoakReport($SoakReport) {
+    foreach ($name in @(
+        'schema','status','terminal_verdict','profile','source_commit',
+        'task43_complete','milestone_eligible','build','execution',
+        'correctness','thresholds','dependencies','cleanup','artifacts','error')) {
+        Require-Property $SoakReport $name
+    }
+    Require ([string]$SoakReport.schema -eq 'myrd.m3.soak-evidence.v1') `
+        'soak schema is invalid'
+    Require ([string]$SoakReport.status -eq 'PASS') 'soak status is not PASS'
+    Require ([string]$SoakReport.terminal_verdict -eq 'PASS') `
+        'soak terminal verdict is not PASS'
+    Require (@('Quick','Formal') -contains [string]$SoakReport.profile) `
+        'soak profile is invalid'
+    $isFormal = [string]$SoakReport.profile -eq 'Formal'
+
+    Require ([string]$SoakReport.source_commit -match '^[0-9A-Fa-f]{40}$') `
+        'soak source commit is invalid'
+    Require ($ExpectedSourceCommit -match '^[0-9A-Fa-f]{40}$') `
+        'expected source commit is invalid'
+    Require ([string]$SoakReport.source_commit -ieq $ExpectedSourceCommit) `
+        'soak source commit mismatch'
+    Require-Boolean $SoakReport.task43_complete 'task43_complete'
+    Require-Boolean $SoakReport.milestone_eligible 'milestone_eligible'
+    if ($isFormal) {
+        Require ([bool]$SoakReport.task43_complete) `
+            'Formal soak must complete Task43'
+        Require ([bool]$SoakReport.milestone_eligible) `
+            'Formal soak must be milestone eligible'
+    }
+    else {
+        Require (-not [bool]$SoakReport.task43_complete) `
+            'Quick soak cannot complete Task43'
+        Require (-not [bool]$SoakReport.milestone_eligible) `
+            'Quick soak cannot be milestone eligible'
+        Require ($null -eq $SoakReport.dependencies) `
+            'Quick soak cannot bind milestone dependencies'
+    }
+
+    foreach ($name in @(
+        'build_type','soak_executable_sha256','stdout_sha256','stderr_sha256')) {
+        Require-Property $SoakReport.build $name
+    }
+    Require-NonEmptyString $SoakReport.build.build_type 'soak build type'
+    if ($isFormal) {
+        Require ([string]$SoakReport.build.build_type -eq 'Release') `
+            'Formal soak requires a Release build'
+    }
+    Require-Hash $SoakReport.build.soak_executable_sha256 'soak executable'
+    Require-Hash $SoakReport.build.stdout_sha256 'soak stdout'
+    Require-Hash $SoakReport.build.stderr_sha256 'soak stderr'
+    if (-not [string]::IsNullOrWhiteSpace($Executable)) {
+        $binaryPath = [IO.Path]::GetFullPath($Executable)
+        Require ([IO.File]::Exists($binaryPath)) 'selected soak executable does not exist'
+        $actualBinaryHash = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash
+        Require ($actualBinaryHash -ieq [string]$SoakReport.build.soak_executable_sha256) `
+            'soak executable SHA-256 mismatch'
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($ExpectedBinarySha256)) {
+        Require-Hash $ExpectedBinarySha256 'expected soak executable'
+        Require ([string]$SoakReport.build.soak_executable_sha256 -ieq $ExpectedBinarySha256) `
+            'soak executable SHA-256 mismatch'
+    }
+    else {
+        throw 'a soak executable or expected binary SHA-256 is required'
+    }
+
+    $actualStdoutHash = Require-SoakLog $StdoutPath `
+        ([string]$SoakReport.build.stdout_sha256) 'soak stdout'
+    $actualStderrHash = Require-SoakLog $StderrPath `
+        ([string]$SoakReport.build.stderr_sha256) 'soak stderr'
+
+    foreach ($name in @(
+        'seed_count','failed_seeds','process_exit_code','operation_count',
+        'stdout_sha256','stderr_sha256')) {
+        Require-Property $SoakReport.execution $name
+    }
+    Require-UnsignedInteger $SoakReport.execution.seed_count 'soak seed_count'
+    $minimumSeeds = if ($isFormal) { 100 } else { 4 }
+    Require ([uint64]$SoakReport.execution.seed_count -ge $minimumSeeds) `
+        "soak seed_count is below the $($SoakReport.profile) minimum"
+    Require (@($SoakReport.execution.failed_seeds).Count -eq 0) `
+        'soak contains failed seeds'
+    Require-UnsignedInteger $SoakReport.execution.process_exit_code `
+        'soak process_exit_code'
+    Require ([uint64]$SoakReport.execution.process_exit_code -eq 0) `
+        'soak process did not exit successfully'
+    Require-UnsignedInteger $SoakReport.execution.operation_count 'soak operation_count'
+    Require ([uint64]$SoakReport.execution.operation_count -gt 0) `
+        'soak operation_count is zero'
+    Require-Hash $SoakReport.execution.stdout_sha256 'execution stdout'
+    Require-Hash $SoakReport.execution.stderr_sha256 'execution stderr'
+    Require ([string]$SoakReport.execution.stdout_sha256 -ieq $actualStdoutHash) `
+        'execution stdout SHA-256 mismatch'
+    Require ([string]$SoakReport.execution.stderr_sha256 -ieq $actualStderrHash) `
+        'execution stderr SHA-256 mismatch'
+
+    foreach ($name in @(
+        'expected_sha256','actual_sha256','hash_match',
+        'complete_generations_only','mixed_generation')) {
+        Require-Property $SoakReport.correctness $name
+    }
+    Require-Hash $SoakReport.correctness.expected_sha256 'soak expected data'
+    Require-Hash $SoakReport.correctness.actual_sha256 'soak actual data'
+    Require ([string]$SoakReport.correctness.expected_sha256 -ieq `
+        [string]$SoakReport.correctness.actual_sha256) 'soak model hash mismatch'
+    Require-Boolean $SoakReport.correctness.hash_match 'soak hash_match'
+    Require ([bool]$SoakReport.correctness.hash_match) `
+        'soak hash_match proof is false'
+    Require-Boolean $SoakReport.correctness.complete_generations_only `
+        'soak complete_generations_only'
+    Require ([bool]$SoakReport.correctness.complete_generations_only) `
+        'soak used an incomplete generation'
+    Require-Boolean $SoakReport.correctness.mixed_generation 'soak mixed_generation'
+    Require (-not [bool]$SoakReport.correctness.mixed_generation) `
+        'soak accepted a mixed generation'
+
+    $thresholdNames = @(
+        'startup_read_limit_bytes','startup_read_bytes',
+        'extra_committed_limit_bytes','extra_committed_bytes',
+        'checkpoint_payload_bytes','journal_growth_limit_bytes',
+        'journal_growth_bytes','mutation_pause_limit_ms','mutation_pause_max_ms',
+        'writer_stall_limit_ms','writer_stall_max_ms')
+    foreach ($name in $thresholdNames) {
+        Require-Property $SoakReport.thresholds $name
+        Require-UnsignedInteger $SoakReport.thresholds.$name "soak threshold $name"
+    }
+    Require ([uint64]$SoakReport.thresholds.startup_read_limit_bytes -eq 67108864) `
+        'startup read limit is not frozen at 64 MiB'
+    Require ([uint64]$SoakReport.thresholds.extra_committed_limit_bytes -eq 134217728) `
+        'extra committed limit is not frozen at 128 MiB'
+    Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -eq 268435456) `
+        'checkpoint payload is not frozen at 256 MiB'
+    Require ([uint64]$SoakReport.thresholds.journal_growth_limit_bytes -eq 322122547) `
+        'journal growth limit is not frozen at 120 percent'
+    Require ([uint64]$SoakReport.thresholds.mutation_pause_limit_ms -eq 250) `
+        'mutation pause limit is not frozen at 250 ms'
+    Require ([uint64]$SoakReport.thresholds.writer_stall_limit_ms -eq 250) `
+        'writer stall limit is not frozen at 250 ms'
+    Require ([uint64]$SoakReport.thresholds.startup_read_bytes -le `
+        [uint64]$SoakReport.thresholds.startup_read_limit_bytes) `
+        'startup read threshold exceeded'
+    Require ([uint64]$SoakReport.thresholds.extra_committed_bytes -le `
+        [uint64]$SoakReport.thresholds.extra_committed_limit_bytes) `
+        'extra committed threshold exceeded'
+    Require ([uint64]$SoakReport.thresholds.journal_growth_bytes -le `
+        [uint64]$SoakReport.thresholds.journal_growth_limit_bytes) `
+        'journal growth threshold exceeded'
+    Require ([uint64]$SoakReport.thresholds.mutation_pause_max_ms -le `
+        [uint64]$SoakReport.thresholds.mutation_pause_limit_ms) `
+        'mutation pause threshold exceeded'
+    Require ([uint64]$SoakReport.thresholds.writer_stall_max_ms -le `
+        [uint64]$SoakReport.thresholds.writer_stall_limit_ms) `
+        'writer stall threshold exceeded'
+
+    if ($isFormal) {
+        Require ($null -ne $SoakReport.dependencies) `
+            'Formal soak requires milestone dependencies'
+        foreach ($name in @('real_functional','crash_full')) {
+            Require-Property $SoakReport.dependencies $name
+        }
+        foreach ($name in @('status','source_commit','sha256')) {
+            Require-Property $SoakReport.dependencies.real_functional $name
+        }
+        foreach ($name in @('status','task42_complete','source_commit','sha256')) {
+            Require-Property $SoakReport.dependencies.crash_full $name
+        }
+        Require ([string]$SoakReport.dependencies.real_functional.status -eq 'PASS') `
+            'Task41 dependency status is not PASS'
+        Require ([string]$SoakReport.dependencies.crash_full.status -eq 'PASS') `
+            'Task42 dependency status is not PASS'
+        Require-Boolean $SoakReport.dependencies.crash_full.task42_complete `
+            'Task42 dependency completion'
+        Require ([bool]$SoakReport.dependencies.crash_full.task42_complete) `
+            'Task42 dependency is incomplete'
+        foreach ($dependency in @(
+            $SoakReport.dependencies.real_functional,
+            $SoakReport.dependencies.crash_full)) {
+            Require ([string]$dependency.source_commit -ieq $ExpectedSourceCommit) `
+                'soak dependency source commit mismatch'
+            Require-Hash $dependency.sha256 'soak dependency'
+        }
+
+        $realFunctional = Read-StrictJsonFile $RealFunctionalReportPath `
+            'Task41 RealFunctional report'
+        Require ([string]$SoakReport.dependencies.real_functional.sha256 -ieq `
+            $realFunctional.Sha256) 'Task41 dependency SHA-256 mismatch'
+        foreach ($name in @('schema','status','terminal_verdict','source_commit')) {
+            Require-Property $realFunctional.Json $name
+        }
+        Require ([string]$realFunctional.Json.schema -eq 'myrd.m3.ntfs-workload.v1') `
+            'Task41 dependency schema is invalid'
+        Require ([string]$realFunctional.Json.status -eq 'PASS') `
+            'Task41 report status is not PASS'
+        Require ([string]$realFunctional.Json.terminal_verdict -eq 'PASS') `
+            'Task41 report terminal verdict is not PASS'
+        Require ([string]$realFunctional.Json.source_commit -ieq $ExpectedSourceCommit) `
+            'Task41 report source commit mismatch'
+
+        $crashFull = Read-StrictJsonFile $CrashAggregateReportPath `
+            'Task42 Crash Full report'
+        Require ([string]$SoakReport.dependencies.crash_full.sha256 -ieq `
+            $crashFull.Sha256) 'Task42 dependency SHA-256 mismatch'
+        foreach ($name in @(
+            'schema','status','terminal_verdict','task42_complete',
+            'milestone_eligible','source_commit','guarantees')) {
+            Require-Property $crashFull.Json $name
+        }
+        Require ([string]$crashFull.Json.schema -eq `
+            'myrd.m3.real-crash-aggregate.v1') 'Task42 dependency schema is invalid'
+        Require ([string]$crashFull.Json.status -eq 'PASS') `
+            'Task42 report status is not PASS'
+        Require ([string]$crashFull.Json.terminal_verdict -eq 'PASS') `
+            'Task42 report terminal verdict is not PASS'
+        Require-Boolean $crashFull.Json.task42_complete 'Task42 report completion'
+        Require ([bool]$crashFull.Json.task42_complete) `
+            'Task42 report is incomplete'
+        Require-Boolean $crashFull.Json.milestone_eligible `
+            'Task42 milestone eligibility'
+        Require ([bool]$crashFull.Json.milestone_eligible) `
+            'Task42 report is not milestone eligible'
+        Require ([string]$crashFull.Json.source_commit -ieq $ExpectedSourceCommit) `
+            'Task42 report source commit mismatch'
+        foreach ($name in @(
+            'latest_complete_confirmed_checkpoint','mixed_generation_rejected')) {
+            Require-Property $crashFull.Json.guarantees $name
+            Require-Boolean $crashFull.Json.guarantees.$name "Task42 guarantee $name"
+            Require ([bool]$crashFull.Json.guarantees.$name) `
+                "Task42 guarantee is false: $name"
+        }
+    }
+
+    foreach ($name in @('succeeded','residuals')) {
+        Require-Property $SoakReport.cleanup $name
+    }
+    Require-Boolean $SoakReport.cleanup.succeeded 'soak cleanup succeeded'
+    Require ([bool]$SoakReport.cleanup.succeeded) 'soak cleanup failed'
+    Require (@($SoakReport.cleanup.residuals).Count -eq 0) `
+        'soak cleanup left residual resources'
+
+    $soakArtifacts = @($SoakReport.artifacts)
+    Require ($soakArtifacts.Count -gt 0) 'soak artifact hashes are required'
+    $soakRoles = @{}
+    foreach ($artifact in $soakArtifacts) {
+        foreach ($name in @('role','sha256')) { Require-Property $artifact $name }
+        Require-NonEmptyString $artifact.role 'soak artifact role'
+        Require (-not $soakRoles.ContainsKey([string]$artifact.role)) `
+            'soak artifact role is duplicated'
+        $soakRoles[[string]$artifact.role] = [string]$artifact.sha256
+        Require-Hash $artifact.sha256 'soak artifact'
+    }
+    Require ($soakRoles.ContainsKey('soak.stdout')) 'soak stdout artifact is missing'
+    Require ($soakRoles.ContainsKey('soak.stderr')) 'soak stderr artifact is missing'
+    Require ([string]$soakRoles['soak.stdout'] -ieq $actualStdoutHash) `
+        'soak stdout artifact SHA-256 mismatch'
+    Require ([string]$soakRoles['soak.stderr'] -ieq $actualStderrHash) `
+        'soak stderr artifact SHA-256 mismatch'
+    Require ($null -eq $SoakReport.error) 'passing soak report contains an error'
+}
+
 $fullPath = [IO.Path]::GetFullPath($Path)
 Require ([IO.File]::Exists($fullPath)) 'M3 report does not exist'
 Require (-not $fullPath.StartsWith('\.\', [StringComparison]::OrdinalIgnoreCase)) 'M3 report path cannot be a device path'
@@ -47,6 +345,13 @@ $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $raw = [IO.File]::ReadAllText($fullPath, $strictUtf8)
 Require (-not [string]::IsNullOrWhiteSpace($raw)) 'M3 report is empty'
 $report = $raw | ConvertFrom-Json
+
+if ($null -ne $report.PSObject.Properties['schema'] -and
+    [string]$report.schema -eq 'myrd.m3.soak-evidence.v1') {
+    Verify-M3SoakReport $report
+    Write-Output "M3 soak JSON validation PASS: $fullPath"
+    exit 0
+}
 
 foreach ($name in @(
     'schema_version','operation','status','operation_id','started_utc',
