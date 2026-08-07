@@ -16,6 +16,10 @@ param(
     [string]$CrashExecutable = '',
     [string]$RealCrashEvidenceRoot = '',
     [string]$SimulatedCrashEvidencePath = '',
+    [ValidateSet('Quick', 'Formal')][string]$SoakMode = 'Formal',
+    [string]$SoakExecutable = '',
+    [string]$RealFunctionalReportPath = '',
+    [string]$CrashAggregateReportPath = '',
     [switch]$SafetyAcknowledged,
     [switch]$WhatIf,
     [switch]$ListCommands
@@ -35,7 +39,7 @@ if ($ListCommands) {
     Write-Output 'Preflight: read-only host/artifact/scratch/disk safety probe'
     Write-Output 'RealFunctional: real AIM/NTFS/checkpoint/reopen/compact/native-VHDX acceptance; requires approved scratch identity'
     Write-Output 'Crash: Full=aggregate explicit real-process/power-cut evidence; Simulated=file-clone/fresh-process oracle only'
-    Write-Output 'Soak: BLOCKED until Task 43 is complete'
+    Write-Output 'Soak: Quick deterministic feedback or Formal same-commit milestone gate'
     exit 0
 }
 
@@ -183,6 +187,118 @@ if ($Tier -eq 'Crash') {
     if ($verifierExit -ne 0) { exit $verifierExit }
     Write-Output "M3 Crash Simulated PASS: $(Join-Path $run 'm3-crash-report.json')"
     Write-Output 'Task42 remains incomplete: no real process-kill, AIM/NTFS, or power-cut evidence'
+    exit 0
+}
+
+if ($Tier -eq 'Soak') {
+    function Write-M3SoakRouteBlocked([string]$Reason) {
+        Write-Output ([ordered]@{
+            schema = 'myrd.m3.verification-route.v1'
+            tier = 'Soak'
+            soak_mode = $SoakMode
+            status = 'BLOCKED'
+            reason = $Reason
+            required_skip = $true
+            task43_complete = $false
+            milestone_eligible = $false
+        } | ConvertTo-Json -Depth 8 -Compress)
+        exit 77
+    }
+
+    if ($WhatIf) {
+        Write-M3SoakRouteBlocked 'WhatIf is a safety probe, not soak execution'
+    }
+    if ([string]::IsNullOrWhiteSpace($EvidenceBase) -or
+        [string]::IsNullOrWhiteSpace($SoakExecutable)) {
+        Write-M3SoakRouteBlocked `
+            'Soak requires EvidenceBase and SoakExecutable'
+    }
+    if ($SoakMode -eq 'Formal' -and
+        ([string]::IsNullOrWhiteSpace($RealFunctionalReportPath) -or
+         [string]::IsNullOrWhiteSpace($CrashAggregateReportPath))) {
+        Write-M3SoakRouteBlocked `
+            'Formal Soak requires same-commit Task41 and Task42 reports'
+    }
+    if ($SoakMode -eq 'Quick' -and
+        (-not [string]::IsNullOrWhiteSpace($RealFunctionalReportPath) -or
+         -not [string]::IsNullOrWhiteSpace($CrashAggregateReportPath))) {
+        Write-M3SoakRouteBlocked 'Quick Soak cannot bind milestone reports'
+    }
+
+    $evidenceBaseFull = [IO.Path]::GetFullPath($EvidenceBase)
+    Require-M3Route ([IO.Directory]::Exists($evidenceBaseFull)) `
+        'EvidenceBase must already exist'
+    $evidenceBaseItem = Get-Item -LiteralPath $evidenceBaseFull -Force
+    Require-M3Route (($evidenceBaseItem.Attributes -band
+            [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        'EvidenceBase cannot be a reparse point'
+    $repoFull = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\'
+    Require-M3Route (-not $evidenceBaseFull.TrimEnd('\').StartsWith(
+            $repoFull, [StringComparison]::OrdinalIgnoreCase)) `
+        'EvidenceBase cannot be inside the repository'
+    $soakExecutableFull = [IO.Path]::GetFullPath($SoakExecutable)
+    Require-M3Route ([IO.File]::Exists($soakExecutableFull)) `
+        'SoakExecutable does not exist'
+    $soakExecutableItem = Get-Item -LiteralPath $soakExecutableFull -Force
+    Require-M3Route (($soakExecutableItem.Attributes -band
+            [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        'SoakExecutable cannot be a reparse point'
+    $sourceCommit = ((& git.exe -C $repoRoot rev-parse HEAD 2>$null) -join '').Trim()
+    Require-M3Route ($sourceCommit -match '^[0-9A-Fa-f]{40}$') `
+        'source commit is unavailable for Soak'
+
+    if ($SoakMode -eq 'Formal') {
+        try {
+            $realPathFull = [IO.Path]::GetFullPath($RealFunctionalReportPath)
+            $crashPathFull = [IO.Path]::GetFullPath($CrashAggregateReportPath)
+            foreach ($path in @($realPathFull, $crashPathFull)) {
+                Require-M3Route ([IO.File]::Exists($path)) `
+                    'Formal dependency report does not exist'
+                $item = Get-Item -LiteralPath $path -Force
+                Require-M3Route (($item.Attributes -band
+                        [IO.FileAttributes]::ReparsePoint) -eq 0) `
+                    'Formal dependency report cannot be a reparse point'
+            }
+            $real = Get-Content -LiteralPath $realPathFull -Raw -Encoding UTF8 |
+                ConvertFrom-Json
+            $crash = Get-Content -LiteralPath $crashPathFull -Raw -Encoding UTF8 |
+                ConvertFrom-Json
+            Require-M3Route ($real.schema -eq 'myrd.m3.ntfs-workload.v1' -and
+                $real.status -eq 'PASS' -and
+                $real.terminal_verdict -eq 'PASS' -and
+                [string]$real.source_commit -ieq $sourceCommit) `
+                'Task41 dependency is not a PASS from the current commit'
+            Require-M3Route ($crash.schema -eq
+                'myrd.m3.real-crash-aggregate.v1' -and
+                $crash.status -eq 'PASS' -and
+                $crash.terminal_verdict -eq 'PASS' -and
+                [bool]$crash.task42_complete -and
+                [bool]$crash.milestone_eligible -and
+                [string]$crash.source_commit -ieq $sourceCommit -and
+                [bool]$crash.guarantees.latest_complete_confirmed_checkpoint -and
+                [bool]$crash.guarantees.mixed_generation_rejected) `
+                'Task42 dependency is not a complete current-commit PASS'
+        }
+        catch {
+            Write-M3SoakRouteBlocked $_.Exception.Message
+        }
+    }
+
+    $runner = Join-Path $repoRoot 'tests\e2e\Invoke-M3Soak.ps1'
+    $runnerArguments = @(
+        '-Phase', 'Run', '-Profile', $SoakMode,
+        '-EvidenceDirectory', $evidenceBaseFull,
+        '-SoakExecutable', $soakExecutableFull,
+        '-Configuration', $Configuration)
+    if ($SoakMode -eq 'Formal') {
+        $runnerArguments += @(
+            '-RealFunctionalReport', ([IO.Path]::GetFullPath($RealFunctionalReportPath)),
+            '-CrashAggregateReport', ([IO.Path]::GetFullPath($CrashAggregateReportPath)))
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner `
+        @runnerArguments
+    $soakExit = $LASTEXITCODE
+    if ($soakExit -ne 0) { exit $soakExit }
     exit 0
 }
 
