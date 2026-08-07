@@ -137,6 +137,19 @@ function Wait-M3RealTaskLine {
     return $line
 }
 
+function ConvertFrom-M3RealCrashSignal {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $phaseMatch = [regex]::Match(
+        $Text, '(?m)^phase=([^\r\n]+)\r?$')
+    $pidMatch = [regex]::Match($Text, '(?m)^pid=(\d+)\r?$')
+    Assert-M3RealCrash ($phaseMatch.Success -and $pidMatch.Success) `
+        'crash phase signal is invalid'
+    return [pscustomobject]@{
+        phase = [string]$phaseMatch.Groups[1].Value
+        pid = [int]$pidMatch.Groups[1].Value
+    }
+}
+
 function Get-M3RealImageArguments {
     param([Parameter(Mandatory = $true)][string]$Command)
     return @(
@@ -777,13 +790,10 @@ function Invoke-M3RealPrepare {
         }
         $signalText = [IO.File]::ReadAllText(
             $script:RealSignal, [Text.UTF8Encoding]::new($false, $true))
-        $phaseMatch = [regex]::Match($signalText, '(?m)^phase=([^\r\n]+)$')
-        $pidMatch = [regex]::Match($signalText, '(?m)^pid=(\d+)$')
-        Assert-M3RealCrash ($phaseMatch.Success -and $pidMatch.Success) `
-            'crash phase signal is invalid'
-        Assert-M3RealCrash ([string]$phaseMatch.Groups[1].Value -eq
+        $signal = ConvertFrom-M3RealCrashSignal $signalText
+        Assert-M3RealCrash ([string]$signal.phase -eq
             [string]$Context.scenario.phase) 'crash phase signal differs'
-        Assert-M3RealCrash ([int]$pidMatch.Groups[1].Value -eq
+        Assert-M3RealCrash ([int]$signal.pid -eq
             [int]$script:RealServer.Id) 'crash signal PID differs from server PID'
         $armed = $true
         $armedReport = [ordered]@{
@@ -809,7 +819,7 @@ function Invoke-M3RealPrepare {
             status = 'OBSERVED'
             scenario_id = $ScenarioId
             interruption = [string]$Context.scenario.interruption
-            server_pid = [int]$pidMatch.Groups[1].Value
+            server_pid = [int]$signal.pid
             server_exit_code = [int]$script:RealServer.ExitCode
             orphan_device_expected_until_reboot = $true
             observed_utc = [DateTime]::UtcNow.ToString('o')
@@ -1337,6 +1347,13 @@ try {
             [string]$_.allowed_recovery -eq 'old_or_new' }).Count
         $newCount = @($matrix.scenarios | Where-Object {
             [string]$_.allowed_recovery -eq 'new' }).Count
+        $crlfSignal = ConvertFrom-M3RealCrashSignal `
+            "phase=journal.flush.before`r`npid=1234`r`n"
+        $lfSignal = ConvertFrom-M3RealCrashSignal `
+            "phase=journal.flush.before`npid=1234`n"
+        Assert-M3RealCrash ($crlfSignal.phase -eq $lfSignal.phase -and
+            $crlfSignal.pid -eq $lfSignal.pid) `
+            'crash signal CRLF/LF parsing differs'
         $report = [ordered]@{
             schema = 'myrd.m3.real-crash-validation.v1'
             status = 'PASS'
@@ -1347,6 +1364,7 @@ try {
             old_count = $oldCount
             old_or_new_count = $oldOrNewCount
             new_count = $newCount
+            signal_formats_validated = @('CRLF', 'LF')
             matrix_sha256 = $matrix.matrix_sha256
             started_utc = [DateTime]::UtcNow.ToString('o')
             finished_utc = [DateTime]::UtcNow.ToString('o')

@@ -44,6 +44,9 @@ try {
     Require-M3RealCrashTest ([int]$report.new_count -eq 5) `
         'real crash matrix committed-generation coverage is incomplete'
     Require-M3RealCrashTest `
+        ((@($report.signal_formats_validated) -join ',') -eq 'CRLF,LF') `
+        'real crash signal CRLF/LF parsing was not validated'
+    Require-M3RealCrashTest `
         ([string]$report.matrix_sha256 -match '^[0-9A-Fa-f]{64}$') `
         'real crash matrix hash is invalid'
     Write-Output 'M3 real crash contract test PASS'
