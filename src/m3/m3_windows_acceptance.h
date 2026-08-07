@@ -19,6 +19,9 @@ namespace myrd::m3 {
 struct M3AimProviderFactoryConfig final {
     OperationContext context{};
     M3ProviderConfig provider{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    M3ProviderFactories test_factories{};
+#endif
 };
 
 // Composition root adapter: the M3 provider owns the M1-compatible SHM

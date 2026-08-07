@@ -1,5 +1,8 @@
 #include "src/m3/m3_windows_acceptance.h"
 #include "src/persistence/vhdx_reader.h"
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+#include "src/m3/m3_crash_test_control.h"
+#endif
 
 #include <windows.h>
 
@@ -9,6 +12,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -205,6 +209,11 @@ int print_checkpoint(const M3CheckpointOutcome& outcome) {
 std::wstring usage() {
     return L"Usage: myrd-m3-aim-server serve --bundle-root DIR "
            L"--manifest NAME [--virtual-bytes N]\n"
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+           L"Test build only: --test-crash-phase NAME "
+           L"--test-crash-signal FILE --test-crash-release FILE "
+           L"[--test-crash-timeout-ms N]\n"
+#endif
            L"Commands on stdin: status | checkpoint volume-flushed | "
            L"checkpoint raw-test | stop\n";
 }
@@ -230,6 +239,12 @@ int wmain(int argc, wchar_t* argv[]) {
         std::filesystem::path bundle_root;
         std::string manifest;
         std::uint64_t virtual_bytes = kDefaultVirtualBytes;
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        std::wstring crash_phase_name;
+        std::filesystem::path crash_signal;
+        std::filesystem::path crash_release;
+        std::uint64_t crash_timeout_ms = 10ull * 60ull * 1000ull;
+#endif
         for (std::size_t index = 1; index < args.size(); ++index) {
             std::wstring value;
             if (take_option(args, index, L"--bundle-root", value)) {
@@ -247,6 +262,29 @@ int wmain(int argc, wchar_t* argv[]) {
                 }
                 continue;
             }
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+            if (take_option(args, index, L"--test-crash-phase", value)) {
+                crash_phase_name = std::move(value);
+                continue;
+            }
+            if (take_option(args, index, L"--test-crash-signal", value)) {
+                crash_signal = std::move(value);
+                continue;
+            }
+            if (take_option(args, index, L"--test-crash-release", value)) {
+                crash_release = std::move(value);
+                continue;
+            }
+            if (take_option(
+                    args, index, L"--test-crash-timeout-ms", value)) {
+                if (!parse_u64(value, crash_timeout_ms) ||
+                    crash_timeout_ms == 0 || crash_timeout_ms > 3600000) {
+                    std::wcerr << L"invalid --test-crash-timeout-ms\n";
+                    return 2;
+                }
+                continue;
+            }
+#endif
             std::wcerr << L"unknown or incomplete option: " << args[index]
                        << L"\n";
             return 2;
@@ -264,6 +302,62 @@ int wmain(int argc, wchar_t* argv[]) {
         config.provider.manifest_name = std::move(manifest);
         config.provider.recovery.limits = default_limits(virtual_bytes);
         config.provider.store = default_store_options();
+
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        const bool any_crash_option = !crash_phase_name.empty() ||
+            !crash_signal.empty() || !crash_release.empty();
+        const bool all_crash_options = !crash_phase_name.empty() &&
+            !crash_signal.empty() && !crash_release.empty();
+        if (any_crash_option != all_crash_options) {
+            std::wcerr << L"all crash-test options must be supplied together\n";
+            return 2;
+        }
+        if (all_crash_options) {
+            const auto phase = parse_m3_crash_test_phase(
+                narrow(crash_phase_name));
+            if (!phase.ok()) {
+                print_error(phase.error());
+                return 2;
+            }
+            auto pause = M3CrashTestPauseController::create(
+                phase.value(), std::move(crash_signal),
+                std::move(crash_release),
+                std::chrono::milliseconds(crash_timeout_ms));
+            if (!pause.ok()) {
+                print_error(pause.error());
+                return 2;
+            }
+            auto controller = std::make_shared<M3CrashTestPauseController>(
+                pause.move_value());
+            config.test_factories.before_checkpoint_prepare =
+                [controller] {
+                    return controller->observe(
+                        M3CrashTestPhase::CheckpointPrepareBefore);
+                };
+            config.test_factories.journal_phase_hook =
+                [controller](const JournalWriterPhaseEvent& event) {
+                    const auto mapped = map_m3_crash_test_phase(event.phase);
+                    return mapped.has_value()
+                        ? controller->observe(*mapped)
+                        : Result<void>::success();
+                };
+            config.test_factories.manifest_phase_hook =
+                [controller](const ManifestPublishTestPhase phase_value) {
+                    const auto mapped = map_m3_crash_test_phase(phase_value);
+                    return mapped.has_value()
+                        ? controller->observe(*mapped)
+                        : Result<void>::success();
+                };
+            config.test_factories.reconcile_phase_hook =
+                [controller](
+                    const CheckpointReconcileTestPhase phase_value) {
+                    const auto mapped = map_m3_crash_test_phase(phase_value);
+                    return mapped.has_value()
+                        ? controller->observe(*mapped)
+                        : Result<void>::success();
+                };
+        }
+#endif
 
         auto runtime = M3AimRuntime::create(std::move(config));
         if (!runtime) {

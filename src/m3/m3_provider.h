@@ -62,6 +62,12 @@ struct M3ProviderFactories final {
     // failure into CommittedNeedsReconciliation so provider retry ownership
     // can be verified without changing persistence publication behavior.
     std::function<Result<void>()> before_checkpoint_reconcile{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    std::function<Result<void>(
+        const persistence::JournalWriterPhaseEvent&)> journal_phase_hook{};
+    persistence::ManifestPublishTestPhaseHook manifest_phase_hook{};
+    persistence::CheckpointReconcileTestHook reconcile_phase_hook{};
+#endif
 };
 
 struct M3CheckpointOutcome final {
@@ -139,7 +145,15 @@ private:
         std::unique_ptr<DynamicBlockStore> store,
         std::unique_ptr<IM3ProviderTransport> transport,
         std::function<Result<void>()> before_checkpoint_prepare,
-        std::function<Result<void>()> before_checkpoint_reconcile);
+        std::function<Result<void>()> before_checkpoint_reconcile
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+        , std::function<Result<void>(
+              const persistence::JournalWriterPhaseEvent&)>
+              journal_phase_hook,
+        persistence::ManifestPublishTestPhaseHook manifest_phase_hook,
+        persistence::CheckpointReconcileTestHook reconcile_phase_hook
+#endif
+        );
 
     static Result<std::unique_ptr<M3Provider>> open_impl(
         const OperationContext& context,
@@ -166,6 +180,12 @@ private:
     std::optional<DynamicBlockStoreStats> final_stats_{};
     std::function<Result<void>()> before_checkpoint_prepare_{};
     std::function<Result<void>()> before_checkpoint_reconcile_{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    std::function<Result<void>(
+        const persistence::JournalWriterPhaseEvent&)> journal_phase_hook_{};
+    persistence::ManifestPublishTestPhaseHook manifest_phase_hook_{};
+    persistence::CheckpointReconcileTestHook reconcile_phase_hook_{};
+#endif
     std::optional<persistence::PreparedCheckpointTransaction>
         pending_checkpoint_{};
     persistence::CommitDisposition last_checkpoint_disposition_{

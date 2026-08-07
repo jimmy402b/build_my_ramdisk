@@ -105,6 +105,7 @@ struct CheckpointManifestPublishRequest final {
     std::optional<CompleteCandidateValidation> complete_validation{};
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     ManifestCandidateValidator test_validate_candidate{};
+    ManifestPublishTestPhaseHook test_phase_hook{};
 #endif
 };
 

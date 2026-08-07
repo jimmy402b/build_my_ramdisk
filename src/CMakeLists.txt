@@ -230,6 +230,11 @@ add_library(myrd_m3_management STATIC
     m3/m3_evidence_publisher.h
     m3/m3_evidence_publisher.cpp
 )
+if(BUILD_TESTING)
+    target_sources(myrd_m3_management PRIVATE
+        m3/m3_crash_test_control.h
+        m3/m3_crash_test_control.cpp)
+endif()
 target_include_directories(myrd_m3_management PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_m3_management PUBLIC
     myrd_persistence myrd_common myrd_proxy)

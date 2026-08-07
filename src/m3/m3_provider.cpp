@@ -156,7 +156,14 @@ M3Provider::M3Provider(
     std::unique_ptr<DynamicBlockStore> store,
     std::unique_ptr<IM3ProviderTransport> transport,
     std::function<Result<void>()> before_checkpoint_prepare,
-    std::function<Result<void>()> before_checkpoint_reconcile)
+    std::function<Result<void>()> before_checkpoint_reconcile
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    , std::function<Result<void>(const JournalWriterPhaseEvent&)>
+          journal_phase_hook,
+    ManifestPublishTestPhaseHook manifest_phase_hook,
+    CheckpointReconcileTestHook reconcile_phase_hook
+#endif
+    )
     : config_(std::move(config)),
       image_(std::move(image)),
       writer_(std::move(writer)),
@@ -165,7 +172,13 @@ M3Provider::M3Provider(
       transport_(std::move(transport)),
       names_(transport_->names()),
       before_checkpoint_prepare_(std::move(before_checkpoint_prepare)),
-      before_checkpoint_reconcile_(std::move(before_checkpoint_reconcile)) {}
+      before_checkpoint_reconcile_(std::move(before_checkpoint_reconcile))
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+      , journal_phase_hook_(std::move(journal_phase_hook)),
+      manifest_phase_hook_(std::move(manifest_phase_hook)),
+      reconcile_phase_hook_(std::move(reconcile_phase_hook))
+#endif
+      {}
 
 Result<std::unique_ptr<M3Provider>> M3Provider::open(
     const OperationContext& context,
@@ -235,12 +248,22 @@ Result<std::unique_ptr<M3Provider>> M3Provider::open_impl(
         std::move(factories.before_checkpoint_prepare);
     auto before_checkpoint_reconcile =
         std::move(factories.before_checkpoint_reconcile);
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    auto journal_phase_hook = std::move(factories.journal_phase_hook);
+    auto manifest_phase_hook = std::move(factories.manifest_phase_hook);
+    auto reconcile_phase_hook = std::move(factories.reconcile_phase_hook);
+#endif
     return Result<std::unique_ptr<M3Provider>>::success(
         std::unique_ptr<M3Provider>(new M3Provider(
             std::move(config), std::move(*recovered.image),
             std::move(writer_lock), store.move_value(),
             transport.move_value(), std::move(before_checkpoint_prepare),
-            std::move(before_checkpoint_reconcile))));
+            std::move(before_checkpoint_reconcile)
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+            , std::move(journal_phase_hook), std::move(manifest_phase_hook),
+            std::move(reconcile_phase_hook)
+#endif
+            )));
 }
 
 M3Provider::~M3Provider() noexcept {
@@ -339,7 +362,11 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
                                   CommitDisposition::NotCommitted,
                                   image_.checkpoint_generation);
     }
-    auto writer = JournalWriter::create(writer_options(config_.recovery.limits));
+    auto options = writer_options(config_.recovery.limits);
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    options.phase_hook = journal_phase_hook_;
+#endif
+    auto writer = JournalWriter::create(std::move(options));
     if (!writer.ok()) {
         return checkpoint_failure(writer.error(),
                                   CommitDisposition::NotCommitted,
@@ -391,6 +418,9 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
     publish.committed_time_100ns = image_.checkpoint_generation + 2;
     publish.complete_validation = CompleteCandidateValidation{
         config_.bundle_root, config_.manifest_name, config_.recovery};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    publish.test_phase_hook = manifest_phase_hook_;
+#endif
     auto published = transaction.publish_manifest(context, std::move(publish));
     if (published.disposition != CommitDisposition::Committed &&
         published.disposition != CommitDisposition::CommitIndeterminate &&
@@ -448,12 +478,15 @@ M3CheckpointOutcome M3Provider::resume_pending_checkpoint(
     }
     CheckpointReconcileRequest reconcile_request{};
 #if defined(MYRD_ENABLE_TEST_SEAMS)
-    if (before_checkpoint_reconcile_) {
+    if (before_checkpoint_reconcile_ || reconcile_phase_hook_) {
         reconcile_request.test_phase_hook = [this](
             const CheckpointReconcileTestPhase phase) {
-            if (phase == CheckpointReconcileTestPhase::BeforeRecoverView) {
-                return before_checkpoint_reconcile_();
+            if (phase == CheckpointReconcileTestPhase::BeforeRecoverView &&
+                before_checkpoint_reconcile_) {
+                auto observed = before_checkpoint_reconcile_();
+                if (!observed.ok()) return observed;
             }
+            if (reconcile_phase_hook_) return reconcile_phase_hook_(phase);
             return Result<void>::success();
         };
     }

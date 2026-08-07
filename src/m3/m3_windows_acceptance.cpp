@@ -130,7 +130,14 @@ Result<void> M3AimRuntime::start() {
     auto checked = check_operation_context(config_.context);
     if (!checked) return checked;
 
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    proxy::KernelVisibleNamespacePolicy policy;
+    auto opened = M3Provider::open_for_test(
+        config_.context, policy, config_.provider,
+        std::move(config_.test_factories));
+#else
     auto opened = M3Provider::open(config_.context, config_.provider);
+#endif
     if (!opened) return Result<void>::failure(opened.error());
     provider_ = opened.move_value();
     auto started = provider_->start(config_.context);

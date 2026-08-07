@@ -565,3 +565,77 @@ TEST_CASE(m3_provider_default_transport_preserves_m1_wire_contract) {
     }
     REQUIRE(provider.value()->stop(context(), {}).ok());
 }
+
+TEST_CASE(m3_provider_exposes_test_only_checkpoint_durability_phases) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto configured = factories(probe);
+    std::vector<std::string> observed;
+    configured.before_checkpoint_prepare = [&] {
+        observed.emplace_back("prepare.before");
+        return Result<void>::success();
+    };
+    configured.journal_phase_hook = [&](const JournalWriterPhaseEvent& event) {
+        if (event.phase == JournalWriterPhase::BeforeFlush) {
+            observed.emplace_back("journal.flush.before");
+        } else if (event.phase == JournalWriterPhase::AfterFlush) {
+            observed.emplace_back("journal.flush.after");
+        }
+        return Result<void>::success();
+    };
+    configured.manifest_phase_hook = [&](const ManifestPublishTestPhase phase) {
+        if (phase == ManifestPublishTestPhase::BeforeSlotWrite) {
+            observed.emplace_back("manifest.slot_write.before");
+        } else if (phase == ManifestPublishTestPhase::AfterSlotWrite) {
+            observed.emplace_back("manifest.slot_write.after");
+        } else if (phase == ManifestPublishTestPhase::BeforeFlush) {
+            observed.emplace_back("manifest.flush.before");
+        } else if (phase == ManifestPublishTestPhase::AfterFlush) {
+            observed.emplace_back("manifest.flush.after");
+        } else if (phase == ManifestPublishTestPhase::AfterReadback) {
+            observed.emplace_back("manifest.readback.after");
+        }
+        return Result<void>::success();
+    };
+    configured.reconcile_phase_hook = [&observed](
+        const CheckpointReconcileTestPhase phase) {
+        if (phase == CheckpointReconcileTestPhase::BeforeRecoverView) {
+            observed.emplace_back("reconcile.before_recover_view");
+        } else if (phase ==
+                   CheckpointReconcileTestPhase::BeforeReportSuccess) {
+            observed.emplace_back("reconcile.before_report_success");
+        }
+        return Result<void>::success();
+    };
+
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), std::move(configured));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x4d});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    const auto checkpoint = provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    REQUIRE(checkpoint.ok());
+
+    const std::vector<std::string> required{
+        "prepare.before",
+        "journal.flush.before",
+        "journal.flush.after",
+        "manifest.slot_write.before",
+        "manifest.slot_write.after",
+        "manifest.flush.before",
+        "manifest.flush.after",
+        "manifest.readback.after",
+        "reconcile.before_recover_view",
+        "reconcile.before_report_success",
+    };
+    std::size_t cursor = 0;
+    for (const auto& item : observed) {
+        if (cursor < required.size() && item == required[cursor]) ++cursor;
+    }
+    REQUIRE_EQ(cursor, required.size());
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}

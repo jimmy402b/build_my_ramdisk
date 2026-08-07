@@ -1379,6 +1379,19 @@ set_tests_properties(integration.m3.provider PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+add_executable(myrd_m3_crash_test_control_tests
+    unit/m3_crash_test_control_tests.cpp)
+target_link_libraries(myrd_m3_crash_test_control_tests PRIVATE
+    myrd_test_support myrd_m3_management)
+target_include_directories(myrd_m3_crash_test_control_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m3_crash_test_control_tests)
+add_test(NAME unit.m3.crash_test_control
+    COMMAND myrd_m3_crash_test_control_tests)
+set_tests_properties(unit.m3.crash_test_control PROPERTIES
+    LABELS "m3-v2;m3-v6"
+    TIMEOUT 30)
+
 add_executable(myrd_m3_windows_acceptance_tests
     integration/m3_windows_acceptance_tests.cpp)
 target_link_libraries(myrd_m3_windows_acceptance_tests PRIVATE

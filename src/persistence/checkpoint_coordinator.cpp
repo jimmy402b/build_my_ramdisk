@@ -422,6 +422,8 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
 #if defined(MYRD_ENABLE_TEST_SEAMS)
             publish_request.test_validate_candidate =
                 std::move(request.test_validate_candidate);
+            publish_request.test_phase_hook =
+                std::move(request.test_phase_hook);
 #endif
             if (!attempted.error.has_value()) {
                 attempted = attempt_manifest_publication(
