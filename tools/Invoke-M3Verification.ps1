@@ -14,6 +14,8 @@ param(
     [string]$ExpectedDriverService = 'phdskmnt',
     [ValidateSet('Full', 'Simulated')][string]$CrashMode = 'Full',
     [string]$CrashExecutable = '',
+    [string]$RealCrashEvidenceRoot = '',
+    [string]$SimulatedCrashEvidencePath = '',
     [switch]$SafetyAcknowledged,
     [switch]$WhatIf,
     [switch]$ListCommands
@@ -32,7 +34,7 @@ if ($ListCommands) {
     Write-Output 'Local: Debug/Release CTest regression only'
     Write-Output 'Preflight: read-only host/artifact/scratch/disk safety probe'
     Write-Output 'RealFunctional: real AIM/NTFS/checkpoint/reopen/compact/native-VHDX acceptance; requires approved scratch identity'
-    Write-Output 'Crash: Full=BLOCKED until real-process crash Task 42 is complete; Simulated=file-clone/fresh-process oracle only'
+    Write-Output 'Crash: Full=aggregate explicit real-process/power-cut evidence; Simulated=file-clone/fresh-process oracle only'
     Write-Output 'Soak: BLOCKED until Task 43 is complete'
     exit 0
 }
@@ -50,17 +52,85 @@ if ($Tier -eq 'Local') {
 
 if ($Tier -eq 'Crash') {
     if ($CrashMode -eq 'Full') {
-        Write-Output ([ordered]@{
-            schema = 'myrd.m3.verification-route.v1'
-            tier = $Tier
-            crash_mode = $CrashMode
-            status = 'BLOCKED'
-            reason = 'Full crash acceptance requires real process termination, AIM/NTFS recovery, and controlled power-cut evidence'
-            required_skip = $true
-            task42_complete = $false
-            milestone_eligible = $false
-        } | ConvertTo-Json -Depth 5 -Compress)
-        exit 77
+        $missingFullInput = [string]::IsNullOrWhiteSpace($EvidenceBase) -or
+            [string]::IsNullOrWhiteSpace($RealCrashEvidenceRoot) -or
+            [string]::IsNullOrWhiteSpace($SimulatedCrashEvidencePath)
+        if ($missingFullInput) {
+            Write-Output ([ordered]@{
+                schema = 'myrd.m3.verification-route.v1'
+                tier = $Tier
+                crash_mode = $CrashMode
+                status = 'BLOCKED'
+                reason = 'Full crash acceptance requires EvidenceBase, RealCrashEvidenceRoot, and SimulatedCrashEvidencePath'
+                required_skip = $true
+                task42_complete = $false
+                milestone_eligible = $false
+            } | ConvertTo-Json -Depth 5 -Compress)
+            exit 77
+        }
+
+        $evidenceBaseFull = [IO.Path]::GetFullPath($EvidenceBase)
+        Require-M3Route ([IO.Directory]::Exists($evidenceBaseFull)) `
+            'EvidenceBase must already exist'
+        $evidenceBaseItem = Get-Item -LiteralPath $evidenceBaseFull -Force
+        Require-M3Route (($evidenceBaseItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) `
+            'EvidenceBase cannot be a reparse point'
+        $repoFull = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\'
+        Require-M3Route (-not $evidenceBaseFull.TrimEnd('\').StartsWith(
+                $repoFull, [StringComparison]::OrdinalIgnoreCase)) `
+            'EvidenceBase cannot be inside the repository'
+
+        $realEvidenceFull = [IO.Path]::GetFullPath($RealCrashEvidenceRoot)
+        Require-M3Route ([IO.Directory]::Exists($realEvidenceFull)) `
+            'RealCrashEvidenceRoot must already exist'
+        $realEvidenceItem = Get-Item -LiteralPath $realEvidenceFull -Force
+        Require-M3Route (($realEvidenceItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) `
+            'RealCrashEvidenceRoot cannot be a reparse point'
+        $simulatedEvidenceFull = [IO.Path]::GetFullPath(
+            $SimulatedCrashEvidencePath)
+        Require-M3Route ([IO.File]::Exists($simulatedEvidenceFull)) `
+            'SimulatedCrashEvidencePath must already exist'
+        $simulatedEvidenceItem = Get-Item -LiteralPath `
+            $simulatedEvidenceFull -Force
+        Require-M3Route (($simulatedEvidenceItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -eq 0) `
+            'SimulatedCrashEvidencePath cannot be a reparse point'
+
+        $run = Join-Path $evidenceBaseFull ('crash-full-' +
+            [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fffffff') + '-' +
+            [Guid]::NewGuid().ToString('N'))
+        [IO.Directory]::CreateDirectory($run) | Out-Null
+        $runner = Join-Path $repoRoot `
+            'tests\e2e\Invoke-M3RealCrashScenario.ps1'
+        $matrix = Join-Path $repoRoot `
+            'tests\fixtures\m3\real-crash-matrix.json'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner `
+            -Action Aggregate -MatrixPath $matrix -EvidenceDirectory $run `
+            -ScenarioEvidenceRoot $realEvidenceFull `
+            -SimulatedEvidencePath $simulatedEvidenceFull
+        $childExit = $LASTEXITCODE
+        if ($childExit -ne 0) { exit $childExit }
+
+        $aggregatePath = Join-Path $run 'm3-real-crash-aggregate.json'
+        Require-M3Route ([IO.File]::Exists($aggregatePath)) `
+            'Full crash aggregate report is missing'
+        $aggregate = Get-Content -LiteralPath $aggregatePath -Raw `
+            -Encoding UTF8 | ConvertFrom-Json
+        Require-M3Route ([string]$aggregate.schema -eq
+            'myrd.m3.real-crash-aggregate.v1' -and
+            [string]$aggregate.status -eq 'PASS' -and
+            [string]$aggregate.terminal_verdict -eq 'PASS' -and
+            [bool]$aggregate.task42_complete -and
+            [bool]$aggregate.milestone_eligible -and
+            [int]$aggregate.real_scenario_count -eq 10 -and
+            [int]$aggregate.process_kill_count -eq 8 -and
+            [int]$aggregate.controlled_power_cut_count -eq 2 -and
+            [bool]$aggregate.guarantees.manifest_slot_diagnostics_verified) `
+            'Full crash aggregate did not certify the complete Task42 matrix'
+        Write-Output "M3 Crash Full PASS: $aggregatePath"
+        exit 0
     }
 
     Require-M3Route (-not [string]::IsNullOrWhiteSpace($EvidenceBase)) `

@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace myrd::m3 {
@@ -126,6 +127,58 @@ M3LifecycleOutcome make_outcome(
     }
     result.json += "}";
     if (error.has_value()) result.diagnostics = "m3 command failed\n";
+    return result;
+}
+
+constexpr std::string_view candidate_status_name(
+    const ManifestCandidateCheckStatus status) noexcept {
+    switch (status) {
+    case ManifestCandidateCheckStatus::NotRun: return "not_run";
+    case ManifestCandidateCheckStatus::Passed: return "passed";
+    case ManifestCandidateCheckStatus::Missing: return "missing";
+    case ManifestCandidateCheckStatus::Corrupt: return "corrupt";
+    case ManifestCandidateCheckStatus::Unsupported: return "unsupported";
+    case ManifestCandidateCheckStatus::AccessDenied: return "access_denied";
+    case ManifestCandidateCheckStatus::IoError: return "io_error";
+    case ManifestCandidateCheckStatus::Cancelled: return "cancelled";
+    case ManifestCandidateCheckStatus::DeadlineExceeded:
+        return "deadline_exceeded";
+    case ManifestCandidateCheckStatus::Conflict: return "conflict";
+    }
+    return "unknown";
+}
+
+M3LifecycleOutcome make_read_only_outcome(
+    const M3CliCommand command,
+    const ImageInspection& inspection) {
+    const auto& selected = *inspection.selected;
+    auto result = make_outcome(command, true,
+                               CommitDisposition::NotCommitted,
+                               selected.checkpoint_generation);
+    result.json.pop_back();
+    result.json += ",\"selected_slot\":" +
+        std::to_string(selected.selected_slot);
+    result.json += ",\"fallback\":";
+    result.json += selected.fallback ? "true" : "false";
+    result.json += ",\"slots\":[";
+    for (std::size_t index = 0; index < inspection.diagnostics.size(); ++index) {
+        if (index != 0) result.json += ',';
+        const auto& diagnostic = inspection.diagnostics[index];
+        result.json += "{\"slot_index\":" +
+            std::to_string(diagnostic.slot_index);
+        result.json += ",\"status\":\"";
+        result.json += candidate_status_name(diagnostic.status);
+        result.json += "\",\"generation\":";
+        if (diagnostic.generation.has_value()) {
+            result.json += std::to_string(*diagnostic.generation);
+        } else {
+            result.json += "null";
+        }
+        result.json += ",\"selected\":";
+        result.json += diagnostic.selected ? "true" : "false";
+        result.json += '}';
+    }
+    result.json += "]}";
     return result;
 }
 
@@ -581,9 +634,7 @@ M3LifecycleOutcome run_read_only(
                 static_cast<std::uint32_t>(PersistenceErrorCode::VerificationFailed),
                 L"m3_lifecycle_runner", L"inspection selected no image"}));
         }
-        return make_outcome(config.command, true,
-                            CommitDisposition::NotCommitted,
-                            value.selected->checkpoint_generation);
+        return make_read_only_outcome(config.command, value);
     }
     const auto depth = config.full_verify ? VerificationDepth::Full
                                           : VerificationDepth::Structural;
@@ -597,9 +648,7 @@ M3LifecycleOutcome run_read_only(
             static_cast<std::uint32_t>(PersistenceErrorCode::VerificationFailed),
             L"m3_lifecycle_runner", L"image verification failed"}));
     }
-    return make_outcome(config.command, true,
-                        CommitDisposition::NotCommitted,
-                        value.inspection.selected->checkpoint_generation);
+    return make_read_only_outcome(config.command, value.inspection);
 }
 
 M3LifecycleOutcome run_recover_test(

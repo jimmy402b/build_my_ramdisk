@@ -19,9 +19,10 @@ identity.
   both M3 executables, and `-SafetyAcknowledged`. Missing or unsafe
   prerequisites return `BLOCKED` (77); a destructive functional error returns
   `FAIL` (1).
-- `Crash`: defaults to `BLOCKED` with exit code 77. Explicit
-  `-CrashMode Simulated` runs the independent file-clone/fresh-process oracle
-  only; it does not satisfy the real-process Task 42 gate.
+- `Crash`: defaults to `Full`. With no explicit evidence paths it is
+  `BLOCKED` with exit code 77. `Full` re-aggregates exactly ten real scenario
+  reports plus one simulated report; explicit `-CrashMode Simulated` runs the
+  independent file-clone/fresh-process oracle only.
 - `Soak`: currently `BLOCKED` with exit code 77 until Task 43.
 
 Required `SKIP` or an unavailable later tier is never converted into PASS.
@@ -49,8 +50,31 @@ The resulting report must say `status=PASS`, `scope=simulated`,
 `task42_complete=false`, and `milestone_eligible=false`. The report is useful
 for the deterministic persistence oracle, but it makes no claim about real
 process termination, real AIM/NTFS recovery, or controlled power loss. The
-full `Crash` route remains blocked until those evidence classes are implemented
-and reviewed.
+simulated report alone never completes Task 42. A reviewed full run must also
+contain eight process-kill scenarios and two controlled VMware power-cut
+scenarios, each with read-only-first NTFS recovery, full corpus verification,
+lazy-load counters, cleanup proof, and manifest slot/fallback diagnostics.
+
+## Full crash evidence
+
+The full route does not manufacture a power cut. It accepts explicit evidence
+paths, creates a fresh aggregate output directory, and revalidates the ten raw
+real reports against the frozen matrix and simulated report. Missing inputs
+remain `BLOCKED/77`; malformed, incomplete, mixed-provenance, fallback, or
+leaking evidence fails nonzero.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  tools/Invoke-M3Verification.ps1 `
+  -Tier Crash -CrashMode Full `
+  -EvidenceBase C:\myrd-evidence\aggregate-runs `
+  -RealCrashEvidenceRoot C:\myrd-evidence\real-scenarios `
+  -SimulatedCrashEvidencePath C:\myrd-evidence\simulated\m3-crash-report.json
+```
+
+The real crash matrix hash is computed from BOM-free UTF-8 with LF line
+endings. Aggregation accepts legacy raw LF/CRLF hashes for the same matrix so
+evidence remains verifiable across Git checkout line-ending policies.
 
 ## Preflight example
 

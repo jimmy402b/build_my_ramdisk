@@ -102,10 +102,24 @@ TEST_CASE(m3_lifecycle_runner_create_recover_inspect_and_verify_use_production_p
         context(), config(bundle, L"inspect"));
     REQUIRE_EQ(inspected.exit_code, 0);
     REQUIRE(inspected.json.find("myrd-m3-runner") == std::string::npos);
+    REQUIRE(inspected.json.find("\"selected_slot\":0") !=
+            std::string::npos);
+    REQUIRE(inspected.json.find("\"fallback\":false") !=
+            std::string::npos);
+    REQUIRE(inspected.json.find(
+                "\"slots\":[{\"slot_index\":0,\"status\":\"passed\"") !=
+            std::string::npos);
+    REQUIRE(inspected.json.find(
+                "{\"slot_index\":1,\"status\":\"") !=
+            std::string::npos);
 
     const auto verified = myrd::m3::run_m3_lifecycle(
         context(), config(bundle, L"verify"));
     REQUIRE_EQ(verified.exit_code, 0);
+    REQUIRE(verified.json.find("\"selected_slot\":0") !=
+            std::string::npos);
+    REQUIRE(verified.json.find("\"fallback\":false") !=
+            std::string::npos);
 }
 
 TEST_CASE(m3_lifecycle_runner_checkpoint_reopens_and_verifies_new_generation) {

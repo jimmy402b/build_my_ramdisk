@@ -75,6 +75,37 @@ function Write-M3RealJsonAtomic {
     }
 }
 
+function Get-M3RealSha256Bytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace(
+            '-', '')
+    }
+    finally { $sha.Dispose() }
+}
+
+function Get-M3RealStableTextHashes {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = Get-M3RealFullPath $Path
+    $text = [IO.File]::ReadAllText(
+        $full, [Text.UTF8Encoding]::new($false, $true))
+    $lf = $text -replace "`r`n", "`n" -replace "`r", "`n"
+    $crlf = $lf -replace "`n", "`r`n"
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $stable = Get-M3RealSha256Bytes $utf8.GetBytes($lf)
+    $compatible = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    $null = $compatible.Add($stable)
+    $null = $compatible.Add((Get-M3RealSha256Bytes $utf8.GetBytes($crlf)))
+    $null = $compatible.Add((Get-FileHash -LiteralPath $full `
+                -Algorithm SHA256).Hash)
+    return [pscustomobject]@{
+        stable_sha256 = $stable
+        compatible_sha256 = @($compatible)
+    }
+}
+
 function Write-M3RealJsonDurable {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -898,6 +929,59 @@ function Test-M3RealObservationEqual {
     return $true
 }
 
+function Assert-M3RealImageDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][uint64]$ExpectedGeneration,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    foreach ($name in @(
+            'ok', 'generation', 'selected_slot', 'fallback', 'slots')) {
+        Assert-M3RealCrash ($null -ne $Value.PSObject.Properties[$name]) `
+            "$Label is missing $name"
+    }
+    Assert-M3RealCrash ([bool]$Value.ok -and
+        [uint64]$Value.generation -eq $ExpectedGeneration) `
+        "$Label did not select the expected generation"
+    $selectedSlot = [int]$Value.selected_slot
+    Assert-M3RealCrash ($selectedSlot -in @(0, 1)) `
+        "$Label selected_slot is invalid"
+    Assert-M3RealCrash ($Value.fallback -is [bool] -and
+        -not [bool]$Value.fallback) `
+        "$Label used or omitted a fallback recovery diagnostic"
+    $slots = @($Value.slots)
+    Assert-M3RealCrash ($slots.Count -eq 2) `
+        "$Label must report exactly two manifest slots"
+    $seen = [Collections.Generic.HashSet[int]]::new()
+    $selectedRows = @()
+    $allowedStatus = @(
+        'not_run', 'passed', 'missing', 'corrupt', 'unsupported',
+        'access_denied', 'io_error', 'cancelled', 'deadline_exceeded',
+        'conflict')
+    foreach ($slot in $slots) {
+        foreach ($name in @('slot_index', 'status', 'generation', 'selected')) {
+            Assert-M3RealCrash ($null -ne $slot.PSObject.Properties[$name]) `
+                "$Label slot diagnostic is missing $name"
+        }
+        $slotIndex = [int]$slot.slot_index
+        Assert-M3RealCrash ($slotIndex -in @(0, 1) -and
+            $seen.Add($slotIndex)) `
+            "$Label slot indices are invalid or duplicated"
+        Assert-M3RealCrash ([string]$slot.status -in $allowedStatus) `
+            "$Label slot status is invalid"
+        Assert-M3RealCrash ($slot.selected -is [bool]) `
+            "$Label slot selected flag is not boolean"
+        if ([bool]$slot.selected) { $selectedRows += $slot }
+    }
+    Assert-M3RealCrash ($seen.Count -eq 2 -and $selectedRows.Count -eq 1) `
+        "$Label must report both slots and exactly one selected slot"
+    Assert-M3RealCrash ([int]$selectedRows[0].slot_index -eq $selectedSlot -and
+        [string]$selectedRows[0].status -eq 'passed' -and
+        $null -ne $selectedRows[0].generation -and
+        [uint64]$selectedRows[0].generation -eq $ExpectedGeneration) `
+        "$Label selected slot provenance differs from the selected generation"
+}
+
 function Read-M3RealFilePrefixHash {
     param([Parameter(Mandatory = $true)][string]$Path, [int]$Bytes = 4096)
     $stream = [IO.File]::Open(
@@ -982,6 +1066,12 @@ function Invoke-M3RealVerify {
     $selectedGeneration = [uint64]$inspect.generation
     Assert-M3RealCrash ([uint64]$fullVerify.generation -eq $selectedGeneration) `
         'inspect and full verify selected different generations'
+    Assert-M3RealImageDiagnostics $inspect $selectedGeneration 'image inspect'
+    Assert-M3RealImageDiagnostics $fullVerify $selectedGeneration `
+        'image full verify'
+    Assert-M3RealCrash ([int]$inspect.selected_slot -eq
+        [int]$fullVerify.selected_slot) `
+        'inspect and full verify selected different manifest slots'
     $oldGeneration = [uint64]$state.old_generation
     $newGeneration = [uint64]$state.new_generation
     $allowedGenerations = switch ([string]$state.allowed_recovery) {
@@ -1178,13 +1268,15 @@ function Invoke-M3RealAggregate {
         foreach ($pair in @(
                 @{ Name = 'phase'; Actual = [string]$report.phase; Expected = [string]$scenario.phase },
                 @{ Name = 'interruption'; Actual = [string]$report.interruption; Expected = [string]$scenario.interruption },
-                @{ Name = 'allowed recovery'; Actual = [string]$report.allowed_recovery; Expected = [string]$scenario.allowed_recovery },
-                @{ Name = 'matrix hash'; Actual = [string]$report.matrix_sha256; Expected = [string]$Matrix.matrix_sha256 })) {
+                @{ Name = 'allowed recovery'; Actual = [string]$report.allowed_recovery; Expected = [string]$scenario.allowed_recovery })) {
             Assert-M3RealCrash ([string]::Equals(
                     $pair.Actual, $pair.Expected,
                     [StringComparison]::OrdinalIgnoreCase)) `
                 "real crash $id $($pair.Name) differs"
         }
+        Assert-M3RealCrash (@($Matrix.compatible_matrix_sha256) -contains
+            [string]$report.matrix_sha256) `
+            "real crash $id matrix hash differs"
         Assert-M3RealCrash ([string]$report.source_commit -match
             '^[0-9A-Fa-f]{40}$') "real crash source commit is invalid: $id"
         foreach ($hashName in @('server_sha256', 'image_sha256',
@@ -1224,6 +1316,13 @@ function Invoke-M3RealAggregate {
             [bool]$report.image_full_verify.ok -and
             [uint64]$report.image_full_verify.generation -eq $selected) `
             "real crash image verification is incomplete: $id"
+        Assert-M3RealImageDiagnostics $report.image_inspect $selected `
+            "real crash $id image inspect"
+        Assert-M3RealImageDiagnostics $report.image_full_verify $selected `
+            "real crash $id image full verify"
+        Assert-M3RealCrash ([int]$report.image_inspect.selected_slot -eq
+            [int]$report.image_full_verify.selected_slot) `
+            "real crash $id inspect/full-verify selected slots differ"
         Assert-M3RealCrash ([bool]$report.read_only_first -and
             [string]$report.filesystem.type -eq 'NTFS' -and
             [bool]$report.filesystem.scan_succeeded -and
@@ -1249,6 +1348,9 @@ function Invoke-M3RealAggregate {
             allowed_recovery = [string]$report.allowed_recovery
             recovered_classification = $classification
             selected_generation = $selected
+            selected_slot = [int]$report.image_inspect.selected_slot
+            fallback = [bool]$report.image_inspect.fallback
+            slot_diagnostics = @($report.image_inspect.slots)
             report_sha256 = (Get-FileHash -LiteralPath $reportPath -Algorithm SHA256).Hash
         }
     }
@@ -1284,6 +1386,7 @@ function Invoke-M3RealAggregate {
         guarantees = [ordered]@{
             latest_complete_confirmed_checkpoint = $true
             mixed_generation_rejected = $true
+            manifest_slot_diagnostics_verified = $true
             post_checkpoint_uncommitted_changes_may_be_lost = $true
             read_only_recovery_first = $true
             ntfs_reformat_forbidden = $true
@@ -1344,10 +1447,12 @@ function Get-M3RealMatrix {
     Assert-M3RealCrash ($new.Count -eq 5) 'real crash new coverage must be five'
     Assert-M3RealCrash ($processKill.Count -eq 8) 'real crash process-kill coverage must be eight'
     Assert-M3RealCrash ($powerCut.Count -eq 2) 'real crash power-cut coverage must be two'
+    $matrixHashes = Get-M3RealStableTextHashes $Path
     return [pscustomobject]@{
         schema = [string]$matrix.schema
         scenarios = $scenarios
-        matrix_sha256 = (Get-FileHash -LiteralPath (Get-M3RealFullPath $Path) -Algorithm SHA256).Hash
+        matrix_sha256 = [string]$matrixHashes.stable_sha256
+        compatible_matrix_sha256 = @($matrixHashes.compatible_sha256)
     }
 }
 
