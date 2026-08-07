@@ -354,6 +354,35 @@ function Remove-M3RealMount {
     $script:RealMount = $null
 }
 
+function Restore-M3RealStaleMountDirectory {
+    $item = Get-Item -LiteralPath $script:RealMountPath -Force `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        [IO.Directory]::CreateDirectory($script:RealMountPath) | Out-Null
+        return
+    }
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+        Assert-M3RealCrash ([IO.Directory]::GetFileSystemEntries(
+                $script:RealMountPath).Count -eq 0) `
+            'ordinary crash mount directory is not empty'
+        return
+    }
+    Assert-M3RealCrash (@(Get-Process -Name 'myrd-m3-aim-server' `
+            -ErrorAction SilentlyContinue).Count -eq 0) `
+        'refusing to remove stale mount while an M3 server exists'
+    Assert-M3RealCrash (@(Get-Disk -ErrorAction Stop | Where-Object {
+            [string]$_.FriendlyName -eq 'Arsenal Virtual' }).Count -eq 0) `
+        'refusing to remove stale mount while an AIM disk exists'
+    # Remove only the exact stale mount-point directory entry left by reboot,
+    # then recreate the ordinary empty directory expected by Add-M3RealMount.
+    Remove-Item -LiteralPath $script:RealMountPath -Force -ErrorAction Stop
+    [IO.Directory]::CreateDirectory($script:RealMountPath) | Out-Null
+    $restored = Get-Item -LiteralPath $script:RealMountPath -Force
+    Assert-M3RealCrash (($restored.Attributes -band
+        [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        'stale crash mount directory was not restored'
+}
+
 function Convert-M3RealBaselinePath {
     param(
         [Parameter(Mandatory = $true)][string]$OriginalPath,
@@ -643,6 +672,9 @@ function Initialize-M3RealScenarioContext {
     $null = Assert-M3ExpectedDiskOwnsPath -ScratchRoot $bundle `
         -ExpectedIdentity $identity
     $null = Assert-M3ExpectedDiskOwnsPath -ScratchRoot $EvidenceFull `
+        -ExpectedIdentity $identity
+    $null = Assert-M3ExpectedDiskOwnsPath `
+        -ScratchRoot ([IO.Path]::GetDirectoryName($mount)) `
         -ExpectedIdentity $identity
     $baselineReport = Read-M3RealJson $baselinePath
     $baseline = Get-M3RealBaselineCorpus $baselineReport
@@ -943,6 +975,7 @@ function Invoke-M3RealVerify {
     Assert-M3RealCrash (@(Get-Disk -ErrorAction Stop | Where-Object {
             [string]$_.FriendlyName -eq 'Arsenal Virtual' }).Count -eq 0) `
         'an orphan Arsenal Virtual disk remains after reboot'
+    Restore-M3RealStaleMountDirectory
 
     $inspect = Invoke-M3RealImage 'inspect'
     $fullVerify = Invoke-M3RealImage 'verify' -Full
