@@ -1,0 +1,140 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$Runner,
+    [Parameter(Mandatory = $true)][string]$Executable
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function Require-SoakRunnerTest {
+    param([bool]$Condition, [Parameter(Mandatory = $true)][string]$Message)
+    if (-not $Condition) { throw $Message }
+}
+
+function Invoke-Runner {
+    param([string[]]$Arguments)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File $Runner @Arguments 2>&1)
+        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+    }
+    finally { $ErrorActionPreference = $old }
+}
+
+function Invoke-FailureMode {
+    param([string]$Mode, [string]$Root, [int]$Timeout = 30)
+    [IO.Directory]::CreateDirectory($Root) | Out-Null
+    $oldMode = $env:MYRD_M3_SOAK_TEST_MODE
+    try {
+        $env:MYRD_M3_SOAK_TEST_MODE = $Mode
+        return Invoke-Runner @(
+            '-Phase', 'Run', '-Profile', 'Quick',
+            '-EvidenceDirectory', $Root, '-SoakExecutable', $Executable,
+            '-TimeoutSeconds', [string]$Timeout)
+    }
+    finally { $env:MYRD_M3_SOAK_TEST_MODE = $oldMode }
+}
+
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$tempRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) `
+    ('myrd-m3-soak-runner-' + [Guid]::NewGuid().ToString('N'))))
+Require-SoakRunnerTest (-not [IO.Directory]::Exists($tempRoot)) `
+    'soak runner temporary root unexpectedly exists'
+
+try {
+    [IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+    $insideRepo = Join-Path $repoRoot 'tests'
+    $unsafe = Invoke-Runner @(
+        '-Phase', 'Validate', '-Profile', 'Quick',
+        '-EvidenceDirectory', $insideRepo, '-SoakExecutable', $Executable)
+    Require-SoakRunnerTest ($unsafe.ExitCode -ne 0) `
+        'repository-contained evidence was accepted'
+
+    $missing = Invoke-Runner @(
+        '-Phase', 'Validate', '-Profile', 'Quick',
+        '-EvidenceDirectory', $tempRoot,
+        '-SoakExecutable', (Join-Path $tempRoot 'missing.exe'))
+    Require-SoakRunnerTest ($missing.ExitCode -ne 0) `
+        'missing soak executable was accepted'
+
+    $quick = Invoke-Runner @(
+        '-Phase', 'Run', '-Profile', 'Quick',
+        '-EvidenceDirectory', $tempRoot, '-SoakExecutable', $Executable,
+        '-TimeoutSeconds', '30')
+    Require-SoakRunnerTest ($quick.ExitCode -eq 0) `
+        'Quick soak runner failed'
+    $reports = @(Get-ChildItem -LiteralPath $tempRoot -Recurse -Filter `
+        'm3-soak-report.json' -File)
+    Require-SoakRunnerTest ($reports.Count -eq 1) `
+        'Quick run did not publish exactly one report'
+    $reportPath = $reports[0].FullName
+    $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 |
+        ConvertFrom-Json
+    Require-SoakRunnerTest ($report.schema -eq 'myrd.m3.soak-evidence.v1') `
+        'runner report schema mismatch'
+    Require-SoakRunnerTest ($report.status -eq 'PASS' -and
+        $report.terminal_verdict -eq 'PASS') 'Quick report is not terminal PASS'
+    Require-SoakRunnerTest ($report.profile -eq 'Quick') `
+        'Quick report profile mismatch'
+    Require-SoakRunnerTest ([uint64]$report.execution.seed_count -eq 4) `
+        'Quick seed set is not fixed at four'
+    Require-SoakRunnerTest (@($report.execution.failed_seeds).Count -eq 0) `
+        'Quick report contains failed seeds'
+    Require-SoakRunnerTest ($report.cleanup.succeeded -eq $true -and
+        @($report.cleanup.residuals).Count -eq 0) 'Quick cleanup was not empty'
+    foreach ($role in @('soak.stdout', 'soak.stderr')) {
+        Require-SoakRunnerTest ($null -ne @($report.artifacts |
+            Where-Object { $_.role -eq $role })[0]) `
+            "runner artifact is missing: $role"
+    }
+    $runDirectory = $reports[0].Directory.FullName
+    Require-SoakRunnerTest ([IO.File]::Exists(
+        (Join-Path $runDirectory 'soak.stdout.txt'))) 'aggregate stdout missing'
+    Require-SoakRunnerTest ([IO.File]::Exists(
+        (Join-Path $runDirectory 'soak.stderr.txt'))) 'aggregate stderr missing'
+    Require-SoakRunnerTest (@(Get-ChildItem -LiteralPath $runDirectory -Filter `
+        '*.tmp' -File).Count -eq 0) 'temporary report was not atomically removed'
+
+    foreach ($mode in @('nonzero','malformed','multiple')) {
+        $failureRoot = Join-Path $tempRoot $mode
+        $failure = Invoke-FailureMode $mode $failureRoot
+        Require-SoakRunnerTest ($failure.ExitCode -ne 0) `
+            "runner accepted child failure mode: $mode"
+        Require-SoakRunnerTest (@(Get-ChildItem -LiteralPath $failureRoot `
+            -Recurse -Filter 'm3-soak-report.json' -File).Count -eq 0) `
+            "failure mode published a passing report: $mode"
+    }
+
+    $beforeTimeout = @(Get-Process -Name 'myrd_m3_soak_tests' `
+        -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $timeoutRoot = Join-Path $tempRoot 'timeout'
+    $timeout = Invoke-FailureMode 'timeout' $timeoutRoot 30
+    Require-SoakRunnerTest ($timeout.ExitCode -ne 0) `
+        'runner accepted a timed-out child'
+    Start-Sleep -Milliseconds 100
+    $afterTimeout = @(Get-Process -Name 'myrd_m3_soak_tests' `
+        -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $newProcesses = @($afterTimeout | Where-Object { $beforeTimeout -notcontains $_ })
+    Require-SoakRunnerTest ($newProcesses.Count -eq 0) `
+        'timed-out soak child remained running'
+
+    $formalMissing = Invoke-Runner @(
+        '-Phase', 'Run', '-Profile', 'Formal',
+        '-EvidenceDirectory', $tempRoot, '-SoakExecutable', $Executable,
+        '-TimeoutSeconds', '30')
+    Require-SoakRunnerTest ($formalMissing.ExitCode -ne 0) `
+        'Formal run without Task41/Task42 dependencies was accepted'
+
+    Write-Output 'M3 soak runner contract PASS'
+    exit 0
+}
+finally {
+    if ([IO.Directory]::Exists($tempRoot)) {
+        [IO.Directory]::Delete($tempRoot, $true)
+    }
+    Require-SoakRunnerTest (-not [IO.Directory]::Exists($tempRoot)) `
+        'soak runner temporary directory remained after cleanup'
+}

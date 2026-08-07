@@ -1512,6 +1512,16 @@ set_tests_properties(integration.m3.soak_workload PROPERTIES
     TIMEOUT 120)
 
 add_test(
+    NAME integration.m3.soak_runner
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-soak-runner.ps1"
+        -Runner "${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M3Soak.ps1"
+        -Executable "$<TARGET_FILE:myrd_m3_soak_tests>")
+set_tests_properties(integration.m3.soak_runner PROPERTIES
+    LABELS "m3-v7"
+    TIMEOUT 240)
+
+add_test(
     NAME unit.m3.soak_verifier
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-soak-verifier.ps1")

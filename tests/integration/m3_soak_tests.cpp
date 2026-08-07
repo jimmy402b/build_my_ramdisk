@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -306,6 +307,24 @@ int main(int argc, char** argv) {
         return 1;
     }
     try {
+        const auto testMode = environment_value("MYRD_M3_SOAK_TEST_MODE");
+        if (testMode == "nonzero") {
+            std::cerr << "M3_SOAK_TEST_MODE nonzero\n";
+            return 7;
+        }
+        if (testMode == "malformed") {
+            std::cout << "not-json\n";
+            return 0;
+        }
+        if (testMode == "multiple") {
+            std::cout << "{\"schema\":\"first\"}\n"
+                         "{\"schema\":\"second\"}\n";
+            return 0;
+        }
+        if (testMode == "timeout") {
+            std::this_thread::sleep_for(std::chrono::seconds(60));
+            return 0;
+        }
         if (argc == 2) {
             const auto first = run_soak_seed(12648430, "Quick");
             const auto second = run_soak_seed(12648430, "Quick");

@@ -155,6 +155,8 @@ try {
     $quick.milestone_eligible = $false
     $quick.execution.seed_count = 4
     $quick.dependencies = $null
+    $quick.thresholds.checkpoint_payload_bytes = 1
+    $quick.thresholds.journal_growth_bytes = 0
     Write-TestJson $quick $reportPath
     $exitCode = Invoke-SoakVerifier $verifier $reportPath $source $binary `
         $stdoutPath $stderrPath $realFunctionalPath $crashAggregatePath

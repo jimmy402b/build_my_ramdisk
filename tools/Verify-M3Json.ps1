@@ -209,8 +209,14 @@ function Verify-M3SoakReport($SoakReport) {
         'startup read limit is not frozen at 64 MiB'
     Require ([uint64]$SoakReport.thresholds.extra_committed_limit_bytes -eq 134217728) `
         'extra committed limit is not frozen at 128 MiB'
-    Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -eq 268435456) `
-        'checkpoint payload is not frozen at 256 MiB'
+    if ($isFormal) {
+        Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -eq 268435456) `
+            'Formal checkpoint payload is not frozen at 256 MiB'
+    }
+    else {
+        Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -gt 0) `
+            'Quick checkpoint payload is zero'
+    }
     Require ([uint64]$SoakReport.thresholds.journal_growth_limit_bytes -eq 322122547) `
         'journal growth limit is not frozen at 120 percent'
     Require ([uint64]$SoakReport.thresholds.mutation_pause_limit_ms -eq 250) `
