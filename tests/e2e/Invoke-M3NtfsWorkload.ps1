@@ -67,12 +67,20 @@ function Get-M3CommonImageArguments {
         $Command, '--bundle-root', $script:BundleFull, '--manifest', $ManifestName,
         '--timeout-ms', '300000',
         '--max-virtual-bytes', [string]$VirtualBytes,
-        '--max-journal-bytes', [string](512MB),
-        '--max-journal-records', '131072',
+        # NTFS format can emit many ZERO/DISCARD records before user data;
+        # reserve a bounded 2 GiB journal for the first real checkpoint.
+        '--max-journal-bytes', [string](2GB),
+        # JournalWriter reserves one 4096-byte alignment unit for the commit
+        # record, so 2 GiB permits at most 524287 checkpoint records.
+        '--max-journal-records', '524287',
         '--max-index-cache-bytes', [string](64MB),
-        '--max-index-cache-entries', '65536',
+        # Each index-cache entry is one 4096-byte index node. Keep the entry
+        # ceiling within the 64 MiB byte budget (64 MiB / 4096 = 16384).
+        '--max-index-cache-entries', '16384',
         '--max-bat-cache-bytes', [string](16MB),
-        '--max-bat-cache-entries', '65536',
+        # Each BAT-cache entry is one 4096-byte BAT page. Keep the entry
+        # ceiling within the 16 MiB byte budget (16 MiB / 4096 = 4096).
+        '--max-bat-cache-entries', '4096',
         '--max-io-scratch-bytes', [string](8MB),
         '--max-verify-batch-bytes', [string](8MB)
     )
@@ -105,6 +113,13 @@ function Invoke-M3ImageCommand {
         throw "$Operation failed with exit code ${exitCode}: $($stdout -join [Environment]::NewLine)"
     }
     return @($stdout)
+}
+
+function Mark-M3DiskMutation {
+    Assert-M3Ntfs (-not $WhatIf) 'disk mutation is not executed during WhatIf'
+    # From this boundary onward the approved non-boot scratch disk may have
+    # been changed. Failure reports must therefore be FAIL, never BLOCKED.
+    $script:DestructiveOperationsEmitted = $true
 }
 
 function ConvertTo-M3ProcessArgument {
@@ -149,7 +164,12 @@ function Start-M3Server {
     Add-M3CleanupEntry -Ledger $script:Cleanup -Kind 'process' `
         -Description 'stop AIM server' -RecoveryCommand 'send stop to the exact AIM server process' `
         -Action { Stop-M3Server }
-    $line = Wait-M3ProcessLine $process.StandardOutput.ReadLineAsync() 'AIM server ready line'
+    # The server gives Windows up to 30 seconds to publish the PhysicalDrive.
+    # Keep the harness deadline outside that boundary so a server-side timeout
+    # and its stderr are observed instead of racing a second stdout read during
+    # cleanup.
+    $line = Wait-M3ProcessLine $process.StandardOutput.ReadLineAsync() `
+        'AIM server ready line' -TimeoutMilliseconds 45000
     try { $ready = $line | ConvertFrom-Json }
     catch { throw "AIM server ready line is invalid JSON: $line" }
     Assert-M3Ntfs ([string]$ready.event -eq 'ready') 'AIM server did not report ready'
@@ -158,11 +178,15 @@ function Start-M3Server {
 }
 
 function Invoke-M3ServerCommand {
-    param([Parameter(Mandatory = $true)][string]$Command)
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [int]$TimeoutMilliseconds = 30000
+    )
     Assert-M3Ntfs ($null -ne $script:Server -and -not $script:Server.HasExited) 'AIM server is not running'
     $script:Server.StandardInput.WriteLine($Command)
     $script:Server.StandardInput.Flush()
-    $line = Wait-M3ProcessLine $script:Server.StandardOutput.ReadLineAsync() "AIM server command '$Command'"
+    $line = Wait-M3ProcessLine $script:Server.StandardOutput.ReadLineAsync() `
+        "AIM server command '$Command'" -TimeoutMilliseconds $TimeoutMilliseconds
     try { return ($line | ConvertFrom-Json) }
     catch { throw "AIM server command returned invalid JSON: $line" }
 }
@@ -177,7 +201,24 @@ function Stop-M3Server {
     if (-not $process.HasExited) {
         $process.StandardInput.WriteLine('stop')
         $process.StandardInput.Flush()
-        $line = Wait-M3ProcessLine $process.StandardOutput.ReadLineAsync() 'AIM server stopped line'
+        $stopTask = $process.StandardOutput.ReadLineAsync()
+        if (-not $stopTask.Wait(30000)) {
+            $process.WaitForExit(30000)
+            $stderr = if ($null -ne $script:ServerStdErrTask -and
+                $script:ServerStdErrTask.IsCompleted) {
+                [string]$script:ServerStdErrTask.Result
+            } else { '' }
+            throw "AIM server stopped line timed out (exit=$($process.ExitCode)): $stderr"
+        }
+        $line = [string]$stopTask.Result
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            $process.WaitForExit(30000)
+            $stderr = if ($null -ne $script:ServerStdErrTask -and
+                $script:ServerStdErrTask.IsCompleted) {
+                [string]$script:ServerStdErrTask.Result
+            } else { '' }
+            throw "AIM server stopped line returned no output (exit=$($process.ExitCode)): $stderr"
+        }
         $stopped = $line | ConvertFrom-Json
         Assert-M3Ntfs ([string]$stopped.event -eq 'stopped' -and [bool]$stopped.ok) `
             'AIM server did not confirm clean stop'
@@ -265,9 +306,32 @@ function Get-M3ExactPartition {
     )
     $partitions = @(Get-Partition -DiskNumber $DiskNumber -ErrorAction Stop)
     Assert-M3Ntfs ($partitions.Count -gt 0) "runtime disk $DiskNumber has no partition"
-    $selected = if ($PartitionNumber -gt 0) {
-        @($partitions | Where-Object { [int]$_.PartitionNumber -eq $PartitionNumber })
-    } else { @($partitions | Where-Object { -not [bool]$_.IsReserved }) }
+    if ($PartitionNumber -gt 0) {
+        $selected = @($partitions | Where-Object {
+            [int]$_.PartitionNumber -eq $PartitionNumber
+        })
+    } else {
+        # IsReserved is not present on all Win11 storage-provider objects.
+        # The NTFS volume is the authoritative data-partition identity; query
+        # it explicitly so a GPT MSR/recovery partition cannot be selected.
+        $ntfs = @($partitions | ForEach-Object {
+            $volumes = @(Get-Volume -Partition $_ -ErrorAction SilentlyContinue)
+            if ($volumes.Count -eq 1 -and
+                [string]$volumes[0].FileSystem -eq 'NTFS') { $_ }
+        })
+        if ($ntfs.Count -eq 1) {
+            $selected = $ntfs
+        } else {
+            # Before formatting there should be no default partition lookup;
+            # retain a conservative typed fallback for callers that do use it.
+            $selected = @($partitions | Where-Object {
+                $type = [string]$_.Type
+                -not [string]::Equals($type, 'Reserved', [StringComparison]::OrdinalIgnoreCase) -and
+                -not [string]::Equals($type, 'MSR', [StringComparison]::OrdinalIgnoreCase) -and
+                -not [string]::Equals($type, 'Recovery', [StringComparison]::OrdinalIgnoreCase)
+            })
+        }
+    }
     Assert-M3Ntfs ($selected.Count -eq 1) "runtime disk $DiskNumber partition selection is ambiguous"
     Assert-M3Ntfs ([int]$selected[0].DiskNumber -eq $DiskNumber) 'partition identity changed'
     return $selected[0]
@@ -276,18 +340,33 @@ function Get-M3ExactPartition {
 function Add-M3Mount {
     param([int]$DiskNumber, [int]$PartitionNumber)
     Assert-M3EmptyMount
+    # GetNewClosure creates a dynamic script scope. Capture the concrete path
+    # as an ordinary local instead of resolving $script:MountFull there.
+    $mountFull = $script:MountFull
     $cleanupAction = {
         $part = Get-Partition -DiskNumber $DiskNumber -PartitionNumber $PartitionNumber -ErrorAction SilentlyContinue
         if ($null -eq $part) { return }
         $paths = @($part.AccessPaths | Where-Object {
-            [string]::Equals(([string]$_).TrimEnd('\'), $script:MountFull.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+            [string]::Equals(([string]$_).TrimEnd('\'), $mountFull.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
         })
         Assert-M3Ntfs ($paths.Count -le 1) 'exact access path appears more than once'
         if ($paths.Count -eq 1) {
             Remove-PartitionAccessPath -InputObject $part -AccessPath ([string]$paths[0]) -ErrorAction Stop
         }
-        if ([IO.Directory]::Exists($script:MountFull)) {
-            Assert-M3Ntfs ([IO.Directory]::GetFileSystemEntries($script:MountFull).Count -eq 0) 'mount path is not empty after removal'
+        if ([IO.Directory]::Exists($mountFull)) {
+            $mountItem = Get-Item -LiteralPath $mountFull -Force
+            if (($mountItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                # The volume access path is already detached above. Remove
+                # only the now-stale mount-point directory entry, then restore
+                # the ordinary empty directory required by the next run.
+                Remove-Item -LiteralPath $mountFull -Force
+                [IO.Directory]::CreateDirectory($mountFull) | Out-Null
+                $mountItem = Get-Item -LiteralPath $mountFull -Force
+            }
+            Assert-M3Ntfs (($mountItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+                'mount path remains a reparse point after removal'
+            Assert-M3Ntfs (@([IO.Directory]::GetFileSystemEntries($mountFull)).Count -eq 0) `
+                'mount path is not empty after removal'
         }
     }.GetNewClosure()
     Add-M3CleanupEntry -Ledger $script:Cleanup -Kind 'mount' `
@@ -366,6 +445,40 @@ public static class MyrdM3NativeVolume {
     [MyrdM3NativeVolume]::Flush("\\.\$drive`:")
 }
 
+function Wait-M3WriteQuiescence {
+    param(
+        [int]$SampleIntervalSeconds = 5,
+        [int]$StableSamplesRequired = 3,
+        [int]$MaximumSamples = 24
+    )
+    # Acceptance-only workload boundary: FlushFileBuffers can be followed by
+    # delayed NTFS maintenance writes. We wait until those writes settle before
+    # declaring which corpus the checkpoint is expected to contain. This does
+    # not strengthen the product contract for writes issued after a checkpoint.
+    Assert-M3Ntfs ($SampleIntervalSeconds -gt 0) 'write-quiescence interval must be positive'
+    Assert-M3Ntfs ($StableSamplesRequired -gt 0) 'write-quiescence sample count must be positive'
+    Assert-M3Ntfs ($MaximumSamples -ge $StableSamplesRequired) 'write-quiescence sample budget is too small'
+    [uint64]$previousWrites = [uint64]::MaxValue
+    $stableSamples = 0
+    for ($sample = 0; $sample -lt $MaximumSamples; ++$sample) {
+        Start-Sleep -Seconds $SampleIntervalSeconds
+        $status = Get-M3ServerStatus
+        Assert-M3Ntfs ([uint64]$status.transport.write_errors -eq 0) `
+            "AIM WRITE errors observed while waiting for NTFS quiescence: $($status | ConvertTo-Json -Compress)"
+        [uint64]$currentWrites = $status.transport.write
+        if ($currentWrites -eq $previousWrites) {
+            ++$stableSamples
+        } else {
+            $previousWrites = $currentWrites
+            $stableSamples = 0
+        }
+        if ($stableSamples -ge $StableSamplesRequired) {
+            return $status
+        }
+    }
+    throw "NTFS/AIM WRITE stream did not become quiescent within $($SampleIntervalSeconds * $MaximumSamples) seconds"
+}
+
 function Save-M3State {
     param([Parameter(Mandatory = $true)]$State)
     $path = Join-Path $script:EvidenceFull 'm3-ntfs-state.json'
@@ -429,7 +542,10 @@ function Invoke-M3FilesystemWorkload {
     # A sparse file proves first-touch holes are read as zeroes without
     # requiring a huge host-side write.
     $sparsePath = Join-Path $data 'sparse.bin'
-    $null = & fsutil.exe file SetSparse $sparsePath 2>&1
+    # Win11's current fsutil syntax is "sparse setflag"; the older
+    # "file SetSparse" spelling is rejected as an invalid command.
+    New-Item -ItemType File -Path $sparsePath -Force | Out-Null
+    $null = & fsutil.exe sparse setflag $sparsePath 2>&1
     Assert-M3Ntfs ($LASTEXITCODE -eq 0) 'fsutil SetSparse failed'
     $sparseStream = [IO.File]::Open($sparsePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try {
@@ -488,8 +604,9 @@ function Get-M3BasePathAfterCompact {
     $jsonLine = @($output | Where-Object { [string]$_ -match '^\s*\{' } | Select-Object -Last 1)
     Assert-M3Ntfs ($jsonLine.Count -eq 1) 'image inspect did not return one JSON report'
     $report = $jsonLine[0] | ConvertFrom-Json
-    Assert-M3Ntfs ($null -ne $report.selected) 'image inspect selected no durable generation'
-    $generation = [uint64]$report.selected.base_generation
+    Assert-M3Ntfs ([bool]$report.ok) "image inspect failed: $($report | ConvertTo-Json -Compress)"
+    Assert-M3Ntfs ($null -ne $report.generation) 'image inspect returned no durable generation'
+    $generation = [uint64]$report.generation
     $name = if ($generation -eq 0) { 'base-0000.vhdx' } else { "base-g0000-c${generation}.vhdx" }
     $path = Get-M3FullPath (Join-Path $script:BundleFull $name)
     Assert-M3NoReparsePath $path
@@ -499,27 +616,34 @@ function Get-M3BasePathAfterCompact {
 
 function Invoke-M3NativeVhdxReadOnlyVerification {
     $base = Get-M3BasePathAfterCompact
-    $already = @(Get-DiskImage -ImagePath $base -ErrorAction SilentlyContinue)
+    $basePath = [string]$base.path
+    $already = @(Get-DiskImage -ImagePath $basePath -ErrorAction SilentlyContinue |
+        Where-Object { [bool]$_.Attached })
     Assert-M3Ntfs ($already.Count -eq 0) 'selected VHDX is already attached; refusing double attach'
     $before = @(Get-Disk | ForEach-Object { [int]$_.Number })
     $detachAction = {
-        $attached = @(Get-DiskImage -ImagePath $base -ErrorAction SilentlyContinue)
-        if ($attached.Count -eq 1) { Dismount-DiskImage -ImagePath $base -ErrorAction Stop }
+        $attached = @(Get-DiskImage -ImagePath $basePath -ErrorAction SilentlyContinue |
+            Where-Object { [bool]$_.Attached })
+        if ($attached.Count -eq 1) { Dismount-DiskImage -ImagePath $basePath -ErrorAction Stop }
     }.GetNewClosure()
     Add-M3CleanupEntry -Ledger $script:Cleanup -Kind 'vhdx' `
         -Description 'detach exact compact VHDX' `
-        -RecoveryCommand "Dismount-DiskImage -ImagePath '$base'" `
+        -RecoveryCommand "Dismount-DiskImage -ImagePath '$basePath'" `
         -Action $detachAction
-    Mount-DiskImage -ImagePath $base -Access ReadOnly -NoDriveLetter -ErrorAction Stop | Out-Null
+    Mount-DiskImage -ImagePath $basePath -Access ReadOnly -NoDriveLetter -ErrorAction Stop | Out-Null
     $newDisks = @(Get-Disk | Where-Object { $before -notcontains [int]$_.Number })
     Assert-M3Ntfs ($newDisks.Count -eq 1) 'read-only VHDX attach did not create exactly one new disk'
     $disk = $newDisks[0]
     Assert-M3Ntfs (-not [bool]$disk.IsBoot -and -not [bool]$disk.IsSystem) 'attached VHDX is unsafe'
     $partitions = @(Get-Partition -DiskNumber ([int]$disk.Number) -ErrorAction Stop)
     Assert-M3Ntfs ($partitions.Count -gt 0) 'attached VHDX has no partition'
-    $volume = @(Get-Volume -Partition $partitions[0] -ErrorAction Stop)
-    Assert-M3Ntfs ($volume.Count -eq 1 -and [string]$volume[0].FileSystem -eq 'NTFS') 'attached VHDX is not an NTFS volume'
-    return [pscustomobject]@{ path = $base.path; generation = $base.generation; disk_number = [int]$disk.Number; filesystem = [string]$volume[0].FileSystem }
+    $ntfsVolumes = @($partitions | ForEach-Object {
+        @(Get-Volume -Partition $_ -ErrorAction SilentlyContinue) |
+            Where-Object { [string]$_.FileSystem -eq 'NTFS' }
+    })
+    Assert-M3Ntfs ($ntfsVolumes.Count -eq 1) 'attached VHDX does not expose exactly one NTFS volume'
+    $volume = $ntfsVolumes[0]
+    return [pscustomobject]@{ path = $basePath; generation = $base.generation; disk_number = [int]$disk.Number; filesystem = [string]$volume[0].FileSystem }
 }
 
 function Invoke-M3AllWorkload {
@@ -537,6 +661,7 @@ function Invoke-M3AllWorkload {
     Assert-M3Ntfs ($existing.Count -eq 0) 'generation-zero AIM disk already has partitions; refusing format'
     $null = Assert-M3RuntimeDiskUnchanged $firstReady $firstIdentity
     if ([bool]$firstDisk.IsReadOnly) { Set-Disk -Number ([int]$firstIdentity.Number) -IsReadOnly $false -ErrorAction Stop }
+    Mark-M3DiskMutation
     Initialize-Disk -Number ([int]$firstIdentity.Number) -PartitionStyle GPT -ErrorAction Stop | Out-Null
     $null = Assert-M3RuntimeDiskUnchanged $firstReady $firstIdentity
     $partition = New-Partition -DiskNumber ([int]$firstIdentity.Number) -UseMaximumSize -AssignDriveLetter:$false -ErrorAction Stop
@@ -547,8 +672,14 @@ function Invoke-M3AllWorkload {
     $null = Add-M3Mount ([int]$firstIdentity.Number) ([int]$partition.PartitionNumber)
     $workload = Invoke-M3FilesystemWorkload
     Flush-M3Volume $script:MountFull
-    $checkpoint = Invoke-M3ServerCommand 'checkpoint volume-flushed'
-    Assert-M3Ntfs ([bool]$checkpoint.ok -and [string]$checkpoint.disposition -eq 'Committed') 'first filesystem checkpoint did not commit'
+    $firstStatus = Wait-M3WriteQuiescence
+    Assert-M3Ntfs ([uint64]$firstStatus.transport.write -gt 0 -and
+        [uint64]$firstStatus.transport.write_errors -eq 0) `
+        "filesystem workload produced no successful WRITE requests: $($firstStatus | ConvertTo-Json -Compress)"
+    $checkpoint = Invoke-M3ServerCommand 'checkpoint volume-flushed' `
+        -TimeoutMilliseconds 300000
+    Assert-M3Ntfs ([bool]$checkpoint.ok -and [string]$checkpoint.disposition -eq 'Committed') `
+        "first filesystem checkpoint did not commit: checkpoint=$($checkpoint | ConvertTo-Json -Compress); status=$($firstStatus | ConvertTo-Json -Compress)"
     Remove-M3ExactMount ([int]$firstIdentity.Number) ([int]$partition.PartitionNumber)
     Stop-M3Server
 
@@ -572,8 +703,11 @@ function Invoke-M3AllWorkload {
     }
     Assert-M3Ntfs ((Get-M3FileHashExact $workload.sparse.path) -eq [string]$workload.sparse.sha256) 'reopen sparse hash mismatch'
     Flush-M3Volume $script:MountFull
-    $secondCheckpoint = Invoke-M3ServerCommand 'checkpoint volume-flushed'
-    Assert-M3Ntfs ([bool]$secondCheckpoint.ok -and [string]$secondCheckpoint.disposition -eq 'Committed') 'reopen checkpoint did not commit'
+    $secondQuiescence = Wait-M3WriteQuiescence
+    $secondCheckpoint = Invoke-M3ServerCommand 'checkpoint volume-flushed' `
+        -TimeoutMilliseconds 300000
+    Assert-M3Ntfs ([bool]$secondCheckpoint.ok -and [string]$secondCheckpoint.disposition -eq 'Committed') `
+        "reopen checkpoint did not commit: $($secondCheckpoint | ConvertTo-Json -Compress)"
     Remove-M3ExactMount ([int]$secondIdentity.Number) ([int]$secondPartition.PartitionNumber)
     Stop-M3Server
 
@@ -595,8 +729,10 @@ function Invoke-M3AllWorkload {
         lazy_evidence = [pscustomobject]@{
             bounded_sample = $true
             sample_sha256 = $sampleHash
+            first_quiescence_status = $firstStatus
             startup_status = $startupStatus
             sample_status = $sampleStatus
+            second_quiescence_status = $secondQuiescence
             full_corpus_verified = $true
         }
         seed = 9001
@@ -708,6 +844,7 @@ try {
 }
 catch {
     $message = [string]$_.Exception.Message
+    $scriptStackTrace = [string]$_.ScriptStackTrace
     $status = if ($script:DestructiveOperationsEmitted) { 'FAIL' } else { 'BLOCKED' }
     $exitCode = if ($status -eq 'FAIL') { 1 } else { 77 }
     $evidence = if ($null -ne $script:EvidenceFull) { $script:EvidenceFull } else { Get-M3FullPath $EvidenceDirectory }
@@ -722,6 +859,7 @@ catch {
             server_started = [bool]$script:ServerEverStarted
             destructive_operations_emitted = [bool]$script:DestructiveOperationsEmitted
             reason = $message
+            script_stack_trace = $scriptStackTrace
             cleanup = [pscustomobject]@{ attempted = $false; succeeded = $true; residuals = @() }
             started_utc = [DateTime]::UtcNow.ToString('o')
             finished_utc = [DateTime]::UtcNow.ToString('o')

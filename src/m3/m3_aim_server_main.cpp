@@ -1,4 +1,5 @@
 #include "src/m3/m3_windows_acceptance.h"
+#include "src/persistence/vhdx_reader.h"
 
 #include <windows.h>
 
@@ -20,6 +21,12 @@ using namespace myrd::persistence;
 
 constexpr std::uint64_t kDefaultVirtualBytes = 64ull << 30;
 constexpr std::uint64_t kMiB = 1024ull * 1024ull;
+// A Windows NTFS format may emit a large number of ZERO/DISCARD records
+// before the first user file is created. Keep enough bounded journal budget
+// for that first durable filesystem checkpoint.
+constexpr std::uint64_t kDefaultJournalBytes = 2ull * 1024ull * kMiB;
+constexpr std::uint64_t kDefaultIndexCacheBytes = 64ull * kMiB;
+constexpr std::uint64_t kDefaultBatCacheBytes = 16ull * kMiB;
 
 void print_error(const Error& error) {
     std::fwprintf(stderr, L"M3 AIM server error (%u): %ls: %ls\n",
@@ -92,12 +99,14 @@ bool take_option(
 PersistenceLimits default_limits(std::uint64_t virtual_bytes) {
     return PersistenceLimits{
         virtual_bytes,
-        512ull * kMiB,
-        131072,
-        64ull * kMiB,
-        65536,
-        16ull * kMiB,
-        65536,
+        kDefaultJournalBytes,
+        // JournalWriter reserves one alignment unit for the commit record;
+        // the record ceiling must therefore be strictly below bytes/alignment.
+        kDefaultJournalBytes / kJournalAlignment - 1,
+        kDefaultIndexCacheBytes,
+        kDefaultIndexCacheBytes / kIndexNodeBytes,
+        kDefaultBatCacheBytes,
+        kDefaultBatCacheBytes / kVhdxBatPageBytes,
         8ull * kMiB,
         8ull * kMiB};
 }
@@ -143,6 +152,10 @@ void print_status(const M3AimRuntime& runtime) {
               << storage.resident_clean_blocks
               << ",\"resident_dirty_blocks\":"
               << storage.resident_dirty_blocks
+              << ",\"zero_dirty_blocks\":"
+              << storage.zero_dirty_blocks
+              << ",\"zero_clean_blocks\":"
+              << storage.zero_clean_blocks
               << ",\"backing_reads_total\":"
               << storage.backing_reads_total
               << ",\"backing_read_bytes_total\":"
@@ -173,8 +186,17 @@ int print_checkpoint(const M3CheckpointOutcome& outcome) {
     std::cout << "{\"event\":\"checkpoint\",\"disposition\":\""
               << persistence::to_string(outcome.disposition)
               << "\",\"generation\":" << outcome.generation
-              << ",\"ok\":" << (outcome.ok() ? "true" : "false")
-              << "}\n" << std::flush;
+              << ",\"ok\":" << (outcome.ok() ? "true" : "false");
+    if (outcome.error.has_value()) {
+        const auto& error = *outcome.error;
+        std::cout << ",\"error\":{\"code\":" << error.code
+                  << ",\"native_code\":" << error.native_code
+                  << ",\"operation\":\""
+                  << json_escape(narrow(error.operation))
+                  << "\",\"message\":\""
+                  << json_escape(narrow(error.message)) << "\"}";
+    }
+    std::cout << "}\n" << std::flush;
     if (outcome.ok()) return 0;
     if (outcome.error.has_value()) print_error(*outcome.error);
     return 8;

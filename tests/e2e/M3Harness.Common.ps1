@@ -261,7 +261,10 @@ function Get-M3PageFileDiskNumbers {
             [void]$numbers.Add([int]$item.DiskNumber)
         }
     }
-    return $numbers
+    # PowerShell unwraps a single collection output unless it is unary-comma
+    # wrapped. Callers rely on HashSet.Contains(), so preserve the HashSet even
+    # when the machine has exactly one page-file disk.
+    return ,$numbers
 }
 
 function Get-M3ActualDiskCandidates {
@@ -359,7 +362,10 @@ function Invoke-M3CleanupLedger {
         }
         if ($entry.Status -eq 'succeeded') { continue }
         try {
-            & $entry.Action
+            # Cleanup actions may call cmdlets whose success values would
+            # otherwise leak into this function's output and be mistaken for
+            # ledger entries by callers.
+            $null = & $entry.Action
             $entry.Status = 'succeeded'
         }
         catch {

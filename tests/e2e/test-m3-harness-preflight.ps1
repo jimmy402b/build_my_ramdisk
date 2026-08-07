@@ -129,7 +129,10 @@ try {
     $ledger = New-M3CleanupLedger
     $count = 0
     Add-M3CleanupEntry -Ledger $ledger -Kind 'marker' -Description 'test marker' `
-        -RecoveryCommand 'remove the test marker' -Action { $script:count++ }
+        -RecoveryCommand 'remove the test marker' -Action {
+            $script:count++
+            Write-Output 'cleanup action output must not escape the ledger'
+        }
     $firstCleanup = Invoke-M3CleanupLedger $ledger
     $secondCleanup = Invoke-M3CleanupLedger $ledger
     Require-M3Test ($count -eq 1) 'cleanup ledger was not idempotent'

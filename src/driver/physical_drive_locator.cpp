@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 
 #pragma comment(lib, "setupapi.lib")
@@ -47,14 +48,22 @@ Result<LocatedDisk> match_created_disk(
     auto addr = decode_device_address(created);
 
     const DiskCandidate* match = nullptr;
-    bool matching_address_seen = false;
+    bool matching_new_address_seen = false;
+    std::uint32_t conflicting_number = 0;
+    std::uint64_t conflicting_length = 0;
     for (const auto& c : candidates) {
         if (c.path_id != addr.path_id) continue;
         if (c.target_id != addr.target_id) continue;
         if (c.lun != addr.lun) continue;
-        matching_address_seen = true;
         if (c.existed_before) continue;
-        if (c.length_bytes != expected_size_bytes) continue;
+        matching_new_address_seen = true;
+        if (c.length_bytes != expected_size_bytes) {
+            if (conflicting_number == 0) {
+                conflicting_number = c.physical_drive_number;
+                conflicting_length = c.length_bytes;
+            }
+            continue;
+        }
         if (match != nullptr) {
             return Result<LocatedDisk>::failure(
                 {ErrorDomain::evidence, ERROR_DUP_NAME,
@@ -65,14 +74,19 @@ Result<LocatedDisk> match_created_disk(
     }
 
     if (!match) {
-        return Result<LocatedDisk>::failure(
-            {ErrorDomain::evidence,
-             static_cast<std::uint32_t>(
-                 matching_address_seen ? ERROR_INVALID_DATA : ERROR_NOT_FOUND),
-             L"match_created_disk",
-             matching_address_seen
-                 ? L"matching SCSI address has conflicting baseline or length identity"
-                 : L"no candidate matches"});
+        std::wstring message = L"no candidate matches";
+        if (matching_new_address_seen) {
+            message = L"new matching SCSI address has conflicting length identity";
+            message += L" (PhysicalDrive" +
+                std::to_wstring(conflicting_number) + L" length=" +
+                std::to_wstring(conflicting_length) + L" expected=" +
+                std::to_wstring(expected_size_bytes) + L")";
+        }
+        return Result<LocatedDisk>::failure({
+            ErrorDomain::evidence,
+            static_cast<std::uint32_t>(
+                matching_new_address_seen ? ERROR_INVALID_DATA : ERROR_NOT_FOUND),
+            L"match_created_disk", std::move(message)});
     }
 
     LocatedDisk result{};
@@ -267,6 +281,7 @@ Result<LocatedDisk> wait_for_created_physical_drive(
     auto deadline = std::chrono::steady_clock::now() + timeout;
     constexpr auto kInterval = std::chrono::milliseconds(250);
     constexpr auto kConfirmationDelay = std::chrono::milliseconds(100);
+    std::optional<Error> last_identity_conflict;
 
     auto mark_existed_before = [&](std::vector<DiskCandidate>& candidates) {
         for (auto& candidate : candidates) {
@@ -290,8 +305,16 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         auto first = match_created_disk(
             created, cand.value(), expected_size_bytes);
         if (!first) {
-            if (first.error().code != ERROR_NOT_FOUND) {
+            // Windows may publish the new disk interface before its length
+            // information has settled. Keep polling for the exact identity;
+            // a transient same-address/length mismatch is not proof that a
+            // different disk was created. The timeout remains the fail-safe.
+            if (first.error().code != ERROR_NOT_FOUND &&
+                first.error().code != ERROR_INVALID_DATA) {
                 return Result<LocatedDisk>::failure(first.error());
+            }
+            if (first.error().code == ERROR_INVALID_DATA) {
+                last_identity_conflict = first.error();
             }
             std::this_thread::sleep_for(kInterval);
             continue;
@@ -316,9 +339,12 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         return confirmed;
     }
 
-    return Result<LocatedDisk>::failure(
-        {ErrorDomain::evidence, WAIT_TIMEOUT,
-         L"wait_for_created_physical_drive", L"timed out"});
+    if (last_identity_conflict.has_value()) {
+        return Result<LocatedDisk>::failure(*last_identity_conflict);
+    }
+    return Result<LocatedDisk>::failure({
+        ErrorDomain::evidence, WAIT_TIMEOUT,
+        L"wait_for_created_physical_drive", L"timed out"});
 }
 
 } // namespace myrd::aim

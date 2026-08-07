@@ -45,6 +45,18 @@ TEST_CASE(locator_rejects_candidate_that_existed_before) {
     REQUIRE(r.has_error());
 }
 
+TEST_CASE(locator_ignores_existing_same_address_while_waiting_for_new_disk) {
+    // VMware can report the same SCSI address for an existing disk and a
+    // subsequently-created AIM disk. The old disk must not turn a
+    // not-yet-enumerated new disk into a permanent identity conflict.
+    std::vector<myrd::aim::DiskCandidate> cands;
+    cands.push_back({0x01, 0x00, 0x00, 5, 64ull * 1024ull * 1024ull, true});
+    myrd::aim::DeviceId id{0x00000001u};
+    auto r = myrd::aim::match_created_disk(id, cands);
+    REQUIRE(r.has_error());
+    REQUIRE_EQ(r.error().code, static_cast<std::uint32_t>(ERROR_NOT_FOUND));
+}
+
 TEST_CASE(locator_rejects_length_not_64_mib) {
     std::vector<myrd::aim::DiskCandidate> cands;
     cands.push_back({0x01, 0x00, 0x00, 5, 1024, false});

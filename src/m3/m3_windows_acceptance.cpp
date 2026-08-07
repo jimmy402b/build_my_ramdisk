@@ -200,7 +200,8 @@ Result<void> M3AimRuntime::start() {
     }
 
     auto located = aim::wait_for_created_physical_drive(
-        *owned_device_, *physical_baseline_, device_timeout_);
+        *owned_device_, *physical_baseline_, geometry.virtual_bytes,
+        device_timeout_);
     if (!located) {
         (void)remove_owned_device();
         (void)stop_provider();
