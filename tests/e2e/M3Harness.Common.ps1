@@ -348,7 +348,11 @@ function Invoke-M3CleanupLedger {
         [switch]$WhatIf
     )
     if ($Ledger.Finalized) { return @($Ledger.Entries) }
-    foreach ($entry in @($Ledger.Entries)) {
+    # Resources are registered when they become live. Teardown must therefore
+    # be LIFO: dependents (mount/access path/VHDX attachment) must disappear
+    # before the provider or process that owns them is stopped.
+    for ($index = $Ledger.Entries.Count - 1; $index -ge 0; --$index) {
+        $entry = $Ledger.Entries[$index]
         if ($WhatIf) {
             $entry.Status = 'whatif-not-run'
             continue

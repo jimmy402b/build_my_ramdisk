@@ -136,6 +136,18 @@ try {
     Require-M3Test ($firstCleanup[0].Status -eq 'succeeded') 'cleanup did not succeed'
     Require-M3Test ($secondCleanup[0].Status -eq 'succeeded') 'cleanup repeat changed status'
 
+    $script:cleanupOrder = [Collections.ArrayList]::new()
+    $orderedLedger = New-M3CleanupLedger
+    Add-M3CleanupEntry -Ledger $orderedLedger -Kind 'provider' `
+        -Description 'stop provider after dependents' -RecoveryCommand 'stop provider' `
+        -Action { [void]$script:cleanupOrder.Add('provider') }
+    Add-M3CleanupEntry -Ledger $orderedLedger -Kind 'mount' `
+        -Description 'remove dependent mount first' -RecoveryCommand 'remove mount' `
+        -Action { [void]$script:cleanupOrder.Add('mount') }
+    $null = Invoke-M3CleanupLedger $orderedLedger
+    Require-M3Test (($script:cleanupOrder -join '|') -eq 'mount|provider') `
+        'cleanup ledger did not execute dependent resources in reverse registration order'
+
     $harness = Join-Path $PSScriptRoot 'run-m3-persistence.ps1'
     $harnessOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $harness `
         -Tier Preflight -Configuration Release -EvidenceDirectory $evidence `
