@@ -164,6 +164,6 @@ Require zero failures. Preserve the two pre-existing line-ending-only files unst
 
 Require both to exit `0`.
 
-- [ ] **Step 5: Commit in reviewable units.**
+- [x] **Step 5: Commit in reviewable units.**
 
 Commit verifier tests/verifier, runner tests/runner/routing, and documentation separately. Never stage `src/persistence/file_io.h` or `tests/support/test_main.cpp`.
