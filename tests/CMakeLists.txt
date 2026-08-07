@@ -1432,6 +1432,35 @@ set_tests_properties(integration.m3.cli_local_e2e PROPERTIES
     LABELS "m3-v5"
     TIMEOUT 60)
 
+# ---- M3 simulated crash evidence route (Task 42, limited scope) ----------
+add_test(
+    NAME unit.m3.crash_verifier
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-crash-verifier.ps1")
+set_tests_properties(unit.m3.crash_verifier PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 60)
+
+add_test(
+    NAME integration.m3.crash_simulated_evidence
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-crash-simulated.ps1"
+        -Configuration "$<CONFIG>"
+        -CrashModelExecutable "$<TARGET_FILE:myrd_m3_checkpoint_crash_model_tests>")
+set_tests_properties(integration.m3.crash_simulated_evidence PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 240)
+
+add_test(
+    NAME integration.m3.crash_routing
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-crash-routing.ps1"
+        -Configuration "$<CONFIG>"
+        -CrashModelExecutable "$<TARGET_FILE:myrd_m3_checkpoint_crash_model_tests>")
+set_tests_properties(integration.m3.crash_routing PROPERTIES
+    LABELS "m3-v2"
+    TIMEOUT 240)
+
 add_test(
     NAME integration.m2.orchestrator_whatif
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass

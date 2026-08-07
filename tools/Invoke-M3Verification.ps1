@@ -12,6 +12,8 @@ param(
     [string]$ScratchRoot = '',
     [string]$ExpectedDiskIdentityJson = '',
     [string]$ExpectedDriverService = 'phdskmnt',
+    [ValidateSet('Full', 'Simulated')][string]$CrashMode = 'Full',
+    [string]$CrashExecutable = '',
     [switch]$SafetyAcknowledged,
     [switch]$WhatIf,
     [switch]$ListCommands
@@ -30,7 +32,7 @@ if ($ListCommands) {
     Write-Output 'Local: Debug/Release CTest regression only'
     Write-Output 'Preflight: read-only host/artifact/scratch/disk safety probe'
     Write-Output 'RealFunctional: real AIM/NTFS/checkpoint/reopen/compact/native-VHDX acceptance; requires approved scratch identity'
-    Write-Output 'Crash: BLOCKED until Task 42 is complete'
+    Write-Output 'Crash: Full=BLOCKED until real-process crash Task 42 is complete; Simulated=file-clone/fresh-process oracle only'
     Write-Output 'Soak: BLOCKED until Task 43 is complete'
     exit 0
 }
@@ -43,6 +45,74 @@ if ($Tier -eq 'Local') {
     & $ctest.Source '--test-dir' $buildDirectory '-C' $Configuration '--output-on-failure'
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Output "M3 Local PASS: $Configuration CTest"
+    exit 0
+}
+
+if ($Tier -eq 'Crash') {
+    if ($CrashMode -eq 'Full') {
+        Write-Output ([ordered]@{
+            schema = 'myrd.m3.verification-route.v1'
+            tier = $Tier
+            crash_mode = $CrashMode
+            status = 'BLOCKED'
+            reason = 'Full crash acceptance requires real process termination, AIM/NTFS recovery, and controlled power-cut evidence'
+            required_skip = $true
+            task42_complete = $false
+            milestone_eligible = $false
+        } | ConvertTo-Json -Depth 5 -Compress)
+        exit 77
+    }
+
+    Require-M3Route (-not [string]::IsNullOrWhiteSpace($EvidenceBase)) `
+        'Crash Simulated requires EvidenceBase'
+    Require-M3Route (-not [string]::IsNullOrWhiteSpace($CrashExecutable)) `
+        'Crash Simulated requires CrashExecutable'
+    $evidenceBaseFull = [IO.Path]::GetFullPath($EvidenceBase)
+    Require-M3Route ([IO.Directory]::Exists($evidenceBaseFull)) `
+        'EvidenceBase must already exist'
+    $evidenceBaseItem = Get-Item -LiteralPath $evidenceBaseFull -Force
+    Require-M3Route (($evidenceBaseItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+        'EvidenceBase cannot be a reparse point'
+    $repoFull = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\'
+    Require-M3Route (-not $evidenceBaseFull.TrimEnd('\').StartsWith(
+            $repoFull, [StringComparison]::OrdinalIgnoreCase)) `
+        'EvidenceBase cannot be inside the repository'
+    $crashExecutableFull = [IO.Path]::GetFullPath($CrashExecutable)
+    Require-M3Route ([IO.File]::Exists($crashExecutableFull)) `
+        "CrashExecutable does not exist: $crashExecutableFull"
+    $run = Join-Path $evidenceBaseFull ('crash-simulated-' +
+        [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fffffff') + '-' +
+        [Guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($run) | Out-Null
+    $runner = Join-Path $repoRoot 'tests\e2e\Invoke-M3CrashMatrix.ps1'
+    $matrix = Join-Path $repoRoot 'tests\fixtures\m3\crash-matrix.json'
+    $registry = Join-Path $repoRoot 'tests\fixtures\m3\fault-phase-registry.json'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner `
+        -Phase Run -Configuration $Configuration -EvidenceDirectory $run `
+        -CrashModelExecutable $crashExecutableFull -MatrixPath $matrix `
+        -RegistryPath $registry
+    $childExit = $LASTEXITCODE
+    if ($childExit -ne 0) { exit $childExit }
+
+    $sourceCommit = ((& git.exe -C $repoRoot rev-parse HEAD 2>$null) -join '').Trim()
+    Require-M3Route ($sourceCommit -match '^[0-9A-Fa-f]{40}$') `
+        'source commit is unavailable for Crash Simulated evidence'
+    $verifier = Join-Path $repoRoot 'tools\Verify-M3CrashJson.ps1'
+    $matrixHash = (Get-FileHash -LiteralPath $matrix -Algorithm SHA256).Hash
+    $registryHash = (Get-FileHash -LiteralPath $registry -Algorithm SHA256).Hash
+    $crashHash = (Get-FileHash -LiteralPath $crashExecutableFull -Algorithm SHA256).Hash
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
+        -Path (Join-Path $run 'm3-crash-report.json') `
+        -ExpectedSourceCommit $sourceCommit `
+        -ExpectedExecutableSha256 $crashHash `
+        -ExpectedMatrixSha256 $matrixHash `
+        -ExpectedRegistrySha256 $registryHash `
+        -StdoutPath (Join-Path $run 'm3-crash-model.stdout.txt') `
+        -StderrPath (Join-Path $run 'm3-crash-model.stderr.txt')
+    $verifierExit = $LASTEXITCODE
+    if ($verifierExit -ne 0) { exit $verifierExit }
+    Write-Output "M3 Crash Simulated PASS: $(Join-Path $run 'm3-crash-report.json')"
+    Write-Output 'Task42 remains incomplete: no real process-kill, AIM/NTFS, or power-cut evidence'
     exit 0
 }
 
