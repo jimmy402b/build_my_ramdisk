@@ -205,17 +205,17 @@ core/write/read/ranges/snapshot、对应 TestAccess、stats/report 和本任务�
 只允许修改 `docs/validation/m3-persistence-acceptance.md`、`M3_TASKLIST.md`；
 发现代码缺陷时另开修复卡，不得在 verdict 卡夹带产品改动。
 
-- [ ] `T09.1 [M]` 从 clean worktree 完整 configure/build Debug/Release，运行完整
+- [x] `T09.1 [M]` 从 clean worktree 完整 configure/build Debug/Release，运行完整
   CTest；记录测试数量、exit code、commit、binary hashes，不引用旧日志。
-- [ ] `T09.2 [M]` 运行 `m3-v3` 两次、`m2-v1..v5`、Task08 100 个新 seed 和
+- [x] `T09.2 [M]` 运行 `m3-v3` 两次、`m2-v1..v5`、Task08 100 个新 seed 和
   bounded concurrency soak；保存原始结果。
-- [ ] `T09.3 [H]` 逐文件生成 M2.1 diff inventory，确认 `src/storage` 无 persistence
+- [x] `T09.3 [H]` 逐文件生成 M2.1 diff inventory，确认 `src/storage` 无 persistence
   format/Win32 file/AIM/proxy 依赖；列出 public API/错误/stats 变化。
-- [ ] `T09.4 [X]` 按 SPEC §7、PLAN §1.1–1.3 逐条签署线性化、COW budget、
+- [x] `T09.4 [X]` 按 SPEC §7、PLAN §1.1–1.3 逐条签署线性化、COW budget、
   no-resurrection、install-before-ack、close/resource 结论。任一项无证据即 NO-GO。
-- [ ] `T09.5 [M]` 把结论和证据写入验收文档；只能写 `M2.1 PASS/NO-GO/
+- [x] `T09.5 [M]` 把结论和证据写入验收文档；只能写 `M2.1 PASS/NO-GO/
   BLOCKED`，不得写 M3 GO。
-- [ ] `T09.6 [X]` 独立验收人复核原始日志与 diff；GO 后 Task09 `DONE`，否则
+- [x] `T09.6 [X]` 独立验收人复核原始日志与 diff；GO 后 Task09 `DONE`，否则
   回到具体 defect 卡。
 
 ## 4. 阶段二：冻结格式与稳定类型（Task 13–16）
