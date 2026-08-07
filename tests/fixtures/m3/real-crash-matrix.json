@@ -1,0 +1,66 @@
+{
+  "schema": "myrd.m3.real-crash-matrix.v1",
+  "description": "Required real AIM/NTFS interruption scenarios. Process-kill scenarios are isolated by a guest reboot because phdskmnt retains an orphan device after provider termination.",
+  "scenarios": [
+    {
+      "id": "pk-journal-flush-before",
+      "phase": "journal.flush.before",
+      "interruption": "process-kill",
+      "allowed_recovery": "old"
+    },
+    {
+      "id": "pk-journal-flush-after",
+      "phase": "journal.flush.after",
+      "interruption": "process-kill",
+      "allowed_recovery": "old"
+    },
+    {
+      "id": "pk-manifest-slot-before",
+      "phase": "manifest.slot_write.before",
+      "interruption": "process-kill",
+      "allowed_recovery": "old"
+    },
+    {
+      "id": "pk-manifest-slot-after",
+      "phase": "manifest.slot_write.after",
+      "interruption": "process-kill",
+      "allowed_recovery": "old_or_new"
+    },
+    {
+      "id": "pk-manifest-flush-after",
+      "phase": "manifest.flush.after",
+      "interruption": "process-kill",
+      "allowed_recovery": "new"
+    },
+    {
+      "id": "pk-manifest-readback-after",
+      "phase": "manifest.readback.after",
+      "interruption": "process-kill",
+      "allowed_recovery": "new"
+    },
+    {
+      "id": "pk-reconcile-before-view",
+      "phase": "reconcile.before_recover_view",
+      "interruption": "process-kill",
+      "allowed_recovery": "new"
+    },
+    {
+      "id": "pk-reconcile-before-success",
+      "phase": "reconcile.before_report_success",
+      "interruption": "process-kill",
+      "allowed_recovery": "new"
+    },
+    {
+      "id": "pc-checkpoint-prepare-before",
+      "phase": "checkpoint.prepare.before",
+      "interruption": "controlled-power-cut",
+      "allowed_recovery": "old"
+    },
+    {
+      "id": "pc-manifest-flush-after",
+      "phase": "manifest.flush.after",
+      "interruption": "controlled-power-cut",
+      "allowed_recovery": "new"
+    }
+  ]
+}

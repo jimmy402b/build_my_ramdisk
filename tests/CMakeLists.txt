@@ -1437,6 +1437,14 @@ set_tests_properties(unit.m3.ntfs_verifier PROPERTIES
     TIMEOUT 60)
 
 add_test(
+    NAME unit.m3.volume_device_path
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-volume-device-path.ps1")
+set_tests_properties(unit.m3.volume_device_path PROPERTIES
+    LABELS "m3-v6"
+    TIMEOUT 60)
+
+add_test(
     NAME integration.m3.cli_local_e2e
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-cli-local-e2e.ps1"
@@ -1473,6 +1481,22 @@ add_test(
 set_tests_properties(integration.m3.crash_routing PROPERTIES
     LABELS "m3-v2"
     TIMEOUT 240)
+
+add_test(
+    NAME unit.m3.real_crash_contract
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-real-crash-contract.ps1")
+set_tests_properties(unit.m3.real_crash_contract PROPERTIES
+    LABELS "m3-v2;m3-v6"
+    TIMEOUT 60)
+
+add_test(
+    NAME unit.m3.real_crash_aggregate
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m3-real-crash-aggregate.ps1")
+set_tests_properties(unit.m3.real_crash_aggregate PROPERTIES
+    LABELS "m3-v2;m3-v6"
+    TIMEOUT 60)
 
 add_test(
     NAME integration.m2.orchestrator_whatif

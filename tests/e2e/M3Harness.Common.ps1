@@ -16,6 +16,20 @@ function Get-M3FullPath {
     catch { throw "path is invalid: $Path" }
 }
 
+function Resolve-M3VolumeDevicePath {
+    param([Parameter(Mandatory = $true)][string]$FilePath)
+    $full = Get-M3FullPath $FilePath
+    Assert-M3Condition ([IO.File]::Exists($full) -or [IO.Directory]::Exists($full)) `
+        "volume lookup path does not exist: $full"
+    $volumes = @(Get-Volume -FilePath $full -ErrorAction Stop)
+    Assert-M3Condition ($volumes.Count -eq 1) `
+        "file path did not resolve to exactly one volume: $full"
+    $device = ([string]$volumes[0].UniqueId).TrimEnd('\')
+    Assert-M3Condition ($device -match '^\\\\\?\\Volume\{[0-9A-Fa-f-]+\}$') `
+        "volume has no stable GUID device path: $full"
+    return $device
+}
+
 function Get-M3ExistingAncestor {
     param([Parameter(Mandatory = $true)][string]$Path)
     $current = Get-M3FullPath $Path

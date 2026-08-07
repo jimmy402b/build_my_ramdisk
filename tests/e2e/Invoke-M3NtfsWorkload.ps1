@@ -421,8 +421,10 @@ function Write-M3DeterministicFile {
 
 function Flush-M3Volume {
     param([Parameter(Mandatory = $true)][string]$MountPath)
-    $root = [IO.Path]::GetPathRoot((Get-M3FullPath $MountPath))
-    $drive = $root.Substring(0, 1)
+    # A directory volume mount such as E:\scratch\mount belongs to the AIM
+    # volume below that reparse point, not to E:. Resolve the mounted file path
+    # to its stable Volume GUID and flush that exact volume handle.
+    $volumeDevice = Resolve-M3VolumeDevicePath -FilePath $MountPath
     if (-not ('MyrdM3NativeVolume' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
@@ -442,7 +444,7 @@ public static class MyrdM3NativeVolume {
 }
 '@ -ErrorAction Stop
     }
-    [MyrdM3NativeVolume]::Flush("\\.\$drive`:")
+    [MyrdM3NativeVolume]::Flush($volumeDevice)
 }
 
 function Wait-M3WriteQuiescence {
