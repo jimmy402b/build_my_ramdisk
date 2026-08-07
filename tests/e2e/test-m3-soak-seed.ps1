@@ -79,13 +79,20 @@ Require-SeedContract ($quickAgain.Summary.operation_count -eq `
 Require-SeedContract ($quickAgain.Summary.expected_sha256 -eq `
     $quick.Summary.expected_sha256) 'same seed changed model hash'
 
-$formal = Invoke-Seed 'Formal' '43'
+$formal = Invoke-Seed 'Formal' '3221344269'
 Require-SeedContract ($formal.ExitCode -eq 0) 'Formal seed process failed'
 Require-SeedContract ($formal.Summary.profile -eq 'Formal') `
     'Formal profile was ignored'
 Require-SeedContract ([uint64]$formal.Summary.operation_count -gt `
     [uint64]$quick.Summary.operation_count) `
     'Formal workload is not larger than Quick'
+Require-SeedContract ([uint64]$formal.Summary.checkpoint.payload_bytes -eq `
+    2686976) 'Formal seed did not stream its assigned 41-block payload'
+Require-SeedContract ([uint64]$formal.Summary.checkpoint.journal_growth_bytes -gt `
+    [uint64]$formal.Summary.checkpoint.payload_bytes) `
+    'Formal seed did not write real journal framing/index/commit bytes'
+Require-SeedContract ([uint64]$formal.Summary.checkpoint.journal_growth_bytes -le `
+    3224371) 'Formal seed journal growth exceeded 120 percent'
 
 $invalid = Invoke-Seed 'Invalid' '42'
 Require-SeedContract ($invalid.ExitCode -ne 0) 'invalid profile was accepted'

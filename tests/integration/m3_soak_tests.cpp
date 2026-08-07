@@ -1,4 +1,7 @@
 #include "src/common/sha256.h"
+#include "src/persistence/file_io.h"
+#include "src/persistence/journal_format.h"
+#include "src/persistence/journal_writer.h"
 #include "src/storage/dynamic_block_store.h"
 
 #include <algorithm>
@@ -8,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -42,6 +46,10 @@ constexpr std::uint64_t kMiB = 1024ULL * 1024ULL;
 constexpr std::uint64_t kLogicalBytes = 100ULL * kGiB;
 constexpr std::size_t kWriteBytes = 4096;
 constexpr std::size_t kHotBlockCount = 16;
+constexpr std::uint64_t kFormalSeedBase = 3221344269ULL;
+constexpr std::uint64_t kFormalSeedStride = 104729ULL;
+constexpr std::uint64_t kFormalSeedCount = 100;
+constexpr std::uint64_t kFormalPayloadBlocks = 4096;
 
 class DeterministicRandom final {
 public:
@@ -87,6 +95,183 @@ std::vector<std::uint64_t> hot_blocks(
 myrd::OperationContext bounded_context() {
     return myrd::OperationContext{
         {}, std::chrono::steady_clock::now() + std::chrono::minutes(10)};
+}
+
+void require_result(const myrd::Result<void>& result, const char* operation);
+
+struct JournalMeasurement final {
+    std::uint64_t payload_bytes{};
+    std::uint64_t growth_bytes{};
+    bool cleanup_succeeded{};
+};
+
+class JournalSandbox final {
+public:
+    explicit JournalSandbox(const std::uint64_t seed) {
+        const auto nonce = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        root_ = std::filesystem::temp_directory_path() /
+            (L"myrd-m3-soak-journal-" + std::to_wstring(seed) + L"-" +
+             std::to_wstring(nonce));
+        if (!std::filesystem::create_directory(root_)) {
+            throw std::runtime_error("journal sandbox creation failed");
+        }
+    }
+
+    ~JournalSandbox() noexcept {
+        if (!cleaned_) {
+            std::error_code ignored;
+            std::filesystem::remove_all(root_, ignored);
+        }
+    }
+
+    const std::filesystem::path& root() const noexcept { return root_; }
+
+    bool cleanup() noexcept {
+        std::error_code error;
+        std::filesystem::remove_all(root_, error);
+        cleaned_ = !error && !std::filesystem::exists(root_, error);
+        return cleaned_ && !error;
+    }
+
+private:
+    std::filesystem::path root_;
+    bool cleaned_{};
+};
+
+myrd::persistence::JournalHeader make_journal_header(
+    const std::uint64_t seed) {
+    using namespace myrd::persistence;
+    JournalHeader header{};
+    for (std::size_t index = 0; index < 16; ++index) {
+        header.image_uuid.bytes[index] = static_cast<std::byte>(
+            ((seed >> ((index % 8U) * 8U)) + index + 1U) & 0xffU);
+        header.journal_identity.journal_uuid[index] =
+            static_cast<std::byte>(0x80U + index);
+    }
+    header.epoch = 1;
+    header.geometry = {kLogicalBytes, 512, 4096};
+    header.base_checkpoint_generation = 0;
+    header.predecessor_kind = JournalPredecessorKind::Genesis;
+    const auto geometry_digest = compute_geometry_digest(header.geometry);
+    if (!geometry_digest.ok()) {
+        throw std::runtime_error("journal geometry digest failed");
+    }
+    header.geometry_digest = geometry_digest.value();
+    VhdxFileIdentity base{};
+    base.file_write_guid[0] = std::byte{0x31};
+    base.data_write_guid[0] = std::byte{0x41};
+    const auto base_digest = compute_base_identity_digest(base);
+    if (!base_digest.ok()) {
+        throw std::runtime_error("journal base digest failed");
+    }
+    header.base_identity_digest = base_digest.value();
+    const auto predecessor = compute_genesis_digest(
+        header.image_uuid, header.geometry_digest,
+        header.base_identity_digest);
+    if (!predecessor.ok()) {
+        throw std::runtime_error("journal predecessor digest failed");
+    }
+    header.predecessor_digest = predecessor.value();
+    header.feature_flags = 1;
+    return header;
+}
+
+std::uint64_t formal_payload_block_count(const std::uint64_t seed) {
+    if (seed < kFormalSeedBase ||
+        (seed - kFormalSeedBase) % kFormalSeedStride != 0) {
+        throw std::runtime_error("Formal seed is outside the frozen set");
+    }
+    const auto index = (seed - kFormalSeedBase) / kFormalSeedStride;
+    if (index >= kFormalSeedCount) {
+        throw std::runtime_error("Formal seed index is out of range");
+    }
+    // 96 * 41 + 4 * 40 = 4096 blocks = exactly 256 MiB.
+    return index < 96 ? 41 : 40;
+}
+
+JournalMeasurement write_formal_journal(const std::uint64_t seed) {
+    using namespace myrd::persistence;
+    const auto block_count = formal_payload_block_count(seed);
+    JournalSandbox sandbox(seed);
+    const auto journal_path = sandbox.root() / L"checkpoint.rdj";
+    auto opened = open_windows_persistence_file(
+        journal_path, FileOpenMode::CreateNewReadWrite);
+    if (!opened.ok()) {
+        throw std::runtime_error("native journal create failed");
+    }
+    auto file = std::shared_ptr<IPersistenceFile>(opened.move_value());
+    const auto header = make_journal_header(seed);
+    const auto header_bytes = encode_journal_header(header);
+    if (!header_bytes.ok()) {
+        throw std::runtime_error("journal header encoding failed");
+    }
+    require_result(file->write_exact(
+        bounded_context(), 0, header_bytes.value()),
+        "journal header write failed");
+
+    JournalCheckpointRequest request{};
+    request.file = file;
+    request.file_identity.volume_serial_number = 1;
+    request.file_identity.file_id[0] = std::byte{0x51};
+    request.file_identity.attributes = 1;
+    request.file_identity.hard_link_count = 1;
+    request.header = header;
+    request.previous_generation = 0;
+    request.previous_digest = header.predecessor_digest;
+    request.committed_length = kJournalAlignment;
+    request.operation_id = seed + 1;
+
+    JournalWriterOptions writer_options{};
+    writer_options.index_builder = {
+        {64 * kIndexNodeBytes, 64}, 4096,
+        4096 * static_cast<std::uint64_t>(kIndexNodeBytes)};
+    writer_options.max_checkpoint_records = 512;
+    writer_options.max_checkpoint_bytes = 4ULL * kMiB;
+    auto writer = JournalWriter::create(writer_options);
+    if (!writer.ok()) {
+        throw std::runtime_error("journal writer creation failed");
+    }
+
+    const auto prepared = writer.value()->prepare_streaming(
+        bounded_context(), request,
+        [seed, block_count](
+            const myrd::OperationContext&,
+            const JournalCheckpointBatchConsumer& consume)
+            -> myrd::Result<void> {
+            for (std::uint64_t block = 0; block < block_count; ++block) {
+                const auto payload = pattern(
+                    seed, block, static_cast<std::size_t>(kM2BlockSize));
+                const JournalCheckpointBlockInput input{
+                    JournalRecordType::Data, block, block + 1, 0, 1,
+                    payload};
+                const auto consumed = consume({&input, 1});
+                if (!consumed.ok()) return consumed;
+            }
+            return myrd::Result<void>::success();
+        });
+    if (!prepared.ok()) {
+        throw std::runtime_error("journal checkpoint prepare failed");
+    }
+    if (prepared.value().data_count != block_count ||
+        prepared.value().zero_count != 0 ||
+        prepared.value().discard_count != 0 ||
+        prepared.value().generation != 1) {
+        throw std::runtime_error("journal checkpoint counters are invalid");
+    }
+    const auto payload_bytes = block_count * kM2BlockSize;
+    const auto growth_bytes = prepared.value().committed_length -
+        kJournalAlignment;
+    if (growth_bytes <= payload_bytes ||
+        growth_bytes > payload_bytes * 120ULL / 100ULL) {
+        throw std::runtime_error("journal write amplification gate failed");
+    }
+    require_result(file->close(), "journal close failed");
+    file.reset();
+    writer.value().reset();
+    const bool cleaned = sandbox.cleanup();
+    if (!cleaned) throw std::runtime_error("journal sandbox cleanup failed");
+    return {payload_bytes, growth_bytes, cleaned};
 }
 
 void require_result(const myrd::Result<void>& result, const char* operation) {
@@ -230,14 +415,18 @@ SoakSeedReport run_soak_seed(
     const auto extra_committed = final_stats.committed_bytes >=
             initial_stats.committed_bytes
         ? final_stats.committed_bytes - initial_stats.committed_bytes : 0;
+    const auto journal = profile == "Formal"
+        ? write_formal_journal(seed)
+        : JournalMeasurement{checkpoint_payload_bytes, 0, true};
     store->close();
     if (!store->is_closed()) throw std::runtime_error("store did not close");
 
     return SoakSeedReport{
         seed, std::string(profile), operation_limit, expected_hash.value(),
         actual_hash.value(), true, false, initial_stats.committed_bytes,
-        extra_committed, checkpoint_payload_bytes, 0, mutation_pause_max_ms,
-        0, snapshot_records, true};
+        extra_committed, journal.payload_bytes, journal.growth_bytes,
+        mutation_pause_max_ms, 0, snapshot_records,
+        journal.cleanup_succeeded};
 }
 
 void require(bool condition, const char* message) {
