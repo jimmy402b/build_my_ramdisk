@@ -283,9 +283,20 @@ function Add-M3RealMount {
     Assert-M3RealCrash ([IO.Directory]::GetFileSystemEntries(
             $script:RealMountPath).Count -eq 0) 'mount directory is not empty'
     $disk = Get-Disk -Number $DiskNumber -ErrorAction Stop
-    foreach ($name in @('IsBoot', 'IsSystem', 'IsPageFile', 'IsClustered')) {
-        Assert-M3RealCrash (-not [bool]$disk.$name) `
+    foreach ($name in @('IsBoot', 'IsSystem')) {
+        Assert-M3RealCrash ($null -ne $disk.PSObject.Properties[$name] -and
+            -not [bool]$disk.PSObject.Properties[$name].Value) `
             "refusing unsafe runtime disk: $name"
+    }
+    # Storage Provider fields differ across Win11 builds. Optional safety
+    # fields still fail closed when present, but absence is not a property
+    # lookup exception after boot/system identity has already been proven.
+    foreach ($name in @('IsPageFile', 'IsClustered')) {
+        $property = $disk.PSObject.Properties[$name]
+        if ($null -ne $property) {
+            Assert-M3RealCrash (-not [bool]$property.Value) `
+                "refusing unsafe runtime disk: $name"
+        }
     }
     Assert-M3RealCrash ([uint64]$disk.Size -eq $VirtualBytes) `
         'runtime disk geometry is incorrect'
