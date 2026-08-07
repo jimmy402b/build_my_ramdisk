@@ -811,9 +811,9 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
 
 允许：crash harness/scenarios/evidence schema；power-loss 只有真实受控断电才可这样标注。
 
-- [ ] `T42.1 [M]` 从 Task33 phase inventory 生成 stable scenario manifests；每场景
+- [x] `T42.1 [M]` 从 Task33 phase inventory 生成 stable scenario manifests；每场景
   固定 expected old/new generation、disposition、slot diagnostics。
-- [ ] `T42.2 [H]` simulated crash：clone bytes、named phase kill、fresh recovery process；
+- [x] `T42.2 [H]` simulated crash：clone bytes、named phase kill、fresh recovery process；
   丢弃所有内存/cache，不重用 handles。
 - [ ] `T42.3 [X]` real process termination 覆盖 journal flush 前/后、manifest attempt/
   proof 后、reconcile 前/后；未受控断电只能标 `simulated-process-kill`。
@@ -886,3 +886,10 @@ No out-of-scope files changed: yes/no
 ## Local execution record
 
 - [x] T38.7: Debug/Release local CLI E2E runs execute `create -> inspect -> verify --full -> recover-test` and confirm temporary-directory cleanup. This does not replace real AIM/NTFS acceptance.
+
+- [x] T42.1/T42.2 simulated subset: `unit.m3.crash_verifier` and
+  `integration.m3.crash_simulated_evidence` pass in Debug/Release; the
+  simulated `CrashMode` route also passes its default BLOCKED and explicit
+  simulated cases. Evidence is limited to the frozen file-clone/fresh-process
+  oracle; T42.3-T42.7, real AIM/NTFS, real process-kill, and controlled
+  power-cut acceptance remain open.

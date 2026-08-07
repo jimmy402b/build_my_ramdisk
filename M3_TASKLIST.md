@@ -1012,6 +1012,18 @@ Known limitations:
 Final verdict and signer:
 ```
 
+## Task 42 local simulated subset record (2026-08-07)
+
+- [x] Frozen crash matrix/phase registry validation: 32 scenarios, 59 phases,
+  with 54 kill, 10 short-write, and 1 torn-write phases.
+- [x] Independent simulated evidence verifier and fresh-process runner pass in
+  Debug and Release with at least 10,000 deterministic schedules and `6/6
+  passed`.
+- [x] CTest registrations and `CrashMode Simulated` route pass; default `Crash`
+  remains BLOCKED/77.
+- [ ] Real process termination, AIM/NTFS recovery, controlled power-cut, and
+  final Task42 reviewer gate remain open. This record does not make M3 GO.
+
 ---
 
 ## G. 推荐执行顺序

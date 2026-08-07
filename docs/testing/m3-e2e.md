@@ -19,10 +19,38 @@ identity.
   both M3 executables, and `-SafetyAcknowledged`. Missing or unsafe
   prerequisites return `BLOCKED` (77); a destructive functional error returns
   `FAIL` (1).
-- `Crash`: currently `BLOCKED` with exit code 77 until Task 42.
+- `Crash`: defaults to `BLOCKED` with exit code 77. Explicit
+  `-CrashMode Simulated` runs the independent file-clone/fresh-process oracle
+  only; it does not satisfy the real-process Task 42 gate.
 - `Soak`: currently `BLOCKED` with exit code 77 until Task 43.
 
 Required `SKIP` or an unavailable later tier is never converted into PASS.
+
+## Simulated crash evidence
+
+The simulated route is the currently executable part of Task 42. It validates
+the frozen 32-scenario crash matrix and 59-phase registry, starts the existing
+checkpoint crash-model executable as one fresh child process, requests at
+least 10,000 deterministic schedules, preserves stdout/stderr, and runs an
+independent JSON verifier against the source, executable, fixture, and raw-log
+SHA-256 values.
+
+Example:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  tools/Invoke-M3Verification.ps1 `
+  -Tier Crash -CrashMode Simulated -Configuration Release `
+  -EvidenceBase C:\myrd-evidence `
+  -CrashExecutable .\out\build\msvc\tests\Release\myrd_m3_checkpoint_crash_model_tests.exe
+```
+
+The resulting report must say `status=PASS`, `scope=simulated`,
+`task42_complete=false`, and `milestone_eligible=false`. The report is useful
+for the deterministic persistence oracle, but it makes no claim about real
+process termination, real AIM/NTFS recovery, or controlled power loss. The
+full `Crash` route remains blocked until those evidence classes are implemented
+and reviewed.
 
 ## Preflight example
 
