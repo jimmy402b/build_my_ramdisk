@@ -67,21 +67,72 @@ try {
     $stdoutHash = (Get-FileHash -LiteralPath $stdoutPath -Algorithm SHA256).Hash
     $stderrHash = (Get-FileHash -LiteralPath $stderrPath -Algorithm SHA256).Hash
     $dataHash = 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+    $serverHash = '1111111111111111111111111111111111111111111111111111111111111111'
+    $imageHash = '2222222222222222222222222222222222222222222222222222222222222222'
     $realFunctionalPath = Join-Path $tempRoot 'm3-ntfs-report.json'
     $crashAggregatePath = Join-Path $tempRoot 'm3-real-crash-aggregate.json'
     [ordered]@{
         schema = 'myrd.m3.ntfs-workload.v1'; status = 'PASS'
-        terminal_verdict = 'PASS'; source_commit = $source
-    } | ConvertTo-Json | Set-Content -LiteralPath $realFunctionalPath -Encoding utf8
+        terminal_verdict = 'PASS'; source_commit = $source; phase = 'All'
+        what_if = $false; server_started = $true
+        destructive_operations_emitted = $true
+        executable_sha256 = [ordered]@{ server = $serverHash; image = $imageHash }
+        cleanup = [ordered]@{ succeeded = $true; residuals = @() }
+        workload = [ordered]@{
+            first_checkpoint_generation = 1
+            second_checkpoint_generation = 2
+            compact_generation = 3
+            server_reopen_verified = $true
+            workload = [ordered]@{
+                files = @([ordered]@{ path = 'a.bin'; bytes = 1; sha256 = $dataHash })
+                sparse = [ordered]@{ sha256 = $dataHash }
+            }
+            lazy_evidence = [ordered]@{
+                bounded_sample = $true; full_corpus_verified = $true
+                startup_status = [ordered]@{ storage = [ordered]@{
+                    backing_reads_total = 0; uncached_reads_total = 0 } }
+                sample_status = [ordered]@{ storage = [ordered]@{
+                    backing_reads_total = 1; uncached_reads_total = 0 } }
+            }
+            native_vhdx = [ordered]@{ filesystem = 'NTFS'; disk_number = 1 }
+        }
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $realFunctionalPath -Encoding utf8
+    $crashScenarios = @()
+    for ($index = 0; $index -lt 10; ++$index) {
+        $crashScenarios += [ordered]@{
+            scenario_id = "scenario-$index"
+            phase = "phase-$index"
+            interruption = if ($index -lt 2) { 'controlled-power-cut' } else { 'process-kill' }
+            allowed_recovery = if (($index % 2) -eq 0) { 'old' } else { 'new' }
+            recovered_classification = if (($index % 2) -eq 0) { 'old' } else { 'new' }
+            selected_generation = if (($index % 2) -eq 0) { 3 } else { 4 }
+            selected_slot = if (($index % 2) -eq 0) { 1 } else { 0 }
+            fallback = $false
+            slot_diagnostics = @(
+                [ordered]@{ slot_index = 0; status = 'passed'; generation = 4; selected = (($index % 2) -ne 0) },
+                [ordered]@{ slot_index = 1; status = 'passed'; generation = 3; selected = (($index % 2) -eq 0) })
+            report_sha256 = $dataHash
+        }
+    }
     [ordered]@{
         schema = 'myrd.m3.real-crash-aggregate.v1'; status = 'PASS'
         terminal_verdict = 'PASS'; task42_complete = $true
         milestone_eligible = $true; source_commit = $source
+        server_sha256 = $serverHash; image_sha256 = $imageHash
+        matrix_sha256 = $dataHash; simulated_evidence_sha256 = $dataHash
+        simulated_schedule_count = 10000; real_scenario_count = 10
+        process_kill_count = 8; controlled_power_cut_count = 2
+        scenarios = $crashScenarios
         guarantees = [ordered]@{
             latest_complete_confirmed_checkpoint = $true
             mixed_generation_rejected = $true
+            manifest_slot_diagnostics_verified = $true
+            post_checkpoint_uncommitted_changes_may_be_lost = $true
+            read_only_recovery_first = $true
+            ntfs_reformat_forbidden = $true
+            per_scenario_guest_reboot_isolation = $true
         }
-    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $crashAggregatePath -Encoding utf8
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $crashAggregatePath -Encoding utf8
     $realFunctionalHash = (Get-FileHash -LiteralPath $realFunctionalPath -Algorithm SHA256).Hash
     $crashAggregateHash = (Get-FileHash -LiteralPath $crashAggregatePath -Algorithm SHA256).Hash
     $report = [ordered]@{
@@ -202,8 +253,15 @@ try {
     }
 
     $dependencyMutations = @(
+        @{ Name = 'Task41 full-contract field'; Target = 'Task41'; Apply = { param($r) $r.PSObject.Properties.Remove('phase') } },
+        @{ Name = 'Task41 WhatIf'; Target = 'Task41'; Apply = { param($r) $r.what_if = $true } },
+        @{ Name = 'Task41 cleanup'; Target = 'Task41'; Apply = { param($r) $r.cleanup.succeeded = $false } },
+        @{ Name = 'Task41 lazy corpus'; Target = 'Task41'; Apply = { param($r) $r.workload.lazy_evidence.full_corpus_verified = $false } },
         @{ Name = 'Task41 report source'; Target = 'Task41'; Apply = { param($r) $r.source_commit = ('c' * 40) } },
         @{ Name = 'Task41 report verdict'; Target = 'Task41'; Apply = { param($r) $r.terminal_verdict = 'FAIL' } },
+        @{ Name = 'Task42 real scenario count'; Target = 'Task42'; Apply = { param($r) $r.real_scenario_count = 9 } },
+        @{ Name = 'Task42 binary cross-binding'; Target = 'Task42'; Apply = { param($r) $r.server_sha256 = ('c' * 64) } },
+        @{ Name = 'Task42 manifest diagnostics'; Target = 'Task42'; Apply = { param($r) $r.guarantees.manifest_slot_diagnostics_verified = $false } },
         @{ Name = 'Task42 report source'; Target = 'Task42'; Apply = { param($r) $r.source_commit = ('c' * 40) } },
         @{ Name = 'Task42 report verdict'; Target = 'Task42'; Apply = { param($r) $r.terminal_verdict = 'FAIL' } },
         @{ Name = 'Task42 report completion'; Target = 'Task42'; Apply = { param($r) $r.task42_complete = $false } },
@@ -212,8 +270,15 @@ try {
     )
     $originalTask41 = Get-Content -Raw -LiteralPath $realFunctionalPath | ConvertFrom-Json
     $originalTask42 = Get-Content -Raw -LiteralPath $crashAggregatePath | ConvertFrom-Json
+    Write-TestJson $originalTask41 $realFunctionalPath
+    Write-TestJson $originalTask42 $crashAggregatePath
+    $canonicalReport = Copy-JsonObject $report
+    $canonicalReport.dependencies.real_functional.sha256 = `
+        (Get-FileHash -LiteralPath $realFunctionalPath -Algorithm SHA256).Hash
+    $canonicalReport.dependencies.crash_full.sha256 = `
+        (Get-FileHash -LiteralPath $crashAggregatePath -Algorithm SHA256).Hash
     foreach ($mutation in $dependencyMutations) {
-        $candidate = Copy-JsonObject $report
+        $candidate = Copy-JsonObject $canonicalReport
         if ($mutation.Target -eq 'Task41') {
             $dependency = Copy-JsonObject $originalTask41
             & $mutation.Apply $dependency

@@ -268,6 +268,28 @@ if ($Tier -eq 'Soak') {
                 $real.terminal_verdict -eq 'PASS' -and
                 [string]$real.source_commit -ieq $sourceCommit) `
                 'Task41 dependency is not a PASS from the current commit'
+            Require-M3Route ($null -ne $real.executable_sha256 -and
+                [string]$real.executable_sha256.server -match
+                    '^[0-9A-Fa-f]{64}$' -and
+                [string]$real.executable_sha256.image -match
+                    '^[0-9A-Fa-f]{64}$') `
+                'Task41 dependency lacks executable hashes'
+            $ntfsVerifier = Join-Path $repoRoot 'tools\Verify-M3NtfsJson.ps1'
+            $oldPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                    -File $ntfsVerifier -Path $realPathFull `
+                    -ExpectedSourceCommit $sourceCommit `
+                    -ExpectedServerSha256 `
+                        ([string]$real.executable_sha256.server) `
+                    -ExpectedImageSha256 `
+                        ([string]$real.executable_sha256.image) 2>&1
+                $ntfsExit = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $oldPreference }
+            Require-M3Route ($ntfsExit -eq 0) `
+                'Task41 dependency failed independent NTFS verification'
             Require-M3Route ($crash.schema -eq
                 'myrd.m3.real-crash-aggregate.v1' -and
                 $crash.status -eq 'PASS' -and
@@ -278,6 +300,26 @@ if ($Tier -eq 'Soak') {
                 [bool]$crash.guarantees.latest_complete_confirmed_checkpoint -and
                 [bool]$crash.guarantees.mixed_generation_rejected) `
                 'Task42 dependency is not a complete current-commit PASS'
+            Require-M3Route (
+                [string]$crash.server_sha256 -match '^[0-9A-Fa-f]{64}$' -and
+                [string]$crash.image_sha256 -match '^[0-9A-Fa-f]{64}$' -and
+                [string]$crash.matrix_sha256 -match '^[0-9A-Fa-f]{64}$' -and
+                [string]$crash.simulated_evidence_sha256 -match
+                    '^[0-9A-Fa-f]{64}$' -and
+                [string]$crash.server_sha256 -ieq
+                    [string]$real.executable_sha256.server -and
+                [string]$crash.image_sha256 -ieq
+                    [string]$real.executable_sha256.image -and
+                [uint64]$crash.simulated_schedule_count -ge 10000 -and
+                [uint64]$crash.real_scenario_count -eq 10 -and
+                [uint64]$crash.process_kill_count -eq 8 -and
+                [uint64]$crash.controlled_power_cut_count -eq 2 -and
+                @($crash.scenarios).Count -eq 10 -and
+                [bool]$crash.guarantees.manifest_slot_diagnostics_verified -and
+                [bool]$crash.guarantees.read_only_recovery_first -and
+                [bool]$crash.guarantees.ntfs_reformat_forbidden -and
+                [bool]$crash.guarantees.per_scenario_guest_reboot_isolation) `
+                'Task42 dependency lacks the complete 10-scenario contract'
         }
         catch {
             Write-M3SoakRouteBlocked $_.Exception.Message

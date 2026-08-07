@@ -282,6 +282,33 @@ function Verify-M3SoakReport($SoakReport) {
             'Task41 report terminal verdict is not PASS'
         Require ([string]$realFunctional.Json.source_commit -ieq $ExpectedSourceCommit) `
             'Task41 report source commit mismatch'
+        foreach ($name in @('executable_sha256','cleanup','workload','phase',
+            'what_if','server_started','destructive_operations_emitted')) {
+            Require-Property $realFunctional.Json $name
+        }
+        foreach ($name in @('server','image')) {
+            Require-Property $realFunctional.Json.executable_sha256 $name
+            Require-Hash $realFunctional.Json.executable_sha256.$name `
+                "Task41 $name executable"
+        }
+        $ntfsVerifier = Join-Path $PSScriptRoot 'Verify-M3NtfsJson.ps1'
+        Require ([IO.File]::Exists($ntfsVerifier)) `
+            'Task41 independent verifier is missing'
+        $oldPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+                -File $ntfsVerifier -Path $realFunctional.Path `
+                -ExpectedSourceCommit $ExpectedSourceCommit `
+                -ExpectedServerSha256 `
+                    ([string]$realFunctional.Json.executable_sha256.server) `
+                -ExpectedImageSha256 `
+                    ([string]$realFunctional.Json.executable_sha256.image) 2>&1
+            $ntfsVerifierExit = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $oldPreference }
+        Require ($ntfsVerifierExit -eq 0) `
+            'Task41 report failed independent NTFS verification'
 
         $crashFull = Read-StrictJsonFile $CrashAggregateReportPath `
             'Task42 Crash Full report'
@@ -308,7 +335,112 @@ function Verify-M3SoakReport($SoakReport) {
         Require ([string]$crashFull.Json.source_commit -ieq $ExpectedSourceCommit) `
             'Task42 report source commit mismatch'
         foreach ($name in @(
-            'latest_complete_confirmed_checkpoint','mixed_generation_rejected')) {
+            'server_sha256','image_sha256','matrix_sha256',
+            'simulated_evidence_sha256','simulated_schedule_count',
+            'real_scenario_count','process_kill_count',
+            'controlled_power_cut_count','scenarios')) {
+            Require-Property $crashFull.Json $name
+        }
+        foreach ($name in @(
+            'server_sha256','image_sha256','matrix_sha256',
+            'simulated_evidence_sha256')) {
+            Require-Hash $crashFull.Json.$name "Task42 $name"
+        }
+        Require ([string]$crashFull.Json.server_sha256 -ieq
+            [string]$realFunctional.Json.executable_sha256.server) `
+            'Task41/Task42 server executable hashes differ'
+        Require ([string]$crashFull.Json.image_sha256 -ieq
+            [string]$realFunctional.Json.executable_sha256.image) `
+            'Task41/Task42 image executable hashes differ'
+        foreach ($name in @(
+            'simulated_schedule_count','real_scenario_count',
+            'process_kill_count','controlled_power_cut_count')) {
+            Require-UnsignedInteger $crashFull.Json.$name "Task42 $name"
+        }
+        Require ([uint64]$crashFull.Json.simulated_schedule_count -ge 10000) `
+            'Task42 simulated schedule count is below 10000'
+        Require ([uint64]$crashFull.Json.real_scenario_count -eq 10) `
+            'Task42 real scenario count is not 10'
+        Require ([uint64]$crashFull.Json.process_kill_count -eq 8) `
+            'Task42 process-kill count is not 8'
+        Require ([uint64]$crashFull.Json.controlled_power_cut_count -eq 2) `
+            'Task42 controlled-power-cut count is not 2'
+        $crashScenarios = @($crashFull.Json.scenarios)
+        Require ($crashScenarios.Count -eq 10) `
+            'Task42 scenario array does not contain 10 entries'
+        $scenarioIds = @{}
+        $processKillScenarios = 0
+        $powerCutScenarios = 0
+        foreach ($scenario in $crashScenarios) {
+            foreach ($name in @(
+                'scenario_id','phase','interruption','allowed_recovery',
+                'recovered_classification','selected_generation',
+                'selected_slot','fallback','slot_diagnostics','report_sha256')) {
+                Require-Property $scenario $name
+            }
+            Require-NonEmptyString $scenario.scenario_id `
+                'Task42 scenario_id'
+            Require (-not $scenarioIds.ContainsKey([string]$scenario.scenario_id)) `
+                'Task42 scenario_id is duplicated'
+            $scenarioIds[[string]$scenario.scenario_id] = $true
+            Require-NonEmptyString $scenario.phase 'Task42 phase'
+            Require (@('process-kill','controlled-power-cut') -contains
+                [string]$scenario.interruption) `
+                'Task42 interruption is invalid'
+            if ([string]$scenario.interruption -eq 'process-kill') {
+                ++$processKillScenarios
+            }
+            else { ++$powerCutScenarios }
+            Require (@('old','new','old_or_new') -contains
+                [string]$scenario.allowed_recovery) `
+                'Task42 allowed recovery is invalid'
+            Require (@('old','new') -contains
+                [string]$scenario.recovered_classification) `
+                'Task42 recovered classification is invalid'
+            if ([string]$scenario.allowed_recovery -ne 'old_or_new') {
+                Require ([string]$scenario.allowed_recovery -eq
+                    [string]$scenario.recovered_classification) `
+                    'Task42 recovered a forbidden generation class'
+            }
+            Require-UnsignedInteger $scenario.selected_generation `
+                'Task42 selected generation'
+            Require-UnsignedInteger $scenario.selected_slot `
+                'Task42 selected slot'
+            Require ([uint64]$scenario.selected_slot -in 0,1) `
+                'Task42 selected slot is invalid'
+            Require-Boolean $scenario.fallback 'Task42 fallback'
+            Require (-not [bool]$scenario.fallback) `
+                'Task42 final evidence used fallback recovery'
+            Require-Hash $scenario.report_sha256 'Task42 scenario report'
+            $slotDiagnostics = @($scenario.slot_diagnostics)
+            Require ($slotDiagnostics.Count -eq 2) `
+                'Task42 scenario requires two slot diagnostics'
+            Require (@($slotDiagnostics | Where-Object {
+                [bool]$_.selected }).Count -eq 1) `
+                'Task42 scenario must select exactly one slot'
+            for ($slotIndex = 0; $slotIndex -lt 2; ++$slotIndex) {
+                $diagnostic = $slotDiagnostics[$slotIndex]
+                foreach ($name in @(
+                    'slot_index','status','generation','selected')) {
+                    Require-Property $diagnostic $name
+                }
+                Require ([uint64]$diagnostic.slot_index -eq $slotIndex) `
+                    'Task42 slot diagnostics are out of order'
+                Require (@('passed','rejected') -contains
+                    [string]$diagnostic.status) `
+                    'Task42 slot diagnostic status is invalid'
+                Require-Boolean $diagnostic.selected `
+                    'Task42 slot diagnostic selection'
+            }
+        }
+        Require ($processKillScenarios -eq 8 -and $powerCutScenarios -eq 2) `
+            'Task42 scenario interruption counts are inconsistent'
+        foreach ($name in @(
+            'latest_complete_confirmed_checkpoint','mixed_generation_rejected',
+            'manifest_slot_diagnostics_verified',
+            'post_checkpoint_uncommitted_changes_may_be_lost',
+            'read_only_recovery_first','ntfs_reformat_forbidden',
+            'per_scenario_guest_reboot_isolation')) {
             Require-Property $crashFull.Json.guarantees $name
             Require-Boolean $crashFull.Json.guarantees.$name "Task42 guarantee $name"
             Require ([bool]$crashFull.Json.guarantees.$name) `

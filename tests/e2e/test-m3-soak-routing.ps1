@@ -75,6 +75,31 @@ try {
     Require-SoakRouteTest ((@($fakeFormal.Output) -join "`n") -notmatch
         'Soak Formal PASS') 'fake Formal route printed PASS'
 
+    $source = ((& git.exe -C $repoRoot rev-parse HEAD) -join '').Trim()
+    $minimalRealPath = Join-Path $tempRoot 'minimal-real.json'
+    $minimalCrashPath = Join-Path $tempRoot 'minimal-crash.json'
+    [IO.File]::WriteAllText($minimalRealPath, ([ordered]@{
+        schema = 'myrd.m3.ntfs-workload.v1'; status = 'PASS'
+        terminal_verdict = 'PASS'; source_commit = $source
+    } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($minimalCrashPath, ([ordered]@{
+        schema = 'myrd.m3.real-crash-aggregate.v1'; status = 'PASS'
+        terminal_verdict = 'PASS'; task42_complete = $true
+        milestone_eligible = $true; source_commit = $source
+        guarantees = [ordered]@{
+            latest_complete_confirmed_checkpoint = $true
+            mixed_generation_rejected = $true
+        }
+    } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    $minimalFormal = Invoke-Route @(
+        '-Tier', 'Soak', '-SoakMode', 'Formal',
+        '-EvidenceBase', $quickEvidence, '-SoakExecutable', $Executable,
+        '-RealFunctionalReportPath', $minimalRealPath,
+        '-CrashAggregateReportPath', $minimalCrashPath,
+        '-Configuration', 'Release')
+    Require-SoakRouteTest ($minimalFormal.ExitCode -eq 77) `
+        'minimal synthetic Formal dependencies were not blocked before workload'
+
     $insideRepo = Invoke-Route @(
         '-Tier', 'Soak', '-SoakMode', 'Quick',
         '-EvidenceBase', (Join-Path $repoRoot 'tests'),
