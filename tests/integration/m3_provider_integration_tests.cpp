@@ -402,6 +402,45 @@ TEST_CASE(m3_provider_serializes_checkpoint_and_stop_without_losing_commit) {
     REQUIRE(reopened.value()->stop(context(), {}).ok());
 }
 
+TEST_CASE(m3_provider_normalizes_preparation_failures_with_full_context) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto configured = factories(probe);
+    configured.before_checkpoint_prepare = [] {
+        return Result<void>::failure({
+            ErrorDomain::storage,
+            static_cast<std::uint32_t>(
+                DynamicBlockStoreErrorCode::SnapshotBusy),
+            L"snapshot", L"injected active snapshot", 170});
+    };
+
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), std::move(configured));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+
+    const auto outcome = provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    REQUIRE(!outcome.ok());
+    REQUIRE_EQ(outcome.disposition, CommitDisposition::NotCommitted);
+    REQUIRE_EQ(outcome.generation, 1ull);
+    REQUIRE(outcome.error.has_value());
+    REQUIRE(outcome.error_context.has_value());
+    REQUIRE_EQ(outcome.error->domain, ErrorDomain::persistence);
+    REQUIRE_EQ(outcome.error->code,
+               static_cast<std::uint32_t>(PersistenceErrorCode::SnapshotBusy));
+    REQUIRE(is_complete_error_context(*outcome.error_context));
+    REQUIRE_EQ(outcome.error_context->operation,
+               std::string{"checkpoint.prepare"});
+    REQUIRE_EQ(outcome.error_context->native_code, 170u);
+    REQUIRE_EQ(outcome.error_context->generation, outcome.generation);
+    REQUIRE_EQ(outcome.error_context->disposition, outcome.disposition);
+
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
 TEST_CASE(m3_provider_stop_retries_pending_reconciliation_before_close) {
     TempBundle bundle;
     create_bundle(bundle);
@@ -434,6 +473,14 @@ TEST_CASE(m3_provider_stop_retries_pending_reconciliation_before_close) {
                CommitDisposition::CommittedNeedsReconciliation);
     REQUIRE_EQ(first.generation, 1ull);
     REQUIRE(first.error.has_value());
+    REQUIRE(first.error_context.has_value());
+    REQUIRE(is_complete_error_context(*first.error_context));
+    REQUIRE_EQ(first.error_context->code,
+               PersistenceErrorCode::VerificationFailed);
+    REQUIRE_EQ(first.error_context->operation,
+               std::string{"checkpoint.reconcile"});
+    REQUIRE_EQ(first.error_context->generation, first.generation);
+    REQUIRE_EQ(first.error_context->disposition, first.disposition);
     REQUIRE_EQ(provider.value()->storage_stats().backing_generation, 0ull);
 
     const auto stopped = provider.value()->stop(context(), {});
@@ -488,6 +535,13 @@ TEST_CASE(m3_provider_transport_error_preserves_pending_durable_disposition) {
                CommitDisposition::CommittedNeedsReconciliation);
     REQUIRE_EQ(stopped.generation, 1ull);
     REQUIRE(stopped.error.has_value());
+    REQUIRE(stopped.error_context.has_value());
+    REQUIRE(is_complete_error_context(*stopped.error_context));
+    REQUIRE_EQ(stopped.error_context->operation,
+               std::string{"stop.transport"});
+    REQUIRE_EQ(stopped.error_context->generation, 1ull);
+    REQUIRE_EQ(stopped.error_context->disposition,
+               CommitDisposition::CommittedNeedsReconciliation);
     REQUIRE_EQ(stopped.error->domain, ErrorDomain::protocol);
     REQUIRE_EQ(stopped.error->code, 0x3901u);
     REQUIRE(stopped.store_closed);
@@ -521,6 +575,13 @@ TEST_CASE(m3_provider_transport_exception_is_first_error_and_cleanup_continues) 
     REQUIRE(stopped.session_closed);
     REQUIRE(stopped.writer_closed);
     REQUIRE(stopped.error.has_value());
+    REQUIRE(stopped.error_context.has_value());
+    REQUIRE(is_complete_error_context(*stopped.error_context));
+    REQUIRE_EQ(stopped.error_context->operation,
+               std::string{"stop.transport"});
+    REQUIRE_EQ(stopped.error_context->generation, 0ull);
+    REQUIRE_EQ(stopped.error_context->disposition,
+               CommitDisposition::NotCommitted);
     REQUIRE_EQ(stopped.error->code,
                static_cast<std::uint32_t>(PersistenceErrorCode::InvalidFormat));
     REQUIRE_EQ(stopped.error->operation, L"M3Provider::stop");

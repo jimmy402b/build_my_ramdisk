@@ -320,6 +320,12 @@ TEST_CASE(adapter_remove_sends_exact_owned_device_id) {
     REQUIRE(r.ok());
     REQUIRE_EQ(fake.send_count(), 1);
     REQUIRE_EQ(fake.calls[0].control_code, myrd::aim::kRemoveDevice);
+    REQUIRE_EQ(fake.calls[0].request_payload.size(), sizeof(std::uint32_t));
+    std::uint32_t encoded_device_id{};
+    std::memcpy(&encoded_device_id,
+                fake.calls[0].request_payload.data(),
+                sizeof(encoded_device_id));
+    REQUIRE_EQ(encoded_device_id, 0x01020304u);
 }
 
 TEST_CASE(adapter_remove_rejects_response_for_different_device) {

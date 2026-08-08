@@ -116,6 +116,12 @@ struct ErrorEvidence final {
     std::uint32_t native_code{};
     std::string phase{};
     std::string stable_code{};
+    std::string operation{};
+    std::optional<std::string> image_uuid{};
+    std::string operation_id{};
+    std::optional<std::uint64_t> generation{};
+    persistence::CommitDisposition disposition{
+        persistence::CommitDisposition::NotCommitted};
 };
 
 struct M3Report final {

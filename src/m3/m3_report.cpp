@@ -307,8 +307,32 @@ ErrorEvidence error_evidence(const Error& error, std::string phase) {
         stable = std::string(persistence::to_string(
             static_cast<persistence::PersistenceErrorCode>(error.code)));
     }
+    std::string operation;
+    operation.reserve(error.operation.size());
+    for (const auto value : error.operation) {
+        if (value < 0x20 || value > 0x7e) {
+            operation.clear();
+            break;
+        }
+        operation.push_back(static_cast<char>(value));
+    }
     return {std::string(domain_name(error.domain)), error.code,
-            error.native_code, std::move(phase), std::move(stable)};
+            error.native_code, std::move(phase), std::move(stable),
+            std::move(operation)};
+}
+
+void bind_error_correlation(M3Report& report) {
+    if (!report.error.has_value()) return;
+    auto& error = *report.error;
+    error.operation_id = report.operation_id;
+    error.image_uuid = report.image.has_value()
+        ? std::optional<std::string>{report.image->image_uuid}
+        : std::nullopt;
+    error.generation = report.selected.has_value()
+        ? std::optional<std::uint64_t>{
+              report.selected->checkpoint_generation}
+        : std::nullopt;
+    error.disposition = persistence::CommitDisposition::NotCommitted;
 }
 
 void apply_context(M3Report& report, M3ReportContext context) {
@@ -493,10 +517,25 @@ Result<void> validate(const M3Report& report) {
     }
     if (report.error.has_value() &&
         (!valid_utf8(report.error->domain) ||
+         !valid_utf8(report.error->operation) ||
          !valid_utf8(report.error->phase) ||
          !valid_utf8(report.error->stable_code) ||
-         report.error->domain.empty() || report.error->phase.empty() ||
-         report.error->stable_code.empty())) {
+         report.error->domain.empty() || report.error->operation.empty() ||
+         report.error->phase.empty() || report.error->stable_code.empty() ||
+         report.error->operation_id != report.operation_id ||
+         !persistence::encode_wire(
+             report.error->disposition).has_value() ||
+         (report.error->image_uuid.has_value() &&
+          !is_hex(*report.error->image_uuid, 32)) ||
+         (report.image.has_value() !=
+          report.error->image_uuid.has_value()) ||
+         (report.image.has_value() &&
+          *report.error->image_uuid != report.image->image_uuid) ||
+         (report.selected.has_value() !=
+          report.error->generation.has_value()) ||
+         (report.selected.has_value() &&
+          *report.error->generation !=
+              report.selected->checkpoint_generation))) {
         return Result<void>::failure(invalid_report(
             L"error evidence contains invalid text"));
     }
@@ -536,6 +575,7 @@ Result<M3Report> make_m3_report(
         ? ReportStatus::Passed : ReportStatus::Failed;
     apply_context(report, std::move(context));
     apply_inspection(report, inspection, "inspect");
+    bind_error_correlation(report);
     if (!inspection.selected.has_value() && !report.error.has_value()) {
         return Result<M3Report>::failure(invalid_report(
             L"rejected inspection has no provenance"));
@@ -568,6 +608,7 @@ Result<M3Report> make_m3_report(
     if (verification.failure.has_value()) {
         report.error = error_evidence(*verification.failure, "verify");
     }
+    bind_error_correlation(report);
     if (!verification.verified && !report.error.has_value()) {
         return Result<M3Report>::failure(invalid_report(
             L"failed verification has no provenance"));
@@ -695,7 +736,14 @@ Result<std::string> serialize_m3_report(const M3Report& report) {
         json.key("domain"); json.string(report.error->domain);
         json.key("code"); json.unsigned_value(report.error->code);
         json.key("native_code"); json.unsigned_value(report.error->native_code);
+        json.key("operation"); json.string(report.error->operation);
         json.key("phase"); json.string(report.error->phase);
+        json.key("image_uuid");
+        optional_string(json, report.error->image_uuid);
+        json.key("operation_id"); json.string(report.error->operation_id);
+        json.key("generation"); optional_uint(json, report.error->generation);
+        json.key("disposition");
+        json.string(persistence::to_string(report.error->disposition));
         json.key("stable_code"); json.string(report.error->stable_code);
         json.object_end();
     } else json.null();

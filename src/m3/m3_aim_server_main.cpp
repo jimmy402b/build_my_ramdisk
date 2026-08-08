@@ -80,6 +80,18 @@ std::string json_escape(std::string_view value) {
     return result;
 }
 
+std::string image_uuid_hex(const ImageUuid& uuid) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(uuid.bytes.size() * 2);
+    for (const auto value : uuid.bytes) {
+        const auto byte = std::to_integer<unsigned char>(value);
+        result.push_back(digits[byte >> 4]);
+        result.push_back(digits[byte & 0x0f]);
+    }
+    return result;
+}
+
 bool parse_u64(std::wstring_view value, std::uint64_t& output) {
     if (value.empty()) return false;
     const auto text = narrow(value);
@@ -198,7 +210,21 @@ int print_checkpoint(const M3CheckpointOutcome& outcome) {
                   << ",\"operation\":\""
                   << json_escape(narrow(error.operation))
                   << "\",\"message\":\""
-                  << json_escape(narrow(error.message)) << "\"}";
+                  << json_escape(narrow(error.message)) << "\"";
+        if (outcome.error_context.has_value()) {
+            const auto& context = *outcome.error_context;
+            std::cout << ",\"phase\":\""
+                      << persistence::to_string(context.phase)
+                      << "\",\"image_uuid\":\""
+                      << image_uuid_hex(context.image_uuid)
+                      << "\",\"operation_id\":" << context.operation_id
+                      << ",\"generation\":" << context.generation
+                      << ",\"disposition\":\""
+                      << persistence::to_string(context.disposition)
+                      << "\",\"safe_context\":\""
+                      << json_escape(context.safe_context) << "\"";
+        }
+        std::cout << "}";
     }
     std::cout << "}\n" << std::flush;
     if (outcome.ok()) return 0;

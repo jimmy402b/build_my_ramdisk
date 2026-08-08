@@ -143,8 +143,91 @@ Result<std::shared_ptr<IPersistenceFile>> open_journal(
 M3CheckpointOutcome checkpoint_failure(
     const Error& error,
     const CommitDisposition disposition,
-    const std::uint64_t generation) {
-    return {disposition, generation, error};
+    const std::uint64_t generation,
+    std::optional<PersistenceErrorContext> error_context = std::nullopt) {
+    return {disposition, generation, error, std::move(error_context)};
+}
+
+PersistenceErrorContext provider_error_context(
+    const RecoveredImage& image,
+    const std::uint64_t operation_id,
+    const Error& source,
+    const CommitDisposition disposition,
+    const std::uint64_t generation,
+    const std::string_view operation,
+    const SessionPhase phase,
+    const std::string_view safe_context) {
+    auto code = checkpoint_persistence_code_for(source);
+    PersistenceErrorContext context{};
+    context.operation = std::string(operation);
+    context.code = code;
+    context.phase = phase;
+    context.native_code = source.native_code;
+    context.operation_id = operation_id;
+    context.image_uuid = image.image_uuid;
+    context.generation = generation;
+    context.disposition = disposition;
+    context.safe_context = std::string(safe_context);
+
+    if (!widen_ascii_operation(operation).has_value() ||
+        !is_complete_error_context(context)) {
+        code = PersistenceErrorCode::FatalInternalInvariant;
+        context.operation = "checkpoint.failure";
+        context.code = code;
+        context.phase = SessionPhase::PersistenceFaulted;
+        context.safe_context = "checkpoint error normalization failed";
+    }
+    return context;
+}
+
+M3CheckpointOutcome provider_checkpoint_failure(
+    const RecoveredImage& image,
+    const std::uint64_t operation_id,
+    const Error& source,
+    const CommitDisposition disposition,
+    const std::uint64_t generation,
+    const std::string_view operation,
+    const SessionPhase phase,
+    const std::string_view safe_context) {
+    auto context = provider_error_context(
+        image, operation_id, source, disposition, generation,
+        operation, phase, safe_context);
+    auto wide_operation = widen_ascii_operation(context.operation);
+    return {
+        disposition,
+        generation,
+        Error{ErrorDomain::persistence,
+              static_cast<std::uint32_t>(context.code),
+              std::move(*wide_operation),
+              source.message,
+              source.native_code},
+        std::move(context)};
+}
+
+M3CheckpointOutcome preserve_or_normalize_checkpoint_failure(
+    const RecoveredImage& image,
+    const std::uint64_t operation_id,
+    const Error& error,
+    const CommitDisposition disposition,
+    const std::uint64_t generation,
+    std::optional<PersistenceErrorContext> error_context,
+    const std::string_view operation,
+    const SessionPhase phase,
+    const std::string_view safe_context) {
+    if (error_context.has_value() &&
+        error.domain == ErrorDomain::persistence &&
+        is_complete_error_context(*error_context) &&
+        error.code == static_cast<std::uint32_t>(error_context->code) &&
+        error.native_code == error_context->native_code &&
+        operation_labels_match(error.operation, error_context->operation) &&
+        error_context->generation == generation &&
+        error_context->disposition == disposition) {
+        return checkpoint_failure(
+            error, disposition, generation, std::move(error_context));
+    }
+    return provider_checkpoint_failure(
+        image, operation_id, error, disposition, generation,
+        operation, phase, safe_context);
 }
 
 } // namespace
@@ -302,11 +385,16 @@ M3CheckpointOutcome M3Provider::checkpoint(
     const OperationContext& context,
     const VolumeBarrierKind barrier) {
     std::scoped_lock lock(operation_mutex_);
+    const auto operation_id = image_.checkpoint_generation + 3902;
     if (state() != M3ProviderState::Ready) {
-        return checkpoint_failure(
+        return provider_checkpoint_failure(
+            image_, operation_id,
             provider_error(L"M3Provider::checkpoint",
                            L"provider is not ready"),
-            CommitDisposition::NotCommitted, image_.checkpoint_generation);
+            CommitDisposition::NotCommitted,
+            image_.checkpoint_generation + 1,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "provider is not ready for checkpoint");
     }
     auto result = pending_checkpoint_.has_value()
         ? resume_pending_checkpoint(context)
@@ -317,6 +405,8 @@ M3CheckpointOutcome M3Provider::checkpoint(
         result.disposition ==
             CommitDisposition::CommittedNeedsReconciliation;
     last_checkpoint_error_ = unresolved ? result.error : std::nullopt;
+    last_checkpoint_error_context_ = unresolved
+        ? result.error_context : std::nullopt;
     if (unresolved && !pending_checkpoint_.has_value()) {
         // Durable/runtime state could not be retained for an in-process retry.
         // Ordinary device I/O may still drain, but persistence management is
@@ -329,38 +419,51 @@ M3CheckpointOutcome M3Provider::checkpoint(
 M3CheckpointOutcome M3Provider::checkpoint_impl(
     const OperationContext& context,
     const VolumeBarrierKind barrier) {
+    const auto operation_id = image_.checkpoint_generation + 3902;
+    const auto target_generation = image_.checkpoint_generation + 1;
     auto live = check_operation_context(context);
     if (!live.ok()) {
-        return checkpoint_failure(live.error(), CommitDisposition::NotCommitted,
-                                  image_.checkpoint_generation);
+        return provider_checkpoint_failure(
+            image_, operation_id, live.error(),
+            CommitDisposition::NotCommitted, target_generation,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "checkpoint operation context rejected");
     }
     if (!is_valid_barrier_for_checkpoint(barrier) || !store_) {
-        return checkpoint_failure(
+        return provider_checkpoint_failure(
+            image_, operation_id,
             provider_error(L"M3Provider::checkpoint",
                            L"checkpoint barrier or store is invalid"),
-            CommitDisposition::NotCommitted, image_.checkpoint_generation);
+            CommitDisposition::NotCommitted, target_generation,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "checkpoint barrier or store is invalid");
     }
     if (before_checkpoint_prepare_) {
         auto observed = before_checkpoint_prepare_();
         if (!observed.ok()) {
-            return checkpoint_failure(
-                observed.error(), CommitDisposition::NotCommitted,
-                image_.checkpoint_generation);
+            return provider_checkpoint_failure(
+                image_, operation_id, observed.error(),
+                CommitDisposition::NotCommitted, target_generation,
+                "checkpoint.prepare", SessionPhase::Ready,
+                "checkpoint preparation observer failed");
         }
     }
-    const auto operation_id = image_.checkpoint_generation + 3902;
     auto correlation = checkpoint_correlation(image_, operation_id);
     if (!correlation.ok()) {
-        return checkpoint_failure(correlation.error(),
-                                  CommitDisposition::NotCommitted,
-                                  image_.checkpoint_generation);
+        return provider_checkpoint_failure(
+            image_, operation_id, correlation.error(),
+            CommitDisposition::NotCommitted, target_generation,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "checkpoint correlation creation failed");
     }
     JournalHeader header{};
     auto journal_file = open_journal(context, writer_, image_, header);
     if (!journal_file.ok()) {
-        return checkpoint_failure(journal_file.error(),
-                                  CommitDisposition::NotCommitted,
-                                  image_.checkpoint_generation);
+        return provider_checkpoint_failure(
+            image_, operation_id, journal_file.error(),
+            CommitDisposition::NotCommitted, target_generation,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "checkpoint journal open failed");
     }
     auto options = writer_options(config_.recovery.limits);
 #if defined(MYRD_ENABLE_TEST_SEAMS)
@@ -368,9 +471,11 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
 #endif
     auto writer = JournalWriter::create(std::move(options));
     if (!writer.ok()) {
-        return checkpoint_failure(writer.error(),
-                                  CommitDisposition::NotCommitted,
-                                  image_.checkpoint_generation);
+        return provider_checkpoint_failure(
+            image_, operation_id, writer.error(),
+            CommitDisposition::NotCommitted, target_generation,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "checkpoint journal writer creation failed");
     }
     JournalCheckpointRequest journal{};
     journal.file = journal_file.value();
@@ -391,26 +496,35 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
     auto prepared = coordinator.prepare(context, request);
     if (!prepared.ok()) {
         const auto& outcome = prepared.failure()->outcome;
-        return checkpoint_failure(
+        return preserve_or_normalize_checkpoint_failure(
+            image_, operation_id,
             outcome.error.value_or(provider_error(
                 L"M3Provider::checkpoint", L"checkpoint preparation failed")),
-            outcome.disposition, outcome.generation);
+            outcome.disposition, outcome.generation, outcome.error_context,
+            "checkpoint.prepare", SessionPhase::Checkpointing,
+            "checkpoint preparation failed without complete context");
     }
     auto transaction = prepared.move_transaction();
     auto manifest_capability = open_locked_manifest_for_mutation(writer_);
     if (!manifest_capability.ok()) {
         const auto error = manifest_capability.error();
         (void)transaction.abort();
-        return checkpoint_failure(error, CommitDisposition::NotCommitted,
-                                  image_.checkpoint_generation);
+        return provider_checkpoint_failure(
+            image_, operation_id, error, CommitDisposition::NotCommitted,
+            target_generation, "checkpoint.publish",
+            SessionPhase::Checkpointing,
+            "checkpoint manifest capability open failed");
     }
     auto manifest = open_validated_persistence_file(
         manifest_capability.move_value());
     if (!manifest.ok()) {
         const auto error = manifest.error();
         (void)transaction.abort();
-        return checkpoint_failure(error, CommitDisposition::NotCommitted,
-                                  image_.checkpoint_generation);
+        return provider_checkpoint_failure(
+            image_, operation_id, error, CommitDisposition::NotCommitted,
+            target_generation, "checkpoint.publish",
+            SessionPhase::Checkpointing,
+            "checkpoint manifest open failed");
     }
     CheckpointManifestPublishRequest publish{};
     publish.manifest_file = manifest.move_value();
@@ -427,10 +541,14 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
         published.disposition !=
             CommitDisposition::CommittedNeedsReconciliation) {
         (void)transaction.abort();
-        return checkpoint_failure(
+        return preserve_or_normalize_checkpoint_failure(
+            image_, operation_id,
             published.error.value_or(provider_error(
                 L"M3Provider::checkpoint", L"checkpoint was not committed")),
-            published.disposition, published.generation);
+            published.disposition, published.generation,
+            published.error_context, "checkpoint.publish",
+            SessionPhase::Checkpointing,
+            "checkpoint publication failed without complete context");
     }
     pending_checkpoint_.emplace(std::move(transaction));
     return resume_pending_checkpoint(context);
@@ -439,41 +557,59 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
 M3CheckpointOutcome M3Provider::resume_pending_checkpoint(
     const OperationContext& context) {
     if (!pending_checkpoint_.has_value()) {
-        return checkpoint_failure(
+        const auto operation_id = image_.checkpoint_generation + 3902;
+        return provider_checkpoint_failure(
+            image_, operation_id,
             provider_error(L"M3Provider::checkpoint",
                            L"no checkpoint is pending"),
-            CommitDisposition::NotCommitted, image_.checkpoint_generation);
+            CommitDisposition::NotCommitted,
+            image_.checkpoint_generation + 1,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "no checkpoint transaction is pending");
     }
     auto& transaction = *pending_checkpoint_;
+    const auto operation_id = transaction.checkpoint().ack_stream.operation_id;
     if (transaction.disposition() == CommitDisposition::CommitIndeterminate) {
         const auto resolved = transaction.resolve_commit(
             context, {FilesystemCommitResolution{
                 config_.bundle_root, config_.manifest_name,
                 config_.recovery, &writer_}});
         if (resolved.disposition == CommitDisposition::NotCommitted) {
-            const auto outcome = checkpoint_failure(
+            const auto outcome = preserve_or_normalize_checkpoint_failure(
+                image_, operation_id,
                 resolved.error.value_or(provider_error(
                     L"M3Provider::checkpoint",
                     L"indeterminate checkpoint was not committed")),
-                resolved.disposition, resolved.generation);
+                resolved.disposition, resolved.generation,
+                resolved.error_context, "checkpoint.resolve",
+                SessionPhase::ResolvingCommit,
+                "checkpoint resolution failed without complete context");
             pending_checkpoint_.reset();
             return outcome;
         }
         if (resolved.disposition == CommitDisposition::CommitIndeterminate) {
-            return checkpoint_failure(
+            return preserve_or_normalize_checkpoint_failure(
+                image_, operation_id,
                 resolved.error.value_or(provider_error(
                     L"M3Provider::checkpoint",
                     L"checkpoint commit remains indeterminate")),
-                resolved.disposition, resolved.generation);
+                resolved.disposition, resolved.generation,
+                resolved.error_context, "checkpoint.resolve",
+                SessionPhase::ResolvingCommit,
+                "checkpoint resolution remained indeterminate without complete context");
         }
         if (resolved.disposition != CommitDisposition::Committed &&
             resolved.disposition !=
                 CommitDisposition::CommittedNeedsReconciliation) {
-            return checkpoint_failure(
+            return preserve_or_normalize_checkpoint_failure(
+                image_, operation_id,
                 resolved.error.value_or(provider_error(
                     L"M3Provider::checkpoint",
                     L"commit resolution returned an invalid disposition")),
-                resolved.disposition, resolved.generation);
+                resolved.disposition, resolved.generation,
+                resolved.error_context, "checkpoint.resolve",
+                SessionPhase::ResolvingCommit,
+                "checkpoint resolution returned invalid disposition without complete context");
         }
     }
     CheckpointReconcileRequest reconcile_request{};
@@ -494,20 +630,27 @@ M3CheckpointOutcome M3Provider::resume_pending_checkpoint(
     const auto reconciled = transaction.reconcile(
         context, reconcile_request);
     if (!reconciled.ok()) {
-        return checkpoint_failure(
+        return preserve_or_normalize_checkpoint_failure(
+            image_, operation_id,
             reconciled.error.value_or(provider_error(
                 L"M3Provider::checkpoint", L"reconciliation failed")),
-            reconciled.disposition, reconciled.generation);
+            reconciled.disposition, reconciled.generation,
+            reconciled.error_context, "checkpoint.reconcile",
+            SessionPhase::Reconciling,
+            "checkpoint reconciliation failed without complete context");
     }
     auto refreshed = recover_complete_image(
         context, config_.bundle_root, config_.manifest_name, config_.recovery);
     if (!refreshed.ok() || !refreshed.image.has_value()) {
         pending_checkpoint_.reset();
-        return checkpoint_failure(
+        return provider_checkpoint_failure(
+            image_, operation_id,
             refreshed.error.value_or(provider_error(
                 L"M3Provider::checkpoint", L"committed image did not reopen")),
             CommitDisposition::CommittedNeedsReconciliation,
-            reconciled.generation);
+            reconciled.generation, "checkpoint.reconcile",
+            SessionPhase::Reconciling,
+            "committed checkpoint did not reopen");
     }
     image_ = std::move(*refreshed.image);
     pending_checkpoint_.reset();
@@ -529,25 +672,54 @@ M3StopOutcome M3Provider::stop(
         result.writer_closed = true;
         return result;
     }
+    if (pending_checkpoint_.has_value()) {
+        result.generation = pending_checkpoint_->checkpoint().generation;
+        result.disposition = pending_checkpoint_->disposition();
+    } else if (last_checkpoint_error_context_.has_value()) {
+        result.generation = last_checkpoint_error_context_->generation;
+    }
     set_state(M3ProviderState::Stopping);
-    const auto remember = [&result](const Error& error) {
-        if (!result.error.has_value()) result.error = error;
+    const auto stop_operation_id = result.generation + 4902;
+    const auto remember = [this, &result, stop_operation_id](
+        const Error& error,
+        std::optional<PersistenceErrorContext> error_context,
+        const std::string_view operation,
+        const SessionPhase phase,
+        const std::string_view safe_context) {
+        if (result.error.has_value()) return;
+        result.error = error;
+        if (error_context.has_value() &&
+            is_complete_error_context(*error_context)) {
+            result.error_context = std::move(error_context);
+            return;
+        }
+        result.error_context = provider_error_context(
+            image_, stop_operation_id, error, result.disposition,
+            result.generation, operation, phase, safe_context);
     };
     if (transport_) {
         try {
             const auto stopped = transport_->stop();
             result.transport_stopped = stopped.ok();
-            if (!stopped.ok()) remember(stopped.error());
+            if (!stopped.ok()) {
+                remember(stopped.error(), std::nullopt, "stop.transport",
+                         SessionPhase::Closing,
+                         "provider transport stop failed");
+            }
         } catch (...) {
             result.transport_stopped = false;
             remember(provider_error(L"M3Provider::stop",
-                                    L"transport stop threw"));
+                                    L"transport stop threw"),
+                     std::nullopt, "stop.transport", SessionPhase::Closing,
+                     "provider transport stop threw");
         }
         try {
             final_snapshot_ = transport_->snapshot();
         } catch (...) {
             remember(provider_error(L"M3Provider::stop",
-                                    L"transport snapshot threw"));
+                                    L"transport snapshot threw"),
+                     std::nullopt, "stop.transport", SessionPhase::Closing,
+                     "provider transport snapshot threw");
         }
         transport_.reset();
     } else {
@@ -555,8 +727,6 @@ M3StopOutcome M3Provider::stop(
     }
     bool persistence_ready = true;
     if (pending_checkpoint_.has_value()) {
-        result.generation = pending_checkpoint_->checkpoint().generation;
-        result.disposition = pending_checkpoint_->disposition();
         if (!result.transport_stopped) {
             persistence_ready = false;
         } else {
@@ -569,9 +739,15 @@ M3StopOutcome M3Provider::stop(
                     CommitDisposition::CommittedNeedsReconciliation;
             last_checkpoint_error_ = unresolved
                 ? resumed.error : std::nullopt;
+            last_checkpoint_error_context_ = unresolved
+                ? resumed.error_context : std::nullopt;
             result.generation = resumed.generation;
             persistence_ready = resumed.ok();
-            if (resumed.error.has_value()) remember(*resumed.error);
+            if (resumed.error.has_value()) {
+                remember(*resumed.error, resumed.error_context,
+                         "checkpoint.reconcile", SessionPhase::Reconciling,
+                         "pending checkpoint reconciliation failed");
+            }
         }
     } else if (result.transport_stopped &&
                (result.disposition == CommitDisposition::CommitIndeterminate ||
@@ -579,14 +755,19 @@ M3StopOutcome M3Provider::stop(
                     CommitDisposition::CommittedNeedsReconciliation)) {
         persistence_ready = false;
         remember(last_checkpoint_error_.value_or(provider_error(
-            L"M3Provider::stop",
-            L"persistence management requires restart recovery")));
+                     L"M3Provider::stop",
+                     L"persistence management requires restart recovery")),
+                 last_checkpoint_error_context_, "stop.persistence",
+                 SessionPhase::PersistenceFaulted,
+                 "persistence management requires restart recovery");
     }
     if (request.checkpoint && persistence_ready) {
         if (!result.transport_stopped || !request.barrier.has_value()) {
             remember(provider_error(
-                L"M3Provider::stop",
-                L"checkpoint requires a stopped transport and barrier"));
+                         L"M3Provider::stop",
+                         L"checkpoint requires a stopped transport and barrier"),
+                     std::nullopt, "stop.checkpoint", SessionPhase::Closing,
+                     "stop checkpoint requires transport barrier");
         } else {
             const auto checkpoint_result = checkpoint_impl(
                 context, *request.barrier);
@@ -599,10 +780,15 @@ M3StopOutcome M3Provider::stop(
                     CommitDisposition::CommittedNeedsReconciliation;
             last_checkpoint_error_ = unresolved
                 ? checkpoint_result.error : std::nullopt;
+            last_checkpoint_error_context_ = unresolved
+                ? checkpoint_result.error_context : std::nullopt;
             result.generation = checkpoint_result.generation;
             result.checkpoint_completed = checkpoint_result.ok();
             if (checkpoint_result.error.has_value()) {
-                remember(*checkpoint_result.error);
+                remember(*checkpoint_result.error,
+                         checkpoint_result.error_context,
+                         "stop.checkpoint", SessionPhase::Checkpointing,
+                         "stop checkpoint failed");
             }
         }
     }
@@ -618,10 +804,16 @@ M3StopOutcome M3Provider::stop(
     result.store_closed = true;
     const auto session_closed = session_.close(context);
     result.session_closed = session_closed.ok();
-    if (!session_closed.ok()) remember(session_closed.error());
+    if (!session_closed.ok()) {
+        remember(session_closed.error(), std::nullopt, "stop.session",
+                 SessionPhase::Closing, "image session close failed");
+    }
     const auto writer_closed = writer_.close();
     result.writer_closed = writer_closed.ok();
-    if (!writer_closed.ok()) remember(writer_closed.error());
+    if (!writer_closed.ok()) {
+        remember(writer_closed.error(), std::nullopt, "stop.writer",
+                 SessionPhase::Closing, "bundle writer close failed");
+    }
     set_state(result.error.has_value() ? M3ProviderState::Failed
                                       : M3ProviderState::Stopped);
     return result;

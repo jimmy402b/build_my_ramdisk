@@ -241,6 +241,36 @@ std::unique_ptr<IPersistenceFile> make_manifest_file(
     return std::move(fault.file);
 }
 
+TEST_CASE(checkpoint_error_mapping_preserves_storage_snapshot_semantics) {
+    const struct {
+        DynamicBlockStoreErrorCode source;
+        PersistenceErrorCode expected;
+    } cases[]{
+        {DynamicBlockStoreErrorCode::BackingGenerationConflict,
+         PersistenceErrorCode::GenerationConflict},
+        {DynamicBlockStoreErrorCode::SnapshotBusy,
+         PersistenceErrorCode::SnapshotBusy},
+        {DynamicBlockStoreErrorCode::SnapshotAborted,
+         PersistenceErrorCode::SnapshotAborted},
+        {DynamicBlockStoreErrorCode::SnapshotResourceExhausted,
+         PersistenceErrorCode::SnapshotResourceExhausted},
+        {DynamicBlockStoreErrorCode::SnapshotTokenInvalid,
+         PersistenceErrorCode::FatalInternalInvariant},
+        {DynamicBlockStoreErrorCode::SnapshotNotFullyScanned,
+         PersistenceErrorCode::FatalInternalInvariant},
+        {DynamicBlockStoreErrorCode::FatalInternalInvariant,
+         PersistenceErrorCode::FatalInternalInvariant},
+    };
+
+    for (const auto& item : cases) {
+        const Error source{
+            ErrorDomain::storage,
+            static_cast<std::uint32_t>(item.source),
+            L"snapshot", L"injected storage failure", 123};
+        REQUIRE_EQ(checkpoint_persistence_code_for(source), item.expected);
+    }
+}
+
 TEST_CASE(checkpoint_prepare_requires_barrier_before_snapshot_begin) {
     auto store = make_store();
     auto writer = make_writer();

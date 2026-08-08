@@ -21,6 +21,12 @@ namespace myrd::persistence {
 
 class CompactionCoordinator;
 
+/// Normalize lower-layer failures into the frozen M3 persistence error model.
+/// The mapping is public so callers and contract tests do not need to branch
+/// on lower-layer numeric error codes.
+[[nodiscard]] PersistenceErrorCode checkpoint_persistence_code_for(
+    const Error& error) noexcept;
+
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 enum class CheckpointReconcileTestPhase : std::uint8_t {
     BeforeRecoverView = 0,

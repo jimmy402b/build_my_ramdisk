@@ -75,10 +75,11 @@ struct M3CheckpointOutcome final {
         persistence::CommitDisposition::NotCommitted};
     std::uint64_t generation{};
     std::optional<Error> error{};
+    std::optional<persistence::PersistenceErrorContext> error_context{};
 
     [[nodiscard]] bool ok() const noexcept {
         return disposition == persistence::CommitDisposition::Committed &&
-               !error.has_value();
+               !error.has_value() && !error_context.has_value();
     }
 };
 
@@ -97,9 +98,11 @@ struct M3StopOutcome final {
     bool session_closed{};
     bool writer_closed{};
     std::optional<Error> error{};
+    std::optional<persistence::PersistenceErrorContext> error_context{};
 
     [[nodiscard]] bool ok() const noexcept {
-        return !error.has_value() && transport_stopped && store_closed &&
+        return !error.has_value() && !error_context.has_value() &&
+               transport_stopped && store_closed &&
                session_closed && writer_closed &&
                (!checkpoint_completed ||
                 disposition == persistence::CommitDisposition::Committed);
@@ -191,6 +194,8 @@ private:
     persistence::CommitDisposition last_checkpoint_disposition_{
         persistence::CommitDisposition::NotCommitted};
     std::optional<Error> last_checkpoint_error_{};
+    std::optional<persistence::PersistenceErrorContext>
+        last_checkpoint_error_context_{};
 };
 
 } // namespace myrd::m3

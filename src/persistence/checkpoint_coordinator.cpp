@@ -36,10 +36,31 @@ std::optional<JournalRecordType> journal_type(
     return std::nullopt;
 }
 
-PersistenceErrorCode persistence_code_for(const Error& error) noexcept {
+}  // namespace
+
+PersistenceErrorCode checkpoint_persistence_code_for(
+    const Error& error) noexcept {
     if (error.domain == ErrorDomain::persistence) {
         const auto decoded = decode_persistence_error_code(error.code);
         if (decoded.has_value()) return *decoded;
+    }
+    if (error.domain == ErrorDomain::storage) {
+        switch (static_cast<DynamicBlockStoreErrorCode>(error.code)) {
+        case DynamicBlockStoreErrorCode::BackingGenerationConflict:
+            return PersistenceErrorCode::GenerationConflict;
+        case DynamicBlockStoreErrorCode::SnapshotBusy:
+            return PersistenceErrorCode::SnapshotBusy;
+        case DynamicBlockStoreErrorCode::SnapshotAborted:
+            return PersistenceErrorCode::SnapshotAborted;
+        case DynamicBlockStoreErrorCode::SnapshotResourceExhausted:
+            return PersistenceErrorCode::SnapshotResourceExhausted;
+        case DynamicBlockStoreErrorCode::SnapshotTokenInvalid:
+        case DynamicBlockStoreErrorCode::SnapshotNotFullyScanned:
+        case DynamicBlockStoreErrorCode::FatalInternalInvariant:
+            return PersistenceErrorCode::FatalInternalInvariant;
+        case DynamicBlockStoreErrorCode::None:
+            break;
+        }
     }
     if (error.code == static_cast<std::uint32_t>(
             OperationErrorCode::cancelled)) {
@@ -61,12 +82,14 @@ PersistenceErrorCode persistence_code_for(const Error& error) noexcept {
     return PersistenceErrorCode::IoError;
 }
 
+namespace {
+
 CheckpointPrepareFailure prepare_failure(
     const CheckpointPrepareRequest& request,
     const SessionPhase phase,
     const Error& source,
     const bool compaction) {
-    const auto code = persistence_code_for(source);
+    const auto code = checkpoint_persistence_code_for(source);
     auto context = request.correlation_context.value();
     // This public operation owns the failure identity even when the caller's
     // otherwise-complete correlation context fails request validation.
@@ -301,7 +324,7 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::publish_manifest(
             auto code =
                 disposition == CommitDisposition::CommitIndeterminate
                     ? PersistenceErrorCode::CommitIndeterminate
-                    : persistence_code_for(*source);
+                    : checkpoint_persistence_code_for(*source);
             if (disposition ==
                     CommitDisposition::CommittedNeedsReconciliation &&
                 (code == PersistenceErrorCode::Cancelled ||
@@ -497,7 +520,7 @@ CheckpointTransactionOutcome PreparedCheckpointTransaction::resolve_commit(
                                const CommitDisposition disposition) {
         auto code = disposition == CommitDisposition::CommitIndeterminate
             ? PersistenceErrorCode::CommitIndeterminate
-            : persistence_code_for(source);
+            : checkpoint_persistence_code_for(source);
         if (disposition ==
                 CommitDisposition::CommittedNeedsReconciliation &&
             (code == PersistenceErrorCode::Cancelled ||
@@ -615,7 +638,7 @@ CheckpointReconcileOutcome PreparedCheckpointTransaction::reconcile(
     result.generation = checkpoint_.generation;
     const auto set_error = [&](const Error& source,
                                const CommitDisposition disposition) {
-        const auto code = persistence_code_for(source);
+        const auto code = checkpoint_persistence_code_for(source);
         auto error_context = correlation_context_.value();
         error_context.operation = compaction
             ? "compaction.reconcile" : "checkpoint.reconcile";

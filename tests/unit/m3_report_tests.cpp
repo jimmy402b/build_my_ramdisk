@@ -25,8 +25,11 @@ public:
         static std::atomic<std::uint64_t> sequence{};
         root_ = std::filesystem::temp_directory_path() /
             (L"myrd-m3-inspect-" +
+             std::to_wstring(GetCurrentProcessId()) + L"-" +
              std::to_wstring(sequence.fetch_add(1)));
-        std::filesystem::create_directories(root_);
+        std::error_code error;
+        REQUIRE(std::filesystem::create_directory(root_, error));
+        REQUIRE(!error);
     }
     ~InspectSandbox() noexcept {
         std::error_code ignored;
@@ -284,6 +287,7 @@ TEST_CASE(m3_report_fails_closed_on_required_identity_or_unknown_enum) {
 TEST_CASE(m3_report_preserves_no_selection_and_corruption_provenance) {
     auto report = complete_report();
     report.status = myrd::m3::ReportStatus::Failed;
+    report.image.reset();
     report.selected.reset();
     report.verification.reset();
     report.slots[0] = {"A", myrd::m3::SlotStatus::Rejected, 7,
@@ -292,12 +296,30 @@ TEST_CASE(m3_report_preserves_no_selection_and_corruption_provenance) {
                        "slot_decode", "missing", false};
     report.error = myrd::m3::ErrorEvidence{
         "persistence", 12, 0, "inspect", "manifest_corrupt"};
+    report.error->operation = "inspect_image";
+    report.error->operation_id = report.operation_id;
+    report.error->image_uuid = std::nullopt;
+    report.error->generation = std::nullopt;
+    report.error->disposition =
+        myrd::persistence::CommitDisposition::NotCommitted;
 
     const auto json = myrd::m3::serialize_m3_report(report);
     REQUIRE(json.ok());
     REQUIRE(json.value().find("\"selected\": null") != std::string::npos);
     REQUIRE(json.value().find("journal_commit") != std::string::npos);
     REQUIRE(json.value().find("manifest_corrupt") != std::string::npos);
+    const auto error_position = json.value().find("\"error\": {");
+    REQUIRE(error_position != std::string::npos);
+    REQUIRE(json.value().find("\"operation\": \"inspect_image\"",
+                              error_position) != std::string::npos);
+    REQUIRE(json.value().find("\"image_uuid\": null", error_position) !=
+            std::string::npos);
+    REQUIRE(json.value().find("\"operation_id\": \"op-0001\"",
+                              error_position) != std::string::npos);
+    REQUIRE(json.value().find("\"generation\": null", error_position) !=
+            std::string::npos);
+    REQUIRE(json.value().find("\"disposition\": \"NotCommitted\"",
+                              error_position) != std::string::npos);
 }
 
 TEST_CASE(m3_inspect_is_read_only_and_preserves_both_slot_diagnostics) {
@@ -377,6 +399,13 @@ TEST_CASE(m3_inspect_reports_corrupt_no_selection_without_repair) {
     REQUIRE_EQ(report.value().status, myrd::m3::ReportStatus::Failed);
     REQUIRE(!report.value().selected.has_value());
     REQUIRE(report.value().error.has_value());
+    REQUIRE_EQ(report.value().error->operation_id, std::string{"op-3701"});
+    REQUIRE(!report.value().error->operation.empty());
+    REQUIRE(!report.value().error->image_uuid.has_value());
+    REQUIRE(!report.value().error->generation.has_value());
+    REQUIRE_EQ(report.value().error->disposition,
+               CommitDisposition::NotCommitted);
+    REQUIRE(myrd::m3::serialize_m3_report(report.value()).ok());
 }
 
 TEST_CASE(m3_full_verify_streams_the_recovered_logical_view) {
