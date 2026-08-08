@@ -96,6 +96,14 @@ try {
     Require-SoakRunnerTest `
         ([uint64]$report.coverage.io_fault_recovered_seeds -ge 1) `
         'Quick run missed I/O fault recovery coverage'
+    Require-SoakRunnerTest `
+        ($null -ne $report.coverage.PSObject.Properties['allocated_profile_seed'] `
+         -and [uint64]$report.coverage.allocated_profile_seed -eq 0) `
+        'Quick run claimed or omitted the Formal allocated-image profile'
+    Require-SoakRunnerTest `
+        ($null -ne $report.thresholds.PSObject.Properties['allocated_profile_bytes'] `
+         -and [uint64]$report.thresholds.allocated_profile_bytes -eq 0) `
+        'Quick run claimed or omitted Formal allocated-image bytes'
     Require-SoakRunnerTest ($report.cleanup.succeeded -eq $true -and
         @($report.cleanup.residuals).Count -eq 0) 'Quick cleanup was not empty'
     foreach ($name in @(
@@ -106,6 +114,24 @@ try {
         Require-SoakRunnerTest ([uint64]$report.cleanup.$name -eq 0) `
             "Quick cleanup gauge is nonzero: $name"
     }
+    foreach ($name in @(
+        'duration_ms','throughput_operations_per_second',
+        'latency_sample_count','latency_us_p50','latency_us_p95',
+        'latency_us_p99','checkpoint_duration_ms','compaction_duration_ms')) {
+        Require-SoakRunnerTest `
+            ($null -ne $report.performance.PSObject.Properties[$name]) `
+            "Quick performance field is missing: $name"
+    }
+    Require-SoakRunnerTest `
+        ([uint64]$report.performance.duration_ms -gt 0 -and
+         [uint64]$report.performance.throughput_operations_per_second -gt 0 -and
+         [uint64]$report.performance.latency_sample_count -gt 0 -and
+         [uint64]$report.performance.checkpoint_duration_ms -gt 0 -and
+         [uint64]$report.performance.compaction_duration_ms -gt 0) `
+        'Quick performance observations contain required zero values'
+    Require-SoakRunnerTest `
+        (@($report.limitations).Count -gt 0) `
+        'Quick report did not state performance limitations'
     foreach ($role in @('soak.stdout', 'soak.stderr')) {
         Require-SoakRunnerTest ($null -ne @($report.artifacts |
             Where-Object { $_.role -eq $role })[0]) `

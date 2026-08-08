@@ -74,6 +74,20 @@ function Get-M3SoakTextHash([string]$Text) {
     finally { $sha.Dispose() }
 }
 
+function Get-M3SoakPercentile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Collections.Generic.List[uint64]]$SortedSamples,
+        [ValidateRange(1,100)][int]$Percentile
+    )
+    Assert-M3Soak ($SortedSamples.Count -gt 0) `
+        'latency percentile requires at least one sample'
+    $rank = [Math]::Ceiling(
+        ([double]$SortedSamples.Count * [double]$Percentile) / 100.0)
+    $index = [int]((([Math]::Max($rank, 1.0))) - 1.0)
+    return [uint64]$SortedSamples[$index]
+}
+
 function Get-M3SoakSourceCommit([string]$RepositoryRoot) {
     $commit = ((& git.exe -C $RepositoryRoot rev-parse HEAD 2>$null) -join '').Trim()
     Assert-M3Soak ($LASTEXITCODE -eq 0 -and
@@ -163,7 +177,7 @@ function ConvertFrom-M3SoakSeedOutput {
     foreach ($name in @(
         'schema','seed','profile','operation_count','expected_sha256',
         'actual_sha256','complete_generations_only','mixed_generation',
-        'resource','checkpoint','latency','snapshot','coverage','cleanup',
+        'resource','checkpoint','latency','snapshot','coverage','performance','cleanup',
         'cleanup_succeeded')) {
         Assert-M3Soak ($null -ne $summary.PSObject.Properties[$name]) `
             "soak seed property is missing: $name"
@@ -184,7 +198,12 @@ function ConvertFrom-M3SoakSeedOutput {
         'soak seed used an incomplete generation'
     Assert-M3Soak (-not [bool]$summary.mixed_generation) `
         'soak seed accepted a mixed generation'
-    foreach ($name in @('logical_bytes','startup_read_bytes','extra_committed_bytes')) {
+    foreach ($name in @(
+        'logical_bytes','startup_read_bytes','extra_committed_bytes',
+        'allocated_profile_bytes','allocated_profile_startup_read_bytes',
+        'allocated_profile_extra_committed_bytes',
+        'allocated_profile_structural_read_bytes',
+        'allocated_profile_verified')) {
         Assert-M3Soak ($null -ne $summary.resource.PSObject.Properties[$name]) `
             "soak seed resource property is missing: $name"
     }
@@ -194,6 +213,35 @@ function ConvertFrom-M3SoakSeedOutput {
         'soak seed startup read threshold exceeded'
     Assert-M3Soak ([uint64]$summary.resource.extra_committed_bytes -le 134217728) `
         'soak seed committed-memory threshold exceeded'
+    $isAllocatedProfileSeed = $RequestedProfile -eq 'Formal' -and
+        $RequestedSeed -eq 3221344269
+    if ($isAllocatedProfileSeed) {
+        Assert-M3Soak `
+            ([uint64]$summary.resource.allocated_profile_bytes -eq 1073741824) `
+            'Formal allocated profile is not exactly 1 GiB'
+        Assert-M3Soak ([bool]$summary.resource.allocated_profile_verified) `
+            'Formal allocated profile was not verified by the production reader'
+        Assert-M3Soak `
+            ([uint64]$summary.resource.allocated_profile_structural_read_bytes -gt 0) `
+            'Formal allocated profile captured no structural reads'
+        Assert-M3Soak `
+            ([uint64]$summary.resource.allocated_profile_startup_read_bytes -le `
+             67108864) 'Formal allocated profile exceeded startup read limit'
+        Assert-M3Soak `
+            ([uint64]$summary.resource.allocated_profile_extra_committed_bytes -le `
+             134217728) 'Formal allocated profile exceeded memory limit'
+    }
+    else {
+        foreach ($name in @(
+            'allocated_profile_bytes','allocated_profile_startup_read_bytes',
+            'allocated_profile_extra_committed_bytes',
+            'allocated_profile_structural_read_bytes')) {
+            Assert-M3Soak ([uint64]$summary.resource.$name -eq 0) `
+                "non-resource seed claimed allocated profile data: $name"
+        }
+        Assert-M3Soak (-not [bool]$summary.resource.allocated_profile_verified) `
+            'non-resource seed claimed allocated profile verification'
+    }
     foreach ($name in @(
         'payload_bytes','journal_growth_bytes','production_payload_bytes',
         'production_journal_growth_bytes')) {
@@ -216,6 +264,22 @@ function ConvertFrom-M3SoakSeedOutput {
         'soak seed snapshot record count is zero'
     Assert-M3Soak ([uint64]$summary.snapshot.cow_peak_bytes -ge 65536) `
         'soak seed did not observe a COW pre-image'
+    foreach ($name in @(
+        'duration_ms','checkpoint_duration_ms','compaction_duration_ms',
+        'latency_samples_us')) {
+        Assert-M3Soak ($null -ne $summary.performance.PSObject.Properties[$name]) `
+            "soak seed performance property is missing: $name"
+    }
+    Assert-M3Soak ([uint64]$summary.performance.duration_ms -gt 0) `
+        'soak seed duration is zero'
+    Assert-M3Soak ([uint64]$summary.performance.checkpoint_duration_ms -gt 0) `
+        'soak seed checkpoint duration is zero'
+    Assert-M3Soak (@($summary.performance.latency_samples_us).Count -gt 0) `
+        'soak seed latency sample set is empty'
+    foreach ($sample in @($summary.performance.latency_samples_us)) {
+        Assert-M3Soak ([uint64]$sample -gt 0) `
+            'soak seed latency sample is zero'
+    }
     foreach ($name in @(
         'production_checkpoint','reopen_verified','compaction_verified',
         'concurrent_first_touch','cow_overlap','io_fault_recovered',
@@ -416,6 +480,26 @@ Assert-M3Soak ($compactionCount -ge 1) `
     'soak set did not execute production compaction'
 Assert-M3Soak ($ioFaultRecoveryCount -ge 1) `
     'soak set did not recover an injected product I/O fault'
+$allocatedProfiles = @($summaries | Where-Object {
+    [bool]$_.resource.allocated_profile_verified })
+if ($Profile -eq 'Formal') {
+    Assert-M3Soak ($allocatedProfiles.Count -eq 1 -and
+        [uint64]$allocatedProfiles[0].seed -eq 3221344269 -and
+        [uint64]$allocatedProfiles[0].resource.allocated_profile_bytes -eq
+            1073741824) 'Formal allocated-image profile coverage is invalid'
+}
+else {
+    Assert-M3Soak ($allocatedProfiles.Count -eq 0) `
+        'Quick soak claimed Formal allocated-image coverage'
+}
+$allocatedProfileSeed = if ($allocatedProfiles.Count -eq 1) {
+    [uint64]$allocatedProfiles[0].seed
+}
+else { [uint64]0 }
+$allocatedProfileBytes = if ($allocatedProfiles.Count -eq 1) {
+    [uint64]$allocatedProfiles[0].resource.allocated_profile_bytes
+}
+else { [uint64]0 }
 
 $cleanupGauges = [ordered]@{}
 foreach ($name in @(
@@ -425,6 +509,31 @@ foreach ($name in @(
         [uint64]$_.cleanup.$name
     } | Measure-Object -Maximum).Maximum)
 }
+$totalDurationMs = [uint64](@($summaries | ForEach-Object {
+    [uint64]$_.performance.duration_ms
+} | Measure-Object -Sum).Sum)
+Assert-M3Soak ($totalDurationMs -gt 0) 'soak total duration is zero'
+$latencySamples = [Collections.Generic.List[uint64]]::new()
+foreach ($summary in $summaries) {
+    foreach ($sample in @($summary.performance.latency_samples_us)) {
+        $latencySamples.Add([uint64]$sample)
+    }
+}
+$latencySamples.Sort()
+$throughput = [uint64][Math]::Floor(
+    ([double]$operationCount * 1000.0) / [double]$totalDurationMs)
+$throughput = [uint64](@([uint64]1, [uint64]$throughput) |
+    Measure-Object -Maximum).Maximum
+$checkpointDuration = [uint64](@($summaries | ForEach-Object {
+    [uint64]$_.performance.checkpoint_duration_ms
+} | Measure-Object -Maximum).Maximum)
+$compactionDuration = [uint64](@($summaries | ForEach-Object {
+    [uint64]$_.performance.compaction_duration_ms
+} | Measure-Object -Maximum).Maximum)
+Assert-M3Soak ($checkpointDuration -gt 0) `
+    'soak checkpoint duration observation is zero'
+Assert-M3Soak ($compactionDuration -gt 0) `
+    'soak compaction duration observation is zero'
 
 $dependencies = if ($Profile -eq 'Formal') {
     [ordered]@{
@@ -483,12 +592,14 @@ $report = [ordered]@{
         io_fault_recovered_seeds = $ioFaultRecoveryCount
         repeated_close_seeds = $repeatedCloseCount
         resource_checkpoint_seed = [uint64]$resourceCheckpoint.seed
+        allocated_profile_seed = $allocatedProfileSeed
     }
     thresholds = [ordered]@{
         startup_read_limit_bytes = 67108864
         startup_read_bytes = $startupRead
         extra_committed_limit_bytes = 134217728
         extra_committed_bytes = $extraCommitted
+        allocated_profile_bytes = $allocatedProfileBytes
         checkpoint_payload_bytes = $checkpointPayload
         journal_growth_limit_bytes = 322122547
         journal_growth_bytes = $journalGrowth
@@ -496,6 +607,16 @@ $report = [ordered]@{
         mutation_pause_max_ms = $mutationPause
         writer_stall_limit_ms = 250
         writer_stall_max_ms = $writerStall
+    }
+    performance = [ordered]@{
+        duration_ms = $totalDurationMs
+        throughput_operations_per_second = [uint64]$throughput
+        latency_sample_count = [uint64]$latencySamples.Count
+        latency_us_p50 = Get-M3SoakPercentile $latencySamples 50
+        latency_us_p95 = Get-M3SoakPercentile $latencySamples 95
+        latency_us_p99 = Get-M3SoakPercentile $latencySamples 99
+        checkpoint_duration_ms = $checkpointDuration
+        compaction_duration_ms = $compactionDuration
     }
     dependencies = $dependencies
     cleanup = [ordered]@{
@@ -507,6 +628,10 @@ $report = [ordered]@{
         snapshot_cow_records = $cleanupGauges.snapshot_cow_records
         snapshot_blocked_writers = $cleanupGauges.snapshot_blocked_writers
     }
+    limitations = @(
+        'Performance values are engineering observations on the audited machine, not a Primo parity or fixed-bandwidth claim.',
+        'The 256 MiB amplification case measures the production JournalWriter stream; every seed separately exercises full M3Provider checkpoints.'
+    )
     artifacts = $artifacts
     error = $null
 }

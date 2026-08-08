@@ -2090,7 +2090,13 @@ acceptance. The same-commit Task42 real interruption and Task43 M3-V7
 soak/resource evidence are recorded below; overall M3 GO remains a separate
 Task44 documentation, license, drift and elevated-regression decision.
 
-## Task 42/43 same-commit final evidence (2026-08-08)
+## Historical Task 42/43 same-commit evidence (2026-08-08, superseded)
+
+The evidence below remains valid only for commit `1ee1e35`. The current
+Task43 harness adds production error-context preservation, concrete cleanup
+gauges, performance observations and a 100 GiB logical/1 GiB allocated VHDX
+reader profile. Fresh same-commit Task41/42/43 evidence is therefore required;
+until then M3 is pending rather than GO.
 
 The final evidence freeze is commit
 `1ee1e350ced851f3b9702116dfb83ff01317d370`. The Release binaries used by all
@@ -2142,5 +2148,6 @@ hidden. The privileged supplement archive SHA-256 is
 `2852F5FD282B9AA252D53CA2051D6845AC46F51CA7CA5F73645EC75FC3571804` and its
 machine-readable result SHA-256 is
 `DB61B53918B1FDFE7CF14768848DE3AD3E67070DB0B5571AFF087B22613F987E`.
-Task42 and Task43 are **DONE/PASS**; the overall M3 release verdict
-remains **BLOCKED pending Task44 documentation/license/drift closure**.
+At historical commit `1ee1e35`, Task42 and Task43 were recorded
+**DONE/PASS**; that verdict is superseded. The current M3 release verdict is
+**PENDING fresh same-commit evidence and Task44 closure**.

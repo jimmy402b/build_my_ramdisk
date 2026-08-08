@@ -830,20 +830,20 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
 只允许 soak harness/verifier/evidence/report；发现代码缺陷回到所属 Task，不在 verdict
 卡修产品。
 
-- [x] `T43.1 [M]` clean Release build + complete CTest，归档命令、counts、commit、
+- [ ] `T43.1 [M]` 在最终 implementation freeze 上 clean Release build + complete CTest，归档命令、counts、commit、
   binary/artifact hashes；宿主非管理员 `114/120`，相同二进制在管理员 guest 补跑
   `6/6`，合并覆盖 `120/120`。
 - [x] `T43.2 [H]` 冻结 soak seeds/workload/thresholds：mixed read/write/TRIM/
   checkpoint/reopen/compaction、concurrent first-touch、low-memory、I/O faults、close。
-- [x] `T43.3 [M]` 执行 soak 并收集 memory/cache/COW stall/journal ratio/index depth/
+- [ ] `T43.3 [M]` 执行最终 Formal soak 并收集 memory/cache/COW stall/journal ratio/index depth/
   handles/threads/devices/I/O bytes/data hashes；阈值是 gate，不是 observation。
-- [x] `T43.4 [X]` 评估 bounded-memory/lazy-I/O/no-leak/no-mixed-generation；任何
+- [ ] `T43.4 [X]` 评估 bounded-memory/lazy-I/O/no-leak/no-mixed-generation；任何
   threshold 超界或 flaky seed 为 NO-GO，不扩大阈值。
-- [x] `T43.5 [M]` soak 后重跑 native VHDX、real AIM/NTFS、crash scenarios；required
+- [ ] `T43.5 [M]` soak 后重跑 native VHDX、real AIM/NTFS、crash scenarios；required
   prerequisite SKIP 单列，不能变 GO。
-- [x] `T43.6 [X]` 按内部 M3-V0 和官方 M3-V1..V7 逐项签 `GO/NO-GO/BLOCKED`，列
+- [ ] `T43.6 [X]` 按内部 M3-V0 和官方 M3-V1..V7 逐项签 `GO/NO-GO/BLOCKED`，列
   artifacts/unresolved defects/limitations；不得用总 bool 掩盖 gate。
-- [x] `T43.7 [X]` 独立 verifier 核对 raw evidence 和 source/binary hashes；最终
+- [ ] `T43.7 [X]` 独立 verifier 核对 raw evidence 和 source/binary hashes；最终
   人工 M3 总体签署仍属于 Task44。
 
 ### Task 44 — Documentation、license 与 final drift closure
@@ -853,8 +853,8 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
 
 - [x] `T44.1 [M]` 文档 inventory：supported/unsupported VHDX profile、bundle files、
   backup/restore、failure outcomes、compaction、shutdown、CommitIndeterminate recovery。
-- [ ] `T44.2 [M]` third-party inventory：每个 header/library/tool 的来源/version/
-  license/redistribution；AIM user-mode code 未经单独审查不得复制。
+- [x] `T44.2 [M]` third-party inventory：每个 header/library/tool 的来源/version/
+  license/redistribution 已记录于 `THIRD_PARTY.md`；AIM user-mode code 未经单独审查不得复制，公开分发安装包前仍需法律审查。
 - [ ] `T44.3 [H]` 逐条对照 implementation evidence 修正 docs；不得修改 SPEC 来
   追认无证据行为，设计变更需单独 decision/review。
 - [ ] `T44.4 [X]` line-by-line drift audit：M1 protocol、AIM、M2 semantics、durability

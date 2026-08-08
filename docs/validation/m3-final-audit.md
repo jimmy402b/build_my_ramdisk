@@ -1,4 +1,10 @@
-# M3 final Task44 audit
+# Historical M3 Task44 audit (superseded)
+
+> **Current status:** this document records commit `1ee1e35` only. Subsequent
+> Task43 correctness/context, cleanup, performance and 100 GiB/1 GiB allocated
+> profile changes invalidate its final-evidence freeze. M3 is currently
+> **PENDING**, not GO; this audit must be regenerated after fresh same-commit
+> Task41/42/43 evidence and cumulative regressions pass.
 
 ## Scope and provenance
 

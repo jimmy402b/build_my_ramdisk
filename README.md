@@ -7,11 +7,11 @@
 - M0：driver-only 可行性验证，机器范围内 GO。
 - M1：Shared Memory Proxy 产品化里程碑，机器范围内 GO。
 - M2/M2.1：动态按块分配、首次访问加载和一致性快照基础已完成。
-- M3：VHDX + journal + 双槽 manifest 持久化候选已完成 Task 41–43，正在执行 Task 44 最终文档、许可和偏航审计。
+- M3：VHDX + journal + 双槽 manifest 持久化实现与新版 Task43 harness 已完成 focused 验证；旧 Task41–43 证据已标记为历史记录，正在重跑最终同提交证据和 Task44 总审计。
 
 M1 已能直接调用内核驱动创建 64 MiB RAM disk，并通过 Windows 原始磁盘路径完成真实 READ、WRITE、ZERO、UNMAP、flush 和精确删除。Release 可执行文件已连续完成 20/20 次实机生命周期；完整证据见 `docs/validation/m1-proxy-acceptance.md`。
 
-M3 候选可以创建和重开镜像 bundle，在第一次访问块时从已提交的 journal/VHDX 按需加载，手动执行 checkpoint 和 compaction，并在异常退出或断电后恢复最近一次完整、已确认提交的 checkpoint。真实 AIM + NTFS、Windows 原生 VHDX、进程终止、受控断电和 Formal soak 证据见 `docs/validation/m3-persistence-acceptance.md`。
+M3 候选可以创建和重开镜像 bundle，在第一次访问块时从已提交的 journal/VHDX 按需加载，手动执行 checkpoint 和 compaction，并在异常退出或断电后恢复最近一次完整、已确认提交的 checkpoint。历史真实 AIM + NTFS、Windows 原生 VHDX、进程终止、受控断电和 Formal soak 证据见 `docs/validation/m3-persistence-acceptance.md`；当前最终 GO 必须等待新 implementation freeze 的同提交证据。
 
 M3 仍不是最终桌面产品：定时 checkpoint、Windows 服务、开机自动恢复、关机策略、自动压缩、GUI 和多磁盘策略属于 M4。普通写入进入 RAM 后即可完成；只有成功发布的 checkpoint 才有断电恢复承诺。
 

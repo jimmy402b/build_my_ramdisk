@@ -3,10 +3,12 @@
 #include "src/m3/m3_provider.h"
 #include "src/persistence/file_io.h"
 #include "src/persistence/image_creator.h"
+#include "src/persistence/image_paths.h"
 #include "src/persistence/journal_format.h"
 #include "src/persistence/journal_writer.h"
 #include "src/persistence/vhdx_format.h"
 #include "src/persistence/vhdx_reader.h"
+#include "src/persistence/vhdx_writer.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -18,6 +20,7 @@
 #include <psapi.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -31,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -52,6 +56,9 @@ constexpr std::uint64_t kFormalSeedBase = 3221344269ULL;
 constexpr std::uint64_t kFormalSeedStride = 104729ULL;
 constexpr std::uint64_t kFormalSeedCount = 100;
 constexpr std::uint64_t kFormalPayloadBlocks = 4096;
+constexpr std::uint64_t kFormalAllocatedProfileSeed = kFormalSeedBase;
+constexpr std::uint64_t kFormalAllocatedProfilePayloads =
+    kGiB / kVhdxDataBlockBytes;
 
 struct Coverage final {
     bool production_checkpoint{};
@@ -77,6 +84,22 @@ struct CleanupGauges final {
     }
 };
 
+struct PerformanceMeasurements final {
+    std::uint64_t duration_ms{};
+    std::vector<std::uint64_t> latency_samples_us{};
+    std::uint64_t checkpoint_duration_ms{};
+    std::uint64_t compaction_duration_ms{};
+};
+
+struct AllocatedProfileMeasurement final {
+    std::uint64_t allocated_bytes{};
+    std::uint64_t startup_read_bytes{};
+    std::uint64_t extra_committed_bytes{};
+    std::uint64_t structural_read_bytes{};
+    bool verified{};
+    bool cleanup_succeeded{true};
+};
+
 struct SoakSeedReport final {
     std::uint64_t seed{};
     std::string profile;
@@ -87,6 +110,7 @@ struct SoakSeedReport final {
     bool mixed_generation{};
     std::uint64_t startup_read_bytes{};
     std::uint64_t extra_committed_bytes{};
+    AllocatedProfileMeasurement allocated_profile{};
     std::uint64_t checkpoint_payload_bytes{};
     std::uint64_t journal_growth_bytes{};
     std::uint64_t production_payload_bytes{};
@@ -98,6 +122,7 @@ struct SoakSeedReport final {
     std::uint64_t snapshot_writer_stalls{};
     Coverage coverage{};
     CleanupGauges cleanup{};
+    PerformanceMeasurements performance{};
     bool cleanup_succeeded{};
 };
 
@@ -415,6 +440,20 @@ std::uint64_t elapsed_ms(std::chrono::steady_clock::time_point started) {
         .count());
 }
 
+std::uint64_t elapsed_us_nonzero(
+    std::chrono::steady_clock::time_point started) {
+    const auto elapsed = static_cast<std::uint64_t>(std::chrono::duration_cast<
+        std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
+        .count());
+    return (std::max)(elapsed, 1ULL);
+}
+
+std::uint64_t elapsed_ms_nonzero(
+    std::chrono::steady_clock::time_point started) {
+    const auto elapsed_us = elapsed_us_nonzero(started);
+    return (elapsed_us + 999ULL) / 1000ULL;
+}
+
 void update_peak_committed(
     const DynamicBlockStoreStats& initial,
     const DynamicBlockStoreStats& current,
@@ -535,7 +574,8 @@ void random_workload(
     std::uint64_t seed,
     std::uint64_t limit,
     std::uint64_t& operations,
-    std::uint64_t& mutation_pause_max_ms) {
+    std::uint64_t& mutation_pause_max_ms,
+    std::vector<std::uint64_t>& latency_samples_us) {
     DeterministicRandom random(seed);
     for (std::uint64_t operation = 0; operation < limit; ++operation) {
         const auto block = blocks[random.next() % blocks.size()];
@@ -579,6 +619,7 @@ void random_workload(
             std::fill(expected.bytes.begin(), expected.bytes.end(), std::byte{});
             expected.dirty = true;
         }
+        latency_samples_us.push_back(elapsed_us_nonzero(started));
         mutation_pause_max_ms = (std::max)(
             mutation_pause_max_ms, elapsed_ms(started));
         ++operations;
@@ -623,6 +664,130 @@ std::uint64_t formal_seed_index(std::uint64_t seed) {
     const auto index = (seed - kFormalSeedBase) / kFormalSeedStride;
     require(index < kFormalSeedCount, "Formal seed index is out of range");
     return index;
+}
+
+class AllocatedProfilePayloadSource final : public IVhdxPayloadSource {
+public:
+    Result<void> read_payload(
+        const OperationContext&,
+        const std::uint64_t payload_index,
+        const std::span<std::byte> destination) const override {
+        if (payload_index >= kFormalAllocatedProfilePayloads ||
+            destination.size() != kVhdxDataBlockBytes) {
+            return Result<void>::failure({
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(
+                    PersistenceErrorCode::InvalidFormat),
+                L"m3_soak_allocated_profile",
+                L"allocated profile payload request is out of range"});
+        }
+        const auto value = static_cast<std::byte>(
+            static_cast<std::uint8_t>(payload_index % 251ULL + 1ULL));
+        std::fill(destination.begin(), destination.end(), value);
+        return Result<void>::success();
+    }
+};
+
+AllocatedProfileMeasurement verify_formal_allocated_profile(
+    const std::uint64_t seed) {
+    require(seed == kFormalAllocatedProfileSeed,
+            "allocated profile ran outside its frozen Formal seed");
+    BundleSandbox sandbox(seed ^ 0xA110CA7EULL);
+    const auto relative_name = std::string{"allocated-profile.vhdx"};
+    const auto path = sandbox.root() / L"allocated-profile.vhdx";
+    const auto context = bounded_context();
+
+    VhdxWriterIdentity identity{};
+    for (std::size_t index = 0; index < 16; ++index) {
+        identity.file_identity.file_write_guid[index] =
+            static_cast<std::byte>(0x11U + index);
+        identity.file_identity.data_write_guid[index] =
+            static_cast<std::byte>(0x31U + index);
+        identity.virtual_disk_id[index] =
+            static_cast<std::byte>(0x51U + index);
+    }
+    std::vector<std::uint64_t> candidates(
+        static_cast<std::size_t>(kFormalAllocatedProfilePayloads));
+    std::iota(candidates.begin(), candidates.end(), std::uint64_t{0});
+    AllocatedProfilePayloadSource source;
+    auto plan = plan_sparse_vhdx(
+        context, {kLogicalBytes, 512}, identity, candidates, source,
+        {kFormalAllocatedProfilePayloads,
+         kFormalAllocatedProfilePayloads, kVhdxDataBlockBytes});
+    require(plan.ok(), "allocated profile VHDX planning failed");
+    require(plan.value().virtual_size() == kLogicalBytes &&
+            plan.value().payloads().size() ==
+                kFormalAllocatedProfilePayloads,
+            "allocated profile VHDX plan is not 100 GiB/1 GiB");
+
+    auto created = open_windows_persistence_file(
+        path, FileOpenMode::CreateNewReadWrite);
+    require(created.ok(), "allocated profile VHDX create failed");
+    auto written = write_sparse_vhdx_file(
+        context, plan.value(), source, created.move_value());
+    require(written.ok(), "allocated profile VHDX write failed");
+    const auto expected_file_length = written.value().layout().file_length();
+    auto created_file = written.value().release_file();
+    require_result(created_file->close(),
+                   "allocated profile VHDX close failed");
+    created_file.reset();
+
+    AllocatedProfileMeasurement measurement{};
+    measurement.allocated_bytes =
+        kFormalAllocatedProfilePayloads * kVhdxDataBlockBytes;
+    {
+        const auto read_before = process_read_bytes();
+        const auto private_before = process_private_bytes();
+        auto capability = open_bundle_file_for_backing_view(
+            sandbox.root(), relative_name);
+        require(capability.ok(),
+                "allocated profile backing-view open failed");
+        auto opened = capability.move_value();
+        auto delete_guard = opened.take_delete_guard();
+        auto validated = open_validated_persistence_file(opened.take_file());
+        require(validated.ok(),
+                "allocated profile validated-file open failed");
+        auto owned_file = validated.move_value();
+        VhdxParseEvidence evidence{};
+        const auto max_payloads =
+            kLogicalBytes / kVhdxDataBlockBytes + 1ULL;
+        auto reader_result = VhdxReader::open(
+            context, owned_file,
+            {{4ULL * kMiB, 128}, max_payloads, max_payloads},
+            {identity.file_identity, expected_file_length}, &evidence);
+        require(reader_result.ok(),
+                "allocated profile production VHDX reader open failed");
+        const auto read_after = process_read_bytes();
+        const auto private_after = process_private_bytes();
+        measurement.startup_read_bytes = read_after >= read_before
+            ? read_after - read_before : 0;
+        measurement.extra_committed_bytes = private_after >= private_before
+            ? private_after - private_before : 0;
+        measurement.structural_read_bytes = evidence.structural_read_bytes;
+
+        auto reader = reader_result.move_value();
+        require(reader->layout().virtual_size() == kLogicalBytes &&
+                reader->stats().payload_read_calls == 0,
+                "allocated profile eagerly read payload data at startup");
+        require(measurement.startup_read_bytes <= 64ULL * kMiB &&
+                measurement.extra_committed_bytes <= 128ULL * kMiB &&
+                evidence.stage == VhdxParseStage::Complete &&
+                evidence.structural_read_bytes > 0,
+                "allocated profile startup resource limit failed");
+
+        std::array<std::byte, kM2BlockSize> block{};
+        const auto loaded = reader->read_block(context, 0, block);
+        require(loaded.ok() && loaded.value().kind == BlockLoadKind::Data &&
+                std::all_of(block.begin(), block.end(), [](const std::byte value) {
+                    return value == std::byte{1};
+                }) && reader->stats().payload_read_calls == 1,
+                "allocated profile first-touch payload verification failed");
+        measurement.verified = true;
+    }
+    measurement.cleanup_succeeded = sandbox.cleanup();
+    require(measurement.cleanup_succeeded,
+            "allocated profile sandbox cleanup failed");
+    return measurement;
 }
 
 JournalMeasurement write_formal_resource_checkpoint(std::uint64_t seed) {
@@ -723,6 +888,7 @@ M3CliConfig compaction_config(const BundleSandbox& bundle) {
 
 SoakSeedReport run_soak_seed(
     std::uint64_t seed, std::string_view profile) {
+    const auto run_started = std::chrono::steady_clock::now();
     const auto random_operation_limit = profile == "Formal" ? 2048ULL : 512ULL;
     const bool compaction_scenario = is_compaction_seed(seed, profile);
     const bool io_fault_scenario = is_io_fault_seed(seed, profile);
@@ -743,6 +909,11 @@ SoakSeedReport run_soak_seed(
     bool cow_write_ok{};
     std::uint64_t cow_write_ms{};
     CleanupGauges cleanup_gauges{};
+    std::vector<std::uint64_t> latency_samples_us;
+    latency_samples_us.reserve(static_cast<std::size_t>(
+        profile == "Formal" ? 2048ULL : 512ULL));
+    std::uint64_t checkpoint_duration_ms{};
+    std::uint64_t compaction_duration_ms{};
     const auto cow_block = blocks.back();
     const auto cow_data = pattern(
         seed, 0xC0FFEEULL, static_cast<std::size_t>(kM2BlockSize));
@@ -780,7 +951,7 @@ SoakSeedReport run_soak_seed(
         bundle, probe, factories(probe, hook));
     const auto startup_read_after = process_read_bytes();
     const auto initial_stats = provider->storage_stats();
-    const auto startup_read_bytes = startup_read_after >= startup_read_before
+    auto startup_read_bytes = startup_read_after >= startup_read_before
         ? startup_read_after - startup_read_before : 0;
     std::uint64_t peak_committed{};
     std::uint64_t mutation_pause_max_ms{};
@@ -800,7 +971,7 @@ SoakSeedReport run_soak_seed(
     update_peak_process_committed(private_bytes_before, peak_committed);
     random_workload(*probe->device, blocks, model, seed,
                     random_operation_limit, operations,
-                    mutation_pause_max_ms);
+                    mutation_pause_max_ms, latency_samples_us);
 
     const auto low_data = pattern(
         seed, 0xA11CEULL, static_cast<std::size_t>(kM2BlockSize));
@@ -859,8 +1030,11 @@ SoakSeedReport run_soak_seed(
         lock.unlock();
         cow_cv.notify_all();
     });
+    const auto first_checkpoint_started = std::chrono::steady_clock::now();
     const auto first_checkpoint = provider->checkpoint(
         bounded_context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    checkpoint_duration_ms = (std::max)(
+        checkpoint_duration_ms, elapsed_ms_nonzero(first_checkpoint_started));
     if (!cow_triggered) {
         std::scoped_lock lock(cow_mutex);
         allow_cow = true;
@@ -918,8 +1092,11 @@ SoakSeedReport run_soak_seed(
     model.at(cow_block).kind = ModelKind::Data;
     model.at(cow_block).dirty = true;
     ++operations;
+    const auto second_checkpoint_started = std::chrono::steady_clock::now();
     const auto second_checkpoint = second->checkpoint(
         bounded_context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    checkpoint_duration_ms = (std::max)(
+        checkpoint_duration_ms, elapsed_ms_nonzero(second_checkpoint_started));
     const bool second_generation_complete =
         second_checkpoint.ok() && second_checkpoint.generation == 2;
     require(second_generation_complete,
@@ -932,8 +1109,10 @@ SoakSeedReport run_soak_seed(
     std::uint64_t expected_generation = 2;
     bool compaction_verified = false;
     if (compaction_scenario) {
+        const auto compaction_started = std::chrono::steady_clock::now();
         const auto compacted = run_m3_lifecycle(
             bounded_context(), compaction_config(bundle));
+        compaction_duration_ms = elapsed_ms_nonzero(compaction_started);
         require(compacted.exit_code == 0 &&
                 compacted.disposition == CommitDisposition::Committed &&
                 compacted.generation == 3,
@@ -963,18 +1142,27 @@ SoakSeedReport run_soak_seed(
     final_provider.reset();
 
     JournalMeasurement resource_checkpoint{};
+    AllocatedProfileMeasurement allocated_profile{};
     if (profile == "Formal" && formal_seed_index(seed) == 0) {
         resource_checkpoint = write_formal_resource_checkpoint(seed);
+        allocated_profile = verify_formal_allocated_profile(seed);
+        startup_read_bytes = (std::max)(
+            startup_read_bytes, allocated_profile.startup_read_bytes);
+        peak_committed = (std::max)(
+            peak_committed, allocated_profile.extra_committed_bytes);
     }
     const auto reported_payload = resource_checkpoint.payload_bytes != 0
         ? resource_checkpoint.payload_bytes : production_payload_bytes;
     const auto reported_growth = resource_checkpoint.growth_bytes != 0
         ? resource_checkpoint.growth_bytes : production_journal_growth;
     const bool cleaned = bundle.cleanup() &&
-        resource_checkpoint.cleanup_succeeded;
+        resource_checkpoint.cleanup_succeeded &&
+        allocated_profile.cleanup_succeeded;
     require(cleanup_gauges.empty(),
             "production soak left active store work after a stable boundary");
     require(cleaned, "production soak bundle cleanup failed");
+    require(!latency_samples_us.empty(),
+            "production soak collected no latency observations");
 
     return {
         seed,
@@ -987,6 +1175,7 @@ SoakSeedReport run_soak_seed(
         expected_hash.value() != actual_hash.value(),
         startup_read_bytes,
         peak_committed,
+        allocated_profile,
         reported_payload,
         reported_growth,
         production_payload_bytes,
@@ -1006,6 +1195,9 @@ SoakSeedReport run_soak_seed(
                      first_generation_complete,
                  repeated_close_verified},
         cleanup_gauges,
+        PerformanceMeasurements{
+            elapsed_ms_nonzero(run_started), std::move(latency_samples_us),
+            checkpoint_duration_ms, compaction_duration_ms},
         cleaned,
     };
 }
@@ -1047,7 +1239,17 @@ void print_summary(const SoakSeedReport& report) {
               << ",\"resource\":{\"logical_bytes\":" << kLogicalBytes
               << ",\"startup_read_bytes\":" << report.startup_read_bytes
               << ",\"extra_committed_bytes\":"
-              << report.extra_committed_bytes << "}"
+              << report.extra_committed_bytes
+              << ",\"allocated_profile_bytes\":"
+              << report.allocated_profile.allocated_bytes
+              << ",\"allocated_profile_startup_read_bytes\":"
+              << report.allocated_profile.startup_read_bytes
+              << ",\"allocated_profile_extra_committed_bytes\":"
+              << report.allocated_profile.extra_committed_bytes
+              << ",\"allocated_profile_structural_read_bytes\":"
+              << report.allocated_profile.structural_read_bytes
+              << ",\"allocated_profile_verified\":"
+              << boolean(report.allocated_profile.verified) << "}"
               << ",\"checkpoint\":{\"payload_bytes\":"
               << report.checkpoint_payload_bytes
               << ",\"journal_growth_bytes\":"
@@ -1078,6 +1280,19 @@ void print_summary(const SoakSeedReport& report) {
               << boolean(report.coverage.io_fault_recovered)
               << ",\"repeated_close\":"
               << boolean(report.coverage.repeated_close) << "}"
+              << ",\"performance\":{\"duration_ms\":"
+              << report.performance.duration_ms
+              << ",\"checkpoint_duration_ms\":"
+              << report.performance.checkpoint_duration_ms
+              << ",\"compaction_duration_ms\":"
+              << report.performance.compaction_duration_ms
+              << ",\"latency_samples_us\":[";
+    for (std::size_t index = 0;
+         index < report.performance.latency_samples_us.size(); ++index) {
+        if (index != 0) std::cout << ',';
+        std::cout << report.performance.latency_samples_us[index];
+    }
+    std::cout << "]}"
               << ",\"cleanup\":{\"loading_blocks\":"
               << report.cleanup.loading_blocks
               << ",\"active_snapshot_id\":"

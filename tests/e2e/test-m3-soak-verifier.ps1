@@ -173,12 +173,14 @@ try {
             io_fault_recovered_seeds = 1
             repeated_close_seeds = 100
             resource_checkpoint_seed = 3221344269
+            allocated_profile_seed = 3221344269
         }
         thresholds = [ordered]@{
             startup_read_limit_bytes = 67108864
             startup_read_bytes = 0
             extra_committed_limit_bytes = 134217728
             extra_committed_bytes = 0
+            allocated_profile_bytes = 1073741824
             checkpoint_payload_bytes = 268435456
             journal_growth_limit_bytes = 322122547
             journal_growth_bytes = 1
@@ -186,6 +188,16 @@ try {
             mutation_pause_max_ms = 1
             writer_stall_limit_ms = 250
             writer_stall_max_ms = 1
+        }
+        performance = [ordered]@{
+            duration_ms = 1000
+            throughput_operations_per_second = 100
+            latency_sample_count = 100000
+            latency_us_p50 = 10
+            latency_us_p95 = 20
+            latency_us_p99 = 30
+            checkpoint_duration_ms = 40
+            compaction_duration_ms = 50
         }
         dependencies = [ordered]@{
             real_functional = [ordered]@{
@@ -205,6 +217,9 @@ try {
             snapshot_cow_records = 0
             snapshot_blocked_writers = 0
         }
+        limitations = @(
+            'Performance values are engineering observations, not a Primo parity claim.'
+        )
         artifacts = @(
             [ordered]@{ role = 'soak.stdout'; sha256 = $stdoutHash },
             [ordered]@{ role = 'soak.stderr'; sha256 = $stderrHash }
@@ -228,8 +243,10 @@ try {
     $quick.coverage.concurrent_first_touch_seeds = 4
     $quick.coverage.cow_overlap_seeds = 4
     $quick.coverage.repeated_close_seeds = 4
+    $quick.coverage.allocated_profile_seed = 0
     $quick.dependencies = $null
     $quick.thresholds.checkpoint_payload_bytes = 1
+    $quick.thresholds.allocated_profile_bytes = 0
     $quick.thresholds.journal_growth_bytes = 0
     Write-TestJson $quick $reportPath
     $exitCode = Invoke-SoakVerifier $verifier $reportPath $source $binary `
@@ -257,12 +274,20 @@ try {
         @{ Name = 'I/O fault coverage'; Apply = { param($r) $r.coverage.io_fault_recovered_seeds = 0 } },
         @{ Name = 'repeated close coverage'; Apply = { param($r) $r.coverage.repeated_close_seeds = 99 } },
         @{ Name = 'resource checkpoint seed'; Apply = { param($r) $r.coverage.resource_checkpoint_seed = 3221344270 } },
+        @{ Name = 'allocated profile seed'; Apply = { param($r) $r.coverage.allocated_profile_seed = 3221344270 } },
         @{ Name = 'startup read threshold'; Apply = { param($r) $r.thresholds.startup_read_bytes = 67108865 } },
         @{ Name = 'committed memory threshold'; Apply = { param($r) $r.thresholds.extra_committed_bytes = 134217729 } },
         @{ Name = 'checkpoint payload'; Apply = { param($r) $r.thresholds.checkpoint_payload_bytes = 1 } },
+        @{ Name = 'allocated profile bytes'; Apply = { param($r) $r.thresholds.allocated_profile_bytes = 1073741823 } },
         @{ Name = 'journal growth threshold'; Apply = { param($r) $r.thresholds.journal_growth_bytes = 322122548 } },
         @{ Name = 'mutation pause threshold'; Apply = { param($r) $r.thresholds.mutation_pause_max_ms = 251 } },
         @{ Name = 'writer stall threshold'; Apply = { param($r) $r.thresholds.writer_stall_max_ms = 251 } },
+        @{ Name = 'performance duration'; Apply = { param($r) $r.performance.duration_ms = 0 } },
+        @{ Name = 'performance throughput'; Apply = { param($r) $r.performance.throughput_operations_per_second = 0 } },
+        @{ Name = 'latency sample count'; Apply = { param($r) $r.performance.latency_sample_count = 0 } },
+        @{ Name = 'latency percentile order'; Apply = { param($r) $r.performance.latency_us_p95 = 5 } },
+        @{ Name = 'checkpoint duration'; Apply = { param($r) $r.performance.checkpoint_duration_ms = 0 } },
+        @{ Name = 'compaction duration'; Apply = { param($r) $r.performance.compaction_duration_ms = 0 } },
         @{ Name = 'cleanup result'; Apply = { param($r) $r.cleanup.succeeded = $false } },
         @{ Name = 'cleanup residual'; Apply = { param($r) $r.cleanup.residuals = @('mapping') } },
         @{ Name = 'loading block residual'; Apply = { param($r) $r.cleanup.loading_blocks = 1 } },
@@ -270,6 +295,7 @@ try {
         @{ Name = 'COW byte residual'; Apply = { param($r) $r.cleanup.snapshot_cow_current_bytes = 65536 } },
         @{ Name = 'COW record residual'; Apply = { param($r) $r.cleanup.snapshot_cow_records = 1 } },
         @{ Name = 'blocked writer residual'; Apply = { param($r) $r.cleanup.snapshot_blocked_writers = 1 } },
+        @{ Name = 'missing limitation'; Apply = { param($r) $r.limitations = @() } },
         @{ Name = 'Task43 completion'; Apply = { param($r) $r.task43_complete = $false } },
         @{ Name = 'milestone eligibility'; Apply = { param($r) $r.milestone_eligible = $false } },
         @{ Name = 'Task41 dependency status'; Apply = { param($r) $r.dependencies.real_functional.status = 'FAIL' } },

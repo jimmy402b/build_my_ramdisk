@@ -24,7 +24,7 @@ Quick profile 只验证 harness 本身，不能完成 Task43。只有 Formal pro
 3. 并发 first-touch 与 checkpoint cut；
 4. low-memory cache/COW pressure 和注入 I/O failure；
 5. 重复 close/reopen、句柄/线程/临时文件回收；
-6. Formal 专用 100 GiB logical/1 GiB allocated 稀疏 profile；
+6. Formal 固定资源 seed `3221344269` 专用 100 GiB logical/1 GiB allocated 稀疏 profile：生产 `VhdxWriter` 写入 512 个非零 2 MiB payload，关闭后经 handle-anchored capability 与生产 `VhdxReader` 重开；启动时 payload read 必须为 0，首次触碰才允许读取并校验一个 64 KiB block；
 7. Formal 专用 256 MiB dirty checkpoint 写放大 profile。
 
 可执行文件向 stdout 输出版本化的单行 JSON summary；非零退出码表示 correctness 或 threshold gate 失败。失败输出 seed、profile、phase 和最小可复现计数。
@@ -36,10 +36,10 @@ Quick profile 只验证 harness 本身，不能完成 Task43。只有 Formal pro
 - 校验 evidence 路径位于仓库外、非 reparse point、初始为空；
 - 取得当前 Git commit 和所有输入 SHA-256；
 - 启动独立子进程、限制超时并保存原始 stdout/stderr；
-- Quick 使用固定 seeds `0`、`1`、`0xC0FFEE`、`0xDEADBEEF`；
-- Formal 额外使用 `SHA256(source_commit | 43 | i)` 低 64 位生成至少 100 个 seeds；
+- Quick 使用固定 seeds `42`、`12648430`、`9001`、`3735928559`；
+- Formal 使用固定公式 `3221344269 + i * 104729`（`i=0..99`）生成恰好 100 个 seeds；seed 0 承担 compaction、1 GiB allocated profile 与 256 MiB resource checkpoint，seed 1 承担产品 journal I/O fault；
 - Formal 读取并绑定 RealFunctional 和 Crash Full 报告；
-- 原子发布 `myrd.m3.soak-evidence.v1` JSON；
+- 原子发布 `myrd.m3.soak-evidence.v2` JSON；每个子进程输出 `myrd.m3.soak-seed.v2`；
 - 清理残留子进程和临时目录，任何残留使结果失败。
 
 ### 独立 verifier 与 route
@@ -55,7 +55,7 @@ Quick profile 只验证 harness 本身，不能完成 Task43。只有 Formal pro
 - M3 额外 committed memory 超过 128 MiB；
 - 256 MiB dirty checkpoint 物理 journal 增量超过 payload 的 120%；
 - mutation admission pause 或单次 writer stall 超过 250 ms；
-- handle/thread/device/temp/view/COW/cache/pin/waiter 残留。
+- 本地 store 的 Loading、active snapshot、COW bytes/records、blocked writers 或临时 bundle 残留；Formal 同时依赖 Task41/Task42 的进程、设备、盘符、server 和 evidence cleanup 门禁，不能只靠本地 soak 推断系统级无残留。
 
 `tools/Invoke-M3Verification.ps1 -Tier Soak` 默认 Formal。缺少显式证据返回 `BLOCKED/77`；格式或阈值错误返回 FAIL；Quick 只能输出开发级 PASS 且 `task43_complete=false`。
 
@@ -69,7 +69,7 @@ Formal 报告至少包含：
 - correctness hashes 和 old/new complete-generation proof；
 - startup read、committed memory、journal growth、COW/stall 指标；
 - throughput、P50/P95/P99、checkpoint/compaction duration；
-- handle/thread/device/temp/view/cow/cache/pin/waiter cleanup；
+- 本地 store/临时 bundle cleanup gauges，以及绑定的 Task41/Task42 系统级 cleanup 证据；
 - `task43_complete`、`milestone_eligible` 和 limitations。
 
 ## 测试和完成条件
@@ -80,4 +80,3 @@ Formal 报告至少包含：
 - Formal route 在最终 commit 上通过；
 - Formal 后重跑同 commit 的 RealFunctional 和 Crash Full，并由 verifier 重新绑定；
 - 任何 required SKIP、阈值超限、不可复现 seed 或资源残留均为 NO-GO。
-

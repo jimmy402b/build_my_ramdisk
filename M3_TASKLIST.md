@@ -990,21 +990,21 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O。允许文件：** `tests/e2e/Invoke-M3Soak.ps1`、扩展 `tools/Invoke-M3Verification.ps1`/`tools/Verify-M3Json.ps1`、`docs/evidence/m3/M3_VERIFICATION_REPORT.md`、机器生成报告；缺陷修复回到对应任务。
 
-- [x] clean Release configure/build/full CTest，保存 exact commit/commands/output；非管理员宿主
+- [ ] clean Release configure/build/full CTest，保存 exact commit/commands/output；非管理员宿主
   `114/120` 后，完全相同 SHA-256 的 6 个 privileged gate 在管理员 guest `6/6`，合并覆盖
   `120/120`。
 - [x] deterministic mixed read/write/TRIM/checkpoint/reopen/compaction soak，含 first-touch concurrency、low-memory、I/O fault、重复 close/reopen。
-- [x] 检查 bounded memory/lazy I/O、COW/stall、journal growth/compaction、handle/thread/device leak、data hashes 与 SPEC thresholds。
-- [x] soak 后复跑 native VHDX、real AIM/NTFS 和 crash required scenarios。
-- [x] 分别列出内部 M3-V0 基线与官方 M3-V1..V7 的 PASS/FAIL/SKIP、artifact hash 和 defect；required SKIP 不能 GO。
-- [x] verdict 已签为 `GO`（Task43/M3-V7）；M3 总体仍由 Task44 的文档、许可、漂移和管理员宿主回归门禁决定。
+- [ ] 检查 bounded memory/lazy I/O、COW/stall、journal growth/compaction、handle/thread/device leak、data hashes 与 SPEC thresholds；新 harness 的 focused Debug/Release 已通过，但 final Formal 尚待重跑。
+- [ ] soak 后复跑 native VHDX、real AIM/NTFS 和 crash required scenarios。
+- [ ] 分别列出内部 M3-V0 基线与官方 M3-V1..V7 的 PASS/FAIL/SKIP、artifact hash 和 defect；required SKIP 不能 GO。
+- [ ] 在最终 implementation commit 的同提交证据通过后重新签 `GO/NO-GO`；旧 `1ee1e35` GO 仅为历史记录，不能完成当前 Task43/Task44。
 
 ## Task 44 — Documentation、license and final drift closure
 
 **类别：C/O。允许文件：** README/status/license notices、M3 文档；若发现代码缺陷回到原任务，不在本任务改算法。
 
 - [x] 文档说明 supported/unsupported VHDX、bundle 文件、backup/restore、checkpoint、compaction、shutdown、CommitIndeterminate 恢复和限制。
-- [ ] inventory 每个 third-party dependency/fixture/tool 的许可与 redistribution；不无意复制 AIM Toolkit user-mode code。
+- [x] inventory 每个 third-party dependency/fixture/tool 的许可与 redistribution；不无意复制 AIM Toolkit user-mode code。工程 provenance 已记录于 `THIRD_PARTY.md`；公开分发安装包前仍需法律审查。
 - [ ] 逐行对照 SPEC/PLAN/TASKLIST，列出每个 frozen contract 的实现与 test/evidence 路径。
 - [ ] 从 clean tree 重跑 docs commands、Debug build/full CTest、Release build/full CTest 和最终 required gates。
 - [ ] 只有 Task 43 GO 且所有漂移关闭才将本任务和 M3 标为 DONE。
@@ -1024,7 +1024,7 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 - [ ] M0/M1/M2 回归、内部 M3-V0 基线和官方 M3-V1..V7 必需门禁在最终提交上新鲜通过。
 - [ ] 报告没有把 SKIP、模拟断电或旧 evidence 包装为 GO。
 
-最终执行记录：
+历史执行记录（commit `1ee1e35`；已被当前 implementation 变更取代，不得用于最终 GO）：
 
 ```text
 Final evidence commit / branch: 1ee1e350ced851f3b9702116dfb83ff01317d370 / feature/m3-task13-review
@@ -1074,7 +1074,12 @@ Final verdict and signer: Task42/43 DONE; overall M3 BLOCKED pending Task44 clos
   exit codes and both Windows boot IDs. The retained现场 was verified without
   deleting or recreating it.
 
-## Task 43 Formal evidence record (2026-08-08)
+## Historical Task 43 Formal evidence record (2026-08-08, superseded)
+
+下列证据只证明 commit `1ee1e350ced851f3b9702116dfb83ff01317d370`。当前
+Task43 harness 已增加生产错误上下文、cleanup gauges、性能统计和 100 GiB/1 GiB
+allocated profile，因此必须在新的 implementation freeze 上重跑 Task41/42/43；在此之前
+本节不能用于当前 M3 GO。
 
 - [x] Formal route PASS at the same commit, with `task43_complete=true` and
   `milestone_eligible=true`; report SHA-256

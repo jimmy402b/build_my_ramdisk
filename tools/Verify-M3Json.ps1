@@ -82,8 +82,8 @@ function Verify-M3SoakReport($SoakReport) {
     foreach ($name in @(
         'schema','status','terminal_verdict','profile','source_commit',
         'task43_complete','milestone_eligible','build','execution',
-        'correctness','coverage','thresholds','dependencies','cleanup',
-        'artifacts','error')) {
+        'correctness','coverage','thresholds','performance','dependencies',
+        'cleanup','artifacts','limitations','error')) {
         Require-Property $SoakReport $name
     }
     Require ([string]$SoakReport.schema -eq 'myrd.m3.soak-evidence.v2') `
@@ -200,7 +200,8 @@ function Verify-M3SoakReport($SoakReport) {
         'production_checkpoint_seeds','reopen_verified_seeds',
         'compaction_verified_seeds','concurrent_first_touch_seeds',
         'cow_overlap_seeds','io_fault_recovered_seeds',
-        'repeated_close_seeds','resource_checkpoint_seed')
+        'repeated_close_seeds','resource_checkpoint_seed',
+        'allocated_profile_seed')
     foreach ($name in $coverageNames) {
         Require-Property $SoakReport.coverage $name
         Require-UnsignedInteger $SoakReport.coverage.$name `
@@ -223,6 +224,7 @@ function Verify-M3SoakReport($SoakReport) {
         'startup_read_limit_bytes','startup_read_bytes',
         'extra_committed_limit_bytes','extra_committed_bytes',
         'checkpoint_payload_bytes','journal_growth_limit_bytes',
+        'allocated_profile_bytes',
         'journal_growth_bytes','mutation_pause_limit_ms','mutation_pause_max_ms',
         'writer_stall_limit_ms','writer_stall_max_ms')
     foreach ($name in $thresholdNames) {
@@ -238,10 +240,16 @@ function Verify-M3SoakReport($SoakReport) {
             'Formal checkpoint payload is not frozen at 256 MiB'
         Require ([uint64]$SoakReport.coverage.resource_checkpoint_seed -eq `
             3221344269) 'Formal resource checkpoint seed is not frozen'
+        Require ([uint64]$SoakReport.coverage.allocated_profile_seed -eq `
+            3221344269) 'Formal allocated profile seed is not frozen'
+        Require ([uint64]$SoakReport.thresholds.allocated_profile_bytes -eq `
+            1073741824) 'Formal allocated profile is not exactly 1 GiB'
     }
     else {
         Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -gt 0) `
             'Quick checkpoint payload is zero'
+        Require ([uint64]$SoakReport.thresholds.allocated_profile_bytes -eq 0) `
+            'Quick report cannot claim the Formal allocated profile'
     }
     Require ([uint64]$SoakReport.thresholds.journal_growth_limit_bytes -eq 322122547) `
         'journal growth limit is not frozen at 120 percent'
@@ -264,6 +272,28 @@ function Verify-M3SoakReport($SoakReport) {
     Require ([uint64]$SoakReport.thresholds.writer_stall_max_ms -le `
         [uint64]$SoakReport.thresholds.writer_stall_limit_ms) `
         'writer stall threshold exceeded'
+
+    $performanceNames = @(
+        'duration_ms','throughput_operations_per_second',
+        'latency_sample_count','latency_us_p50','latency_us_p95',
+        'latency_us_p99','checkpoint_duration_ms','compaction_duration_ms')
+    foreach ($name in $performanceNames) {
+        Require-Property $SoakReport.performance $name
+        Require-UnsignedInteger $SoakReport.performance.$name `
+            "soak performance $name"
+    }
+    foreach ($name in @(
+        'duration_ms','throughput_operations_per_second',
+        'latency_sample_count','checkpoint_duration_ms',
+        'compaction_duration_ms')) {
+        Require ([uint64]$SoakReport.performance.$name -gt 0) `
+            "soak performance value is zero: $name"
+    }
+    Require ([uint64]$SoakReport.performance.latency_us_p50 -le `
+        [uint64]$SoakReport.performance.latency_us_p95 -and
+        [uint64]$SoakReport.performance.latency_us_p95 -le `
+        [uint64]$SoakReport.performance.latency_us_p99) `
+        'soak latency percentiles are not monotonic'
 
     if ($isFormal) {
         Require ($null -ne $SoakReport.dependencies) `
@@ -489,6 +519,12 @@ function Verify-M3SoakReport($SoakReport) {
             "soak cleanup gauge $name"
         Require ([uint64]$SoakReport.cleanup.$name -eq 0) `
             "soak cleanup gauge is nonzero: $name"
+    }
+
+    $limitations = @($SoakReport.limitations)
+    Require ($limitations.Count -gt 0) 'soak limitations are required'
+    foreach ($limitation in $limitations) {
+        Require-NonEmptyString $limitation 'soak limitation'
     }
 
     $soakArtifacts = @($SoakReport.artifacts)

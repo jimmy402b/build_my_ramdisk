@@ -78,7 +78,11 @@ The real crash matrix hash is computed from BOM-free UTF-8 with LF line
 endings. Aggregation accepts legacy raw LF/CRLF hashes for the same matrix so
 evidence remains verifiable across Git checkout line-ending policies.
 
-## Formal soak evidence
+## Historical Formal soak evidence (commit `1ee1e35`, superseded)
+
+This evidence cannot complete the current Task43 because the soak harness has
+changed. Generate fresh Task41, Task42 and Task43 reports from the final
+implementation freeze before signing M3 GO.
 
 The Formal route was accepted at source commit
 `1ee1e350ced851f3b9702116dfb83ff01317d370` only after independently validating
