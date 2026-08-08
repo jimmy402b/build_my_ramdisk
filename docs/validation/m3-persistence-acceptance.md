@@ -2085,6 +2085,62 @@ An independently imported elevated provider integration executable passed
 the non-elevated host token was traced to the intentional SYSTEM/Administrators
 shared-memory DACL (`ERROR_ACCESS_DENIED`), not to provider behavior.
 
-Tasks 39, 40 and 41 verdict: **DONE**. This is M3-V6 normal-path acceptance,
-not M3 GO. Task 42 real interruption recovery and Task 43 M3-V7 soak/resource
-evidence remain mandatory.
+Tasks 39, 40 and 41 verdict: **DONE**. This closes M3-V6 normal-path
+acceptance. The same-commit Task42 real interruption and Task43 M3-V7
+soak/resource evidence are recorded below; overall M3 GO remains a separate
+Task44 documentation, license, drift and elevated-regression decision.
+
+## Task 42/43 same-commit final evidence (2026-08-08)
+
+The final evidence freeze is commit
+`1ee1e350ced851f3b9702116dfb83ff01317d370`. The Release binaries used by all
+three final routes were independently hashed as follows:
+
+- AIM server: `5EC08F88613CBE195B5FB978E9F8B4A60479CB4585230A089684B7E7295011E7`;
+- image CLI: `DD8561EF4CDA320E23566BE1A838EED87BAA3DB7746B46A997D654B524AFDCBA`;
+- soak executable: `B398B10AAE7C03D9077F1A02CC823C559B5376B3D460C80D6A459E91A9C1F81A`;
+- crash-model executable: `7A2BD0B63B6107C6E26BE5D396E3146C2F86CF56E6603C7F1F4FCAA108950562`.
+
+Task 42 passed the host simulated oracle (10,000 schedules, 6/6 model tests)
+and the real guest matrix: 10/10 scenarios, exactly 8 process kills and 2
+controlled VMware power cuts. The Full aggregate says
+`task42_complete=true` and `milestone_eligible=true`; its SHA-256 is
+`82B7C7F1A4BC47D4845BF7CE56F2AA347EAF567A1E4CEED250780AC1C44225D5`.
+Every scenario report is PASS, uses read-only-first recovery, verifies the
+full corpus and NTFS without reformat, records a lazy-load counter delta,
+selects only an old or new complete generation, has no fallback, and leaves
+zero server/AIM residuals.
+
+Task 43 Formal passed after independently revalidating the Task41 and Task42
+dependency reports. It ran 100 seeds and 204,800 operations. Correctness
+expected/actual SHA-256 is
+`47F7C1DCC7EF0A22C3F3792AC84B6C9734E953CBA312E17C8C3E7CB5AB857697` for both;
+checkpoint payload is 256 MiB; journal growth is 286,031,872 bytes against a
+322,122,547-byte limit; startup reads are 0; extra committed bytes are
+524,288; mutation pause and writer stall are both 0 ms; cleanup residuals are
+zero. The Formal report says `task43_complete=true` and
+`milestone_eligible=true`; its SHA-256 is
+`10F7C74A5AA346E336CFA47F2B1E34DB097830111AB6B20A2B0837C11BBE7210`.
+
+The same-commit Task41 report used by Formal has SHA-256
+`0F92D894A98B8B20516E6817F164A12C60932D6E9214D0ABF719EBD55F7B9EDB` and
+passed real AIM publication, NTFS formatting, two checkpoints, reopen without
+reformat, bounded first-touch backing reads, compaction and native read-only
+VHDX verification.
+
+### Verification limitation and verdict boundary
+
+A full non-elevated host Release CTest run passed 114/120. The six failures
+are reproducible privileged-environment gates: four tests creating `Global\`
+shared-memory mappings return `ERROR_ACCESS_DENIED`, one provider test has the
+same mapping restriction, and native VHDX compatibility reports
+`administrator_token_required`. The exact same six Release binaries were then
+run in the elevated Windows 11 guest and passed 6/6 (native VHDX 5/5), so the
+combined fresh coverage is 120/120. The Task43-specific CTest subset passed
+5/5. These environment details are recorded rather than converted to SKIP or
+hidden. The privileged supplement archive SHA-256 is
+`2852F5FD282B9AA252D53CA2051D6845AC46F51CA7CA5F73645EC75FC3571804` and its
+machine-readable result SHA-256 is
+`DB61B53918B1FDFE7CF14768848DE3AD3E67070DB0B5571AFF087B22613F987E`.
+Task42 and Task43 are **DONE/PASS**; the overall M3 release verdict
+remains **BLOCKED pending Task44 documentation/license/drift closure**.

@@ -6,10 +6,14 @@
 
 - M0：driver-only 可行性验证，机器范围内 GO。
 - M1：Shared Memory Proxy 产品化里程碑，机器范围内 GO。
+- M2/M2.1：动态按块分配、首次访问加载和一致性快照基础已完成。
+- M3：VHDX + journal + 双槽 manifest 持久化候选已完成 Task 41–43，正在执行 Task 44 最终文档、许可和偏航审计。
 
 M1 已能直接调用内核驱动创建 64 MiB RAM disk，并通过 Windows 原始磁盘路径完成真实 READ、WRITE、ZERO、UNMAP、flush 和精确删除。Release 可执行文件已连续完成 20/20 次实机生命周期；完整证据见 `docs/validation/m1-proxy-acceptance.md`。
 
-M1 仍是固定容量、全量预分配、易失性的内存块设备。当前没有动态按块分配、磁盘镜像加载/保存、定时写回、断电恢复、VHD、journal、后台服务、产品 CLI 或 GUI。这些属于后续 M2-M4，不能从 M1 GO 推导为已经完成。
+M3 候选可以创建和重开镜像 bundle，在第一次访问块时从已提交的 journal/VHDX 按需加载，手动执行 checkpoint 和 compaction，并在异常退出或断电后恢复最近一次完整、已确认提交的 checkpoint。真实 AIM + NTFS、Windows 原生 VHDX、进程终止、受控断电和 Formal soak 证据见 `docs/validation/m3-persistence-acceptance.md`。
+
+M3 仍不是最终桌面产品：定时 checkpoint、Windows 服务、开机自动恢复、关机策略、自动压缩、GUI 和多磁盘策略属于 M4。普通写入进入 RAM 后即可完成；只有成功发布的 checkpoint 才有断电恢复承诺。
 
 ## 环境要求
 
@@ -30,6 +34,28 @@ ctest --preset debug --output-on-failure
 cmake --build --preset release
 ctest --preset release --output-on-failure
 ```
+
+## M3 操作边界与验证
+
+- M3 bundle、支持的 VHDX profile、备份/恢复、checkpoint、compaction、关闭和故障处置：`docs/operations/m3-persistence.md`
+- M3 真实环境测试：`docs/testing/m3-e2e.md`
+- M3 实现与验收证据：`docs/validation/m3-persistence-acceptance.md`
+- M3 最终 Task 44 审计：`docs/validation/m3-final-audit.md`
+
+列出 M3 验证层级不会改变系统：
+
+```powershell
+.\tools\Invoke-M3Verification.ps1 -ListCommands
+```
+
+本地 Debug/Release 回归不创建真实 AIM 设备：
+
+```powershell
+.\tools\Invoke-M3Verification.ps1 -Tier Local -Configuration Debug
+.\tools\Invoke-M3Verification.ps1 -Tier Local -Configuration Release
+```
+
+`RealFunctional`、`Crash Full` 和 `Soak Formal` 是需要显式证据路径、安全确认或管理员来宾机的正式门禁。不要把 `Preflight`、`Crash Simulated`、`Soak Quick` 或 required `SKIP/BLOCKED` 解释为 M3 GO。
 
 ## M1 验证
 

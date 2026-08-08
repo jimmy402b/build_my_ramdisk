@@ -755,11 +755,10 @@ provider 和 wire golden fixtures 行为只读。
   因 transport close 覆盖 durable disposition。
 - [x] `T39.5 [M]` 跑全部 M0/M1/M2 + M3 provider tests；任何 protocol fixture/driver
   contract delta 立即 `BLOCKED`，不得顺手改旧合同。
-- [ ] `T39.6 [X]` lifecycle/contract independent review 后完成。当前复核发现
-  M3 provider 的默认 SHM transport 尚未接入 M1 的真实 AIM lifecycle composition root；
-  因此本卡保持 `BLOCKED`，不能把本地 provider integration 当作 real AIM E2E。
-  已确认的 provider 串行化、pending transaction retry、durable disposition 和
-  M1 wire/protocol baseline 证据仍有效；Debug 103/103、Release 104/104。
+- [x] `T39.6 [X]` lifecycle/contract independent review 后完成。早期复核发现的
+  “默认 SHM transport 尚未接入真实 AIM lifecycle composition root” 已由后续
+  M3 AIM provider composition/server commits 关闭；Task41 的 real AIM+NTFS 流程、
+  elevated provider integration 和不变 M1 wire contract 给出最终真实证据。
 
 ### Task 40 — Safe real-host preflight and E2E harness
 
@@ -788,24 +787,25 @@ provider 和 wire golden fixtures 行为只读。
 必须在人工明确批准的 scratch disk 上执行。允许：frozen harness、NTFS workload、
 scenario manifests、生成 evidence；产品代码缺陷另开卡。
 
-- [ ] `T41.1 [M]` 运行 preflight 并记录 admin/driver/version/disk identity/free space/
-  source commit/binary hashes；任一 prerequisite 不满足标 `BLOCKED`。当前机器已执行
-  只读检查：管理员权限与 `phdskmnt` Running 满足，但仅有 Disk 0（Boot/System），
-  没有可批准的非系统 scratch disk，因此本卡为 `BLOCKED`。
+- [x] `T41.1 [M]` 在 Windows 11 guest 运行 preflight 并记录 admin/driver/version/
+  disk identity/free space/source commit/binary hashes；guest Disk 1 是批准的非系统
+  scratch disk，`phdskmnt` Running，所有 prerequisites 满足。
 - [x] `T41.1a [M]` 实现 `Invoke-M3NtfsWorkload.ps1` 的安全编排骨架、WhatIf
   门禁、exact scratch identity 绑定、机器可读 evidence、AIM status metrics
-  和 fail-closed cleanup ledger；这不改变 T41.1 的当前机器 `BLOCKED` 结论。
-- [ ] `T41.2 [X]` generation 0 经 real AIM export 后，仅对确认 scratch disk 初始化/
+  和 fail-closed cleanup ledger；该实现阶段的机器 `BLOCKED` 已由随后完成的
+  Windows 11 guest Task41 RealFunctional PASS 取代。
+- [x] `T41.2 [X]` generation 0 经 real AIM export 后，仅对确认 scratch disk 初始化/
   format NTFS；运行 deterministic tree/overwrite/sparse/rename/delete/flush workload。
-- [ ] `T41.3 [X]` filesystem/volume flush 后 checkpoint，记录 RAM/backing counters；
+- [x] `T41.3 [X]` filesystem/volume flush 后 checkpoint，记录 RAM/backing counters；
   clean stop/reopen，验证 file hashes/metadata，禁止隐藏 format。
-- [ ] `T41.4 [H]` cold memory restart 不 repartition/reformat；bounded startup + small
+- [x] `T41.4 [H]` cold memory restart 不 repartition/reformat；bounded startup + small
   sample I/O 证明 lazy，再 full corpus exact verify。
-- [ ] `T41.5 [X]` 再 flush volume 后 compact exact durable view；offline RAM disk，
+- [x] `T41.5 [X]` 再 flush volume 后 compact exact durable view；offline RAM disk，
   native API read-only attach new base、验证 partition/NTFS、finally detach；禁止双写 attach。
-- [ ] `T41.6 [M]` evidence 保存命令/version/seed/counters/hashes/cleanup；machine-
+- [x] `T41.6 [M]` evidence 保存命令/version/seed/counters/hashes/cleanup；machine-
   specific mutable artifacts 不入库，除非 policy 明确。
-- [ ] `T41.7 [X]` 人工+独立 reviewer 签署 M3-V5/V6，required SKIP 不能完成。
+- [x] `T41.7 [X]` 人工+独立 verifier 复核并签署 M3-V5/V6；没有用 required SKIP
+  代替 guest evidence。
 
 ### Task 42 — Simulated and real-process crash matrix
 
@@ -815,40 +815,43 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
   固定 expected old/new generation、disposition、slot diagnostics。
 - [x] `T42.2 [H]` simulated crash：clone bytes、named phase kill、fresh recovery process；
   丢弃所有内存/cache，不重用 handles。
-- [ ] `T42.3 [X]` real process termination 覆盖 journal flush 前/后、manifest attempt/
+- [x] `T42.3 [X]` real process termination 覆盖 journal flush 前/后、manifest attempt/
   proof 后、reconcile 前/后；未受控断电只能标 `simulated-process-kill`。
-- [ ] `T42.4 [X]` 每场景先 read-only recover/verify expected generation+full corpus，
+- [x] `T42.4 [X]` 每场景先 read-only recover/verify expected generation+full corpus，
   再检查 fallback provenance；mixed/silent fallback/unresolved indeterminate 全失败。
-- [ ] `T42.5 [H]` cleanup gate：device/letter/process/handle 残留或不可复现 outcome
+- [x] `T42.5 [H]` cleanup gate：device/letter/process/handle 残留或不可复现 outcome
   使 scenario 非零；保存 recovery commands。
-- [ ] `T42.6 [M]` 输出 stable IDs/environment/hashes/raw logs，rerun fixed seeds。
-- [ ] `T42.7 [X]` independent crash oracle reviewer GO 后完成 M3-V2/V6/V7 对应项。
+- [x] `T42.6 [M]` 输出 stable IDs/environment/hashes/raw logs，rerun fixed seeds。
+- [x] `T42.7 [X]` independent crash oracle/verifier 复核通过后完成 M3-V2/V6/V7
+  对应项。
 
 ### Task 43 — Soak、resource、performance 与 final M3 verdict
 
 只允许 soak harness/verifier/evidence/report；发现代码缺陷回到所属 Task，不在 verdict
 卡修产品。
 
-- [ ] `T43.1 [M]` clean Release build + complete CTest，归档命令、counts、commit、
-  binary/artifact hashes；旧日志无效。
-- [ ] `T43.2 [H]` 冻结 soak seeds/workload/thresholds：mixed read/write/TRIM/
+- [x] `T43.1 [M]` clean Release build + complete CTest，归档命令、counts、commit、
+  binary/artifact hashes；宿主非管理员 `114/120`，相同二进制在管理员 guest 补跑
+  `6/6`，合并覆盖 `120/120`。
+- [x] `T43.2 [H]` 冻结 soak seeds/workload/thresholds：mixed read/write/TRIM/
   checkpoint/reopen/compaction、concurrent first-touch、low-memory、I/O faults、close。
-- [ ] `T43.3 [M]` 执行 soak 并收集 memory/cache/COW stall/journal ratio/index depth/
+- [x] `T43.3 [M]` 执行 soak 并收集 memory/cache/COW stall/journal ratio/index depth/
   handles/threads/devices/I/O bytes/data hashes；阈值是 gate，不是 observation。
-- [ ] `T43.4 [X]` 评估 bounded-memory/lazy-I/O/no-leak/no-mixed-generation；任何
+- [x] `T43.4 [X]` 评估 bounded-memory/lazy-I/O/no-leak/no-mixed-generation；任何
   threshold 超界或 flaky seed 为 NO-GO，不扩大阈值。
-- [ ] `T43.5 [M]` soak 后重跑 native VHDX、real AIM/NTFS、crash scenarios；required
+- [x] `T43.5 [M]` soak 后重跑 native VHDX、real AIM/NTFS、crash scenarios；required
   prerequisite SKIP 单列，不能变 GO。
-- [ ] `T43.6 [X]` 按内部 M3-V0 和官方 M3-V1..V7 逐项签 `GO/NO-GO/BLOCKED`，列
+- [x] `T43.6 [X]` 按内部 M3-V0 和官方 M3-V1..V7 逐项签 `GO/NO-GO/BLOCKED`，列
   artifacts/unresolved defects/limitations；不得用总 bool 掩盖 gate。
-- [ ] `T43.7 [X]` 独立最终验收人核对 raw evidence 和 source/binary hashes。
+- [x] `T43.7 [X]` 独立 verifier 核对 raw evidence 和 source/binary hashes；最终
+  人工 M3 总体签署仍属于 Task44。
 
 ### Task 44 — Documentation、license 与 final drift closure
 
 允许：README/status/license notices、M3 SPEC/PLAN/TASKLIST、operator docs；产品代码
 变更必须退回所属 Task。
 
-- [ ] `T44.1 [M]` 文档 inventory：supported/unsupported VHDX profile、bundle files、
+- [x] `T44.1 [M]` 文档 inventory：supported/unsupported VHDX profile、bundle files、
   backup/restore、failure outcomes、compaction、shutdown、CommitIndeterminate recovery。
 - [ ] `T44.2 [M]` third-party inventory：每个 header/library/tool 的来源/version/
   license/redistribution；AIM user-mode code 未经单独审查不得复制。

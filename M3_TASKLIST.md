@@ -192,9 +192,9 @@ Suggested commit:
 | 39 | M1/M2/M3 provider 集成 | O | DONE | 28,32,38 | M3-V6 prerequisite |
 | 40 | 真实主机 preflight/E2E harness | C | DONE | 24,39 | M3-V6 preflight |
 | 41 | AIM+NTFS+lazy+VHDX 真机验收 | O | DONE | 24,32,35,40 | M3-V6 |
-| 42 | 模拟/进程 crash matrix | O | DOING | 33,40,41 | M3-V2/V6/V7 |
-| 43 | Soak、资源、性能、最终 M3 verdict | O | PENDING | 36,41,42 | M3-V7 |
-| 44 | 文档、许可、最终偏航审计 | C/O | PENDING | 43 | 全门禁 |
+| 42 | 模拟/进程 crash matrix | O | DONE | 33,40,41 | M3-V2/V6/V7 |
+| 43 | Soak、资源、性能、最终 M3 verdict | O | DONE | 36,41,42 | M3-V7 |
+| 44 | 文档、许可、最终偏航审计 | C/O | DOING | 43 | 全门禁 |
 
 ---
 
@@ -512,10 +512,10 @@ blocks corpus。Task 08 状态：`DONE`。
 - Self-review: 逐文件审查发现并修复 case-sensitive `Bundle`/`bundle` 父目录误判、中间 junction 换向后从原始路径 reopen、`manifest_identity()` 悬空引用，以及 cleanup 后增 hardlink 的错误分类；所有缺陷均有回归测试。
 - Evidence: `tests/unit/m3_persistence_path_tests.cpp` SHA-256 `6F546F01BEC4C316EEC030495B1D71126EFDDCF223EF2C76EA957EC4134DEF05`；Release `myrd_m3_persistence_path_tests.exe` SHA-256 `5E0AFF0B6C4BA54E49D5D6F33E2E9B4DA1F4C790EA756A6F1647BC8F861ABFC3`。
 - Drift audit: 未修改 M1 protocol、AIM contract、M2 block 语义、checkpoint durability 顺序或 M4 边界；仅新增 Task 12 最小稳定错误码并明确 Task 13 迁移；cleanup capability 只授予路径/identity/writer 权限，Task 36 仍必须另外证明 manifest/BackingView/in-flight/reconciliation retention 条件。
-- Open risks / excluded follow-up: Task 13 合并完整 persistence error context；后续 codec 必须消费/适配已验证 handle，禁止按 `final_path()` 重新打开；Task 36 实现引用保留策略。独立审查委派因 Claude API `ConnectionRefused` 未产出结论，因此本任务按用户要求停在 `READY_FOR_REVIEW`，不置 `DONE`。
+- Historical checkpoint: 当时 Task 13 仍需合并完整 persistence error context，Task 36 仍需实现引用保留策略；该轮独立审查委派因 Claude API `ConnectionRefused` 未产出结论，因此当时停在 `READY_FOR_REVIEW`。后续独立规格/质量审查、修复和最终 DONE 证据见 `docs/validation/m3-persistence-acceptance.md` 的 “Task 12 path, identity and writer-ownership evidence” 章节。
 - Suggested commit: `feat(persistence): secure image paths and identities`。
 
-**NO-GO 规格审查修复记录（仍为 READY_FOR_REVIEW）：**
+**NO-GO 规格审查修复记录（历史审查阶段，当时为 READY_FOR_REVIEW）：**
 
 - Review base / executor / date: `0fc83e0417b6a8091248c8e6d1bc81f7e82f86fa` / Codex / 2026-08-04；未开始 Task 13。
 - Reviewer verification: P1-A 成立——原实现没有从 private validated handle 进入 Task 11 `IPersistenceFile` 的通道。P1-B 的绝对路径与事后 containment 问题成立；但“仅给 root handle 增加 `FILE_ADD_FILE` 即可使用 `SetFileInformationByHandle`”不成立。本机以 read-only、`FILE_ADD_FILE`、`GENERIC_WRITE|DELETE` 三组 root access 执行 `FileRenameInfo` 均稳定返回 `ERROR_INVALID_PARAMETER (87)`；同一已打开 root handle + 单 component 通过 `NtSetInformationFile(FileRenameInformation)` 返回成功，现有 `FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES` 已足够，无需扩大权限。
@@ -525,9 +525,9 @@ blocks corpus。Task 08 状态：`DONE`。
 - Verification: Debug focused Task 11/12 `2/2`；Release focused `2/2`；Release 高风险 Task 12 repeat `20/20`；当前 `m3-v1` `3/3`；完整 Release build + CTest `62/62`；`git diff --check` 退出 0。
 - Self-review: 两遍审计覆盖 path reopen、handle share/overlapped flags、hardlink/reparse、rename routing、partial write identity refresh、manifest identity、writer/adapter lock order、close/release 与测试 temp-root 删除边界，未发现开放的 Critical/Important 缺陷。独立 Claude review 再次因 API `ConnectionRefused` 未产出意见且未修改工作树。
 - Evidence: `tests/unit/m3_persistence_path_tests.cpp` SHA-256 `28D62FBB8F3293F8578C3ED4FB0307418E25A7CCBFC77DC6754E4274637FB777`；Release `myrd_m3_persistence_path_tests.exe` SHA-256 `6AAC481441D8C111B3AD9D43E1F8AFFF5184F71CF7AF806ACE2F38C1BE666D41`。
-- Open risks / migration points: NT entry points 由系统 `ntdll.dll` 动态解析，缺失时 fail closed 为 `IoError`；Task 13 仍负责把最小稳定错误迁移到完整 persistence outcome，Task 36 仍负责引用保留判定。本任务保持 `READY_FOR_REVIEW`，不置 `DONE`。
+- Historical risks / migration points: NT entry points 由系统 `ntdll.dll` 动态解析，缺失时 fail closed 为 `IoError`；当时 Task 13 仍负责把最小稳定错误迁移到完整 persistence outcome，Task 36 仍负责引用保留判定。该时点保持 `READY_FOR_REVIEW`；上述后续任务和最终 Task12 审查均已完成。
 
-**HEAD `7f67953f` 独立 NO-GO 修复记录（仍为 READY_FOR_REVIEW）：**
+**HEAD `7f67953f` 独立 NO-GO 修复记录（历史审查阶段，当时为 READY_FOR_REVIEW）：**
 
 - Review base / executor / date: `7f67953f30601410fc0e44a3ee5845e07fe09101` / Codex / 2026-08-04；只修 Task 12，未开始或修改 Task 13。
 - Reviewer verification: 两项 P1 均成立。`ValidatedPersistenceFile::write_exact/truncate` 原先只复核 writer，adapter 打开后新增外部 hardlink 会让后端修改同一外部别名；rename 的 `STATUS_PENDING` 分支原先在 writer mutex 内 `WaitForSingleObject(INFINITE)`，close/deadline 均可能永久阻塞。
@@ -537,7 +537,7 @@ blocks corpus。Task 08 状态：`DONE`。
 - Approved Task 11 bridge scope exception: 上一轮为把 validated handle 接入 `IPersistenceFile` 而批准触及 `src/persistence/file_io.cpp` 与新增 `src/persistence/windows_file_io_bridge.h`；本轮未再次修改这两个 Task 11 bridge 文件。作为独立回归，`unit.m3.file_io` 已在 Debug/Release 各自与 Task 12 focused tests 分开运行并通过，证明本轮安全门禁未破坏 Task 11 exact-I/O 行为。
 - Verification: Debug Task 11/12 focused `2/2`；Release Task 11/12 focused `2/2`；Release Task 12 高风险整组 repeat `20/20`；当前 `m3-v1` `3/3`；完整 Release build 与 CTest `62/62`；`git diff --check` 退出 0。
 - Self-review / drift audit: 重点复查 hardlink-after-open、partial-I/O refresh、root/target identity、reparse/direct-child、pending IO status 生命周期、false file-handle signal、writer close race、mutex lock order、cancel drain、测试 temp-root 删除边界与 Task 13 边界；补上 `IO_STATUS_BLOCK` 初始 `STATUS_PENDING` 及“handle 已 signal 但 status 仍 pending”不得误判成功。未修改 M1/M2 语义、checkpoint 顺序、manifest codec、Task 13 types/outcomes 或 Task 36 retention 责任。
-- Open risk: 只有 native backend 在 cancel 后超过 2 秒仍无法完成时才会故意保留一个 process-lifetime quarantine object；这是防止 kernel 持有指针发生 UAF 的 fail-closed 代价。生产 backend 仍动态解析系统 `ntdll.dll`，缺失时稳定失败。独立只读 Claude review 在 180 秒内持续 API retry 后超时、未返回 verdict 且未修改工作树；不据此宣称独立 GO。本任务保持 `READY_FOR_REVIEW`，不置 `DONE`。
+- Historical open risk: 只有 native backend 在 cancel 后超过 2 秒仍无法完成时才会故意保留一个 process-lifetime quarantine object；这是防止 kernel 持有指针发生 UAF 的 fail-closed 代价。生产 backend 仍动态解析系统 `ntdll.dll`，缺失时稳定失败。该轮独立只读 Claude review 超时，故当时不据此宣称独立 GO；后续 Task12 独立规格/质量审查已 GO（P0/P1/P2=0），最终 verdict 已记录为 DONE。
 - Suggested commit: `fix(persistence): revalidate mutations and bound rename waits`。
 
 **最终独立验收记录（DONE，accepted implementation `cedd4d8`）：**
@@ -979,29 +979,31 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O；oracle 独立。允许文件：** `tests/e2e/Invoke-M3CrashMatrix.ps1`、`tests/e2e/run-m3-persistence.ps1`、scenario/evidence schema。
 
-- [ ] 在 named durability phases 执行 deterministic file-clone simulated crashes，每次用 fresh process recovery。
-- [ ] 执行 real process termination：journal flush 前后、manifest publish 周围、publish proof 后、reconcile 前后。
-- [ ] 非真实断电不得声称 power-loss test；报告明确 simulated/process-kill/controlled-power-cut 类型。
-- [ ] 每次先 read-only recover，验证 expected old/new generation 与 full corpus hash，再 inspect slot/fallback。
-- [ ] mixed generation、silent corruption fallback、unresolved indeterminate、resource leak 或 non-reproducible 全部失败。
-- [ ] 跑 `m3-v2` 的 crash/recovery gate、`m3-v6` 的 real kill scenarios 和 `m3-v7` 的重复 soak profile；建议提交 `test(m3): add crash recovery matrix`。
+- [x] 在 named durability phases 执行 deterministic file-clone simulated crashes，每次用 fresh process recovery。
+- [x] 执行 real process termination：journal flush 前后、manifest publish 周围、publish proof 后、reconcile 前后。
+- [x] 非真实断电不得声称 power-loss test；报告明确 simulated/process-kill/controlled-power-cut 类型。
+- [x] 每次先 read-only recover，验证 expected old/new generation 与 full corpus hash，再 inspect slot/fallback。
+- [x] mixed generation、silent corruption fallback、unresolved indeterminate、resource leak 或 non-reproducible 全部失败。
+- [x] 跑 `m3-v2` 的 crash/recovery gate、`m3-v6` 的 real kill scenarios 和 `m3-v7` 的重复 soak profile；建议提交 `test(m3): add crash recovery matrix`。
 
 ## Task 43 — Soak、resource、performance and final verdict
 
 **类别：O。允许文件：** `tests/e2e/Invoke-M3Soak.ps1`、扩展 `tools/Invoke-M3Verification.ps1`/`tools/Verify-M3Json.ps1`、`docs/evidence/m3/M3_VERIFICATION_REPORT.md`、机器生成报告；缺陷修复回到对应任务。
 
-- [ ] clean Release configure/build/full CTest，保存 exact commit/commands/output。
-- [ ] deterministic mixed read/write/TRIM/checkpoint/reopen/compaction soak，含 first-touch concurrency、low-memory、I/O fault、重复 close/reopen。
-- [ ] 检查 bounded memory/lazy I/O、COW/stall、journal growth/compaction、handle/thread/device leak、data hashes 与 SPEC thresholds。
-- [ ] soak 后复跑 native VHDX、real AIM/NTFS 和 crash required scenarios。
-- [ ] 分别列出内部 M3-V0 基线与官方 M3-V1..V7 的 PASS/FAIL/SKIP、artifact hash 和 defect；required SKIP 不能 GO。
-- [ ] verdict 只能 `GO`、`NO-GO`、`BLOCKED`；建议提交 `docs(m3): issue persistence milestone verdict`。
+- [x] clean Release configure/build/full CTest，保存 exact commit/commands/output；非管理员宿主
+  `114/120` 后，完全相同 SHA-256 的 6 个 privileged gate 在管理员 guest `6/6`，合并覆盖
+  `120/120`。
+- [x] deterministic mixed read/write/TRIM/checkpoint/reopen/compaction soak，含 first-touch concurrency、low-memory、I/O fault、重复 close/reopen。
+- [x] 检查 bounded memory/lazy I/O、COW/stall、journal growth/compaction、handle/thread/device leak、data hashes 与 SPEC thresholds。
+- [x] soak 后复跑 native VHDX、real AIM/NTFS 和 crash required scenarios。
+- [x] 分别列出内部 M3-V0 基线与官方 M3-V1..V7 的 PASS/FAIL/SKIP、artifact hash 和 defect；required SKIP 不能 GO。
+- [x] verdict 已签为 `GO`（Task43/M3-V7）；M3 总体仍由 Task44 的文档、许可、漂移和管理员宿主回归门禁决定。
 
 ## Task 44 — Documentation、license and final drift closure
 
 **类别：C/O。允许文件：** README/status/license notices、M3 文档；若发现代码缺陷回到原任务，不在本任务改算法。
 
-- [ ] 文档说明 supported/unsupported VHDX、bundle 文件、backup/restore、checkpoint、compaction、shutdown、CommitIndeterminate 恢复和限制。
+- [x] 文档说明 supported/unsupported VHDX、bundle 文件、backup/restore、checkpoint、compaction、shutdown、CommitIndeterminate 恢复和限制。
 - [ ] inventory 每个 third-party dependency/fixture/tool 的许可与 redistribution；不无意复制 AIM Toolkit user-mode code。
 - [ ] 逐行对照 SPEC/PLAN/TASKLIST，列出每个 frozen contract 的实现与 test/evidence 路径。
 - [ ] 从 clean tree 重跑 docs commands、Debug build/full CTest、Release build/full CTest 和最终 required gates。
@@ -1025,18 +1027,18 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 最终执行记录：
 
 ```text
-Final commit / branch:
-Toolchain / OS / AIM driver:
-Clean-tree status:
-M2.1-V0..V5 results:
-Internal M3-V0 / official M3-V1..V7 results:
-Native VHDX result:
-Real AIM+NTFS result:
-Crash matrix result:
-Soak/resource result:
-Evidence paths and hashes:
-Known limitations:
-Final verdict and signer:
+Final evidence commit / branch: 1ee1e350ced851f3b9702116dfb83ff01317d370 / feature/m3-task13-review
+Toolchain / OS / AIM driver: MSVC 2022 BuildTools x64 / Windows 11 guest / phdskmnt Running
+Clean-tree status: evidence was generated before this documentation-only update; no product source changes
+M2.1-V0..V5 results: prior M2.1 PASS; M3-specific 5-test Task43 gate PASS
+Internal M3-V0 / official M3-V1..V7 results: Task43 Formal PASS; six non-elevated host privilege gates recorded
+Native VHDX result: Task41 guest PASS, native read-only attach and detach verified
+Real AIM+NTFS result: Task41 guest PASS, two checkpoints, reopen, lazy reads, compaction
+Crash matrix result: Task42 Full PASS, 10/10 (8 kills, 2 power cuts), aggregate PASS
+Soak/resource result: Task43 Formal PASS, 100 seeds, 204800 ops, thresholds PASS
+Evidence paths and hashes: see Task42 same-commit and Task43 Formal records above
+Known limitations: host shell 本身是 non-elevated；其六个 privileged failures 已用完全相同二进制在 guest 重跑并 `6/6` 通过
+Final verdict and signer: Task42/43 DONE; overall M3 BLOCKED pending Task44 closure
 ```
 
 ## Task 42 local simulated subset record (2026-08-07)
@@ -1048,8 +1050,54 @@ Final verdict and signer:
   passed`.
 - [x] CTest registrations and `CrashMode Simulated` route pass; default `Crash`
   remains BLOCKED/77.
-- [ ] Real process termination, AIM/NTFS recovery, controlled power-cut, and
-  final Task42 reviewer gate remain open. This record does not make M3 GO.
+- [x] At the time of this 2026-08-07 simulated-only snapshot, real process
+  termination, AIM/NTFS recovery and controlled power-cut were still open;
+  the same-commit real evidence below supersedes this historical limitation.
+
+## Task 42 same-commit real evidence record (2026-08-08)
+
+- [x] Evidence freeze commit: `1ee1e350ced851f3b9702116dfb83ff01317d370`.
+- [x] Host simulated oracle: 10,000 schedules, 6/6 model tests, report SHA-256
+  `A066D90AB308EB91000E6A5D71ED0D2F2C08F84D627D03A37E0F26E7C66F6A2F`.
+- [x] Real matrix: 10/10 PASS; 8 process-kill scenarios and 2 controlled
+  VMware power-cut scenarios. Every report used the same source commit,
+  server SHA-256 `5EC08F88613CBE195B5FB978E9F8B4A60479CB4585230A089684B7E7295011E7`,
+  and image SHA-256 `DD8561EF4CDA320E23566BE1A838EED87BAA3DB7746B46A997D654B524AFDCBA`.
+- [x] Full aggregate route PASS, `task42_complete=true`,
+  `milestone_eligible=true`; aggregate SHA-256
+  `82B7C7F1A4BC47D4845BF7CE56F2AA347EAF567A1E4CEED250780AC1C44225D5`.
+- [x] Recovery classifications were old/new only, all scenarios had
+  `fallback=false`, read-only-first recovery, full corpus hashes, NTFS
+  `NoErrorsFound`, lazy-load counter deltas, and zero server/AIM residuals.
+- [x] One power-cut required an additional VM restart because SSH did not
+  return after the first hard start; the witness records the original vmrun
+  exit codes and both Windows boot IDs. The retained现场 was verified without
+  deleting or recreating it.
+
+## Task 43 Formal evidence record (2026-08-08)
+
+- [x] Formal route PASS at the same commit, with `task43_complete=true` and
+  `milestone_eligible=true`; report SHA-256
+  `10F7C74A5AA346E336CFA47F2B1E34DB097830111AB6B20A2B0837C11BBE7210`.
+- [x] 100 deterministic seeds, 204,800 operations, no failed seed; expected
+  and actual correctness SHA-256 both
+  `47F7C1DCC7EF0A22C3F3792AC84B6C9734E953CBA312E17C8C3E7CB5AB857697`.
+- [x] Formal thresholds: startup reads `0` / `64 MiB` limit; extra committed
+  `524,288` / `128 MiB`; checkpoint payload `256 MiB`; journal growth
+  `286,031,872` / `322,122,547` limit; mutation pause and writer stall both
+  `0 ms` / `250 ms`; cleanup residuals `0`.
+- [x] Task41 dependency report SHA-256
+  `0F92D894A98B8B20516E6817F164A12C60932D6E9214D0ABF719EBD55F7B9EDB` and
+  Task42 aggregate SHA-256 above were independently revalidated before Formal.
+- [x] Privileged CTest supplement evidence archive SHA-256
+  `2852F5FD282B9AA252D53CA2051D6845AC46F51CA7CA5F73645EC75FC3571804`;
+  machine-readable result SHA-256
+  `DB61B53918B1FDFE7CF14768848DE3AD3E67070DB0B5571AFF087B22613F987E`.
+- [x] Task43-specific CTest gates passed `5/5` (including workload, runner,
+  routing and both verifiers). The non-elevated host run passed `114/120` and
+  the exact same six failed binaries passed `6/6` in the elevated guest,
+  including native VHDX `5/5`; combined coverage is `120/120`. Final M3 GO
+  remains pending Task44 closure.
 
 ---
 

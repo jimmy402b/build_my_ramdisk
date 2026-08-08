@@ -23,7 +23,9 @@ identity.
   `BLOCKED` with exit code 77. `Full` re-aggregates exactly ten real scenario
   reports plus one simulated report; explicit `-CrashMode Simulated` runs the
   independent file-clone/fresh-process oracle only.
-- `Soak`: currently `BLOCKED` with exit code 77 until Task 43.
+- `Soak`: `Quick` is a harness-only PASS; `Formal` is the M3-V7 gate and
+  requires same-commit Task41 `RealFunctional` and Task42 `Crash Full` reports.
+  Missing, stale, malformed or weak dependency evidence remains `BLOCKED`/77.
 
 Required `SKIP` or an unavailable later tier is never converted into PASS.
 
@@ -75,6 +77,35 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
 The real crash matrix hash is computed from BOM-free UTF-8 with LF line
 endings. Aggregation accepts legacy raw LF/CRLF hashes for the same matrix so
 evidence remains verifiable across Git checkout line-ending policies.
+
+## Formal soak evidence
+
+The Formal route was accepted at source commit
+`1ee1e350ced851f3b9702116dfb83ff01317d370` only after independently validating
+the same-commit Task41 and Task42 reports:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  tools/Invoke-M3Verification.ps1 `
+  -Tier Soak -SoakMode Formal -Configuration Release `
+  -EvidenceBase C:\myrd-evidence\m3-task43-formal `
+  -SoakExecutable .\out\build\msvc\tests\Release\myrd_m3_soak_tests.exe `
+  -RealFunctionalReportPath C:\myrd-evidence\m3-task41\m3-ntfs-report.json `
+  -CrashAggregateReportPath C:\myrd-evidence\m3-task42\m3-real-crash-aggregate.json
+```
+
+The final report says `status=PASS`, `task43_complete=true`, and
+`milestone_eligible=true`. It ran 100 deterministic seeds and 204,800
+operations with no failed seed. Expected and actual correctness hashes were
+both `47F7C1DCC7EF0A22C3F3792AC84B6C9734E953CBA312E17C8C3E7CB5AB857697`.
+The 256 MiB checkpoint produced 286,031,872 bytes of journal growth, below
+the 322,122,547-byte limit; startup reads were 0, extra committed bytes were
+524,288, both pause/stall maxima were 0 ms, and cleanup residuals were zero.
+
+The report SHA-256 is
+`10F7C74A5AA346E336CFA47F2B1E34DB097830111AB6B20A2B0837C11BBE7210`.
+Quick evidence cannot be passed as Formal evidence, and the Formal report
+must not be reused after changing source or either dependency report.
 
 ## Preflight example
 
