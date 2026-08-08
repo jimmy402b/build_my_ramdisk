@@ -549,5 +549,4 @@ int main(int argc, char** argv) {
         std::cerr << "M3_SOAK_ERROR unknown failure\n";
         return 1;
     }
-    return 1;
 }
