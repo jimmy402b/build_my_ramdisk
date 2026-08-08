@@ -962,11 +962,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 24, 32, 35, 40
 **Files:** Create `tests/e2e/Invoke-M3NtfsWorkload.ps1`; extend `tests/e2e/run-m3-persistence.ps1`, scenario manifests and `docs/evidence/m3/` generated reports only.
 
-- [ ] **Step 1: Create generation zero**, export through the real AIM endpoint, initialize/format the scratch device as NTFS using explicit disk identity, mount it and perform deterministic file-tree writes, overwrites, sparse files, rename/delete and flush.
-- [ ] **Step 2: Checkpoint after a filesystem flush**, record memory/backing I/O counters, cleanly stop, reopen and verify file hashes/metadata. Formatting is a test setup operation, not a hidden product feature.
-- [ ] **Step 3: Restart with cold memory without repartitioning or formatting**, run the declared filesystem check, read a small sample and prove bounded startup/read I/O; then read the full corpus and verify exact content. Demonstrate that untouched image payload is not eagerly loaded.
-- [ ] **Step 4: Flush the volume again and compact the durable NTFS generation**, prove the new `base_generation` hash matches that exact durable view, take the RAM disk offline, open that base VHDX with Windows native APIs read-only, verify partition/NTFS recognition and detach. Never compare a pre-compaction base to newer journal contents or dual-attach the same writable data.
-- [ ] **Step 5: Store command lines, versions, seed, counters, hashes and cleanup result; commit harness/manifest changes, not mutable machine-specific evidence unless the repository policy requires it.**
+- [x] **Step 1: Create generation zero**, export through the real AIM endpoint, initialize/format the scratch device as NTFS using explicit disk identity, mount it and perform deterministic file-tree writes, overwrites, sparse files, rename/delete and flush.
+- [x] **Step 2: Checkpoint after a filesystem flush**, record memory/backing I/O counters, cleanly stop, reopen and verify file hashes/metadata. Formatting is a test setup operation, not a hidden product feature.
+- [x] **Step 3: Restart with cold memory without repartitioning or formatting**, run the declared filesystem check, read a small sample and prove bounded startup/read I/O; then read the full corpus and verify exact content. Demonstrate that untouched image payload is not eagerly loaded.
+- [x] **Step 4: Flush the volume again and compact the durable NTFS generation**, prove the new `base_generation` hash matches that exact durable view, take the RAM disk offline, open that base VHDX with Windows native APIs read-only, verify partition/NTFS recognition and detach. Never compare a pre-compaction base to newer journal contents or dual-attach the same writable data.
+- [x] **Step 5: Store command lines, versions, seed, counters, hashes and cleanup result; commit harness/manifest changes, not mutable machine-specific evidence unless the repository policy requires it.**
 
 ### Task 42: Execute simulated and real-process crash recovery matrices
 
@@ -974,11 +974,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 33, 40, 41
 **Files:** Create `tests/e2e/Invoke-M3CrashMatrix.ps1`; extend `tests/e2e/run-m3-persistence.ps1`, scenario definitions and generated evidence schema.
 
-- [ ] **Step 1: Execute deterministic simulated crashes** at every named phase using file clones and fresh recovery processes.
-- [ ] **Step 2: Execute real process termination** before journal flush, after journal flush, during/before manifest publication where injection permits, after publication proof and before/after reconciliation. Power-loss claims require an actual controlled power-cut setup and are otherwise labelled simulated.
-- [ ] **Step 3: After each run, recover, mount read-only first, verify the expected old/new generation and full corpus hash, then inspect slot/fallback diagnostics.**
-- [ ] **Step 4: Fail on mixed generation, silent fallback from corruption, unresolved indeterminate state, leaked device/drive/handle or non-reproducible outcome.**
-- [ ] **Step 5: Record environment and pass/fail evidence with stable scenario IDs; commit `test(m3): add crash recovery matrix`.**
+- [x] **Step 1: Execute deterministic simulated crashes** at every named phase using file clones and fresh recovery processes.
+- [x] **Step 2: Execute real process termination** before journal flush, after journal flush, during/before manifest publication where injection permits, after publication proof and before/after reconciliation. Power-loss claims require an actual controlled power-cut setup and are otherwise labelled simulated.
+- [x] **Step 3: After each run, recover, mount read-only first, verify the expected old/new generation and full corpus hash, then inspect slot/fallback diagnostics.**
+- [x] **Step 4: Fail on mixed generation, silent fallback from corruption, unresolved indeterminate state, leaked device/drive/handle or non-reproducible outcome.**
+- [x] **Step 5: Record environment and pass/fail evidence with stable scenario IDs; commit `test(m3): add crash recovery matrix`.**
 
 ### Task 43: Run soak, resource, performance and final M3 gates
 
@@ -986,11 +986,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 36, 41, 42
 **Files:** Create `tests/e2e/Invoke-M3Soak.ps1`; extend `tools/Invoke-M3Verification.ps1` and `tools/Verify-M3Json.ps1`; create/modify `docs/evidence/m3/M3_VERIFICATION_REPORT.md` and machine-readable report files.
 
-- [ ] **Step 1: Run the full test suite** from a clean Release build and archive exact commands/results.
-- [ ] **Step 2: Run mixed read/write/TRIM/checkpoint/reopen/compaction soak** with deterministic seeds; include concurrent first-touch, low-memory cache pressure, injected I/O failures and repeated close/reopen.
-- [ ] **Step 3: Measure bounded-memory and lazy-I/O invariants**, checkpoint stall/COW pressure, journal growth/compaction ratio, handle/thread/device leaks and data hashes. Treat thresholds from the SPEC as gates, not observations.
-- [ ] **Step 4: Re-run native VHDX and real AIM/NTFS scenarios** after soak. Record skipped prerequisites separately; a skipped required gate cannot produce GO.
-- [ ] **Step 5: Issue `GO`, `NO-GO` or `BLOCKED`** with the internal M3-V0 baseline and every official M3-V1..V7 gate, artifact hash, unresolved defect and limitation. Commit only reproducible evidence/report updates.
+- [x] **Step 1: Run the full test suite** from a clean Release build and archive exact commands/results.
+- [x] **Step 2: Run mixed read/write/TRIM/checkpoint/reopen/compaction soak** with deterministic seeds; include concurrent first-touch, low-memory cache pressure, injected I/O failures and repeated close/reopen.
+- [x] **Step 3: Measure bounded-memory and lazy-I/O invariants**, checkpoint stall/COW pressure, journal growth/compaction ratio, handle/thread/device leaks and data hashes. Treat thresholds from the SPEC as gates, not observations.
+- [x] **Step 4: Re-run native VHDX and real AIM/NTFS scenarios** in the final Task43 sequence. The detailed Task43 plan freezes the harness, reruns Task41/42, then runs Formal last so it independently binds those same-commit reports. Record skipped prerequisites separately; a skipped required gate cannot produce GO.
+- [x] **Step 5: Issue `GO`, `NO-GO` or `BLOCKED`** with the internal M3-V0 baseline and every official M3-V1..V7 gate, artifact hash, unresolved defect and limitation. Commit only reproducible evidence/report updates.
 
 ### Task 44: Close documentation, license and design drift
 
@@ -998,11 +998,11 @@ focused reader/composite tests and `tests/unit/m3_live_extent_tests.cpp`.
 **Depends on:** 43
 **Files:** Modify project README/status/license notices and M3 design/plan/task list only where implementation evidence requires correction.
 
-- [ ] **Step 1: Document supported/unsupported VHDX profile**, persistence files, backup/restore rules, failure outcomes, compaction, safe shutdown, limitations and operator recovery for `CommitIndeterminate`.
-- [ ] **Step 2: Inventory every third-party header/library/tool** and confirm license/redistribution obligations. The product must not copy AIM Toolkit user-mode code unless deliberately reviewed and documented.
-- [ ] **Step 3: Perform line-by-line drift review** against the M3 SPEC, this PLAN and `M3_TASKLIST.md`. Product code does not redefine frozen semantics by implementation accident.
-- [ ] **Step 4: Run final clean-tree Debug build/tests, Release build/tests, and verify docs commands. Update the M3 verdict only from fresh evidence.**
-- [ ] **Step 5: Commit.** `docs(m3): close persistence milestone`.
+- [x] **Step 1: Document supported/unsupported VHDX profile**, persistence files, backup/restore rules, failure outcomes, compaction, safe shutdown, limitations and operator recovery for `CommitIndeterminate`.
+- [x] **Step 2: Inventory every third-party header/library/tool** and confirm license/redistribution obligations. The product must not copy AIM Toolkit user-mode code unless deliberately reviewed and documented.
+- [x] **Step 3: Perform line-by-line drift review** against the M3 SPEC, this PLAN and `M3_TASKLIST.md`. Product code does not redefine frozen semantics by implementation accident.
+- [x] **Step 4: Run final clean-tree Debug build/tests, Release build/tests, and verify docs commands. Update the M3 verdict only from fresh evidence.**
+- [x] **Step 5: Commit.** `docs(m3): close persistence milestone`.
 
 ## Coverage and ownership matrix
 

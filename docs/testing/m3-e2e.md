@@ -31,7 +31,7 @@ Required `SKIP` or an unavailable later tier is never converted into PASS.
 
 ## Simulated crash evidence
 
-The simulated route is the currently executable part of Task 42. It validates
+The simulated route is the deterministic-oracle subset of Task 42. It validates
 the frozen 32-scenario crash matrix and 59-phase registry, starts the existing
 checkpoint crash-model executable as one fresh child process, requests at
 least 10,000 deterministic schedules, preserves stdout/stderr, and runs an
@@ -78,11 +78,34 @@ The real crash matrix hash is computed from BOM-free UTF-8 with LF line
 endings. Aggregation accepts legacy raw LF/CRLF hashes for the same matrix so
 evidence remains verifiable across Git checkout line-ending policies.
 
+## Final Formal soak evidence (commit `4ece675`)
+
+The accepted Formal route used source commit
+`4ece6756de704a4cd6a967d94aca22253063a12c` and independently revalidated the
+same-commit Task41 and Task42 reports. It passed 100 deterministic seeds and
+206,001 total operations with no failed seed. Expected and actual correctness
+SHA-256 were both
+`F6BDA366ED976E60910C950513147DDA1A8C67B16520153FDF90127FFA90DBC4`.
+
+The 100 GiB logical / 1 GiB allocated production image profile read 225,328
+bytes during startup and added 5,623,808 committed bytes, below the 64 MiB and
+128 MiB limits. The 256 MiB journal payload grew by 285,425,664 bytes, below
+the 322,122,547-byte limit. Mutation pause and writer stall maxima were 0 ms;
+all cleanup gauges and residual counts were zero. The Formal report SHA-256 is
+`D0EE68977CAA5E7478D4F6D774A58B22C6453409AE0D35A7C6E934868D2495A5`.
+
+Task41 SHA-256 is
+`31C799AE676F25A48C3DEA79E51BF71025DD48094DD91E3FA0D1CBF52DC0CFDD`;
+Task42 Full SHA-256 is
+`7A33661CFA85676C0D2FE502D3FBC66B885DEE6588BD8A1FF8B74ACC4866717E`.
+Quick was also run twice with the same four seeds, correctness hash and zero
+residuals; Quick remains non-milestone evidence by design.
+
 ## Historical Formal soak evidence (commit `1ee1e35`, superseded)
 
-This evidence cannot complete the current Task43 because the soak harness has
-changed. Generate fresh Task41, Task42 and Task43 reports from the final
-implementation freeze before signing M3 GO.
+This evidence did not complete the final Task43 because the soak harness had
+changed. It is retained for history and was replaced by the `4ece675` evidence
+above before M3 GO was signed.
 
 The Formal route was accepted at source commit
 `1ee1e350ced851f3b9702116dfb83ff01317d370` only after independently validating

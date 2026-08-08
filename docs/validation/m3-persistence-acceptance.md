@@ -2149,5 +2149,73 @@ hidden. The privileged supplement archive SHA-256 is
 machine-readable result SHA-256 is
 `DB61B53918B1FDFE7CF14768848DE3AD3E67070DB0B5571AFF087B22613F987E`.
 At historical commit `1ee1e35`, Task42 and Task43 were recorded
-**DONE/PASS**; that verdict is superseded. The current M3 release verdict is
-**PENDING fresh same-commit evidence and Task44 closure**.
+**DONE/PASS**; that verdict is superseded. At that historical checkpoint the
+M3 release verdict remained **PENDING fresh same-commit evidence and Task44
+closure**.
+
+## Final Task 41–44 acceptance (commit `4ece675`, 2026-08-08)
+
+The final tracked-clean implementation freeze is
+`4ece6756de704a4cd6a967d94aca22253063a12c`. Clean MSVC Debug and Release
+builds completed under `/W4 /WX`; complete CTest passed `119/119` and
+`120/120`, respectively. No product, test, fixture, tool or build-definition
+file changes after that freeze; the final sign-off diff is documentation-only.
+
+Task41 RealFunctional passed on the approved Windows 11 VMware guest Disk 1
+(64 GiB NVMe, non-system) with `phdskmnt` 1.2.28.93. It created and formatted
+the test disk as NTFS, completed two checkpoints, cold reopen without reformat,
+bounded first-touch loading, generation-3 compaction, full corpus verification,
+native read-only VHDX attach/detach and zero-residual cleanup. Report SHA-256:
+`31C799AE676F25A48C3DEA79E51BF71025DD48094DD91E3FA0D1CBF52DC0CFDD`.
+
+Task42 combined the 10,000-schedule simulated oracle (report SHA-256
+`3ECD207B8846BC0AFC09C65274ED1D46B7CC9A8A3E06942160981538C4A06B8D`)
+with ten real interruption scenarios: eight exact process terminations and two
+VMware `stop ... hard` controlled power cuts. All scenarios recovered only the
+allowed old or new complete generation, mounted read-only first, passed full
+VHDX and corpus verification, passed NTFS scan and lazy-load checks, and left
+zero server/AIM residuals. Full aggregate SHA-256:
+`7A33661CFA85676C0D2FE502D3FBC66B885DEE6588BD8A1FF8B74ACC4866717E`.
+The first process-kill scenario's attempted in-guest soft restart powered down
+Windows without completing a reboot, so a recorded host hard reset supplied
+the required isolation boundary. A later isolation reboot stalled during
+Windows startup and required one additional recorded host hard reset. In both
+cases the durable interruption evidence and scenario bundle were retained, and
+post-recovery verification passed without recreating the scenario.
+
+Task43 Formal independently bound those same-commit Task41/42 reports. It
+passed 100 deterministic seeds, 206,001 total operations and 204,800 latency
+samples with no failed seed. Expected and actual correctness SHA-256 were both
+`F6BDA366ED976E60910C950513147DDA1A8C67B16520153FDF90127FFA90DBC4`.
+The 100 GiB logical / exactly 1 GiB allocated production-reader profile used
+225,328 startup-read bytes and 5,623,808 extra committed bytes. The 256 MiB
+journal payload grew by 285,425,664 bytes. These values are below their frozen
+64 MiB, 128 MiB and 322,122,547-byte limits; mutation pause and writer stall
+maxima were 0 ms, and every cleanup gauge was zero. Formal report SHA-256:
+`D0EE68977CAA5E7478D4F6D774A58B22C6453409AE0D35A7C6E934868D2495A5`.
+Two Quick runs also produced the same four seeds and correctness hash with
+zero residuals; Quick remains non-milestone evidence.
+
+Release binary SHA-256 values were:
+
+- `myrd-m3-aim-server.exe`:
+  `83FA8439D3DB386FCF0E9B66E70C68AE4DF5151CDB8ABF41E80F194AAAAC7DCF`;
+- `myrd_m3_e2e.exe`:
+  `F69FAAB34CD7AB75D1D96BDA9126C76659C9AFD3ABE001AA9C9F463B6968AFAE`;
+- `myrd_m3_soak_tests.exe`:
+  `877760606CE2E1306BC5AB3F8C8FC8967FE8423C608BFC0DB715B6D6EE0BFFC8`;
+- `myrd_m3_checkpoint_crash_model_tests.exe`:
+  `9AE9726E1CBD68CCA5A2C4C25E7B003DC5CE0969A719574A52BFC5A32B995B5E`.
+
+Task44 found no M1 wire semantic drift, AIM adapter drift, M2 block-contract
+drift, persistence-order drift or undocumented M4 policy. The two protocol
+headers differ from the M2 GO commit only by expanded provenance comments.
+Tracked third-party binary count is zero; Release import audits found no AIM
+Toolkit user-mode dependency. Engineering P0/P1 defects are zero. Public
+redistribution still requires the separate legal review stated in
+`THIRD_PARTY.md`.
+
+Final verdict: **M3 GO; Tasks 00–44 DONE**. This guarantees recovery of the
+latest complete confirmed checkpoint, not RAM writes made after it. Automatic
+checkpoint scheduling, Windows service/startup/shutdown policy, GUI and
+multi-disk product policy remain M4.

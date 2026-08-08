@@ -194,7 +194,7 @@ Suggested commit:
 | 41 | AIM+NTFS+lazy+VHDX 真机验收 | O | DONE | 24,32,35,40 | M3-V6 |
 | 42 | 模拟/进程 crash matrix | O | DONE | 33,40,41 | M3-V2/V6/V7 |
 | 43 | Soak、资源、性能、最终 M3 verdict | O | DONE | 36,41,42 | M3-V7 |
-| 44 | 文档、许可、最终偏航审计 | C/O | DOING | 43 | 全门禁 |
+| 44 | 文档、许可、最终偏航审计 | C/O | DONE | 43 | 全门禁 |
 
 ---
 
@@ -947,7 +947,7 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 - [x] 记录版本、命令、seed、I/O/memory counters、hash、cleanup。格式化仅是 E2E setup，不是 M3 API。
 - [x] `m3-v6` 所有 required scenario 通过；不满足环境写 BLOCKED，不写 GO。
 
-**完成记录（DONE，2026-08-07，accepted implementation `078f44b`）：**
+**历史完成记录（2026-08-07，implementation `078f44b`，已由最终冻结取代）：**
 
 - Formal source was a clean detached clone of Git bundle commit
   `078f44b5427d14ac78eec0894877bd714da87eb5` in the Windows 11 VMware guest.
@@ -972,8 +972,10 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
   including the unchanged M1 wire contract. The same test's host-only failure
   was independently reduced to the intentional SYSTEM/Administrators shared-
   memory DACL under a non-elevated Medium Integrity token (`ERROR_ACCESS_DENIED`).
-- Task 41 closes M3-V6 normal-path acceptance only. Task 42 real process/power
-  interruption and Task 43 soak/resource gates remain mandatory before M3 GO.
+- At that checkpoint Task 41 closed M3-V6 normal-path acceptance only; Task42
+  and Task43 were still mandatory. Final Task41 was rerun at `4ece675` and its
+  report SHA-256 is
+  `31C799AE676F25A48C3DEA79E51BF71025DD48094DD91E3FA0D1CBF52DC0CFDD`.
 
 ## Task 42 — Simulated and real-process crash matrix
 
@@ -990,14 +992,13 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 **类别：O。允许文件：** `tests/e2e/Invoke-M3Soak.ps1`、扩展 `tools/Invoke-M3Verification.ps1`/`tools/Verify-M3Json.ps1`、`docs/evidence/m3/M3_VERIFICATION_REPORT.md`、机器生成报告；缺陷修复回到对应任务。
 
-- [ ] clean Release configure/build/full CTest，保存 exact commit/commands/output；非管理员宿主
-  `114/120` 后，完全相同 SHA-256 的 6 个 privileged gate 在管理员 guest `6/6`，合并覆盖
-  `120/120`。
+- [x] clean Debug/Release build/full CTest，保存 exact commit/commands/output；最终管理员宿主
+  Debug `119/119`、Release `120/120`，均使用 `/W4 /WX` 构建。
 - [x] deterministic mixed read/write/TRIM/checkpoint/reopen/compaction soak，含 first-touch concurrency、low-memory、I/O fault、重复 close/reopen。
-- [ ] 检查 bounded memory/lazy I/O、COW/stall、journal growth/compaction、handle/thread/device leak、data hashes 与 SPEC thresholds；新 harness 的 focused Debug/Release 已通过，但 final Formal 尚待重跑。
-- [ ] soak 后复跑 native VHDX、real AIM/NTFS 和 crash required scenarios。
-- [ ] 分别列出内部 M3-V0 基线与官方 M3-V1..V7 的 PASS/FAIL/SKIP、artifact hash 和 defect；required SKIP 不能 GO。
-- [ ] 在最终 implementation commit 的同提交证据通过后重新签 `GO/NO-GO`；旧 `1ee1e35` GO 仅为历史记录，不能完成当前 Task43/Task44。
+- [x] 检查 bounded memory/lazy I/O、COW/stall、journal growth/compaction、handle/thread/device leak、data hashes 与 SPEC thresholds；final Formal 全部在冻结阈值内。
+- [x] 最终 harness 冻结后复跑 native VHDX、real AIM/NTFS 和全部 crash required scenarios，并由随后 Formal 绑定同提交报告。
+- [x] 分别列出内部 M3-V0 基线与官方 M3-V1..V7 的 PASS/FAIL/SKIP、artifact hash 和 defect；无 required SKIP。
+- [x] 最终 implementation commit `4ece6756de704a4cd6a967d94aca22253063a12c` 的同提交 Task41/42/43 证据通过，Task43 verdict 为 `GO`。
 
 ## Task 44 — Documentation、license and final drift closure
 
@@ -1005,24 +1006,39 @@ reader/composite/extent tests；snapshot identity 与 sparse candidate merge
 
 - [x] 文档说明 supported/unsupported VHDX、bundle 文件、backup/restore、checkpoint、compaction、shutdown、CommitIndeterminate 恢复和限制。
 - [x] inventory 每个 third-party dependency/fixture/tool 的许可与 redistribution；不无意复制 AIM Toolkit user-mode code。工程 provenance 已记录于 `THIRD_PARTY.md`；公开分发安装包前仍需法律审查。
-- [ ] 逐行对照 SPEC/PLAN/TASKLIST，列出每个 frozen contract 的实现与 test/evidence 路径。
-- [ ] 从 clean tree 重跑 docs commands、Debug build/full CTest、Release build/full CTest 和最终 required gates。
-- [ ] 只有 Task 43 GO 且所有漂移关闭才将本任务和 M3 标为 DONE。
-- [ ] 建议提交 `docs(m3): close persistence milestone`。
+- [x] 逐行对照 SPEC/PLAN/TASKLIST，列出每个 frozen contract 的实现与 test/evidence 路径；见 `docs/validation/m3-final-audit.md`。
+- [x] 从 clean implementation tree 重跑 docs commands、Debug build/full CTest、Release build/full CTest 和最终 required gates。
+- [x] Task43 GO、许可边界清楚、漂移 P0/P1=0；本任务与 M3 标为 DONE。
+- [x] 以 documentation-only 提交 `docs(m3): close persistence milestone` 完成签署。
 
 ---
 
 ## F. 最终验收核对表
 
-- [ ] 00–44 全部 `DONE`，没有超过一个 `DOING`，没有未解释的 `BLOCKED`。
-- [ ] 每个任务都有红灯、聚焦测试、累计门禁、偏航检查和单独提交记录。
-- [ ] M2.1 在并发下给出一个全盘一致、内存有界、stall 有界的切点。
-- [ ] 创建、增量 checkpoint、重开、fallback、lazy load、compaction、retention 走 production path。
-- [ ] 任一 crash point 只恢复旧完整代或新完整代，永不混代。
-- [ ] dirty ack 只在 exact successor view install 后按 exact epoch/version/kind 条件发生。
-- [ ] product VHDX 通过 Windows native API；real AIM+NTFS 数据往返通过。
-- [ ] M0/M1/M2 回归、内部 M3-V0 基线和官方 M3-V1..V7 必需门禁在最终提交上新鲜通过。
-- [ ] 报告没有把 SKIP、模拟断电或旧 evidence 包装为 GO。
+- [x] 00–44 全部 `DONE`，没有 `DOING` 或未解释的 `BLOCKED`。
+- [x] 每个任务都有红灯、聚焦测试、累计门禁、偏航检查和单独提交记录。
+- [x] M2.1 在并发下给出一个全盘一致、内存有界、stall 有界的切点。
+- [x] 创建、增量 checkpoint、重开、fallback、lazy load、compaction、retention 走 production path。
+- [x] 任一 crash point 只恢复旧完整代或新完整代，永不混代。
+- [x] dirty ack 只在 exact successor view install 后按 exact epoch/version/kind 条件发生。
+- [x] product VHDX 通过 Windows native API；real AIM+NTFS 数据往返通过。
+- [x] M0/M1/M2 回归、内部 M3-V0 基线和官方 M3-V1..V7 必需门禁在最终 implementation freeze 上新鲜通过。
+- [x] 报告没有把 SKIP、模拟断电或旧 evidence 包装为 GO。
+
+最终执行记录（evidence freeze commit `4ece6756de704a4cd6a967d94aca22253063a12c`）：
+
+```text
+Final evidence commit / branch: 4ece6756de704a4cd6a967d94aca22253063a12c / feature/m3-task13-review
+Toolchain / OS / AIM driver: MSVC 2022 BuildTools x64 / Windows 11 host+guest / phdskmnt 1.2.28.93 Running
+Clean-tree status: evidence generated from a tracked-clean implementation freeze; final sign-off diff is documentation-only
+Debug / Release cumulative CTest: 119/119 / 120/120 PASS
+Internal M3-V0 / official M3-V1..V7: PASS; no required SKIP/BLOCKED
+Native VHDX and real AIM+NTFS: Task41 PASS; report SHA-256 31C799AE676F25A48C3DEA79E51BF71025DD48094DD91E3FA0D1CBF52DC0CFDD
+Crash matrix: Task42 PASS; 10,000 simulated schedules plus 10/10 real scenarios; aggregate SHA-256 7A33661CFA85676C0D2FE502D3FBC66B885DEE6588BD8A1FF8B74ACC4866717E
+Soak/resource: Task43 Formal PASS; 100 seeds, 206001 operations, zero failed seed; report SHA-256 D0EE68977CAA5E7478D4F6D774A58B22C6453409AE0D35A7C6E934868D2495A5
+Known limitations: automatic timer/service/startup/shutdown/GUI policy remains M4; only a confirmed checkpoint is power-loss durable; public redistribution still needs legal review
+Final verdict and signer: M3 GO; Task43/44 DONE; P0/P1=0
+```
 
 历史执行记录（commit `1ee1e35`；已被当前 implementation 变更取代，不得用于最终 GO）：
 
@@ -1054,7 +1070,7 @@ Final verdict and signer: Task42/43 DONE; overall M3 BLOCKED pending Task44 clos
   termination, AIM/NTFS recovery and controlled power-cut were still open;
   the same-commit real evidence below supersedes this historical limitation.
 
-## Task 42 same-commit real evidence record (2026-08-08)
+## Historical Task 42 same-commit real evidence record (commit `1ee1e35`, superseded)
 
 - [x] Evidence freeze commit: `1ee1e350ced851f3b9702116dfb83ff01317d370`.
 - [x] Host simulated oracle: 10,000 schedules, 6/6 model tests, report SHA-256

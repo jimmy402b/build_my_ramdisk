@@ -830,20 +830,20 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
 只允许 soak harness/verifier/evidence/report；发现代码缺陷回到所属 Task，不在 verdict
 卡修产品。
 
-- [ ] `T43.1 [M]` 在最终 implementation freeze 上 clean Release build + complete CTest，归档命令、counts、commit、
-  binary/artifact hashes；宿主非管理员 `114/120`，相同二进制在管理员 guest 补跑
-  `6/6`，合并覆盖 `120/120`。
+- [x] `T43.1 [M]` 在最终 implementation freeze 上 clean Debug/Release build + complete
+  CTest，归档命令、counts、commit、binary/artifact hashes；管理员宿主分别
+  `119/119` 与 `120/120`。
 - [x] `T43.2 [H]` 冻结 soak seeds/workload/thresholds：mixed read/write/TRIM/
   checkpoint/reopen/compaction、concurrent first-touch、low-memory、I/O faults、close。
-- [ ] `T43.3 [M]` 执行最终 Formal soak 并收集 memory/cache/COW stall/journal ratio/index depth/
+- [x] `T43.3 [M]` 执行最终 Formal soak 并收集 memory/cache/COW stall/journal ratio/index depth/
   handles/threads/devices/I/O bytes/data hashes；阈值是 gate，不是 observation。
-- [ ] `T43.4 [X]` 评估 bounded-memory/lazy-I/O/no-leak/no-mixed-generation；任何
+- [x] `T43.4 [X]` 评估 bounded-memory/lazy-I/O/no-leak/no-mixed-generation；任何
   threshold 超界或 flaky seed 为 NO-GO，不扩大阈值。
-- [ ] `T43.5 [M]` soak 后重跑 native VHDX、real AIM/NTFS、crash scenarios；required
+- [x] `T43.5 [M]` 最终 harness 冻结后重跑 native VHDX、real AIM/NTFS、crash scenarios，随后由 Formal 绑定同提交报告；required
   prerequisite SKIP 单列，不能变 GO。
-- [ ] `T43.6 [X]` 按内部 M3-V0 和官方 M3-V1..V7 逐项签 `GO/NO-GO/BLOCKED`，列
+- [x] `T43.6 [X]` 按内部 M3-V0 和官方 M3-V1..V7 逐项签 `GO/NO-GO/BLOCKED`，列
   artifacts/unresolved defects/limitations；不得用总 bool 掩盖 gate。
-- [ ] `T43.7 [X]` 独立 verifier 核对 raw evidence 和 source/binary hashes；最终
+- [x] `T43.7 [X]` 独立 verifier 核对 raw evidence 和 source/binary hashes；最终
   人工 M3 总体签署仍属于 Task44。
 
 ### Task 44 — Documentation、license 与 final drift closure
@@ -855,13 +855,13 @@ scenario manifests、生成 evidence；产品代码缺陷另开卡。
   backup/restore、failure outcomes、compaction、shutdown、CommitIndeterminate recovery。
 - [x] `T44.2 [M]` third-party inventory：每个 header/library/tool 的来源/version/
   license/redistribution 已记录于 `THIRD_PARTY.md`；AIM user-mode code 未经单独审查不得复制，公开分发安装包前仍需法律审查。
-- [ ] `T44.3 [H]` 逐条对照 implementation evidence 修正 docs；不得修改 SPEC 来
+- [x] `T44.3 [H]` 逐条对照 implementation evidence 修正 docs；不得修改 SPEC 来
   追认无证据行为，设计变更需单独 decision/review。
-- [ ] `T44.4 [X]` line-by-line drift audit：M1 protocol、AIM、M2 semantics、durability
+- [x] `T44.4 [X]` line-by-line drift audit：M1 protocol、AIM、M2 semantics、durability
   order、error/disposition、cleanup authority、M4 handoff 全列结论。
-- [ ] `T44.5 [M]` fresh clean-tree Debug/Release build/tests 和 docs commands；记录
+- [x] `T44.5 [M]` fresh clean-tree Debug/Release build/tests 和 docs commands；记录
   当前 commit/hashes/counts，任何 required failure 回所属 Task。
-- [ ] `T44.6 [X]` 只有 Task43 GO、所有 required evidence 可复现、license 清楚、
+- [x] `T44.6 [X]` Task43 GO、所有 required evidence 可复现、license 清楚、
   drift P0/P1=0 时才发布 M3 final GO。
 
 ## 10. 任何 Agent 都不得越过的暂停点
@@ -888,11 +888,20 @@ No out-of-scope files changed: yes/no
 
 ## Local execution record
 
+- [x] Final M3 record: implementation freeze
+  `4ece6756de704a4cd6a967d94aca22253063a12c`; Debug `119/119`, Release
+  `120/120`; Task41 SHA-256
+  `31C799AE676F25A48C3DEA79E51BF71025DD48094DD91E3FA0D1CBF52DC0CFDD`;
+  Task42 Full `7A33661CFA85676C0D2FE502D3FBC66B885DEE6588BD8A1FF8B74ACC4866717E`;
+  Task43 Formal `D0EE68977CAA5E7478D4F6D774A58B22C6453409AE0D35A7C6E934868D2495A5`.
+  Internal M3-V0 and official M3-V1..V7 are PASS, no required SKIP, drift
+  P0/P1=0, final verdict M3 GO.
+
 - [x] T38.7: Debug/Release local CLI E2E runs execute `create -> inspect -> verify --full -> recover-test` and confirm temporary-directory cleanup. This does not replace real AIM/NTFS acceptance.
 
-- [x] T42.1/T42.2 simulated subset: `unit.m3.crash_verifier` and
+- [x] Historical T42.1/T42.2 simulated subset: `unit.m3.crash_verifier` and
   `integration.m3.crash_simulated_evidence` pass in Debug/Release; the
   simulated `CrashMode` route also passes its default BLOCKED and explicit
   simulated cases. Evidence is limited to the frozen file-clone/fresh-process
-  oracle; T42.3-T42.7, real AIM/NTFS, real process-kill, and controlled
-  power-cut acceptance remain open.
+  oracle. Its then-open T42.3-T42.7 real AIM/NTFS, process-kill and controlled
+  power-cut work is superseded by the final record above.
