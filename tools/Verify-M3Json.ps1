@@ -82,10 +82,11 @@ function Verify-M3SoakReport($SoakReport) {
     foreach ($name in @(
         'schema','status','terminal_verdict','profile','source_commit',
         'task43_complete','milestone_eligible','build','execution',
-        'correctness','thresholds','dependencies','cleanup','artifacts','error')) {
+        'correctness','coverage','thresholds','dependencies','cleanup',
+        'artifacts','error')) {
         Require-Property $SoakReport $name
     }
-    Require ([string]$SoakReport.schema -eq 'myrd.m3.soak-evidence.v1') `
+    Require ([string]$SoakReport.schema -eq 'myrd.m3.soak-evidence.v2') `
         'soak schema is invalid'
     Require ([string]$SoakReport.status -eq 'PASS') 'soak status is not PASS'
     Require ([string]$SoakReport.terminal_verdict -eq 'PASS') `
@@ -195,6 +196,29 @@ function Verify-M3SoakReport($SoakReport) {
     Require (-not [bool]$SoakReport.correctness.mixed_generation) `
         'soak accepted a mixed generation'
 
+    $coverageNames = @(
+        'production_checkpoint_seeds','reopen_verified_seeds',
+        'compaction_verified_seeds','concurrent_first_touch_seeds',
+        'cow_overlap_seeds','io_fault_recovered_seeds',
+        'repeated_close_seeds','resource_checkpoint_seed')
+    foreach ($name in $coverageNames) {
+        Require-Property $SoakReport.coverage $name
+        Require-UnsignedInteger $SoakReport.coverage.$name `
+            "soak coverage $name"
+    }
+    $seedCount = [uint64]$SoakReport.execution.seed_count
+    foreach ($name in @(
+        'production_checkpoint_seeds','reopen_verified_seeds',
+        'concurrent_first_touch_seeds','cow_overlap_seeds',
+        'repeated_close_seeds')) {
+        Require ([uint64]$SoakReport.coverage.$name -eq $seedCount) `
+            "soak coverage does not include every seed: $name"
+    }
+    Require ([uint64]$SoakReport.coverage.compaction_verified_seeds -ge 1) `
+        'soak did not execute production compaction'
+    Require ([uint64]$SoakReport.coverage.io_fault_recovered_seeds -ge 1) `
+        'soak did not recover an injected product I/O fault'
+
     $thresholdNames = @(
         'startup_read_limit_bytes','startup_read_bytes',
         'extra_committed_limit_bytes','extra_committed_bytes',
@@ -212,6 +236,8 @@ function Verify-M3SoakReport($SoakReport) {
     if ($isFormal) {
         Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -eq 268435456) `
             'Formal checkpoint payload is not frozen at 256 MiB'
+        Require ([uint64]$SoakReport.coverage.resource_checkpoint_seed -eq `
+            3221344269) 'Formal resource checkpoint seed is not frozen'
     }
     else {
         Require ([uint64]$SoakReport.thresholds.checkpoint_payload_bytes -gt 0) `
@@ -485,7 +511,7 @@ Require (-not [string]::IsNullOrWhiteSpace($raw)) 'M3 report is empty'
 $report = $raw | ConvertFrom-Json
 
 if ($null -ne $report.PSObject.Properties['schema'] -and
-    [string]$report.schema -eq 'myrd.m3.soak-evidence.v1') {
+    [string]$report.schema -eq 'myrd.m3.soak-evidence.v2') {
     Verify-M3SoakReport $report
     Write-Output "M3 soak JSON validation PASS: $fullPath"
     exit 0

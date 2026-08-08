@@ -1499,7 +1499,7 @@ add_test(
 add_executable(myrd_m3_soak_tests
     integration/m3_soak_tests.cpp)
 target_link_libraries(myrd_m3_soak_tests PRIVATE
-    myrd_persistence myrd_storage myrd_common)
+    myrd_m3_management myrd_persistence myrd_storage myrd_common Psapi)
 target_include_directories(myrd_m3_soak_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m3_soak_tests)

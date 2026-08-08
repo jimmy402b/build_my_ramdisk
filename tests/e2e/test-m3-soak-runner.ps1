@@ -73,7 +73,7 @@ try {
     $reportPath = $reports[0].FullName
     $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    Require-SoakRunnerTest ($report.schema -eq 'myrd.m3.soak-evidence.v1') `
+    Require-SoakRunnerTest ($report.schema -eq 'myrd.m3.soak-evidence.v2') `
         'runner report schema mismatch'
     Require-SoakRunnerTest ($report.status -eq 'PASS' -and
         $report.terminal_verdict -eq 'PASS') 'Quick report is not terminal PASS'
@@ -83,6 +83,19 @@ try {
         'Quick seed set is not fixed at four'
     Require-SoakRunnerTest (@($report.execution.failed_seeds).Count -eq 0) `
         'Quick report contains failed seeds'
+    foreach ($name in @(
+        'production_checkpoint_seeds','reopen_verified_seeds',
+        'concurrent_first_touch_seeds','cow_overlap_seeds',
+        'repeated_close_seeds')) {
+        Require-SoakRunnerTest ([uint64]$report.coverage.$name -eq 4) `
+            "Quick production coverage mismatch: $name"
+    }
+    Require-SoakRunnerTest `
+        ([uint64]$report.coverage.compaction_verified_seeds -ge 1) `
+        'Quick run missed compaction coverage'
+    Require-SoakRunnerTest `
+        ([uint64]$report.coverage.io_fault_recovered_seeds -ge 1) `
+        'Quick run missed I/O fault recovery coverage'
     Require-SoakRunnerTest ($report.cleanup.succeeded -eq $true -and
         @($report.cleanup.residuals).Count -eq 0) 'Quick cleanup was not empty'
     foreach ($role in @('soak.stdout', 'soak.stderr')) {

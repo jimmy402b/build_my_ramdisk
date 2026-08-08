@@ -42,7 +42,7 @@ function Invoke-Seed {
 $quick = Invoke-Seed 'Quick' '42'
 Require-SeedContract ($quick.ExitCode -eq 0) 'Quick seed process failed'
 Require-SeedContract ($null -ne $quick.Summary) 'Quick final line is not JSON'
-Require-SeedContract ($quick.Summary.schema -eq 'myrd.m3.soak-seed.v1') `
+Require-SeedContract ($quick.Summary.schema -eq 'myrd.m3.soak-seed.v2') `
     'seed schema mismatch'
 Require-SeedContract ([uint64]$quick.Summary.seed -eq 42) `
     'requested seed was ignored'
@@ -51,7 +51,7 @@ Require-SeedContract ($quick.Summary.profile -eq 'Quick') `
 foreach ($name in @(
     'operation_count','expected_sha256','actual_sha256',
     'complete_generations_only','mixed_generation','resource','checkpoint',
-    'latency','cleanup_succeeded')) {
+    'latency','snapshot','coverage','cleanup_succeeded')) {
     Require-SeedContract ($null -ne $quick.Summary.PSObject.Properties[$name]) `
         "seed summary is missing $name"
 }
@@ -71,6 +71,20 @@ Require-SeedContract ([uint64]$quick.Summary.latency.writer_stall_max_ms -le 250
     'Quick writer-stall threshold exceeded'
 Require-SeedContract ([bool]$quick.Summary.cleanup_succeeded) `
     'Quick cleanup failed'
+foreach ($name in @(
+    'production_checkpoint','reopen_verified','compaction_verified',
+    'concurrent_first_touch','cow_overlap','repeated_close')) {
+    Require-SeedContract ([bool]$quick.Summary.coverage.$name) `
+        "Quick production coverage is false: $name"
+}
+Require-SeedContract ([uint64]$quick.Summary.snapshot.cow_peak_bytes -ge 65536) `
+    'Quick seed did not observe a COW pre-image'
+Require-SeedContract ([uint64]$quick.Summary.checkpoint.production_payload_bytes -gt 0) `
+    'Quick seed did not execute a production checkpoint'
+Require-SeedContract `
+    ([uint64]$quick.Summary.checkpoint.production_journal_growth_bytes -gt `
+     [uint64]$quick.Summary.checkpoint.production_payload_bytes) `
+    'Quick production checkpoint did not record journal framing'
 
 $quickAgain = Invoke-Seed 'Quick' '42'
 Require-SeedContract ($quickAgain.ExitCode -eq 0) 'second Quick seed failed'
@@ -87,17 +101,17 @@ Require-SeedContract ([uint64]$formal.Summary.operation_count -gt `
     [uint64]$quick.Summary.operation_count) `
     'Formal workload is not larger than Quick'
 Require-SeedContract ([uint64]$formal.Summary.checkpoint.payload_bytes -eq `
-    2686976) 'Formal seed did not stream its assigned 41-block payload'
+    268435456) 'Formal seed did not execute one 256 MiB checkpoint'
 Require-SeedContract ([uint64]$formal.Summary.checkpoint.journal_growth_bytes -gt `
     [uint64]$formal.Summary.checkpoint.payload_bytes) `
     'Formal seed did not write real journal framing/index/commit bytes'
 Require-SeedContract ([uint64]$formal.Summary.checkpoint.journal_growth_bytes -le `
-    3224371) 'Formal seed journal growth exceeded 120 percent'
+    322122547) 'Formal seed journal growth exceeded 120 percent'
 
 $invalid = Invoke-Seed 'Invalid' '42'
 Require-SeedContract ($invalid.ExitCode -ne 0) 'invalid profile was accepted'
 Require-SeedContract ($null -eq $invalid.Summary -or
-    $invalid.Summary.schema -ne 'myrd.m3.soak-seed.v1') `
+    $invalid.Summary.schema -ne 'myrd.m3.soak-seed.v2') `
     'invalid profile emitted passing seed JSON'
 
 Write-Output 'M3 soak seed executable contract PASS'

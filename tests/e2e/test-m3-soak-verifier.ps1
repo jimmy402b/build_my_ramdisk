@@ -136,7 +136,7 @@ try {
     $realFunctionalHash = (Get-FileHash -LiteralPath $realFunctionalPath -Algorithm SHA256).Hash
     $crashAggregateHash = (Get-FileHash -LiteralPath $crashAggregatePath -Algorithm SHA256).Hash
     $report = [ordered]@{
-        schema = 'myrd.m3.soak-evidence.v1'
+        schema = 'myrd.m3.soak-evidence.v2'
         status = 'PASS'
         terminal_verdict = 'PASS'
         profile = 'Formal'
@@ -163,6 +163,16 @@ try {
             hash_match = $true
             complete_generations_only = $true
             mixed_generation = $false
+        }
+        coverage = [ordered]@{
+            production_checkpoint_seeds = 100
+            reopen_verified_seeds = 100
+            compaction_verified_seeds = 1
+            concurrent_first_touch_seeds = 100
+            cow_overlap_seeds = 100
+            io_fault_recovered_seeds = 1
+            repeated_close_seeds = 100
+            resource_checkpoint_seed = 3221344269
         }
         thresholds = [ordered]@{
             startup_read_limit_bytes = 67108864
@@ -205,6 +215,11 @@ try {
     $quick.task43_complete = $false
     $quick.milestone_eligible = $false
     $quick.execution.seed_count = 4
+    $quick.coverage.production_checkpoint_seeds = 4
+    $quick.coverage.reopen_verified_seeds = 4
+    $quick.coverage.concurrent_first_touch_seeds = 4
+    $quick.coverage.cow_overlap_seeds = 4
+    $quick.coverage.repeated_close_seeds = 4
     $quick.dependencies = $null
     $quick.thresholds.checkpoint_payload_bytes = 1
     $quick.thresholds.journal_growth_bytes = 0
@@ -226,6 +241,14 @@ try {
         @{ Name = 'hash match proof'; Apply = { param($r) $r.correctness.hash_match = $false } },
         @{ Name = 'complete generation proof'; Apply = { param($r) $r.correctness.complete_generations_only = $false } },
         @{ Name = 'mixed generation proof'; Apply = { param($r) $r.correctness.mixed_generation = $true } },
+        @{ Name = 'production checkpoint coverage'; Apply = { param($r) $r.coverage.production_checkpoint_seeds = 99 } },
+        @{ Name = 'reopen coverage'; Apply = { param($r) $r.coverage.reopen_verified_seeds = 99 } },
+        @{ Name = 'compaction coverage'; Apply = { param($r) $r.coverage.compaction_verified_seeds = 0 } },
+        @{ Name = 'first-touch coverage'; Apply = { param($r) $r.coverage.concurrent_first_touch_seeds = 99 } },
+        @{ Name = 'COW coverage'; Apply = { param($r) $r.coverage.cow_overlap_seeds = 99 } },
+        @{ Name = 'I/O fault coverage'; Apply = { param($r) $r.coverage.io_fault_recovered_seeds = 0 } },
+        @{ Name = 'repeated close coverage'; Apply = { param($r) $r.coverage.repeated_close_seeds = 99 } },
+        @{ Name = 'resource checkpoint seed'; Apply = { param($r) $r.coverage.resource_checkpoint_seed = 3221344270 } },
         @{ Name = 'startup read threshold'; Apply = { param($r) $r.thresholds.startup_read_bytes = 67108865 } },
         @{ Name = 'committed memory threshold'; Apply = { param($r) $r.thresholds.extra_committed_bytes = 134217729 } },
         @{ Name = 'checkpoint payload'; Apply = { param($r) $r.thresholds.checkpoint_payload_bytes = 1 } },

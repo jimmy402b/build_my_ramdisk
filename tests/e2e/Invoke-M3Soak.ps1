@@ -163,11 +163,12 @@ function ConvertFrom-M3SoakSeedOutput {
     foreach ($name in @(
         'schema','seed','profile','operation_count','expected_sha256',
         'actual_sha256','complete_generations_only','mixed_generation',
-        'resource','checkpoint','latency','cleanup_succeeded')) {
+        'resource','checkpoint','latency','snapshot','coverage',
+        'cleanup_succeeded')) {
         Assert-M3Soak ($null -ne $summary.PSObject.Properties[$name]) `
             "soak seed property is missing: $name"
     }
-    Assert-M3Soak ($summary.schema -eq 'myrd.m3.soak-seed.v1') `
+    Assert-M3Soak ($summary.schema -eq 'myrd.m3.soak-seed.v2') `
         'soak seed schema mismatch'
     Assert-M3Soak ([uint64]$summary.seed -eq $RequestedSeed) `
         'soak seed identity mismatch'
@@ -193,7 +194,9 @@ function ConvertFrom-M3SoakSeedOutput {
         'soak seed startup read threshold exceeded'
     Assert-M3Soak ([uint64]$summary.resource.extra_committed_bytes -le 134217728) `
         'soak seed committed-memory threshold exceeded'
-    foreach ($name in @('payload_bytes','journal_growth_bytes')) {
+    foreach ($name in @(
+        'payload_bytes','journal_growth_bytes','production_payload_bytes',
+        'production_journal_growth_bytes')) {
         Assert-M3Soak ($null -ne $summary.checkpoint.PSObject.Properties[$name]) `
             "soak seed checkpoint property is missing: $name"
     }
@@ -205,6 +208,34 @@ function ConvertFrom-M3SoakSeedOutput {
         'soak seed mutation pause threshold exceeded'
     Assert-M3Soak ([uint64]$summary.latency.writer_stall_max_ms -le 250) `
         'soak seed writer stall threshold exceeded'
+    foreach ($name in @('records','cow_peak_bytes','writer_stalls')) {
+        Assert-M3Soak ($null -ne $summary.snapshot.PSObject.Properties[$name]) `
+            "soak seed snapshot property is missing: $name"
+    }
+    Assert-M3Soak ([uint64]$summary.snapshot.records -gt 0) `
+        'soak seed snapshot record count is zero'
+    Assert-M3Soak ([uint64]$summary.snapshot.cow_peak_bytes -ge 65536) `
+        'soak seed did not observe a COW pre-image'
+    foreach ($name in @(
+        'production_checkpoint','reopen_verified','compaction_verified',
+        'concurrent_first_touch','cow_overlap','io_fault_recovered',
+        'repeated_close')) {
+        Assert-M3Soak ($null -ne $summary.coverage.PSObject.Properties[$name]) `
+            "soak seed coverage property is missing: $name"
+    }
+    foreach ($name in @(
+        'production_checkpoint','reopen_verified','concurrent_first_touch',
+        'cow_overlap','repeated_close')) {
+        Assert-M3Soak ([bool]$summary.coverage.$name) `
+            "soak seed production coverage is false: $name"
+    }
+    Assert-M3Soak `
+        ([uint64]$summary.checkpoint.production_payload_bytes -gt 0) `
+        'soak seed production checkpoint payload is zero'
+    Assert-M3Soak `
+        ([uint64]$summary.checkpoint.production_journal_growth_bytes -gt `
+         [uint64]$summary.checkpoint.production_payload_bytes) `
+        'soak seed production journal did not include framing bytes'
     Assert-M3Soak ([bool]$summary.cleanup_succeeded) `
         'soak seed cleanup failed'
     return $summary
@@ -339,18 +370,44 @@ $startupRead = [uint64](@($summaries | ForEach-Object {
 $extraCommitted = [uint64](@($summaries | ForEach-Object {
     [uint64]$_.resource.extra_committed_bytes
 } | Measure-Object -Maximum).Maximum)
-$checkpointPayload = [uint64](@($summaries | ForEach-Object {
-    [uint64]$_.checkpoint.payload_bytes
-} | Measure-Object -Sum).Sum)
-$journalGrowth = [uint64](@($summaries | ForEach-Object {
-    [uint64]$_.checkpoint.journal_growth_bytes
-} | Measure-Object -Sum).Sum)
+$resourceCheckpoint = @($summaries | Sort-Object `
+    { [uint64]$_.checkpoint.payload_bytes } -Descending)[0]
+$checkpointPayload = [uint64]$resourceCheckpoint.checkpoint.payload_bytes
+$journalGrowth = [uint64]$resourceCheckpoint.checkpoint.journal_growth_bytes
 $mutationPause = [uint64](@($summaries | ForEach-Object {
     [uint64]$_.latency.mutation_pause_max_ms
 } | Measure-Object -Maximum).Maximum)
 $writerStall = [uint64](@($summaries | ForEach-Object {
     [uint64]$_.latency.writer_stall_max_ms
 } | Measure-Object -Maximum).Maximum)
+$productionCheckpointCount = @($summaries | Where-Object {
+    [bool]$_.coverage.production_checkpoint }).Count
+$reopenCount = @($summaries | Where-Object {
+    [bool]$_.coverage.reopen_verified }).Count
+$compactionCount = @($summaries | Where-Object {
+    [bool]$_.coverage.compaction_verified }).Count
+$firstTouchCount = @($summaries | Where-Object {
+    [bool]$_.coverage.concurrent_first_touch }).Count
+$cowOverlapCount = @($summaries | Where-Object {
+    [bool]$_.coverage.cow_overlap }).Count
+$ioFaultRecoveryCount = @($summaries | Where-Object {
+    [bool]$_.coverage.io_fault_recovered }).Count
+$repeatedCloseCount = @($summaries | Where-Object {
+    [bool]$_.coverage.repeated_close }).Count
+Assert-M3Soak ($productionCheckpointCount -eq $seeds.Count) `
+    'not every seed executed a production checkpoint'
+Assert-M3Soak ($reopenCount -eq $seeds.Count) `
+    'not every seed verified reopen'
+Assert-M3Soak ($firstTouchCount -eq $seeds.Count) `
+    'not every seed verified concurrent first-touch'
+Assert-M3Soak ($cowOverlapCount -eq $seeds.Count) `
+    'not every seed observed COW overlap'
+Assert-M3Soak ($repeatedCloseCount -eq $seeds.Count) `
+    'not every seed verified repeated close'
+Assert-M3Soak ($compactionCount -ge 1) `
+    'soak set did not execute production compaction'
+Assert-M3Soak ($ioFaultRecoveryCount -ge 1) `
+    'soak set did not recover an injected product I/O fault'
 
 $dependencies = if ($Profile -eq 'Formal') {
     [ordered]@{
@@ -370,7 +427,7 @@ $dependencies = if ($Profile -eq 'Formal') {
 else { $null }
 
 $report = [ordered]@{
-    schema = 'myrd.m3.soak-evidence.v1'
+    schema = 'myrd.m3.soak-evidence.v2'
     status = 'PASS'
     terminal_verdict = 'PASS'
     profile = $Profile
@@ -399,6 +456,16 @@ $report = [ordered]@{
             Where-Object { -not [bool]$_.complete_generations_only }).Count)
         mixed_generation = [bool](@($summaries |
             Where-Object { [bool]$_.mixed_generation }).Count)
+    }
+    coverage = [ordered]@{
+        production_checkpoint_seeds = $productionCheckpointCount
+        reopen_verified_seeds = $reopenCount
+        compaction_verified_seeds = $compactionCount
+        concurrent_first_touch_seeds = $firstTouchCount
+        cow_overlap_seeds = $cowOverlapCount
+        io_fault_recovered_seeds = $ioFaultRecoveryCount
+        repeated_close_seeds = $repeatedCloseCount
+        resource_checkpoint_seed = [uint64]$resourceCheckpoint.seed
     }
     thresholds = [ordered]@{
         startup_read_limit_bytes = 67108864

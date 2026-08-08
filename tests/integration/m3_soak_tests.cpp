@@ -1,27 +1,67 @@
 #include "src/common/sha256.h"
+#include "src/m3/m3_lifecycle_runner.h"
+#include "src/m3/m3_provider.h"
 #include "src/persistence/file_io.h"
+#include "src/persistence/image_creator.h"
 #include "src/persistence/journal_format.h"
 #include "src/persistence/journal_writer.h"
-#include "src/storage/dynamic_block_store.h"
+#include "src/persistence/vhdx_format.h"
+#include "src/persistence/vhdx_reader.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
 
 #include <algorithm>
-#include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <map>
-#include <stdexcept>
+#include <memory>
+#include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
 
 namespace {
+
+using namespace myrd;
+using namespace myrd::m3;
+using namespace myrd::persistence;
+
+constexpr std::uint64_t kGiB = 1024ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kMiB = 1024ULL * 1024ULL;
+constexpr std::uint64_t kLogicalBytes = 100ULL * kGiB;
+constexpr std::size_t kWriteBytes = 4096;
+constexpr std::uint64_t kFormalSeedBase = 3221344269ULL;
+constexpr std::uint64_t kFormalSeedStride = 104729ULL;
+constexpr std::uint64_t kFormalSeedCount = 100;
+constexpr std::uint64_t kFormalPayloadBlocks = 4096;
+
+struct Coverage final {
+    bool production_checkpoint{};
+    bool reopen_verified{};
+    bool compaction_verified{};
+    bool concurrent_first_touch{};
+    bool cow_overlap{};
+    bool io_fault_recovered{};
+    bool repeated_close{};
+};
 
 struct SoakSeedReport final {
     std::uint64_t seed{};
@@ -35,87 +75,123 @@ struct SoakSeedReport final {
     std::uint64_t extra_committed_bytes{};
     std::uint64_t checkpoint_payload_bytes{};
     std::uint64_t journal_growth_bytes{};
+    std::uint64_t production_payload_bytes{};
+    std::uint64_t production_journal_growth_bytes{};
     std::uint64_t mutation_pause_max_ms{};
     std::uint64_t writer_stall_max_ms{};
     std::uint64_t snapshot_records{};
+    std::uint64_t snapshot_cow_peak_bytes{};
+    std::uint64_t snapshot_writer_stalls{};
+    Coverage coverage{};
     bool cleanup_succeeded{};
 };
 
-constexpr std::uint64_t kGiB = 1024ULL * 1024ULL * 1024ULL;
-constexpr std::uint64_t kMiB = 1024ULL * 1024ULL;
-constexpr std::uint64_t kLogicalBytes = 100ULL * kGiB;
-constexpr std::size_t kWriteBytes = 4096;
-constexpr std::size_t kHotBlockCount = 16;
-constexpr std::uint64_t kFormalSeedBase = 3221344269ULL;
-constexpr std::uint64_t kFormalSeedStride = 104729ULL;
-constexpr std::uint64_t kFormalSeedCount = 100;
-constexpr std::uint64_t kFormalPayloadBlocks = 4096;
+enum class ModelKind : std::uint8_t { Data, Zero, Discard };
 
-class DeterministicRandom final {
-public:
-    explicit DeterministicRandom(std::uint64_t state) : state_(state) {}
-
-    std::uint64_t next() noexcept {
-        state_ ^= state_ << 13U;
-        state_ ^= state_ >> 7U;
-        state_ ^= state_ << 17U;
-        return state_;
-    }
-
-private:
-    std::uint64_t state_;
+struct ModelBlock final {
+    std::vector<std::byte> bytes{
+        static_cast<std::size_t>(kM2BlockSize), std::byte{}};
+    ModelKind kind{ModelKind::Zero};
+    bool dirty{};
 };
 
-std::vector<std::byte> pattern(
-    std::uint64_t seed, std::uint64_t operation, std::size_t size) {
-    std::vector<std::byte> result(size);
-    std::uint64_t state = seed ^ (operation + 1) * 0x9e3779b97f4a7c15ULL;
-    for (std::size_t index = 0; index < result.size(); ++index) {
-        state ^= state << 13U;
-        state ^= state >> 7U;
-        state ^= state << 17U;
-        result[index] = static_cast<std::byte>(state & 0xffU);
-    }
-    return result;
-}
-
-std::vector<std::uint64_t> hot_blocks(
-    const std::uint64_t total_blocks) {
-    std::vector<std::uint64_t> result{
-        0, 1, 2, 3, total_blocks / 7, total_blocks / 5,
-        total_blocks / 3, total_blocks / 2, total_blocks - 1,
-        total_blocks - 2, total_blocks / 11, total_blocks / 13,
-        total_blocks / 17, total_blocks / 19, total_blocks / 23,
-        total_blocks / 29};
-    std::sort(result.begin(), result.end());
-    result.erase(std::unique(result.begin(), result.end()), result.end());
-    return result;
-}
-
-myrd::OperationContext bounded_context() {
-    return myrd::OperationContext{
-        {}, std::chrono::steady_clock::now() + std::chrono::minutes(10)};
-}
-
-void require_result(const myrd::Result<void>& result, const char* operation);
+using Model = std::map<std::uint64_t, ModelBlock>;
 
 struct JournalMeasurement final {
     std::uint64_t payload_bytes{};
     std::uint64_t growth_bytes{};
-    bool cleanup_succeeded{};
+    bool cleanup_succeeded{true};
+};
+
+void fail(std::string_view message) {
+    throw std::runtime_error(std::string(message));
+}
+
+void require(bool condition, std::string_view message) {
+    if (!condition) fail(message);
+}
+
+void require_result(const Result<void>& result, std::string_view message) {
+    if (!result.ok()) fail(message);
+}
+
+std::string narrow_diagnostic(std::wstring_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const auto character : value) {
+        result.push_back(character >= 0 && character <= 0x7f
+            ? static_cast<char>(character) : '?');
+    }
+    return result;
+}
+
+OperationContext bounded_context() {
+    return {{}, std::chrono::steady_clock::now() + std::chrono::minutes(15)};
+}
+
+std::uint64_t process_read_bytes() {
+    IO_COUNTERS counters{};
+    require(GetProcessIoCounters(GetCurrentProcess(), &counters) != FALSE,
+            "GetProcessIoCounters failed");
+    return counters.ReadTransferCount;
+}
+
+std::uint64_t process_private_bytes() {
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb = sizeof(counters);
+    require(GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                sizeof(counters)) != FALSE,
+            "GetProcessMemoryInfo failed");
+    return counters.PrivateUsage;
+}
+
+class BundleSandbox final {
+public:
+    explicit BundleSandbox(std::uint64_t seed) {
+        const auto nonce = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        root_ = std::filesystem::temp_directory_path() /
+            (L"myrd-m3-soak-bundle-" + std::to_wstring(GetCurrentProcessId()) +
+             L"-" + std::to_wstring(seed) + L"-" + std::to_wstring(nonce));
+        std::error_code error;
+        require(std::filesystem::create_directory(root_, error) && !error,
+                "bundle sandbox creation failed");
+    }
+
+    ~BundleSandbox() noexcept {
+        if (!cleaned_) {
+            std::error_code ignored;
+            std::filesystem::remove_all(root_, ignored);
+        }
+    }
+
+    const std::filesystem::path& root() const noexcept { return root_; }
+
+    bool cleanup() noexcept {
+        std::error_code error;
+        std::filesystem::remove_all(root_, error);
+        cleaned_ = !error && !std::filesystem::exists(root_, error);
+        return cleaned_ && !error;
+    }
+
+private:
+    std::filesystem::path root_{};
+    bool cleaned_{};
 };
 
 class JournalSandbox final {
 public:
-    explicit JournalSandbox(const std::uint64_t seed) {
+    explicit JournalSandbox(std::uint64_t seed) {
         const auto nonce = static_cast<std::uint64_t>(
             std::chrono::steady_clock::now().time_since_epoch().count());
         root_ = std::filesystem::temp_directory_path() /
-            (L"myrd-m3-soak-journal-" + std::to_wstring(seed) + L"-" +
-             std::to_wstring(nonce));
-        if (!std::filesystem::create_directory(root_)) {
-            throw std::runtime_error("journal sandbox creation failed");
-        }
+            (L"myrd-m3-soak-journal-" + std::to_wstring(GetCurrentProcessId()) +
+             L"-" + std::to_wstring(seed) + L"-" + std::to_wstring(nonce));
+        std::error_code error;
+        require(std::filesystem::create_directory(root_, error) && !error,
+                "journal sandbox creation failed");
     }
 
     ~JournalSandbox() noexcept {
@@ -135,13 +211,352 @@ public:
     }
 
 private:
-    std::filesystem::path root_;
+    std::filesystem::path root_{};
     bool cleaned_{};
 };
 
-myrd::persistence::JournalHeader make_journal_header(
-    const std::uint64_t seed) {
-    using namespace myrd::persistence;
+class DeterministicRandom final {
+public:
+    explicit DeterministicRandom(std::uint64_t state)
+        : state_(state == 0 ? 1 : state) {}
+
+    std::uint64_t next() noexcept {
+        state_ ^= state_ << 13U;
+        state_ ^= state_ >> 7U;
+        state_ ^= state_ << 17U;
+        return state_;
+    }
+
+private:
+    std::uint64_t state_{};
+};
+
+std::vector<std::byte> pattern(
+    std::uint64_t seed, std::uint64_t operation, std::size_t size) {
+    std::vector<std::byte> result(size);
+    std::uint64_t state = seed ^ (operation + 1) * 0x9e3779b97f4a7c15ULL;
+    for (auto& value : result) {
+        state ^= state << 13U;
+        state ^= state >> 7U;
+        state ^= state << 17U;
+        value = static_cast<std::byte>(state & 0xffU);
+    }
+    return result;
+}
+
+std::vector<std::uint64_t> model_blocks(std::uint64_t total_blocks) {
+    std::vector<std::uint64_t> result{
+        0, 1, 2, 3, total_blocks / 7, total_blocks / 5,
+        total_blocks / 3, total_blocks / 2, total_blocks - 1,
+        total_blocks - 2, total_blocks / 11, total_blocks / 13,
+        total_blocks / 17, total_blocks / 19, total_blocks / 23,
+        total_blocks / 29, total_blocks / 31, total_blocks / 37,
+        total_blocks / 41, total_blocks / 43};
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+PersistenceLimits persistence_limits() {
+    return {
+        kLogicalBytes,
+        512ULL * kMiB,
+        8192,
+        128ULL * kIndexNodeBytes,
+        128,
+        128ULL * kVhdxBatPageBytes,
+        128,
+        4ULL * kMiB,
+        4ULL * kMiB,
+    };
+}
+
+DynamicBlockStoreOptions store_options() {
+    return {
+        32ULL * kMiB,
+        64ULL * kMiB,
+        16ULL * kMiB,
+        kM2BlockSize,
+        1,
+        256,
+        4ULL * kMiB,
+        std::chrono::milliseconds{250},
+    };
+}
+
+void create_bundle(const BundleSandbox& bundle, std::uint64_t seed) {
+    GenerationZeroCreateRequest request{};
+    request.bundle_root = bundle.root();
+    request.manifest_relative_name = "disk.rdm";
+    request.base_temporary_name = "base.create.tmp";
+    request.base_relative_name = "base-0000.vhdx";
+    request.journal_relative_name = "journal-e0001.rdj";
+    request.geometry = {kLogicalBytes, 512, 4096};
+    for (std::size_t index = 0; index < 16; ++index) {
+        const auto byte = static_cast<std::byte>(
+            ((seed >> ((index % 8U) * 8U)) + index + 1U) & 0xffU);
+        request.image_uuid.bytes[index] = byte;
+        request.base_identity.file_identity.file_write_guid[index] =
+            static_cast<std::byte>(0x20U + index);
+        request.base_identity.file_identity.data_write_guid[index] =
+            static_cast<std::byte>(0x40U + index);
+        request.base_identity.virtual_disk_id[index] =
+            static_cast<std::byte>(0x60U + index);
+        request.journal_identity.journal_uuid[index] =
+            static_cast<std::byte>(0x80U + index);
+    }
+    request.journal_epoch = 1;
+    request.operation_id = seed + 1;
+    request.created_time_100ns = seed + 2;
+    request.vhdx_limits = {65536, 4096, kVhdxDataBlockBytes};
+    request.recovery = {persistence_limits()};
+    auto created = create_generation_zero_image(bounded_context(), request);
+    require(created.ok(), "100 GiB generation-zero image creation failed");
+}
+
+struct TransportProbe final { IBlockDevice* device{}; };
+
+class CapturingTransport final : public IM3ProviderTransport {
+public:
+    CapturingTransport(IBlockDevice& device, std::shared_ptr<TransportProbe> probe)
+        : probe_(std::move(probe)) {
+        probe_->device = &device;
+    }
+
+    Result<void> start() override { return Result<void>::success(); }
+    Result<void> stop() override { return Result<void>::success(); }
+    proxy::SessionSnapshot snapshot() const override { return {}; }
+    proxy::ProxyObjectNames names() const override { return {}; }
+
+private:
+    std::shared_ptr<TransportProbe> probe_;
+};
+
+M3ProviderFactories factories(
+    const std::shared_ptr<TransportProbe>& probe,
+    std::function<Result<void>(const JournalWriterPhaseEvent&)> phase_hook = {}) {
+    M3ProviderFactories result{};
+    result.transport = [probe](IBlockDevice& device,
+                               const proxy::IProxyNamespacePolicy&,
+                               proxy::ShmProxySessionOptions) {
+        std::unique_ptr<IM3ProviderTransport> transport =
+            std::make_unique<CapturingTransport>(device, probe);
+        return Result<std::unique_ptr<IM3ProviderTransport>>::success(
+            std::move(transport));
+    };
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    result.journal_phase_hook = std::move(phase_hook);
+#else
+    (void)phase_hook;
+#endif
+    return result;
+}
+
+M3ProviderConfig provider_config(const BundleSandbox& bundle) {
+    return {bundle.root(), "disk.rdm", {persistence_limits()},
+            store_options(), std::chrono::minutes{15}};
+}
+
+std::unique_ptr<M3Provider> open_provider(
+    const BundleSandbox& bundle,
+    const std::shared_ptr<TransportProbe>& probe,
+    M3ProviderFactories configured) {
+    proxy::LocalNamespacePolicy policy;
+    auto opened = M3Provider::open_for_test(
+        bounded_context(), policy, provider_config(bundle),
+        std::move(configured));
+    require(opened.ok(), "M3Provider open failed");
+    require(opened.value()->start(bounded_context()).ok(),
+            "M3Provider start failed");
+    require(probe->device != nullptr, "capturing transport missed block device");
+    return opened.move_value();
+}
+
+bool stop_twice(M3Provider& provider) {
+    const auto first = provider.stop(bounded_context(), {});
+    require(first.ok(), "M3Provider first stop failed");
+    const auto second = provider.stop(bounded_context(), {});
+    require(second.ok(), "M3Provider repeated stop failed");
+    return first.ok() && second.ok();
+}
+
+std::uint64_t elapsed_ms(std::chrono::steady_clock::time_point started) {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now() - started)
+        .count());
+}
+
+void update_peak_committed(
+    const DynamicBlockStoreStats& initial,
+    const DynamicBlockStoreStats& current,
+    std::uint64_t& peak) {
+    if (current.committed_bytes >= initial.committed_bytes) {
+        peak = (std::max)(peak,
+            current.committed_bytes - initial.committed_bytes);
+    }
+}
+
+void update_peak_process_committed(
+    std::uint64_t baseline, std::uint64_t& peak) {
+    const auto current = process_private_bytes();
+    if (current >= baseline) {
+        peak = (std::max)(peak, current - baseline);
+    }
+}
+
+std::vector<std::byte> read_model_bytes(IBlockDevice& device, const Model& model) {
+    std::vector<std::byte> result;
+    result.reserve(model.size() * static_cast<std::size_t>(kM2BlockSize));
+    for (const auto& [block, expected] : model) {
+        std::vector<std::byte> actual(static_cast<std::size_t>(kM2BlockSize));
+        require_result(device.read(
+            bounded_context(), block * kM2BlockSize, actual),
+            "production model readback failed");
+        require(actual == expected.bytes,
+                "production readback disagrees with complete-generation model");
+        result.insert(result.end(), actual.begin(), actual.end());
+    }
+    return result;
+}
+
+std::vector<std::byte> model_bytes(const Model& model) {
+    std::vector<std::byte> result;
+    result.reserve(model.size() * static_cast<std::size_t>(kM2BlockSize));
+    for (const auto& [block, value] : model) {
+        (void)block;
+        result.insert(result.end(), value.bytes.begin(), value.bytes.end());
+    }
+    return result;
+}
+
+std::uint64_t data_payload_bytes(const Model& model) {
+    std::uint64_t result{};
+    for (const auto& [block, value] : model) {
+        (void)block;
+        if (value.dirty && value.kind == ModelKind::Data) {
+            result += kM2BlockSize;
+        }
+    }
+    return result;
+}
+
+std::uint64_t dirty_record_count(const Model& model) {
+    return static_cast<std::uint64_t>(std::count_if(
+        model.begin(), model.end(),
+        [](const auto& item) { return item.second.dirty; }));
+}
+
+void concurrent_first_touch(
+    IBlockDevice& device,
+    const std::vector<std::uint64_t>& blocks,
+    Model& model,
+    std::uint64_t seed,
+    std::uint64_t& operations,
+    std::uint64_t& mutation_pause_max_ms) {
+    constexpr std::size_t kWorkers = 4;
+    std::mutex error_mutex;
+    std::string error_message;
+    std::vector<std::vector<std::byte>> writes;
+    writes.reserve(kWorkers);
+    for (std::size_t index = 0; index < kWorkers; ++index) {
+        writes.push_back(pattern(seed, 1000 + index,
+                                 static_cast<std::size_t>(kM2BlockSize)));
+    }
+    std::vector<std::thread> workers;
+    for (std::size_t index = 0; index < kWorkers; ++index) {
+        workers.emplace_back([&, index] {
+            std::vector<std::byte> zero(static_cast<std::size_t>(kM2BlockSize));
+            const auto offset = blocks[index] * kM2BlockSize;
+            auto read = device.read(bounded_context(), offset, zero);
+            if (!read.ok() || !std::all_of(
+                    zero.begin(), zero.end(),
+                    [](std::byte value) { return value == std::byte{}; })) {
+                std::scoped_lock lock(error_mutex);
+                error_message = "concurrent first-touch read failed";
+                return;
+            }
+            const auto started = std::chrono::steady_clock::now();
+            auto write = device.write(bounded_context(), offset, writes[index]);
+            const auto duration = elapsed_ms(started);
+            {
+                std::scoped_lock lock(error_mutex);
+                mutation_pause_max_ms = (std::max)(
+                    mutation_pause_max_ms, duration);
+                if (!write.ok()) {
+                    error_message = "concurrent first-touch write failed";
+                }
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    require(error_message.empty(), error_message);
+    for (std::size_t index = 0; index < kWorkers; ++index) {
+        auto& target = model.at(blocks[index]);
+        target.bytes = std::move(writes[index]);
+        target.kind = ModelKind::Data;
+        target.dirty = true;
+    }
+    operations += 2 * kWorkers;
+}
+
+void random_workload(
+    IBlockDevice& device,
+    const std::vector<std::uint64_t>& blocks,
+    Model& model,
+    std::uint64_t seed,
+    std::uint64_t limit,
+    std::uint64_t& operations,
+    std::uint64_t& mutation_pause_max_ms) {
+    DeterministicRandom random(seed);
+    for (std::uint64_t operation = 0; operation < limit; ++operation) {
+        const auto block = blocks[random.next() % blocks.size()];
+        const auto kind = random.next() % 4U;
+        auto& expected = model.at(block);
+        const auto started = std::chrono::steady_clock::now();
+        if (kind == 0) {
+            const auto data = pattern(seed, operation, kWriteBytes);
+            const auto local_offset = static_cast<std::uint64_t>(
+                (random.next() % (kM2BlockSize - kWriteBytes)) / 512U) * 512U;
+            require_result(device.write(
+                bounded_context(), block * kM2BlockSize + local_offset, data),
+                "production random write failed");
+            std::copy(data.begin(), data.end(),
+                      expected.bytes.begin() + static_cast<std::ptrdiff_t>(
+                          local_offset));
+            expected.kind = ModelKind::Data;
+            expected.dirty = true;
+        } else if (kind == 1) {
+            const auto local_offset = static_cast<std::uint64_t>(
+                (random.next() % (kM2BlockSize - kWriteBytes)) / 512U) * 512U;
+            std::vector<std::byte> actual(kWriteBytes);
+            require_result(device.read(
+                bounded_context(), block * kM2BlockSize + local_offset, actual),
+                "production random read failed");
+            require(std::equal(
+                actual.begin(), actual.end(),
+                expected.bytes.begin() + static_cast<std::ptrdiff_t>(
+                    local_offset)), "random read disagrees with model");
+        } else {
+            const DataRange range{block * kM2BlockSize, kM2BlockSize};
+            if (kind == 2) {
+                require_result(device.zero(bounded_context(), {&range, 1}),
+                               "production random zero failed");
+                expected.kind = ModelKind::Zero;
+            } else {
+                require_result(device.unmap(bounded_context(), {&range, 1}),
+                               "production random unmap failed");
+                expected.kind = ModelKind::Discard;
+            }
+            std::fill(expected.bytes.begin(), expected.bytes.end(), std::byte{});
+            expected.dirty = true;
+        }
+        mutation_pause_max_ms = (std::max)(
+            mutation_pause_max_ms, elapsed_ms(started));
+        ++operations;
+    }
+}
+
+JournalHeader make_journal_header(std::uint64_t seed) {
     JournalHeader header{};
     for (std::size_t index = 0; index < 16; ++index) {
         header.image_uuid.bytes[index] = static_cast<std::byte>(
@@ -154,61 +569,46 @@ myrd::persistence::JournalHeader make_journal_header(
     header.base_checkpoint_generation = 0;
     header.predecessor_kind = JournalPredecessorKind::Genesis;
     const auto geometry_digest = compute_geometry_digest(header.geometry);
-    if (!geometry_digest.ok()) {
-        throw std::runtime_error("journal geometry digest failed");
-    }
+    require(geometry_digest.ok(), "journal geometry digest failed");
     header.geometry_digest = geometry_digest.value();
     VhdxFileIdentity base{};
     base.file_write_guid[0] = std::byte{0x31};
     base.data_write_guid[0] = std::byte{0x41};
     const auto base_digest = compute_base_identity_digest(base);
-    if (!base_digest.ok()) {
-        throw std::runtime_error("journal base digest failed");
-    }
+    require(base_digest.ok(), "journal base digest failed");
     header.base_identity_digest = base_digest.value();
     const auto predecessor = compute_genesis_digest(
         header.image_uuid, header.geometry_digest,
         header.base_identity_digest);
-    if (!predecessor.ok()) {
-        throw std::runtime_error("journal predecessor digest failed");
-    }
+    require(predecessor.ok(), "journal predecessor digest failed");
     header.predecessor_digest = predecessor.value();
     header.feature_flags = 1;
     return header;
 }
 
-std::uint64_t formal_payload_block_count(const std::uint64_t seed) {
+std::uint64_t formal_seed_index(std::uint64_t seed) {
     if (seed < kFormalSeedBase ||
         (seed - kFormalSeedBase) % kFormalSeedStride != 0) {
-        throw std::runtime_error("Formal seed is outside the frozen set");
+        fail("Formal seed is outside the frozen set");
     }
     const auto index = (seed - kFormalSeedBase) / kFormalSeedStride;
-    if (index >= kFormalSeedCount) {
-        throw std::runtime_error("Formal seed index is out of range");
-    }
-    // 96 * 41 + 4 * 40 = 4096 blocks = exactly 256 MiB.
-    return index < 96 ? 41 : 40;
+    require(index < kFormalSeedCount, "Formal seed index is out of range");
+    return index;
 }
 
-JournalMeasurement write_formal_journal(const std::uint64_t seed) {
-    using namespace myrd::persistence;
-    const auto block_count = formal_payload_block_count(seed);
+JournalMeasurement write_formal_resource_checkpoint(std::uint64_t seed) {
     JournalSandbox sandbox(seed);
     const auto journal_path = sandbox.root() / L"checkpoint.rdj";
     auto opened = open_windows_persistence_file(
         journal_path, FileOpenMode::CreateNewReadWrite);
-    if (!opened.ok()) {
-        throw std::runtime_error("native journal create failed");
-    }
+    require(opened.ok(), "native resource journal create failed");
     auto file = std::shared_ptr<IPersistenceFile>(opened.move_value());
     const auto header = make_journal_header(seed);
     const auto header_bytes = encode_journal_header(header);
-    if (!header_bytes.ok()) {
-        throw std::runtime_error("journal header encoding failed");
-    }
+    require(header_bytes.ok(), "resource journal header encoding failed");
     require_result(file->write_exact(
         bounded_context(), 0, header_bytes.value()),
-        "journal header write failed");
+        "resource journal header write failed");
 
     JournalCheckpointRequest request{};
     request.file = file;
@@ -222,229 +622,366 @@ JournalMeasurement write_formal_journal(const std::uint64_t seed) {
     request.committed_length = kJournalAlignment;
     request.operation_id = seed + 1;
 
-    JournalWriterOptions writer_options{};
-    writer_options.index_builder = {
-        {64 * kIndexNodeBytes, 64}, 4096,
-        4096 * static_cast<std::uint64_t>(kIndexNodeBytes)};
-    writer_options.max_checkpoint_records = 512;
-    writer_options.max_checkpoint_bytes = 4ULL * kMiB;
-    auto writer = JournalWriter::create(writer_options);
-    if (!writer.ok()) {
-        throw std::runtime_error("journal writer creation failed");
-    }
+    JournalWriterOptions options{};
+    options.index_builder = {
+        {128 * kIndexNodeBytes, 128}, 8192,
+        8192 * static_cast<std::uint64_t>(kIndexNodeBytes)};
+    options.max_checkpoint_records = 8192;
+    options.max_checkpoint_bytes =
+        (kFormalPayloadBlocks * kM2BlockSize * 120ULL / 100ULL /
+         kJournalAlignment) * kJournalAlignment;
+    auto writer = JournalWriter::create(options);
+    require(writer.ok(), "resource journal writer creation failed");
 
     const auto prepared = writer.value()->prepare_streaming(
         bounded_context(), request,
-        [seed, block_count](
-            const myrd::OperationContext&,
-            const JournalCheckpointBatchConsumer& consume)
-            -> myrd::Result<void> {
-            for (std::uint64_t block = 0; block < block_count; ++block) {
+        [seed](const OperationContext&,
+               const JournalCheckpointBatchConsumer& consume) -> Result<void> {
+            for (std::uint64_t block = 0;
+                 block < kFormalPayloadBlocks; ++block) {
                 const auto payload = pattern(
                     seed, block, static_cast<std::size_t>(kM2BlockSize));
                 const JournalCheckpointBlockInput input{
-                    JournalRecordType::Data, block, block + 1, 0, 1,
-                    payload};
+                    JournalRecordType::Data, block, block + 1, 0, 1, payload};
                 const auto consumed = consume({&input, 1});
                 if (!consumed.ok()) return consumed;
             }
-            return myrd::Result<void>::success();
+            return Result<void>::success();
         });
     if (!prepared.ok()) {
-        throw std::runtime_error("journal checkpoint prepare failed");
+        fail("single 256 MiB journal checkpoint failed: code=" +
+             std::to_string(prepared.error().code) + ", native=" +
+             std::to_string(prepared.error().native_code) + ", operation=" +
+             narrow_diagnostic(prepared.error().operation) + ", message=" +
+             narrow_diagnostic(prepared.error().message));
     }
-    if (prepared.value().data_count != block_count ||
-        prepared.value().zero_count != 0 ||
-        prepared.value().discard_count != 0 ||
-        prepared.value().generation != 1) {
-        throw std::runtime_error("journal checkpoint counters are invalid");
-    }
-    const auto payload_bytes = block_count * kM2BlockSize;
-    const auto growth_bytes = prepared.value().committed_length -
-        kJournalAlignment;
-    if (growth_bytes <= payload_bytes ||
-        growth_bytes > payload_bytes * 120ULL / 100ULL) {
-        throw std::runtime_error("journal write amplification gate failed");
-    }
-    require_result(file->close(), "journal close failed");
+    require(prepared.value().data_count == kFormalPayloadBlocks &&
+            prepared.value().generation == 1,
+            "single 256 MiB checkpoint counters are invalid");
+    const auto payload_bytes = kFormalPayloadBlocks * kM2BlockSize;
+    const auto growth_bytes =
+        prepared.value().committed_length - kJournalAlignment;
+    require(growth_bytes > payload_bytes &&
+            growth_bytes <= payload_bytes * 120ULL / 100ULL,
+            "single 256 MiB journal write amplification exceeded 20 percent");
+    require_result(file->close(), "resource journal close failed");
     file.reset();
     writer.value().reset();
     const bool cleaned = sandbox.cleanup();
-    if (!cleaned) throw std::runtime_error("journal sandbox cleanup failed");
+    require(cleaned, "resource journal cleanup failed");
     return {payload_bytes, growth_bytes, cleaned};
 }
 
-void require_result(const myrd::Result<void>& result, const char* operation) {
-    if (!result.ok()) {
-        throw std::runtime_error(operation);
-    }
+bool is_compaction_seed(std::uint64_t seed, std::string_view profile) {
+    return profile == "Formal" ? formal_seed_index(seed) == 0 : seed == 42;
+}
+
+bool is_io_fault_seed(std::uint64_t seed, std::string_view profile) {
+    return profile == "Formal" ? formal_seed_index(seed) == 1 : seed == 9001;
+}
+
+M3CliConfig compaction_config(const BundleSandbox& bundle) {
+    M3CliConfig config{};
+    config.command = M3CliCommand::Compact;
+    config.bundle_root = bundle.root();
+    config.manifest_name = "disk.rdm";
+    config.persistence_limits = persistence_limits();
+    config.store_options = store_options();
+    config.timeout = std::chrono::minutes{15};
+    config.barrier = VolumeBarrierKind::RawBlockTestNoFilesystemCache;
+    return config;
 }
 
 SoakSeedReport run_soak_seed(
-    const std::uint64_t seed, const std::string_view profile) {
-    const std::uint64_t operation_limit = profile == "Formal" ? 2048 : 512;
-    const myrd::DynamicBlockStoreOptions options{
-        64ULL * kMiB, 128ULL * kMiB, 32ULL * kMiB,
-        4ULL * kMiB, 8, 256, 16ULL * kMiB,
-        std::chrono::milliseconds{250}};
-    auto created = myrd::DynamicBlockStore::create({
-        kLogicalBytes, 512, options, myrd::InitialBlockState::CleanZero,
-        {}, 0});
-    if (!created.ok()) {
-        throw std::runtime_error("DynamicBlockStore creation failed");
-    }
-    auto store = created.move_value();
-    const auto initial_stats = store->stats();
-    const auto blocks = hot_blocks(store->total_blocks());
-    std::map<std::uint64_t, std::vector<std::byte>> model;
-    for (const auto block : blocks) {
-        model.emplace(
-            block, std::vector<std::byte>(
-                       static_cast<std::size_t>(myrd::kBlockSizeBytes)));
-    }
+    std::uint64_t seed, std::string_view profile) {
+    const auto random_operation_limit = profile == "Formal" ? 2048ULL : 512ULL;
+    const bool compaction_scenario = is_compaction_seed(seed, profile);
+    const bool io_fault_scenario = is_io_fault_seed(seed, profile);
+    BundleSandbox bundle(seed);
+    create_bundle(bundle, seed);
 
-    DeterministicRandom random(seed == 0 ? 1 : seed);
+    const auto blocks = model_blocks(kLogicalBytes / kM2BlockSize);
+    Model model;
+    for (const auto block : blocks) model.emplace(block, ModelBlock{});
+
+    auto probe = std::make_shared<TransportProbe>();
+    std::atomic_bool inject_io{io_fault_scenario};
+    std::mutex cow_mutex;
+    std::condition_variable cow_cv;
+    bool allow_cow{};
+    bool cow_finished{};
+    bool cow_triggered{};
+    bool cow_write_ok{};
+    std::uint64_t cow_write_ms{};
+    const auto cow_block = blocks.back();
+    const auto cow_data = pattern(
+        seed, 0xC0FFEEULL, static_cast<std::size_t>(kM2BlockSize));
+
+    auto hook = [&](const JournalWriterPhaseEvent& event) -> Result<void> {
+        if (event.phase != JournalWriterPhase::BeforeBlockWrite ||
+            event.ordinal != 0) {
+            return Result<void>::success();
+        }
+        if (inject_io.exchange(false)) {
+            return Result<void>::failure({
+                ErrorDomain::persistence, static_cast<std::uint32_t>(
+                    PersistenceErrorCode::IoError),
+                L"m3_soak", L"injected journal I/O failure",
+                ERROR_WRITE_FAULT});
+        }
+        std::unique_lock lock(cow_mutex);
+        if (cow_triggered) return Result<void>::success();
+        cow_triggered = true;
+        allow_cow = true;
+        cow_cv.notify_all();
+        cow_cv.wait(lock, [&] { return cow_finished; });
+        if (!cow_write_ok) {
+            return Result<void>::failure({
+                ErrorDomain::persistence, static_cast<std::uint32_t>(
+                    PersistenceErrorCode::IoError),
+                L"m3_soak", L"concurrent COW mutation failed"});
+        }
+        return Result<void>::success();
+    };
+
+    const auto startup_read_before = process_read_bytes();
+    const auto private_bytes_before = process_private_bytes();
+    auto provider = open_provider(
+        bundle, probe, factories(probe, hook));
+    const auto startup_read_after = process_read_bytes();
+    const auto initial_stats = provider->storage_stats();
+    const auto startup_read_bytes = startup_read_after >= startup_read_before
+        ? startup_read_after - startup_read_before : 0;
+    std::uint64_t peak_committed{};
     std::uint64_t mutation_pause_max_ms{};
-    for (std::uint64_t operation = 0; operation < operation_limit;
-         ++operation) {
-        const auto block = blocks[random.next() % blocks.size()];
-        const auto kind = random.next() % 4U;
-        const auto context = bounded_context();
+    std::uint64_t operations{};
+
+    const auto before_first_touch = provider->storage_stats();
+    concurrent_first_touch(
+        *probe->device,
+        std::vector<std::uint64_t>(blocks.begin(), blocks.begin() + 4),
+        model, seed, operations, mutation_pause_max_ms);
+    const auto after_first_touch = provider->storage_stats();
+    const bool concurrent_first_touch_verified =
+        after_first_touch.backing_reads_total >=
+            before_first_touch.backing_reads_total + 4;
+    require(concurrent_first_touch_verified,
+            "concurrent first-touch did not perform lazy backing reads");
+    update_peak_process_committed(private_bytes_before, peak_committed);
+    random_workload(*probe->device, blocks, model, seed,
+                    random_operation_limit, operations,
+                    mutation_pause_max_ms);
+
+    const auto low_data = pattern(
+        seed, 0xA11CEULL, static_cast<std::size_t>(kM2BlockSize));
+    require_result(probe->device->write(
+        bounded_context(), blocks.front() * kM2BlockSize, low_data),
+        "low checkpoint sentinel write failed");
+    model.at(blocks.front()).bytes = low_data;
+    model.at(blocks.front()).kind = ModelKind::Data;
+    model.at(blocks.front()).dirty = true;
+    const auto high_data = pattern(
+        seed, 0xBEEFULL, static_cast<std::size_t>(kM2BlockSize));
+    require_result(probe->device->write(
+        bounded_context(), cow_block * kM2BlockSize, high_data),
+        "high checkpoint sentinel write failed");
+    model.at(cow_block).bytes = high_data;
+    model.at(cow_block).kind = ModelKind::Data;
+    model.at(cow_block).dirty = true;
+    operations += 2;
+    update_peak_committed(initial_stats, provider->storage_stats(),
+                          peak_committed);
+    update_peak_process_committed(private_bytes_before, peak_committed);
+
+    const Model first_cut = model;
+    const auto production_payload_bytes = data_payload_bytes(first_cut);
+    const auto snapshot_records = dirty_record_count(first_cut);
+    const auto journal_path = bundle.root() / L"journal-e0001.rdj";
+    const auto journal_before = std::filesystem::file_size(journal_path);
+
+    bool io_fault_observed = false;
+    if (io_fault_scenario) {
+        const auto failed_checkpoint = provider->checkpoint(
+            bounded_context(),
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+        require(!failed_checkpoint.ok() &&
+                failed_checkpoint.disposition ==
+                    CommitDisposition::NotCommitted &&
+                failed_checkpoint.error_context.has_value() &&
+                failed_checkpoint.error_context->code ==
+                    PersistenceErrorCode::IoError,
+                "injected product I/O failure did not fail closed");
+        io_fault_observed = true;
+    }
+
+    std::thread cow_writer([&] {
+        std::unique_lock lock(cow_mutex);
+        cow_cv.wait(lock, [&] { return allow_cow; });
+        lock.unlock();
         const auto started = std::chrono::steady_clock::now();
-        if (kind == 0) {
-            const auto data = pattern(seed, operation, kWriteBytes);
-            const auto offset = static_cast<std::uint64_t>(
-                (random.next() % (myrd::kBlockSizeBytes - kWriteBytes)) /
-                512U) * 512U;
-            require_result(store->write(
-                context, block * myrd::kBlockSizeBytes + offset, data),
-                "soak write failed");
-            std::copy(data.begin(), data.end(),
-                      model.at(block).begin() + static_cast<std::ptrdiff_t>(
-                          offset));
-        }
-        else if (kind == 1) {
-            const auto offset = static_cast<std::uint64_t>(
-                (random.next() % (myrd::kBlockSizeBytes - kWriteBytes)) /
-                512U) * 512U;
-            std::vector<std::byte> actual(kWriteBytes);
-            require_result(store->read(
-                context, block * myrd::kBlockSizeBytes + offset, actual),
-                "soak read failed");
-            if (!std::equal(
-                    actual.begin(), actual.end(),
-                    model.at(block).begin() + static_cast<std::ptrdiff_t>(
-                        offset))) {
-                throw std::runtime_error("soak read disagrees with model");
-            }
-        }
-        else {
-            const myrd::DataRange range{block * myrd::kBlockSizeBytes,
-                                        myrd::kBlockSizeBytes};
-            if (kind == 2) {
-                require_result(store->zero(context, {&range, 1}),
-                               "soak zero failed");
-            }
-            else {
-                require_result(store->unmap(context, {&range, 1}),
-                               "soak unmap failed");
-            }
-            std::fill(model.at(block).begin(), model.at(block).end(),
-                      std::byte{});
-        }
-        const auto elapsed = std::chrono::duration_cast<
-            std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                       started).count();
-        mutation_pause_max_ms = (std::max)(mutation_pause_max_ms,
-                                           static_cast<std::uint64_t>(elapsed));
+        const auto wrote = probe->device->write(
+            bounded_context(), cow_block * kM2BlockSize, cow_data);
+        const auto duration = elapsed_ms(started);
+        lock.lock();
+        cow_write_ms = duration;
+        cow_write_ok = wrote.ok();
+        cow_finished = true;
+        lock.unlock();
+        cow_cv.notify_all();
+    });
+    const auto first_checkpoint = provider->checkpoint(
+        bounded_context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    if (!cow_triggered) {
+        std::scoped_lock lock(cow_mutex);
+        allow_cow = true;
+        cow_cv.notify_all();
+    }
+    cow_writer.join();
+    const bool first_generation_complete =
+        first_checkpoint.ok() && first_checkpoint.generation == 1;
+    require(first_generation_complete,
+            "production checkpoint did not commit generation one");
+    require(cow_triggered && cow_write_ok,
+            "production checkpoint did not overlap a COW mutation");
+    model.at(cow_block).bytes = cow_data;
+    model.at(cow_block).kind = ModelKind::Data;
+    model.at(cow_block).dirty = true;
+    mutation_pause_max_ms = (std::max)(mutation_pause_max_ms, cow_write_ms);
+    ++operations;
+    const auto after_first_checkpoint = provider->storage_stats();
+    require(after_first_checkpoint.snapshot_cow_peak_bytes >= kM2BlockSize,
+            "production checkpoint did not observe a COW pre-image");
+    update_peak_committed(initial_stats, after_first_checkpoint,
+                          peak_committed);
+    update_peak_process_committed(private_bytes_before, peak_committed);
+    (void)read_model_bytes(*probe->device, model);
+    bool repeated_close_verified = stop_twice(*provider);
+    provider.reset();
+
+    const auto journal_after = std::filesystem::file_size(journal_path);
+    require(journal_after > journal_before,
+            "production checkpoint did not grow the journal");
+    const auto production_journal_growth = journal_after - journal_before;
+
+    auto reopened_probe = std::make_shared<TransportProbe>();
+    auto reopened = open_provider(
+        bundle, reopened_probe, factories(reopened_probe));
+    require(reopened->generation() == 1,
+            "reopen did not select generation one");
+    (void)read_model_bytes(*reopened_probe->device, first_cut);
+    bool reopen_verified = reopened->generation() == 1;
+    repeated_close_verified =
+        stop_twice(*reopened) && repeated_close_verified;
+    reopened.reset();
+
+    model = first_cut;
+    auto second_probe = std::make_shared<TransportProbe>();
+    auto second = open_provider(bundle, second_probe, factories(second_probe));
+    const auto final_data = pattern(
+        seed, 0xF1A1ULL, static_cast<std::size_t>(kM2BlockSize));
+    require_result(second_probe->device->write(
+        bounded_context(), cow_block * kM2BlockSize, final_data),
+        "final generation write failed");
+    model.at(cow_block).bytes = final_data;
+    model.at(cow_block).kind = ModelKind::Data;
+    model.at(cow_block).dirty = true;
+    ++operations;
+    const auto second_checkpoint = second->checkpoint(
+        bounded_context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    const bool second_generation_complete =
+        second_checkpoint.ok() && second_checkpoint.generation == 2;
+    require(second_generation_complete,
+            "production checkpoint did not commit generation two");
+    repeated_close_verified =
+        stop_twice(*second) && repeated_close_verified;
+    second.reset();
+
+    std::uint64_t expected_generation = 2;
+    bool compaction_verified = false;
+    if (compaction_scenario) {
+        const auto compacted = run_m3_lifecycle(
+            bounded_context(), compaction_config(bundle));
+        require(compacted.exit_code == 0 &&
+                compacted.disposition == CommitDisposition::Committed &&
+                compacted.generation == 3,
+                "production compaction failed");
+        expected_generation = 3;
+        compaction_verified = true;
+        ++operations;
     }
 
-    const auto snapshot = store->begin_consistent_snapshot(bounded_context());
-    if (!snapshot.ok()) {
-        throw std::runtime_error("consistent snapshot begin failed");
-    }
-    myrd::DirtyScanCursor cursor{};
-    std::uint64_t snapshot_records{};
-    std::uint64_t checkpoint_payload_bytes{};
-    for (;;) {
-        const auto batch = store->copy_consistent_snapshot_batch(
-            bounded_context(), snapshot.value(), cursor, 4ULL * kMiB);
-        if (!batch.ok()) {
-            (void)store->abort_consistent_snapshot(snapshot.value());
-            throw std::runtime_error("consistent snapshot copy failed");
-        }
-        for (const auto& record : batch.value()) {
-            const auto found = model.find(record.block_index);
-            if (found == model.end()) {
-                (void)store->abort_consistent_snapshot(snapshot.value());
-                throw std::runtime_error("snapshot returned unknown block");
-            }
-            if (!record.data.empty() && record.data != found->second) {
-                (void)store->abort_consistent_snapshot(snapshot.value());
-                throw std::runtime_error("snapshot data disagrees with model");
-            }
-            ++snapshot_records;
-            checkpoint_payload_bytes += record.data.size();
-        }
-        if (cursor.next_block_index >= store->total_blocks()) break;
-    }
-    require_result(store->finish_consistent_snapshot(snapshot.value()),
-                   "consistent snapshot finish failed");
-    require_result(store->validate_invariants_for_test(),
-                   "store invariants failed");
+    auto final_probe = std::make_shared<TransportProbe>();
+    auto final_provider = open_provider(
+        bundle, final_probe, factories(final_probe));
+    require(final_provider->generation() == expected_generation,
+            "final reopen selected an incomplete generation");
+    const auto actual_bytes = read_model_bytes(*final_probe->device, model);
+    const auto expected_bytes = model_bytes(model);
+    const auto expected_hash = sha256_hex(expected_bytes);
+    const auto actual_hash = sha256_hex(actual_bytes);
+    require(expected_hash.ok() && actual_hash.ok() &&
+            expected_hash.value() == actual_hash.value(),
+            "final complete-generation hash mismatch");
+    const bool final_generation_complete =
+        final_provider->generation() == expected_generation;
+    repeated_close_verified =
+        stop_twice(*final_provider) && repeated_close_verified;
+    final_provider.reset();
 
-    std::vector<std::byte> expected;
-    std::vector<std::byte> actual;
-    expected.reserve(model.size() * static_cast<std::size_t>(
-        myrd::kBlockSizeBytes));
-    actual.reserve(expected.capacity());
-    for (const auto& [block, bytes] : model) {
-        expected.insert(expected.end(), bytes.begin(), bytes.end());
-        std::vector<std::byte> readback(bytes.size());
-        require_result(store->read(
-            bounded_context(), block * myrd::kBlockSizeBytes, readback),
-            "soak full readback failed");
-        actual.insert(actual.end(), readback.begin(), readback.end());
+    JournalMeasurement resource_checkpoint{};
+    if (profile == "Formal" && formal_seed_index(seed) == 0) {
+        resource_checkpoint = write_formal_resource_checkpoint(seed);
     }
-    const auto expected_hash = myrd::sha256_hex(expected);
-    const auto actual_hash = myrd::sha256_hex(actual);
-    if (!expected_hash.ok() || !actual_hash.ok()) {
-        throw std::runtime_error("soak hash computation failed");
-    }
-    const auto final_stats = store->stats();
-    const auto extra_committed = final_stats.committed_bytes >=
-            initial_stats.committed_bytes
-        ? final_stats.committed_bytes - initial_stats.committed_bytes : 0;
-    const auto journal = profile == "Formal"
-        ? write_formal_journal(seed)
-        : JournalMeasurement{checkpoint_payload_bytes, 0, true};
-    store->close();
-    if (!store->is_closed()) throw std::runtime_error("store did not close");
+    const auto reported_payload = resource_checkpoint.payload_bytes != 0
+        ? resource_checkpoint.payload_bytes : production_payload_bytes;
+    const auto reported_growth = resource_checkpoint.growth_bytes != 0
+        ? resource_checkpoint.growth_bytes : production_journal_growth;
+    const bool cleaned = bundle.cleanup() &&
+        resource_checkpoint.cleanup_succeeded;
+    require(cleaned, "production soak bundle cleanup failed");
 
-    return SoakSeedReport{
-        seed, std::string(profile), operation_limit, expected_hash.value(),
-        actual_hash.value(), true, false, initial_stats.committed_bytes,
-        extra_committed, journal.payload_bytes, journal.growth_bytes,
-        mutation_pause_max_ms, 0, snapshot_records,
-        journal.cleanup_succeeded};
-}
-
-void require(bool condition, const char* message) {
-    if (!condition) {
-        std::cerr << "M3_SOAK_TEST_FAIL " << message << '\n';
-        std::exit(1);
-    }
+    return {
+        seed,
+        std::string(profile),
+        operations,
+        expected_hash.value(),
+        actual_hash.value(),
+        first_generation_complete && second_generation_complete &&
+            final_generation_complete,
+        expected_hash.value() != actual_hash.value(),
+        startup_read_bytes,
+        peak_committed,
+        reported_payload,
+        reported_growth,
+        production_payload_bytes,
+        production_journal_growth,
+        mutation_pause_max_ms,
+        cow_write_ms,
+        snapshot_records,
+        after_first_checkpoint.snapshot_cow_peak_bytes,
+        after_first_checkpoint.snapshot_writer_stalls_total,
+        Coverage{first_generation_complete && second_generation_complete,
+                 reopen_verified && final_generation_complete,
+                 compaction_verified, concurrent_first_touch_verified,
+                 cow_triggered &&
+                     after_first_checkpoint.snapshot_cow_peak_bytes >=
+                         kM2BlockSize,
+                 io_fault_scenario && io_fault_observed &&
+                     first_generation_complete,
+                 repeated_close_verified},
+        cleaned,
+    };
 }
 
 std::uint64_t parse_seed(const char* text) {
     if (text == nullptr || *text == '\0') {
-        throw std::runtime_error("MYRD_M3_SOAK_SEED is required");
+        fail("MYRD_M3_SOAK_SEED is required");
     }
     std::uint64_t value{};
     const auto end = text + std::char_traits<char>::length(text);
     const auto parsed = std::from_chars(text, end, value, 10);
     if (parsed.ec != std::errc{} || parsed.ptr != end) {
-        throw std::runtime_error("MYRD_M3_SOAK_SEED must be unsigned decimal");
+        fail("MYRD_M3_SOAK_SEED must be unsigned decimal");
     }
     return value;
 }
@@ -461,31 +998,51 @@ std::string environment_value(const char* name) {
 }
 
 void print_summary(const SoakSeedReport& report) {
-    std::cout << "{\"schema\":\"myrd.m3.soak-seed.v1\",\"seed\":"
+    const auto boolean = [](bool value) { return value ? "true" : "false"; };
+    std::cout << "{\"schema\":\"myrd.m3.soak-seed.v2\",\"seed\":"
               << report.seed << ",\"profile\":\"" << report.profile
               << "\",\"operation_count\":" << report.operations
               << ",\"expected_sha256\":\"" << report.expected_sha256
               << "\",\"actual_sha256\":\"" << report.actual_sha256
               << "\",\"complete_generations_only\":"
-              << (report.complete_generations_only ? "true" : "false")
-              << ",\"mixed_generation\":"
-              << (report.mixed_generation ? "true" : "false")
-              << ",\"resource\":{\"logical_bytes\":"
-              << kLogicalBytes << ",\"startup_read_bytes\":"
-              << report.startup_read_bytes
+              << boolean(report.complete_generations_only)
+              << ",\"mixed_generation\":" << boolean(report.mixed_generation)
+              << ",\"resource\":{\"logical_bytes\":" << kLogicalBytes
+              << ",\"startup_read_bytes\":" << report.startup_read_bytes
               << ",\"extra_committed_bytes\":"
               << report.extra_committed_bytes << "}"
               << ",\"checkpoint\":{\"payload_bytes\":"
               << report.checkpoint_payload_bytes
               << ",\"journal_growth_bytes\":"
-              << report.journal_growth_bytes << "}"
+              << report.journal_growth_bytes
+              << ",\"production_payload_bytes\":"
+              << report.production_payload_bytes
+              << ",\"production_journal_growth_bytes\":"
+              << report.production_journal_growth_bytes << "}"
               << ",\"latency\":{\"mutation_pause_max_ms\":"
               << report.mutation_pause_max_ms
               << ",\"writer_stall_max_ms\":"
               << report.writer_stall_max_ms << "}"
-              << ",\"snapshot_records\":" << report.snapshot_records
+              << ",\"snapshot\":{\"records\":"
+              << report.snapshot_records << ",\"cow_peak_bytes\":"
+              << report.snapshot_cow_peak_bytes << ",\"writer_stalls\":"
+              << report.snapshot_writer_stalls << "}"
+              << ",\"coverage\":{\"production_checkpoint\":"
+              << boolean(report.coverage.production_checkpoint)
+              << ",\"reopen_verified\":"
+              << boolean(report.coverage.reopen_verified)
+              << ",\"compaction_verified\":"
+              << boolean(report.coverage.compaction_verified)
+              << ",\"concurrent_first_touch\":"
+              << boolean(report.coverage.concurrent_first_touch)
+              << ",\"cow_overlap\":"
+              << boolean(report.coverage.cow_overlap)
+              << ",\"io_fault_recovered\":"
+              << boolean(report.coverage.io_fault_recovered)
+              << ",\"repeated_close\":"
+              << boolean(report.coverage.repeated_close) << "}"
               << ",\"cleanup_succeeded\":"
-              << (report.cleanup_succeeded ? "true" : "false") << "}\n";
+              << boolean(report.cleanup_succeeded) << "}\n";
 }
 
 }  // namespace
@@ -496,56 +1053,54 @@ int main(int argc, char** argv) {
         return 1;
     }
     try {
-        const auto testMode = environment_value("MYRD_M3_SOAK_TEST_MODE");
-        if (testMode == "nonzero") {
+        const auto test_mode = environment_value("MYRD_M3_SOAK_TEST_MODE");
+        if (test_mode == "nonzero") {
             std::cerr << "M3_SOAK_TEST_MODE nonzero\n";
             return 7;
         }
-        if (testMode == "malformed") {
+        if (test_mode == "malformed") {
             std::cout << "not-json\n";
             return 0;
         }
-        if (testMode == "multiple") {
+        if (test_mode == "multiple") {
             std::cout << "{\"schema\":\"first\"}\n"
                          "{\"schema\":\"second\"}\n";
             return 0;
         }
-        if (testMode == "timeout") {
+        if (test_mode == "timeout") {
             std::this_thread::sleep_for(std::chrono::seconds(60));
             return 0;
         }
         if (argc == 2) {
             const auto first = run_soak_seed(12648430, "Quick");
             const auto second = run_soak_seed(12648430, "Quick");
-            require(first.operations > 0, "runner did not execute operations");
+            require(first.operations > 0, "self-test ran no operations");
             require(first.expected_sha256 == first.actual_sha256,
-                    "shadow model hash did not match production readback");
-            require(first.complete_generations_only,
-                    "runner did not prove complete generations");
-            require(first.operations == second.operations,
-                    "same seed changed operation count");
-            require(first.expected_sha256 == second.expected_sha256,
-                    "same seed changed expected hash");
-            require(first.actual_sha256 == second.actual_sha256,
-                    "same seed changed actual hash");
+                    "self-test model hash mismatch");
+            require(first.coverage.production_checkpoint &&
+                    first.coverage.reopen_verified &&
+                    first.coverage.concurrent_first_touch &&
+                    first.coverage.cow_overlap &&
+                    first.coverage.repeated_close,
+                    "self-test missed production coverage");
+            require(first.operations == second.operations &&
+                    first.expected_sha256 == second.expected_sha256 &&
+                    first.actual_sha256 == second.actual_sha256,
+                    "same seed was not deterministic");
             print_summary(first);
             return 0;
         }
         const auto profile = environment_value("MYRD_M3_SOAK_PROFILE");
         if (profile != "Quick" && profile != "Formal") {
-            throw std::runtime_error(
-                "MYRD_M3_SOAK_PROFILE must be Quick or Formal");
+            fail("MYRD_M3_SOAK_PROFILE must be Quick or Formal");
         }
         const auto seed_text = environment_value("MYRD_M3_SOAK_SEED");
-        const auto seed = parse_seed(seed_text.c_str());
-        print_summary(run_soak_seed(seed, profile));
+        print_summary(run_soak_seed(parse_seed(seed_text.c_str()), profile));
         return 0;
-    }
-    catch (const std::exception& error) {
+    } catch (const std::exception& error) {
         std::cerr << "M3_SOAK_ERROR " << error.what() << '\n';
         return 1;
-    }
-    catch (...) {
+    } catch (...) {
         std::cerr << "M3_SOAK_ERROR unknown failure\n";
         return 1;
     }
