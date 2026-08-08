@@ -63,6 +63,20 @@ struct Coverage final {
     bool repeated_close{};
 };
 
+struct CleanupGauges final {
+    std::uint64_t loading_blocks{};
+    std::uint64_t active_snapshot_id{};
+    std::uint64_t snapshot_cow_current_bytes{};
+    std::uint64_t snapshot_cow_records{};
+    std::uint64_t snapshot_blocked_writers{};
+
+    bool empty() const noexcept {
+        return loading_blocks == 0 && active_snapshot_id == 0 &&
+            snapshot_cow_current_bytes == 0 && snapshot_cow_records == 0 &&
+            snapshot_blocked_writers == 0;
+    }
+};
+
 struct SoakSeedReport final {
     std::uint64_t seed{};
     std::string profile;
@@ -83,6 +97,7 @@ struct SoakSeedReport final {
     std::uint64_t snapshot_cow_peak_bytes{};
     std::uint64_t snapshot_writer_stalls{};
     Coverage coverage{};
+    CleanupGauges cleanup{};
     bool cleanup_succeeded{};
 };
 
@@ -113,6 +128,20 @@ void require(bool condition, std::string_view message) {
 
 void require_result(const Result<void>& result, std::string_view message) {
     if (!result.ok()) fail(message);
+}
+
+void observe_cleanup_gauges(
+    CleanupGauges& aggregate, const DynamicBlockStoreStats& stats) noexcept {
+    aggregate.loading_blocks =
+        (std::max)(aggregate.loading_blocks, stats.loading_blocks);
+    aggregate.active_snapshot_id =
+        (std::max)(aggregate.active_snapshot_id, stats.snapshot_active_id);
+    aggregate.snapshot_cow_current_bytes = (std::max)(
+        aggregate.snapshot_cow_current_bytes, stats.snapshot_cow_current_bytes);
+    aggregate.snapshot_cow_records =
+        (std::max)(aggregate.snapshot_cow_records, stats.snapshot_cow_records);
+    aggregate.snapshot_blocked_writers = (std::max)(
+        aggregate.snapshot_blocked_writers, stats.snapshot_blocked_writers);
 }
 
 std::string narrow_diagnostic(std::wstring_view value) {
@@ -713,6 +742,7 @@ SoakSeedReport run_soak_seed(
     bool cow_triggered{};
     bool cow_write_ok{};
     std::uint64_t cow_write_ms{};
+    CleanupGauges cleanup_gauges{};
     const auto cow_block = blocks.back();
     const auto cow_data = pattern(
         seed, 0xC0FFEEULL, static_cast<std::size_t>(kM2BlockSize));
@@ -854,6 +884,7 @@ SoakSeedReport run_soak_seed(
     update_peak_committed(initial_stats, after_first_checkpoint,
                           peak_committed);
     update_peak_process_committed(private_bytes_before, peak_committed);
+    observe_cleanup_gauges(cleanup_gauges, after_first_checkpoint);
     (void)read_model_bytes(*probe->device, model);
     bool repeated_close_verified = stop_twice(*provider);
     provider.reset();
@@ -869,6 +900,7 @@ SoakSeedReport run_soak_seed(
     require(reopened->generation() == 1,
             "reopen did not select generation one");
     (void)read_model_bytes(*reopened_probe->device, first_cut);
+    observe_cleanup_gauges(cleanup_gauges, reopened->storage_stats());
     bool reopen_verified = reopened->generation() == 1;
     repeated_close_verified =
         stop_twice(*reopened) && repeated_close_verified;
@@ -892,6 +924,7 @@ SoakSeedReport run_soak_seed(
         second_checkpoint.ok() && second_checkpoint.generation == 2;
     require(second_generation_complete,
             "production checkpoint did not commit generation two");
+    observe_cleanup_gauges(cleanup_gauges, second->storage_stats());
     repeated_close_verified =
         stop_twice(*second) && repeated_close_verified;
     second.reset();
@@ -916,6 +949,7 @@ SoakSeedReport run_soak_seed(
     require(final_provider->generation() == expected_generation,
             "final reopen selected an incomplete generation");
     const auto actual_bytes = read_model_bytes(*final_probe->device, model);
+    observe_cleanup_gauges(cleanup_gauges, final_provider->storage_stats());
     const auto expected_bytes = model_bytes(model);
     const auto expected_hash = sha256_hex(expected_bytes);
     const auto actual_hash = sha256_hex(actual_bytes);
@@ -938,6 +972,8 @@ SoakSeedReport run_soak_seed(
         ? resource_checkpoint.growth_bytes : production_journal_growth;
     const bool cleaned = bundle.cleanup() &&
         resource_checkpoint.cleanup_succeeded;
+    require(cleanup_gauges.empty(),
+            "production soak left active store work after a stable boundary");
     require(cleaned, "production soak bundle cleanup failed");
 
     return {
@@ -969,6 +1005,7 @@ SoakSeedReport run_soak_seed(
                  io_fault_scenario && io_fault_observed &&
                      first_generation_complete,
                  repeated_close_verified},
+        cleanup_gauges,
         cleaned,
     };
 }
@@ -1041,6 +1078,16 @@ void print_summary(const SoakSeedReport& report) {
               << boolean(report.coverage.io_fault_recovered)
               << ",\"repeated_close\":"
               << boolean(report.coverage.repeated_close) << "}"
+              << ",\"cleanup\":{\"loading_blocks\":"
+              << report.cleanup.loading_blocks
+              << ",\"active_snapshot_id\":"
+              << report.cleanup.active_snapshot_id
+              << ",\"snapshot_cow_current_bytes\":"
+              << report.cleanup.snapshot_cow_current_bytes
+              << ",\"snapshot_cow_records\":"
+              << report.cleanup.snapshot_cow_records
+              << ",\"snapshot_blocked_writers\":"
+              << report.cleanup.snapshot_blocked_writers << "}"
               << ",\"cleanup_succeeded\":"
               << boolean(report.cleanup_succeeded) << "}\n";
 }

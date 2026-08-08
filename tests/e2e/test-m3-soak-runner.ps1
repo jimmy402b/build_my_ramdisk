@@ -98,6 +98,14 @@ try {
         'Quick run missed I/O fault recovery coverage'
     Require-SoakRunnerTest ($report.cleanup.succeeded -eq $true -and
         @($report.cleanup.residuals).Count -eq 0) 'Quick cleanup was not empty'
+    foreach ($name in @(
+        'loading_blocks','active_snapshot_id','snapshot_cow_current_bytes',
+        'snapshot_cow_records','snapshot_blocked_writers')) {
+        Require-SoakRunnerTest ($null -ne $report.cleanup.PSObject.Properties[$name]) `
+            "Quick cleanup gauge is missing: $name"
+        Require-SoakRunnerTest ([uint64]$report.cleanup.$name -eq 0) `
+            "Quick cleanup gauge is nonzero: $name"
+    }
     foreach ($role in @('soak.stdout', 'soak.stderr')) {
         Require-SoakRunnerTest ($null -ne @($report.artifacts |
             Where-Object { $_.role -eq $role })[0]) `

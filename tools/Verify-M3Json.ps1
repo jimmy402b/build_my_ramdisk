@@ -474,13 +474,22 @@ function Verify-M3SoakReport($SoakReport) {
         }
     }
 
-    foreach ($name in @('succeeded','residuals')) {
+    $cleanupGaugeNames = @(
+        'loading_blocks','active_snapshot_id','snapshot_cow_current_bytes',
+        'snapshot_cow_records','snapshot_blocked_writers')
+    foreach ($name in @('succeeded','residuals') + $cleanupGaugeNames) {
         Require-Property $SoakReport.cleanup $name
     }
     Require-Boolean $SoakReport.cleanup.succeeded 'soak cleanup succeeded'
     Require ([bool]$SoakReport.cleanup.succeeded) 'soak cleanup failed'
     Require (@($SoakReport.cleanup.residuals).Count -eq 0) `
         'soak cleanup left residual resources'
+    foreach ($name in $cleanupGaugeNames) {
+        Require-UnsignedInteger $SoakReport.cleanup.$name `
+            "soak cleanup gauge $name"
+        Require ([uint64]$SoakReport.cleanup.$name -eq 0) `
+            "soak cleanup gauge is nonzero: $name"
+    }
 
     $soakArtifacts = @($SoakReport.artifacts)
     Require ($soakArtifacts.Count -gt 0) 'soak artifact hashes are required'

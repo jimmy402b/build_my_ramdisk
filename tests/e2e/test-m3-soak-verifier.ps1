@@ -196,7 +196,15 @@ try {
                 source_commit = $source; sha256 = $crashAggregateHash
             }
         }
-        cleanup = [ordered]@{ succeeded = $true; residuals = @() }
+        cleanup = [ordered]@{
+            succeeded = $true
+            residuals = @()
+            loading_blocks = 0
+            active_snapshot_id = 0
+            snapshot_cow_current_bytes = 0
+            snapshot_cow_records = 0
+            snapshot_blocked_writers = 0
+        }
         artifacts = @(
             [ordered]@{ role = 'soak.stdout'; sha256 = $stdoutHash },
             [ordered]@{ role = 'soak.stderr'; sha256 = $stderrHash }
@@ -257,6 +265,11 @@ try {
         @{ Name = 'writer stall threshold'; Apply = { param($r) $r.thresholds.writer_stall_max_ms = 251 } },
         @{ Name = 'cleanup result'; Apply = { param($r) $r.cleanup.succeeded = $false } },
         @{ Name = 'cleanup residual'; Apply = { param($r) $r.cleanup.residuals = @('mapping') } },
+        @{ Name = 'loading block residual'; Apply = { param($r) $r.cleanup.loading_blocks = 1 } },
+        @{ Name = 'active snapshot residual'; Apply = { param($r) $r.cleanup.active_snapshot_id = 1 } },
+        @{ Name = 'COW byte residual'; Apply = { param($r) $r.cleanup.snapshot_cow_current_bytes = 65536 } },
+        @{ Name = 'COW record residual'; Apply = { param($r) $r.cleanup.snapshot_cow_records = 1 } },
+        @{ Name = 'blocked writer residual'; Apply = { param($r) $r.cleanup.snapshot_blocked_writers = 1 } },
         @{ Name = 'Task43 completion'; Apply = { param($r) $r.task43_complete = $false } },
         @{ Name = 'milestone eligibility'; Apply = { param($r) $r.milestone_eligible = $false } },
         @{ Name = 'Task41 dependency status'; Apply = { param($r) $r.dependencies.real_functional.status = 'FAIL' } },

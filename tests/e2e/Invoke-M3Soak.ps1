@@ -163,7 +163,7 @@ function ConvertFrom-M3SoakSeedOutput {
     foreach ($name in @(
         'schema','seed','profile','operation_count','expected_sha256',
         'actual_sha256','complete_generations_only','mixed_generation',
-        'resource','checkpoint','latency','snapshot','coverage',
+        'resource','checkpoint','latency','snapshot','coverage','cleanup',
         'cleanup_succeeded')) {
         Assert-M3Soak ($null -ne $summary.PSObject.Properties[$name]) `
             "soak seed property is missing: $name"
@@ -228,6 +228,14 @@ function ConvertFrom-M3SoakSeedOutput {
         'cow_overlap','repeated_close')) {
         Assert-M3Soak ([bool]$summary.coverage.$name) `
             "soak seed production coverage is false: $name"
+    }
+    foreach ($name in @(
+        'loading_blocks','active_snapshot_id','snapshot_cow_current_bytes',
+        'snapshot_cow_records','snapshot_blocked_writers')) {
+        Assert-M3Soak ($null -ne $summary.cleanup.PSObject.Properties[$name]) `
+            "soak seed cleanup gauge is missing: $name"
+        Assert-M3Soak ([uint64]$summary.cleanup.$name -eq 0) `
+            "soak seed cleanup gauge is nonzero: $name"
     }
     Assert-M3Soak `
         ([uint64]$summary.checkpoint.production_payload_bytes -gt 0) `
@@ -409,6 +417,15 @@ Assert-M3Soak ($compactionCount -ge 1) `
 Assert-M3Soak ($ioFaultRecoveryCount -ge 1) `
     'soak set did not recover an injected product I/O fault'
 
+$cleanupGauges = [ordered]@{}
+foreach ($name in @(
+    'loading_blocks','active_snapshot_id','snapshot_cow_current_bytes',
+    'snapshot_cow_records','snapshot_blocked_writers')) {
+    $cleanupGauges[$name] = [uint64](@($summaries | ForEach-Object {
+        [uint64]$_.cleanup.$name
+    } | Measure-Object -Maximum).Maximum)
+}
+
 $dependencies = if ($Profile -eq 'Formal') {
     [ordered]@{
         real_functional = [ordered]@{
@@ -481,7 +498,15 @@ $report = [ordered]@{
         writer_stall_max_ms = $writerStall
     }
     dependencies = $dependencies
-    cleanup = [ordered]@{ succeeded = $true; residuals = @() }
+    cleanup = [ordered]@{
+        succeeded = $true
+        residuals = @()
+        loading_blocks = $cleanupGauges.loading_blocks
+        active_snapshot_id = $cleanupGauges.active_snapshot_id
+        snapshot_cow_current_bytes = $cleanupGauges.snapshot_cow_current_bytes
+        snapshot_cow_records = $cleanupGauges.snapshot_cow_records
+        snapshot_blocked_writers = $cleanupGauges.snapshot_blocked_writers
+    }
     artifacts = $artifacts
     error = $null
 }
