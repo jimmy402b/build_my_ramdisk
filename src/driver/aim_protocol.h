@@ -6,8 +6,14 @@
 
 #include "src/common/result.h"
 
-// AIM protocol ABI — all values from audited contract
-// Upstream commit: d379caa027d21902e45fce8c9daf02fd116c2dda
+// AIM protocol ABI declarations adapted from Arsenal Image Mounter
+// `Unmanaged Source/phdskmnt/inc/common.h` at pinned commit
+// d379caa027d21902e45fce8c9daf02fd116c2dda (upstream API 1.2.29.95).
+// Upstream file: Copyright (C) Arsenal Recon; AGPL-3.0 terms stated there.
+// MyRamDisk changes: selected the required ABI subset, translated declarations
+// to namespaced C++20 fixed-width types, added local validation/static asserts,
+// and added project-specific constants. No AIM implementation body is copied.
+// See THIRD_PARTY.md for the complete provenance and redistribution policy.
 
 namespace myrd::aim {
 

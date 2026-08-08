@@ -8,8 +8,15 @@
 
 #include "src/common/result.h"
 
-// IMDPROXY protocol ABI — all values from audited contract
-// Upstream commit: d379caa027d21902e45fce8c9daf02fd116c2dda
+// IMDPROXY protocol declarations adapted from Olof Lagerkvist's `imdproxy.h`
+// as mirrored by Arsenal Image Mounter at pinned commit
+// d379caa027d21902e45fce8c9daf02fd116c2dda.
+// Upstream declaration copyright: Copyright (C) 2005-2007 Olof Lagerkvist;
+// MIT-style license. The complete notice is reproduced in THIRD_PARTY.md.
+// MyRamDisk changes: selected the supported protocol subset, translated the
+// declarations to namespaced C++20 fixed-width types, and added independently
+// authored safe wire helpers/static asserts. No upstream implementation body
+// is copied.
 
 namespace myrd::proxy {
 

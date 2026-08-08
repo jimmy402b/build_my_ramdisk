@@ -327,12 +327,22 @@ Create `THIRD_PARTY.md`:
 
 - Upstream: https://github.com/ArsenalRecon/Arsenal-Image-Mounter
 - Audited commit: `d379caa027d21902e45fce8c9daf02fd116c2dda`
-- Upstream license: GNU Affero General Public License v3
-- Referenced files: `common.h`, `imdproxy.h`, `proxy.cpp`, `DevioShmService.cs`
-- Official `DriverSetup/DriverFiles.zip` SHA-256:
-  `709DAC0A2E6A0CFFF7B332CCAFD688F30F0E56926EB68C0F5B8AB44083F02FE8`
+- Protocol reference: commit
+  `d379caa027d21902e45fce8c9daf02fd116c2dda` (upstream API 1.2.29.95).
+- `common.h`, `proxy.cpp`, and `DevioShmService.cs` state Arsenal Recon
+  AGPL-3.0/open-source terms. `imdproxy.h` is a separate ImDisk declaration
+  by Olof Lagerkvist under its MIT-style notice; do not classify it as AGPL.
+- Accepted runtime driver source package: commit
+  `cb7a2347e9595b12e2bd178ce803090a7a674037`,
+  `DriverSetup/DriverFiles.zip` SHA-256
+  `B889A4BAAE15CE4F6DDD94327BCC56C9B1D0FC442DDB3E0A1FD233F8D12BD324`;
+  member `Win10/x64/phdskmnt.sys`, version 1.2.28.93, SHA-256
+  `3C23DF3D22D2BD9ED34F4BBD12713EF9ADB131B6178F88C0CD3DBFCBDA9DF6F9`.
+- The local ABI/protocol declarations adapt the published declarations; no AIM
+  user-mode implementation body is copied.
 
-No AIM user-mode binary is linked, loaded, or redistributed by M0.
+No AIM user-mode binary or `phdskmnt.sys` is linked, loaded from the project,
+or redistributed by M0.
 ```
 
 - [ ] **Step 5: Configure, build, and run the smoke test**
