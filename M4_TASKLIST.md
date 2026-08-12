@@ -23,12 +23,23 @@ dependency and must not be merged or cherry-picked wholesale.
 
 ## A. Execution contract
 
-### A1. Primary-agent-only implementation
+### A1. Subagent-driven implementation
 
-The project owner has frozen M4 implementation to the primary agent. Do not
-delegate implementation, testing, review or CodeGraph exploration to subagents.
-The primary agent reads the diff, observes every RED, runs every verification
-command and updates this ledger.
+The project owner has frozen M4 to subagent-driven execution. For every R0-R8
+implementation task, assign a fresh `gpt-5.6-terra` agent at medium reasoning
+as implementer. After it implements the task, assign independent fresh
+Terra/medium reviewers first for SPEC compliance and then for code quality.
+The implementer fixes every review finding and the work is re-reviewed.
+
+The main Sol/xhigh controller performs structural analysis with CodeGraph and
+gives the implementer the needed context, maintains sequence and the one-DOING
+limit, reads the diff, independently reruns verification, updates this ledger,
+and creates each exact task commit. Never run multiple implementation agents
+concurrently in the shared worktree. If implementation fails, the controller
+first determines whether the task or plan is defective, context is missing, the
+task is too large, or the work is difficult. If the plan is wrong, pause and
+request or record a decision; only take over implementation when the task is
+sound but Terra cannot complete it.
 
 ### A2. Before a task
 
@@ -39,7 +50,8 @@ command and updates this ledger.
 - [ ] Require every dependency to be `DONE` with accessible evidence.
 - [ ] Ensure the table has at most one `DOING` task.
 - [ ] Change the task from `PENDING` to `DOING` and fill the start record.
-- [ ] Add and run the focused RED before product implementation.
+- [ ] Assign the fresh implementer and reserve independent fresh SPEC-compliance and code-quality reviewers.
+- [ ] Have the implementer add and run the focused RED before product implementation.
 
 ### A3. Before a task is DONE
 
@@ -50,9 +62,11 @@ command and updates this ledger.
 - [ ] Run product-boundary/prohibited-string and test-seam scans.
 - [ ] Run `git diff --check` and `git status --short`.
 - [ ] Map the actual files to the allowed-file list.
-- [ ] Record the RED, implementation, verification and remaining exclusions.
+- [ ] Obtain independent SPEC-compliance and code-quality reviews; have the implementer fix findings and obtain re-review.
+- [ ] Have the main controller read the diff and independently rerun the required verification.
+- [ ] Record the implementer's RED and implementation, the reviewers' findings and re-review, the main-controller verification, and remaining exclusions.
 - [ ] Update status to `DONE` only with fresh evidence.
-- [ ] Stage exact paths and create the fixed task commit.
+- [ ] Have the main controller stage exact paths and create the fixed task commit.
 
 ### A4. Status values
 

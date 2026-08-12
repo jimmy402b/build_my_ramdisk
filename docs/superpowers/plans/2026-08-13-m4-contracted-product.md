@@ -1,6 +1,6 @@
 # MyRamDisk M4 Contracted Product Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. The project owner has prohibited subagent implementation for this milestone; the primary agent performs and reviews every step inline. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. For every R0-R8 implementation task, a fresh `gpt-5.6-terra` agent at medium reasoning implements the task; independent fresh Terra/medium agents then perform SPEC-compliance review and code-quality review. The implementer fixes review findings and the work is re-reviewed. The main Sol/xhigh controller uses CodeGraph for structural analysis and supplies the needed context, reads the diff, independently reruns verification, maintains task order, and makes exact commits. Do not run multiple implementation agents concurrently in the shared worktree. If implementation fails, the main controller first determines whether the task or plan is defective, context is missing, the task is too large, or implementation is difficult; pause and request or record a decision when the plan is wrong, and take over only when the task is sound but Terra cannot complete it. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship one `myrd run` executable that creates or recovers one AIM-backed NTFS RAM disk, checkpoints it while running, optionally compacts it after a bounded feasibility gate, and safely writes back and removes it on Ctrl+C.
 
@@ -215,6 +215,7 @@ Expected: FAIL because target `myrd` or its help contract does not exist.
 Create `src/run/main.cpp` as a temporary R0 shell:
 
 ```cpp
+#include <string_view>
 #include <iostream>
 
 int wmain(int argc, wchar_t* argv[]) {
