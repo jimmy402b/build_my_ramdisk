@@ -1562,3 +1562,19 @@ add_test(
 set_tests_properties(unit.m2.orchestrator_report_gate PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
+
+add_custom_target(myrd_m4_product_boundary_tests
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m4_product_boundary_tests.ps1"
+        -Executable "$<TARGET_FILE:myrd>"
+    DEPENDS myrd
+    VERBATIM)
+
+add_test(
+    NAME unit.m4.product_boundary
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m4_product_boundary_tests.ps1"
+        -Executable "$<TARGET_FILE:myrd>")
+set_tests_properties(unit.m4.product_boundary PROPERTIES
+    LABELS "m4-v0"
+    TIMEOUT 30)

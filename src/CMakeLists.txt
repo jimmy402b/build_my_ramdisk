@@ -262,3 +262,7 @@ add_executable(myrd-m3-aim-server
 target_include_directories(myrd-m3-aim-server PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-m3-aim-server PRIVATE myrd_m3_windows)
 myrd_enable_warnings(myrd-m3-aim-server)
+
+add_executable(myrd
+    run/main.cpp)
+myrd_enable_warnings(myrd)

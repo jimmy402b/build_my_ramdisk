@@ -161,7 +161,7 @@ task evidence.
 
 | ID | Task | Status | Depends on | Primary gate | Fixed commit subject |
 |---|---|---|---|---|---|
-| R0 | Clean product boundary | PENDING | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
+| R0 | Clean product boundary | DONE | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
 | R1 | Online compaction feasibility | PENDING | R0 | GO or `BLOCKED_DECISION`; `m3-v4`, `m4-v1` | `feat(m4): prove online compaction feasibility` |
 | R2 | Exact `myrd run` CLI | PENDING | R1 GO or approved SPEC amendment | CLI matrix, `m4-v0` | `feat(m4): add minimal run command` |
 | R3 | Minimal M3 product runtime | PENDING | R2 | create/recover selection, stats, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
@@ -194,15 +194,32 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] Branch descends from M3 GO and does not descend from Task23.
-- [ ] `myrd.exe` exists and exposes only the temporary contracted help shell.
-- [ ] Product binary has no old-M4 component tokens.
-- [ ] Line-count tool fails closed above a supplied maximum and reports the
+- [x] Branch descends from M3 GO and does not descend from Task23.
+- [x] `myrd.exe` exists and exposes only the temporary contracted help shell.
+- [x] Product binary has no old-M4 component tokens.
+- [x] Line-count tool fails closed above a supplied maximum and reports the
   real 2500-line gate.
-- [ ] `unit.m4.product_boundary` is GREEN in Debug and Release.
-- [ ] Exact commit exists.
+- [x] `unit.m4.product_boundary` is GREEN in Debug and Release.
+- [x] Exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
+
+```text
+Task / status: R0 / DONE
+Executor / UTC timestamp: fresh gpt-5.6-terra medium implementer / 2026-08-12T20:07:15Z
+Start commit / branch / end commit: b66b812a42b25581335787975abc2b8cef7a408a / feature/m4-contracted-product / this R0 commit at Git HEAD
+Allowed files / actual files: R0 frozen allowlist / src/run/main.cpp; src/CMakeLists.txt; tests/CMakeLists.txt; tests/unit/m4_product_boundary_tests.ps1; tools/Measure-M4ProductLines.ps1; M4_TASKLIST.md
+Dependencies and evidence: M3 GO 4f9f912 is ancestor (exit 0); Task23 5acc289 is not ancestor (exit 1); start worktree clean before R0 ledger update
+RED command / observed failure / exit code: `cmd /d /c 'call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --preset msvc && cmake --build --preset debug --target myrd_m4_product_boundary_tests --parallel 1'`; CMake generator expression `$<TARGET_FILE:myrd>` failed because target `myrd` did not exist; exit 1
+Implementation summary: added the temporary `myrd --help` usage shell, focused PowerShell product-boundary assertion (bounded process, exact stdout/empty stderr, timeout cleanup, ASCII/UTF-16LE forbidden-token scan with self-audit, stderr-pollution and default/max-zero line-count self-checks), CMake custom target/CTest registration, and fail-closed M4 product-line counter; review repairs added language-aware comment handling, UTF-8/NUL/path guards, exact Git hunk counting without base-text reconstruction, cross-line C++ string/raw-string and PowerShell block/here-string handling, process cleanup hardening, and isolated regression fixtures including a five-file binary-base/no-hunk fail-closed proof
+Focused Debug verification / exit code: MSVC Debug `myrd_m4_product_boundary_tests` target and `ctest --preset debug -R '^unit\.m4\.product_boundary$' --output-on-failure`; both exit 0
+Cumulative and Release verification / exit code: MSVC Release `myrd_m4_product_boundary_tests` target and `ctest --preset release -R '^unit\.m4\.product_boundary$' --output-on-failure`; both exit 0; no full M3/VM route run per R0 exclusion
+Line count / architecture and seam scans: main-controller fresh counter reported `src/run/main.cpp=12`, `TOTAL=12 MAXIMUM=2500` exit 0; `-Maximum 0` exit 1; invalid Base exit 1; Debug/Release product binary scan for old-M4 and representative test-seam tokens had no match; exact six-file allowlist and `git diff --check` passed
+VM evidence paths and SHA-256, if applicable: not applicable to R0
+SPEC/PLAN/TASKLIST drift audit: execution contract aligned by b66b812 and R0 sample include corrected; all SPEC findings and review-driven regression gaps were repaired and re-reviewed; final independent SPEC review APPROVED and final independent code-quality review APPROVED with no Critical/Important/Minor; main controller read the full diff and reran the required verification at 2026-08-13T04:12:21Z; no R1 or old-M4 content entered R0
+Open risks / explicitly excluded follow-up: R0 is only a boundary/help shell; no M3 VM rerun and no R1 work; `vswhere.exe` emits a non-fatal vcvars warning after successful commands
+Commit subject / commit hash: build(m4): establish contracted product boundary / this R0 commit at Git HEAD
+```
 
 ## R1 — Online compaction feasibility
 
