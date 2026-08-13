@@ -143,7 +143,11 @@ otherwise             -> fail
 - Range: 64 MiB through 1 TiB.
 - New image geometry uses this value.
 - Recovered manifest geometry must match it exactly.
-- Logical sector size is 512 and physical sector size is 4096.
+- The M3 generation-zero/VHDX image geometry remains logical sector 512 and
+  physical sector 4096. The Windows AIM disk must report logical sector 512;
+  its `StorageAccessAlignmentProperty.BytesPerPhysicalSector` is accepted only
+  when it is 512 or 4096. Every other reported physical-sector value fails
+  closed.
 
 ### 3.6 `--drive-letter`
 

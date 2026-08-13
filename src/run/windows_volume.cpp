@@ -43,7 +43,8 @@ bool drive_mask_ok(DWORD mask, DWORD error) noexcept { return mask != 0 || error
 
 bool native_geometry_ok(std::uint64_t bytes, std::uint32_t logical, std::uint32_t physical,
                         const m3::M3AimRuntimeInfo& info) noexcept {
-    return bytes == info.virtual_bytes && logical == info.sector_size && physical == 4096;
+    return bytes == info.virtual_bytes && logical == info.sector_size &&
+        (physical == 512 || physical == 4096);
 }
 bool fixed_ioctl_sizes_ok(DWORD device_bytes, DWORD geometry_bytes, DWORD alignment_bytes,
                           DWORD layout_bytes, DWORD partition_count) noexcept {

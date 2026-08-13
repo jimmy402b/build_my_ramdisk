@@ -72,10 +72,21 @@ TEST_CASE(m4_volume_device_and_attribute_predicates_reject_malformed_inputs) {
 
 TEST_CASE(m4_native_predicates_freeze_geometry_layout_and_timeout) {
     myrd::m3::M3AimRuntimeInfo info{}; info.virtual_bytes = 4096; info.sector_size = 512;
-    REQUIRE(myrd::native_geometry_ok(4096,512,4096,info)); REQUIRE(!myrd::native_geometry_ok(4096,512,512,info));
+    REQUIRE(myrd::native_geometry_ok(4096,512,4096,info)); REQUIRE(myrd::native_geometry_ok(4096,512,512,info));
     DRIVE_LAYOUT_INFORMATION_EX layout{}; layout.PartitionStyle=PARTITION_STYLE_RAW; REQUIRE(myrd::layout_ok(layout,true)); layout.PartitionCount=1; REQUIRE(!myrd::layout_ok(layout,true));
     layout={}; layout.PartitionStyle=PARTITION_STYLE_GPT; layout.PartitionCount=1; layout.PartitionEntry[0].Gpt.PartitionType=myrd::kBasicDataPartition; layout.PartitionEntry[0].PartitionLength.QuadPart=1; REQUIRE(myrd::layout_ok(layout,false)); layout.PartitionEntry[0].PartitionLength.QuadPart=0; REQUIRE(!myrd::layout_ok(layout,false));
     REQUIRE(myrd::valid_timeout(std::chrono::milliseconds(1))); REQUIRE(!myrd::valid_timeout(std::chrono::milliseconds(0))); REQUIRE(!myrd::valid_timeout(std::chrono::seconds(121)));
+}
+
+TEST_CASE(m4_native_geometry_accepts_windows_512_or_4096_physical_sectors_only) {
+    myrd::m3::M3AimRuntimeInfo info{}; info.virtual_bytes = 4096; info.sector_size = 512;
+    REQUIRE(myrd::native_geometry_ok(4096, 512, 512, info));
+    REQUIRE(myrd::native_geometry_ok(4096, 512, 4096, info));
+    REQUIRE(!myrd::native_geometry_ok(4096, 512, 0, info));
+    REQUIRE(!myrd::native_geometry_ok(4096, 512, 1024, info));
+    REQUIRE(!myrd::native_geometry_ok(4096, 512, 8192, info));
+    REQUIRE(!myrd::native_geometry_ok(4095, 512, 512, info));
+    REQUIRE(!myrd::native_geometry_ok(4096, 4096, 512, info));
 }
 
 TEST_CASE(m4_extent_and_mount_predicates_reject_ambiguous_tables) {
