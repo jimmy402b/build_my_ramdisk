@@ -161,6 +161,7 @@ function Invoke-LineCounterFixture {
     try {
         New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src\run') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src\m3') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src\persistence') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'tools') -Force | Out-Null
         Copy-Item -LiteralPath $MeasureScript -Destination (Join-Path $fixtureRoot 'tools\Measure-M4ProductLines.ps1')
 
@@ -168,7 +169,10 @@ function Invoke-LineCounterFixture {
         $fixedFiles = @(
             'src/m3/m3_provider.h', 'src/m3/m3_provider.cpp',
             'src/m3/m3_windows_acceptance.h', 'src/m3/m3_windows_acceptance.cpp',
-            'src/m3/m3_aim_server_main.cpp'
+            'src/m3/m3_aim_server_main.cpp',
+            'src/m3/m3_lifecycle_runner.h', 'src/m3/m3_lifecycle_runner.cpp',
+            'src/persistence/persistence_types.h',
+            'src/persistence/journal_writer.h', 'src/persistence/journal_writer.cpp'
         )
         foreach ($relativePath in $fixedFiles) {
             [IO.File]::WriteAllText((Join-Path $fixtureRoot $relativePath), "// fixed base`n", $utf8NoBom)
@@ -267,6 +271,7 @@ function Invoke-BinaryBaseLineCounterFixture {
     $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-binary-base-fixture-' + [Guid]::NewGuid().ToString('N'))
     try {
         New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src\m3') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src\persistence') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'tools') -Force | Out-Null
         Copy-Item -LiteralPath $MeasureScript -Destination (Join-Path $fixtureRoot 'tools\Measure-M4ProductLines.ps1')
 
@@ -274,7 +279,10 @@ function Invoke-BinaryBaseLineCounterFixture {
         $fixedFiles = @(
             'src/m3/m3_provider.h', 'src/m3/m3_provider.cpp',
             'src/m3/m3_windows_acceptance.h', 'src/m3/m3_windows_acceptance.cpp',
-            'src/m3/m3_aim_server_main.cpp'
+            'src/m3/m3_aim_server_main.cpp',
+            'src/m3/m3_lifecycle_runner.h', 'src/m3/m3_lifecycle_runner.cpp',
+            'src/persistence/persistence_types.h',
+            'src/persistence/journal_writer.h', 'src/persistence/journal_writer.cpp'
         )
         foreach ($fixedFile in $fixedFiles) {
             $fixedFullPath = Join-Path $fixtureRoot $fixedFile
@@ -342,6 +350,19 @@ if (-not $stderrRejected) { throw 'help contract self-audit accepted stderr poll
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $cliSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\cli.cpp')
+$mainSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\main.cpp')
+if ($mainSource -match '\(void\)runtime\.value\(\)->stop\(\)') {
+    throw 'product main must not ignore runtime cleanup after start failure'
+}
+$lifecycleSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\m3\m3_lifecycle_runner.cpp')
+if ($lifecycleSource -match 'outcome\.generation\s*!=\s*image\.value\(\)\.checkpoint_generation\s*\+\s*1') {
+    throw 'offline product wrapper must not compare against stale pre-lock discovery generation'
+}
+if ($mainSource -notmatch 'info\(\)\.virtual_bytes\s*!=\s*options\.virtual_bytes' -or
+    $mainSource -notmatch 'maintenance_stats\(\)' -or
+    $mainSource -notmatch 'recover\s*&&\s*stats\.value\(\)\.generation\s*==\s*0') {
+    throw 'product main must validate runtime size and nonzero durable generation after start'
+}
 $cliRuntimeApi = Find-CliRuntimeApi $cliSource
 if ($null -ne $cliRuntimeApi) { throw "CLI parser must not access runtime APIs: $cliRuntimeApi" }
 foreach ($fixture in @(
@@ -372,9 +393,51 @@ $runUsage = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:>
 $compactUsage = "Usage:`r`n  myrd compact --bundle <path>" + [Environment]::NewLine
 Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --help' -InvocationName 'myrd run --help') 0 $runUsage '' 'run help'
 Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --help' -InvocationName 'myrd compact --help') 0 $compactUsage '' 'compact help'
-Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --bundle x --size 64M --drive-letter R:' -InvocationName 'valid run') 1 '' ('run implementation unavailable' + [Environment]::NewLine) 'valid run'
-Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --bundle x' -InvocationName 'valid compact') 1 '' ('compact implementation unavailable' + [Environment]::NewLine) 'valid compact'
+$createBundle = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-create-' + [Guid]::NewGuid().ToString('N'))
+try {
+    $createResult = Invoke-BoundedProcess -Path $executablePath -Arguments ('run --bundle "' + $createBundle + '" --size 64M --drive-letter R:') -InvocationName 'valid run'
+    if ($createResult.ExitCode -ne 1) { throw 'valid run must stop unavailable with exit 1' }
+    $runtimeReached = $createResult.Stdout -match '^PhysicalDrive[0-9]+\r?\n$'
+    $runtimeUnavailable = $createResult.Stderr -ceq ('Windows volume setup unavailable' + [Environment]::NewLine)
+    $driverUnavailable = $createResult.Stdout -ceq '' -and
+        $createResult.Stderr -match ('^Error: run failed for ' + [Regex]::Escape($createBundle) + ': [^:\r\n]+: .+\r?\n$')
+    if (-not (($runtimeReached -and $runtimeUnavailable) -or $driverUnavailable)) {
+        throw 'valid run did not follow the frozen temporary R4 stop contract'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $createBundle 'disk.rdm') -PathType Leaf)) {
+        throw 'missing bundle did not retain the generation-zero manifest'
+    }
+    $beforeGenZeroReject = @(Get-ChildItem -LiteralPath $createBundle -File | Sort-Object Name |
+        ForEach-Object { $_.Name + ':' + $_.Length + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
+    $genZeroError = 'Error: incomplete generation-zero bundle at ' + $createBundle + '. Verify the bundle path, manually remove the incomplete bundle, then run the original myrd run command again.' + [Environment]::NewLine
+    Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments ('run --bundle "' + $createBundle + '" --size 64M --drive-letter R:') -InvocationName 'generation-zero recover') 1 '' $genZeroError 'generation-zero recover'
+    $afterGenZeroReject = @(Get-ChildItem -LiteralPath $createBundle -File | Sort-Object Name |
+        ForEach-Object { $_.Name + ':' + $_.Length + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
+    if (($beforeGenZeroReject -join '|') -cne ($afterGenZeroReject -join '|')) {
+        throw 'generation-zero recover rejection mutated the bundle'
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $createBundle -PathType Container) {
+        Remove-Item -LiteralPath $createBundle -Recurse -Force
+    }
+}
+$missingCompact = Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --bundle C:\missing-m4-product-bundle' -InvocationName 'valid compact'
+if ($missingCompact.ExitCode -ne 1 -or $missingCompact.Stdout -cne '' -or
+    $missingCompact.Stderr -notmatch '^Error: compact failed for C:\\missing-m4-product-bundle: .+\r?\n$') {
+    throw 'compact failure must include the bundle path and M3 diagnostic'
+}
 Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --bundle x --size 64M --drive-letter X' -InvocationName 'invalid run') 2 '' ('invalid drive letter' + [Environment]::NewLine + $globalUsage) 'invalid run'
+$unknownBundle = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-unknown-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($unknownBundle)
+$marker = Join-Path $unknownBundle 'keep.txt'
+[IO.File]::WriteAllText($marker, 'keep')
+try {
+    $unknownError = 'Error: run failed for ' + $unknownBundle + ': classify_bundle: non-empty bundle has no disk.rdm' + [Environment]::NewLine
+    Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments ('run --bundle "' + $unknownBundle + '" --size 64M --drive-letter R:') -InvocationName 'unknown nonempty bundle') 1 '' $unknownError 'unknown nonempty bundle'
+    if (@(Get-ChildItem -LiteralPath $unknownBundle -Force).Count -ne 1 -or -not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw 'unknown bundle was mutated' }
+}
+finally { Remove-Item -LiteralPath $marker -Force; Remove-Item -LiteralPath $unknownBundle -Force }
 
 $bytes = [IO.File]::ReadAllBytes($executablePath)
 $forbidden = @(

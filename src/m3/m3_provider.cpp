@@ -5,11 +5,13 @@
 #include "src/persistence/journal_format.h"
 #include "src/persistence/journal_writer.h"
 #include "src/persistence/recovered_store_adapter.h"
+#include "src/persistence/vhdx_reader.h"
 #include "src/proxy/request_processor.h"
 #include "src/proxy/shared_memory_channel.h"
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <utility>
 
 namespace myrd::m3 {
@@ -73,7 +75,9 @@ M3ProviderFactories normalize(M3ProviderFactories factories) {
     return factories;
 }
 
-JournalWriterOptions writer_options(const PersistenceLimits& limits) {
+JournalWriterOptions writer_options(
+    const PersistenceLimits& limits,
+    const std::optional<std::uint64_t>& committed_end_ceiling) {
     JournalWriterOptions options{};
     options.index_builder.reader_cache = {
         limits.max_index_cache_bytes, limits.max_index_cache_entries};
@@ -83,6 +87,7 @@ JournalWriterOptions writer_options(const PersistenceLimits& limits) {
     options.index_builder.max_plan_image_bytes = limits.max_index_cache_bytes;
     options.max_checkpoint_records = limits.max_journal_records;
     options.max_checkpoint_bytes = limits.max_journal_committed_bytes;
+    options.committed_end_ceiling = committed_end_ceiling;
     return options;
 }
 
@@ -231,6 +236,29 @@ M3CheckpointOutcome preserve_or_normalize_checkpoint_failure(
 }
 
 } // namespace
+
+persistence::PersistenceLimits production_persistence_limits(
+    const std::uint64_t virtual_bytes) {
+    constexpr std::uint64_t kMiB = 1024ull * 1024ull;
+    constexpr std::uint64_t kJournalBytes = 2ull * 1024ull * kMiB;
+    return {virtual_bytes, kJournalBytes,
+            kJournalBytes / persistence::kJournalAlignment - 1,
+            64ull * kMiB, 64ull * kMiB / persistence::kIndexNodeBytes,
+            16ull * kMiB, 16ull * kMiB / persistence::kVhdxBatPageBytes,
+            8ull * kMiB, 8ull * kMiB};
+}
+
+DynamicBlockStoreOptions production_store_options(
+    const std::uint64_t ram_limit) {
+    constexpr std::uint64_t block = kM2BlockSize;
+    const auto aligned = ram_limit - (ram_limit % block);
+    const auto hard = (aligned < block ? block : aligned);
+    const auto soft = (hard / 2) - ((hard / 2) % block);
+    const auto low = (hard / 4) - ((hard / 4) % block);
+    return {soft, hard, low, 8ull * 1024ull * 1024ull,
+            8192, 256, 64ull * 1024ull * 1024ull,
+            std::chrono::milliseconds(250)};
+}
 
 M3Provider::M3Provider(
     M3ProviderConfig config,
@@ -465,7 +493,8 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
             "checkpoint.prepare", SessionPhase::Ready,
             "checkpoint journal open failed");
     }
-    auto options = writer_options(config_.recovery.limits);
+    auto options = writer_options(config_.recovery.limits,
+                                  config_.journal_committed_end_ceiling);
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     options.phase_hook = journal_phase_hook_;
 #endif
@@ -841,6 +870,22 @@ DynamicBlockStoreStats M3Provider::storage_stats() const {
     std::scoped_lock lock(operation_mutex_);
     if (store_) return store_->stats();
     return final_stats_.value_or(DynamicBlockStoreStats{});
+}
+
+Result<M3MaintenanceStats> M3Provider::maintenance_stats() const {
+    std::scoped_lock lock(operation_mutex_);
+    const auto stats = store_ ? store_->stats()
+                              : final_stats_.value_or(DynamicBlockStoreStats{});
+    constexpr std::uint64_t kBlockBytes = persistence::kM2BlockSize;
+    const auto dirty_blocks = stats.resident_dirty_blocks + stats.zero_dirty_blocks;
+    if (dirty_blocks < stats.resident_dirty_blocks ||
+        dirty_blocks > (std::numeric_limits<std::uint64_t>::max)() / kBlockBytes) {
+        return Result<M3MaintenanceStats>::failure(provider_error(
+            L"M3Provider::maintenance_stats", L"dirty byte arithmetic overflow"));
+    }
+    return Result<M3MaintenanceStats>::success({
+        image_.checkpoint_generation, dirty_blocks * kBlockBytes,
+        image_.backing_identity.journal_committed_length});
 }
 
 proxy::SessionSnapshot M3Provider::transport_snapshot() const {

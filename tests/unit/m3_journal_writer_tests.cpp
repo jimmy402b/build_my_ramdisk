@@ -231,6 +231,37 @@ TEST_CASE(journal_writer_prepares_flushes_and_reads_back_checkpoint) {
                encode_journal_header(fixture.request.header).value());
 }
 
+TEST_CASE(journal_writer_enforces_optional_absolute_committed_end_ceiling) {
+    auto fixture = make_fixture();
+    auto unlimited = JournalWriter::create(writer_options());
+    REQUIRE(unlimited.ok());
+    const auto expected = unlimited.value()->prepare(OperationContext{}, fixture.request);
+    REQUIRE(expected.ok());
+    const auto baseline_length = expected.value().committed_length;
+
+    auto equal_options = writer_options();
+    equal_options.committed_end_ceiling = baseline_length;
+    auto equal = JournalWriter::create(std::move(equal_options));
+    REQUIRE(equal.ok());
+    auto equal_fixture = make_fixture();
+    const auto equal_result = equal.value()->prepare(OperationContext{}, equal_fixture.request);
+    REQUIRE(equal_result.ok());
+    REQUIRE_EQ(equal_result.value().committed_length, baseline_length);
+
+    auto crossing_options = writer_options();
+    crossing_options.committed_end_ceiling = baseline_length - 1;
+    auto crossing = JournalWriter::create(std::move(crossing_options));
+    REQUIRE(crossing.ok());
+    auto blocked_fixture = make_fixture();
+    const auto durable_prefix = read_committed_prefix(blocked_fixture);
+    const auto blocked = crossing.value()->prepare(OperationContext{}, blocked_fixture.request);
+    REQUIRE(!blocked.ok());
+    REQUIRE_EQ(blocked.error().code,
+               static_cast<std::uint32_t>(PersistenceErrorCode::JournalCapacityExhausted));
+    REQUIRE_EQ(blocked_fixture.request.committed_length, kJournalAlignment);
+    require_committed_prefix(blocked_fixture, durable_prefix);
+}
+
 TEST_CASE(journal_writer_streams_batches_without_retaining_payloads) {
     auto expected_fixture = make_fixture();
     auto expected_writer = JournalWriter::create(writer_options());

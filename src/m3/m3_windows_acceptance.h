@@ -65,6 +65,7 @@ public:
     Result<void> stop();
 
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
+    [[nodiscard]] Result<M3MaintenanceStats> maintenance_stats() const;
     [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
 
     [[nodiscard]] const M3AimRuntimeInfo& info() const noexcept {

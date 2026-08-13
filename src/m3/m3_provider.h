@@ -22,6 +22,11 @@
 
 namespace myrd::m3 {
 
+[[nodiscard]] persistence::PersistenceLimits production_persistence_limits(
+    std::uint64_t virtual_bytes);
+[[nodiscard]] DynamicBlockStoreOptions production_store_options(
+    std::uint64_t ram_limit);
+
 enum class M3ProviderState : std::uint8_t {
     Constructed = 0,
     Starting,
@@ -37,6 +42,13 @@ struct M3ProviderConfig final {
     persistence::RecoveryOptions recovery;
     DynamicBlockStoreOptions store;
     std::chrono::milliseconds request_timeout{30000};
+    std::optional<std::uint64_t> journal_committed_end_ceiling{};
+};
+
+struct M3MaintenanceStats final {
+    std::uint64_t generation{};
+    std::uint64_t dirty_bytes{};
+    std::uint64_t journal_committed_bytes{};
 };
 
 class IM3ProviderTransport {
@@ -137,6 +149,7 @@ public:
     [[nodiscard]] std::uint64_t generation() const;
     [[nodiscard]] persistence::ImageGeometry geometry() const;
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
+    [[nodiscard]] Result<M3MaintenanceStats> maintenance_stats() const;
     [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
     [[nodiscard]] proxy::ProxyObjectNames names() const;
 

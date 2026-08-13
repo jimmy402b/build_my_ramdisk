@@ -241,6 +241,14 @@ DynamicBlockStoreStats M3AimRuntime::storage_stats() const {
     return {};
 }
 
+Result<M3MaintenanceStats> M3AimRuntime::maintenance_stats() const {
+    if (!provider_) return Result<M3MaintenanceStats>::failure({
+        ErrorDomain::internal,
+        static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
+        L"M3AimRuntime::maintenance_stats", L"runtime has no provider"});
+    return provider_->maintenance_stats();
+}
+
 proxy::SessionSnapshot M3AimRuntime::transport_snapshot() const {
     if (provider_) return provider_->transport_snapshot();
     return {};

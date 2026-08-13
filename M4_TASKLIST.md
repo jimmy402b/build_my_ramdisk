@@ -350,37 +350,54 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] Shared production persistence/store values preserve accepted M3 limits.
-- [ ] The product RAM-policy matrix freezes 64 MiB, default 2 GiB and 1 TiB:
+- [x] Shared production persistence/store values preserve accepted M3 limits.
+- [x] The product RAM-policy matrix freezes 64 MiB, default 2 GiB and 1 TiB:
   hard is the largest storage-block-aligned value no greater than the requested
   `ram-limit`, soft is half that aligned hard value rounded down to a block,
   low watermark is one quarter rounded down to a block, and every case
   preserves accepted M2 `soft < hard`. It also freezes 65537 KiB -> hard
   64 MiB / soft 32 MiB / low 16 MiB and validates every resulting option set
   with `validate_dynamic_block_store_options()`.
-- [ ] Generation-zero create uses existing creator and independently reopens.
-- [ ] Internal new-image generation zero bypasses only the existing-bundle
+- [x] Generation-zero create uses existing creator and independently reopens.
+- [x] Internal new-image generation zero bypasses only the existing-bundle
   product gate; an existing generation-zero bundle is rejected.
-- [ ] Recover requires exact geometry.
-- [ ] Maintenance stats use checked dirty-byte math and current journal truth.
-- [ ] Provider and runtime stats return `Result`; fact/arithmetic failure is
+- [x] Recover requires exact geometry.
+- [x] Maintenance stats use checked dirty-byte math and current journal truth.
+- [x] Provider and runtime stats return `Result`; fact/arithmetic failure is
   never truncated or treated as a successful zero value.
-- [ ] The M4 product provider alone enforces the 2048 MiB cumulative committed
+- [x] The M4 product provider alone enforces the 2048 MiB cumulative committed
   journal ceiling and reports typed `JournalCapacityExhausted` without changing
   existing M3 per-operation resource semantics.
-- [ ] `JournalCapacityExhausted` has frozen value 20; equality succeeds,
+- [x] `JournalCapacityExhausted` has frozen value 20; equality succeeds,
   crossing does not advance selected manifest/generation/committed length, and
   an unset ceiling preserves accepted M3 behavior.
-- [ ] Provider checkpoint outcome preserves the typed capacity error unchanged.
-- [ ] Offline compact fixes `disk.rdm` and product limits, rejects generation
+- [x] Provider checkpoint outcome preserves the typed capacity error unchanged.
+- [x] Offline compact fixes `disk.rdm` and product limits, rejects generation
   zero/writer conflict, advances one committed generation, reopens identical
   data and starts no AIM runtime.
-- [ ] Offline compact freezes actionable success/in-use output and never exposes
+- [x] Offline compact freezes actionable success/in-use output and never exposes
   `myrd_m3_e2e`, `RawTest` or engineering store/persistence options.
-- [ ] M3 `m3-v2`, provider, recovery and Windows acceptance pass.
+- [x] M3 `m3-v2`, provider, recovery and Windows acceptance pass.
 - [ ] Exact commit exists.
 
-**Execution record:** Started 2026-08-13 by the assigned Terra/medium implementer from `65559b4f26c619a423a58199541aecc40db79848` on `feature/m4-contracted-product`; initial focused RED was obtained. Stable defaults, code-20 typed capacity-ceiling, maintenance-stat and provider tests now exist; R3 implementation, independent reviews and commit remain pending. Owner-approved contract amendment, 2026-08-13: `--ram-limit` is a requested M2 resident-memory upper bound; derive `aligned_hard = floor(requested / kM2BlockSize) * kM2BlockSize`, then derive soft as half of aligned hard rounded down to a block and low as one quarter rounded down to a block. The mandatory R3 validity matrix is 64 MiB -> hard 64 MiB / soft 32 MiB / low 16 MiB; default 2 GiB -> hard 2 GiB / soft 1 GiB / low 512 MiB; 1 TiB -> hard 1 TiB / soft 512 GiB / low 256 GiB; 65537 KiB -> hard 64 MiB / soft 32 MiB / low 16 MiB. Every case must prove `validate_dynamic_block_store_options().ok()` and accepted M2 `soft < hard`. Valid CLI K/M/G/T values are not rejected merely for lack of block alignment; this does not weaken or modify M2.
+**Execution record:**
+
+```text
+Task / status: R3 / implementation, reviews and verification complete; exact commit pending (DOING)
+Executor / UTC timestamp: assigned gpt-5.6-terra medium implementer; independent Terra/medium SPEC and quality reviewers; main Sol/xhigh controller / 2026-08-13T12:38:53Z
+Start commit / branch / end commit: 65559b4f26c619a423a58199541aecc40db79848 / feature/m4-contracted-product / pending exact R3 commit by the main controller
+Allowed files / actual files: frozen R3 allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/m3/m3_aim_server_main.cpp; src/m3/m3_lifecycle_runner.h; src/m3/m3_lifecycle_runner.cpp; src/m3/m3_provider.h; src/m3/m3_provider.cpp; src/m3/m3_windows_acceptance.h; src/m3/m3_windows_acceptance.cpp; src/persistence/journal_writer.h; src/persistence/journal_writer.cpp; src/persistence/persistence_types.h; src/run/main.cpp; tests/CMakeLists.txt; tests/integration/m4_product_composition_tests.cpp; tests/unit/m3_journal_writer_tests.cpp; tests/unit/m3_persistence_types_tests.cpp; tests/unit/m4_product_boundary_tests.ps1; tools/Measure-M4ProductLines.ps1
+Dependencies and evidence: R2 DONE at 65559b4; owner-approved RAM-policy amendment committed as 8135fa160ea7760582f9d2136bd0d09eb4c695c7 before final R3 implementation; branch remains feature/m4-contracted-product and M3 GO remains its accepted base
+RED command / observed failure / exit code: initial MSVC Debug `cmake --build --preset debug --target myrd_m4_product_composition_tests --parallel 1` failed because the product composition target/default and maintenance-stat APIs did not exist, exit 1. Independent slice REDs then proved missing frozen code-20/wire support, optional JournalWriter equality/crossing behavior, live provider maintenance facts, provider typed capacity preservation/nonadvance and the offline product wrapper. The amended RAM matrix failed because the former store constructor copied the requested 2 GiB into soft instead of deriving hard/soft/low; shared-limit RED also caught journal 512 MiB and BAT 64 MiB drift from the accepted engineering values. Process REDs proved absent-directory create did not retain generation zero, existing generation zero lacked actionable output, locked compact printed the literal `<the same bundle path>`, unknown nonempty directories lacked the M3 operation/message, runtime start cleanup was ignored, post-start runtime facts were unchecked and newly created generation zero was incorrectly rejected by an unconditional post-start generation gate. Static boundary RED proved the offline wrapper compared its final result to stale pre-lock discovery. Each RED exited 1 for the intended missing behavior before its minimal repair; test-setup mistakes (fixture namespace typo, strict-mode scalar Count and incomplete line-counter fixture files) were recorded as test repairs, not feature REDs.
+Implementation summary: extracted exact accepted M3 production persistence/store values and retained engineering defaults; implemented the owner-approved aligned hard/half/quarter RAM policy; added checked Result maintenance stats and the concrete runtime forwarder; froze PersistenceErrorCode::JournalCapacityExhausted=20 with string/wire mappings; added an optional absolute committed-end ceiling used only by product main and preserved provider error context plus selected generation/committed-length nonadvance. Added one offline product-compaction wrapper that discovers geometry, rejects generation zero, supplies fixed disk.rdm/product limits, delegates to the existing lifecycle algorithm and requires exit 0, cleanup and Committed without a stale pre-lock generation comparison. Product main now classifies absent/empty/recover/unknown bundles fail-closed, creates random-identity generation zero through the existing creator, requires exact recover geometry, routes compact with exact actual-path output, validates started runtime size and Result maintenance facts, rejects post-start generation zero only in recover mode, cleans up start/fact failures, and temporarily stops at the R4 unavailable boundary. Ordinary run errors include the safe bundle path plus the concrete operation/message; existing generation zero has the dedicated verify-path/manual-remove/rerun message and remains unmodified. Product composition tests cover the RAM matrix, current dirty/journal facts, typed ceiling behavior, generation-one offline compact/reopen bytes, held-writer process output and nonmutation; the boundary test covers create artifacts, existing-generation-zero nonmutation, unknown-directory nonmutation, temporary R4 routing, line-counter fixtures and prohibited product tokens.
+Focused Debug verification / exit code: main-controller fresh exact focused CTest set `unit.m3.persistence_types`, `unit.m3.journal_writer`, `integration.m3.recovery`, `integration.m3.image_create`, `integration.m3.compaction`, `integration.m3.provider`, `integration.m3.windows_acceptance`, `integration.m4.product_composition` passed 8/8, exit 0; fresh Debug product-boundary target/test passed, exit 0
+Cumulative and Release verification / exit code: main-controller fresh Debug `ctest --preset debug -L m3-v2 --output-on-failure` passed 32/32 and `-L m4-v1` passed 1/1, exit 0; fresh Release exact focused set passed 8/8 and Release product boundary passed, exit 0
+Line count / architecture and seam scans: main-controller fresh counter reported TOTAL=452 MAXIMUM=2500, exit 0; exact pre-ledger implementation allowlist was 18/18 and this record adds only M4_TASKLIST.md; `git diff --check` passed; Release product-binary prohibited-token scan and diff prohibited-concept/placeholder scan passed; no online/automatic compaction, new interface, copied publication/reconciliation algorithm, engineering command or test seam entered the product
+VM evidence paths and SHA-256, if applicable: not applicable to R3; real AIM/NTFS lifecycle and destructive/reboot evidence remain R7
+SPEC/PLAN/TASKLIST drift audit: owner RAM-policy amendment is commit 8135fa160ea7760582f9d2136bd0d09eb4c695c7. Independent SPEC review findings for actual-path writer-conflict output and actionable existing-generation-zero recovery were repaired with process-level nonmutation evidence; final SPEC review APPROVED. Independent quality review findings for stale pre-lock compaction comparison, post-start runtime fact validation and safe run diagnostics were repaired; the final create-path generation-zero condition was narrowed to recover mode; final quality review APPROVED. Main controller read the diff and independently reran the fresh evidence above. R3 remains DOING solely because A4 requires the exact task commit before DONE.
+Open risks / explicitly excluded follow-up: Windows elevation, exact-volume discovery/provisioning/anti-misformat and first filesystem checkpoint are R4; maintenance scheduling/journal warning policy is R5; Ctrl+C locked shutdown is R6; real VM kill/reboot/recover is R7; online/automatic compaction remains explicitly deferred outside v1 and was not reintroduced
+Commit subject / commit hash: feat(m4): expose minimal m3 product runtime / pending main-controller exact-path staging and commit
+```
 
 ## R4 — Exact Windows volume
 

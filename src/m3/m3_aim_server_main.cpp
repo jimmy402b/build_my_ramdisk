@@ -25,13 +25,6 @@ using namespace myrd::persistence;
 
 constexpr std::uint64_t kDefaultVirtualBytes = 64ull << 30;
 constexpr std::uint64_t kMiB = 1024ull * 1024ull;
-// A Windows NTFS format may emit a large number of ZERO/DISCARD records
-// before the first user file is created. Keep enough bounded journal budget
-// for that first durable filesystem checkpoint.
-constexpr std::uint64_t kDefaultJournalBytes = 2ull * 1024ull * kMiB;
-constexpr std::uint64_t kDefaultIndexCacheBytes = 64ull * kMiB;
-constexpr std::uint64_t kDefaultBatCacheBytes = 16ull * kMiB;
-
 void print_error(const Error& error) {
     std::fwprintf(stderr, L"M3 AIM server error (%u): %ls: %ls\n",
         error.code, error.operation.c_str(), error.message.c_str());
@@ -113,30 +106,11 @@ bool take_option(
 }
 
 PersistenceLimits default_limits(std::uint64_t virtual_bytes) {
-    return PersistenceLimits{
-        virtual_bytes,
-        kDefaultJournalBytes,
-        // JournalWriter reserves one alignment unit for the commit record;
-        // the record ceiling must therefore be strictly below bytes/alignment.
-        kDefaultJournalBytes / kJournalAlignment - 1,
-        kDefaultIndexCacheBytes,
-        kDefaultIndexCacheBytes / kIndexNodeBytes,
-        kDefaultBatCacheBytes,
-        kDefaultBatCacheBytes / kVhdxBatPageBytes,
-        8ull * kMiB,
-        8ull * kMiB};
+    return production_persistence_limits(virtual_bytes);
 }
 
 DynamicBlockStoreOptions default_store_options() {
-    return DynamicBlockStoreOptions{
-        512ull * kMiB,
-        1ull * 1024ull * kMiB,
-        256ull * kMiB,
-        8ull * kMiB,
-        8192,
-        256,
-        64ull * kMiB,
-        std::chrono::milliseconds(250)};
+    return production_store_options(1ull * 1024ull * kMiB);
 }
 
 void print_ready(const M3AimRuntime& runtime) {

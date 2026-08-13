@@ -191,7 +191,13 @@ if (Test-Path -LiteralPath $runRoot) {
     $relativePaths += Get-ChildItem -LiteralPath $runRoot -File -Recurse -Force |
         ForEach-Object { $_.FullName.Substring($repositoryRoot.Length + 1).Replace('\', '/') }
 }
-$relativePaths += @('src/m3/m3_provider.h', 'src/m3/m3_provider.cpp', 'src/m3/m3_windows_acceptance.h', 'src/m3/m3_windows_acceptance.cpp', 'src/m3/m3_aim_server_main.cpp')
+$relativePaths += @(
+    'src/m3/m3_provider.h', 'src/m3/m3_provider.cpp',
+    'src/m3/m3_windows_acceptance.h', 'src/m3/m3_windows_acceptance.cpp',
+    'src/m3/m3_aim_server_main.cpp',
+    'src/m3/m3_lifecycle_runner.h', 'src/m3/m3_lifecycle_runner.cpp',
+    'src/persistence/persistence_types.h',
+    'src/persistence/journal_writer.h', 'src/persistence/journal_writer.cpp')
 
 $total = 0
 foreach ($relativePath in $relativePaths | Sort-Object -Unique) {
