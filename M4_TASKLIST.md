@@ -164,7 +164,7 @@ task evidence.
 | R0 | Clean product boundary | DONE | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
 | R1 | Online compaction feasibility | DONE | R0 | NO-GO evidence, owner amendment, explicit defer | `docs(m4): resolve compaction scope` |
 | R2 | Exact product CLI | DONE | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
-| R3 | Minimal M3 product runtime | PENDING | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
+| R3 | Minimal M3 product runtime | DOING | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
 | R4 | Exact Windows volume | PENDING | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
 | R5 | Persistence maintenance loop | PENDING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
 | R6 | Safe Ctrl+C shutdown | PENDING | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
@@ -351,6 +351,13 @@ M4_TASKLIST.md
 **Acceptance:**
 
 - [ ] Shared production persistence/store values preserve accepted M3 limits.
+- [ ] The product RAM-policy matrix freezes 64 MiB, default 2 GiB and 1 TiB:
+  hard is the largest storage-block-aligned value no greater than the requested
+  `ram-limit`, soft is half that aligned hard value rounded down to a block,
+  low watermark is one quarter rounded down to a block, and every case
+  preserves accepted M2 `soft < hard`. It also freezes 65537 KiB -> hard
+  64 MiB / soft 32 MiB / low 16 MiB and validates every resulting option set
+  with `validate_dynamic_block_store_options()`.
 - [ ] Generation-zero create uses existing creator and independently reopens.
 - [ ] Internal new-image generation zero bypasses only the existing-bundle
   product gate; an existing generation-zero bundle is rejected.
@@ -373,7 +380,7 @@ M4_TASKLIST.md
 - [ ] M3 `m3-v2`, provider, recovery and Windows acceptance pass.
 - [ ] Exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:** Started 2026-08-13 by the assigned Terra/medium implementer from `65559b4f26c619a423a58199541aecc40db79848` on `feature/m4-contracted-product`; initial focused RED was obtained. Stable defaults, code-20 typed capacity-ceiling, maintenance-stat and provider tests now exist; R3 implementation, independent reviews and commit remain pending. Owner-approved contract amendment, 2026-08-13: `--ram-limit` is a requested M2 resident-memory upper bound; derive `aligned_hard = floor(requested / kM2BlockSize) * kM2BlockSize`, then derive soft as half of aligned hard rounded down to a block and low as one quarter rounded down to a block. The mandatory R3 validity matrix is 64 MiB -> hard 64 MiB / soft 32 MiB / low 16 MiB; default 2 GiB -> hard 2 GiB / soft 1 GiB / low 512 MiB; 1 TiB -> hard 1 TiB / soft 512 GiB / low 256 GiB; 65537 KiB -> hard 64 MiB / soft 32 MiB / low 16 MiB. Every case must prove `validate_dynamic_block_store_options().ok()` and accepted M2 `soft < hard`. Valid CLI K/M/G/T values are not rejected merely for lack of block alignment; this does not weaken or modify M2.
 
 ## R4 — Exact Windows volume
 

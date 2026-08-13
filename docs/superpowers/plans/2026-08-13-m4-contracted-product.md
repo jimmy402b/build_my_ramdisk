@@ -461,10 +461,45 @@ Tests must require:
 const auto limits = m3::production_persistence_limits(8ull * kGiB);
 const auto store = m3::production_store_options(2ull * kGiB);
 REQUIRE_EQ(limits.max_virtual_bytes, 8ull * kGiB);
-REQUIRE_EQ(store.soft_limit_bytes, 2ull * kGiB);
+REQUIRE_EQ(store.soft_limit_bytes, 1ull * kGiB);
 REQUIRE_EQ(store.hard_limit_bytes, 2ull * kGiB);
-REQUIRE_EQ(store.eviction_low_watermark_bytes, 1ull * kGiB);
+REQUIRE_EQ(store.eviction_low_watermark_bytes, 512ull * kMiB);
+REQUIRE(validate_dynamic_block_store_options(store).ok());
+REQUIRE(store.soft_limit_bytes < store.hard_limit_bytes);
 ```
+
+The same test matrix must freeze the complete product RAM contract, including
+the accepted M2 ordering invariant:
+
+```cpp
+const auto minimum = m3::production_store_options(64ull * kMiB);
+REQUIRE_EQ(minimum.hard_limit_bytes, 64ull * kMiB);
+REQUIRE_EQ(minimum.soft_limit_bytes, 32ull * kMiB);
+REQUIRE_EQ(minimum.eviction_low_watermark_bytes, 16ull * kMiB);
+REQUIRE(validate_dynamic_block_store_options(minimum).ok());
+REQUIRE(minimum.soft_limit_bytes < minimum.hard_limit_bytes);
+
+const auto maximum = m3::production_store_options(1ull * kTiB);
+REQUIRE_EQ(maximum.hard_limit_bytes, 1ull * kTiB);
+REQUIRE_EQ(maximum.soft_limit_bytes, 512ull * kGiB);
+REQUIRE_EQ(maximum.eviction_low_watermark_bytes, 256ull * kGiB);
+REQUIRE(validate_dynamic_block_store_options(maximum).ok());
+REQUIRE(maximum.soft_limit_bytes < maximum.hard_limit_bytes);
+
+const auto unaligned = m3::production_store_options(65537ull * kKiB);
+REQUIRE_EQ(unaligned.hard_limit_bytes, 64ull * kMiB);
+REQUIRE_EQ(unaligned.soft_limit_bytes, 32ull * kMiB);
+REQUIRE_EQ(unaligned.eviction_low_watermark_bytes, 16ull * kMiB);
+REQUIRE(validate_dynamic_block_store_options(unaligned).ok());
+REQUIRE(unaligned.soft_limit_bytes < unaligned.hard_limit_bytes);
+```
+
+For the default `2ull * kGiB`, the assertions above therefore require hard
+2 GiB, soft 1 GiB and low watermark 512 MiB. `ram_limit` always names the
+requested upper bound: the actual hard ceiling is its largest storage-block
+aligned value no greater than the request. It must never be copied into both
+M2 limits, and valid CLI K/M/G/T values are not rejected solely for lacking
+storage-block alignment.
 
 Add maintenance-stat tests that make one block dirty and require one storage
 block of `dirty_bytes`, current generation and the selected journal committed
@@ -510,7 +545,10 @@ Result<M3MaintenanceStats> maintenance_stats() const;
 
 Use checked arithmetic. Replace the engineering AIM server's local default
 constructors with calls to the shared value functions; do not change accepted
-M3 default values except the explicit product RAM limit.
+M3 default values except the explicit product RAM policy: hard equals the
+largest storage-block-aligned value no greater than the explicit product RAM
+request, soft is half that aligned hard value rounded down to a block, and low
+watermark is one quarter rounded down to a block.
 
 Add the same concrete `Result<M3MaintenanceStats> maintenance_stats() const`
 forwarder to `M3AimRuntime`; it must call the owned provider and add no cache,

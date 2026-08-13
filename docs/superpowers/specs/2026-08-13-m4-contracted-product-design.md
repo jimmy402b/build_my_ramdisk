@@ -157,8 +157,25 @@ otherwise             -> fail
 - `checkpoint-seconds`: 5 through 86400.
 - `checkpoint-dirty-mb`: 1 through 1048576.
 - `ram-limit`: 64 MiB through 1 TiB.
-- M2 soft and hard limits both equal `ram-limit`; low watermark is half that
-  value rounded down to the storage block boundary.
+- `ram-limit` is a requested resident-memory upper bound, not a parser
+  alignment requirement. The product derives `aligned_hard` as the largest
+  storage-block-aligned value no greater than `ram-limit`:
+  `floor(ram-limit / kM2BlockSize) * kM2BlockSize`. It derives soft as
+  `floor((aligned_hard / 2) / kM2BlockSize) * kM2BlockSize` and the eviction
+  low watermark as `floor((aligned_hard / 4) / kM2BlockSize) * kM2BlockSize`.
+  Thus the actual M2 hard resident-memory ceiling is the largest valid ceiling
+  not exceeding the request. This preserves the accepted M2 invariant
+  `soft_limit_bytes < hard_limit_bytes` without rejecting otherwise valid CLI
+  K/M/G/T values merely because they are not block-aligned.
+
+The required RAM-policy validity matrix is:
+
+| `--ram-limit` | hard limit | soft limit | eviction low watermark |
+|---:|---:|---:|---:|
+| 64 MiB | 64 MiB | 32 MiB | 16 MiB |
+| 2 GiB (default) | 2 GiB | 1 GiB | 512 MiB |
+| 1 TiB | 1 TiB | 512 GiB | 256 GiB |
+| 65537 KiB | 64 MiB | 32 MiB | 16 MiB |
 
 ## 4. Explicit non-goals and prohibited product content
 
@@ -483,8 +500,9 @@ has stopped. It:
 2. recovers and validates the newest complete generation and rejects generation
    zero;
 3. derives finite product persistence limits from the recovered virtual size
-   and uses the fixed product store options for a 2 GiB RAM limit; the user
-   cannot supply engineering limits or `raw-test` options;
+   and uses the fixed product store options for the default 2 GiB hard RAM
+   limit (soft 1 GiB, low watermark 512 MiB); the user cannot supply
+   engineering limits or `raw-test` options;
 4. acquires the existing M3 bundle writer lock and fails without mutation if a
    runtime or another maintenance process owns the bundle;
 5. calls the existing offline M3 lifecycle compaction and requires a committed,
