@@ -106,6 +106,24 @@ TEST_CASE(m4_extent_and_mount_predicates_reject_ambiguous_tables) {
     REQUIRE_EQ(myrd::classify_mount(L'R',malformed,3,L"x"),myrd::MountClass::Malformed);
 }
 
+TEST_CASE(m4_letter_target_selection_bypasses_enumeration_or_fails_closed) {
+    std::wstring device;
+    REQUIRE_EQ(myrd::classify_letter_target(TRUE, ERROR_SUCCESS, L"\\\\?\\Volume{target}\\", device), myrd::LetterTargetClass::Target);
+    REQUIRE_EQ(device, std::wstring(L"\\\\?\\Volume{target}"));
+    REQUIRE_EQ(myrd::classify_letter_target(FALSE, ERROR_FILE_NOT_FOUND, L"", device), myrd::LetterTargetClass::Absent);
+    REQUIRE_EQ(myrd::classify_letter_target(FALSE, ERROR_PATH_NOT_FOUND, L"", device), myrd::LetterTargetClass::Absent);
+    REQUIRE_EQ(myrd::classify_letter_target(FALSE, ERROR_ACCESS_DENIED, L"", device), myrd::LetterTargetClass::Failed);
+    REQUIRE_EQ(myrd::classify_letter_target(TRUE, ERROR_SUCCESS, L"R:\\", device), myrd::LetterTargetClass::Failed);
+    REQUIRE(!myrd::retry_volume_discovery(L"find_recovered_volume_target"));
+    REQUIRE(myrd::retry_volume_discovery(L"find_recovered_volume"));
+    myrd::Error original{myrd::ErrorDomain::win32, 5, L"verify_extent", L"volume extent query failed", 123};
+    const auto targeted = myrd::target_failure(original);
+    REQUIRE_EQ(targeted.operation, std::wstring(L"find_recovered_volume_target"));
+    REQUIRE_EQ(targeted.message, original.message);
+    REQUIRE_EQ(targeted.code, original.code);
+    REQUIRE_EQ(targeted.native_code, original.native_code);
+}
+
 TEST_CASE(m4_mount_ownership_predicate_is_case_insensitive_and_exact) {
     REQUIRE(myrd::owned_mount(L"\\\\?\\Volume{abc}\\", L"\\\\?\\VOLUME{ABC}\\"));
     REQUIRE(!myrd::owned_mount(L"\\\\?\\Volume{other}\\", L"\\\\?\\Volume{abc}\\"));

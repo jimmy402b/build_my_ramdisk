@@ -92,6 +92,16 @@ bool volume_device_path(const std::wstring& guid, std::wstring& device) {
     if(!guid.starts_with(prefix) || guid.size()<=prefix.size()+2 || guid.back()!=L'\\' || guid.find(L'}')==std::wstring::npos) return false;
     device=guid.substr(0,guid.size()-1); return true;
 }
+enum class LetterTargetClass { Absent, Target, Failed };
+LetterTargetClass classify_letter_target(BOOL found, DWORD error, const wchar_t* guid, std::wstring& device) noexcept {
+    if (!found) return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? LetterTargetClass::Absent : LetterTargetClass::Failed;
+    return volume_device_path(guid ? std::wstring(guid) : std::wstring{}, device) ? LetterTargetClass::Target : LetterTargetClass::Failed;
+}
+bool retry_volume_discovery(const std::wstring& operation) noexcept { return operation != L"find_recovered_volume_target"; }
+Error target_failure(Error error) {
+    error.operation = L"find_recovered_volume_target";
+    return error;
+}
 Result<void> verify_exact_volume(HANDLE volume, std::uint32_t disk) {
     alignas(VOLUME_DISK_EXTENTS) std::array<std::byte, kQueryCap> bytes{}; DWORD got{};
     if (!DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0,
@@ -162,6 +172,31 @@ Result<void> validate_disk(const m3::M3AimRuntimeInfo& info, bool raw) {
 }
 
 Result<ProductVolume> discover(const m3::M3AimRuntimeInfo& info, wchar_t letter) {
+    std::wstring mounted_mount{letter,L':',L'\\',L'\0'};
+    std::array<wchar_t, MAX_PATH> mounted_name{};
+    const BOOL mounted = GetVolumeNameForVolumeMountPointW(mounted_mount.c_str(), mounted_name.data(), static_cast<DWORD>(mounted_name.size()));
+    const DWORD mounted_error = GetLastError();
+    std::wstring mounted_device;
+    const auto mounted_target = classify_letter_target(mounted, mounted_error, mounted_name.data(), mounted_device);
+    if (mounted_target == LetterTargetClass::Failed)
+        return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"requested drive-letter target query failed", mounted_error));
+    if (mounted_target == LetterTargetClass::Target) {
+        HANDLE volume = CreateFileW(mounted_device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (volume == INVALID_HANDLE_VALUE) return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"opening requested drive-letter target failed", GetLastError()));
+        const auto exact = verify_exact_volume(volume, info.disk.physical_drive_number);
+        CloseHandle(volume);
+        if (!exact.ok()) return Result<ProductVolume>::failure(target_failure(exact.error()));
+        DWORD serial{}; std::array<wchar_t, 256> filesystem{};
+        if (!GetVolumeInformationW(mounted_name.data(), nullptr, 0, &serial, nullptr, nullptr, filesystem.data(), static_cast<DWORD>(filesystem.size())))
+            return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"GetVolumeInformationW failed", GetLastError()));
+        if (wcscmp(filesystem.data(), L"NTFS") != 0) return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"exact volume is not NTFS"));
+        std::array<wchar_t, kQueryCap / sizeof(wchar_t)> paths{}; DWORD needed{};
+        if (!GetVolumePathNamesForVolumeNameW(mounted_name.data(), paths.data(), static_cast<DWORD>(paths.size()), &needed))
+            return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"mount path query failed", GetLastError()));
+        if (needed > paths.size() || classify_mount(letter, paths.data(), paths.size(), mounted_name.data()) != MountClass::Exact)
+            return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"requested drive letter is not the exact target mount"));
+        return Result<ProductVolume>::success({mounted_name.data(), info.disk.physical_drive_number, letter});
+    }
     std::array<wchar_t, MAX_PATH> name{};
     HANDLE find = FindFirstVolumeW(name.data(), static_cast<DWORD>(name.size()));
     if (find == INVALID_HANDLE_VALUE) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"FindFirstVolumeW failed", GetLastError()));
@@ -350,6 +385,7 @@ Result<ProductVolume> find_recovered_volume(const m3::M3AimRuntimeInfo& info, wc
     do {
         last = discover(info, letter);
         if (last.ok()) return last;
+        if (!retry_volume_discovery(last.error().operation)) return last;
         if (std::chrono::steady_clock::now() >= deadline) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     } while (true);
