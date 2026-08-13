@@ -14,10 +14,17 @@ $parameterSets = @(
     '-DiskNumber $DiskNumber -UseMaximumSize -DriveLetter $DriveLetter -ErrorAction Stop',
     "-Partition `$partition -FileSystem NTFS -NewFileSystemLabel 'MyRamDisk' -Confirm:`$false -Force -ErrorAction Stop")
 for ($i=0; $i -lt $parameterSets.Count; ++$i) { if ($commandText[$i] -notmatch [regex]::Escape($parameterSets[$i])) { throw "frozen parameter set changed at $i" } }
-$ifs=@($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] },$true))
 $getDisk=($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Get-Disk' },$true))[0]
-$setDisk=($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Set-Disk' },$true))[0]
-if($ifs.Count -ne 2 -or $ifs[0].Extent.StartOffset -lt $getDisk.Extent.EndOffset -or $ifs[1].Extent.StartOffset -lt $getDisk.Extent.EndOffset -or $ifs[0].Extent.EndOffset -gt $setDisk.Extent.StartOffset -or $ifs[1].Extent.EndOffset -gt $setDisk.Extent.StartOffset) { throw 'RAW/boot guards are not exactly before mutation' }
+$mutations=@($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -in @('Set-Disk','Initialize-Disk') },$true)|Sort-Object { $_.Extent.StartOffset })
+if($mutations.Count -ne 3){throw 'expected exactly two Set-Disk and one Initialize-Disk mutation'}
+$guards=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.IfStatementAst] -and $node.Extent.StartOffset -ge $getDisk.Extent.EndOffset -and $node.Extent.EndOffset -le $mutations[0].Extent.StartOffset},$true))
+if($guards.Count-ne2){throw 'expected exactly two guards between Get-Disk and first mutation'}
+$conditions=@($guards|ForEach-Object{$_.Clauses[0].Item1.Extent.Text.Trim()})
+if($conditions -notcontains "`$disk.PartitionStyle -ne 'RAW'" -or $conditions -notcontains "`$disk.IsBoot -or `$disk.IsSystem"){throw 'RAW and boot/system guards are not bound to the pre-mutation AST interval'}
+foreach($guard in $guards){
+  $statements=@($guard.Clauses[0].Item2.Statements)
+  if($statements.Count -ne 1 -or $statements[0] -isnot [System.Management.Automation.Language.ThrowStatementAst]){throw 'each pre-mutation guard must have exactly one top-level throw statement'}
+}
 if ($script -notmatch '^param\(\[UInt32\]\$DiskNumber, \[char\]\$DriveLetter\)') { throw 'frozen parameter contract changed' }
 $allow = @('Get-Disk','Set-Disk','Initialize-Disk','New-Partition','Format-Volume')
 $calls = [regex]::Matches($script, '(?m)^\s*([A-Za-z]+-[A-Za-z]+)\b') | ForEach-Object { $_.Groups[1].Value }

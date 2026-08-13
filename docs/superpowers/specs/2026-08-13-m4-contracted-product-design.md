@@ -489,11 +489,19 @@ Before provisioning, all seven checks must pass:
    DeviceId.
 4. Native geometry reports the exact requested size within the accepted device
    alignment semantics.
-5. The disk is RAW and contains no partition.
+5. For the exact newly created AIM candidate only, the native IOCTL layout is
+   either `RAW` with zero partitions or `MBR` with zero partitions, signature
+   zero and checksum zero. The latter is only a native candidate/no-recognized-
+   partitions representation: it does not define RAW and does not authorize
+   formatting. Before every `Set-Disk` or `Initialize-Disk`, the embedded helper
+   is the authoritative format gate: `Get-Disk` must report `PartitionStyle`
+   exactly `RAW` and neither boot nor system; any disagreement fails closed.
 6. Windows does not mark it as boot or system disk.
 7. The requested drive letter is not owned by another volume.
 
-If any check is ambiguous or fails, no provisioning command runs.
+If any check is ambiguous or fails, no provisioning command runs. Recovery has
+no formatting fallback and never treats the native MBR candidate representation
+as a recoverable layout.
 
 ### 9.5 Offline compaction
 
