@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. For every R0-R8 implementation task, a fresh `gpt-5.6-terra` agent at medium reasoning implements the task; independent fresh Terra/medium agents then perform SPEC-compliance review and code-quality review. The implementer fixes review findings and the work is re-reviewed. The main Sol/xhigh controller uses CodeGraph for structural analysis and supplies the needed context, reads the diff, independently reruns verification, maintains task order, and makes exact commits. Do not run multiple implementation agents concurrently in the shared worktree. If implementation fails, the main controller first determines whether the task or plan is defective, context is missing, the task is too large, or implementation is difficult; pause and request or record a decision when the plan is wrong, and take over only when the task is sound but Terra cannot complete it. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship one `myrd run` executable that creates or recovers one AIM-backed NTFS RAM disk, checkpoints it while running, optionally compacts it after a bounded feasibility gate, and safely writes back and removes it on Ctrl+C.
+**Goal:** Ship one `myrd.exe` that creates or recovers one AIM-backed NTFS RAM disk with `myrd run`, checkpoints it while running, safely writes back and removes it on Ctrl+C, and compacts a stopped bundle with `myrd compact`.
 
 **Architecture:** Start from M3 GO and compose the existing M3 provider, proxy, persistence engine and `M3AimRuntime` directly inside one foreground process. Add one pure CLI parser, one concrete Windows-volume module, one concrete run loop and one composition `main`; do not add a management process, IPC layer, durable M4 state or extensibility interfaces.
 
@@ -73,7 +73,7 @@ timeout inflation is permitted.
 New tests use these cumulative labels:
 
 - `m4-v0`: branch/build/CLI/product-boundary tests;
-- `m4-v1`: M3 adapter and optional online compaction tests;
+- `m4-v1`: M3 product adapter, typed journal-capacity and offline compaction tests;
 - `m4-v2`: Windows volume/provisioning tests;
 - `m4-v3`: run-loop and shutdown tests;
 - `m4-v4`: real VM product lifecycle.
@@ -90,6 +90,9 @@ src/run/**
 net added lines in src/m3/m3_provider.h/.cpp
 net added lines in src/m3/m3_windows_acceptance.h/.cpp
 net added lines in src/m3/m3_aim_server_main.cpp
+net added lines in src/m3/m3_lifecycle_runner.h/.cpp
+net added lines in src/persistence/persistence_types.h
+net added lines in src/persistence/journal_writer.h/.cpp
 ```
 
 The script compares M3 GO with the worktree, prints per-file and total counts,
@@ -109,10 +112,10 @@ declarative CMake lines do not count.
 | `src/run/windows_volume.h` | Small value types and concrete volume functions |
 | `src/run/windows_volume.cpp` | Exact disk/volume discovery, provisioning, mount, flush, lock and dismount |
 | `src/run/run_loop.h` | Maintenance policy/state and concrete run-loop declarations |
-| `src/run/run_loop.cpp` | Checkpoint, optional compaction, shutdown and one-second loop |
+| `src/run/run_loop.cpp` | Checkpoint, journal-capacity warning/error policy, shutdown and one-second loop |
 | `src/run/provision_volume.ps1` | Fixed GPT/single-partition/NTFS provisioning logic |
 | `src/run/run_resources.rc` | Embed provisioning script and executable version resource |
-| `src/run/main.cpp` | Create/recover composition, signal flag and reverse cleanup |
+| `src/run/main.cpp` | Create/recover composition, offline-compact routing, signal flag and reverse cleanup |
 
 ### New test and tool files
 
@@ -122,8 +125,7 @@ declarative CMake lines do not count.
 | `tests/unit/m4_run_policy_tests.cpp` | Due predicates and commit-outcome policy |
 | `tests/unit/m4_windows_volume_tests.cpp` | Pure identity/extent/drive-letter/refusal helpers |
 | `tests/unit/test-m4-provision-script.ps1` | Script parameter and forbidden-command audit |
-| `tests/integration/m4_product_composition_tests.cpp` | Create/recover selection and cleanup ordering without real disk mutation |
-| `tests/integration/m3_online_compaction_spike_tests.cpp` | R1 feasibility test; retained only on GO |
+| `tests/integration/m4_product_composition_tests.cpp` | Create/recover/offline-compact selection and cleanup ordering without real disk mutation |
 | `tests/e2e/Invoke-M4RunLifecycle.ps1` | One real AIM/NTFS create-kill-reboot-recover-shutdown lifecycle |
 | `tools/Invoke-M4Verification.ps1` | Local/VM/final route with bounded inputs |
 | `tools/Measure-M4ProductLines.ps1` | Product line budget gate |
@@ -138,8 +140,17 @@ src/m3/m3_provider.cpp
 src/m3/m3_windows_acceptance.h
 src/m3/m3_windows_acceptance.cpp
 src/m3/m3_aim_server_main.cpp
+src/m3/m3_lifecycle_runner.h
+src/m3/m3_lifecycle_runner.cpp
+src/persistence/persistence_types.h
+src/persistence/journal_writer.h
+src/persistence/journal_writer.cpp
 tests/CMakeLists.txt
+tests/unit/m3_journal_writer_tests.cpp
+tests/unit/m3_persistence_types_tests.cpp
+tests/unit/m4_product_boundary_tests.ps1
 README.md
+docs/deferred/online-compaction.md
 docs/superpowers/specs/2026-08-13-m4-contracted-product-design.md
 docs/superpowers/plans/2026-08-13-m4-contracted-product.md
 M4_TASKLIST.md
@@ -273,110 +284,30 @@ git commit -m "build(m4): establish contracted product boundary"
 
 ## Task R1: Decide online compaction feasibility
 
-**Files:**
+**Result:** NO-GO, experiment removed, owner decision resolved.
 
-- Create on GO: `tests/integration/m3_online_compaction_spike_tests.cpp`
-- Modify on GO: `src/m3/m3_provider.h`
-- Modify on GO: `src/m3/m3_provider.cpp`
-- Modify on GO: `src/m3/m3_windows_acceptance.h`
-- Modify on GO: `src/m3/m3_windows_acceptance.cpp`
-- Modify on GO: `tests/CMakeLists.txt`
-- Modify: `M4_TASKLIST.md`
+The historical RED and bounded experiment are preserved in `M4_TASKLIST.md`.
+The spike proved that live-provider compaction needs either a duplicate M3
+publication/resolution/reconciliation implementation or an independently
+designed shared transaction-finalization refactor. No experimental production
+or test code remains.
 
-This is a decision task, not an open-ended refactor.
+The owner approved the SPEC amendment on 2026-08-13:
 
-- [ ] **Step 1: Freeze the provider-level RED**
+1. M4 v1 has no online or automatic compaction.
+2. R2 and R3 add the supported offline product command
+   `myrd compact --bundle <path>` by reusing `run_m3_lifecycle`.
+3. R5 warns once at 80% of the 2048 MiB journal ceiling and stops checkpoint
+   retries after a typed journal-capacity failure.
+4. `docs/deferred/online-compaction.md` records the independent future work and
+   R1 root cause without adding a v1 placeholder.
 
-Build the test by adapting the existing provider fixture from
-`tests/integration/m3_provider_integration_tests.cpp`. The new test must:
-
-```cpp
-TEST_CASE(online_provider_compaction_commits_and_preserves_live_data) {
-    // Open a generation-one provider with the existing fake transport.
-    // Write block A, checkpoint A, write block B, then call provider.compact().
-    // Require one newer committed generation and reads of both A and B.
-    // Reopen through recover_complete_image and require the same bytes.
-}
-```
-
-The test may reuse existing test support but may not add a fake management
-record, revision, phase or callback hierarchy.
-
-- [ ] **Step 2: Run RED**
-
-```powershell
-cmake --build --preset debug --target myrd_m3_online_compaction_spike_tests --parallel 1
-```
-
-Expected: compile failure because `M3Provider::compact` does not exist.
-
-- [ ] **Step 3: Attempt the bounded provider method**
-
-The only permitted public shape is concrete:
-
-```cpp
-struct M3CompactionOutcome final {
-    persistence::CommitDisposition disposition{
-        persistence::CommitDisposition::NotCommitted};
-    std::uint64_t generation{};
-    std::optional<Error> error{};
-    [[nodiscard]] bool ok() const noexcept;
-};
-
-M3CompactionOutcome M3Provider::compact(
-    const OperationContext& context,
-    persistence::VolumeBarrierKind barrier);
-```
-
-`M3AimRuntime` may forward the same call. Reuse the existing
-`CompactionCoordinator`, journal writer, manifest publication, commit resolver
-and reconciliation. Do not copy their algorithms into `src/run`.
-
-- [ ] **Step 4: Apply the GO/NO-GO checks before polishing**
-
-Run:
-
-```powershell
-git diff --numstat 4f9f912 -- src/m3 tests/integration/m3_online_compaction_spike_tests.cpp
-rg -n 'revision|profile|operation_store|strategy|manager|callback' `
-  src/m3/m3_provider.* src/m3/m3_windows_acceptance.*
-```
-
-NO-GO if the solution needs coordinator public-interface changes, copied
-compaction code, a new abstraction, fake revisions, or roughly more than 200
-net production lines. On NO-GO:
-
-1. save the RED and the concrete obstacle in `M4_TASKLIST.md`;
-2. revert only the R1 experiment with exact patches;
-3. mark R1 `BLOCKED_DECISION`;
-4. stop all later tasks and request “independent M3 refactor” or “remove v1
-   automatic compaction”.
-
-- [ ] **Step 5: Verify GO if the bounds hold**
-
-```powershell
-cmake --build --preset debug --target myrd_m3_online_compaction_spike_tests --parallel 1
-ctest --preset debug -R '^(integration\.m3\.online_compaction|integration\.m3\.compaction|integration\.m3\.provider)$' --output-on-failure
-ctest --preset debug -L m3-v4 --output-on-failure
-cmake --build --preset release --target myrd_m3_online_compaction_spike_tests --parallel 1
-ctest --preset release -R '^integration\.m3\.online_compaction$' --output-on-failure
-powershell -NoProfile -File tools/Measure-M4ProductLines.ps1
-git diff --check
-```
-
-- [ ] **Step 6: Commit GO**
-
-```powershell
-git add src/m3/m3_provider.h src/m3/m3_provider.cpp `
-  src/m3/m3_windows_acceptance.h src/m3/m3_windows_acceptance.cpp `
-  tests/integration/m3_online_compaction_spike_tests.cpp tests/CMakeLists.txt `
-  M4_TASKLIST.md
-git commit -m "feat(m4): prove online compaction feasibility"
-```
+This decision completes R1 and unblocks R2. It does not authorize an online
+method, coordinator API change or M3 shared refactor inside M4 v1.
 
 ---
 
-## Task R2: Implement the exact `myrd run` CLI
+## Task R2: Implement the exact product CLI
 
 **Files:**
 
@@ -385,14 +316,15 @@ git commit -m "feat(m4): prove online compaction feasibility"
 - Create: `tests/unit/m4_cli_tests.cpp`
 - Modify: `src/run/main.cpp`
 - Modify: `src/CMakeLists.txt`
+- Modify: `tests/unit/m4_product_boundary_tests.ps1`
 - Modify: `tests/CMakeLists.txt`
 - Modify: `M4_TASKLIST.md`
 
 - [ ] **Step 1: Write parser RED cases**
 
-Freeze a table covering help, the default run form, every optional policy,
-duplicate/missing/unknown options, size suffix boundaries, drive letters and
-bundle device-path rejection. The public shape is:
+Freeze a table covering help, the default run form, the exact offline compact
+form, every run policy, duplicate/missing/unknown options, size suffix
+boundaries, drive letters and bundle device-path rejection. The public shape is:
 
 ```cpp
 struct RunOptions final {
@@ -401,14 +333,18 @@ struct RunOptions final {
     wchar_t drive_letter{};
     std::chrono::seconds checkpoint_interval{600};
     std::uint64_t checkpoint_dirty_bytes{256ull * 1024 * 1024};
-    std::uint64_t compact_threshold_bytes{512ull * 1024 * 1024};
     std::uint64_t ram_limit_bytes{2ull * 1024 * 1024 * 1024};
 };
 
-enum class CliAction : std::uint8_t { Run, Help, Error };
+struct CompactOptions final {
+    std::filesystem::path bundle;
+};
+
+enum class CliAction : std::uint8_t { Run, Compact, Help, Error };
 struct CliParseResult final {
     CliAction action{CliAction::Error};
-    std::optional<RunOptions> options{};
+    std::optional<RunOptions> run{};
+    std::optional<CompactOptions> compact{};
     std::wstring message;
 };
 
@@ -422,9 +358,16 @@ TEST_CASE(cli_default_run_contract) {
     const auto parsed = parse({L"run", L"--bundle", L"C:\\disk",
         L"--size", L"8G", L"--drive-letter", L"R:"});
     REQUIRE_EQ(parsed.action, CliAction::Run);
-    REQUIRE_EQ(parsed.options->virtual_bytes, 8ull * 1024 * 1024 * 1024);
-    REQUIRE_EQ(parsed.options->checkpoint_interval, std::chrono::seconds(600));
-    REQUIRE_EQ(parsed.options->drive_letter, L'R');
+    REQUIRE_EQ(parsed.run->virtual_bytes, 8ull * 1024 * 1024 * 1024);
+    REQUIRE_EQ(parsed.run->checkpoint_interval, std::chrono::seconds(600));
+    REQUIRE_EQ(parsed.run->drive_letter, L'R');
+}
+
+TEST_CASE(cli_offline_compact_contract) {
+    const auto parsed = parse({L"compact", L"--bundle", L"C:\\disk"});
+    REQUIRE_EQ(parsed.action, CliAction::Compact);
+    REQUIRE_EQ(parsed.compact->bundle, std::filesystem::path(L"C:\\disk"));
+    REQUIRE_EQ(parse(compact_with_run_option).action, CliAction::Error);
 }
 
 TEST_CASE(cli_rejects_duplicate_and_device_paths) {
@@ -450,11 +393,19 @@ case-sensitive; drive letters accept either ASCII case and normalize to
 uppercase. Do not access the filesystem, registry, driver or volume APIs.
 Return only actionable usage text; do not add error classes or JSON.
 
+Update the R0 boundary test's exact help/error contract to the final product
+grammar. Global help lists exactly the `run` and `compact` forms; `run --help`
+and `compact --help` each print only their exact subcommand usage. No-argument
+invocation remains exit 2, stdout empty, with the exact global usage on stderr.
+Freeze the exact global text from SPEC Section 3.1, including its two-space
+indentation, line breaks and one trailing platform newline.
+
 - [ ] **Step 4: Route `main` through the parser**
 
 `main` must print help to stdout and return 0, print parser errors plus usage to
-stderr and return 2, and temporarily print `run implementation unavailable` and
-return 1 for a valid run form until R3.
+stderr and return 2, and temporarily print `run implementation unavailable` or
+`compact implementation unavailable` and return 1 for the corresponding valid
+form until R3.
 
 - [ ] **Step 5: Verify GREEN and pre-mutation purity**
 
@@ -471,8 +422,9 @@ git diff --check
 
 ```powershell
 git add src/run/cli.h src/run/cli.cpp src/run/main.cpp src/CMakeLists.txt `
-  tests/unit/m4_cli_tests.cpp tests/CMakeLists.txt M4_TASKLIST.md
-git commit -m "feat(m4): add minimal run command"
+  tests/unit/m4_cli_tests.cpp tests/unit/m4_product_boundary_tests.ps1 `
+  tests/CMakeLists.txt M4_TASKLIST.md
+git commit -m "feat(m4): add minimal product commands"
 ```
 
 ---
@@ -486,9 +438,19 @@ git commit -m "feat(m4): add minimal run command"
 - Modify: `src/m3/m3_windows_acceptance.h`
 - Modify: `src/m3/m3_windows_acceptance.cpp`
 - Modify: `src/m3/m3_aim_server_main.cpp`
+- Modify: `src/m3/m3_lifecycle_runner.h`
+- Modify: `src/m3/m3_lifecycle_runner.cpp`
+- Modify: `src/persistence/persistence_types.h`
+- Modify: `src/persistence/journal_writer.h`
+- Modify: `src/persistence/journal_writer.cpp`
 - Modify: `src/run/main.cpp`
+- Modify: `src/CMakeLists.txt`
+- Modify: `tests/unit/m3_journal_writer_tests.cpp`
+- Modify: `tests/unit/m3_persistence_types_tests.cpp`
+- Modify: `tests/unit/m4_product_boundary_tests.ps1`
 - Create: `tests/integration/m4_product_composition_tests.cpp`
 - Modify: `tests/CMakeLists.txt`
+- Modify: `tools/Measure-M4ProductLines.ps1`
 - Modify: `M4_TASKLIST.md`
 
 - [ ] **Step 1: Add RED tests for reusable production values**
@@ -506,7 +468,21 @@ REQUIRE_EQ(store.eviction_low_watermark_bytes, 1ull * kGiB);
 
 Add maintenance-stat tests that make one block dirty and require one storage
 block of `dirty_bytes`, current generation and the selected journal committed
-length.
+length. Add journal-writer tests with an optional absolute committed-end ceiling:
+exact equality succeeds, crossing by one aligned record returns typed
+`JournalCapacityExhausted`, and leaving the ceiling unset preserves current M3
+behavior. Existing per-checkpoint byte/record work limits, allocation, snapshot
+batch and host disk failures must retain their existing distinct codes.
+Add a provider checkpoint regression that crosses a small configured absolute
+ceiling and proves `M3CheckpointOutcome.error_context->code` remains exactly
+`JournalCapacityExhausted`, with no generation or selected committed-length
+advance.
+
+Add offline product-compaction tests that require a generation-one bundle,
+advance one committed generation, reopen with identical bytes, reject a
+generation-zero bundle and fail without mutation while the M3 writer lock is
+held. Freeze the exact success and writer-conflict messages from SPEC Section
+9.5 and prove no output recommends the engineering `myrd_m3_e2e` executable.
 
 - [ ] **Step 2: Run RED**
 
@@ -529,14 +505,61 @@ struct M3MaintenanceStats final {
     std::uint64_t dirty_bytes{};
     std::uint64_t journal_committed_bytes{};
 };
-M3MaintenanceStats maintenance_stats() const;
+Result<M3MaintenanceStats> maintenance_stats() const;
 ```
 
 Use checked arithmetic. Replace the engineering AIM server's local default
 constructors with calls to the shared value functions; do not change accepted
 M3 default values except the explicit product RAM limit.
 
-- [ ] **Step 4: Implement create/recover selection in `main`**
+Add the same concrete `Result<M3MaintenanceStats> maintenance_stats() const`
+forwarder to `M3AimRuntime`; it must call the owned provider and add no cache,
+observer or interface. Add this field to `M3ProviderConfig`:
+
+```cpp
+std::optional<std::uint64_t> journal_committed_end_ceiling{};
+```
+
+Only product `main` sets it, to `2147483648`; engineering M3 composition leaves
+the default unset. Tests may set a smaller finite value to exercise the exact
+boundary without creating a 2 GiB fixture.
+
+Update `Measure-M4ProductLines.ps1` and its isolated boundary fixture so every
+newly allowed M3/persistence adaptation file is counted relative to M3 GO. The
+counter must continue to fail closed when a fixed file is missing or binary.
+
+Add `PersistenceErrorCode::JournalCapacityExhausted = 20` and its exact
+`to_string` mapping. Add an optional absolute committed-end ceiling to
+`JournalWriterOptions` and set it only from the optional provider field. Return
+the new code only when the candidate checkpoint's final committed end would
+cross that absolute ceiling. Equality succeeds. A rejected checkpoint may
+leave only an uncommitted tail; it must not advance the selected manifest,
+generation or durable committed length. Do not rename or reuse
+`SnapshotResourceExhausted`; the existing per-operation `max_checkpoint_bytes`,
+record count, memory, snapshot and bounded-workspace failures retain their
+current semantics.
+
+- [ ] **Step 4: Add the offline product-compaction adapter**
+
+Add one concrete function to `m3_lifecycle_runner.h/.cpp`:
+
+```cpp
+M3LifecycleOutcome run_product_offline_compaction(
+    const OperationContext& context,
+    const std::filesystem::path& bundle_root);
+```
+
+It fixes manifest `disk.rdm`, first recovers the geometry, rejects generation
+zero, derives `production_persistence_limits(virtual_bytes)` and finite product
+store options by calling `production_store_options(2ull * kGiB)`, sets the
+existing offline lifecycle's compact command and `RawTest` barrier internally,
+and calls `run_m3_lifecycle`. The word `RawTest` does not appear in product help
+or user input; it is an internal barrier for an already-stopped durable view
+with no mounted filesystem to flush. Require `Committed`, cleanup success and a
+successor generation. Do not copy any compaction, publication, resolver or
+reconciliation code.
+
+- [ ] **Step 5: Implement create/recover/compact selection in `main`**
 
 Add concrete local helpers, not interfaces:
 
@@ -555,26 +578,39 @@ construct the same `M3AimProviderFactoryConfig` and `M3AimRuntime`.
 
 Until R4, stop after the runtime reports its exact PhysicalDrive, call
 `runtime.stop()` and return 1 with `Windows volume setup unavailable`.
+For `CliAction::Compact`, call only `run_product_offline_compaction` with a
+finite deadline, print one human success line containing the new generation,
+print an actionable stderr failure otherwise, and never construct
+`M3AimRuntime`.
 
-- [ ] **Step 5: Verify GREEN and M3 regression**
+Link the product executable to `myrd_m3_windows`; that existing library already
+brings the M3 management/lifecycle implementation. Do not link the engineering
+`myrd_m3_e2e` executable or route product input through its parser.
+
+- [ ] **Step 6: Verify GREEN and M3 regression**
 
 ```powershell
 cmake --build --preset debug --target myrd_m4_product_composition_tests myrd --parallel 1
-ctest --preset debug -R '^(integration\.m4\.product_composition|integration\.m3\.(image_create|recovery|provider|windows_acceptance))$' --output-on-failure
+ctest --preset debug -R '^(integration\.m4\.product_composition|unit\.m3\.journal_writer|unit\.m3\.persistence_types|integration\.m3\.(image_create|recovery|provider|compaction|windows_acceptance))$' --output-on-failure
 ctest --preset debug -L m3-v2 --output-on-failure
 ctest --preset debug -L m4-v1 --output-on-failure
 powershell -NoProfile -File tools/Measure-M4ProductLines.ps1
 git diff --check
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```powershell
 git add src/m3/m3_provider.h src/m3/m3_provider.cpp `
   src/m3/m3_windows_acceptance.h src/m3/m3_windows_acceptance.cpp `
-  src/m3/m3_aim_server_main.cpp src/run/main.cpp `
+  src/m3/m3_aim_server_main.cpp src/m3/m3_lifecycle_runner.h `
+  src/m3/m3_lifecycle_runner.cpp src/persistence/persistence_types.h `
+  src/persistence/journal_writer.h src/persistence/journal_writer.cpp `
+  src/run/main.cpp src/CMakeLists.txt tests/unit/m3_journal_writer_tests.cpp `
+  tests/unit/m3_persistence_types_tests.cpp `
+  tests/unit/m4_product_boundary_tests.ps1 `
   tests/integration/m4_product_composition_tests.cpp tests/CMakeLists.txt `
-  M4_TASKLIST.md
+  tools/Measure-M4ProductLines.ps1 M4_TASKLIST.md
 git commit -m "feat(m4): expose minimal m3 product runtime"
 ```
 
@@ -719,19 +755,29 @@ git commit -m "feat(m4): provision and recover exact windows volume"
 Use one transient value only:
 
 ```cpp
-enum class MaintenanceKind : std::uint8_t { Checkpoint, Compaction };
 struct MaintenanceState final {
     std::chrono::steady_clock::time_point last_checkpoint{};
     std::chrono::steady_clock::time_point checkpoint_suppressed_until{};
-    std::chrono::steady_clock::time_point compaction_suppressed_until{};
+    bool journal_warning_printed{};
+    bool checkpoints_disabled_for_full_journal{};
     bool skip_final_checkpoint{};
     bool exit_failure{};
 };
 ```
 
 Tests freeze exact threshold equality, no early trigger, checked dirty-byte
-math, 60-second suppression, one retry for `NotCommitted`, convergence handling
-and indeterminate controlled shutdown.
+math, 60-second suppression, one retry for ordinary `NotCommitted`, convergence
+handling and indeterminate controlled shutdown. They also freeze:
+
+- ceiling `2147483648` and warning threshold `1717986919` bytes;
+- no warning below the threshold and one process-lifetime warning at/above it;
+- warning text contains the exact stopped-bundle command;
+- `JournalCapacityExhausted` performs no retry, disables later checkpoints,
+  marks final checkpoint skipped and requests failure exit after cleanup;
+- other `SnapshotResourceExhausted` errors retain the ordinary retry path.
+- maintenance-stat failure requests controlled failure shutdown, still permits
+  the normal final checkpoint when commit state permits it, and exits 1 after
+  cleanup.
 
 - [ ] **Step 2: Run RED**
 
@@ -749,16 +795,24 @@ Expose only:
 bool checkpoint_due(const RunOptions&, const M3MaintenanceStats&,
                     const MaintenanceState&,
                     std::chrono::steady_clock::time_point) noexcept;
-bool compact_due(const RunOptions&, const M3MaintenanceStats&,
-                 const MaintenanceState&,
-                 std::chrono::steady_clock::time_point) noexcept;
+bool apply_checkpoint_outcome(MaintenanceState&,
+                              const m3::M3CheckpointOutcome&,
+                              std::chrono::steady_clock::time_point,
+                              bool retry_already_used) noexcept;
+void mark_maintenance_stats_failure(MaintenanceState&) noexcept;
 int run_loop(m3::M3AimRuntime&, ProductVolume&, const RunOptions&,
              std::atomic_bool& shutdown_requested);
 ```
 
-Keep `do_checkpoint`, conditional `do_compact` and outcome handling private in
-`run_loop.cpp`. Every persistence operation first calls `flush_volume`, which
-revalidates the exact volume extent. Retry only once.
+Keep `do_checkpoint`, journal warning emission and outcome handling private in
+`run_loop.cpp`; the two small pure policy functions only mutate transient
+`MaintenanceState` and add no interface or persistent record. Every checkpoint
+first calls `flush_volume`, which revalidates the exact volume extent. Retry an
+ordinary `NotCommitted` only once. A typed journal-capacity result must bypass
+that retry and every later checkpoint. `apply_checkpoint_outcome` returns true
+only when the caller must make the single immediate ordinary retry;
+`mark_maintenance_stats_failure` sets `exit_failure` without setting
+`skip_final_checkpoint`, after which `run_loop` requests shutdown.
 
 - [ ] **Step 4: Wire `main` into the loop**
 
@@ -769,7 +823,7 @@ generation, then call `run_loop`. Do not add JSON, IPC or background scheduler.
 
 ```powershell
 cmake --build --preset debug --target myrd_m4_run_policy_tests myrd --parallel 1
-ctest --preset debug -R '^(unit\.m4\.run_policy|integration\.m3\.(checkpoint|checkpoint_reconcile|compaction))$' --output-on-failure
+ctest --preset debug -R '^(unit\.m4\.run_policy|unit\.m3\.(journal_writer|persistence_types)|integration\.m3\.(checkpoint|checkpoint_reconcile))$' --output-on-failure
 ctest --preset debug -L m4-v3 --output-on-failure
 powershell -NoProfile -File tools/Measure-M4ProductLines.ps1
 rg -n 'scheduler|queue|thread_pool|operation_store|phase|evidence' src/run
@@ -912,7 +966,7 @@ VM.
 
 ```powershell
 param(
-  [ValidateSet('CreateKill','RecoverShutdown','Negative')]
+  [ValidateSet('CreateKill','RecoverShutdown','OfflineCompact','Negative')]
   [string]$Phase,
   [Parameter(Mandatory)][string]$Executable,
   [Parameter(Mandatory)][string]$Bundle,
@@ -934,9 +988,13 @@ artifact, password or harness path.
 
 - [ ] **Step 3: Implement the three bounded phases**
 
-CreateKill performs SPEC Section 12.2 steps 1-8 and exits only after killing the
+CreateKill performs SPEC Section 12.2 steps 1-7 and exits only after killing the
 exact recorded PID. RecoverShutdown runs after the operator/host reboots the VM
-and performs steps 9-16. Negative runs the frozen refusal cases serially and
+and performs steps 8-14. OfflineCompact runs only after clean shutdown, calls
+the same Release `myrd.exe compact --bundle <path>`, requires a successor
+generation with identical file hashes, and proves AIM/PhysicalDrive inventory
+does not change. Negative runs the frozen refusal cases serially, including
+writer-lock rejection of offline compact while `myrd run` owns the bundle, and
 proves no baseline inventory or unrelated drive-letter change.
 
 The script records line-oriented evidence under an operator-provided directory,
@@ -950,6 +1008,7 @@ but product code has no evidence system.
 -Tier Local
 -Tier VmCreateKill
 -Tier VmRecoverShutdown
+-Tier VmOfflineCompact
 -Tier VmNegative
 -Tier Final
 ```
@@ -959,9 +1018,10 @@ but product code has no evidence system.
 
 - [ ] **Step 5: Execute the real lifecycle**
 
-Run CreateKill, reboot the VM, run RecoverShutdown, then Negative. Record exact
-commands, source commit, executable SHA-256, bundle path, drive letter, before
-and after inventories, file hashes and exit codes in the R7 TASKLIST record.
+Run CreateKill, reboot the VM, run RecoverShutdown, OfflineCompact, then
+Negative. Record exact commands, source commit, executable SHA-256, bundle
+path, drive letter, before and after inventories, file hashes and exit codes in
+the R7 TASKLIST record.
 
 - [ ] **Step 6: Verify local regressions after VM fixes**
 
@@ -999,13 +1059,25 @@ README must contain:
 
 - exact command and defaults;
 - administrator/AIM/Windows requirements;
+- clarification that offline compact does not discover or start AIM and needs
+  only bundle filesystem access plus the exclusive writer lock;
 - create versus recover behavior;
 - recovery never formats;
-- checkpoint and conditional compaction behavior;
+- checkpoint behavior, 80% journal warning, full-journal failure behavior and
+  the exact stopped-bundle `myrd compact --bundle <path>` recovery command;
+- the ordinary clean route: close applications, press Ctrl+C, wait for `myrd`
+  to exit, run `myrd compact --bundle "<the same bundle path>"`, then restart
+  the original `myrd run` command;
+- the full-journal route: press Ctrl+C, allow safe cleanup to finish with exit
+  1, run that same compact command, then restart the original run command;
+- the forced-kill route: reboot Windows first, then run the compact command and
+  restart the original run command; never direct users to `myrd_m3_e2e`;
+- an explicit statement that online compaction is deferred outside v1, with a
+  link to `docs/deferred/online-compaction.md`;
 - Ctrl+C clean sequence;
 - exact busy-volume Defender/Search guidance;
-- forced-kill reboot requirement;
-- v1 limitation and separately evaluated v2 identity decision point;
+- forced-kill reboot as a product limitation with no promised cleanup/identity
+  follow-up in this final milestone;
 - only exit codes 0, 1 and 2.
 
 - [ ] **Step 2: Build Debug and Release from a fresh configure**
@@ -1061,7 +1133,9 @@ Expected: build PASS and `rg` has no match.
 
 ```powershell
 rg -n -i 'service|host|worker|named.pipe|ipc|profile|operation.store|durable.phase|admission|revision|evidence' src/run
+rg -n -i 'compact|compaction' src/run/run_loop.h src/run/run_loop.cpp
 rg -n -i '\b(T'+'BD|TO'+'DO|FIX'+'ME)\b' src/run README.md `
+  docs/deferred/online-compaction.md `
   docs/superpowers/specs/2026-08-13-m4-contracted-product-design.md `
   docs/superpowers/plans/2026-08-13-m4-contracted-product.md M4_TASKLIST.md
 powershell -NoProfile -File tools/Measure-M4ProductLines.ps1
@@ -1070,7 +1144,8 @@ git status --short
 ```
 
 Every hit must be classified. Product source must contain no prohibited old-M4
-concept. Total product lines must be at most 2500.
+concept. The run-loop compaction scan must have no match; offline compaction is
+routed only by `main`. Total product lines must be at most 2500.
 
 - [ ] **Step 6: Run final VM evidence verifier**
 
@@ -1104,9 +1179,10 @@ describe the drift correction in the R8 record. Do not amend earlier commits.
 
 ## 2. Final acceptance summary
 
-M4 is GO only when R0-R8 are DONE, or when R1 is explicitly resolved by an owner
-decision that amends the SPEC and removes compaction before R2 proceeds. No test
-skip, previous-branch evidence, code-review assertion or nearly-complete result
+M4 is GO only when R0-R8 are DONE. R1 is resolved by the approved v1 amendment:
+no online compaction, supported offline product compaction, typed journal
+capacity handling and the explicit external defer record. No test skip,
+previous-branch evidence, code-review assertion or nearly-complete result
 substitutes for fresh command output.
 
 The milestone ends here. There is no M5 plan.

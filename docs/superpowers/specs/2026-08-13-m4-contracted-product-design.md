@@ -10,19 +10,23 @@
 M4 is the final product milestone. It is not a continuation of the failed
 Service/Host/Worker management platform and it does not create an M5.
 
-The product is one foreground command:
+The product has one foreground runtime command and one offline maintenance
+command in the same executable:
 
 ```text
 myrd run --bundle <path> --size <N> --drive-letter <R:>
          [--checkpoint-seconds <N>]
          [--checkpoint-dirty-mb <N>]
-         [--compact-threshold-mb <N>]
          [--ram-limit <N>]
+
+myrd compact --bundle <path>
 ```
 
-The command creates or recovers one persistent RAM disk, keeps it mounted while
+`myrd run` creates or recovers one persistent RAM disk, keeps it mounted while
 the process runs, periodically persists it, and performs a safe final writeback
-when Ctrl+C requests shutdown.
+when Ctrl+C requests shutdown. `myrd compact` operates only on a stopped bundle
+and reuses the accepted offline M3 lifecycle; it never creates an AIM device or
+mounts a volume.
 
 The product is deliberately narrow:
 
@@ -46,9 +50,9 @@ x64 VM with the real AIM driver and NTFS:
 3. The recovery path does not call `Initialize-Disk`, `New-Partition` or
    `Format-Volume`.
 4. Periodic checkpoints flush the exact volume before invoking M3 checkpoint.
-5. Automatic compaction is present only if the R1 feasibility gate is GO. If
-   R1 is NO-GO, the project owner must explicitly choose an independent M3
-   refactor or removal of automatic compaction from v1.
+5. v1 performs no online or automatic compaction. It warns once when the journal
+   reaches 80% of its 2048 MiB ceiling and provides the supported offline
+   `myrd compact --bundle <path>` recovery path.
 6. Ctrl+C performs `lock -> flush -> final checkpoint -> dismount -> remove
    drive letter -> remove exact AIM device`, and only then exits 0.
 7. The shipped product contains none of the prohibited old-M4 components in
@@ -68,19 +72,35 @@ The only accepted product forms are:
 myrd --help
 myrd run --help
 myrd run --bundle <path> --size <N> --drive-letter <R:> [policy options]
+myrd compact --help
+myrd compact --bundle <path>
 ```
 
 Every other subcommand or option is a usage error. There is no JSON output,
-configuration file, daemon command, management command or cleanup command.
+configuration file, daemon command, runtime management command or cleanup
+command. The offline compact form accepts only `--bundle`; it does not expose
+M3 barrier, geometry, persistence-limit or store-limit options.
 Command names and option names are exact lowercase ASCII and case-sensitive.
 Drive letters accept either ASCII case and are normalized to uppercase.
+
+The exact global usage text is:
+
+```text
+Usage:
+  myrd run --bundle <path> --size <N> --drive-letter <R:> [--checkpoint-seconds <N>] [--checkpoint-dirty-mb <N>] [--ram-limit <N>]
+  myrd compact --bundle <path>
+```
+
+`myrd run --help` prints only the `run` usage line with the `Usage:` heading;
+`myrd compact --help` prints only the `compact` usage line with that heading.
+No-argument invocation exits 2, writes nothing to stdout and writes the global
+usage text to stderr.
 
 ### 3.2 Defaults
 
 ```text
 --checkpoint-seconds     600
 --checkpoint-dirty-mb    256
---compact-threshold-mb   512
 --ram-limit              2G
 ```
 
@@ -88,7 +108,7 @@ Drive letters accept either ASCII case and are normalized to uppercase.
 
 | Code | Meaning |
 |---:|---|
-| 0 | Help completed, or Ctrl+C shutdown completed with all cleanup confirmed |
+| 0 | Help completed, offline compaction committed, or Ctrl+C shutdown completed with all cleanup confirmed |
 | 2 | Command-line usage error; no bundle, AIM or volume mutation occurred |
 | 1 | Every other startup, runtime, persistence, provisioning or cleanup failure |
 
@@ -100,12 +120,15 @@ No product error-code taxonomy is introduced.
 - The value is a normal filesystem directory path.
 - Win32 device paths, `GLOBALROOT`, volume-device paths, NUL and alternate data
   stream syntax are rejected.
-- Missing directory or empty directory means create.
-- Existing fixed manifest `disk.rdm` means recover.
-- A non-empty directory without `disk.rdm` is rejected without overwriting it.
+- For `myrd run`, a missing directory or empty directory means create.
+- For `myrd run`, an existing fixed manifest `disk.rdm` means recover.
+- For `myrd compact`, the directory and `disk.rdm` must already exist; missing
+  or empty input is rejected without creating anything.
+- A non-empty directory without `disk.rdm` is rejected without overwriting it
+  by both commands.
 - A regular file or other non-directory object is rejected.
 
-The bundle classification is exactly:
+The `myrd run` bundle classification is exactly:
 
 ```text
 manifest exists       -> recover
@@ -133,10 +156,7 @@ otherwise             -> fail
 
 - `checkpoint-seconds`: 5 through 86400.
 - `checkpoint-dirty-mb`: 1 through 1048576.
-- `compact-threshold-mb`: 64 through 1536.
 - `ram-limit`: 64 MiB through 1 TiB.
-- Compact threshold must leave at least 512 MiB below the M3 2048 MiB journal
-  production ceiling.
 - M2 soft and hard limits both equal `ram-limit`; low watermark is half that
   value rounded down to the storage block boundary.
 
@@ -163,8 +183,12 @@ The new branch must not contain or reintroduce:
 - M4 model tests, crash models, fuzz models or randomized soak models;
 - adoption or removal of an orphan AIM device without a Windows reboot.
 
-No interface, type, empty directory or compatibility seam may be added “for
-later” for any item in this list.
+No interface, type, empty directory or compatibility seam may be added for
+later use for any item in this list.
+
+The supported offline `myrd compact` command is not a runtime management
+command. It is the only v1 bundle-maintenance command and cannot communicate
+with, control or coexist with a running `myrd run` process for the same bundle.
 
 ## 5. Process and component shape
 
@@ -213,10 +237,10 @@ Responsibilities:
 - `cli.*`: pure parsing, defaults and bounds; no disk or AIM access.
 - `windows_volume.*`: concrete Win32 volume discovery, exact extent checks,
   provisioning helper, flush, lock, dismount and drive-letter functions.
-- `run_loop.*`: concrete checkpoint, optional compaction, shutdown and the
+- `run_loop.*`: concrete checkpoint, journal-capacity policy, shutdown and the
   one-second loop; no interfaces or queues.
-- `main.cpp`: composition, Ctrl+C flag, create/recover startup and reverse-order
-  cleanup.
+- `main.cpp`: composition, offline compact routing, Ctrl+C flag,
+  create/recover startup and reverse-order cleanup.
 - `provision_volume.ps1`: fixed GPT/single-partition/NTFS provisioning script.
 - `run_resources.rc`: embeds that script; it has no behavior of its own.
 
@@ -226,10 +250,16 @@ Small changes are allowed in:
 src/m3/m3_provider.h/.cpp
 src/m3/m3_windows_acceptance.h/.cpp
 src/m3/m3_aim_server_main.cpp
+src/m3/m3_lifecycle_runner.h/.cpp
+src/persistence/persistence_types.h
+src/persistence/journal_writer.h
+src/persistence/journal_writer.cpp
 ```
 
 They may expose only the product facts and operations that M3 already owns.
-They must not introduce a new abstraction layer.
+They must not introduce a new abstraction layer. The persistence changes are
+limited to a distinct journal-capacity error value and the exact writer-limit
+return sites needed by Section 10.2.
 
 ## 6. Git and history boundary
 
@@ -285,14 +315,22 @@ The spike may not:
 
 ### 7.3 Decision
 
-- GO: focused compaction tests and full M3 regression pass, no algorithm copy,
-  no prohibited abstraction, and the production delta is within the bounded
-  spike. Automatic compaction remains in v1.
-- NO-GO: the experiment is reverted, the observed obstacle is recorded, and
-  implementation stops. The owner decides either an independent M3 refactor or
-  removal of automatic compaction from v1.
+R1 was NO-GO. The experiment proved that a live-provider implementation would
+either copy the M3 manifest publication, commit resolution and reconciliation
+algorithm or first extract a shared transaction-finalization path from M3. The
+experiment was removed and the final R1 production delta is zero.
 
-No later task may silently bypass this gate.
+The owner approved the following v1 amendment on 2026-08-13:
+
+- remove online and automatic compaction from M4 v1;
+- ship `myrd compact --bundle <path>` as a supported offline product command;
+- monitor the fixed 2048 MiB journal ceiling during `myrd run`;
+- record online compaction as explicit work outside v1 in
+  `docs/deferred/online-compaction.md`.
+
+The deferred item is not an M5, does not block M4 v1 GO and must not add a
+placeholder interface to v1. No later task may reintroduce online compaction
+without a separately approved M3 design and plan.
 
 ## 8. M3 product adaptation
 
@@ -325,6 +363,18 @@ M3 production-limit construction and store-option construction are moved from
 the engineering AIM server into named value-returning functions reusable by
 `myrd`, without changing their accepted numeric values.
 
+The fixed M4 product journal ceiling is 2048 MiB of cumulative committed-end
+length. This is separate from M3's existing finite per-checkpoint byte and
+record work limits. The product provider supplies an optional absolute
+committed-end ceiling through `M3ProviderConfig` to `JournalWriter`; `myrd run`
+sets it to exactly 2147483648 bytes and existing M3 callers leave it unset.
+Crossing that absolute ceiling reports a distinct typed
+`JournalCapacityExhausted` persistence error with frozen numeric value 20. The
+candidate checkpoint must not advance the manifest or durable committed length.
+Per-checkpoint record/byte work, snapshot-memory, batch and host-filesystem
+failures retain their existing codes and must not be classified as a full
+journal by parsing human error text.
+
 ### 8.3 Maintenance stats
 
 The runtime exposes one transient value:
@@ -337,10 +387,13 @@ struct M3MaintenanceStats final {
 };
 ```
 
-It is read under the provider's existing operation lock. Dirty bytes are the
-checked sum of resident-dirty and zero-dirty blocks multiplied by the fixed
-storage block size. Journal committed length comes from the current recovered
-image identity. The value is not persisted and is not evidence or a phase.
+`M3Provider::maintenance_stats()` and the concrete `M3AimRuntime` forwarding
+method return `Result<M3MaintenanceStats>`. They read under the provider's
+existing operation lock. Dirty bytes are the checked sum of resident-dirty and
+zero-dirty blocks multiplied by the fixed storage block size. Journal committed
+length comes from the current recovered image identity. Arithmetic or fact
+failure is returned instead of truncating. The value is not persisted and is
+not evidence or a phase.
 
 ### 8.4 Runtime cleanup order
 
@@ -350,9 +403,9 @@ the provider. M4 must dismount and remove the drive letter before calling it.
 
 ## 9. Startup flow
 
-### 9.1 Common preflight
+### 9.1 `myrd run` preflight
 
-Before mutation:
+Before `myrd run` mutation:
 
 1. Require an elevated administrator token.
 2. Parse the complete CLI and bounds.
@@ -361,6 +414,11 @@ Before mutation:
 5. Verify the AIM driver can be discovered before any Windows disk mutation.
 6. Verify the requested drive letter is free or already belongs to the exact
    recovered volume.
+
+These AIM, elevation and drive-letter checks do not apply to `myrd compact`.
+The offline command requires normal read/write/delete access to the bundle and
+the exclusive M3 writer lock, but it discovers or starts no driver, device,
+proxy, disk or volume.
 
 ### 9.2 Create path
 
@@ -416,6 +474,45 @@ Before provisioning, all seven checks must pass:
 
 If any check is ambiguous or fails, no provisioning command runs.
 
+### 9.5 Offline compaction
+
+`myrd compact --bundle <path>` is valid only after `myrd run` for that bundle
+has stopped. It:
+
+1. requires an existing normal directory containing the fixed `disk.rdm`;
+2. recovers and validates the newest complete generation and rejects generation
+   zero;
+3. derives finite product persistence limits from the recovered virtual size
+   and uses the fixed product store options for a 2 GiB RAM limit; the user
+   cannot supply engineering limits or `raw-test` options;
+4. acquires the existing M3 bundle writer lock and fails without mutation if a
+   runtime or another maintenance process owns the bundle;
+5. calls the existing offline M3 lifecycle compaction and requires a committed,
+   reconciled successor generation;
+6. closes every store, session and writer capability before exiting 0.
+
+The command compacts only the last committed durable view. It launches no AIM
+runtime, proxy, provisioning script or volume operation, and it cannot preserve
+RAM changes that never reached a successful checkpoint. After a forced kill,
+the required Windows reboot still precedes offline compaction.
+
+Successful completion prints exactly:
+
+```text
+Compacted bundle to generation <N>.
+```
+
+If the bundle writer lock is owned, the command does not mutate the bundle and
+prints exactly:
+
+```text
+Error: bundle is in use. Stop myrd run for this bundle, then retry: myrd compact --bundle "<the same bundle path>"
+```
+
+Other failures print one short error that includes the failing bundle path and
+the existing M3 diagnostic, then exit 1. The product never tells an ordinary
+user to invoke `myrd_m3_e2e` or provide an internal barrier/store option.
+
 ## 10. Maintenance loop
 
 The loop has no scheduler abstraction:
@@ -424,11 +521,18 @@ The loop has no scheduler abstraction:
 while (!shutdown_requested.load(std::memory_order_relaxed)) {
     wait_up_to_one_second();
     auto stats = runtime.maintenance_stats();
-    if (checkpoint_due(stats, now)) do_checkpoint(runtime, volume);
-    stats = runtime.maintenance_stats();
-    if (compaction_enabled && compact_due(stats)) do_compact(runtime, volume);
+    if (!stats.ok()) {
+        request_failure_shutdown(stats.error());
+        continue;
+    }
+    warn_once_if_journal_high(stats.value());
+    if (checkpoint_due(stats.value(), now)) do_checkpoint(runtime, volume);
 }
 ```
+
+A maintenance-stat failure prints one error and requests controlled failure
+shutdown. The normal final checkpoint is still attempted unless an earlier
+commit outcome already prohibited it; cleanup ultimately exits 1.
 
 ### 10.1 Checkpoint trigger
 
@@ -447,11 +551,24 @@ open exact volume GUID
 -> runtime.checkpoint(WindowsVolumeFlushed)
 ```
 
-### 10.2 Compaction trigger
+### 10.2 Journal capacity policy
 
-Only after R1 GO, compaction is due when journal committed bytes reaches
-`compact-threshold-mb`. It also requires exact-volume extent verification and
-`FlushFileBuffers` before calling the online M3 operation.
+The production ceiling is exactly 2048 MiB. The warning threshold is the first
+integer byte at or above 80%, computed without floating point as:
+
+```text
+warning_bytes = ceiling_bytes - floor(ceiling_bytes / 5)
+              = 1717986919
+```
+
+On the first maintenance observation at or above that threshold, `myrd run`
+prints one warning for the process lifetime. Its exact form is:
+
+```text
+Warning: journal is <current> of 2147483648 bytes. Press Ctrl+C for a clean shutdown, then run: myrd compact --bundle "<the same bundle path>"
+```
+
+The warning is not repeated on every one-second poll or checkpoint.
 
 ### 10.3 Maintenance error policy
 
@@ -460,7 +577,15 @@ M4 preserves M3 commit meaning but adds no persistent state:
 - `Committed`: print the generation, update in-memory last-success time, keep
   running.
 - `NotCommitted`: retry once immediately. On a second failure, warn and suppress
-  the same maintenance kind for 60 seconds while the disk remains available.
+  checkpoint attempts for 60 seconds while the disk remains available.
+- typed `JournalCapacityExhausted`: do not perform the ordinary immediate retry
+  and do not schedule more checkpoints in this process. Print one actionable
+  error in this exact form, and keep the mounted disk available until the
+  operator requests shutdown:
+
+  ```text
+  Error: journal capacity is exhausted; new changes are not durable. Press Ctrl+C, then run: myrd compact --bundle "<the same bundle path>". Restart with the original myrd run command.
+  ```
 - `CommittedNeedsReconciliation`: invoke the existing provider retry/resume path
   once. If it converges to `Committed`, continue; otherwise request controlled
   shutdown.
@@ -470,6 +595,11 @@ M4 preserves M3 commit meaning but adds no persistent state:
 
 Only in-memory timestamps and one shutdown-reason enum are allowed. They are not
 serialized and do not form a state machine contract.
+
+After `JournalCapacityExhausted`, Ctrl+C skips the known-impossible final
+checkpoint, continues safe dismount/device cleanup, and exits 1. Changes after
+the last successful generation may be lost; offline compaction then operates on
+that last successful generation.
 
 ## 11. Ctrl+C and shutdown
 
@@ -528,11 +658,10 @@ Windows reboot before reusing the same bundle. It does not implement `myrd
 cleanup` because the new process has no persisted proof binding an orphan device
 to a bundle.
 
-This is a documented v1 limitation. If real user evidence shows the reboot cost
-is unacceptable, v2 may separately evaluate a persistent identity mechanism
-that precisely binds bundle, AIM device, process and boot session. No cleanup
-command or “minimal lease” is promised before that evaluation, and no such
-mechanism enters v1.
+This is a documented product limitation. M4 does not promise a cleanup command,
+lease or later identity phase. Any proposal to remove the reboot requirement
+would require a new owner-approved scope decision outside this final milestone;
+none is planned here.
 
 ## 12. Testing strategy
 
@@ -546,7 +675,8 @@ M4 adds only:
    handles where possible.
 4. One concrete composition integration test around create/recover selection and
    cleanup order.
-5. The R1 focused online compaction feasibility test if GO.
+5. One offline product-compaction integration test proving writer-lock refusal,
+   committed generation advance and reopen with identical data.
 
 No M4 model, crash-model, randomized soak or fake management composition is
 allowed.
@@ -560,16 +690,17 @@ The single product E2E runs serially:
 3. Run `myrd run` and require GPT/NTFS readiness.
 4. Write file A and record SHA-256.
 5. Wait for a committed checkpoint.
-6. If R1 GO, grow the journal and require one committed compaction.
-7. Write file C that is not promised durable.
-8. Force-kill only the exact `myrd.exe` PID.
-9. Reboot Windows and require no residual AIM disk.
-10. Run the same command and require the recover path.
-11. Prove provisioning commands were not executed.
-12. Verify file A; do not require C.
-13. Write file D.
-14. Close test handles and send Ctrl+C.
-15. Require clean shutdown order, exit 0 and inventory baseline.
+6. Write file C that is not promised durable.
+7. Force-kill only the exact `myrd.exe` PID.
+8. Reboot Windows and require no residual AIM disk.
+9. Run the same command and require the recover path.
+10. Prove provisioning commands were not executed.
+11. Verify file A; do not require C.
+12. Write file D.
+13. Close test handles and send Ctrl+C.
+14. Require clean shutdown order, exit 0 and inventory baseline.
+15. Run `myrd compact --bundle <path>`, require one committed successor and no
+    AIM/PhysicalDrive inventory change.
 16. Run a third time, verify file D, Ctrl+C again and require baseline.
 
 Minimum negative VM checks are:
@@ -582,13 +713,14 @@ Minimum negative VM checks are:
 - second process is rejected by the M3 writer lock;
 - missing AIM driver fails before disk mutation;
 - busy volume is not dismounted or removed and can exit after the holder closes.
+- offline compact is rejected while `myrd run` owns the bundle.
 
 ## 13. Code budget and architecture scans
 
 Physical source lines are counted relative to M3 GO for:
 
 - `src/run/**` including `provision_volume.ps1`;
-- net additions in the four allowed M3 adapter files;
+- net additions in every allowed M3/persistence product-adaptation file;
 - any additional product CMake/resource logic that contains runtime behavior.
 
 Tests, documentation and declarative CMake target lists are excluded. Generated
@@ -598,16 +730,16 @@ used to evade the count.
 | Area | Target | Maximum |
 |---|---:|---:|
 | CLI/defaults | 250 | 350 |
-| M3 create/stats/online compact adaptation | 300 | 450 |
+| M3 create/stats/offline compact adaptation | 300 | 450 |
 | Windows provisioning and volume identity | 650 | 900 |
 | Flush/mount/dismount | 250 | 350 |
 | Run loop/shutdown/main | 300 | 450 |
 | **Total** | **1750** | **2500** |
 
 If the projected total exceeds 2500, implementation stops and identifies the
-specific RED that caused growth. Automatic compaction is the first removable
-feature. Anti-misformat checks, exact-volume flush and locked shutdown are not
-removed to satisfy the budget.
+specific RED that caused growth. The supported offline journal-recovery path,
+anti-misformat checks, exact-volume flush and locked shutdown are not removed to
+satisfy the budget.
 
 Product builds are scanned for the prohibited names and representative strings
 from Section 4. No test seam may appear in `BUILD_TESTING=OFF` objects or
@@ -619,7 +751,7 @@ The only allowed order is:
 
 ```text
 R0 clean boundary
--> R1 compaction GO/NO-GO
+-> R1 online compaction NO-GO plus owner-approved v1 amendment
 -> R2 CLI
 -> R3 M3 product adaptation
 -> R4 Windows volume create/recover
@@ -629,9 +761,9 @@ R0 clean boundary
 -> R8 regression, documentation and final GO
 ```
 
-R1 NO-GO pauses the sequence for an owner decision. Every other task requires
-its predecessor to be DONE. No later task may be implemented because it appears
-easier.
+R1 is resolved by the owner-approved amendment in Section 7.3. Every other task
+requires its predecessor to be DONE. No later task may be implemented because
+it appears easier.
 
 ## 15. Stop conditions
 

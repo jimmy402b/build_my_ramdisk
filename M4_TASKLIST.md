@@ -162,16 +162,17 @@ task evidence.
 | ID | Task | Status | Depends on | Primary gate | Fixed commit subject |
 |---|---|---|---|---|---|
 | R0 | Clean product boundary | DONE | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
-| R1 | Online compaction feasibility | PENDING | R0 | GO or `BLOCKED_DECISION`; `m3-v4`, `m4-v1` | `feat(m4): prove online compaction feasibility` |
-| R2 | Exact `myrd run` CLI | PENDING | R1 GO or approved SPEC amendment | CLI matrix, `m4-v0` | `feat(m4): add minimal run command` |
-| R3 | Minimal M3 product runtime | PENDING | R2 | create/recover selection, stats, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
+| R1 | Online compaction feasibility | DONE | R0 | NO-GO evidence, owner amendment, explicit defer | `docs(m4): resolve compaction scope` |
+| R2 | Exact product CLI | PENDING | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
+| R3 | Minimal M3 product runtime | PENDING | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
 | R4 | Exact Windows volume | PENDING | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
-| R5 | Persistence maintenance loop | PENDING | R4 | checkpoint/optional compact policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
+| R5 | Persistence maintenance loop | PENDING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
 | R6 | Safe Ctrl+C shutdown | PENDING | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
 | R7 | Real AIM/NTFS lifecycle | PENDING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
 | R8 | Final regression and GO | PENDING | R7 | Debug/Release full, M0-M4 labels, OFF scan, <=2500 | `docs(m4): close contracted product milestone` |
 
-No task after R1 may start while R1 is `BLOCKED_DECISION`.
+R1's NO-GO experiment is closed by the owner-approved v1 amendment. R2 may
+start only after the exact decision-document commit exists.
 
 ---
 
@@ -223,9 +224,9 @@ Commit subject / commit hash: build(m4): establish contracted product boundary /
 
 ## R1 — Online compaction feasibility
 
-**SPEC:** Sections 7, 10.2.
+**SPEC:** Sections 7, 9.5 and 10.2.
 **PLAN:** Task R1.
-**Allowed files on GO:**
+**Historical spike allowlist (the experiment was removed):**
 
 ```text
 src/m3/m3_provider.h
@@ -239,19 +240,40 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] RED proves live provider lacks online compaction.
-- [ ] One concrete provider/runtime call reuses existing M3 coordinator,
-  publication, resolver and reconciliation.
-- [ ] No algorithm copy, fake revision, durable M4 record or new abstraction.
-- [ ] Production delta remains within the bounded spike.
-- [ ] Online reopen test, M3 provider/compaction tests and `m3-v4` pass.
-- [ ] If any bound fails, experiment is removed, evidence is recorded, task is
+- [x] Historical RED proves live provider lacks online compaction.
+- [x] NO-GO proves a bounded method would require algorithm copy or an
+  independently scoped shared M3 finalization refactor.
+- [x] No algorithm copy, fake revision, durable M4 record or new abstraction is
+  retained; final experimental production delta is zero.
+- [x] If any bound fails, experiment is removed, evidence is recorded, task is
   `BLOCKED_DECISION`, and no later task starts.
-- [ ] GO has the exact commit.
+- [x] Owner selected removal of online/automatic compaction from v1.
+- [x] SPEC/PLAN/TASKLIST define supported offline `myrd compact`, 80% journal
+  warning, typed full-journal handling and actionable recovery.
+- [x] `docs/deferred/online-compaction.md` records the R1 root cause and
+  independent reconsideration conditions outside v1.
+- [x] Exact decision-document commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
 
-## R2 — Exact `myrd run` CLI
+```text
+Task / status: R1 / DONE
+Executor / UTC timestamp: spike by fresh gpt-5.6-terra medium implementer; owner amendment and final document review by main Sol/xhigh / 2026-08-13
+Start commit / branch / end commit: 89b441b06d8fcc926094cf7cc28805845a28cb9d / feature/m4-contracted-product / this decision-document commit at Git HEAD
+Allowed files / actual files: R1 decision documents / M4_TASKLIST.md; docs/superpowers/specs/2026-08-13-m4-contracted-product-design.md; docs/superpowers/plans/2026-08-13-m4-contracted-product.md; docs/deferred/online-compaction.md; all experimental product, test and CMake edits removed
+Dependencies and evidence: R0 DONE at 89b441b with Debug/Release m4-v0 boundary evidence; M3 GO remains ancestor and Task23 remains outside ancestry
+Historical observed RED (experiment reverted): `cmd /d /c 'call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --build --preset debug --target myrd_m3_online_compaction_spike_tests --parallel 1'`; after adding the missing test-only VHDX header, MSVC C2039 reported `M3Provider::compact` does not exist (the sole effective RED); exit 1. The target and test were removed with the experiment, so this command cannot be run against the final tree.
+Implementation summary: attempted only the permitted provider bridge: concrete outcome/method, provider-local artifact names/identities and `CompactionCoordinator::begin/build_artifacts/prepare_delta`. The bridge reached a prepared transaction but cannot use the provider's existing `resume_pending_checkpoint`, because that method starts after manifest publication. Correct online behavior would require reproducing manifest mutation, publication disposition handling, commit resolution and reconciliation before that helper, or moving that common transaction-finalization algorithm from the lifecycle runner/provider into an M3 shared refactor. The former is a second lifecycle implementation and the latter exceeds this spike's allowed scope.
+Focused Debug verification / exit code: RED command above exit 1 as required; GO verification not run because the bound failed before a valid implementation existed
+Cumulative and Release verification / exit code: not applicable to the NO-GO decision; no online implementation retained
+Line count / architecture and seam scans: experiment measured 204 net lines across the scoped source+spike-test paths before finalization; exact source-only split was not retained. Regardless, independent structural review confirmed completing publish/resolve/reconcile would violate the no-copy/shared-refactor boundary. The line count was pressure evidence; the blocker is the required algorithm copy or disallowed shared refactor. Experimental delta was then exactly removed. Final R1 production delta is 0.
+VM evidence paths and SHA-256, if applicable: not applicable to R1
+SPEC/PLAN/TASKLIST drift audit: R1's specified decision condition occurred. SPEC BLOCKER APPROVED. Quality review findings in the blocker ledger were fixed and re-review passed. On 2026-08-13 the owner approved removing online/automatic compaction from v1, adding the same-executable offline `myrd compact --bundle <path>` path, requiring the R5 80% warning and typed full-journal stop-retry behavior, and recording the online work explicitly outside v1. The amended documents were self-reviewed for command, task, test, line-budget and README consistency before this decision commit. No coordinator interface was changed and no algorithm copy was retained.
+Open risks / explicitly excluded follow-up: online compaction remains outside v1 and may be reconsidered only through the independent M3 design conditions in docs/deferred/online-compaction.md. R3 must prove the offline command is ordinary-user usable and does not expose the engineering CLI. No revisions, records, abstractions or production spike remain.
+Commit subject / commit hash: docs(m4): resolve compaction scope / this decision-document commit at Git HEAD
+```
+
+## R2 — Exact product CLI
 
 **SPEC:** Section 3.
 **PLAN:** Task R2.
@@ -263,13 +285,15 @@ src/run/cli.cpp
 src/run/main.cpp
 src/CMakeLists.txt
 tests/unit/m4_cli_tests.cpp
+tests/unit/m4_product_boundary_tests.ps1
 tests/CMakeLists.txt
 M4_TASKLIST.md
 ```
 
 **Acceptance:**
 
-- [ ] Only `myrd --help`, `myrd run --help` and the exact run form parse.
+- [ ] Only `myrd --help`, `myrd run --help`, the exact run form,
+  `myrd compact --help` and `myrd compact --bundle <path>` parse.
 - [ ] Defaults and every numeric/path/drive-letter bound are frozen by tests.
 - [ ] Duplicate, unknown, incomplete and device-path inputs exit 2 before
   filesystem, AIM or volume access.
@@ -281,7 +305,7 @@ M4_TASKLIST.md
 
 ## R3 — Minimal M3 product runtime
 
-**SPEC:** Sections 8 and 9.1.
+**SPEC:** Sections 8 and 9.1-9.5.
 **PLAN:** Task R3.
 **Allowed files:**
 
@@ -291,9 +315,19 @@ src/m3/m3_provider.cpp
 src/m3/m3_windows_acceptance.h
 src/m3/m3_windows_acceptance.cpp
 src/m3/m3_aim_server_main.cpp
+src/m3/m3_lifecycle_runner.h
+src/m3/m3_lifecycle_runner.cpp
+src/persistence/persistence_types.h
+src/persistence/journal_writer.h
+src/persistence/journal_writer.cpp
 src/run/main.cpp
+src/CMakeLists.txt
+tests/unit/m3_journal_writer_tests.cpp
+tests/unit/m3_persistence_types_tests.cpp
+tests/unit/m4_product_boundary_tests.ps1
 tests/integration/m4_product_composition_tests.cpp
 tests/CMakeLists.txt
+tools/Measure-M4ProductLines.ps1
 M4_TASKLIST.md
 ```
 
@@ -305,6 +339,20 @@ M4_TASKLIST.md
   product gate; an existing generation-zero bundle is rejected.
 - [ ] Recover requires exact geometry.
 - [ ] Maintenance stats use checked dirty-byte math and current journal truth.
+- [ ] Provider and runtime stats return `Result`; fact/arithmetic failure is
+  never truncated or treated as a successful zero value.
+- [ ] The M4 product provider alone enforces the 2048 MiB cumulative committed
+  journal ceiling and reports typed `JournalCapacityExhausted` without changing
+  existing M3 per-operation resource semantics.
+- [ ] `JournalCapacityExhausted` has frozen value 20; equality succeeds,
+  crossing does not advance selected manifest/generation/committed length, and
+  an unset ceiling preserves accepted M3 behavior.
+- [ ] Provider checkpoint outcome preserves the typed capacity error unchanged.
+- [ ] Offline compact fixes `disk.rdm` and product limits, rejects generation
+  zero/writer conflict, advances one committed generation, reopens identical
+  data and starts no AIM runtime.
+- [ ] Offline compact freezes actionable success/in-use output and never exposes
+  `myrd_m3_e2e`, `RawTest` or engineering store/persistence options.
 - [ ] M3 `m3-v2`, provider, recovery and Windows acceptance pass.
 - [ ] Exact commit exists.
 
@@ -364,9 +412,15 @@ M4_TASKLIST.md
 
 - [ ] One-second loop has no scheduler interface, queue or thread pool.
 - [ ] Time and dirty threshold equality trigger checkpoint exactly.
-- [ ] Journal threshold triggers compaction only after R1 GO.
+- [ ] Journal usage below 1717986919 bytes is silent; at/above it prints one
+  process-lifetime warning with the exact stopped-bundle compact command.
 - [ ] Every operation revalidates and flushes the exact volume first.
 - [ ] `NotCommitted` retries once and suppresses 60 seconds after second failure.
+- [ ] Maintenance-stat failure requests controlled failure shutdown, preserves
+  an otherwise permitted final checkpoint and exits 1 after cleanup.
+- [ ] Typed `JournalCapacityExhausted` is not retried, disables later and final
+  checkpoints, keeps the disk mounted until Ctrl+C, prints the exact recovery
+  path and ultimately exits 1 after safe cleanup.
 - [ ] Reconciliation converges through existing M3 ownership.
 - [ ] Indeterminate commit requests controlled failure shutdown and suppresses
   final checkpoint.
@@ -428,6 +482,8 @@ M4_TASKLIST.md
 - [ ] Recover phase never invokes provisioning and verifies A.
 - [ ] Ctrl+C commits D, safely dismounts and returns inventory to baseline.
 - [ ] Third run verifies D.
+- [ ] Offline compact after clean shutdown advances one generation, preserves
+  all hashes and changes no AIM/PhysicalDrive inventory.
 - [ ] Negative matrix proves no overwrite, no letter theft, no gen-zero retry,
   no ambiguous recovery format, writer lock, driver preflight and busy refusal.
 - [ ] Evidence contains no password, private key or secret.
@@ -454,7 +510,9 @@ audit, not for adding features.
 **Acceptance:**
 
 - [ ] README contains exact command, defaults, recovery no-format guarantee,
-  busy-volume guidance, forced-kill reboot limitation and exit codes.
+  80%/full-journal behavior, exact offline compact recovery, busy-volume
+  guidance, clean/full/forced-kill offline-compaction sequences, forced-kill
+  reboot limitation, online-compaction defer link and exit codes.
 - [ ] Fresh Debug full CTest passes.
 - [ ] Fresh Release full CTest passes.
 - [ ] Formal M0-M3 labels and all local M4 labels pass.
@@ -472,8 +530,7 @@ audit, not for adding features.
 
 ## E. Final GO checklist
 
-- [ ] R0-R8 are DONE, including any explicit R1 owner decision and amended
-  documents.
+- [ ] R0-R8 are DONE, including the exact R1 owner-decision document commit.
 - [ ] One product executable and one resident MyRamDisk process are shipped.
 - [ ] Create, periodic persistence, forced-kill/reboot recovery and Ctrl+C
   shutdown pass on real AIM/NTFS.
@@ -483,4 +540,8 @@ audit, not for adding features.
 - [ ] Product implementation is at most 2500 lines.
 - [ ] Full local regression and same-commit VM evidence are fresh.
 - [ ] README states every v1 limitation.
+- [ ] Online compaction appears only as the explicit external defer and no v1
+  placeholder API, option or scheduler hook exists.
+- [ ] `src/run/run_loop.*` contains no compact/compaction path; offline compact
+  is routed only by product `main`.
 - [ ] M4 is declared the final milestone; no M5 tasklist or plan exists.
