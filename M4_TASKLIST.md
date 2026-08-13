@@ -165,7 +165,7 @@ task evidence.
 | R1 | Online compaction feasibility | DONE | R0 | NO-GO evidence, owner amendment, explicit defer | `docs(m4): resolve compaction scope` |
 | R2 | Exact product CLI | DONE | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
 | R3 | Minimal M3 product runtime | DONE | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
-| R4 | Exact Windows volume | PENDING | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
+| R4 | Exact Windows volume | DONE | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
 | R5 | Persistence maintenance loop | PENDING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
 | R6 | Safe Ctrl+C shutdown | PENDING | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
 | R7 | Real AIM/NTFS lifecycle | PENDING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
@@ -429,12 +429,12 @@ M4_TASKLIST.md
 - [x] Recover locates exact volume by disk extents and never calls provisioning.
 - [x] Occupied drive letters and ambiguous/mixed volumes are rejected.
 - [x] `m4-v2`, M3 Windows acceptance and product composition pass.
-- [ ] Exact commit exists.
+- [x] Exact commit exists.
 
 **Execution record:**
 
 ```text
-Task / status: R4 / DOING
+Task / status: R4 / DONE
 Executor / UTC timestamp: delegated implementation agent; independent SPEC and quality reviewers; main controller / 2026-08-13
 Start commit / branch: 62414f2286b84dfcc02c5e3aaec90ba2cf87ccb7 / feature/m4-contracted-product
 Initial RED: correctly loaded VS2022 BuildTools Debug build of myrd_m4_windows_volume_tests failed because src/run/windows_volume.h was missing, exit 1.
@@ -442,7 +442,7 @@ TDD and safety record: subsequent REDs exposed missing native device-number proo
 Independent approvals: final SPEC review and quality review APPROVED. The R4 temporary cleanup boundary was approved narrowly: mount removal is ordered before stop; R6 owns busy-volume keep-running/shutdown behavior.
 Main-controller verification: fresh Debug exact 4/4, Debug m4-v2 3/3, Debug m3-v2 32/32; fresh Release exact 4/4 and Release m4-v2 3/3; both configuration product-boundary tests PASS. Line count 841/2500. Exact 10/10 allowlist, stage-0, prohibited/resource/callgraph scans and git diff --check PASS.
 R7 follow-up: real destructive AIM/NTFS provisioning, forced-kill/reboot and VM evidence remain R7.
-Exact commit: pending; this R4 record intentionally remains DOING until the implementation commit exists.
+Exact implementation commit: d7d33c008e3fba2d11d585e9ebb0879b5326bd33 / feat(m4): provision and recover exact windows volume
 ```
 
 ## R5 — Persistence maintenance loop
