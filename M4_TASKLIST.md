@@ -166,7 +166,7 @@ task evidence.
 | R2 | Exact product CLI | DONE | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
 | R3 | Minimal M3 product runtime | DONE | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
 | R4 | Exact Windows volume | DONE | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
-| R5 | Persistence maintenance loop | PENDING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
+| R5 | Persistence maintenance loop | DOING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
 | R6 | Safe Ctrl+C shutdown | PENDING | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
 | R7 | Real AIM/NTFS lifecycle | PENDING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
 | R8 | Final regression and GO | PENDING | R7 | Debug/Release full, M0-M4 labels, OFF scan, <=2500 | `docs(m4): close contracted product milestone` |
@@ -463,24 +463,41 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] One-second loop has no scheduler interface, queue or thread pool.
-- [ ] Time and dirty threshold equality trigger checkpoint exactly.
-- [ ] Journal usage below 1717986919 bytes is silent; at/above it prints one
+- [x] One-second loop has no scheduler interface, queue or thread pool.
+- [x] Time and dirty threshold equality trigger checkpoint exactly.
+- [x] Journal usage below 1717986919 bytes is silent; at/above it prints one
   process-lifetime warning with the exact stopped-bundle compact command.
-- [ ] Every operation revalidates and flushes the exact volume first.
-- [ ] `NotCommitted` retries once and suppresses 60 seconds after second failure.
-- [ ] Maintenance-stat failure requests controlled failure shutdown, preserves
+- [x] Every operation revalidates and flushes the exact volume first.
+- [x] `NotCommitted` retries once and suppresses 60 seconds after second failure.
+- [x] Maintenance-stat failure requests controlled failure shutdown, preserves
   an otherwise permitted final checkpoint and exits 1 after cleanup.
-- [ ] Typed `JournalCapacityExhausted` is not retried, disables later and final
+- [x] Typed `JournalCapacityExhausted` is not retried, disables later and final
   checkpoints, keeps the disk mounted until Ctrl+C, prints the exact recovery
   path and ultimately exits 1 after safe cleanup.
-- [ ] Reconciliation converges through existing M3 ownership.
-- [ ] Indeterminate commit requests controlled failure shutdown and suppresses
+- [x] Reconciliation converges through existing M3 ownership.
+- [x] Indeterminate commit requests controlled failure shutdown and suppresses
   final checkpoint.
-- [ ] `m4-v3` and affected M3 checkpoint/compaction tests pass.
+- [x] `m4-v3` and affected M3 checkpoint/compaction tests pass.
 - [ ] Exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
+
+```text
+Task / status: R5 / DOING
+Executor / UTC timestamp: fresh gpt-5.6-terra medium implementer / 2026-08-13
+Start commit / branch / end commit: f23b586ec77ae644f01aa939664b6f6af1ca16b7 / feature/m4-contracted-product / pending this fixed R5 commit
+Allowed files / actual files: R5 frozen allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/run/main.cpp; src/run/run_loop.h; src/run/run_loop.cpp; tests/CMakeLists.txt; tests/unit/m4_run_policy_tests.cpp
+Dependencies and evidence: R4 is DONE at start HEAD f23b586ec77ae644f01aa939664b6f6af1ca16b7; worktree was clean before this ledger update.
+RED command / observed failure / exit code: initial `cmake --build --preset debug --target myrd_m4_run_policy_tests --parallel 1` reported `unknown target 'myrd_m4_run_policy_tests'`, exit 1; after target/test creation it failed CMake generation because `src/run/run_loop.cpp` did not exist, exit 1. SPEC REDs then proved missing second reconciliation flush, missing ordinary second-failure warning, reconciliation failure treated as suppression-only, and missing committed-generation output. Quality REDs proved typed-context-only capacity misclassification, post-sleep work despite shutdown, and absent Windows argv command round-trip. Main-review RED proved status used a time captured before the checkpoint result rather than the result time.
+Implementation summary: concrete one-second loop with private same-source behavior helpers, exact due/outcome policy, flush before every checkpoint/reconciliation attempt, one retry and exact 60-second suppression, typed capacity handling, Windows argv-safe compact recovery command, post-sleep shutdown check, ready line and committed-generation output. No scheduler/interface/queue/thread pool, persistent M4 state, R6 handler, lock/dismount or final-checkpoint implementation.
+Focused Debug verification / exit code: main controller fresh Debug built product/run-policy/boundary and ran focused 5/5 plus `m4-v3` 1/1, exit 0. After the final result-time repair, focused 5/5 and `m4-v3` 1/1 were rerun GREEN.
+Cumulative and Release verification / exit code: Debug `m3-v2` 32/32 passed in the same review round before the final result-time repair; do not treat it as rerun after that repair. Main controller fresh Release built product/boundary and ran focused 5/5 plus `m4-v3` 1/1, exit 0.
+Line count / architecture and seam scans: fresh line counter reports TOTAL=1059 MAXIMUM=2500, exit 0; exact allowlist is 7/7 staged paths, stage is otherwise empty; prohibited architecture scan and `git diff --check` exit 0.
+VM evidence paths and SHA-256, if applicable: not applicable; R7 is excluded.
+SPEC/PLAN/TASKLIST drift audit: final independent SPEC and quality reviews APPROVED. R5 remains DOING pending the fixed commit and later R6/R7 work.
+Open risks / explicitly excluded follow-up: R6 console handler, locked final checkpoint and dismount cleanup remain deliberately unimplemented; R7 real VM lifecycle remains deferred. The current atomic is only the R5 local shutdown entry.
+Commit subject / commit hash: feat(m4): schedule persistence maintenance / pending this fixed R5 commit
+```
 
 ## R6 — Safe Ctrl+C shutdown
 

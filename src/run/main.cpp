@@ -2,11 +2,13 @@
 #include "src/m3/m3_lifecycle_runner.h"
 #include "src/m3/m3_windows_acceptance.h"
 #include "windows_volume.h"
+#include "run_loop.h"
 #include "src/persistence/image_creator.h"
 #include "src/persistence/recovery_engine.h"
 #include "src/persistence/vhdx_reader.h"
 #include <bcrypt.h>
 #include <windows.h>
+#include <atomic>
 #include <iostream>
 #include <limits>
 #include <span>
@@ -291,7 +293,18 @@ int wmain(int argc, wchar_t* argv[]) {
             return 1;
         }
     }
-    std::wcout << L"PhysicalDrive" << volume.value().physical_drive_number << L"\n";
+    const auto ready_stats = runtime.value()->maintenance_stats();
+    if (!ready_stats.ok()) {
+        const auto cleanup = stop_with_volume_cleanup(volume.value());
+        print_run_error(options.bundle, ready_stats.error());
+        if (!cleanup) std::wcerr << L"Runtime cleanup failed\n";
+        return 1;
+    }
+    std::wcout << L"Ready: " << volume.value().drive_letter << L": generation "
+               << ready_stats.value().generation << L".\n";
+    std::atomic_bool shutdown_requested{false};
+    const int loop_exit = myrd::run_loop(*runtime.value(), volume.value(), options,
+                                         shutdown_requested);
     if (!stop_with_volume_cleanup(volume.value())) return 1;
-    return 0;
+    return loop_exit;
 }

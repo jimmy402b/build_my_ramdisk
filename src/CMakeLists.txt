@@ -265,6 +265,7 @@ myrd_enable_warnings(myrd-m3-aim-server)
 
 add_executable(myrd
     run/main.cpp
+    run/run_loop.cpp run/run_loop.h
     run/cli.cpp run/cli.h
     run/windows_volume.cpp run/windows_volume.h
     run/run_resources.rc)

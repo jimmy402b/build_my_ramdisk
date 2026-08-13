@@ -1613,3 +1613,11 @@ add_test(NAME unit.m4.provision_script
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File
         "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-provision-script.ps1")
 set_tests_properties(unit.m4.provision_script PROPERTIES LABELS "m4-v2" TIMEOUT 30)
+
+add_executable(myrd_m4_run_policy_tests unit/m4_run_policy_tests.cpp
+    "${CMAKE_SOURCE_DIR}/src/run/windows_volume.cpp")
+target_link_libraries(myrd_m4_run_policy_tests PRIVATE myrd_test_support myrd_m3_windows shell32)
+target_include_directories(myrd_m4_run_policy_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_run_policy_tests)
+add_test(NAME unit.m4.run_policy COMMAND myrd_m4_run_policy_tests)
+set_tests_properties(unit.m4.run_policy PROPERTIES LABELS "m4-v3" TIMEOUT 30)
