@@ -264,5 +264,6 @@ target_link_libraries(myrd-m3-aim-server PRIVATE myrd_m3_windows)
 myrd_enable_warnings(myrd-m3-aim-server)
 
 add_executable(myrd
-    run/main.cpp)
+    run/main.cpp
+    run/cli.cpp run/cli.h)
 myrd_enable_warnings(myrd)

@@ -163,7 +163,7 @@ task evidence.
 |---|---|---|---|---|---|
 | R0 | Clean product boundary | DONE | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
 | R1 | Online compaction feasibility | DONE | R0 | NO-GO evidence, owner amendment, explicit defer | `docs(m4): resolve compaction scope` |
-| R2 | Exact product CLI | PENDING | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
+| R2 | Exact product CLI | DONE | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
 | R3 | Minimal M3 product runtime | PENDING | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
 | R4 | Exact Windows volume | PENDING | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
 | R5 | Persistence maintenance loop | PENDING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
@@ -292,16 +292,33 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] Only `myrd --help`, `myrd run --help`, the exact run form,
+- [x] Only `myrd --help`, `myrd run --help`, the exact run form,
   `myrd compact --help` and `myrd compact --bundle <path>` parse.
-- [ ] Defaults and every numeric/path/drive-letter bound are frozen by tests.
-- [ ] Duplicate, unknown, incomplete and device-path inputs exit 2 before
+- [x] Defaults and every numeric/path/drive-letter bound are frozen by tests.
+- [x] Duplicate, unknown, incomplete and device-path inputs exit 2 before
   filesystem, AIM or volume access.
-- [ ] Output is human-only and stderr/stdout purity is tested.
-- [ ] Debug/Release CLI and `m4-v0` pass.
-- [ ] Exact commit exists.
+- [x] Output is human-only and stderr/stdout purity is tested.
+- [x] Debug/Release CLI and `m4-v0` pass.
+- [x] Exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
+
+```text
+Task / status: R2 / DONE
+Executor / UTC timestamp: Terra/medium implementer; independent Terra/medium SPEC and quality reviewers; main Sol/xhigh controller / 2026-08-13T08:17:54Z
+Start commit / branch / end commit: 4cb5a76905ec6c22d923029258316a6af2daaaae / feature/m4-contracted-product / this R2 commit at Git HEAD
+Allowed files / actual files: frozen R2 allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/run/cli.h; src/run/cli.cpp; src/run/main.cpp; tests/CMakeLists.txt; tests/unit/m4_cli_tests.cpp; tests/unit/m4_product_boundary_tests.ps1
+Dependencies and evidence: R0 DONE at 89b441b; R1 DONE at 4cb5a76; fresh Debug and Release unit.m4.product_boundary each 1/1 PASS before R2
+RED command / observed failure / exit code: initial `cmake --build --preset debug --target myrd_m4_cli_tests --parallel 1` reported unknown target `myrd_m4_cli_tests`, exit 1. Expansion RED: `ctest --preset debug -R ^unit\.m4\.cli$ --output-on-failure` failed because parser errors had empty messages, exit 1. ADS coverage also initially failed before its parser repair. Final R2 scope RED: the same CLI target failed the new ordinary `C:\globalroot-not-device` path case because lexical substring rejection treated it as a device path, exit 1; rejection was narrowed to actual namespace prefixes. Quality RED: same CLI test command failed new `\GLOBAL??\root` / `\DosDevices\root` cases before those native namespace prefixes were rejected, exit 1. The lexical runtime-API scan is a coverage strengthening with self-audited positive/negative synthetic source snippets. Final scanner RED: Debug product-boundary target failed because a raw string self-audit containing `DeviceIoControl(` was falsely detected, exit 1; bounded C++ raw-literal stripping and malformed/unterminated fail-closed checks were added. Final minor RED: form-feed and vertical-tab raw delimiter self-audits did not fail closed, exit 1; delimiter validation now uses PS5.1-compatible `[char]::IsControl` with strict-mode-safe array counting. Main-controller-found contract RED: changing the process assertion to global-usage-only for no arguments made the Debug boundary target fail because `unknown command` prefixed stderr, exit 1; `main` now emits only global usage for an empty argument list while other parser errors remain actionable. Additional accepted-form/boundary cases that passed on first run are coverage repairs, not new RED evidence.
+Implementation summary: added the filesystem-free exact CLI parser using bounded ASCII narrowing plus `std::from_chars`, frozen final option/result types, actionable parser messages, exact process routing/output coverage and runtime-API static boundary assertion; parser tests assert actual K/M/G/T scaling, defaults and accepted numeric boundary values. The first value-assertion test run failed only because its new helper accidentally duplicated `--size`; after correcting the test helper, values passed without production change (coverage repair). Valid run and compact forms print their temporary unavailable result.
+Focused Debug verification / exit code: main-controller fresh MSVC Debug build of myrd_m4_cli_tests, myrd_m4_product_boundary_tests and myrd; focused CTest unit.m4.cli plus unit.m4.product_boundary 2/2 PASS; full m4-v0 2/2 PASS; combined command exit 0
+Cumulative and Release verification / exit code: main-controller fresh MSVC Release build of the same targets; focused CTest 2/2 PASS; full m4-v0 2/2 PASS; combined Debug/Release command exit 0
+Line count / architecture and seam scans: product line counter exit 0, cli.cpp=71 cli.h=27 main.cpp=17 TOTAL=115/2500; exact eight-file allowlist, diff check, unfinished/prohibited src/run scans, Release product-binary old-M4/test-seam scan and manual no-args/valid-compact/invalid-run process contracts all PASS
+VM evidence paths and SHA-256, if applicable: not applicable to R2
+SPEC/PLAN/TASKLIST drift audit: independent SPEC review initially found required from_chars/final/actionable-message/full-matrix/process-output and namespace/false-rejection gaps; implementer repaired and re-review APPROVED. Independent quality review found native GLOBAL??/DosDevices path gaps and a shallow source-API scanner; repairs added namespace coverage and a self-audited comment/string/raw-string-aware scanner. Raw delimiter control-character finding was fixed and final quality re-review APPROVED with zero Critical/Important/Minor. Main controller then found the no-argument exact-output drift, obtained a real boundary RED, required the narrow fix, and both reviewers re-approved before the main fresh verification above.
+Open risks / explicitly excluded follow-up: R2 implements parsing/rendering only; create/recover/offline compaction execution remains R3
+Commit subject / commit hash: feat(m4): add minimal product commands / this R2 commit at Git HEAD
+```
 
 ## R3 — Minimal M3 product runtime
 

@@ -1578,3 +1578,11 @@ add_test(
 set_tests_properties(unit.m4.product_boundary PROPERTIES
     LABELS "m4-v0"
     TIMEOUT 30)
+
+add_executable(myrd_m4_cli_tests unit/m4_cli_tests.cpp
+    "${CMAKE_SOURCE_DIR}/src/run/cli.cpp")
+target_link_libraries(myrd_m4_cli_tests PRIVATE myrd_test_support)
+target_include_directories(myrd_m4_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_cli_tests)
+add_test(NAME unit.m4.cli COMMAND myrd_m4_cli_tests)
+set_tests_properties(unit.m4.cli PROPERTIES LABELS "m4-v0" TIMEOUT 30)

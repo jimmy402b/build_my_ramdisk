@@ -77,7 +77,7 @@ function Test-ByteSubsequence {
 function Assert-HelpContract {
     param([Parameter(Mandatory = $true)][psobject]$Result)
 
-    $usage = 'Usage: myrd run --bundle <path> --size <N> --drive-letter <R:> [options]'
+    $usage = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:> [--checkpoint-seconds <N>] [--checkpoint-dirty-mb <N>] [--ram-limit <N>]`r`n  myrd compact --bundle <path>"
     if ($Result.ExitCode -ne 0) { throw 'myrd --help must exit 0' }
     if ($Result.Stderr -ne '') { throw 'myrd --help must keep stderr empty' }
     if ($Result.Stdout -cne ($usage + [Environment]::NewLine)) {
@@ -88,12 +88,70 @@ function Assert-HelpContract {
 function Assert-UsageErrorContract {
     param([Parameter(Mandatory = $true)][psobject]$Result)
 
-    $usage = 'Usage: myrd run --bundle <path> --size <N> --drive-letter <R:> [options]'
-    if ($Result.ExitCode -ne 2) { throw 'myrd with no arguments must exit 2' }
+    $usage = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:> [--checkpoint-seconds <N>] [--checkpoint-dirty-mb <N>] [--ram-limit <N>]`r`n  myrd compact --bundle <path>"
+    if ($Result.ExitCode -ne 2) { throw 'usage error must exit 2' }
     if ($Result.Stdout -cne '') { throw 'myrd with no arguments must keep stdout empty' }
     if ($Result.Stderr -cne ($usage + [Environment]::NewLine)) {
-        throw 'myrd with no arguments stderr must exactly match contracted usage'
+        throw 'no-argument stderr must exactly match contracted usage'
     }
+}
+
+function Assert-ExactProcessContract {
+    param(
+        [Parameter(Mandatory = $true)][psobject]$Result,
+        [Parameter(Mandatory = $true)][int]$ExitCode,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Stdout,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Stderr,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if ($Result.ExitCode -ne $ExitCode -or $Result.Stdout -cne $Stdout -or $Result.Stderr -cne $Stderr) {
+        throw "$Name output purity or exit contract failed"
+    }
+}
+
+function Remove-CppNonCode {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $out = [Text.StringBuilder]::new(); $state = 'code'; $escape = $false; $rawEnd = ''
+    for ($i = 0; $i -lt $Text.Length; ++$i) {
+        $c = $Text[$i]; $next = if ($i + 1 -lt $Text.Length) { $Text[$i + 1] } else { [char]0 }
+        if ($state -eq 'line') { if ($c -eq "`n") { $state='code'; [void]$out.Append($c) }; continue }
+        if ($state -eq 'block') { if ($c -eq '*' -and $next -eq '/') { ++$i; $state='code' }; continue }
+        if ($state -eq 'raw') {
+            if ($Text.Substring($i, [Math]::Min($Text.Length - $i, $rawEnd.Length)) -ceq $rawEnd) { $i += $rawEnd.Length - 1; $state='code' }
+            continue
+        }
+        if ($state -eq 'string' -or $state -eq 'char') {
+            if ($escape) { $escape=$false; continue }
+            if ($c -eq '\') { $escape=$true; continue }
+            if (($state -eq 'string' -and $c -eq '"') -or ($state -eq 'char' -and $c -eq "'")) { $state='code' }
+            continue
+        }
+        if ($c -eq '/' -and $next -eq '/') { ++$i; $state='line'; continue }
+        if ($c -eq '/' -and $next -eq '*') { ++$i; $state='block'; continue }
+        if ($c -eq 'R' -and $next -eq '"' -and $i + 2 -lt $Text.Length) {
+            $open = $Text.IndexOf('(', $i + 2)
+            if ($open -lt 0 -or $open - $i - 2 -gt 16) { throw 'malformed or unterminated C++ raw literal' }
+            $delimiter = $Text.Substring($i + 2, $open - ($i + 2))
+            if ($delimiter.IndexOfAny([char[]]@(' ', '\', '(', ')', '"')) -ge 0 -or
+                @($delimiter.ToCharArray() | Where-Object { [char]::IsControl($_) }).Count -ne 0) { throw 'malformed C++ raw literal delimiter' }
+            $rawEnd = ')' + $delimiter + '"'; $i = $open; $state='raw'; continue
+        }
+        if ($c -eq '"') { $state='string'; continue }
+        if ($c -eq "'") { $state='char'; continue }
+        [void]$out.Append($c)
+    }
+    if ($state -eq 'raw') { throw 'unterminated C++ raw literal' }
+    return $out.ToString()
+}
+
+function Find-CliRuntimeApi {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $code = Remove-CppNonCode $Text
+    $patterns = @(
+        '\bstd\s*::\s*filesystem\s*::\s*(status|exists|is_directory|directory_iterator|recursive_directory_iterator|canonical|weakly_canonical|create_[A-Za-z_]*|remove(_all)?|rename|copy(_[A-Za-z_]*)?|file_size|permissions|space|current_path|temp_directory_path)\s*\(',
+        '\b(CreateFile[AW]?|GetFileAttributes[AW]?|FindFirstFile[AW]?|FindNextFile[AW]?|Reg[A-Za-z0-9_]*|DeviceIoControl|SetupDi[A-Za-z0-9_]*|CM_[A-Za-z0-9_]*|DefineDosDevice[AW]?|SetVolumeMountPoint[AW]?|GetVolume[A-Za-z0-9_]*|OpenSCManager[AW]?|OpenService[AW]?)\s*\(')
+    foreach ($pattern in $patterns) { $match = [Regex]::Match($code, $pattern); if ($match.Success) { return $match.Value } }
+    return $null
 }
 
 function Invoke-LineCounterFixture {
@@ -274,7 +332,7 @@ $stderrRejected = $false
 try {
     Assert-HelpContract ([pscustomobject]@{
         ExitCode = 0
-        Stdout = 'Usage: myrd run --bundle <path> --size <N> --drive-letter <R:> [options]' +
+        Stdout = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:> [--checkpoint-seconds <N>] [--checkpoint-dirty-mb <N>] [--ram-limit <N>]`r`n  myrd compact --bundle <path>" +
             [Environment]::NewLine
         Stderr = 'pollution'
     })
@@ -283,8 +341,40 @@ catch { $stderrRejected = $true }
 if (-not $stderrRejected) { throw 'help contract self-audit accepted stderr pollution' }
 
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
+$cliSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\cli.cpp')
+$cliRuntimeApi = Find-CliRuntimeApi $cliSource
+if ($null -ne $cliRuntimeApi) { throw "CLI parser must not access runtime APIs: $cliRuntimeApi" }
+foreach ($fixture in @(
+    'std::filesystem::exists(path);',
+    'CreateFileW(path, 0, 0, 0, 0, 0, 0);',
+    'RegOpenKeyW(0, 0, 0, 0);',
+    'DeviceIoControl(0, 0, 0, 0, 0, 0, 0, 0);')) {
+    if ($null -eq (Find-CliRuntimeApi $fixture)) { throw "CLI runtime API scan self-audit missed: $fixture" }
+}
+foreach ($fixture in @(
+    'std::filesystem::path path(value);',
+    '// CreateFileW(path, 0, 0, 0, 0, 0, 0, 0);',
+    'const char* text = "DeviceIoControl(";',
+    'const char* raw = R"tag(embedded " quote DeviceIoControl()tag";',
+    "wchar_t quote = 'R';")) {
+    if ($null -ne (Find-CliRuntimeApi $fixture)) { throw "CLI runtime API scan false positive: $fixture" }
+}
+foreach ($delimiterControl in @([char]12, [char]11)) {
+    $malformed = 'const char* raw = R"a' + $delimiterControl + 'b(DeviceIoControl()a' + $delimiterControl + 'b";'
+    $rejected = $false
+    try { [void](Find-CliRuntimeApi $malformed) } catch { $rejected = $true }
+    if (-not $rejected) { throw 'CLI raw delimiter control-character self-audit did not fail closed' }
+}
 Assert-HelpContract (Invoke-BoundedProcess -Path $executablePath -Arguments '--help' -InvocationName 'myrd --help')
 Assert-UsageErrorContract (Invoke-BoundedProcess -Path $executablePath -Arguments '' -InvocationName 'myrd')
+$globalUsage = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:> [--checkpoint-seconds <N>] [--checkpoint-dirty-mb <N>] [--ram-limit <N>]`r`n  myrd compact --bundle <path>" + [Environment]::NewLine
+$runUsage = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:> [--checkpoint-seconds <N>] [--checkpoint-dirty-mb <N>] [--ram-limit <N>]" + [Environment]::NewLine
+$compactUsage = "Usage:`r`n  myrd compact --bundle <path>" + [Environment]::NewLine
+Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --help' -InvocationName 'myrd run --help') 0 $runUsage '' 'run help'
+Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --help' -InvocationName 'myrd compact --help') 0 $compactUsage '' 'compact help'
+Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --bundle x --size 64M --drive-letter R:' -InvocationName 'valid run') 1 '' ('run implementation unavailable' + [Environment]::NewLine) 'valid run'
+Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --bundle x' -InvocationName 'valid compact') 1 '' ('compact implementation unavailable' + [Environment]::NewLine) 'valid compact'
+Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --bundle x --size 64M --drive-letter X' -InvocationName 'invalid run') 2 '' ('invalid drive letter' + [Environment]::NewLine + $globalUsage) 'invalid run'
 
 $bytes = [IO.File]::ReadAllBytes($executablePath)
 $forbidden = @(
