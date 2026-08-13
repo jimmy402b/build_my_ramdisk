@@ -168,7 +168,7 @@ task evidence.
 | R4 | Exact Windows volume | DONE | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
 | R5 | Persistence maintenance loop | DONE | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
 | R6 | Safe Ctrl+C shutdown | DONE | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
-| R7 | Real AIM/NTFS lifecycle | PENDING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
+| R7 | Real AIM/NTFS lifecycle | DOING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
 | R8 | Final regression and GO | PENDING | R7 | Debug/Release full, M0-M4 labels, OFF scan, <=2500 | `docs(m4): close contracted product milestone` |
 
 R1's NO-GO experiment is closed by the owner-approved v1 amendment. R2 may
@@ -569,7 +569,24 @@ M4_TASKLIST.md
 - [ ] Evidence contains no password, private key or secret.
 - [ ] Final route says PASS and exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
+
+```text
+Task / status: R7 / DOING
+Executor / UTC timestamp: gpt-5.6-terra medium implementers, with gpt-5.6-sol xhigh controller fallback / 2026-08-13T18:48:28Z
+Start commit / branch / end commit: 0f7c1186c1c8acb659b44a594e4de05b99626627 / feature/m4-contracted-product / pending
+Allowed files / actual files: tests/e2e/Invoke-M4RunLifecycle.ps1; tools/Invoke-M4Verification.ps1; tests/CMakeLists.txt; M4_TASKLIST.md / tests/e2e/Invoke-M4RunLifecycle.ps1; tools/Invoke-M4Verification.ps1; tests/CMakeLists.txt; M4_TASKLIST.md
+Dependencies and evidence: R6 is recorded DONE; worktree supplied clean at HEAD 0f7c1186c1c8acb659b44a594e4de05b99626627.
+RED command / observed failure / exit code: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\\e2e\\Invoke-M4RunLifecycle.ps1 ...`; PowerShell reported that the file did not exist; process exit represented Windows file-not-found (77 low byte). This was the required missing-script RED before creation.
+Implementation summary: review repair RED→GREEN: strict exit-77/no-state-mutation wrappers first failed on CMake escaping; the native helper then failed stdout inheritance and Ctrl-Break delivery until it used exact SECURITY_ATTRIBUTES, NUL stdin, STARTUPINFOEX/HANDLE_LIST, CREATE_NEW_PROCESS_GROUP, exact argv quoting, bounded drains and idempotent handle cleanup. The harness freezes 64M/5s/1MiB/64M argv, Ready/NTFS, committed checkpoint successor, exact-PID kill, source-commit marker, stable inventory, recovery child-process audit, clean-shutdown final generation, offline compact successor and third-run hashes. Negative is a concrete nine-case serial executor using a data-only `myrd.m4.negative-fixtures.v1` manifest: commands/refusal patterns remain frozen in code, paths are constrained below `<bundle>.r7-negative`, and per-case immutable evidence proves nonmutation, lock, driver and busy-volume behavior. Final consumes all four same-commit phase files plus nine negative files and fail-closes on identity, argv, inventory, hash, generation, recovery-audit, refusal-output or oracle drift.
+Focused Debug verification / exit code: fresh controller verification ran `cmake --preset msvc`, built `myrd`, and ran Debug `m4-v0` through `m4-v3`; 2/2, 1/1, 3/3 and 9/9 passed, exit 0. The direct lifecycle subset is 8/8 PASS. TDD repairs additionally proved >64 KiB rejection, latest/final checkpoint selection, hostile negative manifest rejection, process-handle cleanup, and synthetic Final mutation rejection.
+Cumulative and Release verification / exit code: fresh controller verification built Release `myrd` and ran Release `m4-v0` through `m4-v3`; 2/2, 1/1, 3/3 and 9/9 passed, exit 0. Fresh `Invoke-M4Verification.ps1 -Tier Local` independently passed Debug and Release. The VM route with no acknowledgement returns 77 before mutation as required.
+Line count / architecture and seam scans: parser validation passed for both scripts; safety probes for every phase and malformed acknowledged input returned 77 before VM action. Native selftest exercises process group, argv quoting, controlled stdio, overflow drain, finite waits, exact Ctrl-Break and exact emergency termination. Final synthetic evidence accepts the valid set and rejects changed SHA, compact/final generation, inventory, audit, target escape, refusal text, duplicate case and failed status. Product line count is `1217 / 2500`; `git diff --check` and the R7 4/4 allowlist audit pass.
+VM evidence paths and SHA-256, if applicable: BLOCKED_VM_ACCESS_REQUIRED. Read-only discovery found the running VMware `Windows 11 x64` guest previously recorded by M3 as the approved isolated AIM/NTFS target, but `vmrun` access requires the encrypted-VM password and no passwordless SSH/WinRM route or R7 approval marker is available. The desktop host was not substituted for the guest, so no destructive phase was run and no lifecycle evidence was fabricated.
+SPEC/PLAN/TASKLIST drift audit: the full local harness and operator fixture contract are implemented. Independent SPEC and quality re-reviews both APPROVED the local harness with no remaining findings, and main fresh Debug/Release verification passes. Real same-commit approved-VM acceptance remains unproven, so R7 correctly remains DOING and uncommitted.
+Open risks / explicitly excluded follow-up: R7 cannot be marked DONE without same-commit approved-VM evidence. Continuation requires an operator-provided access route to the already-approved encrypted VMware guest; destructive phases still require the explicit in-guest safety marker/switch and are never auto-rebooted.
+Commit subject / commit hash: test(m4): prove real run lifecycle / pending (main controller commits)
+```
 
 ## R8 — Final regression and GO
 

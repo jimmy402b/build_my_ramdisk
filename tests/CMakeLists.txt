@@ -1621,3 +1621,36 @@ target_include_directories(myrd_m4_run_policy_tests PRIVATE "${CMAKE_SOURCE_DIR}
 myrd_enable_warnings(myrd_m4_run_policy_tests)
 add_test(NAME unit.m4.run_policy COMMAND myrd_m4_run_policy_tests)
 set_tests_properties(unit.m4.run_policy PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
+# R7 is intentionally a non-destructive CTest contract.  It exercises every
+# phase without the acknowledgement switch, so no VM, driver, bundle, or drive
+# is ever required for ordinary local regression.
+foreach(_myrd_r7_phase IN ITEMS CreateKill RecoverShutdown OfflineCompact Negative)
+    add_test(NAME unit.m4.lifecycle_safety_${_myrd_r7_phase}
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+            "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-r7-safety-' + [guid]::NewGuid().ToString('N') + '.json'); & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase '${_myrd_r7_phase}' -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile $s; $e=$LASTEXITCODE; if($e -ne 77){throw \"expected exit 77, got $e\"}; if(Test-Path -LiteralPath $s){throw 'safety gate mutated state file'}")
+    set_tests_properties(unit.m4.lifecycle_safety_${_myrd_r7_phase} PROPERTIES
+        LABELS "m4-v3" TIMEOUT 30)
+endforeach()
+
+add_test(NAME unit.m4.lifecycle_native_selftest
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$env:MYRD_M4_HARNESS_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"native selftest exit $e\"}")
+set_tests_properties(unit.m4.lifecycle_native_selftest PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
+add_test(NAME unit.m4.lifecycle_ack_invalid_no_mutation
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-r7-invalid-'+[guid]::NewGuid().ToString('N')+'.json'); & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile $s -SafetyAcknowledged; if($LASTEXITCODE -ne 77){throw 'expected invalid gate exit 77'}; if(Test-Path $s){throw 'invalid acknowledged input wrote state'}")
+set_tests_properties(unit.m4.lifecycle_ack_invalid_no_mutation PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
+# The Final verifier synthesizes evidence only when this private switch is set;
+# it never invokes the lifecycle runner or touches a VM.
+add_test(NAME unit.m4.lifecycle_final_verifier
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$env:MYRD_M4_FINAL_SELFTEST='1'; & '${CMAKE_SOURCE_DIR}/tools/Invoke-M4Verification.ps1' -Tier Final; $e=$LASTEXITCODE; if($e -ne 0){throw \"final verifier selftest exit $e\"}")
+set_tests_properties(unit.m4.lifecycle_final_verifier PROPERTIES LABELS "m4-v3" TIMEOUT 60)
+
+add_test(NAME unit.m4.lifecycle_negative_contract
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$env:MYRD_M4_NEGATIVE_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase Negative -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"negative contract selftest exit $e\"}")
+set_tests_properties(unit.m4.lifecycle_negative_contract PROPERTIES LABELS "m4-v3" TIMEOUT 30)
