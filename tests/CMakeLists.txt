@@ -1643,6 +1643,16 @@ add_test(NAME unit.m4.lifecycle_ack_invalid_no_mutation
         "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-r7-invalid-'+[guid]::NewGuid().ToString('N')+'.json'); & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile $s -SafetyAcknowledged; if($LASTEXITCODE -ne 77){throw 'expected invalid gate exit 77'}; if(Test-Path $s){throw 'invalid acknowledged input wrote state'}")
 set_tests_properties(unit.m4.lifecycle_ack_invalid_no_mutation PROPERTIES LABELS "m4-v3" TIMEOUT 30)
 
+add_test(NAME unit.m4.lifecycle_block_cleanup
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-block-cleanup-'+[guid]::NewGuid().ToString('N')+'.sentinel'); $env:MYRD_M4_BLOCK_CLEANUP_SELFTEST='1'; $env:MYRD_M4_BLOCK_CLEANUP_SENTINEL=$s; try {$o=@(& '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged 2>&1 | ForEach-Object {[string]$_}); $e=$LASTEXITCODE; if($e -ne 77){throw \"expected cleanup selftest exit 77, got $e\"}; $expected='M4 lifecycle CreateKill BLOCKED: selftest forced block after child start.'; if($o.Count -ne 1 -or $o[0] -cne $expected){throw \"cleanup selftest output mismatch: $($o -join '|')\"}; if(-not(Test-Path -LiteralPath $s) -or [IO.File]::ReadAllText($s) -cne 'cleaned'){throw 'cleanup sentinel was not written'}} finally {Remove-Item -LiteralPath $s -Force -ErrorAction SilentlyContinue; Remove-Item Env:MYRD_M4_BLOCK_CLEANUP_SELFTEST,Env:MYRD_M4_BLOCK_CLEANUP_SENTINEL -ErrorAction SilentlyContinue}")
+set_tests_properties(unit.m4.lifecycle_block_cleanup PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
+add_test(NAME unit.m4.lifecycle_block_cleanup_precondition
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$env:MYRD_M4_BLOCK_CLEANUP_SELFTEST='1'; Remove-Item Env:MYRD_M4_BLOCK_CLEANUP_SENTINEL -ErrorAction SilentlyContinue; try {$before=@(Get-Process powershell -ErrorAction SilentlyContinue|% Id); $o=@(& '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged 2>&1 | ForEach-Object {[string]$_}); $e=$LASTEXITCODE; $after=@(Get-Process powershell -ErrorAction SilentlyContinue|% Id); if($e -ne 77){throw \"expected precondition exit 77, got $e\"}; $expected='M4 lifecycle CreateKill BLOCKED: selftest cleanup sentinel was not supplied'; if($o.Count -ne 1 -or $o[0] -cne $expected){throw \"precondition output mismatch: $($o -join '|')\"}; if(@($after|?{$before-notcontains$_}).Count){throw 'invalid precondition started a child'}} finally {Remove-Item Env:MYRD_M4_BLOCK_CLEANUP_SELFTEST -ErrorAction SilentlyContinue}")
+set_tests_properties(unit.m4.lifecycle_block_cleanup_precondition PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
 # The Final verifier synthesizes evidence only when this private switch is set;
 # it never invokes the lifecycle runner or touches a VM.
 add_test(NAME unit.m4.lifecycle_final_verifier

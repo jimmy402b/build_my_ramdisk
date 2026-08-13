@@ -63,6 +63,10 @@ void print_capacity_error(const RunOptions& options) {
                << L". Restart with the original myrd run command.\n";
 }
 
+void print_committed_generation(const std::uint64_t generation) {
+    std::wcout << L"Checkpoint committed generation " << generation << L".\n" << std::flush;
+}
+
 template <typename Now, typename Flush, typename Checkpoint, typename Warning>
 void do_checkpoint_attempts(MaintenanceState& state, Now&& now,
                             Flush&& flush, Checkpoint&& checkpoint,
@@ -88,8 +92,7 @@ void do_checkpoint_attempts(MaintenanceState& state, Now&& now,
             if (reconciled.disposition == persistence::CommitDisposition::Committed) {
                 const bool retry_unused = apply_checkpoint_outcome(state, reconciled, reconciled_time, true);
                 (void)retry_unused;
-                std::wcout << L"Checkpoint committed generation "
-                           << reconciled.generation << L".\n";
+                print_committed_generation(reconciled.generation);
                 return;
             }
             state.exit_failure = true;
@@ -100,7 +103,7 @@ void do_checkpoint_attempts(MaintenanceState& state, Now&& now,
         const bool retry = apply_checkpoint_outcome(state, result, result_time, retried);
         if (!retry) {
             if (result.disposition == persistence::CommitDisposition::Committed)
-                std::wcout << L"Checkpoint committed generation " << result.generation << L".\n";
+                print_committed_generation(result.generation);
             if (retried && result.disposition == persistence::CommitDisposition::NotCommitted) warning();
             return;
         }
@@ -193,7 +196,10 @@ int do_shutdown_actions(MaintenanceState& state, std::atomic_bool& requested, Lo
         if (flushed.ok() && !state.skip_final_checkpoint) {
             for (bool retry = false;; retry = true) {
                 const auto result = checkpoint();
-                if (result.disposition == persistence::CommitDisposition::Committed && result.ok()) break;
+                if (result.disposition == persistence::CommitDisposition::Committed && result.ok()) {
+                    print_committed_generation(result.generation);
+                    break;
+                }
                 if (journal_capacity_exhausted(result)) {
                     state.checkpoints_disabled_for_full_journal = true;
                     state.skip_final_checkpoint = true;

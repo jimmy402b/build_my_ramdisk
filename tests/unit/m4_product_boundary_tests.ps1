@@ -57,6 +57,142 @@ function Invoke-BoundedProcess {
     }
 }
 
+function Assert-SafeBoundaryInvocations {
+    param([Parameter(Mandatory = $true)][string]$Source)
+
+    $parseErrors = $null
+    $tokens = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput(
+        $Source, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) { throw 'boundary invocation safety source did not parse' }
+    $boundedCommandName = 'Invoke-' + 'BoundedProcess'
+    $calls = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq $boundedCommandName
+    }, $true))
+    if ($calls.Count -eq 0) { throw 'boundary invocation safety source has no bounded product calls' }
+    $dynamicCommands = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst] -and
+            ($null -eq $node.GetCommandName() -or
+             ($node.GetCommandName() -cne $boundedCommandName -and
+              $node.GetCommandName().IndexOf($boundedCommandName, [StringComparison]::OrdinalIgnoreCase) -ge 0))
+    }, $true))
+    if ($dynamicCommands.Count -ne 0) {
+        throw 'boundary invocation safety found a dynamic or qualified command invocation'
+    }
+    $commandNameTokens = @($tokens | Where-Object {
+        $_.Text -ceq $boundedCommandName -and
+        ($_.TokenFlags -band [Management.Automation.Language.TokenFlags]::CommandName)
+    })
+    $definitionCount = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq $boundedCommandName
+    }, $true)).Count
+    $definitionTokens = @($tokens | Where-Object {
+        $_.Text -ceq $boundedCommandName -and
+        -not($_.TokenFlags -band [Management.Automation.Language.TokenFlags]::CommandName)
+    })
+    if ($commandNameTokens.Count -ne $calls.Count -or
+        $definitionTokens.Count -ne $definitionCount) {
+        throw 'boundary invocation safety found an unaudited bounded-process identifier'
+    }
+    if ($definitionCount -eq 1 -and $calls.Count -ne 7) {
+        throw 'ordinary boundary must contain exactly seven audited bounded product calls'
+    }
+
+    $unknownAssignments = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $node.Left.VariablePath.UserPath -ceq 'unknownBundle'
+    }, $true))
+    $unknownUses = @($calls | Where-Object {
+        $_.Extent.Text -match '\$unknownBundle\b'
+    })
+    if ($unknownUses.Count -gt 0) {
+        if ($unknownUses.Count -ne 1 -or $unknownAssignments.Count -ne 1) {
+            throw 'unknown bundle must have exactly one safe assignment and one bounded product call'
+        }
+        $safeUnknownAssignment = @'
+$unknownBundle = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-unknown-' + [Guid]::NewGuid().ToString('N'))
+'@.Trim()
+        $normalizedAssignment = $unknownAssignments[0].Extent.Text -replace '\s+', ' '
+        if ($unknownAssignments[0].Operator -ne [Management.Automation.Language.TokenKind]::Equals -or
+            $normalizedAssignment -cne $safeUnknownAssignment) {
+            throw 'unknown bundle assignment is not the frozen safe temporary path expression'
+        }
+        if ($unknownAssignments[0].Extent.EndOffset -ge $unknownUses[0].Extent.StartOffset) {
+            throw 'unknown bundle assignment must precede its bounded product call'
+        }
+        if ($definitionCount -eq 1) {
+            $gates = @($ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -ceq 'Assert-SafeBoundaryInvocations' -and
+                    ($node.Extent.Text -replace '\s+', ' ') -ceq 'Assert-SafeBoundaryInvocations $boundarySource'
+            }, $true))
+            if ($gates.Count -ne 1 -or
+                $gates[0].Extent.EndOffset -ge $unknownAssignments[0].Extent.StartOffset) {
+                throw 'boundary source audit must run before the unknown bundle assignment'
+            }
+        }
+    }
+    elseif ($unknownAssignments.Count -ne 0) {
+        throw 'unknown bundle assignment exists without its audited product call'
+    }
+
+    $safeLiterals = @(
+        '', '--help', 'run --help', 'compact --help',
+        'compact --bundle C:\missing-m4-product-bundle',
+        'run --bundle x --size 64M --drive-letter X'
+    )
+    foreach ($call in $calls) {
+        $elements = @($call.CommandElements)
+        $argumentsAst = $null
+        for ($i = 1; $i -lt $elements.Count - 1; ++$i) {
+            if ($elements[$i] -is [Management.Automation.Language.CommandParameterAst] -and
+                $elements[$i].ParameterName -ceq 'Arguments') {
+                $argumentsAst = $elements[$i + 1]
+                break
+            }
+        }
+        if ($null -eq $argumentsAst) { throw 'bounded product call lacks an explicit -Arguments expression' }
+
+        $literal = $null
+        if ($argumentsAst -is [Management.Automation.Language.StringConstantExpressionAst]) {
+            $literal = $argumentsAst.Value
+        }
+        elseif ($argumentsAst -is [Management.Automation.Language.ExpandableStringExpressionAst] -and
+                $argumentsAst.NestedExpressions.Count -eq 0) {
+            $literal = $argumentsAst.Value
+        }
+        if ($null -ne $literal) {
+            if ($safeLiterals -cnotcontains $literal) {
+                throw "unsafe bounded product arguments: $literal"
+            }
+            continue
+        }
+
+        $variables = @($argumentsAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.VariableExpressionAst]
+        }, $true))
+        $normalized = $argumentsAst.Extent.Text -replace '\s+', ' '
+        $safeUnknownExpression = @'
+('run --bundle "' + $unknownBundle + '" --size 64M --drive-letter R:')
+'@.Trim()
+        $safeUnknown = $variables.Count -eq 1 -and
+            $variables[0].VariablePath.UserPath -ceq 'unknownBundle' -and
+            $normalized -ceq $safeUnknownExpression
+        if (-not $safeUnknown) {
+            throw "unsafe nonliteral bounded product arguments: $($argumentsAst.Extent.Text)"
+        }
+    }
+}
+
 function Test-ByteSubsequence {
     param(
         [Parameter(Mandatory = $true)][byte[]]$Haystack,
@@ -351,6 +487,30 @@ if (-not $stderrRejected) { throw 'help contract self-audit accepted stderr poll
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $cliSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\cli.cpp')
 $mainSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\main.cpp')
+$boundarySource = Get-Content -Raw $PSCommandPath
+$boundedCommandName = 'Invoke-' + 'BoundedProcess'
+foreach ($dangerousFixture in @(
+    ($boundedCommandName + " -Path `$executablePath -Arguments 'run --bundle C:\danger --size 64M --drive-letter R:' -InvocationName 'renamed'"),
+    ($boundedCommandName + ' -Path $executablePath -Arguments "run --bundle C:\danger --size 64M --drive-letter R:" -InvocationName "double quoted"'),
+    ('$dangerousArguments = ''run --bundle C:\danger --size 64M --drive-letter R:''; ' + $boundedCommandName + ' -Path $executablePath -Arguments $dangerousArguments -InvocationName ''variable''')
+)) {
+    $rejected = $false
+    try { Assert-SafeBoundaryInvocations $dangerousFixture } catch { $rejected = $true }
+    if (-not $rejected) { throw 'boundary invocation safety self-audit missed a renamed, double-quoted, or variable mutating run' }
+}
+$safeUnknownCall = $boundedCommandName + @'
+ -Path $executablePath -Arguments ('run --bundle "' + $unknownBundle + '" --size 64M --drive-letter R:') -InvocationName 'unknown nonempty bundle'
+'@.TrimEnd()
+foreach ($sourceMutation in @(
+    ('$unknownBundle = ''C:\danger''; ' + $safeUnknownCall),
+    ('$unknownBundle = Join-Path ([IO.Path]::GetTempPath()) (''myrd-m4-unknown-'' + [Guid]::NewGuid().ToString(''N'')); $unknownBundle += ''\danger''; ' + $safeUnknownCall),
+    ('$unknownBundle = Join-Path ([IO.Path]::GetTempPath()) (''myrd-m4-unknown-'' + [Guid]::NewGuid().ToString(''N'')); ' + $safeUnknownCall + '; & $function:' + $boundedCommandName + ' -Path $executablePath -Arguments ''--help'' -InvocationName ''dynamic''')
+)) {
+    $rejected = $false
+    try { Assert-SafeBoundaryInvocations $sourceMutation } catch { $rejected = $true }
+    if (-not $rejected) { throw 'boundary invocation safety self-audit missed unsafe unknown source or indirect invocation' }
+}
+Assert-SafeBoundaryInvocations $boundarySource
 if ($mainSource -match '\(void\)runtime\.value\(\)->stop\(\)') {
     throw 'product main must not ignore runtime cleanup after start failure'
 }
@@ -393,35 +553,6 @@ $runUsage = "Usage:`r`n  myrd run --bundle <path> --size <N> --drive-letter <R:>
 $compactUsage = "Usage:`r`n  myrd compact --bundle <path>" + [Environment]::NewLine
 Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'run --help' -InvocationName 'myrd run --help') 0 $runUsage '' 'run help'
 Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --help' -InvocationName 'myrd compact --help') 0 $compactUsage '' 'compact help'
-$createBundle = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-create-' + [Guid]::NewGuid().ToString('N'))
-try {
-    $createResult = Invoke-BoundedProcess -Path $executablePath -Arguments ('run --bundle "' + $createBundle + '" --size 64M --drive-letter R:') -InvocationName 'valid run'
-    if ($createResult.ExitCode -ne 1) { throw 'valid run must stop unavailable with exit 1' }
-    $runtimeReached = $createResult.Stdout -match '^PhysicalDrive[0-9]+\r?\n$'
-    $runtimeUnavailable = $createResult.Stderr -ceq ('Windows volume setup unavailable' + [Environment]::NewLine)
-    $driverUnavailable = $createResult.Stdout -ceq '' -and
-        $createResult.Stderr -match ('^Error: run failed for ' + [Regex]::Escape($createBundle) + ': [^:\r\n]+: .+\r?\n$')
-    if (-not (($runtimeReached -and $runtimeUnavailable) -or $driverUnavailable)) {
-        throw 'valid run did not follow the frozen temporary R4 stop contract'
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $createBundle 'disk.rdm') -PathType Leaf)) {
-        throw 'missing bundle did not retain the generation-zero manifest'
-    }
-    $beforeGenZeroReject = @(Get-ChildItem -LiteralPath $createBundle -File | Sort-Object Name |
-        ForEach-Object { $_.Name + ':' + $_.Length + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
-    $genZeroError = 'Error: incomplete generation-zero bundle at ' + $createBundle + '. Verify the bundle path, manually remove the incomplete bundle, then run the original myrd run command again.' + [Environment]::NewLine
-    Assert-ExactProcessContract (Invoke-BoundedProcess -Path $executablePath -Arguments ('run --bundle "' + $createBundle + '" --size 64M --drive-letter R:') -InvocationName 'generation-zero recover') 1 '' $genZeroError 'generation-zero recover'
-    $afterGenZeroReject = @(Get-ChildItem -LiteralPath $createBundle -File | Sort-Object Name |
-        ForEach-Object { $_.Name + ':' + $_.Length + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
-    if (($beforeGenZeroReject -join '|') -cne ($afterGenZeroReject -join '|')) {
-        throw 'generation-zero recover rejection mutated the bundle'
-    }
-}
-finally {
-    if (Test-Path -LiteralPath $createBundle -PathType Container) {
-        Remove-Item -LiteralPath $createBundle -Recurse -Force
-    }
-}
 $missingCompact = Invoke-BoundedProcess -Path $executablePath -Arguments 'compact --bundle C:\missing-m4-product-bundle' -InvocationName 'valid compact'
 if ($missingCompact.ExitCode -ne 1 -or $missingCompact.Stdout -cne '' -or
     $missingCompact.Stderr -notmatch '^Error: compact failed for C:\\missing-m4-product-bundle: .+\r?\n$') {

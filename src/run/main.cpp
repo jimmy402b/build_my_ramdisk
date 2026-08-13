@@ -312,7 +312,7 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
     std::wcout << L"Ready: " << volume.value().drive_letter << L": generation "
-               << ready_stats.value().generation << L".\n";
+               << ready_stats.value().generation << L".\n" << std::flush;
     g_shutdown_backing.store(false, std::memory_order_relaxed);
     g_shutdown_requested = &g_shutdown_backing;
     if (!SetConsoleCtrlHandler(console_shutdown_handler, TRUE)) {

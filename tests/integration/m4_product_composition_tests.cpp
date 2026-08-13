@@ -42,6 +42,95 @@ TEST_CASE(product_console_handler_only_stores_shutdown_flag) {
     REQUIRE(text.find("g_shutdown_backing.store(false, std::memory_order_relaxed)") != std::string::npos);
 }
 
+TEST_CASE(product_lifecycle_status_lines_explicitly_flush_native_pipes) {
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream main_source(root / "src/run/main.cpp");
+    const std::string main_text{std::istreambuf_iterator<char>(main_source), {}};
+    const auto ready = main_text.find("Ready: ");
+    REQUIRE(ready != std::string::npos);
+    const auto ready_line_end = main_text.find(';', ready);
+    REQUIRE(ready_line_end != std::string::npos);
+    REQUIRE(main_text.substr(ready, ready_line_end - ready).find("std::flush") != std::string::npos);
+
+    std::ifstream loop_source(root / "src/run/run_loop.cpp");
+    const std::string loop_text{std::istreambuf_iterator<char>(loop_source), {}};
+    constexpr std::string_view committed{"Checkpoint committed generation "};
+    std::size_t position{};
+    unsigned committed_count{};
+    while ((position = loop_text.find(committed, position)) != std::string::npos) {
+        const auto line_end = loop_text.find(';', position);
+        REQUIRE(line_end != std::string::npos);
+        REQUIRE(loop_text.substr(position, line_end - position).find("std::flush") != std::string::npos);
+        ++committed_count;
+        position = line_end + 1;
+    }
+    REQUIRE_EQ(committed_count, 1u);
+    const auto shutdown = loop_text.find("do_shutdown_actions");
+    REQUIRE(shutdown != std::string::npos);
+    const auto shutdown_end = loop_text.find("int do_shutdown(", shutdown);
+    REQUIRE(shutdown_end != std::string::npos);
+    const auto shutdown_text = loop_text.substr(shutdown, shutdown_end - shutdown);
+    REQUIRE(shutdown_text.find("result.disposition == persistence::CommitDisposition::Committed && result.ok()") != std::string::npos);
+    REQUIRE(shutdown_text.find("print_committed_generation(result.generation)") != std::string::npos);
+
+    constexpr std::string_view status_call{"print_committed_generation("};
+    std::size_t call_position{};
+    unsigned status_call_count{};
+    while ((call_position = loop_text.find(status_call, call_position)) != std::string::npos) {
+        ++status_call_count;
+        call_position += status_call.size();
+    }
+    REQUIRE_EQ(status_call_count, 4u);
+
+    const auto status_writer = loop_text.find("void print_committed_generation");
+    REQUIRE(status_writer != std::string::npos);
+    const auto status_writer_end = loop_text.find('}', status_writer);
+    REQUIRE(status_writer_end != std::string::npos);
+    const auto status_writer_text = loop_text.substr(status_writer, status_writer_end - status_writer);
+    REQUIRE(status_writer_text.find("Checkpoint committed generation ") != std::string::npos);
+    REQUIRE(status_writer_text.find("std::flush") != std::string::npos);
+}
+
+TEST_CASE(lifecycle_child_exception_paths_dispose_after_emergency) {
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream source(root / "tests/e2e/Invoke-M4RunLifecycle.ps1");
+    const std::string text{std::istreambuf_iterator<char>(source), {}};
+    for (const auto phase : {std::string_view{"if($Phase-eq'RecoverShutdown')"},
+                             std::string_view{"if($Phase-eq'OfflineCompact')"}}) {
+        const auto begin = text.find(phase);
+        REQUIRE(begin != std::string::npos);
+        const auto end = text.find("# Negative fixtures", begin);
+        REQUIRE(end != std::string::npos);
+        const auto body = text.substr(begin, end - begin);
+        REQUIRE(body.find("catch{Emergency") != std::string::npos);
+        REQUIRE(body.find("finally{") != std::string::npos);
+        REQUIRE(body.find(".Process.Dispose()") != std::string::npos);
+    }
+}
+
+TEST_CASE(lifecycle_block_cleanup_validates_sentinel_before_child_start) {
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream source(root / "tests/e2e/Invoke-M4RunLifecycle.ps1");
+    const std::string text{std::istreambuf_iterator<char>(source), {}};
+    const auto begin = text.find("function Block-CleanupSelfTest");
+    REQUIRE(begin != std::string::npos);
+    const auto end = text.find("if($env:MYRD_M4_BLOCK_CLEANUP_SELFTEST", begin);
+    REQUIRE(end != std::string::npos);
+    const auto body = text.substr(begin, end - begin);
+    const auto supplied = body.find("selftest cleanup sentinel was not supplied");
+    const auto full_path = body.find("GetFullPath");
+    const auto absent = body.find("selftest cleanup sentinel already exists");
+    const auto start = body.find("[M4Child]::Start");
+    const auto guarded = body.find("try { Block", start);
+    REQUIRE(supplied < full_path);
+    REQUIRE(full_path < absent);
+    REQUIRE(absent < start);
+    REQUIRE(start < guarded);
+    REQUIRE(body.substr(start, guarded - start).find("Need(") == std::string::npos);
+    REQUIRE(body.find("try {$cleanup=Emergency $child}") != std::string::npos);
+    REQUIRE(body.find("finally {$child.Process.Dispose()}") != std::string::npos);
+}
+
 TEST_CASE(product_defaults_are_shared_m3_values) {
     constexpr std::uint64_t kKiB = 1024ull;
     constexpr std::uint64_t kMiB = 1024ull * kKiB;
