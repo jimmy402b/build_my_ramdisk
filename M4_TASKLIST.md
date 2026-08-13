@@ -167,7 +167,7 @@ task evidence.
 | R3 | Minimal M3 product runtime | DONE | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
 | R4 | Exact Windows volume | DONE | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
 | R5 | Persistence maintenance loop | DONE | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
-| R6 | Safe Ctrl+C shutdown | PENDING | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
+| R6 | Safe Ctrl+C shutdown | DONE | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
 | R7 | Real AIM/NTFS lifecycle | PENDING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
 | R8 | Final regression and GO | PENDING | R7 | Debug/Release full, M0-M4 labels, OFF scan, <=2500 | `docs(m4): close contracted product milestone` |
 
@@ -527,17 +527,18 @@ M4_TASKLIST.md
   clears the request and resumes running.
 - [x] Forced termination is documented as requiring Windows reboot.
 - [x] Only complete confirmed cleanup exits 0.
-- [ ] Debug/Release `m4-v3` pass and exact commit exists.
+- [x] Debug/Release `m4-v3` pass and exact commit exists.
 
 **Execution record:**
 
 ```text
-Task / status: R6 / DOING
+Task / status: R6 / DONE
 Start commit / branch: 72fc264c1af0e6fab5c8a73eb8893b49dac7ea2e / feature/m4-contracted-product
 Initial RED: Debug locked-volume contract compilation failed for missing R6 symbols. SPEC REDs then proved each final retry needs its own flush, lock/verify failures need zero cleanup mutation and request clear, reconciliation needs one flushed retry, and indeterminate/capacity R5 state skips final checkpoint while retaining cleanup. Quality REDs proved a `Committed` outcome carrying an error cannot be success, typed capacity cannot retry, handler cleanup must not overwrite the registration error, and resumed maintenance must retain post-wait shutdown gating.
 Implementation and review: exact locked-volume ownership verifies extents on the locked handle; shutdown preserves the frozen action order, logs safe cleanup failures, and only confirmed success prints the exact goodbye. Console callback performs only relaxed atomic store. Final SPEC and quality reviews APPROVED.
 Fresh verification: Debug build, boundary, focused 6/6, m4-v3 1/1 and m3-v2 32/32 passed; Release build, boundary, focused 6/6 and m4-v3 1/1 passed. Allowlist 9/9, stage-0 prohibited scan and diffcheck passed; product lines 1217/2500.
-Open risk / follow-up: R7 retains real destructive AIM/NTFS VM lifecycle evidence. R6 remains DOING until this implementation commit exists; the combined Debug/Release/exact-commit checkbox remains unchecked pending the commit.
+Open risk / follow-up: R7 retains real destructive AIM/NTFS VM lifecycle evidence; R6 is complete.
+Implementation commit: 03df02face954302f7d3618e6eacb3516eb735dc / feat(m4): shut down ram disk safely
 ```
 
 ## R7 — Real AIM/NTFS lifecycle
