@@ -85,6 +85,15 @@ bool volume_device_path(const std::wstring& guid, std::wstring& device) {
     if(!guid.starts_with(prefix) || guid.size()<=prefix.size()+2 || guid.back()!=L'\\' || guid.find(L'}')==std::wstring::npos) return false;
     device=guid.substr(0,guid.size()-1); return true;
 }
+Result<void> verify_exact_volume(HANDLE volume, std::uint32_t disk) {
+    std::array<std::byte, kQueryCap> bytes{}; DWORD got{};
+    if (!DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0,
+        bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr))
+        return Result<void>::failure(fail(L"verify_extent", L"volume extent query failed", GetLastError()));
+    if (classify_extents(bytes.data(), got, disk) != ExtentClass::Exact)
+        return Result<void>::failure(fail(L"verify_extent", L"volume is not the exact runtime disk"));
+    return Result<void>::success();
+}
 bool attribute_list_size_ok(BOOL first_result,DWORD error,SIZE_T size) noexcept { return !first_result && error==ERROR_INSUFFICIENT_BUFFER && size>0 && size<=64*1024; }
 
 std::wstring disk_path(std::uint32_t number) {
@@ -283,6 +292,40 @@ Result<void> run_helper(std::uint32_t disk, wchar_t letter, std::chrono::millise
     return Result<void>::success();
 }
 } // namespace
+
+LockedVolume::LockedVolume(HANDLE handle, std::wstring identity, std::uint32_t disk) noexcept
+    : handle_(handle), identity_(std::move(identity)), physical_drive_number_(disk) {}
+LockedVolume::LockedVolume(LockedVolume&& other) noexcept
+    : handle_(std::exchange(other.handle_, INVALID_HANDLE_VALUE)), identity_(std::move(other.identity_)),
+      physical_drive_number_(other.physical_drive_number_) {}
+LockedVolume& LockedVolume::operator=(LockedVolume&& other) noexcept {
+    if (this != &other) { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE); identity_ = std::move(other.identity_); physical_drive_number_ = other.physical_drive_number_; }
+    return *this;
+}
+LockedVolume::~LockedVolume() noexcept { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
+Result<void> LockedVolume::flush() {
+    if (!FlushFileBuffers(handle_)) return Result<void>::failure(fail(L"flush", L"FlushFileBuffers failed", GetLastError()));
+    return Result<void>::success();
+}
+Result<void> LockedVolume::dismount() {
+    DWORD ignored{};
+    if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr))
+        return Result<void>::failure(fail(L"dismount", L"FSCTL_DISMOUNT_VOLUME failed", GetLastError()));
+    return Result<void>::success();
+}
+bool volume_lock_busy_error(DWORD error) noexcept { return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY; }
+Result<VolumeLockAttempt> lock_volume(const ProductVolume& product) {
+    std::wstring path;
+    if (!volume_device_path(product.volume_guid_path, path)) return Result<VolumeLockAttempt>::failure(fail(L"lock", L"malformed volume GUID path"));
+    HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) { const DWORD error = GetLastError(); if (volume_lock_busy_error(error)) return Result<VolumeLockAttempt>::success({true, std::nullopt}); return Result<VolumeLockAttempt>::failure(fail(L"lock", L"opening exact volume failed", error)); }
+    DWORD ignored{};
+    if (!DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr)) { const DWORD error=GetLastError(); CloseHandle(handle); if (volume_lock_busy_error(error)) return Result<VolumeLockAttempt>::success({true, std::nullopt}); return Result<VolumeLockAttempt>::failure(fail(L"lock", L"FSCTL_LOCK_VOLUME failed", error)); }
+    const auto exact = verify_exact_volume(handle, product.physical_drive_number);
+    if (!exact.ok()) { CloseHandle(handle); return Result<VolumeLockAttempt>::failure(exact.error()); }
+    LockedVolume locked(handle, product.volume_guid_path, product.physical_drive_number);
+    return Result<VolumeLockAttempt>::success({false, std::optional<LockedVolume>(std::move(locked))});
+}
 
 Result<ProductVolume> provision_new_volume(const m3::M3AimRuntimeInfo& info, wchar_t letter, std::chrono::milliseconds timeout) {
     if (!valid_letter(letter)) return Result<ProductVolume>::failure(fail(L"provision_new_volume", L"invalid drive letter"));

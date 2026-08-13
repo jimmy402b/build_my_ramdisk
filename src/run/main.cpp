@@ -17,6 +17,17 @@
 
 namespace {
 enum class BundleMode { Create, Recover };
+std::atomic_bool g_shutdown_backing{false};
+std::atomic_bool* g_shutdown_requested{&g_shutdown_backing};
+BOOL WINAPI console_shutdown_handler(DWORD event) {
+    switch (event) {
+    case CTRL_C_EVENT: case CTRL_BREAK_EVENT: case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT: case CTRL_SHUTDOWN_EVENT:
+        g_shutdown_requested->store(true, std::memory_order_relaxed);
+        return TRUE;
+    default: return FALSE;
+    }
+}
 
 myrd::Result<void> require_elevation() {
     HANDLE token{}; if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_DUPLICATE,&token)) return myrd::Result<void>::failure({myrd::ErrorDomain::win32,GetLastError(),L"require_elevation",L"OpenProcessToken failed"});
@@ -302,9 +313,21 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     std::wcout << L"Ready: " << volume.value().drive_letter << L": generation "
                << ready_stats.value().generation << L".\n";
-    std::atomic_bool shutdown_requested{false};
+    g_shutdown_backing.store(false, std::memory_order_relaxed);
+    g_shutdown_requested = &g_shutdown_backing;
+    if (!SetConsoleCtrlHandler(console_shutdown_handler, TRUE)) {
+        const DWORD handler_error = GetLastError();
+        const auto cleanup = stop_with_volume_cleanup(volume.value());
+        print_run_error(options.bundle, {myrd::ErrorDomain::win32, handler_error,
+            L"SetConsoleCtrlHandler", L"console handler registration failed"});
+        if (!cleanup) std::wcerr << L"Runtime cleanup failed\n";
+        return 1;
+    }
     const int loop_exit = myrd::run_loop(*runtime.value(), volume.value(), options,
-                                         shutdown_requested);
-    if (!stop_with_volume_cleanup(volume.value())) return 1;
+                                         *g_shutdown_requested);
+    if (!SetConsoleCtrlHandler(console_shutdown_handler, FALSE)) {
+        std::wcerr << L"Error: SetConsoleCtrlHandler unregister failed\n";
+        return 1;
+    }
     return loop_exit;
 }

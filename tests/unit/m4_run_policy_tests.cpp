@@ -236,6 +236,117 @@ TEST_CASE(m4_run_policy_wait_shutdown_skips_work_after_wait) {
     REQUIRE_EQ(work, 0);
 }
 
+TEST_CASE(m4_shutdown_busy_clears_request_without_cleanup) {
+    std::atomic_bool requested{true};
+    REQUIRE(shutdown_busy_resume(requested));
+    REQUIRE(!requested.load(std::memory_order_relaxed));
+}
+
+TEST_CASE(m4_shutdown_actions_freeze_order_retry_and_cleanup_after_failure) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
+    const auto exit = do_shutdown_actions(state, requested,
+        [&] { calls.push_back(1); return ShutdownLock::Locked; },
+        [&] { calls.push_back(2); return Result<void>::success(); },
+        [&] { calls.push_back(3); return Result<void>::success(); },
+        [&] { calls.push_back(4); return outcome(calls.size() == 4
+            ? persistence::CommitDisposition::NotCommitted
+            : persistence::CommitDisposition::Committed); },
+        [&] { calls.push_back(5); return Result<void>::success(); },
+        [&] { calls.push_back(6); return Result<void>::success(); },
+        [&] { calls.push_back(7); return Result<void>::success(); });
+    REQUIRE_EQ(exit, 0); REQUIRE_EQ(calls, std::vector<int>({1,2,3,4,3,4,5,6,7}));
+}
+
+TEST_CASE(m4_shutdown_actions_flush_failure_skips_checkpoint_but_continues_cleanup) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
+    const auto exit = do_shutdown_actions(state, requested, [&] { calls.push_back(1); return ShutdownLock::Locked; },
+        [&] { calls.push_back(2); return Result<void>::success(); }, [&] { calls.push_back(3); return Result<void>::failure({}); }, [&] { calls.push_back(4); return outcome(persistence::CommitDisposition::Committed); },
+        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); }, [&] { calls.push_back(7); return Result<void>::success(); });
+    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({1,2,3,5,6,7}));
+}
+
+TEST_CASE(m4_shutdown_actions_verify_failure_resumes_without_any_cleanup) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; int mutations{};
+    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [] { return Result<void>::failure({}); }, [&] { ++mutations; return Result<void>::success(); },
+        [&] { ++mutations; return outcome(persistence::CommitDisposition::Committed); }, [&] { ++mutations; return Result<void>::success(); },
+        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); });
+    REQUIRE_EQ(exit, -1); REQUIRE(state.exit_failure); REQUIRE(!requested.load()); REQUIRE_EQ(mutations, 0);
+}
+
+TEST_CASE(m4_shutdown_actions_reconciliation_retries_after_a_second_flush) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
+    const auto exit = do_shutdown_actions(state, requested, [&] { calls.push_back(1); return ShutdownLock::Locked; },
+        [&] { calls.push_back(2); return Result<void>::success(); }, [&] { calls.push_back(3); return Result<void>::success(); },
+        [&] { calls.push_back(4); return outcome(calls.size() == 4 ? persistence::CommitDisposition::CommittedNeedsReconciliation : persistence::CommitDisposition::Committed); },
+        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); }, [&] { calls.push_back(7); return Result<void>::success(); });
+    REQUIRE_EQ(exit, 0); REQUIRE_EQ(calls, std::vector<int>({1,2,3,4,3,4,5,6,7}));
+}
+
+TEST_CASE(m4_shutdown_actions_rejects_committed_outcome_with_error) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; int cleanup{};
+    auto invalid = outcome(persistence::CommitDisposition::Committed);
+    invalid.error = Error{ErrorDomain::persistence, 1, L"checkpoint", L"error"};
+    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [&] { return invalid; },
+        [&] { ++cleanup; return Result<void>::success(); }, [&] { ++cleanup; return Result<void>::success(); }, [&] { ++cleanup; return Result<void>::success(); });
+    REQUIRE_EQ(exit, 1); REQUIRE_EQ(cleanup, 3);
+}
+
+TEST_CASE(m4_shutdown_actions_capacity_outcome_does_not_retry) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; int checkpoints{};
+    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [&] { ++checkpoints; return capacity_outcome(); },
+        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [] { return Result<void>::success(); });
+    REQUIRE_EQ(exit, 1); REQUIRE_EQ(checkpoints, 1); REQUIRE(state.skip_final_checkpoint);
+}
+
+TEST_CASE(m4_shutdown_actions_busy_has_no_mutation_and_resumes) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; int mutations{};
+    const auto exit = do_shutdown_actions(state, requested,
+        [] { return ShutdownLock::Busy; }, [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); },
+        [] { return outcome(persistence::CommitDisposition::Committed); }, [&] { ++mutations; return Result<void>::success(); },
+        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); });
+    REQUIRE_EQ(exit, -1); REQUIRE_EQ(mutations, 0); REQUIRE(!requested.load());
+}
+
+TEST_CASE(m4_shutdown_actions_indeterminate_skips_final_but_cleans_up_and_fails) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
+    REQUIRE(!apply_checkpoint_outcome(state, outcome(persistence::CommitDisposition::CommitIndeterminate), {}, false));
+    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [&] { calls.push_back(2); return Result<void>::success(); }, [&] { calls.push_back(3); return Result<void>::success(); }, [&] { calls.push_back(4); return outcome(persistence::CommitDisposition::Committed); },
+        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); }, [&] { calls.push_back(7); return Result<void>::success(); });
+    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({2,3,5,6,7}));
+}
+
+TEST_CASE(m4_shutdown_actions_capacity_state_skips_final_but_cleans_up_and_fails) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
+    REQUIRE(!apply_checkpoint_outcome(state, capacity_outcome(), {}, false));
+    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [&] { calls.push_back(1); return Result<void>::success(); }, [&] { calls.push_back(2); return Result<void>::success(); },
+        [&] { calls.push_back(3); return outcome(persistence::CommitDisposition::Committed); }, [&] { calls.push_back(4); return Result<void>::success(); },
+        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); });
+    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({1,2,4,5,6}));
+}
+
+TEST_CASE(m4_shutdown_actions_lock_failure_resumes_without_cleanup_then_preserves_failure) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; int mutations{};
+    const auto first = do_shutdown_actions(state, requested, [] { return ShutdownLock::Failed; },
+        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); },
+        [] { return outcome(persistence::CommitDisposition::Committed); }, [&] { ++mutations; return Result<void>::success(); },
+        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); });
+    REQUIRE_EQ(first, -1); REQUIRE_EQ(mutations, 0); REQUIRE(!requested.load()); REQUIRE(state.exit_failure);
+}
+
+TEST_CASE(m4_shutdown_actions_cleanup_failure_wins_over_checkpoint_success) {
+    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
+    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [] { return outcome(persistence::CommitDisposition::Committed); },
+        [&] { calls.push_back(4); return Result<void>::failure({}); }, [&] { calls.push_back(5); return Result<void>::success(); },
+        [&] { calls.push_back(6); return Result<void>::success(); });
+    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({4,5,6}));
+}
+
 TEST_CASE(m4_run_policy_other_persistence_failure_keeps_normal_retry) {
     myrd::MaintenanceState state{};
     REQUIRE(myrd::apply_checkpoint_outcome(state, outcome(

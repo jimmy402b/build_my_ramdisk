@@ -172,27 +172,96 @@ void mark_maintenance_stats_failure(MaintenanceState& state) noexcept {
     state.exit_failure = true;
 }
 
+bool shutdown_busy_resume(std::atomic_bool& shutdown_requested) noexcept {
+    shutdown_requested.store(false, std::memory_order_relaxed);
+    return true;
+}
+
+namespace {
+enum class ShutdownLock { Locked, Busy, Failed };
+template <typename Lock, typename Verify, typename Flush, typename Checkpoint, typename Dismount, typename Remove, typename Stop>
+int do_shutdown_actions(MaintenanceState& state, std::atomic_bool& requested, Lock&& lock,
+    Verify&& verify, Flush&& flush, Checkpoint&& checkpoint, Dismount&& dismount, Remove&& remove, Stop&& stop) {
+    const auto held = lock();
+    if (held == ShutdownLock::Busy) { shutdown_busy_resume(requested); return -1; }
+    if (held == ShutdownLock::Failed) { state.exit_failure = true; shutdown_busy_resume(requested); return -1; }
+    bool failed = state.exit_failure;
+    if (held == ShutdownLock::Locked) {
+        if (!verify().ok()) { state.exit_failure = true; shutdown_busy_resume(requested); return -1; }
+        const auto flushed = flush();
+        if (!flushed.ok()) failed = true;
+        if (flushed.ok() && !state.skip_final_checkpoint) {
+            for (bool retry = false;; retry = true) {
+                const auto result = checkpoint();
+                if (result.disposition == persistence::CommitDisposition::Committed && result.ok()) break;
+                if (journal_capacity_exhausted(result)) {
+                    state.checkpoints_disabled_for_full_journal = true;
+                    state.skip_final_checkpoint = true;
+                    state.exit_failure = true;
+                    failed = true;
+                    break;
+                }
+                if ((result.disposition == persistence::CommitDisposition::NotCommitted ||
+                    result.disposition == persistence::CommitDisposition::CommittedNeedsReconciliation) && !retry) {
+                    if (!flush().ok()) { failed = true; break; }
+                    continue;
+                }
+                if (result.disposition != persistence::CommitDisposition::NotCommitted || retry) { failed = true; break; }
+            }
+        } else if (state.skip_final_checkpoint) failed = true;
+        if (const auto result = dismount(); !result.ok()) { failed = true; if (result.has_error()) std::wcerr << L"Error: " << result.error().operation << L": " << result.error().message << L"\n"; }
+        if (const auto result = remove(); !result.ok()) { failed = true; if (result.has_error()) std::wcerr << L"Error: " << result.error().operation << L": " << result.error().message << L"\n"; }
+    }
+    if (const auto result = stop(); !result.ok()) { failed = true; if (result.has_error()) std::wcerr << L"Error: " << result.error().operation << L": " << result.error().message << L"\n"; }
+    return failed ? 1 : 0;
+}
+int do_shutdown(m3::M3AimRuntime& runtime, ProductVolume& volume,
+                MaintenanceState& state, std::atomic_bool& requested) {
+    auto locked = lock_volume(volume);
+    if (!locked.ok()) { std::wcerr << L"Error: volume lock failed: " << locked.error().message << L"\n"; state.exit_failure = true; shutdown_busy_resume(requested); return -1; }
+    if (locked.value().busy) {
+        std::wcerr << L"Close applications using the RAM disk and press Ctrl+C again. If the volume remains busy, temporarily pause or exclude Windows Defender real-time scanning and Windows Search indexing for this drive, then retry. Closing the terminal or killing `myrd.exe` is an unclean termination and requires a Windows reboot before the same bundle is used again.\n";
+        shutdown_busy_resume(requested); return -1;
+    }
+    auto held = std::move(*locked.value().locked);
+    const OperationContext context{{}, std::chrono::steady_clock::now() + std::chrono::minutes(5)};
+    const int result = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
+        [] { return Result<void>::success(); }, [&] { return held.flush(); }, [&] { return runtime.checkpoint(context, persistence::VolumeBarrierKind::WindowsVolumeFlushed); },
+        [&] { return held.dismount(); }, [&] { return remove_drive_letter(volume); }, [&] { return runtime.stop(); });
+    if (result == 0) std::wcout << L"Clean shutdown. Goodbye.\n";
+    return result;
+}
+}
+
 int run_loop(m3::M3AimRuntime& runtime, ProductVolume& volume,
              const RunOptions& options, std::atomic_bool& shutdown_requested) {
     MaintenanceState state{};
     state.last_checkpoint = std::chrono::steady_clock::now();
+    const auto maintenance = [&] {
+        const auto stats = runtime.maintenance_stats();
+        if (!stats.ok()) {
+            std::wcerr << L"Error: maintenance statistics failed: " << stats.error().message << L"\n";
+            mark_maintenance_stats_failure(state);
+            shutdown_requested.store(true, std::memory_order_relaxed);
+            return;
+        }
+        warn_once(state, stats.value(), options);
+        const auto now = std::chrono::steady_clock::now();
+        if (checkpoint_due(options, stats.value(), state, now))
+            do_checkpoint(runtime, volume, options, state, shutdown_requested);
+    };
     while (!shutdown_requested.load(std::memory_order_relaxed)) {
         wait_then_work(shutdown_requested,
-            [] { std::this_thread::sleep_for(std::chrono::seconds(1)); }, [&] {
-                const auto stats = runtime.maintenance_stats();
-                if (!stats.ok()) {
-                    std::wcerr << L"Error: maintenance statistics failed: " << stats.error().message << L"\n";
-                    mark_maintenance_stats_failure(state);
-                    shutdown_requested.store(true, std::memory_order_relaxed);
-                    return;
-                }
-                warn_once(state, stats.value(), options);
-                const auto now = std::chrono::steady_clock::now();
-                if (checkpoint_due(options, stats.value(), state, now))
-                    do_checkpoint(runtime, volume, options, state, shutdown_requested);
-            });
+            [] { std::this_thread::sleep_for(std::chrono::seconds(1)); }, maintenance);
     }
-    return state.exit_failure ? 1 : 0;
+    for (;;) {
+        const int shutdown = do_shutdown(runtime, volume, state, shutdown_requested);
+        if (shutdown >= 0) return shutdown;
+        while (!shutdown_requested.load(std::memory_order_relaxed)) {
+            wait_then_work(shutdown_requested,
+                [] { std::this_thread::sleep_for(std::chrono::seconds(1)); }, maintenance);
+        }
+    }
 }
 
 } // namespace myrd

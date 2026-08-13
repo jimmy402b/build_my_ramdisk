@@ -13,6 +13,15 @@ TEST_CASE(m4_volume_contract_is_concrete) {
     REQUIRE_EQ(volume.drive_letter, L'\0');
 }
 
+TEST_CASE(m4_locked_volume_contract_is_move_only_and_busy_errors_are_narrow) {
+    static_assert(std::is_final_v<myrd::LockedVolume>);
+    static_assert(!std::is_copy_constructible_v<myrd::LockedVolume>);
+    static_assert(std::is_nothrow_move_constructible_v<myrd::LockedVolume>);
+    REQUIRE(myrd::volume_lock_busy_error(ERROR_SHARING_VIOLATION));
+    REQUIRE(myrd::volume_lock_busy_error(ERROR_LOCK_VIOLATION));
+    REQUIRE(!myrd::volume_lock_busy_error(ERROR_ACCESS_DENIED));
+}
+
 TEST_CASE(m4_volume_rejects_runtime_sentinels_before_native_open) {
     myrd::m3::M3AimRuntimeInfo info{};
     info.device_id.value = myrd::aim::kAllDevices;

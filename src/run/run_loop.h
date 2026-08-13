@@ -25,6 +25,7 @@ struct MaintenanceState final {
     const m3::M3CheckpointOutcome&, std::chrono::steady_clock::time_point,
     bool retry_already_used) noexcept;
 void mark_maintenance_stats_failure(MaintenanceState&) noexcept;
+bool shutdown_busy_resume(std::atomic_bool&) noexcept;
 int run_loop(m3::M3AimRuntime&, ProductVolume&, const RunOptions&, std::atomic_bool&);
 
 } // namespace myrd

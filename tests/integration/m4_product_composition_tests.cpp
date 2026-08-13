@@ -17,9 +17,30 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <fstream>
 #include <string>
 
 namespace {
+
+TEST_CASE(product_console_handler_only_stores_shutdown_flag) {
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream source(root / "src/run/main.cpp");
+    const std::string text{std::istreambuf_iterator<char>(source), {}};
+    const auto begin = text.find("BOOL WINAPI console_shutdown_handler");
+    REQUIRE(begin != std::string::npos);
+    const auto end = text.find("myrd::Result<void> require_elevation", begin);
+    REQUIRE(end != std::string::npos);
+    const auto body = text.substr(begin, end - begin);
+    REQUIRE(text.find("std::atomic_bool* g_shutdown_requested") != std::string::npos);
+    REQUIRE(body.find("->store(true, std::memory_order_relaxed)") != std::string::npos);
+    REQUIRE(body.find("std::w") == std::string::npos);
+    REQUIRE(body.find("new ") == std::string::npos);
+    REQUIRE(text.find("SetConsoleCtrlHandler(console_shutdown_handler, TRUE)") != std::string::npos);
+    REQUIRE(text.find("const DWORD handler_error = GetLastError()") != std::string::npos);
+    REQUIRE(text.find("ErrorDomain::win32, handler_error") != std::string::npos);
+    REQUIRE(text.find("SetConsoleCtrlHandler(console_shutdown_handler, FALSE)") != std::string::npos);
+    REQUIRE(text.find("g_shutdown_backing.store(false, std::memory_order_relaxed)") != std::string::npos);
+}
 
 TEST_CASE(product_defaults_are_shared_m3_values) {
     constexpr std::uint64_t kKiB = 1024ull;

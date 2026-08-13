@@ -519,17 +519,26 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] Console handler only stores an atomic flag.
-- [ ] Clean order is lock, extent check, flush, final checkpoint, dismount,
+- [x] Console handler only stores an atomic flag.
+- [x] Clean order is lock, extent check, flush, final checkpoint, dismount,
   mount removal and runtime stop.
-- [ ] Dismount is unreachable without a held volume lock.
-- [ ] Busy lock performs no cleanup mutation, prints Defender/Search guidance,
+- [x] Dismount is unreachable without a held volume lock.
+- [x] Busy lock performs no cleanup mutation, prints Defender/Search guidance,
   clears the request and resumes running.
-- [ ] Forced termination is documented as requiring Windows reboot.
-- [ ] Only complete confirmed cleanup exits 0.
+- [x] Forced termination is documented as requiring Windows reboot.
+- [x] Only complete confirmed cleanup exits 0.
 - [ ] Debug/Release `m4-v3` pass and exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
+
+```text
+Task / status: R6 / DOING
+Start commit / branch: 72fc264c1af0e6fab5c8a73eb8893b49dac7ea2e / feature/m4-contracted-product
+Initial RED: Debug locked-volume contract compilation failed for missing R6 symbols. SPEC REDs then proved each final retry needs its own flush, lock/verify failures need zero cleanup mutation and request clear, reconciliation needs one flushed retry, and indeterminate/capacity R5 state skips final checkpoint while retaining cleanup. Quality REDs proved a `Committed` outcome carrying an error cannot be success, typed capacity cannot retry, handler cleanup must not overwrite the registration error, and resumed maintenance must retain post-wait shutdown gating.
+Implementation and review: exact locked-volume ownership verifies extents on the locked handle; shutdown preserves the frozen action order, logs safe cleanup failures, and only confirmed success prints the exact goodbye. Console callback performs only relaxed atomic store. Final SPEC and quality reviews APPROVED.
+Fresh verification: Debug build, boundary, focused 6/6, m4-v3 1/1 and m3-v2 32/32 passed; Release build, boundary, focused 6/6 and m4-v3 1/1 passed. Allowlist 9/9, stage-0 prohibited scan and diffcheck passed; product lines 1217/2500.
+Open risk / follow-up: R7 retains real destructive AIM/NTFS VM lifecycle evidence. R6 remains DOING until this implementation commit exists; the combined Debug/Release/exact-commit checkbox remains unchecked pending the commit.
+```
 
 ## R7 — Real AIM/NTFS lifecycle
 
