@@ -420,18 +420,30 @@ M4_TASKLIST.md
 
 **Acceptance:**
 
-- [ ] All seven pre-provision anti-misformat checks fail closed.
-- [ ] Provision helper is fixed, embedded, bounded and accepts only disk number
+- [x] All seven pre-provision anti-misformat checks fail closed.
+- [x] Provision helper is fixed, embedded, bounded and accepts only disk number
   and drive letter.
-- [ ] Create produces exactly one GPT basic-data partition and NTFS volume on
+- [x] Create produces exactly one GPT basic-data partition and NTFS volume on
   the exact runtime PhysicalDrive.
-- [ ] First volume flush precedes committed generation-one checkpoint.
-- [ ] Recover locates exact volume by disk extents and never calls provisioning.
-- [ ] Occupied drive letters and ambiguous/mixed volumes are rejected.
-- [ ] `m4-v2`, M3 Windows acceptance and product composition pass.
+- [x] First volume flush precedes committed generation-one checkpoint.
+- [x] Recover locates exact volume by disk extents and never calls provisioning.
+- [x] Occupied drive letters and ambiguous/mixed volumes are rejected.
+- [x] `m4-v2`, M3 Windows acceptance and product composition pass.
 - [ ] Exact commit exists.
 
-**Execution record:** Not started.
+**Execution record:**
+
+```text
+Task / status: R4 / DOING
+Executor / UTC timestamp: delegated implementation agent; independent SPEC and quality reviewers; main controller / 2026-08-13
+Start commit / branch: 62414f2286b84dfcc02c5e3aaec90ba2cf87ccb7 / feature/m4-contracted-product
+Initial RED: correctly loaded VS2022 BuildTools Debug build of myrd_m4_windows_volume_tests failed because src/run/windows_volume.h was missing, exit 1.
+TDD and safety record: subsequent REDs exposed missing native device-number proof, finite-query rejection, create/recover call graph, pre-start drive-letter preflight, one-TU predicate naming, script AST ordering, temporary-file error precedence, and token duplication access. GREEN adds fail-closed runtime/device/address/geometry/sector/layout/extents/mount validation; fixed embedded GPT/NTFS script AST allowlist; bounded helper resource extraction, restricted child handle inheritance, bounded output draining/timeout behavior and cleanup; exact volume device opens/flush; recovery-only discovery; create flush then generation-one checkpoint; elevation/admin preflight; and ownership-safe mount removal.
+Independent approvals: final SPEC review and quality review APPROVED. The R4 temporary cleanup boundary was approved narrowly: mount removal is ordered before stop; R6 owns busy-volume keep-running/shutdown behavior.
+Main-controller verification: fresh Debug exact 4/4, Debug m4-v2 3/3, Debug m3-v2 32/32; fresh Release exact 4/4 and Release m4-v2 3/3; both configuration product-boundary tests PASS. Line count 841/2500. Exact 10/10 allowlist, stage-0, prohibited/resource/callgraph scans and git diff --check PASS.
+R7 follow-up: real destructive AIM/NTFS provisioning, forced-kill/reboot and VM evidence remain R7.
+Exact commit: pending; this R4 record intentionally remains DOING until the implementation commit exists.
+```
 
 ## R5 — Persistence maintenance loop
 

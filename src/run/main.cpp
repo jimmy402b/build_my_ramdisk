@@ -1,10 +1,12 @@
 #include "cli.h"
 #include "src/m3/m3_lifecycle_runner.h"
 #include "src/m3/m3_windows_acceptance.h"
+#include "windows_volume.h"
 #include "src/persistence/image_creator.h"
 #include "src/persistence/recovery_engine.h"
 #include "src/persistence/vhdx_reader.h"
 #include <bcrypt.h>
+#include <windows.h>
 #include <iostream>
 #include <limits>
 #include <span>
@@ -13,6 +15,16 @@
 
 namespace {
 enum class BundleMode { Create, Recover };
+
+myrd::Result<void> require_elevation() {
+    HANDLE token{}; if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY|TOKEN_DUPLICATE,&token)) return myrd::Result<void>::failure({myrd::ErrorDomain::win32,GetLastError(),L"require_elevation",L"OpenProcessToken failed"});
+    SID_IDENTIFIER_AUTHORITY authority=SECURITY_NT_AUTHORITY; PSID admin{};
+    if(!AllocateAndInitializeSid(&authority,2,SECURITY_BUILTIN_DOMAIN_RID,DOMAIN_ALIAS_RID_ADMINS,0,0,0,0,0,0,&admin)){DWORD error=GetLastError();CloseHandle(token);return myrd::Result<void>::failure({myrd::ErrorDomain::win32,error,L"require_elevation",L"administrator SID creation failed"});}
+    TOKEN_ELEVATION elevation{}; DWORD returned{}; BOOL ok=GetTokenInformation(token,TokenElevation,&elevation,sizeof(elevation),&returned); DWORD error=GetLastError(); HANDLE impersonation{}; BOOL duplicated=DuplicateToken(token,SecurityIdentification,&impersonation); DWORD duplicate_error=GetLastError(); BOOL member{}; BOOL member_ok=duplicated&&CheckTokenMembership(impersonation,admin,&member); DWORD member_error=GetLastError(); if(impersonation)CloseHandle(impersonation); FreeSid(admin); CloseHandle(token);
+    if(!duplicated)return myrd::Result<void>::failure({myrd::ErrorDomain::win32,duplicate_error,L"require_elevation",L"DuplicateToken failed"});
+    if(!ok || returned<sizeof(elevation) || !member_ok || !elevation.TokenIsElevated || !member) return myrd::Result<void>::failure({myrd::ErrorDomain::usage,!member_ok?member_error:error,L"require_elevation",L"run requires an elevated administrator token"});
+    return myrd::Result<void>::success();
+}
 
 myrd::Result<BundleMode> classify_bundle(const std::filesystem::path& root) {
     std::error_code ec;
@@ -142,6 +154,8 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
     const auto& options = *parsed.run;
+    const auto elevated=require_elevation();
+    if(!elevated.ok()){print_run_error(options.bundle,elevated.error());return 1;}
     const auto context = myrd::OperationContext{
         {}, std::chrono::steady_clock::now() + std::chrono::minutes(5)};
     const auto mode = classify_bundle(options.bundle);
@@ -150,6 +164,14 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
     const bool recover = mode.value() == BundleMode::Recover;
+    SetLastError(ERROR_SUCCESS); const DWORD drive_mask=GetLogicalDrives(); const DWORD drive_error=GetLastError();
+    const bool drive_query_ok=drive_mask!=0 || drive_error==ERROR_SUCCESS;
+    if (!recover && (!drive_query_ok || drive_mask &
+        (1u << (options.drive_letter - L'A')))) {
+        print_run_error(options.bundle, {myrd::ErrorDomain::usage, 1,
+            L"preflight_drive_letter", !drive_query_ok ? L"GetLogicalDrives failed" : L"requested drive letter is occupied"});
+        return 1;
+    }
     auto image = recover
         ? myrd::persistence::recover_complete_image(
             context, options.bundle, "disk.rdm",
@@ -224,9 +246,52 @@ int wmain(int argc, wchar_t* argv[]) {
         if (!cleanup.ok()) std::wcerr << L"Runtime cleanup failed\n";
         return 1;
     }
-    std::wcout << L"PhysicalDrive" << runtime.value()->info().disk.physical_drive_number << L"\n";
-    const auto stopped = runtime.value()->stop();
-    std::wcerr << L"Windows volume setup unavailable\n";
-    if (!stopped.ok()) std::wcerr << L"Runtime cleanup failed\n";
-    return 1;
+    auto volume = recover
+        ? myrd::find_recovered_volume(runtime.value()->info(), options.drive_letter,
+                                      std::chrono::seconds(120))
+        : myrd::provision_new_volume(runtime.value()->info(), options.drive_letter,
+                                     std::chrono::seconds(120));
+    auto stop_with_volume_cleanup = [&](const myrd::ProductVolume& held) {
+        const auto removed = myrd::remove_drive_letter(held);
+        const auto stopped = runtime.value()->stop();
+        if (!removed.ok()) print_run_error(options.bundle, removed.error());
+        if (!stopped.ok()) std::wcerr << L"Runtime cleanup failed\n";
+        return removed.ok() && stopped.ok();
+    };
+    if (!volume.ok()) {
+        const auto cleanup = runtime.value()->stop();
+        print_run_error(options.bundle, volume.error());
+        if (!cleanup.ok()) std::wcerr << L"Runtime cleanup failed\n";
+        return 1;
+    }
+    if (recover) {
+        auto assigned = myrd::assign_drive_letter(volume.value());
+        if (!assigned.ok()) {
+            const auto cleanup = stop_with_volume_cleanup(volume.value());
+            print_run_error(options.bundle, assigned.error());
+            if (!cleanup) std::wcerr << L"Runtime cleanup failed\n";
+            return 1;
+        }
+    } else {
+        auto flushed = myrd::flush_volume(volume.value());
+        if (!flushed.ok()) {
+            const auto cleanup = stop_with_volume_cleanup(volume.value());
+            print_run_error(options.bundle, flushed.error());
+            if (!cleanup) std::wcerr << L"Runtime cleanup failed\n";
+            return 1;
+        }
+        const auto checkpoint = runtime.value()->checkpoint(context,
+            myrd::persistence::VolumeBarrierKind::WindowsVolumeFlushed);
+        if (!checkpoint.ok() || checkpoint.generation != 1) {
+            const auto cleanup = stop_with_volume_cleanup(volume.value());
+            print_run_error(options.bundle, checkpoint.error.value_or(myrd::Error{
+                myrd::ErrorDomain::persistence, 1, L"first_volume_checkpoint",
+                L"first checkpoint did not commit generation one"}));
+            if (!cleanup) std::wcerr << L"Runtime cleanup failed\n";
+            return 1;
+        }
+    }
+    std::wcout << L"PhysicalDrive" << volume.value().physical_drive_number << L"\n";
+    if (!stop_with_volume_cleanup(volume.value())) return 1;
+    return 0;
 }
