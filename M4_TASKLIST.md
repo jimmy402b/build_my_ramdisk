@@ -164,7 +164,7 @@ task evidence.
 | R0 | Clean product boundary | DONE | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
 | R1 | Online compaction feasibility | DONE | R0 | NO-GO evidence, owner amendment, explicit defer | `docs(m4): resolve compaction scope` |
 | R2 | Exact product CLI | DONE | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
-| R3 | Minimal M3 product runtime | DOING | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
+| R3 | Minimal M3 product runtime | DONE | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
 | R4 | Exact Windows volume | PENDING | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
 | R5 | Persistence maintenance loop | PENDING | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
 | R6 | Safe Ctrl+C shutdown | PENDING | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
@@ -378,14 +378,14 @@ M4_TASKLIST.md
 - [x] Offline compact freezes actionable success/in-use output and never exposes
   `myrd_m3_e2e`, `RawTest` or engineering store/persistence options.
 - [x] M3 `m3-v2`, provider, recovery and Windows acceptance pass.
-- [ ] Exact commit exists.
+- [x] Exact commit exists.
 
 **Execution record:**
 
 ```text
-Task / status: R3 / implementation, reviews and verification complete; exact commit pending (DOING)
+Task / status: R3 / DONE
 Executor / UTC timestamp: assigned gpt-5.6-terra medium implementer; independent Terra/medium SPEC and quality reviewers; main Sol/xhigh controller / 2026-08-13T12:38:53Z
-Start commit / branch / end commit: 65559b4f26c619a423a58199541aecc40db79848 / feature/m4-contracted-product / pending exact R3 commit by the main controller
+Start commit / branch / end commit: 65559b4f26c619a423a58199541aecc40db79848 / feature/m4-contracted-product / 3dc1e2eb95a02048fa5499a07984414096fefb52
 Allowed files / actual files: frozen R3 allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/m3/m3_aim_server_main.cpp; src/m3/m3_lifecycle_runner.h; src/m3/m3_lifecycle_runner.cpp; src/m3/m3_provider.h; src/m3/m3_provider.cpp; src/m3/m3_windows_acceptance.h; src/m3/m3_windows_acceptance.cpp; src/persistence/journal_writer.h; src/persistence/journal_writer.cpp; src/persistence/persistence_types.h; src/run/main.cpp; tests/CMakeLists.txt; tests/integration/m4_product_composition_tests.cpp; tests/unit/m3_journal_writer_tests.cpp; tests/unit/m3_persistence_types_tests.cpp; tests/unit/m4_product_boundary_tests.ps1; tools/Measure-M4ProductLines.ps1
 Dependencies and evidence: R2 DONE at 65559b4; owner-approved RAM-policy amendment committed as 8135fa160ea7760582f9d2136bd0d09eb4c695c7 before final R3 implementation; branch remains feature/m4-contracted-product and M3 GO remains its accepted base
 RED command / observed failure / exit code: initial MSVC Debug `cmake --build --preset debug --target myrd_m4_product_composition_tests --parallel 1` failed because the product composition target/default and maintenance-stat APIs did not exist, exit 1. Independent slice REDs then proved missing frozen code-20/wire support, optional JournalWriter equality/crossing behavior, live provider maintenance facts, provider typed capacity preservation/nonadvance and the offline product wrapper. The amended RAM matrix failed because the former store constructor copied the requested 2 GiB into soft instead of deriving hard/soft/low; shared-limit RED also caught journal 512 MiB and BAT 64 MiB drift from the accepted engineering values. Process REDs proved absent-directory create did not retain generation zero, existing generation zero lacked actionable output, locked compact printed the literal `<the same bundle path>`, unknown nonempty directories lacked the M3 operation/message, runtime start cleanup was ignored, post-start runtime facts were unchecked and newly created generation zero was incorrectly rejected by an unconditional post-start generation gate. Static boundary RED proved the offline wrapper compared its final result to stale pre-lock discovery. Each RED exited 1 for the intended missing behavior before its minimal repair; test-setup mistakes (fixture namespace typo, strict-mode scalar Count and incomplete line-counter fixture files) were recorded as test repairs, not feature REDs.
@@ -394,9 +394,9 @@ Focused Debug verification / exit code: main-controller fresh exact focused CTes
 Cumulative and Release verification / exit code: main-controller fresh Debug `ctest --preset debug -L m3-v2 --output-on-failure` passed 32/32 and `-L m4-v1` passed 1/1, exit 0; fresh Release exact focused set passed 8/8 and Release product boundary passed, exit 0
 Line count / architecture and seam scans: main-controller fresh counter reported TOTAL=452 MAXIMUM=2500, exit 0; exact pre-ledger implementation allowlist was 18/18 and this record adds only M4_TASKLIST.md; `git diff --check` passed; Release product-binary prohibited-token scan and diff prohibited-concept/placeholder scan passed; no online/automatic compaction, new interface, copied publication/reconciliation algorithm, engineering command or test seam entered the product
 VM evidence paths and SHA-256, if applicable: not applicable to R3; real AIM/NTFS lifecycle and destructive/reboot evidence remain R7
-SPEC/PLAN/TASKLIST drift audit: owner RAM-policy amendment is commit 8135fa160ea7760582f9d2136bd0d09eb4c695c7. Independent SPEC review findings for actual-path writer-conflict output and actionable existing-generation-zero recovery were repaired with process-level nonmutation evidence; final SPEC review APPROVED. Independent quality review findings for stale pre-lock compaction comparison, post-start runtime fact validation and safe run diagnostics were repaired; the final create-path generation-zero condition was narrowed to recover mode; final quality review APPROVED. Main controller read the diff and independently reran the fresh evidence above. R3 remains DOING solely because A4 requires the exact task commit before DONE.
+SPEC/PLAN/TASKLIST drift audit: owner RAM-policy amendment is commit 8135fa160ea7760582f9d2136bd0d09eb4c695c7. Independent SPEC review findings for actual-path writer-conflict output and actionable existing-generation-zero recovery were repaired with process-level nonmutation evidence; final SPEC review APPROVED. Independent quality review findings for stale pre-lock compaction comparison, post-start runtime fact validation and safe run diagnostics were repaired; the final create-path generation-zero condition was narrowed to recover mode; final quality review APPROVED. Main controller read the diff and independently reran the fresh evidence above. Exact R3 implementation commit 3dc1e2eb95a02048fa5499a07984414096fefb52 satisfies A4, so R3 is DONE.
 Open risks / explicitly excluded follow-up: Windows elevation, exact-volume discovery/provisioning/anti-misformat and first filesystem checkpoint are R4; maintenance scheduling/journal warning policy is R5; Ctrl+C locked shutdown is R6; real VM kill/reboot/recover is R7; online/automatic compaction remains explicitly deferred outside v1 and was not reintroduced
-Commit subject / commit hash: feat(m4): expose minimal m3 product runtime / pending main-controller exact-path staging and commit
+Commit subject / commit hash: feat(m4): expose minimal m3 product runtime / 3dc1e2eb95a02048fa5499a07984414096fefb52
 ```
 
 ## R4 — Exact Windows volume
