@@ -125,26 +125,45 @@ try {
     $stage = Join-Path $out 'myrd-v1.0.0-windows-x64'
     if ([IO.Directory]::Exists($stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
     Need (-not [IO.Directory]::Exists($stage)) 'ZIP-only collision probe stage is not absent'
+    $zipBefore = [IO.File]::ReadAllBytes($zipPath)
+    $zipBeforeHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
     $priorErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $zipOnlyOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $packager `
+        $null = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $packager `
             -Artifact $fake -OutputDirectory $out -SourceCommit $commit -ToolchainProfile 'test-toolchain' 2>&1)
     }
     finally { $ErrorActionPreference = $priorErrorAction }
     Need ($LASTEXITCODE -ne 0) 'release packager overwrote an existing ZIP'
+    Need ([IO.File]::Exists($zipPath)) 'release packager removed an existing ZIP'
+    Need ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -eq $zipBeforeHash) 'release packager changed an existing ZIP hash'
+    Need ([Convert]::ToBase64String($zipBefore) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($zipPath))) 'release packager changed existing ZIP bytes'
+    Need (-not [IO.Directory]::Exists($stage)) 'release packager created a stage during ZIP-only collision'
 
     Remove-Item -LiteralPath $zipPath -Force
     Need (-not [IO.File]::Exists($zipPath)) 'stage-only collision probe ZIP is not absent'
     [IO.Directory]::CreateDirectory($stage) | Out-Null
+    $sentinel = Join-Path $stage 'preexisting-sentinel.txt'
+    [IO.File]::WriteAllText($sentinel, 'do not modify', [Text.UTF8Encoding]::new($false))
+    $stageBefore = @(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {
+        '{0}|{1}' -f $_.FullName.Substring($stage.Length).TrimStart([IO.Path]::DirectorySeparatorChar), (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    } | Sort-Object)
     $priorErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $stageOnlyOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $packager `
+        $null = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $packager `
             -Artifact $fake -OutputDirectory $out -SourceCommit $commit -ToolchainProfile 'test-toolchain' 2>&1)
     }
     finally { $ErrorActionPreference = $priorErrorAction }
     Need ($LASTEXITCODE -ne 0) 'release packager overwrote an existing stage'
+    Need ([IO.Directory]::Exists($stage)) 'release packager removed an existing stage'
+    Need ([IO.File]::Exists($sentinel)) 'release packager removed an existing stage sentinel'
+    Need ([Text.UTF8Encoding]::new($false).GetString([IO.File]::ReadAllBytes($sentinel)) -eq 'do not modify') 'release packager changed existing stage sentinel content'
+    $stageAfter = @(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {
+        '{0}|{1}' -f $_.FullName.Substring($stage.Length).TrimStart([IO.Path]::DirectorySeparatorChar), (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    } | Sort-Object)
+    Need (($stageBefore -join "`n") -eq ($stageAfter -join "`n")) 'release packager changed existing stage inventory'
+    Need (-not [IO.File]::Exists($zipPath)) 'release packager created a ZIP during stage-only collision'
 }
 finally {
     if ([IO.Directory]::Exists($scratch)) { Remove-Item -LiteralPath $scratch -Recurse -Force }

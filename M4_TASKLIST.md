@@ -691,3 +691,10 @@ README and RELEASE_NOTES now state the local-NTFS bundle and currently-free
 creation-drive-letter prerequisites using the same frozen phrases. Direct
 release-contract and focused Formal12/release-contract CTests are rerun before
 the follow-up documentation commit; no VM, product or driver action is used.
+
+**Collision-preservation coverage repair:** the local release contract now
+snapshots an existing ZIP's exact bytes and SHA-256, and an existing stage's
+sentinel content plus complete file/hash inventory. Rejected ZIP-only and
+stage-only invocations must preserve those pre-existing outputs and create
+neither counterpart. This strengthening passed on its first run; it is not a
+new implementation RED.
