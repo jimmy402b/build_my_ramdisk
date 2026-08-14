@@ -76,6 +76,13 @@ ExtentClass classify_extents(const std::byte* bytes, DWORD count, std::uint32_t 
     if(value->NumberOfDiskExtents!=1) return ExtentClass::Mixed;
     return value->Extents[0].DiskNumber==target ? ExtentClass::Exact : ExtentClass::Other;
 }
+enum class EnumeratedExtentQueryClass { Inspect, SkipUnsupported, TooLarge, Failed };
+EnumeratedExtentQueryClass classify_enumerated_extent_query(BOOL ok, DWORD error) noexcept {
+    if (ok) return EnumeratedExtentQueryClass::Inspect;
+    if (error == ERROR_INVALID_FUNCTION) return EnumeratedExtentQueryClass::SkipUnsupported;
+    if (error == ERROR_MORE_DATA) return EnumeratedExtentQueryClass::TooLarge;
+    return EnumeratedExtentQueryClass::Failed;
+}
 enum class MountClass { Absent, Exact, Occupied, Malformed };
 MountClass classify_mount(wchar_t letter, const wchar_t* paths, std::size_t capacity, const std::wstring& volume) noexcept {
     (void)volume;
@@ -215,7 +222,10 @@ Result<ProductVolume> discover(const m3::M3AimRuntimeInfo& info, wchar_t letter)
                 nullptr, 0, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr);
             const DWORD extent_error = GetLastError();
             CloseHandle(volume);
-            if (!ok) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", extent_error == ERROR_MORE_DATA ? L"volume extents exceed finite query cap" : L"volume extent query failed", extent_error)); }
+            const auto query = classify_enumerated_extent_query(ok, extent_error);
+            if (query == EnumeratedExtentQueryClass::SkipUnsupported) continue;
+            if (query == EnumeratedExtentQueryClass::TooLarge) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume extents exceed finite query cap", extent_error)); }
+            if (query == EnumeratedExtentQueryClass::Failed) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume extent query failed", extent_error)); }
             if (got < offsetof(VOLUME_DISK_EXTENTS, Extents) + sizeof(DWORD)) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"truncated volume extent query")); }
             const auto kind=classify_extents(bytes.data(),got,info.disk.physical_drive_number);
             if(kind==ExtentClass::Invalid) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"truncated or ambiguous volume extents")); }

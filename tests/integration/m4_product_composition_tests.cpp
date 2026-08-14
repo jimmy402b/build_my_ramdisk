@@ -95,17 +95,19 @@ TEST_CASE(lifecycle_child_exception_paths_dispose_after_emergency) {
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
     std::ifstream source(root / "tests/e2e/Invoke-M4RunLifecycle.ps1");
     const std::string text{std::istreambuf_iterator<char>(source), {}};
-    for (const auto phase : {std::string_view{"if($Phase-eq'RecoverShutdown')"},
-                             std::string_view{"if($Phase-eq'OfflineCompact')"}}) {
-        const auto begin = text.find(phase);
-        REQUIRE(begin != std::string::npos);
-        const auto end = text.find("# Negative fixtures", begin);
-        REQUIRE(end != std::string::npos);
-        const auto body = text.substr(begin, end - begin);
-        REQUIRE(body.find("catch{Emergency") != std::string::npos);
-        REQUIRE(body.find("finally{") != std::string::npos);
-        REQUIRE(body.find(".Process.Dispose()") != std::string::npos);
-    }
+    const auto recover_begin = text.find("if($Phase-eq'RecoverShutdown')");
+    const auto offline_begin = text.find("if($Phase-eq'OfflineCompact')", recover_begin);
+    const auto negative_begin = text.find("# Negative fixtures", offline_begin);
+    REQUIRE(recover_begin != std::string::npos);
+    REQUIRE(offline_begin != std::string::npos);
+    REQUIRE(negative_begin != std::string::npos);
+    const auto recover = text.substr(recover_begin, offline_begin - recover_begin);
+    REQUIRE(recover.find("catch{Emergency $c;throw}") != std::string::npos);
+    REQUIRE(recover.find("finally{") != std::string::npos);
+    REQUIRE(recover.find("$c.Process.Dispose()") != std::string::npos);
+    const auto offline = text.substr(offline_begin, negative_begin - offline_begin);
+    REQUIRE(offline.find("catch{Rethrow-OfflineEmergency $third $_}") != std::string::npos);
+    REQUIRE(offline.find("finally{$third.Process.Dispose()}") != std::string::npos);
 }
 
 TEST_CASE(lifecycle_block_cleanup_validates_sentinel_before_child_start) {

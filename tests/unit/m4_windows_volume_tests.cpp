@@ -106,6 +106,19 @@ TEST_CASE(m4_extent_and_mount_predicates_reject_ambiguous_tables) {
     REQUIRE_EQ(myrd::classify_mount(L'R',malformed,3,L"x"),myrd::MountClass::Malformed);
 }
 
+TEST_CASE(m4_enumerated_extent_query_skips_only_unsupported_unrelated_volumes) {
+    REQUIRE_EQ(myrd::classify_enumerated_extent_query(TRUE, ERROR_SUCCESS),
+               myrd::EnumeratedExtentQueryClass::Inspect);
+    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_INVALID_FUNCTION),
+               myrd::EnumeratedExtentQueryClass::SkipUnsupported);
+    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_MORE_DATA),
+               myrd::EnumeratedExtentQueryClass::TooLarge);
+    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_ACCESS_DENIED),
+               myrd::EnumeratedExtentQueryClass::Failed);
+    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_GEN_FAILURE),
+               myrd::EnumeratedExtentQueryClass::Failed);
+}
+
 TEST_CASE(m4_letter_target_selection_bypasses_enumeration_or_fails_closed) {
     std::wstring device;
     REQUIRE_EQ(myrd::classify_letter_target(TRUE, ERROR_SUCCESS, L"\\\\?\\Volume{target}\\", device), myrd::LetterTargetClass::Target);
