@@ -30,12 +30,23 @@ function Write-Utf8NoBomAtomic([string]$Path, [string]$Text) {
 }
 function Assert-InitialManifest($Manifest, [string]$Root) {
     $cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'missing_driver', 'busy_volume', 'compact_lock')
+    $entryFields = @{
+        unknown_nonempty = @('path', 'letter')
+        size_mismatch = @('path', 'letter', 'expected_size')
+        occupied_letter = @('path', 'letter', 'volume_guid')
+        gen0 = @('path', 'letter', 'expected_size')
+        writer_lock = @('path', 'letter', 'expected_size')
+        missing_driver = @('path', 'letter')
+        busy_volume = @('path', 'letter', 'expected_size', 'holder_relative_path')
+        compact_lock = @('path', 'letter', 'expected_size')
+    }
     Need ($Manifest.schema -ceq 'myrd.m4.negative-fixtures.v1') 'negative fixture schema mismatch'
     Need ((@($Manifest.PSObject.Properties.Name) -join ',') -ceq (('schema', 'active_cases') + $cases -join ',')) 'negative fixture fields are not exact'
     Need ((@($Manifest.active_cases) -join ',') -ceq 'missing_driver') 'negative fixture active cases are not initial'
     foreach ($case in $cases) {
         $entry = $Manifest.$case
         Need ($null -ne $entry) "negative fixture entry is absent: $case"
+        Need ((@($entry.PSObject.Properties.Name | Sort-Object) -join ',') -ceq (@($entryFields[$case] | Sort-Object) -join ',')) "negative fixture fields are not exact: $case"
         $expectedPath = Join-Path $Root $case
         Need ([IO.Path]::GetFullPath([string]$entry.path) -ceq $expectedPath) "negative fixture path is invalid: $case"
     }

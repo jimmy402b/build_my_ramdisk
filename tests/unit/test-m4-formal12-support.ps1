@@ -130,6 +130,19 @@ param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[s
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
     [IO.File]::WriteAllText($manifestPath, $validManifestText, [Text.UTF8Encoding]::new($false))
+    $extraField = $validManifestText | ConvertFrom-Json
+    $extraField.size_mismatch | Add-Member -NotePropertyName command -NotePropertyValue 'forbidden'
+    [IO.File]::WriteAllText($manifestPath, (($extraField | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    $extraFieldText = [IO.File]::ReadAllText($manifestPath)
+    $savedErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $extraFieldActivation = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $prepare -FormalRoot $formal -ActivateRemaining 2>$null)
+    $ErrorActionPreference = $savedErrorAction
+    Need ($LASTEXITCODE -ne 0) 'remaining fixture activation accepted an extra case field'
+    Need ([IO.File]::ReadAllText($manifestPath) -ceq $extraFieldText) 'failed extra-field activation changed manifest'
+    Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
+    Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
+    [IO.File]::WriteAllText($manifestPath, $validManifestText, [Text.UTF8Encoding]::new($false))
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $prepare -FormalRoot $formal -ActivateRemaining
     Need ($LASTEXITCODE -eq 0) 'remaining negative-fixture preparation failed'
     $remaining = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
