@@ -684,3 +684,10 @@ The release-contract test is a local static/package-layout contract. Formal12
 registration and its `m4-v3` label are unchanged. The packager is deliberately
 local-only and rejects existing stage or ZIP paths rather than publishing or
 overwriting anything.
+
+**Release-surface review repair:** the strengthened contract first REDed with
+`README is missing support requirement: bundle 目录必须位于本机 NTFS 卷`.
+README and RELEASE_NOTES now state the local-NTFS bundle and currently-free
+creation-drive-letter prerequisites using the same frozen phrases. Direct
+release-contract and focused Formal12/release-contract CTests are rerun before
+the follow-up documentation commit; no VM, product or driver action is used.

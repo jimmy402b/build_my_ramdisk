@@ -2,7 +2,7 @@
 
 Release date: 2026-08-15
 
-MyRamDisk v1.0.0 supports one persistent, AIM-backed NTFS RAM disk on Windows 11 x64. Run it from an elevated Administrator PowerShell session with Arsenal Image Mounter (AIM) already installed and available. AIM is a separate prerequisite and is not included in this release archive.
+MyRamDisk v1.0.0 supports one persistent, AIM-backed NTFS RAM disk on Windows 11 x64. Run it from an elevated Administrator PowerShell session with Arsenal Image Mounter (AIM) already installed and available. AIM is a separate prerequisite and is not included in this release archive. bundle 目录必须位于本机 NTFS 卷；创建时指定的盘符必须当前空闲。
 
 Public commands:
 

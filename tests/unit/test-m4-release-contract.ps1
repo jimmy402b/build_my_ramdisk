@@ -52,11 +52,20 @@ foreach ($heading in $headings) {
 foreach ($command in @('myrd.exe run --bundle', 'myrd.exe compact --bundle')) {
     Need ($readme -match [regex]::Escape($command)) "README is missing command $command"
 }
+$localNtfsRequirement = 'bundle ' + [string]::new([char[]]@(0x76EE,0x5F55,0x5FC5,0x987B,0x4F4D,0x4E8E,0x672C,0x673A)) + ' NTFS ' + [char]0x5377
+$freeLetterRequirement = [string]::new([char[]]@(0x521B,0x5EFA,0x65F6,0x6307,0x5B9A,0x7684,0x76D8,0x7B26,0x5FC5,0x987B,0x5F53,0x524D,0x7A7A,0x95F2))
+foreach ($requirement in @($localNtfsRequirement, $freeLetterRequirement)) {
+    Need ($readme.Contains($requirement)) "README is missing support requirement: $requirement"
+}
 
 $notes = Join-Path $root 'RELEASE_NOTES.md'
 $packager = Join-Path $root 'tools\New-M4ReleasePackage.ps1'
 Need ([IO.File]::Exists($notes)) 'missing RELEASE_NOTES.md'
 Need ([IO.File]::Exists($packager)) 'missing M4 release packager'
+$notesText = Get-Content -LiteralPath $notes -Raw -Encoding UTF8
+foreach ($requirement in @($localNtfsRequirement, $freeLetterRequirement)) {
+    Need ($notesText.Contains($requirement)) "RELEASE_NOTES is missing supported-profile requirement: $requirement"
+}
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-release-contract-' + [Guid]::NewGuid().ToString('N'))
 Need (-not [IO.Directory]::Exists($scratch)) 'release-contract scratch root unexpectedly exists'

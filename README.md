@@ -4,7 +4,7 @@ MyRamDisk 是一个前台运行的、持久化的 Windows RAM disk 产品。它�
 
 ## 支持范围
 
-v1 支持 Windows 11 x64 上的一个 AIM-backed NTFS RAM disk。必须在提升权限的 Administrator PowerShell 中运行，并且 AIM 已安装且可用；本发行包不包含 AIM 或驱动安装程序。产品不承诺广泛 Windows 认证，也不提供服务、GUI、开机自启、多磁盘、驱动安装或在线压缩。
+v1 支持 Windows 11 x64 上的一个 AIM-backed NTFS RAM disk。必须在提升权限的 Administrator PowerShell 中运行，并且 AIM 已安装且可用；本发行包不包含 AIM 或驱动安装程序。bundle 目录必须位于本机 NTFS 卷；创建时指定的盘符必须当前空闲。产品不承诺广泛 Windows 认证，也不提供服务、GUI、开机自启、多磁盘、驱动安装或在线压缩。
 
 ## 快速开始
 
@@ -12,7 +12,7 @@ v1 支持 Windows 11 x64 上的一个 AIM-backed NTFS RAM disk。必须在提升
 .\myrd.exe run --bundle "D:\MyRamDisk\work" --size 4G --drive-letter R:
 ```
 
-`--size` 接受 64 MiB 到 1 TiB 的 `K`、`M`、`G` 或 `T` 后缀。默认 checkpoint 间隔为 600 秒，脏数据阈值为 256 MiB，RAM 上限为 2 GiB；可分别用 `--checkpoint-seconds`、`--checkpoint-dirty-mb` 和 `--ram-limit` 调整。
+`--size` 接受 64 MiB 到 1 TiB 的 `K`、`M`、`G` 或 `T` 后缀。bundle 目录必须位于本机 NTFS 卷，且创建时指定的盘符必须当前空闲。默认 checkpoint 间隔为 600 秒，脏数据阈值为 256 MiB，RAM 上限为 2 GiB；可分别用 `--checkpoint-seconds`、`--checkpoint-dirty-mb` 和 `--ram-limit` 调整。
 
 ## 创建与恢复
 
