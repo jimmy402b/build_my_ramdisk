@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(MyRamDiskM0 VERSION 0.1.0 LANGUAGES CXX)
+project(MyRamDiskM0 VERSION 1.0.0 LANGUAGES CXX)
 
 if(NOT MSVC)
     message(FATAL_ERROR "M0 requires MSVC")

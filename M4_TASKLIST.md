@@ -665,3 +665,22 @@ audit, not for adding features.
 - [ ] `src/run/run_loop.*` contains no compact/compaction path; offline compact
   is routed only by product `main`.
 - [ ] M4 is declared the final milestone; no M5 tasklist or plan exists.
+
+## F. Owner-approved v1 release-candidate preparation
+
+**Status:** candidate preparation only; R7 remains DOING and R8 remains not DOING.
+
+The owner approved a documentation, version-resource and local packaging
+preparation pass for v1.0.0 before Formal12. All compiled product and lifecycle
+inputs are frozen before Formal12; this pass does not run a VM, product process,
+driver action, package stage, release upload or tag.
+
+**Exact allowlist:** `CMakeLists.txt`; `src/run/run_resources.rc`; `README.md`;
+`RELEASE_NOTES.md`; `tools/New-M4ReleasePackage.ps1`;
+`tests/unit/test-m4-release-contract.ps1`; `tests/CMakeLists.txt`;
+`M4_TASKLIST.md`; `docs/superpowers/plans/2026-08-13-m4-contracted-product.md`.
+
+The release-contract test is a local static/package-layout contract. Formal12
+registration and its `m4-v3` label are unchanged. The packager is deliberately
+local-only and rejects existing stage or ZIP paths rather than publishing or
+overwriting anything.

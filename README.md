@@ -1,94 +1,60 @@
 # MyRamDisk
 
-基于已安装的 `phdskmnt.sys` 内核驱动、由本项目自行实现 Shared Memory Proxy 和内存块后端的 Windows RAM Disk 项目。
+MyRamDisk 是一个前台运行的、持久化的 Windows RAM disk 产品。它使用已单独安装的 Arsenal Image Mounter (AIM)；本项目遵循 GNU Affero General Public License v3.0，详情见 [LICENSE](LICENSE)。
 
-## 当前状态
+## 支持范围
 
-- M0：driver-only 可行性验证，机器范围内 GO。
-- M1：Shared Memory Proxy 产品化里程碑，机器范围内 GO。
-- M2/M2.1：动态按块分配、首次访问加载和一致性快照基础已完成。
-- M3：VHDX + journal + 双槽 manifest 持久化里程碑已通过最终验收（证据冻结提交 `4ece675`）；Task41 真实 AIM+NTFS、Task42 崩溃矩阵、Task43 Formal 和 Task44 漂移审计均为 GO。
+v1 支持 Windows 11 x64 上的一个 AIM-backed NTFS RAM disk。必须在提升权限的 Administrator PowerShell 中运行，并且 AIM 已安装且可用；本发行包不包含 AIM 或驱动安装程序。产品不承诺广泛 Windows 认证，也不提供服务、GUI、开机自启、多磁盘、驱动安装或在线压缩。
 
-M1 已能直接调用内核驱动创建 64 MiB RAM disk，并通过 Windows 原始磁盘路径完成真实 READ、WRITE、ZERO、UNMAP、flush 和精确删除。Release 可执行文件已连续完成 20/20 次实机生命周期；完整证据见 `docs/validation/m1-proxy-acceptance.md`。
+## 快速开始
 
-M3 可以创建和重开镜像 bundle，在第一次访问块时从已提交的 journal/VHDX 按需加载，手动执行 checkpoint 和 compaction，并在异常退出或断电后恢复最近一次完整、已确认提交的 checkpoint。最终真实 AIM + NTFS、Windows 原生 VHDX、8 次进程终止、2 次受控断电和 100-seed Formal soak 证据见 `docs/validation/m3-persistence-acceptance.md` 与 `docs/validation/m3-final-audit.md`。
+```powershell
+.\myrd.exe run --bundle "D:\MyRamDisk\work" --size 4G --drive-letter R:
+```
 
-M3 仍不是最终桌面产品：定时 checkpoint、Windows 服务、开机自动恢复、关机策略、自动压缩、GUI 和多磁盘策略属于 M4。普通写入进入 RAM 后即可完成；只有成功发布的 checkpoint 才有断电恢复承诺。
+`--size` 接受 64 MiB 到 1 TiB 的 `K`、`M`、`G` 或 `T` 后缀。默认 checkpoint 间隔为 600 秒，脏数据阈值为 256 MiB，RAM 上限为 2 GiB；可分别用 `--checkpoint-seconds`、`--checkpoint-dirty-mb` 和 `--ram-limit` 调整。
 
-## 环境要求
+## 创建与恢复
 
-- Windows 11 x64
-- Visual Studio 2022 Build Tools 与 MSVC x64
-- CMake >= 3.25
-- Ninja >= 1.11
-- 已安装并运行的签名 `phdskmnt.sys`（本机验收版本 1.2.28.93）
-- 实机驱动测试需要管理员权限
+不存在或为空的 bundle 会创建新的镜像和 NTFS 卷。包含完整 `disk.rdm` 的 bundle 会恢复既有镜像；恢复路径绝不会格式化卷。恢复必须使用与原来相同的 `run` 命令（特别是相同的 bundle、大小和盘符）。
 
-## 构建与本地测试
+## Checkpoint 与 journal
+
+运行中会按间隔或脏数据阈值发布 checkpoint；只有已发布的 checkpoint 才能在非正常停止后恢复。journal 到 80% 时会给出一次警告。journal 写满时，产品停止后续 checkpoint 并在安全清理后以退出码 1 结束；此时先离线压缩，再重新运行原来的 `run` 命令。
+
+## 离线压缩
+
+仅在 `myrd run` 已停止、且 bundle 写入锁可独占取得时执行：
+
+```powershell
+.\myrd.exe compact --bundle "D:\MyRamDisk\work"
+```
+
+离线压缩不启动或发现 AIM，只需要 bundle 文件系统访问和独占写入锁。v1 没有在线压缩；相关未来工作见 [docs/deferred/online-compaction.md](docs/deferred/online-compaction.md)。
+
+## 安全关闭与强制终止
+
+先关闭使用该盘的应用，再按 Ctrl+C。MyRamDisk 按锁定卷、验证 extent、刷新、最终 checkpoint、卸载、移除盘符、停止运行时的顺序清理；若卷被占用，请关闭 Defender 或 Windows Search 对该盘的扫描/索引后重试 Ctrl+C。
+
+普通关闭后，等待 `myrd` 退出，运行相同 bundle 的 `compact`，再运行原来的 `run` 命令。若 journal 已满，也按 Ctrl+C 等待安全清理（退出码 1），离线压缩后再重启。若产品进程被强制终止，只能终止该产品进程；在恢复前先对 VMware 或 Windows 执行硬重置，然后重新运行完全相同的 `run` 命令。强制终止不承诺清理或身份后续处理。
+
+## 退出码
+
+`0` 表示成功；`1` 表示运行、checkpoint、压缩或清理失败；`2` 表示命令行用法错误。
+
+## 已知限制
+
+只支持一个前台磁盘。没有服务、GUI、自动恢复、自动压缩、在线压缩、多磁盘或驱动安装。不要在产品运行时执行离线压缩。
+
+## 构建与验证
 
 ```powershell
 . .\tools\Enter-MsvcEnvironment.ps1
 cmake --preset msvc
-cmake --build --preset debug
+cmake --build --preset debug --target myrd
 ctest --preset debug --output-on-failure
-cmake --build --preset release
-ctest --preset release --output-on-failure
 ```
-
-## M3 操作边界与验证
-
-- M3 bundle、支持的 VHDX profile、备份/恢复、checkpoint、compaction、关闭和故障处置：`docs/operations/m3-persistence.md`
-- M3 真实环境测试：`docs/testing/m3-e2e.md`
-- M3 实现与验收证据：`docs/validation/m3-persistence-acceptance.md`
-- M3 最终 Task 44 审计：`docs/validation/m3-final-audit.md`
-
-列出 M3 验证层级不会改变系统：
-
-```powershell
-.\tools\Invoke-M3Verification.ps1 -ListCommands
-```
-
-本地 Debug/Release 回归不创建真实 AIM 设备：
-
-```powershell
-.\tools\Invoke-M3Verification.ps1 -Tier Local -Configuration Debug
-.\tools\Invoke-M3Verification.ps1 -Tier Local -Configuration Release
-```
-
-`RealFunctional`、`Crash Full` 和 `Soak Formal` 是需要显式证据路径、安全确认或管理员来宾机的正式门禁。不要把 `Preflight`、`Crash Simulated`、`Soak Quick` 或 required `SKIP/BLOCKED` 解释为 M3 GO。
-
-## M1 验证
-
-列出将执行的门，不改变系统：
-
-```powershell
-.\tools\Invoke-M1Verification.ps1 -Tier M1-V6 -ListCommands
-```
-
-在管理员 PowerShell 中执行完整 M1 V0-V6：
-
-```powershell
-.\tools\Invoke-M1Verification.ps1 -Tier M1-V6 -Configuration Debug
-```
-
-完整流程会构建 Debug/Release，运行 M1 单元测试、10,000-case fuzz、50 次本地 SHM、Release import audit、M0 只读驱动查询、8 个故障注入和 20 次 Release 实机生命周期。
-
-E2E harness 会串行化真实运行，只在 `try/finally` 保护的测试窗口停止 `deviosvc`，随后恢复原状态并确认 StartMode 未改变。报告写入被忽略的 `reports/` 目录，child report 原子发布后会被哈希锁定并再次校验。
-
-## M0 回归
-
-```powershell
-.\tools\Invoke-M0Verification.ps1 -Tier V4
-```
-
-M1 provider 公布 ZERO/UNMAP 能力；M0 provider 保持冻结的旧 INFO flags=0。M0 实机回归必须持续通过。
-
-## 安全与授权边界
-
-M0/M1 GO 不授权卸载 AIM Toolkit、删除 `deviosvc`、替换驱动或分发独立驱动安装包。当前代码只验证在本机已有签名驱动上的 driver-only 运行时路径。独立安装和 Toolkit 移除仍需在一次性虚拟机中单独验证。
 
 ## 许可证
 
-本项目使用 GNU Affero General Public License v3.0，详见 `LICENSE`。
-
-固定 AIM 协议参考来自 Arsenal Image Mounter 的 AGPL-3.0 源码，固定提交为 `d379caa027d21902e45fce8c9daf02fd116c2dda`。
+MyRamDisk 使用 GNU Affero General Public License v3.0。固定 AIM 协议参考来自 Arsenal Image Mounter 的 AGPL-3.0 源码；AIM 必须独立获取和安装。

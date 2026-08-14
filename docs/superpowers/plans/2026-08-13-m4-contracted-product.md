@@ -1230,3 +1230,16 @@ previous-branch evidence, code-review assertion or nearly-complete result
 substitutes for fresh command output.
 
 The milestone ends here. There is no M5 plan.
+
+## 3. Owner-approved v1 candidate preparation (2026-08-15)
+
+This bounded preparation pass precedes Formal12 and freezes all compiled and
+lifecycle inputs. It is limited exactly to: `CMakeLists.txt`,
+`src/run/run_resources.rc`, `README.md`, `RELEASE_NOTES.md`,
+`tools/New-M4ReleasePackage.ps1`, `tests/unit/test-m4-release-contract.ps1`,
+`tests/CMakeLists.txt`, `M4_TASKLIST.md`, and this plan. It adds v1.0.0 version
+metadata, user-facing release documentation, an offline local archive packager,
+and a non-product release contract. It does not change Formal12 registration,
+run any VM/product/driver action, stage a real release, create a tag, or alter
+historical lifecycle evidence. R7 remains DOING and R8 remains not DOING until
+their existing acceptance criteria have fresh evidence.

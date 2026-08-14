@@ -1680,3 +1680,9 @@ add_test(NAME unit.m4.formal12_support
         -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-formal12-support.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}")
 set_tests_properties(unit.m4.formal12_support PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
+add_test(NAME unit.m4.release_contract
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-release-contract.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}")
+set_tests_properties(unit.m4.release_contract PROPERTIES LABELS "m4-v0" TIMEOUT 30)
