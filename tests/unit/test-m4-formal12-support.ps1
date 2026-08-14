@@ -62,6 +62,36 @@ exit 77
     Need ([string]$captured.child_stdout -eq 'control-out') 'control capture stdout is not exact'
     Need ([string]$captured.child_stderr -eq 'control-err') 'control capture stderr is not exact'
 
+    $runner = Join-Path $scratch 'runner.ps1'
+    [IO.File]::WriteAllText($runner, @'
+param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[string]$StateFile,[switch]$SafetyAcknowledged)
+[Console]::Out.Write("$($env:MYRD_M4_APPROVED_VM)|$($env:MYRD_M4_SOURCE_COMMIT)")
+'@, [Text.UTF8Encoding]::new($false))
+    $oldApproved = $env:MYRD_M4_APPROVED_VM
+    $oldSource = $env:MYRD_M4_SOURCE_COMMIT
+    $hadApproved = Test-Path Env:MYRD_M4_APPROVED_VM
+    $hadSource = Test-Path Env:MYRD_M4_SOURCE_COMMIT
+    $commit = ('a' * 40) -join ''
+    try {
+        $env:MYRD_M4_APPROVED_VM = '1'
+        $env:MYRD_M4_SOURCE_COMMIT = ('b' * 40) -join ''
+        $controlEnvironment = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $capture -Mode Control -ChildFile $runner | ConvertFrom-Json)[0]
+        Need ([string]$controlEnvironment.child_stdout -eq '|') 'control capture inherited source or approval environment'
+        $savedErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $missingCommit = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $capture -Mode Runner -ChildFile $runner -Phase CreateKill -Executable x -Bundle y -DriveLetter R -StateFile z 2>$null)
+        $ErrorActionPreference = $savedErrorAction
+        Need ($LASTEXITCODE -ne 0) 'runner capture accepted a missing source commit'
+        $withoutAck = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $capture -Mode Runner -ChildFile $runner -SourceCommit $commit -Phase CreateKill -Executable x -Bundle y -DriveLetter R -StateFile z | ConvertFrom-Json)[0]
+        Need ([string]$withoutAck.child_stdout -eq "|$commit") 'runner capture inherited approval or source environment'
+        $withAck = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $capture -Mode Runner -ChildFile $runner -SourceCommit $commit -Phase CreateKill -Executable x -Bundle y -DriveLetter R -StateFile z -SafetyAcknowledged | ConvertFrom-Json)[0]
+        Need ([string]$withAck.child_stdout -eq "1|$commit") 'runner capture did not pass explicit approval environment'
+    }
+    finally {
+        if ($hadApproved) { $env:MYRD_M4_APPROVED_VM = $oldApproved } else { Remove-Item Env:MYRD_M4_APPROVED_VM -ErrorAction SilentlyContinue }
+        if ($hadSource) { $env:MYRD_M4_SOURCE_COMMIT = $oldSource } else { Remove-Item Env:MYRD_M4_SOURCE_COMMIT -ErrorAction SilentlyContinue }
+    }
+
     $formal = Join-Path $scratch 'formal'
     $bundle = Join-Path $formal 'bundle'
     $gen0 = Join-Path $scratch 'gen0'
@@ -85,16 +115,32 @@ exit 77
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
 
+    $validManifestText = [IO.File]::ReadAllText($manifestPath)
+    $tampered = $validManifestText | ConvertFrom-Json
+    $tampered.size_mismatch.path = (Join-Path $scratch 'outside')
+    [IO.File]::WriteAllText($manifestPath, (($tampered | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $formal 'm4-negative-missing_driver.v1.json'), '{}', [Text.UTF8Encoding]::new($false))
+    $tamperedText = [IO.File]::ReadAllText($manifestPath)
+    $savedErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $tamperedActivation = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $prepare -FormalRoot $formal -ActivateRemaining 2>$null)
+    $ErrorActionPreference = $savedErrorAction
+    Need ($LASTEXITCODE -ne 0) 'remaining fixture activation accepted tampered metadata'
+    Need ([IO.File]::ReadAllText($manifestPath) -ceq $tamperedText) 'failed activation changed tampered manifest'
+    Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
+    Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
+    [IO.File]::WriteAllText($manifestPath, $validManifestText, [Text.UTF8Encoding]::new($false))
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $prepare -FormalRoot $formal -ActivateRemaining
     Need ($LASTEXITCODE -eq 0) 'remaining negative-fixture preparation failed'
     $remaining = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Need (($remaining.active_cases -join ',') -eq 'unknown_nonempty,size_mismatch,occupied_letter,gen0,writer_lock,busy_volume,compact_lock') 'remaining fixture cases are not exact or ordered'
+    $remaining.active_cases = @('missing_driver')
+    Need (($remaining | ConvertTo-Json -Compress -Depth 8) -ceq (($validManifestText | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 8))) 'activation changed fixture metadata beyond active_cases'
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
 
     $querySource = Get-Content -LiteralPath $aimQuery -Raw -Encoding UTF8
-    foreach ($required in @('query_version\s*\(', 'list_devices\s*\(')) {
+    foreach ($required in @('discover_aim_adapter\s*\(', 'query_version\s*\(', 'list_devices\s*\(', 'discover_aim_adapter failed', 'query_version failed', 'list_devices failed')) {
         Need ($querySource -match $required) "AIM query helper is missing call $required"
     }
     foreach ($forbidden in @('create_proxy_disk', 'remove_device', 'query_device', 'rescan_aim_adapter', 'Initialize-Disk', 'Format-Volume')) {

@@ -28,6 +28,29 @@ function Write-Utf8NoBomAtomic([string]$Path, [string]$Text) {
         [IO.File]::Move($temporary, $Path)
     }
 }
+function Assert-InitialManifest($Manifest, [string]$Root) {
+    $cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'missing_driver', 'busy_volume', 'compact_lock')
+    Need ($Manifest.schema -ceq 'myrd.m4.negative-fixtures.v1') 'negative fixture schema mismatch'
+    Need ((@($Manifest.PSObject.Properties.Name) -join ',') -ceq (('schema', 'active_cases') + $cases -join ',')) 'negative fixture fields are not exact'
+    Need ((@($Manifest.active_cases) -join ',') -ceq 'missing_driver') 'negative fixture active cases are not initial'
+    foreach ($case in $cases) {
+        $entry = $Manifest.$case
+        Need ($null -ne $entry) "negative fixture entry is absent: $case"
+        $expectedPath = Join-Path $Root $case
+        Need ([IO.Path]::GetFullPath([string]$entry.path) -ceq $expectedPath) "negative fixture path is invalid: $case"
+    }
+    foreach ($case in @('unknown_nonempty', 'size_mismatch', 'gen0', 'writer_lock', 'missing_driver', 'busy_volume', 'compact_lock')) {
+        Need ([string]$Manifest.$case.letter -ceq 'S') "negative fixture letter is invalid: $case"
+    }
+    foreach ($case in @('size_mismatch', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')) {
+        Need ([string]$Manifest.$case.expected_size -ceq '64M') "negative fixture size is invalid: $case"
+    }
+    Need ([string]$Manifest.busy_volume.holder_relative_path -ceq 'holder.bin') 'negative fixture busy holder is invalid'
+    Need ([string]$Manifest.occupied_letter.letter -match '^[A-Z]$') 'negative fixture occupied letter is invalid'
+    Need ([string]$Manifest.occupied_letter.volume_guid -match '^\\\\\?\\Volume\{[0-9A-Fa-f-]+\}\\$') 'negative fixture occupied GUID is invalid'
+    foreach ($case in @('unknown_nonempty', 'occupied_letter', 'missing_driver')) { Need (-not (Test-Path -LiteralPath (Join-Path $Root $case))) "negative fixture absent path exists: $case" }
+    foreach ($case in @('size_mismatch', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')) { Need ([IO.File]::Exists((Join-Path $Root "$case\disk.rdm"))) "negative fixture disk is absent: $case" }
+}
 
 $formal = [IO.Path]::GetFullPath($FormalRoot).TrimEnd('\')
 $bundle = Join-Path $formal 'bundle'
@@ -38,7 +61,7 @@ if ($ActivateRemaining) {
     Need ([IO.File]::Exists($manifestPath)) 'negative fixture manifest is absent'
     Need ([IO.File]::Exists((Join-Path $formal 'm4-negative-missing_driver.v1.json'))) 'immutable missing-driver evidence is absent'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Need ($manifest.schema -eq 'myrd.m4.negative-fixtures.v1') 'negative fixture schema mismatch'
+    Assert-InitialManifest $manifest $negativeRoot
     $manifest.active_cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')
     Write-Utf8NoBomAtomic $manifestPath (($manifest | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine)
     exit 0

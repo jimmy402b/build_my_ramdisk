@@ -26,6 +26,7 @@ if ($Mode -eq 'Runner') {
     foreach ($value in @($Phase, $Executable, $Bundle, $DriveLetter, $StateFile)) {
         if ([string]::IsNullOrWhiteSpace($value)) { throw 'runner argument is missing' }
     }
+    if ([string]::IsNullOrWhiteSpace($SourceCommit)) { throw 'runner source commit is missing' }
 }
 
 $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Quote-ChildArgument $ChildFile))
@@ -40,7 +41,9 @@ $psi.Arguments = $arguments -join ' '
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
-if (-not [string]::IsNullOrWhiteSpace($SourceCommit)) { $psi.EnvironmentVariables['MYRD_M4_SOURCE_COMMIT'] = $SourceCommit }
+[void]$psi.EnvironmentVariables.Remove('MYRD_M4_APPROVED_VM')
+[void]$psi.EnvironmentVariables.Remove('MYRD_M4_SOURCE_COMMIT')
+if ($Mode -eq 'Runner') { $psi.EnvironmentVariables['MYRD_M4_SOURCE_COMMIT'] = $SourceCommit }
 if ($Mode -eq 'Runner' -and $SafetyAcknowledged) { $psi.EnvironmentVariables['MYRD_M4_APPROVED_VM'] = '1' }
 
 $process = New-Object Diagnostics.Process
