@@ -119,26 +119,40 @@ exit `$LASTEXITCODE
     Need ($roundTrip.phase -ceq $quotedPhase -and $roundTrip.executable -ceq $quotedExecutable -and $roundTrip.bundle -ceq $quotedBundle -and $roundTrip.drive_letter -ceq 'R' -and $roundTrip.state_file -ceq $quotedState) 'runner capture command-line quoting did not round-trip frozen arguments'
 
     $startFailure = Join-Path $scratch 'start-failure.ps1'
+    $startMarker = Join-Path $scratch 'unexpected-start.marker'
+    $startRunner = Join-Path $scratch 'start-runner.ps1'
+    [IO.File]::WriteAllText($startRunner, @"
+param([string]`$Phase,[string]`$Executable,[string]`$Bundle,[string]`$DriveLetter,[string]`$StateFile,[switch]`$SafetyAcknowledged)
+[IO.File]::WriteAllText('$startMarker', [string]`$PID, [Text.UTF8Encoding]::new(`$false))
+"@, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($startFailure, @"
 `$ErrorActionPreference = 'Continue'
 `$huge = 'x' * 1000000
-& '$capture' -Mode Runner -ChildFile '$runner' -SourceCommit $('c' * 40 -join '') -Phase CreateKill -Executable x -Bundle `$huge -DriveLetter R -StateFile z
+& '$capture' -Mode Runner -ChildFile '$startRunner' -SourceCommit $('c' * 40 -join '') -Phase CreateKill -Executable x -Bundle `$huge -DriveLetter R -StateFile z
 if (-not `$?) { exit 1 }
 exit 0
 "@, [Text.UTF8Encoding]::new($false))
-    $beforePids = @(Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object Id)
-    $startError = Join-Path $scratch 'start-failure.stderr'
-    $savedErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $startOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startFailure 2>$startError)
-    $ErrorActionPreference = $savedErrorAction
-    Need ($startOutput.Count -eq 1) 'start failure did not emit exactly one JSON record'
-    $startRecord = $startOutput[0] | ConvertFrom-Json
-    Need ([int]$startRecord.child_exit -eq -1) 'oversized runner command unexpectedly started'
-    Need ($LASTEXITCODE -ne 0) 'start failure wrapper returned zero'
-    Need (($null -eq $startRecord.child_pid -or [int]$startRecord.child_pid -eq 0) -and [int]$startRecord.child_exit -eq -1) 'start failure JSON record has a child identity or exit'
-    $afterPids = @(Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object Id)
-    Need (@($afterPids | Where-Object { $beforePids -notcontains $_ }).Count -eq 0) 'start failure left a child process behind'
+    try {
+        $startError = Join-Path $scratch 'start-failure.stderr'
+        $savedErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $startOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startFailure 2>$startError)
+        $ErrorActionPreference = $savedErrorAction
+        Need ($startOutput.Count -eq 1) 'start failure did not emit exactly one JSON record'
+        $startRecord = $startOutput[0] | ConvertFrom-Json
+        Need ([int]$startRecord.child_exit -eq -1) 'oversized runner command unexpectedly started'
+        Need ($LASTEXITCODE -ne 0) 'start failure wrapper returned zero'
+        Need (($null -eq $startRecord.child_pid -or [int]$startRecord.child_pid -eq 0) -and [int]$startRecord.child_exit -eq -1) 'start failure JSON record has a child identity or exit'
+        Need (-not [IO.File]::Exists($startMarker)) 'start failure launched the synthetic child'
+    }
+    finally {
+        if ([IO.File]::Exists($startMarker)) {
+            $markerPid = [IO.File]::ReadAllText($startMarker)
+            $markerProcess = Get-Process -Id $markerPid -ErrorAction SilentlyContinue
+            if ($null -ne $markerProcess) { Stop-Process -Id $markerProcess.Id -Force -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $startMarker -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     $formal = Join-Path $scratch 'formal'
     $bundle = Join-Path $formal 'bundle'
