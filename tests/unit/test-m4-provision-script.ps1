@@ -41,7 +41,7 @@ $classes = @{
   'exact-size-and-sectors' = @('geometry.DiskSize.QuadPart != static_cast<LONGLONG>(info.virtual_bytes)', 'geometry.Geometry.BytesPerSector != info.sector_size')
   'raw-no-partition' = @('layout.PartitionStyle == PARTITION_STYLE_RAW', 'layout.PartitionCount == 0')
   'boot-system' = @("`$disk.IsBoot -or `$disk.IsSystem")
-  'zero-multiple-mixed-extents' = @('value->NumberOfDiskExtents!=1', 'ExtentClass::Mixed', 'matches.size() != 1')
+  'zero-multiple-mixed-extents' = @('value->NumberOfDiskExtents!=1', 'ExtentClass::Mixed', 'classify_volume_matches(matches.size()) != VolumeMatchClass::Exact')
   'occupied-letter' = @('drive_mask & (1u << (letter - L''A''))')
   'ambiguous-identity' = @('volume identity is ambiguous')
 }

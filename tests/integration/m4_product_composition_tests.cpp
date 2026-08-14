@@ -91,6 +91,26 @@ TEST_CASE(product_lifecycle_status_lines_explicitly_flush_native_pipes) {
     REQUIRE(status_writer_text.find("std::flush") != std::string::npos);
 }
 
+TEST_CASE(product_volume_discovery_classifies_matches_before_consuming_one) {
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream source(root / "src/run/windows_volume.cpp");
+    const std::string text{std::istreambuf_iterator<char>(source), {}};
+    const auto begin = text.find("Result<ProductVolume> discover(");
+    const auto end = text.find("Result<void> rollback_exact_mount", begin);
+    REQUIRE(begin != std::string::npos);
+    REQUIRE(end != std::string::npos);
+    const auto body = text.substr(begin, end - begin);
+    const auto enumeration_end = body.find(
+        "if (enumeration_error != ERROR_NO_MORE_FILES)");
+    const auto classify = body.find("classify_volume_matches(matches.size())");
+    const auto consume = body.find("matches[0]");
+    REQUIRE(enumeration_end != std::string::npos);
+    REQUIRE(classify != std::string::npos);
+    REQUIRE(consume != std::string::npos);
+    REQUIRE(enumeration_end < classify);
+    REQUIRE(classify < consume);
+}
+
 TEST_CASE(lifecycle_child_exception_paths_dispose_after_emergency) {
     const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
     std::ifstream source(root / "tests/e2e/Invoke-M4RunLifecycle.ps1");
@@ -131,6 +151,17 @@ TEST_CASE(lifecycle_block_cleanup_validates_sentinel_before_child_start) {
     REQUIRE(body.substr(start, guarded - start).find("Need(") == std::string::npos);
     REQUIRE(body.find("try {$cleanup=Emergency $child}") != std::string::npos);
     REQUIRE(body.find("finally {$child.Process.Dispose()}") != std::string::npos);
+}
+
+TEST_CASE(lifecycle_negative_contract_uses_only_realistic_vm_cases) {
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    std::ifstream source(root / "tests/e2e/Invoke-M4RunLifecycle.ps1");
+    const std::string text{std::istreambuf_iterator<char>(source), {}};
+    REQUIRE(text.find(
+        "$NegativeCases=@('unknown_nonempty','size_mismatch','occupied_letter',"
+        "'gen0','writer_lock','missing_driver','busy_volume','compact_lock')")
+        != std::string::npos);
+    REQUIRE(text.find("'ambiguous_recovery' {") == std::string::npos);
 }
 
 TEST_CASE(product_defaults_are_shared_m3_values) {

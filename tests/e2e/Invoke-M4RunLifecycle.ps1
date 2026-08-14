@@ -215,13 +215,12 @@ function Block-CleanupSelfTest {
 }
 if($env:MYRD_M4_BLOCK_CLEANUP_SELFTEST-eq'1'){Block-CleanupSelfTest}
 
-$NegativeCases=@('unknown_nonempty','size_mismatch','occupied_letter','gen0','ambiguous_recovery','writer_lock','missing_driver','busy_volume','compact_lock')
+$NegativeCases=@('unknown_nonempty','size_mismatch','occupied_letter','gen0','writer_lock','missing_driver','busy_volume','compact_lock')
 $NegativeContracts=[ordered]@{
   unknown_nonempty=[ordered]@{fields=@('path','letter');expected_refusal='unknown_nonempty';exit=1}
   size_mismatch=[ordered]@{fields=@('path','letter','expected_size');expected_refusal='size_mismatch';exit=1}
   occupied_letter=[ordered]@{fields=@('path','letter','volume_guid');expected_refusal='occupied_letter';exit=1}
   gen0=[ordered]@{fields=@('path','letter','expected_size');expected_refusal='generation_zero';exit=1}
-  ambiguous_recovery=[ordered]@{fields=@('path','letter','expected_size','sentinels','candidate_letters','candidate_volume_guids');expected_refusal='ambiguous_recovery';exit=1}
   writer_lock=[ordered]@{fields=@('path','letter','expected_size');expected_refusal='writer_lock';exit=1}
   missing_driver=[ordered]@{fields=@('path','letter');expected_refusal='missing_driver';exit=1}
   busy_volume=[ordered]@{fields=@('path','letter','expected_size','holder_relative_path');expected_refusal='busy_volume';exit=0}
@@ -235,20 +234,15 @@ function Assert-NegativeFixtureEntry([string]$case,$entry,[string]$root){
   FNeed (([string]$entry.letter)-match'^[A-Za-z]$') "Negative $case letter invalid."
   if($entry.PSObject.Properties.Name-contains'expected_size'){FNeed (([string]$entry.expected_size)-in@('64M','128M')) "Negative $case expected_size must be 64M or 128M."}
   if($case-eq'busy_volume'){FNeed (([string]$entry.holder_relative_path)-match'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') 'busy_volume holder_relative_path must be one safe filename.'}
-  if($case-eq'ambiguous_recovery'){
-    FNeed (@($entry.sentinels).Count-eq2-and@($entry.candidate_letters).Count-eq2-and@($entry.candidate_volume_guids).Count-eq2) 'ambiguous_recovery requires exactly two candidate identities/sentinels.'
-    FNeed (@($entry.candidate_letters|Select-Object -Unique).Count-eq2-and@($entry.candidate_volume_guids|Select-Object -Unique).Count-eq2-and@($entry.sentinels|Select-Object -Unique).Count-eq2) 'ambiguous_recovery candidate identities/sentinels must be distinct.'
-    for($i=0;$i-lt2;$i++){$letter=[string]$entry.candidate_letters[$i];FNeed ($letter-match'^[A-Za-z]$') 'ambiguous candidate letter invalid.';FNeed (([string]$entry.candidate_volume_guids[$i])-match'^\\\\\?\\Volume\{[0-9A-Fa-f-]{36}\}\\$') 'ambiguous candidate volume GUID invalid.';FNeed ([IO.Path]::GetFullPath([string]$entry.sentinels[$i]).StartsWith("$letter`:\",[StringComparison]::OrdinalIgnoreCase)) 'ambiguous sentinel must be on its paired candidate drive.'}
-  }
 }
 function Negative-ContractSelfTest {
-  Need(@($NegativeContracts.Keys).Count-eq9)'negative contract case count';Need((Json @($NegativeContracts.Keys))-eq(Json $NegativeCases))'negative contract order'
+  Need(@($NegativeContracts.Keys).Count-eq8)'negative contract case count';Need ($NegativeCases -notcontains 'ambiguous_recovery') 'VM negative contract retained synthetic ambiguity';Need((Json @($NegativeContracts.Keys))-eq(Json $NegativeCases))'negative contract order'
   foreach($name in $NegativeCases){$c=$NegativeContracts[$name];Need(@($c.fields).Count-gt0)"negative $name fields";Need(-not[string]::IsNullOrWhiteSpace([string]$c.expected_refusal))"negative $name refusal"}
   $root='C:\R7-Negative';$valid=[pscustomobject]@{path='C:\R7-Negative\busy';letter='R';expected_size='64M';holder_relative_path='holder.bin'};Assert-NegativeFixtureEntry 'busy_volume' $valid $root
   foreach($bad in @(
     [pscustomobject]@{case='busy_volume';entry=[pscustomobject]@{path='C:\R7-Negative\busy';letter='R';expected_size='64M';holder_relative_path='..\escape.bin'}},
     [pscustomobject]@{case='gen0';entry=[pscustomobject]@{path='C:\R7-Negative\gen0';letter='R';expected_size='65M'}},
-    [pscustomobject]@{case='ambiguous_recovery';entry=[pscustomobject]@{path='C:\R7-Negative\ambiguous';letter='R';expected_size='64M';sentinels=@('S:\one.txt','S:\two.txt');candidate_letters=@('R','S');candidate_volume_guids=@('\\?\Volume{11111111-1111-1111-1111-111111111111}\','\\?\Volume{22222222-2222-2222-2222-222222222222}\')}}
+    [pscustomobject]@{case='ambiguous_recovery';entry=$null}
   )){$rejected=$false;try{Assert-NegativeFixtureEntry $bad.case $bad.entry $root}catch{$rejected=$true};Need($rejected)"negative fixture validator accepted $($bad.case) hostile input"}
   Need($NegativeContracts.busy_volume.exit-eq0)'busy contract must keep and then cleanly stop the holder';Write-Output 'M4 negative contract selftest PASS';exit 0
 }
@@ -288,9 +282,6 @@ foreach($case in @($fixtures.active_cases)){
   }
   'gen0' {
    Need((Test-Path (Join-Path $path 'disk.rdm')))'gen0 requires existing generation-zero bundle.';$before=Snapshot $path $letter;$argv=RunArgsFor $path $letter $size;$process=Refusal $argv $case 'Error: incomplete generation-zero bundle at ';$after=Snapshot $path $letter;$before.fixture_hashes=$before.bundle_hash;$after.fixture_hashes=$after.bundle_hash;Need($before.bundle_hash-eq$after.bundle_hash)'gen0 retry mutated bundle.'
-  }
-  'ambiguous_recovery' {
-   Need((Test-Path (Join-Path $path 'disk.rdm')))'ambiguous_recovery requires an existing bundle.';Need(@($entry.sentinels).Count-eq2-and@($entry.candidate_letters).Count-eq2-and@($entry.candidate_volume_guids).Count-eq2)'ambiguous_recovery requires exactly two candidate identities/sentinels.';for($i=0;$i-lt2;$i++){Need([string]$entry.candidate_letters[$i]-match'^[A-Za-z]$')'ambiguous candidate letter invalid.';Need((LetterGuid ([string]$entry.candidate_letters[$i]))-eq[string]$entry.candidate_volume_guids[$i])'ambiguous candidate volume identity mismatch.'};$sentBefore=[ordered]@{};foreach($sentinel in @($entry.sentinels)){Need([IO.File]::Exists($sentinel))"ambiguous sentinel missing: $sentinel";$sentBefore[$sentinel]=(Get-FileHash $sentinel).Hash};$before=Snapshot $path $letter;$before.sentinel_hashes=$sentBefore;$before.candidate_volume_guids=@($entry.candidate_volume_guids);$argv=RunArgsFor $path $letter $size;$process=Refusal $argv $case 'find_recovered_volume: volume identity is ambiguous';$after=Snapshot $path $letter;$sentAfter=[ordered]@{};foreach($sentinel in @($entry.sentinels)){$sentAfter[$sentinel]=(Get-FileHash $sentinel).Hash};$after.sentinel_hashes=$sentAfter;$after.candidate_volume_guids=@($entry.candidate_volume_guids);$after.no_format_indicators=(Json $sentBefore)-eq(Json $sentAfter);Need($after.no_format_indicators-and$before.bundle_hash-eq$after.bundle_hash)'ambiguous recovery mutated/formatted a candidate.'
   }
   'writer_lock' {
    Need((Test-Path (Join-Path $path 'disk.rdm')))'writer_lock requires an existing bundle.';$baselinePre=Inventory;$first=Start-RunFor $path $letter $size -LongCheckpoint;try{[void](Wait-ReadyFor $first $letter 120);$before=Snapshot $path $letter;$before.baseline_prestart=$baselinePre;$before.refusal_bundle_hash=$before.bundle_hash;$argv=RunArgsFor $path $letter $size -LongCheckpoint;$process=Refusal $argv $case 'another process owns the manifest writer lock';$afterRefusal=Snapshot $path $letter;Need($before.refusal_bundle_hash-eq$afterRefusal.bundle_hash)'writer_lock second process mutated bundle.';$firstExit=CtrlC $first;$after=Snapshot $path $letter;$after.refusal_bundle_hash=$afterRefusal.bundle_hash;$after.first_exit=$firstExit;Need($firstExit-eq0-and(Same (StableInventory $baselinePre) (StableInventory $after.inventory)))'writer_lock holder failed clean baseline restore.';$first.Process.Dispose()}catch{Emergency $first;$first.Process.Dispose();throw}

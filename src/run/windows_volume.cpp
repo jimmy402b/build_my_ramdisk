@@ -83,6 +83,12 @@ EnumeratedExtentQueryClass classify_enumerated_extent_query(BOOL ok, DWORD error
     if (error == ERROR_MORE_DATA) return EnumeratedExtentQueryClass::TooLarge;
     return EnumeratedExtentQueryClass::Failed;
 }
+enum class VolumeMatchClass { Missing, Exact, Ambiguous };
+VolumeMatchClass classify_volume_matches(std::size_t count) noexcept {
+    if (count == 0) return VolumeMatchClass::Missing;
+    if (count == 1) return VolumeMatchClass::Exact;
+    return VolumeMatchClass::Ambiguous;
+}
 enum class MountClass { Absent, Exact, Occupied, Malformed };
 MountClass classify_mount(wchar_t letter, const wchar_t* paths, std::size_t capacity, const std::wstring& volume) noexcept {
     (void)volume;
@@ -237,7 +243,8 @@ Result<ProductVolume> discover(const m3::M3AimRuntimeInfo& info, wchar_t letter)
     FindVolumeClose(find);
     if (enumeration_error != ERROR_NO_MORE_FILES)
         return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume enumeration changed or failed", enumeration_error));
-    if (matches.size() != 1) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume identity is ambiguous"));
+    if (classify_volume_matches(matches.size()) != VolumeMatchClass::Exact)
+        return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume identity is ambiguous"));
     DWORD serial{}; std::array<wchar_t, 256> filesystem{};
     if (!GetVolumeInformationW(matches[0].c_str(), nullptr, 0, &serial, nullptr, nullptr, filesystem.data(), static_cast<DWORD>(filesystem.size()))) {DWORD error=GetLastError();return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"GetVolumeInformationW failed", error));}
     if (wcscmp(filesystem.data(), L"NTFS") != 0) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"exact volume is not NTFS"));

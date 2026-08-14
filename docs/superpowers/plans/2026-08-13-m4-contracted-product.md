@@ -1031,9 +1031,13 @@ exact recorded PID. RecoverShutdown runs after the operator/host reboots the VM
 and performs steps 8-14. OfflineCompact runs only after clean shutdown, calls
 the same Release `myrd.exe compact --bundle <path>`, requires a successor
 generation with identical file hashes, and proves AIM/PhysicalDrive inventory
-does not change. Negative runs the frozen refusal cases serially, including
-writer-lock rejection of offline compact while `myrd run` owns the bundle, and
-proves no baseline inventory or unrelated drive-letter change.
+does not change. Negative runs the frozen ordered eight realistic refusal cases
+serially: unknown non-empty bundle, size mismatch, occupied drive letter,
+generation zero, writer lock, missing driver, busy volume and compact lock. It
+proves no baseline inventory or unrelated drive-letter change. Zero or multiple
+matching-volume refusal remains a local unit/composition safety boundary; the
+VM route must not repartition a real or synthetic disk merely to create a second
+candidate volume.
 
 The script records line-oriented evidence under an operator-provided directory,
 but product code has no evidence system.
@@ -1056,10 +1060,12 @@ but product code has no evidence system.
 
 - [ ] **Step 5: Execute the real lifecycle**
 
-Run CreateKill, reboot the VM, run RecoverShutdown, OfflineCompact, then
-Negative. Record exact commands, source commit, executable SHA-256, bundle
-path, drive letter, before and after inventories, file hashes and exit codes in
-the R7 TASKLIST record.
+Run CreateKill, reboot the VM, run RecoverShutdown, OfflineCompact, then the
+ordered eight-case Negative route. Record exact commands, source commit,
+executable SHA-256, bundle path, drive letter, before and after inventories,
+file hashes and exit codes in the R7 TASKLIST record. Do not add a real-VM
+multi-volume fixture; its fail-closed zero/one/many classification is proven by
+the same-translation-unit and production-wiring tests.
 
 - [ ] **Step 6: Verify local regressions after VM fixes**
 

@@ -106,6 +106,17 @@ TEST_CASE(m4_extent_and_mount_predicates_reject_ambiguous_tables) {
     REQUIRE_EQ(myrd::classify_mount(L'R',malformed,3,L"x"),myrd::MountClass::Malformed);
 }
 
+TEST_CASE(m4_volume_match_count_accepts_exactly_one) {
+    REQUIRE_EQ(myrd::classify_volume_matches(0),
+               myrd::VolumeMatchClass::Missing);
+    REQUIRE_EQ(myrd::classify_volume_matches(1),
+               myrd::VolumeMatchClass::Exact);
+    REQUIRE_EQ(myrd::classify_volume_matches(2),
+               myrd::VolumeMatchClass::Ambiguous);
+    REQUIRE_EQ(myrd::classify_volume_matches(64),
+               myrd::VolumeMatchClass::Ambiguous);
+}
+
 TEST_CASE(m4_enumerated_extent_query_skips_only_unsupported_unrelated_volumes) {
     REQUIRE_EQ(myrd::classify_enumerated_extent_query(TRUE, ERROR_SUCCESS),
                myrd::EnumeratedExtentQueryClass::Inspect);
