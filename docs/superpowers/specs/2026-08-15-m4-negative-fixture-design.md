@@ -1,145 +1,133 @@
-# M4 Negative Fixture Evidence Design
+# M4 Negative VM Scope Design
 
 ## Status and scope
 
 This design repairs only the real-VM `Negative` evidence route in
-`tests/e2e/Invoke-M4RunLifecycle.ps1` and its independent Final verifier. It
-does not change product code, normal create/recover/compact behavior, the
-approved VM identity, or the frozen nine negative cases.
+`tests/e2e/Invoke-M4RunLifecycle.ps1`, its independent Final verifier and the
+local tests that preserve the volume-ambiguity defense. It does not change
+normal create/recover/compact behavior or the approved VM identity.
 
 Formal10 proved the product recovery-discovery repair through CreateKill,
 RecoverShutdown and OfflineCompact. Negative then failed before starting a
-product process because the operator fixture manifest was absent. Inspection
-also found that the existing `ambiguous_recovery` contract was not satisfiable
-on the required clean baseline: it required two candidate drive letters to be
-mounted before the product started, while the phase-wide inventory gate
-required the same empty-AIM baseline captured by CreateKill.
+product process because the operator fixture manifest was absent. Review of
+the manifest contract showed that its `ambiguous_recovery` case required an
+artificial one-disk/two-volume topology. That topology is a useful defensive
+code boundary, but it is not a normal product lifecycle and would require
+risky VM repartitioning solely for acceptance evidence.
 
-## Chosen approach
+The approved scope therefore separates realistic VM checks from synthetic
+structural boundaries.
 
-The harness continues to consume a data-only
-`myrd.m4.negative-fixtures.v1` manifest. Commands, arguments and refusal
-patterns remain frozen in the runner. The repair changes ambiguity evidence
-from a pre-launch live-mount assertion to an immutable fixture assertion:
+## Real-VM negative cases
 
-1. The operator prepares an ambiguous recovery bundle below
-   `<bundle>.r7-negative` whose persisted disk contains two volumes and known
-   sentinel contents.
-2. The manifest records exactly two candidate volume GUIDs, exactly two
-   sentinel paths, the corresponding two sentinel SHA-256 values, and the
-   expected bundle-tree digest.
-3. Before launching the refusal command, the runner validates all manifest
-   fields and requires the current bundle-tree digest to equal the declared
-   digest.
-4. The current product must exit 1 with the exact existing
-   `find_recovered_volume: volume identity is ambiguous` refusal.
-5. After exit, the runner recomputes the bundle-tree digest and requires it to
-   equal both the pre-launch digest and the declared digest. Stable Windows
-   inventory must remain equal to the CreateKill baseline.
-6. Per-case immutable evidence records the declared candidate identities and
-   sentinel hashes in both oracle sides, plus the measured before/after bundle
-   digest. It never claims the candidate volumes were mounted before launch.
+The real VM runs these eight serial cases:
 
-The exact ambiguity refusal proves that the product observed multiple matching
-volumes. The unchanged complete bundle-tree digest proves that the rejected
-attempt did not persist a partition, format, sentinel or metadata change.
-Together these facts replace the contradictory pre-launch mount requirement
-without adding a product test seam.
+1. `unknown_nonempty` leaves an unknown non-empty directory untouched;
+2. `size_mismatch` rejects recovery with the wrong requested size;
+3. `occupied_letter` does not steal an existing drive letter;
+4. `gen0` does not reprovision an incomplete generation-zero bundle;
+5. `writer_lock` rejects a second writer;
+6. `missing_driver` fails before disk mutation;
+7. `busy_volume` keeps a busy volume/device until the holder closes;
+8. `compact_lock` rejects offline compact while `myrd run` owns the bundle.
 
-## Bundle-tree digest
+Commands, arguments and refusal patterns remain frozen in the runner. Every
+fixture path stays strictly below `<bundle>.r7-negative`, except that the
+occupied-letter oracle reads the already-existing approved baseline volume.
+Each case writes immutable process, refusal, inventory and nonmutation
+evidence. Final requires exactly these eight files plus the aggregate Negative
+phase file.
 
-The existing textual `TreeHash` output is retained for other cases. Ambiguity
-uses a new deterministic SHA-256 digest over that exact canonical tree text.
-The digest is uppercase 64-hex and is computed by a private PowerShell helper
-using UTF-8 without BOM. The manifest and Final verifier accept only that
-syntax. An absent or changed file, relative path, length or file SHA changes
-the digest.
+`ambiguous_recovery` is removed from the VM manifest, runner case list and
+Final VM evidence list. No formal VM run creates a second partition, formats a
+candidate volume or modifies the fixed 8 GiB RAW Disk2 merely to synthesize
+this condition.
 
-## Manifest validation
+## Local volume-ambiguity defense
 
-The `ambiguous_recovery` entry retains its existing fields and adds:
+One virtual disk can contain more than one partition/volume even though the
+normal product creates exactly one GPT/NTFS volume. The product must continue
+to accept exactly one matching volume and reject zero or multiple matching
+volumes.
 
-- `sentinel_sha256`: exactly two uppercase or lowercase 64-hex strings in the
-  same order as `sentinels` and `candidate_volume_guids`;
-- `bundle_tree_sha256`: one 64-hex digest of the prepared fixture tree.
+The existing discovery code remains fail-closed. A small pure classification
+seam, used by the production result check, classifies match counts as:
 
-The validator continues to require two distinct candidate letters, GUIDs and
-sentinel paths. Paths must remain under the derived negative root or under the
-paired candidate drive as already specified. Null, missing, duplicate,
-malformed or wrong-count values fail before a product process starts.
+- zero: missing/refused;
+- one: exact/accepted;
+- two or more: ambiguous/refused.
 
-No manifest field can supply a command, executable option, refusal regex,
-source commit, artifact identity or evidence path.
+Same-translation-unit unit tests cover 0, 1, 2 and a larger count. A composition
+source contract confirms production discovery uses that seam after complete
+enumeration. This retains the defense without a product test hook or a
+destructive VM fixture.
+
+## Data-only fixture manifest
+
+The runner continues to consume
+`<StateFile>.negative-fixtures.json` with schema
+`myrd.m4.negative-fixtures.v1`. Its `active_cases` may contain only the eight
+approved names. Case entries contain only constrained paths, one-letter drive
+letters, approved sizes and the existing busy-volume holder filename. They
+cannot provide commands, executable options, refusal regexes, source commit,
+artifact identity or evidence paths.
+
+Unknown, duplicate, null or malformed cases fail before a product process
+starts. Existing per-case evidence is loaded only when schema, case, source,
+artifact, bundle root, refusal contract and both oracle sides are valid.
 
 ## Resumable missing-driver execution
 
-The nine negative cases remain ordered and immutable. The existing per-case
-evidence resume mechanism is retained because `missing_driver` requires a
-stopped/absent `phdskmnt` service while the other driver-backed cases require
-it running.
+`missing_driver` requires stopped/absent `phdskmnt`, while the other
+driver-backed cases require it running. The existing per-case resume mechanism
+is retained and the operator uses two controlled passes:
 
-The operator runs Negative in two controlled passes:
-
-1. With `phdskmnt` stopped, a manifest whose `active_cases` contains only
-   `missing_driver` writes that immutable case evidence. The exact final
-   `Negative remaining cases: ...` exit 77 is an expected partial boundary,
-   not aggregate PASS.
-2. After restoring the same approved driver service and re-proving the clean
-   AIM/R/disk baseline, the manifest lists the other eight cases. The runner
-   validates the existing `missing_driver` evidence, executes the remaining
-   cases serially, writes aggregate `m4-lifecycle-Negative.v1.json`, and exits
-   0.
+1. Stop only the approved `phdskmnt` service, prove AIM/R are absent, and run a
+   manifest whose `active_cases` contains only `missing_driver`. The case
+   evidence is immutable. The exact final `Negative remaining cases: ...`
+   exit 77 is an expected partial boundary, not aggregate PASS.
+2. Restore the same service, re-prove the clean AIM/R/disk baseline, and run a
+   manifest listing the other seven cases. The runner validates the existing
+   `missing_driver` evidence, executes the remainder serially, writes
+   `m4-lifecycle-Negative.v1.json`, and exits 0.
 
 Any other exit 77, evidence mismatch, process timeout, inventory drift or
 service restoration failure is a real RED. Final accepts only the completed
-aggregate plus all nine immutable per-case files.
-
-## Final verification
-
-`tools/Invoke-M4Verification.ps1` strengthens the ambiguity oracle. It must
-require:
-
-- exact ambiguity refusal and exit 1;
-- equal before/after candidate GUID arrays;
-- equal before/after sentinel SHA-256 arrays, with exactly two valid hashes;
-- measured before/after bundle-tree digests equal to one another and to the
-  declared manifest digest recorded in evidence;
-- `no_format_indicators=true`;
-- unchanged stable inventory.
-
-The synthetic Final selftest gains valid ambiguity digest data and mutations
-for a changed post-run digest and malformed sentinel hash.
+aggregate and all eight immutable case files.
 
 ## Fixture preparation and safety
 
-Fixture preparation is an operator action performed only after the main
-OfflineCompact phase returns to a clean AIM/R baseline. Every fixture path is
-strictly below the fresh formal root's derived negative directory. Existing
-valid bundles are copied from the same formal run. The ambiguity bundle is
-prepared only through an exact current-owned AIM device whose DeviceId, size,
-sector geometry and PhysicalDrive mapping are proved before any partition
-operation; system disks and the fixed 8 GiB RAW Disk2 are never modified.
+Preparation occurs only after OfflineCompact returns to the clean baseline.
+Valid case bundles are copies of the same formal run's compacted bundle. The
+generation-zero fixture comes from a separately proved incomplete fixture and
+is copied read-only into the derived negative root. The occupied-letter case
+uses an existing approved baseline letter and records its GUID before and
+after the refusal.
 
-Preparation records the two candidate GUIDs, sentinel SHA-256 values and
-bundle-tree digest before clean shutdown returns AIM/R to baseline. The
-generation-zero fixture is copied from a separately proved incomplete fixture
-and is never opened for mutation by the preparation route.
+Preparation never partitions or formats a physical disk. System disks and the
+fixed 8 GiB RAW Disk2 are never modified. Every temporary helper and manifest
+path is exact and current-owned. Driver stop/start operations are bounded,
+verify the exact `phdskmnt` service and must return the same clean baseline.
 
 Every formal root is one-use. A real phase RED stops downstream execution and
 that root is never reused.
 
-## TDD and acceptance
+## TDD and Final verification
 
-Local RED tests must first prove that the old validator accepts an ambiguity
-entry without the new hashes, the old oracle depends on live pre-launch drive
-letters, and Final accepts a mutated bundle digest. Minimal GREEN then changes
-only the runner, Final verifier, their focused tests/CMake source contracts and
-the R7 ledger.
+Local RED tests first prove that the old runner/Final still require nine cases
+and that production discovery lacks an explicit tested 0/1/many match-count
+contract. Minimal GREEN changes only:
+
+- the runner's frozen Negative list, contract validator and synthetic
+  negative selftest;
+- Final's frozen case list, per-case checks and mutation selftest;
+- the volume match-count classification seam and same-TU unit test;
+- the composition source contract and R7 ledger.
 
 Required local verification is:
 
 - PowerShell 5.1 parsing for runner and verifier;
-- focused negative-contract, native, Final and composition tests;
+- focused negative-contract, Final, Windows-volume and composition tests;
 - sequential Debug and Release `m4-v2` and `m4-v3` labels;
 - product line counter, diff check and exact allowlist audit;
 - independent SPEC and quality review.

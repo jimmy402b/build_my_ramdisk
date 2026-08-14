@@ -739,11 +739,15 @@ Minimum negative VM checks are:
 - recover size mismatch fails;
 - occupied drive letter is not stolen;
 - generation-zero existing bundle is not reprovisioned;
-- recovery volume ambiguity is not formatted;
 - second process is rejected by the M3 writer lock;
 - missing AIM driver fails before disk mutation;
 - busy volume is not dismounted or removed and can exit after the holder closes.
 - offline compact is rejected while `myrd run` owns the bundle.
+
+Zero or multiple matching volumes remain a fail-closed product boundary and
+must be covered by local unit/composition tests. The real-VM acceptance route
+does not repartition or format a disk solely to synthesize a multi-volume
+topology.
 
 ## 13. Code budget and architecture scans
 
