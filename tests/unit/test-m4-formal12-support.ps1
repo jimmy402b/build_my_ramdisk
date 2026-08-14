@@ -34,6 +34,11 @@ function Assert-SourceInventoryUnchanged {
         Need ($after[$relative] -eq $Before[$relative]) "$Label source content changed $relative"
     }
 }
+function Assert-NoManifestResidue {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+    $siblings = @(Get-ChildItem -LiteralPath (Split-Path $ManifestPath -Parent) -File | Where-Object { $_.Name -like "$(Split-Path $ManifestPath -Leaf).*" -and $_.Extension -in @('.tmp', '.bak') })
+    Need ($siblings.Count -eq 0) 'negative fixture manifest left temp or backup residue'
+}
 
 $root = [IO.Path]::GetFullPath($SourceRoot)
 $capture = Join-Path $root 'tests\e2e\Capture-M4Child.ps1'
@@ -92,6 +97,49 @@ param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[s
         if ($hadSource) { $env:MYRD_M4_SOURCE_COMMIT = $oldSource } else { Remove-Item Env:MYRD_M4_SOURCE_COMMIT -ErrorAction SilentlyContinue }
     }
 
+    $quoteRunner = Join-Path $scratch 'quote-runner.ps1'
+    [IO.File]::WriteAllText($quoteRunner, @'
+param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[string]$StateFile,[switch]$SafetyAcknowledged)
+[ordered]@{phase=$Phase;executable=$Executable;bundle=$Bundle;drive_letter=$DriveLetter;state_file=$StateFile}|ConvertTo-Json -Compress
+'@, [Text.UTF8Encoding]::new($false))
+    $quotedPhase = 'phase with spaces'
+    $quotedExecutable = 'C:\executable with spaces\'
+    $quotedBundle = 'C:\bundle' + ('\' * 3) + '"quoted'
+    $quotedState = 'C:\state with spaces\'
+    $quoteLauncher = Join-Path $scratch 'quote-launcher.ps1'
+    $encodedValues = @($quotedPhase, $quotedExecutable, $quotedBundle, $quotedState) | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_)) }
+    $encodedExpressions = @($encodedValues | ForEach-Object { "[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$_'))" })
+    [IO.File]::WriteAllText($quoteLauncher, @"
+`$values = @($($encodedExpressions -join ','))
+& '$capture' -Mode Runner -ChildFile '$quoteRunner' -SourceCommit '$commit' -Phase `$values[0] -Executable `$values[1] -Bundle `$values[2] -DriveLetter R -StateFile `$values[3]
+exit `$LASTEXITCODE
+"@, [Text.UTF8Encoding]::new($false))
+    $quoted = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $quoteLauncher | ConvertFrom-Json)[0]
+    $roundTrip = $quoted.child_stdout | ConvertFrom-Json
+    Need ($roundTrip.phase -ceq $quotedPhase -and $roundTrip.executable -ceq $quotedExecutable -and $roundTrip.bundle -ceq $quotedBundle -and $roundTrip.drive_letter -ceq 'R' -and $roundTrip.state_file -ceq $quotedState) 'runner capture command-line quoting did not round-trip frozen arguments'
+
+    $startFailure = Join-Path $scratch 'start-failure.ps1'
+    [IO.File]::WriteAllText($startFailure, @"
+`$ErrorActionPreference = 'Continue'
+`$huge = 'x' * 1000000
+& '$capture' -Mode Runner -ChildFile '$runner' -SourceCommit $('c' * 40 -join '') -Phase CreateKill -Executable x -Bundle `$huge -DriveLetter R -StateFile z
+if (-not `$?) { exit 1 }
+exit 0
+"@, [Text.UTF8Encoding]::new($false))
+    $beforePids = @(Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object Id)
+    $startError = Join-Path $scratch 'start-failure.stderr'
+    $savedErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $startOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startFailure 2>$startError)
+    $ErrorActionPreference = $savedErrorAction
+    Need ($startOutput.Count -eq 1) 'start failure did not emit exactly one JSON record'
+    $startRecord = $startOutput[0] | ConvertFrom-Json
+    Need ([int]$startRecord.child_exit -eq -1) 'oversized runner command unexpectedly started'
+    Need ($LASTEXITCODE -ne 0) 'start failure wrapper returned zero'
+    Need (($null -eq $startRecord.child_pid -or [int]$startRecord.child_pid -eq 0) -and [int]$startRecord.child_exit -eq -1) 'start failure JSON record has a child identity or exit'
+    $afterPids = @(Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object Id)
+    Need (@($afterPids | Where-Object { $beforePids -notcontains $_ }).Count -eq 0) 'start failure left a child process behind'
+
     $formal = Join-Path $scratch 'formal'
     $bundle = Join-Path $formal 'bundle'
     $gen0 = Join-Path $scratch 'gen0'
@@ -110,6 +158,7 @@ param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[s
     Need ($LASTEXITCODE -eq 0) 'normal negative-fixture preparation failed'
     $manifestPath = Join-Path $formal 'm4-lifecycle.state.json.negative-fixtures.json'
     Need ([IO.File]::Exists($manifestPath)) 'normal negative-fixture manifest is missing'
+    Assert-NoManifestResidue -ManifestPath $manifestPath
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Need (($manifest.active_cases -join ',') -eq 'missing_driver') 'normal fixture manifest active_cases is not exactly missing_driver'
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
@@ -127,6 +176,7 @@ param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[s
     $ErrorActionPreference = $savedErrorAction
     Need ($LASTEXITCODE -ne 0) 'remaining fixture activation accepted tampered metadata'
     Need ([IO.File]::ReadAllText($manifestPath) -ceq $tamperedText) 'failed activation changed tampered manifest'
+    Assert-NoManifestResidue -ManifestPath $manifestPath
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
     [IO.File]::WriteAllText($manifestPath, $validManifestText, [Text.UTF8Encoding]::new($false))
@@ -140,6 +190,7 @@ param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[s
     $ErrorActionPreference = $savedErrorAction
     Need ($LASTEXITCODE -ne 0) 'remaining fixture activation accepted an extra case field'
     Need ([IO.File]::ReadAllText($manifestPath) -ceq $extraFieldText) 'failed extra-field activation changed manifest'
+    Assert-NoManifestResidue -ManifestPath $manifestPath
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
     [IO.File]::WriteAllText($manifestPath, $validManifestText, [Text.UTF8Encoding]::new($false))
@@ -149,6 +200,7 @@ param([string]$Phase,[string]$Executable,[string]$Bundle,[string]$DriveLetter,[s
     Need (($remaining.active_cases -join ',') -eq 'unknown_nonempty,size_mismatch,occupied_letter,gen0,writer_lock,busy_volume,compact_lock') 'remaining fixture cases are not exact or ordered'
     $remaining.active_cases = @('missing_driver')
     Need (($remaining | ConvertTo-Json -Compress -Depth 8) -ceq (($validManifestText | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 8))) 'activation changed fixture metadata beyond active_cases'
+    Assert-NoManifestResidue -ManifestPath $manifestPath
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
 

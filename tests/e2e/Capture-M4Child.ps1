@@ -18,7 +18,24 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Quote-ChildArgument {
     param([Parameter(Mandatory = $true)][string]$Value)
-    '"' + $Value.Replace('\\', '\\').Replace('"', '\\"') + '"'
+    $quoted = New-Object Text.StringBuilder
+    [void]$quoted.Append('"')
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]'\') { $slashes++; continue }
+        if ($character -eq [char]'"') {
+            [void]$quoted.Append((('\' * (2 * $slashes + 1)) -join ''))
+            [void]$quoted.Append('"')
+            $slashes = 0
+            continue
+        }
+        [void]$quoted.Append((('\' * $slashes) -join ''))
+        [void]$quoted.Append($character)
+        $slashes = 0
+    }
+    [void]$quoted.Append((('\' * (2 * $slashes)) -join ''))
+    [void]$quoted.Append('"')
+    $quoted.ToString()
 }
 
 if (-not [IO.File]::Exists($ChildFile)) { throw 'child file is absent' }
@@ -52,19 +69,26 @@ $started = [datetime]::UtcNow
 $stdout = ''
 $stderr = ''
 $exit = -1
+$childPid = $null
 try {
     [void]$process.Start()
+    $childPid = $process.Id
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit($TimeoutMs)) { $process.Kill() }
-    $process.WaitForExit()
+    if (-not $process.WaitForExit($TimeoutMs)) {
+        try { $process.Kill() }
+        catch { if (-not $process.HasExited) { throw } }
+        if (-not $process.WaitForExit($TimeoutMs)) { throw 'child did not exit after timeout kill' }
+    }
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
     $exit = $process.ExitCode
 }
 finally {
-    $ended = [datetime]::UtcNow
-    $record = [ordered]@{mode = $Mode; child_pid = $process.Id; start_utc = $started.ToString('o'); end_utc = $ended.ToString('o'); child_exit = $exit; child_stdout = $stdout; child_stderr = $stderr}
-    [Console]::Out.WriteLine(($record | ConvertTo-Json -Compress))
-    $process.Dispose()
+    try {
+        $ended = [datetime]::UtcNow
+        $record = [ordered]@{mode = $Mode; child_pid = $childPid; start_utc = $started.ToString('o'); end_utc = $ended.ToString('o'); child_exit = $exit; child_stdout = $stdout; child_stderr = $stderr}
+        [Console]::Out.WriteLine(($record | ConvertTo-Json -Compress))
+    }
+    finally { $process.Dispose() }
 }

@@ -18,14 +18,18 @@ function Inventory([string]$Path) {
 }
 function Write-Utf8NoBomAtomic([string]$Path, [string]$Text) {
     $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
-    [IO.File]::WriteAllText($temporary, $Text, [Text.UTF8Encoding]::new($false))
-    if ([IO.File]::Exists($Path)) {
-        $backup = "$Path.$([Guid]::NewGuid().ToString('N')).bak"
-        [IO.File]::Replace($temporary, $Path, $backup)
-        [IO.File]::Delete($backup)
+    try {
+        [IO.File]::WriteAllText($temporary, $Text, [Text.UTF8Encoding]::new($false))
+        if ([IO.File]::Exists($Path)) {
+            $replace = [IO.File].GetMethod('Replace', [type[]]@([string], [string], [string]))
+            [void]$replace.Invoke($null, [object[]]@($temporary, $Path, $null))
+        }
+        else {
+            [IO.File]::Move($temporary, $Path)
+        }
     }
-    else {
-        [IO.File]::Move($temporary, $Path)
+    finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
     }
 }
 function Assert-InitialManifest($Manifest, [string]$Root) {
