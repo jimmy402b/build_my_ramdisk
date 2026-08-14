@@ -1669,3 +1669,14 @@ add_test(NAME unit.m4.lifecycle_negative_contract
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
         "$env:MYRD_M4_NEGATIVE_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase Negative -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"negative contract selftest exit $e\"}")
 set_tests_properties(unit.m4.lifecycle_negative_contract PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
+add_executable(myrd_m4_aim_query e2e/m4_aim_query.cpp)
+target_link_libraries(myrd_m4_aim_query PRIVATE myrd_driver)
+target_include_directories(myrd_m4_aim_query PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_aim_query)
+
+add_test(NAME unit.m4.formal12_support
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-formal12-support.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}")
+set_tests_properties(unit.m4.formal12_support PROPERTIES LABELS "m4-v3" TIMEOUT 30)

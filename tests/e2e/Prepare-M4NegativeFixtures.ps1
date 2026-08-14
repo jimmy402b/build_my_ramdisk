@@ -1,0 +1,77 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$FormalRoot,
+    [string]$GenerationZeroSource,
+    [ValidatePattern('^[A-Za-z]$')][string]$OccupiedLetter,
+    [string]$OccupiedVolumeGuid,
+    [switch]$ActivateRemaining
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Need { param([bool]$Condition, [string]$Message) if (-not $Condition) { throw $Message } }
+function Inventory([string]$Path) {
+    @(Get-ChildItem -LiteralPath $Path -Recurse -File | Sort-Object FullName | ForEach-Object {
+        [ordered]@{ path = $_.FullName.Substring($Path.Length).TrimStart('\'); length = [int64]$_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+    } | ConvertTo-Json -Compress -Depth 4)
+}
+function Write-Utf8NoBomAtomic([string]$Path, [string]$Text) {
+    $temporary = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+    [IO.File]::WriteAllText($temporary, $Text, [Text.UTF8Encoding]::new($false))
+    if ([IO.File]::Exists($Path)) {
+        $backup = "$Path.$([Guid]::NewGuid().ToString('N')).bak"
+        [IO.File]::Replace($temporary, $Path, $backup)
+        [IO.File]::Delete($backup)
+    }
+    else {
+        [IO.File]::Move($temporary, $Path)
+    }
+}
+
+$formal = [IO.Path]::GetFullPath($FormalRoot).TrimEnd('\')
+$bundle = Join-Path $formal 'bundle'
+$negativeRoot = [IO.Path]::GetFullPath("$bundle.r7-negative")
+$manifestPath = Join-Path $formal 'm4-lifecycle.state.json.negative-fixtures.json'
+
+if ($ActivateRemaining) {
+    Need ([IO.File]::Exists($manifestPath)) 'negative fixture manifest is absent'
+    Need ([IO.File]::Exists((Join-Path $formal 'm4-negative-missing_driver.v1.json'))) 'immutable missing-driver evidence is absent'
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Need ($manifest.schema -eq 'myrd.m4.negative-fixtures.v1') 'negative fixture schema mismatch'
+    $manifest.active_cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')
+    Write-Utf8NoBomAtomic $manifestPath (($manifest | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine)
+    exit 0
+}
+
+Need (-not (Test-Path -LiteralPath $negativeRoot)) 'negative root must be absent'
+Need (-not (Test-Path -LiteralPath $manifestPath)) 'negative fixture manifest must be absent'
+Need ([IO.File]::Exists((Join-Path $bundle 'disk.rdm'))) 'current compacted source disk.rdm is absent'
+Need (-not [string]::IsNullOrWhiteSpace($GenerationZeroSource)) 'generation-zero source is required'
+Need (-not [string]::IsNullOrWhiteSpace($OccupiedLetter)) 'occupied letter is required'
+Need (-not [string]::IsNullOrWhiteSpace($OccupiedVolumeGuid)) 'occupied volume GUID is required'
+$generationZero = [IO.Path]::GetFullPath($GenerationZeroSource).TrimEnd('\')
+Need ([IO.File]::Exists((Join-Path $generationZero 'disk.rdm'))) 'generation-zero source disk.rdm is absent'
+$bundleBefore = Inventory $bundle
+$gen0Before = Inventory $generationZero
+[void][IO.Directory]::CreateDirectory($negativeRoot)
+foreach ($case in @('size_mismatch', 'writer_lock', 'busy_volume', 'compact_lock')) { Copy-Item -LiteralPath $bundle -Destination (Join-Path $negativeRoot $case) -Recurse -ErrorAction Stop }
+Copy-Item -LiteralPath $generationZero -Destination (Join-Path $negativeRoot 'gen0') -Recurse -ErrorAction Stop
+Need ((Inventory $bundle) -ceq $bundleBefore) 'current compacted source inventory changed'
+Need ((Inventory $generationZero) -ceq $gen0Before) 'generation-zero source inventory changed'
+foreach ($case in @('unknown_nonempty', 'occupied_letter', 'missing_driver')) { Need (-not (Test-Path -LiteralPath (Join-Path $negativeRoot $case))) "fixture path must be absent: $case" }
+
+$letter = $OccupiedLetter.ToUpperInvariant()
+$manifest = [ordered]@{
+    schema = 'myrd.m4.negative-fixtures.v1'
+    active_cases = @('missing_driver')
+    unknown_nonempty = [ordered]@{path = (Join-Path $negativeRoot 'unknown_nonempty'); letter = 'S'}
+    size_mismatch = [ordered]@{path = (Join-Path $negativeRoot 'size_mismatch'); letter = 'S'; expected_size = '64M'}
+    occupied_letter = [ordered]@{path = (Join-Path $negativeRoot 'occupied_letter'); letter = $letter; volume_guid = $OccupiedVolumeGuid}
+    gen0 = [ordered]@{path = (Join-Path $negativeRoot 'gen0'); letter = 'S'; expected_size = '64M'}
+    writer_lock = [ordered]@{path = (Join-Path $negativeRoot 'writer_lock'); letter = 'S'; expected_size = '64M'}
+    missing_driver = [ordered]@{path = (Join-Path $negativeRoot 'missing_driver'); letter = 'S'}
+    busy_volume = [ordered]@{path = (Join-Path $negativeRoot 'busy_volume'); letter = 'S'; expected_size = '64M'; holder_relative_path = 'holder.bin'}
+    compact_lock = [ordered]@{path = (Join-Path $negativeRoot 'compact_lock'); letter = 'S'; expected_size = '64M'}
+}
+Write-Utf8NoBomAtomic $manifestPath (($manifest | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine)
