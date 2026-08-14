@@ -1638,6 +1638,11 @@ add_test(NAME unit.m4.lifecycle_native_selftest
         "$env:MYRD_M4_HARNESS_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"native selftest exit $e\"}")
 set_tests_properties(unit.m4.lifecycle_native_selftest PROPERTIES LABELS "m4-v3" TIMEOUT 30)
 
+add_test(NAME unit.m4.lifecycle_protocol_selftest
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "$env:MYRD_M4_PROTOCOL_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"protocol selftest exit $e\"}")
+set_tests_properties(unit.m4.lifecycle_protocol_selftest PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+
 add_test(NAME unit.m4.lifecycle_ack_invalid_no_mutation
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
         "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-r7-invalid-'+[guid]::NewGuid().ToString('N')+'.json'); & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile $s -SafetyAcknowledged; if($LASTEXITCODE -ne 77){throw 'expected invalid gate exit 77'}; if(Test-Path $s){throw 'invalid acknowledged input wrote state'}")
