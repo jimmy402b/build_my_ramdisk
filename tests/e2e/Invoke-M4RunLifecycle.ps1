@@ -36,6 +36,7 @@ function Args { @('run','--bundle',$Bundle,'--size',$Size,'--drive-letter',"$Dri
 function Write-New([string]$path,[string]$text){$stream=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$writer=[IO.StreamWriter]::new($stream,[Text.UTF8Encoding]::new($false));$writer.Write($text);$writer.Flush();$writer.Dispose();$stream=$null}finally{if($null-ne$stream){$stream.Dispose()}}}
 function Save($s){$j=Json $s;if($j-match'(?i)(password|private[ _-]?key|secret|token)'){throw 'unsafe evidence content'};$p=PhasePath $StateFile;Need(-not(Test-Path $p))"Refusing to overwrite immutable phase evidence: $p";Write-New $p ($j+[Environment]::NewLine)}
 function Load([string]$name){$p=Join-Path (EvidenceDir $StateFile) "m4-lifecycle-$name.v1.json";Need ([IO.File]::Exists($p)) "missing $name evidence: $p";$raw=Get-Content $p -Raw -Encoding UTF8;Need($raw-notmatch'(?i)(password|private[ _-]?key|secret|token)')"unsafe $name evidence";$raw|ConvertFrom-Json}
+function LetterGuid([string]$letter){$v=Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue;if($null-eq$v){return 'ABSENT'};[string]$v.UniqueId}
 
 # Bound child helper: independent asynchronous stream drains, exact process ID,
 # finite waits, and exact-PID emergency cleanup only.  CREATE_NEW_PROCESS_GROUP
@@ -75,6 +76,9 @@ function RunArgsFor([string]$root,[string]$letter,[string]$size,[switch]$LongChe
 function Start-Run { Start-Command ([string[]](Args)) }
 function Start-RunFor([string]$root,[string]$letter,[string]$size,[switch]$LongCheckpoint){Start-Command ([string[]](RunArgsFor $root $letter $size -LongCheckpoint:$LongCheckpoint))}
 function Protocol-SelfTest {
+  $letterGuidCommand=Get-Command LetterGuid -CommandType Function -ErrorAction SilentlyContinue
+  Need ($null -ne $letterGuidCommand) 'protocol LetterGuid helper is not available before selftest dispatch.'
+  Need ((LetterGuid '?') -eq 'ABSENT') 'protocol LetterGuid helper invocation is unavailable before selftest dispatch.'
   function Probe-Overflow([string]$name,[scriptblock]$parse){try{$value=&$parse;[pscustomobject]@{name=$name;failed=$null-ne$value;detail=$(if($null-ne$value){"returned $value"}else{''})}}catch{[pscustomobject]@{name=$name;failed=$true;detail="$($_.Exception.GetType().FullName): $($_.Exception.Message)"}}}
   Need ((Ready-GenerationText "Ready: R: generation 1.`r`n" 'R') -eq 1) 'protocol Ready CRLF was not accepted'
   Need ((Ready-GenerationText "Ready: R: generation 1.`n" 'R') -eq 1) 'protocol Ready LF was not accepted'
@@ -221,7 +225,6 @@ if($Phase-eq'OfflineCompact'){$recover=Load 'RecoverShutdown';$before=Inventory;
 # Negative fixtures are declarative data only. No command, expression, regex or
 # executable option is accepted from them; every command and refusal below is frozen.
 function TreeHash([string]$path){if(-not(Test-Path -LiteralPath $path)){'ABSENT';return};(@(Get-ChildItem -LiteralPath $path -Recurse -File -Force|Sort-Object FullName|%{"$($_.FullName.Substring($path.Length))|$($_.Length)|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"})-join"`n")}
-function LetterGuid([string]$letter){$v=Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue;if($null-eq$v){return 'ABSENT'};[string]$v.UniqueId}
 function Snapshot([string]$path,[string]$letter){[ordered]@{inventory=Inventory;bundle_hash=TreeHash $path;letter_guid=$(if($letter){LetterGuid $letter}else{'ABSENT'})}}
 function Refusal([string[]]$argv,[string]$case,[string]$pattern){$child=Start-Command $argv;try{if(-not$child.Process.Wait(30000)){$child.Process.Kill();Need($child.Process.Wait(10000))"Negative $case terminate timeout";$child.Process.FinishDrains();Block "Negative $case command timed out"};$child.Process.FinishDrains();Need($child.Process.ExitCode-eq1)"Negative $case expected exit 1, got $($child.Process.ExitCode)";Need($child.Process.Stderr-match$pattern)"Negative $case refusal text mismatch: $($child.Process.Stderr)";[ordered]@{pid=$child.Process.Pid;exit=$child.Process.ExitCode;stdout=$child.Process.Stdout;stderr=$child.Process.Stderr;timeout_seconds=30;started_utc=$child.started_utc;ended_utc=[datetime]::UtcNow.ToString('o')}}finally{$child.Process.Dispose()}}
 function Write-Negative([string]$case,[string[]]$argv,[string]$refusal,$process,$before,$after){$record=[ordered]@{schema='myrd.m4.negative-case.v1';case=$case;status='PASS';source_commit=$common.source_commit;executable_path=$common.executable_path;executable_sha256=$common.executable_sha256;bundle_root=$negativeRoot;argv=@($argv);expected_refusal=$refusal;process=$process;oracle=[ordered]@{before=$before;after=$after}};$p=Join-Path $evidenceDir "m4-negative-$case.v1.json";Need(-not(Test-Path $p))"Refusing to overwrite immutable negative evidence: $case";Write-New $p ((Json $record)+[Environment]::NewLine)}
