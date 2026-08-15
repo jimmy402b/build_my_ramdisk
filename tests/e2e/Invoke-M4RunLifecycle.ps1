@@ -235,10 +235,17 @@ function Assert-NegativeFixtureEntry([string]$case,$entry,[string]$root){
   if($entry.PSObject.Properties.Name-contains'expected_size'){FNeed (([string]$entry.expected_size)-in@('64M','128M')) "Negative $case expected_size must be 64M or 128M."}
   if($case-eq'busy_volume'){FNeed (([string]$entry.holder_relative_path)-match'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') 'busy_volume holder_relative_path must be one safe filename.'}
 }
+function Resolve-NegativeExpectedSize($entry,[string]$fallback){$property=$entry.PSObject.Properties['expected_size'];if($null-eq$property){return $fallback};[string]$property.Value}
 function Negative-ContractSelfTest {
   Need(@($NegativeContracts.Keys).Count-eq8)'negative contract case count';Need ($NegativeCases -notcontains 'ambiguous_recovery') 'VM negative contract retained synthetic ambiguity';Need((Json @($NegativeContracts.Keys))-eq(Json $NegativeCases))'negative contract order'
   foreach($name in $NegativeCases){$c=$NegativeContracts[$name];Need(@($c.fields).Count-gt0)"negative $name fields";Need(-not[string]::IsNullOrWhiteSpace([string]$c.expected_refusal))"negative $name refusal"}
   $root='C:\R7-Negative';$valid=[pscustomobject]@{path='C:\R7-Negative\busy';letter='R';expected_size='64M';holder_relative_path='holder.bin'};Assert-NegativeFixtureEntry 'busy_volume' $valid $root
+  foreach($noSize in @(
+    [pscustomobject]@{case='unknown_nonempty';entry=[pscustomobject]@{path='C:\R7-Negative\unknown';letter='R'}},
+    [pscustomobject]@{case='occupied_letter';entry=[pscustomobject]@{path='C:\R7-Negative\occupied';letter='R';volume_guid='volume-guid'}},
+    [pscustomobject]@{case='missing_driver';entry=[pscustomobject]@{path='C:\R7-Negative\missing';letter='R'}}
+  )){Assert-NegativeFixtureEntry $noSize.case $noSize.entry $root;Need((Resolve-NegativeExpectedSize $noSize.entry '64M')-ceq'64M')"negative $($noSize.case) missing expected_size did not use fallback"}
+  $sized=[pscustomobject]@{path='C:\R7-Negative\size';letter='R';expected_size='128M'};Assert-NegativeFixtureEntry 'size_mismatch' $sized $root;Need((Resolve-NegativeExpectedSize $sized '64M')-ceq'128M')'negative explicit expected_size did not win over fallback'
   foreach($bad in @(
     [pscustomobject]@{case='busy_volume';entry=[pscustomobject]@{path='C:\R7-Negative\busy';letter='R';expected_size='64M';holder_relative_path='..\escape.bin'}},
     [pscustomobject]@{case='gen0';entry=[pscustomobject]@{path='C:\R7-Negative\gen0';letter='R';expected_size='65M'}},
@@ -269,7 +276,7 @@ foreach($case in @($fixtures.active_cases)){try{Assert-NegativeFixtureEntry $cas
 $done=@();foreach($case in $NegativeCases){$p=Join-Path $evidenceDir "m4-negative-$case.v1.json";if(Test-Path $p){$x=Get-Content $p -Raw -Encoding UTF8|ConvertFrom-Json;Need($x.schema-eq'myrd.m4.negative-case.v1'-and$x.case-eq$case-and$x.status-eq'PASS'-and$x.source_commit-eq$common.source_commit-and$x.executable_path-eq$common.executable_path-and$x.executable_sha256-eq$common.executable_sha256-and$x.bundle_root-eq$negativeRoot-and$x.expected_refusal-eq$NegativeContracts[$case].expected_refusal-and$x.oracle.before-and$x.oracle.after)"Negative evidence invalid: $case";$done+=$case}}
 
 foreach($case in @($fixtures.active_cases)){
- if($done-contains$case){continue};$entry=$fixtures.$case;$path=[IO.Path]::GetFullPath($entry.path);$letter=[string]$entry.letter;$size=$(if($entry.expected_size){[string]$entry.expected_size}else{$Size});$argv=@();$process=$null;$before=$null;$after=$null
+ if($done-contains$case){continue};$entry=$fixtures.$case;$path=[IO.Path]::GetFullPath($entry.path);$letter=[string]$entry.letter;$size=Resolve-NegativeExpectedSize $entry $Size;$argv=@();$process=$null;$before=$null;$after=$null
  switch($case){
   'unknown_nonempty' {
    Need(-not(Test-Path $path))'unknown_nonempty path must initially be absent so the harness owns it.';[void][IO.Directory]::CreateDirectory($path);$marker=Join-Path $path 'marker.txt';[IO.File]::WriteAllText($marker,'myrd-r7-unknown-sentinel',[Text.UTF8Encoding]::new($false));$before=Snapshot $path $letter;$before.marker_hash=(Get-FileHash $marker).Hash;$argv=RunArgsFor $path $letter $Size;$process=Refusal $argv $case 'classify_bundle: non-empty bundle has no disk\.rdm';$after=Snapshot $path $letter;$after.marker_hash=(Get-FileHash $marker).Hash;Need($before.bundle_hash-eq$after.bundle_hash-and$before.marker_hash-eq$after.marker_hash)'unknown_nonempty mutated fixture.'
