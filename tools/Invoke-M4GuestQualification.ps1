@@ -417,6 +417,7 @@ function Assert-InitialGuestFacts {
         Need (($actual -join '|') -ceq ($expected -join '|')) 'guest facts property schema is invalid'
         foreach ($name in $expected) { Need ($actual -ccontains $name) "guest facts is missing $name" }
         Need ($Facts.admin -is [bool] -and $Facts.admin) 'guest administrator privilege is required'
+        Need ($Facts.boot_utc -is [string]) 'guest boot_utc type is invalid'
         $bootText = [string]$Facts.boot_utc; [DateTimeOffset]$boot = [DateTimeOffset]::MinValue
         Need ($bootText -cmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z$' -and [DateTimeOffset]::TryParse($bootText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$boot)) 'guest boot_utc must be UTC'
         Need ($Facts.model -is [string] -and $Facts.model -ceq 'VMware20,1') 'guest model is not VMware20,1'
@@ -476,7 +477,10 @@ function Invoke-BoundedProcess {
         Need ($process.Start()) 'bounded process failed to start'
         $stdoutTask = $process.StandardOutput.ReadToEndAsync(); $stderrTask = $process.StandardError.ReadToEndAsync()
         $timedOut = -not $process.WaitForExit($TimeoutMs)
-        if ($timedOut) { $process.Kill() }
+        if ($timedOut -and -not $process.HasExited) {
+            try { $process.Kill() }
+            catch [InvalidOperationException] { if (-not $process.HasExited) { throw } }
+        }
         $process.WaitForExit(); [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask))
         return [ordered]@{ pid = $process.Id; exit = $process.ExitCode; timed_out = $timedOut; stdout = $stdoutTask.Result; stderr = $stderrTask.Result; started_utc = $started.ToString('o'); ended_utc = [DateTime]::UtcNow.ToString('o') }
     }
@@ -502,6 +506,19 @@ function ConvertFrom-AimQueryJson {
     catch { throw [M4QualificationBlocked]::new("AIM query JSON is invalid: $($_.Exception.Message)") }
 }
 
+function Select-RelevantGuestProcesses {
+    param([Parameter(Mandatory = $true)][object[]]$Processes, [Parameter(Mandatory = $true)][int]$CurrentProcessId)
+    $executables = @('myrd.exe','myrd_m4_aim_query.exe','MyRamDiskHost.exe')
+    $scripts = @('Capture-M4Child.ps1','Invoke-M4RunLifecycle.ps1','Prepare-M4NegativeFixtures.ps1','Invoke-M4Verification.ps1','Invoke-M4GuestQualification.ps1')
+    foreach ($process in $Processes) {
+        if ($null -eq $process -or -not ($process.PSObject.Properties.Name -ccontains 'ProcessId') -or -not ($process.PSObject.Properties.Name -ccontains 'Name') -or -not ($process.PSObject.Properties.Name -ccontains 'CommandLine')) { continue }
+        if ([int64]$process.ProcessId -eq $CurrentProcessId) { continue }
+        $name = [string]$process.Name; $commandLine = [string]$process.CommandLine
+        if ($executables -contains $name) { [int64]$process.ProcessId; continue }
+        if (@('powershell.exe','pwsh.exe') -contains $name -and @($scripts | Where-Object { $commandLine -like "*$_*" }).Count -gt 0) { [int64]$process.ProcessId }
+    }
+}
+
 function Get-GuestFacts {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot, [Parameter(Mandatory = $true)][string]$Kit)
     try {
@@ -519,7 +536,8 @@ function Get-GuestFacts {
         $service = @(Get-CimInstance Win32_Service -Filter "Name='MyRamDiskService'"); $driver = @(Get-CimInstance Win32_SystemDriver -Filter "Name='phdskmnt'")
         Need ($service.Count -eq 1) 'guest service inventory is invalid'; Need ($driver.Count -eq 1) 'guest driver inventory is invalid'
         $disks = @(Get-Disk | Sort-Object Number | ForEach-Object { $partitions = if ($_.PartitionStyle -ceq 'RAW') { @() } else { @(Get-Partition -DiskNumber $_.Number) }; '{0}|{1}|{2}|{3}' -f $_.Number,$_.Size,$_.PartitionStyle,$partitions.Count })
-        [ordered]@{ admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); boot_utc = ([Management.ManagementDateTimeConverter]::ToDateTime($os.LastBootUpTime).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')); model = [string]$computer.Model; bios = [string]$computer.Name; mac = if ($adapter.Count -eq 1) { [string]$adapter[0].MACAddress } else { '' }; root_ntfs = $true; service_start = [string]$service[0].StartMode; service_state = [string]$service[0].State; service_pid = [int64]$service[0].ProcessId; driver_start = if ([string]$driver[0].StartMode -ceq 'Manual') { 'DEMAND_START' } else { [string]$driver[0].StartMode }; driver_state = [string]$driver[0].State; processes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @('myrd','myrd_m4_aim_query','MyRamDiskHost','Capture-M4Child','Invoke-M4RunLifecycle','Prepare-M4NegativeFixtures') } | ForEach-Object { [int64]$_.Id }); aim_ids = $aimIds; R = [bool](Test-Path 'R:\'); S = [bool](Test-Path 'S:\'); physical_disks = $disks }
+        # Historical field name: the frozen "bios" value is ComputerSystem.Name (T_VIRTUAL), not SMBIOS text.
+        [ordered]@{ admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); boot_utc = ([Management.ManagementDateTimeConverter]::ToDateTime($os.LastBootUpTime).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')); model = [string]$computer.Model; bios = [string]$computer.Name; mac = if ($adapter.Count -eq 1) { [string]$adapter[0].MACAddress } else { '' }; root_ntfs = $true; service_start = [string]$service[0].StartMode; service_state = [string]$service[0].State; service_pid = [int64]$service[0].ProcessId; driver_start = if ([string]$driver[0].StartMode -ceq 'Manual') { 'DEMAND_START' } else { [string]$driver[0].StartMode }; driver_state = [string]$driver[0].State; processes = @(Select-RelevantGuestProcesses -Processes @(Get-CimInstance Win32_Process) -CurrentProcessId $PID); aim_ids = $aimIds; R = [bool](Test-Path 'R:\'); S = [bool](Test-Path 'S:\'); physical_disks = $disks }
     }
     catch [M4QualificationBlocked] { throw }
     catch { throw [M4QualificationBlocked]::new("guest fact sampling failed: $($_.Exception.Message)") }
@@ -542,9 +560,14 @@ function Initialize-QualificationRoot {
         return $root
     }
     catch {
-        if ($created -and [IO.Directory]::Exists($root)) { Remove-Item -LiteralPath $root -Recurse -Force }
-        if ($_.Exception -is [M4QualificationBlocked]) { throw }
-        throw [M4QualificationBlocked]::new("qualification root initialization failed: $($_.Exception.Message)")
+        $primary = $_.Exception; $cleanup = $null
+        if ($created -and [IO.Directory]::Exists($root)) {
+            try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }
+            catch { $cleanup = $_.Exception }
+        }
+        $message = "qualification root initialization failed: $($primary.Message)"
+        if ($null -ne $cleanup) { $message += "; cleanup failed: $($cleanup.Message)" }
+        throw [M4QualificationBlocked]::new($message)
     }
 }
 
@@ -554,10 +577,11 @@ function Assert-UnexpectedReset {
         Need (((Get-ExactPropertyNames -Value $Armed) -join '|') -ceq 'boot_utc|armed_utc') 'armed reset facts schema is invalid'
         Need (((Get-ExactPropertyNames -Value $Post) -join '|') -ceq 'boot_utc|system_events') 'post reset facts schema is invalid'
         [DateTimeOffset]$before = [DateTimeOffset]::MinValue; [DateTimeOffset]$armedAt = [DateTimeOffset]::MinValue; [DateTimeOffset]$after = [DateTimeOffset]::MinValue
+        Need ($Armed.boot_utc -is [string] -and $Armed.armed_utc -is [string] -and $Post.boot_utc -is [string]) 'reset boot time type is invalid'
         foreach ($entry in @(@([string]$Armed.boot_utc,[ref]$before),@([string]$Armed.armed_utc,[ref]$armedAt),@([string]$Post.boot_utc,[ref]$after))) { Need ($entry[0] -cmatch 'Z$' -and [DateTimeOffset]::TryParse($entry[0], [ref]$entry[1])) 'reset time must be UTC' }
         Need ($after -gt $before) 'reset boot time did not advance'
         Need ($null -ne $Post.system_events -and $Post.system_events -is [Array]) 'post reset events type is invalid'
-        $events = @($Post.system_events); foreach ($event in $events) { $p=Get-ExactPropertyNames $event; Need (($p -join '|') -ceq 'id|time_utc') 'reset event schema is invalid'; Need (($event.id -is [int]) -or ($event.id -is [long])) 'reset event id type is invalid'; Need (($event.id -eq 41) -or ($event.id -eq 6008)) 'reset event id is invalid'; [DateTimeOffset]$when=[DateTimeOffset]::MinValue; Need (([string]$event.time_utc -cmatch '^\d{4}-\d\d-\d\dT.*Z$') -and [DateTimeOffset]::TryParse([string]$event.time_utc,[ref]$when) -and $when -gt $armedAt) "reset event $($event.id) time is not after armed_utc" }
+        $events = @($Post.system_events); foreach ($event in $events) { $p=Get-ExactPropertyNames $event; Need (($p -join '|') -ceq 'id|time_utc') 'reset event schema is invalid'; Need (($event.id -is [int]) -or ($event.id -is [long])) 'reset event id type is invalid'; Need ($event.time_utc -is [string]) 'reset event time type is invalid'; Need (($event.id -eq 41) -or ($event.id -eq 6008)) 'reset event id is invalid'; [DateTimeOffset]$when=[DateTimeOffset]::MinValue; Need (([string]$event.time_utc -cmatch '^\d{4}-\d\d-\d\dT.*Z$') -and [DateTimeOffset]::TryParse([string]$event.time_utc,[ref]$when) -and $when -gt $armedAt) "reset event $($event.id) time is not after armed_utc" }
         Need (@($events | Where-Object { [string]$_.id -ceq '41' }).Count -ge 1) 'reset event 41 is missing'; Need (@($events | Where-Object { [string]$_.id -ceq '6008' }).Count -ge 1) 'reset event 6008 is missing'
     }
     catch [M4QualificationBlocked] { throw }
@@ -584,7 +608,7 @@ function Invoke-SelfTest {
             @('admin', $false, 'administrator privilege'), @('model', 'other', 'model'), @('bios', 'other', 'BIOS'), @('mac', '00:00:00:00:00:00', 'MAC'),
             @('root_ntfs', $false, 'root volume'), @('service_start', 'Auto', 'service start'), @('service_state', 'Running', 'service state'), @('service_pid', 4, 'service pid'),
             @('driver_start', 'Auto', 'driver start'), @('driver_state', 'Stopped', 'driver state'), @('processes', @(1), 'process inventory'), @('processes', $null, 'process inventory'), @('aim_ids', @('x'), 'AIM inventory'), @('aim_ids', $null, 'AIM inventory'),
-            @('R', $true, 'R drive'), @('S', $true, 'S drive'), @('physical_disks', @('0|1|RAW|0'), 'physical disk'), @('boot_utc', 'not-a-time', 'boot_utc')
+            @('R', $true, 'R drive'), @('S', $true, 'S drive'), @('physical_disks', @('0|1|RAW|0'), 'physical disk'), @('boot_utc', 'not-a-time', 'boot_utc'), @('boot_utc', [DateTime]::UtcNow, 'boot_utc type')
         )
         foreach ($mutation in $badFacts) {
             $bad = & $copyFacts; $bad[$mutation[0]] = $mutation[1]; $blocked = $false; $message = ''
@@ -594,6 +618,22 @@ function Invoke-SelfTest {
         }
         $aimResult = ConvertFrom-AimQueryJson -Json '{"success":true,"api_version":1,"sub_version":2,"ids":[]}'
         Need (@($aimResult).Count -eq 0) 'AIM parser did not preserve an empty ids array'
+        foreach ($badAim in @('{"success":true,"api_version":1,"sub_version":2}', '{"success":"true","api_version":1,"sub_version":2,"ids":[]}', '{"success":true,"api_version":"1","sub_version":2,"ids":[]}', '{"success":true,"api_version":1,"sub_version":2,"ids":["x"]}', '{"success":true,"api_version":1,"sub_version":2,"ids":null}')) {
+            $blocked=$false; try { ConvertFrom-AimQueryJson -Json $badAim | Out-Null } catch [M4QualificationBlocked] { $blocked=$true }; Need $blocked 'invalid AIM query JSON was not blocked by type'
+        }
+        $syntheticProcesses = @(
+            [pscustomobject]@{ ProcessId = 100; Name = 'powershell.exe'; CommandLine = 'powershell -File Capture-M4Child.ps1' },
+            [pscustomobject]@{ ProcessId = 101; Name = 'pwsh.exe'; CommandLine = 'pwsh Invoke-M4RunLifecycle.ps1' },
+            [pscustomobject]@{ ProcessId = 102; Name = 'powershell.exe'; CommandLine = 'powershell Prepare-M4NegativeFixtures.ps1' },
+            [pscustomobject]@{ ProcessId = 103; Name = 'pwsh.exe'; CommandLine = 'pwsh Invoke-M4Verification.ps1' },
+            [pscustomobject]@{ ProcessId = 104; Name = 'myrd.exe'; CommandLine = '' },
+            [pscustomobject]@{ ProcessId = 105; Name = 'myrd_m4_aim_query.exe'; CommandLine = '' },
+            [pscustomobject]@{ ProcessId = 106; Name = 'MyRamDiskHost.exe'; CommandLine = '' },
+            [pscustomobject]@{ ProcessId = 107; Name = 'powershell.exe'; CommandLine = 'powershell -File unrelated.ps1' },
+            [pscustomobject]@{ ProcessId = 108; Name = 'powershell.exe'; CommandLine = 'powershell -File Invoke-M4GuestQualification.ps1' },
+            [pscustomobject]@{ ProcessId = $PID; Name = 'powershell.exe'; CommandLine = 'powershell -File Invoke-M4GuestQualification.ps1' }
+        )
+        Need (((Select-RelevantGuestProcesses -Processes $syntheticProcesses -CurrentProcessId $PID) -join '|') -ceq '100|101|102|103|104|105|106|108') 'guest process classifier is invalid'
         $child = Join-Path $scratch 'bounded-child.ps1'
         [IO.File]::WriteAllText($child, "param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$Rest)`n[Console]::Out.WriteLine((`$Rest -join '|'))`n[Console]::Error.WriteLine('stderr-line')`nexit 23", [Text.UTF8Encoding]::new($false))
         $argv = @('-NoProfile','-File',$child,'','two words','two words\','C:\tail\','slash\"quote','say"quote')
@@ -604,6 +644,10 @@ function Invoke-SelfTest {
         $timeoutResult = Invoke-BoundedProcess -FilePath (Join-Path $PSHOME 'powershell.exe') -Arguments @('-NoProfile','-Command','Start-Sleep -Seconds 5') -TimeoutMs 20
         Need $timeoutResult.timed_out 'bounded child timeout was not reported'
         Need ($null -eq (Get-Process -Id $timeoutResult.pid -ErrorAction SilentlyContinue)) 'bounded timeout process is still present'
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            $raceResult = Invoke-BoundedProcess -FilePath (Join-Path $PSHOME 'powershell.exe') -Arguments @('-NoProfile','-Command','') -TimeoutMs 1
+            Need ((@($raceResult.Keys) -join '|') -ceq 'pid|exit|timed_out|stdout|stderr|started_utc|ended_utc') 'bounded process race result schema is invalid'
+        }
         $armed = [ordered]@{ boot_utc = '2026-08-16T00:00:00Z'; armed_utc = '2026-08-16T00:01:00Z' }
         $post = [ordered]@{ boot_utc = '2026-08-16T00:02:00Z'; system_events = @([ordered]@{ id = 41; time_utc = '2026-08-16T00:01:01Z' }, [ordered]@{ id = 6008; time_utc = '2026-08-16T00:01:02Z' }) }
         Assert-UnexpectedReset -Armed $armed -Post $post | Out-Null
@@ -614,9 +658,13 @@ function Invoke-SelfTest {
             @([ordered]@{ boot_utc = '2026-08-16T00:02:00Z'; system_events = @([ordered]@{ id = 41; time_utc = '2026-08-16T00:01:00Z' }, [ordered]@{ id = 6008; time_utc = '2026-08-16T00:01:02Z' }) }, 'event 41 time'),
             @([ordered]@{ boot_utc = '2026-08-16T00:02:00Z'; system_events = @([ordered]@{ id = 41; time_utc = '2026-08-16T00:01:01Z' }, [ordered]@{ id = 6008; time_utc = '2026-08-16T00:01:00Z' }) }, 'event 6008 time'),
             @([ordered]@{ boot_utc = '2026-08-16T00:02:00Z'; system_events = @([ordered]@{ id = '41'; time_utc = '2026-08-16T00:01:01Z' }, [ordered]@{ id = 6008; time_utc = '2026-08-16T00:01:02Z' }) }, 'id type'),
+            @([ordered]@{ boot_utc = '2026-08-16T00:02:00Z'; system_events = @([ordered]@{ id = 41; time_utc = [DateTime]::UtcNow }, [ordered]@{ id = 6008; time_utc = '2026-08-16T00:01:02Z' }) }, 'time type'),
             @([ordered]@{ boot_utc = '2026-08-16T00:02:00Z'; system_events = @([ordered]@{ id = 41; utc = '2026-08-16T00:01:01Z' }, [ordered]@{ id = 6008; time_utc = '2026-08-16T00:01:02Z' }) }, 'event schema')
         )
         foreach ($case in $badResets) { $blocked=$false; $message=''; try { Assert-UnexpectedReset -Armed $armed -Post $case[0] } catch [M4QualificationBlocked] { $blocked=$true; $message=$_.Exception.Message }; Need ($blocked -and $message -clike "*$($case[1])*") 'invalid unexpected reset used the wrong reason' }
+        $badArmed = [ordered]@{ boot_utc = [DateTime]::UtcNow; armed_utc = '2026-08-16T00:01:00Z' }; $blocked=$false; $message=''
+        try { Assert-UnexpectedReset -Armed $badArmed -Post $post } catch [M4QualificationBlocked] { $blocked=$true; $message=$_.Exception.Message }
+        Need ($blocked -and $message -clike '*boot time type*') 'non-string armed reset time used the wrong reason'
         $sourceKit = Join-Path $scratch 'source-kit'; [IO.Directory]::CreateDirectory($sourceKit) | Out-Null
         $kitNames = @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe')
         foreach ($name in $kitNames) { [IO.File]::WriteAllText((Join-Path $sourceKit $name), $name, [Text.UTF8Encoding]::new($false)) }
