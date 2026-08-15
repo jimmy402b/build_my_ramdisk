@@ -145,17 +145,72 @@ function Write-QualificationState {
     }
     $tempPath = Join-Path $root ('.state-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $backupPath = Join-Path $root ('.state-' + [Guid]::NewGuid().ToString('N') + '.bak')
+    $rollbackBackupPath = Join-Path $root ('.state-' + [Guid]::NewGuid().ToString('N') + '.rollback.bak')
+    $eventPath = Join-Path $root 'events.jsonl'
+    $hadState = [IO.File]::Exists($statePath)
+    $hadEventFile = [IO.File]::Exists($eventPath)
+    [int64]$eventLength = if ($hadEventFile) { ([IO.FileInfo]$eventPath).Length } else { 0 }
+    $stateCommitted = $false
     try {
         $json = $State | ConvertTo-Json -Compress -Depth 4
         Write-DurableUtf8 -Path $tempPath -Content ($json + [Environment]::NewLine)
         Read-QualificationStateFile -Path $tempPath | Out-Null
-        if ([IO.File]::Exists($statePath)) {
+        if ($hadState) {
             [IO.File]::Replace($tempPath, $statePath, $backupPath)
         }
         else {
             [IO.File]::Move($tempPath, $statePath)
         }
+        $stateCommitted = $true
         Append-QualificationEvent -QualificationRoot $root -State $State
+
+        if ([IO.File]::Exists($backupPath)) {
+            [IO.File]::Delete($backupPath)
+        }
+    }
+    catch {
+        $commitError = $_.Exception
+        $rollbackError = $null
+        if ($stateCommitted) {
+            try {
+                if ($hadState) {
+                    if (-not [IO.File]::Exists($backupPath)) { throw 'qualification rollback backup is missing' }
+                    [IO.File]::Replace($backupPath, $statePath, $rollbackBackupPath)
+                }
+                elseif ([IO.File]::Exists($statePath)) {
+                    [IO.File]::Delete($statePath)
+                }
+
+                if ($hadEventFile) {
+                    if (-not [IO.File]::Exists($eventPath)) { throw 'qualification event file disappeared during rollback' }
+                    $eventStream = [IO.FileStream]::new(
+                        $eventPath,
+                        [IO.FileMode]::Open,
+                        [IO.FileAccess]::Write,
+                        [IO.FileShare]::Read,
+                        4096,
+                        [IO.FileOptions]::WriteThrough)
+                    try {
+                        $eventStream.SetLength($eventLength)
+                        $eventStream.Flush($true)
+                    }
+                    finally {
+                        $eventStream.Dispose()
+                    }
+                }
+                elseif ([IO.File]::Exists($eventPath)) {
+                    [IO.File]::Delete($eventPath)
+                }
+            }
+            catch {
+                $rollbackError = $_.Exception
+            }
+        }
+
+        if ($null -ne $rollbackError) {
+            throw [M4QualificationBlocked]::new("qualification commit failed: $($commitError.Message); rollback failed: $($rollbackError.Message)")
+        }
+        throw [M4QualificationBlocked]::new("qualification commit failed: $($commitError.Message)")
     }
     finally {
         if ([IO.File]::Exists($tempPath)) {
@@ -163,6 +218,9 @@ function Write-QualificationState {
         }
         if ([IO.File]::Exists($backupPath)) {
             [IO.File]::Delete($backupPath)
+        }
+        if ([IO.File]::Exists($rollbackBackupPath)) {
+            [IO.File]::Delete($rollbackBackupPath)
         }
     }
 }
@@ -246,6 +304,29 @@ function Invoke-SelfTest {
             Need ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($beforeState, [IO.File]::ReadAllBytes($statePath))) 'failed state write changed state.json'
             Need ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($beforeEvents, [IO.File]::ReadAllBytes($eventsPath))) 'failed state write changed events.jsonl'
             Need (@([IO.Directory]::GetFiles($scratch, '.state-*.tmp')).Count -eq 0) 'failed state write left a temp file'
+        }
+
+        $appendFailureState = [ordered]@{
+            schema = 'myrd.m4.guest-qualification.v1'
+            qualification_id = 'q1'
+            state = 'AwaitingCrashReset'
+            sequence = 2
+        }
+        $eventsBeforeAppendFailure = [IO.File]::ReadAllBytes($eventsPath)
+        Remove-Item -LiteralPath $eventsPath -Force
+        [IO.Directory]::CreateDirectory($eventsPath) | Out-Null
+        try {
+            $blocked = $false
+            try { Write-QualificationState -QualificationRoot $scratch -State $appendFailureState } catch [M4QualificationBlocked] { $blocked = $true }
+            Need $blocked 'append failure was not blocked by type'
+            Need ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($beforeState, [IO.File]::ReadAllBytes($statePath))) 'append failure changed state.json'
+            Need ([IO.Directory]::Exists($eventsPath)) 'append failure changed events.json shape'
+            Need (@([IO.Directory]::GetFiles($scratch, '.state-*.tmp')).Count -eq 0) 'append failure left a temp file'
+            Need (@([IO.Directory]::GetFiles($scratch, '.state-*.bak')).Count -eq 0) 'append failure left a backup file'
+        }
+        finally {
+            if ([IO.Directory]::Exists($eventsPath)) { Remove-Item -LiteralPath $eventsPath -Recurse -Force }
+            [IO.File]::WriteAllBytes($eventsPath, $eventsBeforeAppendFailure)
         }
 
         $blocked = $false
