@@ -24,7 +24,7 @@ $controllerAst = [Management.Automation.Language.Parser]::ParseFile(
     [ref]$tokens,
     [ref]$parseErrors)
 Need ($parseErrors.Count -eq 0) 'guest qualification controller failed AST parsing'
-$requiredFunctions = @('Get-GuestFacts', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset')
+$requiredFunctions = @('Get-GuestFacts', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-QualificationRun')
 foreach ($name in $requiredFunctions) {
     $matches = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     Need ($matches.Count -eq 1) "guest qualification controller is missing $name"
@@ -36,6 +36,10 @@ foreach ($requiredText in @("Name='MyRamDiskService'", "Name='phdskmnt'", 'Get-D
 foreach ($forbiddenText in @('Win32_DiskDrive', "Name='myrd'")) { Need (-not $controllerText.Contains($forbiddenText)) "Get-GuestFacts source contract contains $forbiddenText" }
 Need ($controllerText.Contains('[IO.Directory]::Move($Stage, $Root)')) 'qualification root publish must atomically move the stage'
 Need ($controllerText.Contains('.stage-')) 'qualification root initialization must use a private stage name'
+Need ($controllerText.Contains('$script:ProcessInvoker')) 'guest qualification controller must inject ProcessInvoker'
+Need ($controllerText.Contains('RESET STILL REQUIRED: CrashReset')) 'guest qualification controller must require the VMware reset'
+Need ($controllerText.Contains('CRASH RESET ARMED')) 'guest qualification controller must arm crash reset explicitly'
+Need ($controllerText.Contains("'schema', 'qualification_id', 'state', 'sequence', 'events'")) 'qualification state schema must include events'
 $tempCleanupFinally = @($controllerAst.FindAll({
     param($node)
     $node -is [Management.Automation.Language.TryStatementAst] -and
