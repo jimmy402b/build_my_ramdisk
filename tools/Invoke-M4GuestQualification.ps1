@@ -543,26 +543,54 @@ function Get-GuestFacts {
     catch { throw [M4QualificationBlocked]::new("guest fact sampling failed: $($_.Exception.Message)") }
 }
 
+function Publish-QualificationRootStage {
+    param([Parameter(Mandatory = $true)][string]$Stage, [Parameter(Mandatory = $true)][string]$Root)
+    try {
+        Need ([IO.Directory]::Exists($Stage)) 'qualification root stage is missing'
+        Need (-not [IO.Directory]::Exists($Root) -and -not [IO.File]::Exists($Root)) 'qualification root already exists'
+        Need (([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Stage))) -ceq ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Root)))) 'qualification root stage parent is invalid'
+        [IO.Directory]::Move($Stage, $Root)
+        return $Root
+    }
+    catch [M4QualificationBlocked] { throw }
+    catch { throw [M4QualificationBlocked]::new("qualification root publish failed: $($_.Exception.Message)") }
+}
+
+function Assert-QualificationRootLayout {
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$ExpectedCommit)
+    Need (((@(Get-ChildItem -LiteralPath $Root -Force | ForEach-Object Name) | Sort-Object) -join '|') -ceq 'evidence|formal|kit|logs|powercut|temp') 'qualification root directory set is invalid'
+    Need (((@(Get-ChildItem -LiteralPath (Join-Path $Root 'formal') -Force | ForEach-Object Name) | Sort-Object) -join '|') -ceq 'Release|tests|tools') 'qualification formal directory set is invalid'
+    Assert-QualificationKit -Kit (Join-Path $Root 'kit') -ExpectedCommit $ExpectedCommit | Out-Null
+    foreach ($relative in @('formal\Release\myrd.exe','formal\tests\e2e\Invoke-M4RunLifecycle.ps1','formal\tools\Invoke-M4Verification.ps1')) { Need ([IO.File]::Exists((Join-Path $Root $relative))) "qualification root missed $relative" }
+}
+
 function Initialize-QualificationRoot {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot, [Parameter(Mandatory = $true)][string]$SourceKit, [Parameter(Mandatory = $true)][string]$ExpectedCommit, [Parameter(Mandatory = $true)]$Facts)
     Assert-InitialGuestFacts -Facts $Facts | Out-Null; Assert-QualificationKit -Kit $SourceKit -ExpectedCommit $ExpectedCommit | Out-Null
     Need ([IO.Path]::IsPathRooted($QualificationRoot)) 'qualification root must be absolute'
-    $root = [IO.Path]::GetFullPath($QualificationRoot); Need (-not [IO.Directory]::Exists($root) -and -not [IO.File]::Exists($root)) 'qualification root already exists'
-    $created = $false
+    $root = [IO.Path]::GetFullPath($QualificationRoot); $parent = [IO.Path]::GetDirectoryName($root)
+    Need ([IO.Directory]::Exists($parent)) 'qualification root parent is missing'
+    Need (-not [IO.Directory]::Exists($root) -and -not [IO.File]::Exists($root)) 'qualification root already exists'
+    $stage = Join-Path $parent ('.' + [IO.Path]::GetFileName($root) + '.stage-' + [Guid]::NewGuid().ToString('N'))
+    Need (-not [IO.Directory]::Exists($stage) -and -not [IO.File]::Exists($stage)) 'qualification root stage already exists'
+    $stageCreated = $false; $published = $false
     try {
-        [IO.Directory]::CreateDirectory($root) | Out-Null; $created = $true
-        foreach ($relative in @('formal\Release','formal\tests\e2e','formal\tools','powercut','evidence','logs','temp','kit')) { [IO.Directory]::CreateDirectory((Join-Path $root $relative)) | Out-Null }
-        foreach ($name in @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe','qualification-kit.json')) { [IO.File]::Copy((Join-Path $SourceKit $name), (Join-Path $root ('kit\' + $name)), $false) }
-        Assert-QualificationKit -Kit (Join-Path $root 'kit') -ExpectedCommit $ExpectedCommit | Out-Null
-        [IO.File]::Copy((Join-Path $root 'kit\myrd.exe'), (Join-Path $root 'formal\Release\myrd.exe'), $false)
-        [IO.File]::Copy((Join-Path $root 'kit\Invoke-M4RunLifecycle.ps1'), (Join-Path $root 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'), $false)
-        [IO.File]::Copy((Join-Path $root 'kit\Invoke-M4Verification.ps1'), (Join-Path $root 'formal\tools\Invoke-M4Verification.ps1'), $false)
+        [IO.Directory]::CreateDirectory($stage) | Out-Null; $stageCreated = $true
+        foreach ($relative in @('formal\Release','formal\tests\e2e','formal\tools','powercut','evidence','logs','temp','kit')) { [IO.Directory]::CreateDirectory((Join-Path $stage $relative)) | Out-Null }
+        foreach ($name in @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe','qualification-kit.json')) { [IO.File]::Copy((Join-Path $SourceKit $name), (Join-Path $stage ('kit\' + $name)), $false) }
+        Assert-QualificationKit -Kit (Join-Path $stage 'kit') -ExpectedCommit $ExpectedCommit | Out-Null
+        [IO.File]::Copy((Join-Path $stage 'kit\myrd.exe'), (Join-Path $stage 'formal\Release\myrd.exe'), $false)
+        [IO.File]::Copy((Join-Path $stage 'kit\Invoke-M4RunLifecycle.ps1'), (Join-Path $stage 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'), $false)
+        [IO.File]::Copy((Join-Path $stage 'kit\Invoke-M4Verification.ps1'), (Join-Path $stage 'formal\tools\Invoke-M4Verification.ps1'), $false)
+        Publish-QualificationRootStage -Stage $stage -Root $root | Out-Null; $stageCreated = $false; $published = $true
+        Assert-QualificationRootLayout -Root $root -ExpectedCommit $ExpectedCommit
         return $root
     }
     catch {
         $primary = $_.Exception; $cleanup = $null
-        if ($created -and [IO.Directory]::Exists($root)) {
-            try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }
+        $ownedPath = if ($published) { $root } elseif ($stageCreated) { $stage } else { $null }
+        if ($null -ne $ownedPath -and [IO.Directory]::Exists($ownedPath)) {
+            try { Remove-Item -LiteralPath $ownedPath -Recurse -ErrorAction Stop }
             catch { $cleanup = $_.Exception }
         }
         $message = "qualification root initialization failed: $($primary.Message)"
@@ -671,6 +699,17 @@ function Invoke-SelfTest {
         $kitCommit = 'c' * 40
         $kitManifest = [ordered]@{ schema = 'myrd.m4.qualification-kit.v1'; source_commit = $kitCommit; files = @($kitNames | ForEach-Object { $p=Join-Path $sourceKit $_; [ordered]@{name=$_;length=[int64]([IO.FileInfo]$p).Length;sha256=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToUpperInvariant()} }) }
         [IO.File]::WriteAllText((Join-Path $sourceKit 'qualification-kit.json'), ($kitManifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+        $publishStage = Join-Path $scratch 'publish-stage'; $publishRoot = Join-Path $scratch 'publish-root'; [IO.Directory]::CreateDirectory($publishStage) | Out-Null
+        Publish-QualificationRootStage -Stage $publishStage -Root $publishRoot | Out-Null
+        Need ([IO.Directory]::Exists($publishRoot) -and -not [IO.Directory]::Exists($publishStage)) 'qualification root stage publish did not move atomically'
+        $collisionStage = Join-Path $scratch 'publish-collision-stage'; $collisionRoot = Join-Path $scratch 'publish-collision-root'
+        [IO.Directory]::CreateDirectory($collisionStage) | Out-Null; [IO.File]::WriteAllText((Join-Path $collisionStage 'stage-sentinel'), 'stage')
+        [IO.Directory]::CreateDirectory($collisionRoot) | Out-Null; $collisionSentinel = Join-Path $collisionRoot 'root-sentinel'; [IO.File]::WriteAllText($collisionSentinel, 'root')
+        $beforeCollision = (Get-FileHash -LiteralPath $collisionSentinel -Algorithm SHA256).Hash; $blocked=$false
+        try { Publish-QualificationRootStage -Stage $collisionStage -Root $collisionRoot | Out-Null } catch [M4QualificationBlocked] { $blocked=$true }
+        Need ($blocked -and [IO.Directory]::Exists($collisionStage)) 'competition publish did not preserve the caller stage'
+        Need ((Get-FileHash -LiteralPath $collisionSentinel -Algorithm SHA256).Hash -ceq $beforeCollision) 'competition publish changed the root'
+        Remove-Item -LiteralPath $collisionStage -Recurse -ErrorAction Stop
         $initialRoot = Join-Path $scratch 'qualification-root'; $bad=$false; $invalidFacts=& $copyFacts; $invalidFacts.admin=$false
         try { Initialize-QualificationRoot -QualificationRoot $initialRoot -SourceKit $sourceKit -ExpectedCommit $kitCommit -Facts $invalidFacts | Out-Null } catch [M4QualificationBlocked] { $bad=$true }
         Need ($bad -and -not [IO.Directory]::Exists($initialRoot)) 'bad facts created a qualification root'
