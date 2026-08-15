@@ -47,6 +47,8 @@ function Assert-QualificationStateSchema {
     Need ($script:QualificationStates -contains [string]$State.state) 'qualification state value is invalid'
     $sequenceText = [string]$State.sequence
     Need ($sequenceText -match '^[0-9]+$') 'qualification state sequence is invalid'
+    [uint64]$sequenceValue = 0
+    Need ([UInt64]::TryParse($sequenceText, [ref]$sequenceValue)) 'qualification state sequence is out of range'
     return $State
 }
 
@@ -79,11 +81,14 @@ function Read-QualificationStateFile {
     Need ([IO.File]::Exists($Path)) 'qualification state file is missing'
     try {
         $state = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+        return (Assert-QualificationStateSchema -State $state)
+    }
+    catch [M4QualificationBlocked] {
+        throw
     }
     catch {
-        throw "qualification state file is invalid: $($_.Exception.Message)"
+        throw [M4QualificationBlocked]::new("qualification state file is invalid: $($_.Exception.Message)")
     }
-    return (Assert-QualificationStateSchema -State $state)
 }
 
 function Read-QualificationState {
@@ -126,6 +131,18 @@ function Write-QualificationState {
     Need ([IO.Directory]::Exists($root)) 'qualification root is missing'
     Assert-QualificationStateSchema -State $State | Out-Null
     $statePath = Get-QualificationStatePath -QualificationRoot $root
+    if ([IO.File]::Exists($statePath)) {
+        $previousState = Read-QualificationStateFile -Path $statePath
+        Need ([string]::Equals([string]$previousState.qualification_id, [string]$State.qualification_id, [StringComparison]::Ordinal)) 'qualification id cannot change'
+        [uint64]$previousSequence = [uint64]$previousState.sequence
+        Need ($previousSequence -lt [UInt64]::MaxValue) 'qualification state sequence cannot overflow'
+        Need ([uint64]$State.sequence -eq ($previousSequence + 1)) 'qualification state sequence must advance by one'
+        Assert-Transition -From ([string]$previousState.state) -To ([string]$State.state)
+    }
+    else {
+        Need ([string]$State.state -ceq 'Initial') 'first qualification state must be Initial'
+        Need ([uint64]$State.sequence -eq 0) 'first qualification state sequence must be zero'
+    }
     $tempPath = Join-Path $root ('.state-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $backupPath = Join-Path $root ('.state-' + [Guid]::NewGuid().ToString('N') + '.bak')
     try {
@@ -151,7 +168,7 @@ function Write-QualificationState {
 }
 
 $script:QualificationStates = @(
-    'Initial', 'FormalCreateReady', 'AwaitingCrashReset', 'CrashResetObserved',
+    'Initial', 'Preflight', 'FormalCreateReady', 'AwaitingCrashReset', 'CrashResetObserved',
     'FormalRecovered', 'AwaitingLivePowerCut', 'LivePowerCutObserved',
     'LivePowerRecovered', 'FixturesPrepared', 'AwaitingMissingDriverReset',
     'MissingDriverResetObserved', 'MissingDriverCaptured', 'DriverRestored',
@@ -187,14 +204,16 @@ function Invoke-SelfTest {
         Need ($roundTrip.qualification_id -ceq 'q1') 'qualification id did not round-trip'
         Need ($roundTrip.state -ceq 'Initial') 'initial state did not round-trip'
         Need ([int]$roundTrip.sequence -eq 0) 'initial sequence did not round-trip'
-        Assert-Transition -From 'Initial' -To 'FormalCreateReady'
+        Assert-Transition -From 'Initial' -To 'Preflight'
         $next = [ordered]@{
             schema = 'myrd.m4.guest-qualification.v1'
             qualification_id = 'q1'
-            state = 'FormalCreateReady'
+            state = 'Preflight'
             sequence = 1
         }
         Write-QualificationState -QualificationRoot $scratch -State $next
+        $current = Read-QualificationState -QualificationRoot $scratch
+        Need ($current.state -ceq 'Preflight' -and [uint64]$current.sequence -eq 1) 'legal transition did not persist'
         $events = @(
             Get-Content -LiteralPath (Join-Path $scratch 'events.jsonl') -Encoding UTF8 |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
@@ -202,9 +221,40 @@ function Invoke-SelfTest {
         )
         Need ($events.Count -eq 2) 'event sequence count is invalid'
         Need ([int]$events[0].sequence -eq 0 -and [int]$events[1].sequence -eq 1) 'event sequence order is invalid'
+
+        $statePath = Join-Path $scratch 'state.json'
+        $eventsPath = Join-Path $scratch 'events.jsonl'
+        $beforeState = [IO.File]::ReadAllBytes($statePath)
+        $beforeEvents = [IO.File]::ReadAllBytes($eventsPath)
+        foreach ($invalid in @(
+            [ordered]@{ schema = 'myrd.m4.guest-qualification.v1'; qualification_id = 'q1'; state = 'Initial'; sequence = 2 },
+            [ordered]@{ schema = 'myrd.m4.guest-qualification.v1'; qualification_id = 'q1'; state = 'FormalRecovered'; sequence = 2 },
+            [ordered]@{ schema = 'myrd.m4.guest-qualification.v1'; qualification_id = 'q2'; state = 'FormalCreateReady'; sequence = 2 },
+            [ordered]@{ schema = 'myrd.m4.guest-qualification.v1'; qualification_id = 'q1'; state = 'FormalCreateReady'; sequence = 3 }
+        )) {
+            $blocked = $false
+            try { Write-QualificationState -QualificationRoot $scratch -State $invalid } catch [M4QualificationBlocked] { $blocked = $true }
+            Need $blocked 'invalid state write was not blocked by type'
+            Need ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($beforeState, [IO.File]::ReadAllBytes($statePath))) 'failed state write changed state.json'
+            Need ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($beforeEvents, [IO.File]::ReadAllBytes($eventsPath))) 'failed state write changed events.jsonl'
+            Need (@([IO.Directory]::GetFiles($scratch, '.state-*.tmp')).Count -eq 0) 'failed state write left a temp file'
+        }
+
         $blocked = $false
-        try { Assert-Transition -From 'Initial' -To 'Complete' } catch [M4QualificationBlocked] { $blocked = $true }
-        Need $blocked 'Initial -> Complete must be blocked'
+        try { Assert-Transition -From 'Preflight' -To 'Complete' } catch [M4QualificationBlocked] { $blocked = $true }
+        Need $blocked 'Preflight -> Complete must be blocked'
+
+        $corruptPayloads = [Collections.Generic.List[byte[]]]::new()
+        $corruptPayloads.Add([byte[]](0xFF, 0xFE, 0xFD))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{not-json'))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"invalid","qualification_id":"q1","state":"Preflight","sequence":1}'))
+        foreach ($corruptPayload in $corruptPayloads) {
+            [IO.File]::WriteAllBytes($statePath, $corruptPayload)
+            $blocked = $false
+            try { Read-QualificationState -QualificationRoot $scratch | Out-Null } catch [M4QualificationBlocked] { $blocked = $true }
+            Need $blocked 'corrupt state was not rejected by type'
+            Need ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($beforeEvents, [IO.File]::ReadAllBytes($eventsPath))) 'corrupt state read changed events.jsonl'
+        }
     }
     finally {
         if ([IO.Directory]::Exists($scratch)) {
