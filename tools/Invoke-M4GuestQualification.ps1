@@ -23,6 +23,102 @@ function Need {
     if (-not $Condition) { throw [M4QualificationBlocked]::new($Message) }
 }
 
+function Get-ExactPropertyNames {
+    param([Parameter(Mandatory = $true)]$Value)
+    if ($Value -is [Collections.IDictionary]) { return @($Value.Keys | ForEach-Object { [string]$_ }) }
+    return @($Value.PSObject.Properties | ForEach-Object { $_.Name })
+}
+
+function Assert-QualificationKit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kit,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    )
+
+    try {
+        $expectedNames = @(
+            'Capture-M4Child.ps1', 'Invoke-M4GuestQualification.ps1',
+            'Invoke-M4RunLifecycle.ps1', 'Invoke-M4Verification.ps1',
+            'Prepare-M4NegativeFixtures.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe')
+        Need ($ExpectedCommit -cmatch '^[0-9a-f]{40}$') 'expected qualification-kit commit is invalid'
+        $root = [IO.Path]::GetFullPath($Kit)
+        Need ([IO.Directory]::Exists($root)) 'qualification kit root is missing'
+        Need (@([IO.Directory]::GetDirectories($root)).Count -eq 0) 'qualification kit contains a subdirectory'
+        $rootFiles = @([IO.Directory]::GetFiles($root) | ForEach-Object { [IO.Path]::GetFileName($_) })
+        $allNames = @($expectedNames + 'qualification-kit.json')
+        Need ($rootFiles.Count -eq 8) 'qualification kit root file count is invalid'
+        foreach ($name in $allNames) { Need ($rootFiles -ccontains $name) "qualification kit root is missing $name" }
+
+        $manifestPath = Join-Path $root 'qualification-kit.json'
+        $bytes = [IO.File]::ReadAllBytes($manifestPath)
+        Need ($bytes.Length -lt 3 -or -not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'qualification kit manifest has a UTF-8 BOM'
+        $manifest = [Text.UTF8Encoding]::new($false, $true).GetString($bytes) | ConvertFrom-Json
+        $manifestProperties = Get-ExactPropertyNames -Value $manifest
+        Need ($manifestProperties.Count -eq 3) 'qualification kit manifest property count is invalid'
+        foreach ($name in @('schema', 'source_commit', 'files')) { Need ($manifestProperties -ccontains $name) "qualification kit manifest is missing $name" }
+        Need ([string]$manifest.schema -ceq 'myrd.m4.qualification-kit.v1') 'qualification kit manifest schema is invalid'
+        Need ([string]$manifest.source_commit -ceq $ExpectedCommit) 'qualification kit manifest source commit is invalid'
+        $records = @($manifest.files)
+        Need ($records.Count -eq 7) 'qualification kit manifest file count is invalid'
+        Need (([string]::Join('|', @($records | ForEach-Object { [string]$_.name }))) -ceq ([string]::Join('|', $expectedNames))) 'qualification kit manifest names are invalid'
+        foreach ($record in $records) {
+            $properties = Get-ExactPropertyNames -Value $record
+            Need ($properties.Count -eq 3) 'qualification kit manifest file property count is invalid'
+            foreach ($property in @('name', 'length', 'sha256')) { Need ($properties -ccontains $property) "qualification kit manifest file is missing $property" }
+            $name = [string]$record.name
+            Need ($expectedNames -ccontains $name) "qualification kit manifest names unknown file $name"
+            $lengthText = [string]$record.length
+            [int64]$length = 0
+            Need ($lengthText -cmatch '^[0-9]+$' -and [Int64]::TryParse($lengthText, [ref]$length)) "qualification kit manifest length is invalid for $name"
+            $filePath = Join-Path $root $name
+            Need ($length -eq ([IO.FileInfo]$filePath).Length) "qualification kit manifest length does not match $name"
+            $hash = [string]$record.sha256
+            Need ($hash -cmatch '^[0-9A-F]{64}$') "qualification kit manifest hash format is invalid for $name"
+            Need ($hash -ceq (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash.ToUpperInvariant()) "qualification kit manifest hash does not match $name"
+        }
+        return $manifest
+    }
+    catch [M4QualificationBlocked] { throw }
+    catch { throw [M4QualificationBlocked]::new("qualification kit is invalid: $($_.Exception.Message)") }
+}
+
+function Invoke-QualificationKitValidatorSelfTest {
+    param([Parameter(Mandatory = $true)][string]$Scratch)
+
+    $kit = Join-Path $Scratch 'qualification-kit-selftest'
+    [IO.Directory]::CreateDirectory($kit) | Out-Null
+    $names = @('Capture-M4Child.ps1', 'Invoke-M4GuestQualification.ps1', 'Invoke-M4RunLifecycle.ps1', 'Invoke-M4Verification.ps1', 'Prepare-M4NegativeFixtures.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe')
+    foreach ($name in $names) { [IO.File]::WriteAllText((Join-Path $kit $name), $name, [Text.UTF8Encoding]::new($false)) }
+    $commit = ('a' * 40)
+    $manifestPath = Join-Path $kit 'qualification-kit.json'
+    $writeManifest = {
+        param($SourceCommit, $Records)
+        $manifest = [ordered]@{ schema = 'myrd.m4.qualification-kit.v1'; source_commit = $SourceCommit; files = @($Records) }
+        [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    }
+    $records = @($names | ForEach-Object {
+        $path = Join-Path $kit $_
+        [ordered]@{ name = $_; length = [int64]([IO.FileInfo]$path).Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant() }
+    })
+    & $writeManifest $commit $records
+    Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null
+    $reject = {
+        $blocked = $false
+        try { Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null } catch [M4QualificationBlocked] { $blocked = $true }
+        Need $blocked 'invalid qualification kit was not blocked by type'
+    }
+    $victim = Join-Path $kit $names[0]
+    [IO.File]::Delete($victim); & $reject; [IO.File]::WriteAllText($victim, $names[0], [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $kit 'extra.txt'), 'extra'); & $reject; [IO.File]::Delete((Join-Path $kit 'extra.txt'))
+    [IO.Directory]::CreateDirectory((Join-Path $kit 'nested')) | Out-Null; & $reject; [IO.Directory]::Delete((Join-Path $kit 'nested'))
+    $bad = @($records); $bad[0].length = [int64]999; & $writeManifest $commit $bad; & $reject
+    $bad = @($records); $bad[0].sha256 = ('B' * 64); & $writeManifest $commit $bad; & $reject
+    & $writeManifest ('b' * 40) $records; & $reject
+    $self = @($records + [ordered]@{ name = 'qualification-kit.json'; length = 1; sha256 = ('A' * 64) }); & $writeManifest $commit $self; & $reject
+    & $writeManifest $commit @($records[0..5]); & $reject
+    $extra = @($records + [ordered]@{ name = 'extra.txt'; length = 1; sha256 = ('A' * 64) }); & $writeManifest $commit $extra; & $reject
+}
+
 function Get-QualificationStatePath {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot)
     return (Join-Path ([IO.Path]::GetFullPath($QualificationRoot)) 'state.json')
@@ -303,6 +399,7 @@ function Invoke-SelfTest {
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-guest-qualification-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($scratch) | Out-Null
     try {
+        Invoke-QualificationKitValidatorSelfTest -Scratch $scratch
         $expectedStates = @(
             'Initial', 'FormalCreateReady', 'AwaitingCrashReset', 'CrashResetObserved',
             'FormalRecovered', 'AwaitingLivePowerCut', 'LivePowerCutObserved',

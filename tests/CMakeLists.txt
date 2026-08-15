@@ -1687,6 +1687,12 @@ add_test(NAME unit.m4.guest_qualification
         -SourceRoot "${CMAKE_SOURCE_DIR}")
 set_tests_properties(unit.m4.guest_qualification PROPERTIES LABELS "m4-v3" TIMEOUT 30)
 
+add_test(NAME unit.m4.qualification_kit
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-qualification-kit.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}")
+set_tests_properties(unit.m4.qualification_kit PROPERTIES LABELS "m4-v3" TIMEOUT 45)
+
 add_test(NAME unit.m4.release_contract
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-release-contract.ps1"
