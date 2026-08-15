@@ -35,6 +35,15 @@ function Invoke-Packager {
     return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $outputLines }
 }
 
+$processEnvironment = [Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process)
+$stageNameWasSet = $processEnvironment.Contains('MYRD_M4_QUALIFICATION_STAGE_NAME')
+$stageNameBefore = [Environment]::GetEnvironmentVariable('MYRD_M4_QUALIFICATION_STAGE_NAME', [EnvironmentVariableTarget]::Process)
+$testModeWasSet = $processEnvironment.Contains('MYRD_M4_QUALIFICATION_TEST_MODE')
+$testModeBefore = [Environment]::GetEnvironmentVariable('MYRD_M4_QUALIFICATION_TEST_MODE', [EnvironmentVariableTarget]::Process)
+$pathBefore = [Environment]::GetEnvironmentVariable('PATH', [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('MYRD_M4_QUALIFICATION_STAGE_NAME', $null, [EnvironmentVariableTarget]::Process)
+[Environment]::SetEnvironmentVariable('MYRD_M4_QUALIFICATION_TEST_MODE', $null, [EnvironmentVariableTarget]::Process)
+
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-qualification-kit-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
 try {
@@ -154,4 +163,17 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable('PATH', $pathBefore, [EnvironmentVariableTarget]::Process)
+    if ($stageNameWasSet) {
+        [Environment]::SetEnvironmentVariable('MYRD_M4_QUALIFICATION_STAGE_NAME', $stageNameBefore, [EnvironmentVariableTarget]::Process)
+    }
+    else {
+        [Environment]::SetEnvironmentVariable('MYRD_M4_QUALIFICATION_STAGE_NAME', $null, [EnvironmentVariableTarget]::Process)
+    }
+    if ($testModeWasSet) {
+        [Environment]::SetEnvironmentVariable('MYRD_M4_QUALIFICATION_TEST_MODE', $testModeBefore, [EnvironmentVariableTarget]::Process)
+    }
+    else {
+        [Environment]::SetEnvironmentVariable('MYRD_M4_QUALIFICATION_TEST_MODE', $null, [EnvironmentVariableTarget]::Process)
+    }
 }

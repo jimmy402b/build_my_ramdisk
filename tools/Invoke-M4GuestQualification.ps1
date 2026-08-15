@@ -67,9 +67,10 @@ function Assert-QualificationKit {
             foreach ($property in @('name', 'length', 'sha256')) { Need ($properties -ccontains $property) "qualification kit manifest file is missing $property" }
             $name = [string]$record.name
             Need ($expectedNames -ccontains $name) "qualification kit manifest names unknown file $name"
-            $lengthText = [string]$record.length
-            [int64]$length = 0
-            Need ($lengthText -cmatch '^[0-9]+$' -and [Int64]::TryParse($lengthText, [ref]$length)) "qualification kit manifest length is invalid for $name"
+            $lengthValue = $record.length
+            Need (($lengthValue -is [int]) -or ($lengthValue -is [long])) "qualification kit manifest length type is invalid for $name"
+            [int64]$length = $lengthValue
+            Need ($length -ge 0) "qualification kit manifest length is invalid for $name"
             $filePath = Join-Path $root $name
             Need ($length -eq ([IO.FileInfo]$filePath).Length) "qualification kit manifest length does not match $name"
             $hash = [string]$record.sha256
@@ -116,6 +117,7 @@ function Invoke-QualificationKitValidatorSelfTest {
     [IO.File]::Delete($victim); & $reject 'qualification kit root file count is invalid'; [IO.File]::WriteAllText($victim, $names[0], [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $kit 'extra.txt'), 'extra'); & $reject 'qualification kit root file count is invalid'; [IO.File]::Delete((Join-Path $kit 'extra.txt'))
     [IO.Directory]::CreateDirectory((Join-Path $kit 'nested')) | Out-Null; & $reject 'qualification kit contains a subdirectory'; [IO.Directory]::Delete((Join-Path $kit 'nested'))
+    $bad = & $newRecords; $bad[0].length = [string]$bad[0].length; & $writeManifest $commit $bad; & $reject 'qualification kit manifest length type is invalid'
     $bad = & $newRecords; $bad[0].length = [int64]999; & $writeManifest $commit $bad; & $reject 'qualification kit manifest length does not match'
     $bad = & $newRecords; $bad[0].sha256 = ('B' * 64); & $writeManifest $commit $bad; & $reject 'qualification kit manifest hash does not match'
     & $writeManifest ('b' * 40) (& $newRecords); & $reject 'qualification kit manifest source commit is invalid'
