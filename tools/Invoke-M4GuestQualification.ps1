@@ -14,14 +14,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function M4QualificationBlocked {
-    param([Parameter(Mandatory = $true)][string]$Message)
-    throw "M4QualificationBlocked: $Message"
+class M4QualificationBlocked : System.Exception {
+    M4QualificationBlocked([string]$message) : base($message) {}
 }
 
 function Need {
     param([bool]$Condition, [Parameter(Mandatory = $true)][string]$Message)
-    if (-not $Condition) { throw $Message }
+    if (-not $Condition) { throw [M4QualificationBlocked]::new($Message) }
 }
 
 function Get-QualificationStatePath {
@@ -168,7 +167,7 @@ function Assert-Transition {
     $fromIndex = [array]::IndexOf($script:QualificationStates, $From)
     $toIndex = [array]::IndexOf($script:QualificationStates, $To)
     if ($fromIndex -lt 0 -or $toIndex -lt 0 -or $toIndex -ne ($fromIndex + 1)) {
-        M4QualificationBlocked "invalid transition $From -> $To"
+        throw [M4QualificationBlocked]::new("invalid transition $From -> $To")
     }
 }
 
@@ -204,7 +203,7 @@ function Invoke-SelfTest {
         Need ($events.Count -eq 2) 'event sequence count is invalid'
         Need ([int]$events[0].sequence -eq 0 -and [int]$events[1].sequence -eq 1) 'event sequence order is invalid'
         $blocked = $false
-        try { Assert-Transition -From 'Initial' -To 'Complete' } catch { $blocked = $_.Exception.Message -like 'M4QualificationBlocked:*' }
+        try { Assert-Transition -From 'Initial' -To 'Complete' } catch [M4QualificationBlocked] { $blocked = $true }
         Need $blocked 'Initial -> Complete must be blocked'
     }
     finally {
@@ -220,4 +219,4 @@ if ($SelfTest) {
     exit 0
 }
 
-M4QualificationBlocked 'Run and Status are not implemented in Task 1'
+throw [M4QualificationBlocked]::new('Run and Status are not implemented in Task 1')
