@@ -96,27 +96,39 @@ function Invoke-QualificationKitValidatorSelfTest {
         $manifest = [ordered]@{ schema = 'myrd.m4.qualification-kit.v1'; source_commit = $SourceCommit; files = @($Records) }
         [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
     }
-    $records = @($names | ForEach-Object {
-        $path = Join-Path $kit $_
-        [ordered]@{ name = $_; length = [int64]([IO.FileInfo]$path).Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant() }
-    })
-    & $writeManifest $commit $records
+    $newRecords = {
+        return @($names | ForEach-Object {
+            $path = Join-Path $kit $_
+            [ordered]@{ name = $_; length = [int64]([IO.FileInfo]$path).Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant() }
+        })
+    }
+    & $writeManifest $commit (& $newRecords)
     Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null
     $reject = {
+        param([Parameter(Mandatory = $true)][string]$ExpectedMessage)
         $blocked = $false
-        try { Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null } catch [M4QualificationBlocked] { $blocked = $true }
+        $message = $null
+        try { Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null } catch [M4QualificationBlocked] { $blocked = $true; $message = $_.Exception.Message }
         Need $blocked 'invalid qualification kit was not blocked by type'
+        Need ($message -clike "*$ExpectedMessage*") "invalid qualification kit reported the wrong reason: $message"
     }
     $victim = Join-Path $kit $names[0]
-    [IO.File]::Delete($victim); & $reject; [IO.File]::WriteAllText($victim, $names[0], [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $kit 'extra.txt'), 'extra'); & $reject; [IO.File]::Delete((Join-Path $kit 'extra.txt'))
-    [IO.Directory]::CreateDirectory((Join-Path $kit 'nested')) | Out-Null; & $reject; [IO.Directory]::Delete((Join-Path $kit 'nested'))
-    $bad = @($records); $bad[0].length = [int64]999; & $writeManifest $commit $bad; & $reject
-    $bad = @($records); $bad[0].sha256 = ('B' * 64); & $writeManifest $commit $bad; & $reject
-    & $writeManifest ('b' * 40) $records; & $reject
-    $self = @($records + [ordered]@{ name = 'qualification-kit.json'; length = 1; sha256 = ('A' * 64) }); & $writeManifest $commit $self; & $reject
-    & $writeManifest $commit @($records[0..5]); & $reject
-    $extra = @($records + [ordered]@{ name = 'extra.txt'; length = 1; sha256 = ('A' * 64) }); & $writeManifest $commit $extra; & $reject
+    [IO.File]::Delete($victim); & $reject 'qualification kit root file count is invalid'; [IO.File]::WriteAllText($victim, $names[0], [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $kit 'extra.txt'), 'extra'); & $reject 'qualification kit root file count is invalid'; [IO.File]::Delete((Join-Path $kit 'extra.txt'))
+    [IO.Directory]::CreateDirectory((Join-Path $kit 'nested')) | Out-Null; & $reject 'qualification kit contains a subdirectory'; [IO.Directory]::Delete((Join-Path $kit 'nested'))
+    $bad = & $newRecords; $bad[0].length = [int64]999; & $writeManifest $commit $bad; & $reject 'qualification kit manifest length does not match'
+    $bad = & $newRecords; $bad[0].sha256 = ('B' * 64); & $writeManifest $commit $bad; & $reject 'qualification kit manifest hash does not match'
+    & $writeManifest ('b' * 40) (& $newRecords); & $reject 'qualification kit manifest source commit is invalid'
+    $self = @((& $newRecords) + [ordered]@{ name = 'qualification-kit.json'; length = 1; sha256 = ('A' * 64) }); & $writeManifest $commit $self; & $reject 'qualification kit manifest file count is invalid'
+    $few = & $newRecords; & $writeManifest $commit @($few[0..5]); & $reject 'qualification kit manifest file count is invalid'
+    $extra = @((& $newRecords) + [ordered]@{ name = 'extra.txt'; length = 1; sha256 = ('A' * 64) }); & $writeManifest $commit $extra; & $reject 'qualification kit manifest file count is invalid'
+    & $writeManifest $commit (& $newRecords)
+    $cleanManifest = [IO.File]::ReadAllBytes($manifestPath)
+    $bomManifest = [byte[]]::new($cleanManifest.Length + 3)
+    $bomManifest[0] = 0xEF; $bomManifest[1] = 0xBB; $bomManifest[2] = 0xBF
+    [Array]::Copy($cleanManifest, 0, $bomManifest, 3, $cleanManifest.Length)
+    [IO.File]::WriteAllBytes($manifestPath, $bomManifest); & $reject 'qualification kit manifest has a UTF-8 BOM'
+    [IO.File]::WriteAllBytes($manifestPath, $cleanManifest)
 }
 
 function Get-QualificationStatePath {
