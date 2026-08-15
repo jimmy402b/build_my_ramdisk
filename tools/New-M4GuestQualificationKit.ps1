@@ -39,20 +39,23 @@ try {
 
     $name = [IO.Path]::GetFileName($destinationDirectory)
     $injected = [Environment]::GetEnvironmentVariable('MYRD_M4_QUALIFICATION_STAGE_NAME')
-    if ([string]::IsNullOrEmpty($injected)) {
-        $stageName = '.' + $name + '.stage-' + [Guid]::NewGuid().ToString('N')
-    }
-    else {
+    $testMode = [Environment]::GetEnvironmentVariable('MYRD_M4_QUALIFICATION_TEST_MODE')
+    if ($testMode -ceq '1' -and -not [string]::IsNullOrEmpty($injected)) {
         Need ($injected -cmatch ('^\.' + [Regex]::Escape($name) + '\.stage-[A-Za-z0-9-]+$')) 'Injected qualification stage name is invalid'
         $stageName = $injected
     }
+    else { $stageName = '.' + $name + '.stage-' + [Guid]::NewGuid().ToString('N') }
     $stage = Join-Path $parent $stageName
     Need (-not [IO.Directory]::Exists($stage) -and -not [IO.File]::Exists($stage)) "Qualification stage already exists: $stage"
     New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
     $stageCreated = $true
 
     foreach ($file in $files) { [IO.File]::Copy($file.Source, (Join-Path $stage $file.Name), $false) }
-    $commit = (& git -C $root rev-parse HEAD).Trim().ToLowerInvariant()
+    $gitOutput = @(& git -C $root rev-parse HEAD)
+    $gitExitCode = $LASTEXITCODE
+    Need ($gitExitCode -eq 0) "SourceRoot git rev-parse failed with exit code $gitExitCode"
+    Need ($gitOutput.Count -eq 1) 'SourceRoot git commit output is invalid'
+    $commit = ([string]$gitOutput[0]).Trim().ToLowerInvariant()
     Need ($commit -cmatch '^[0-9a-f]{40}$') 'SourceRoot git commit is invalid'
     $manifestFiles = @($files | ForEach-Object {
         $destination = Join-Path $stage $_.Name

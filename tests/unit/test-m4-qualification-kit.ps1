@@ -93,6 +93,18 @@ try {
         Need ($entry.sha256 -ceq (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToUpperInvariant()) "manifest hash is invalid for $($entry.name)"
     }
 
+    $fakeGitDirectory = Join-Path $scratch 'fake-git'
+    [IO.Directory]::CreateDirectory($fakeGitDirectory) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeGitDirectory 'git.cmd'), "@echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`r`n@exit /b 7`r`n", [Text.ASCIIEncoding]::new())
+    $failedGitOutput = Join-Path $scratch 'failed-git-output'
+    $originalPath = $env:PATH
+    $env:PATH = $fakeGitDirectory + [IO.Path]::PathSeparator + $originalPath
+    try { $failedGit = Invoke-Packager -Root $fakeRoot -Artifact $artifact -Query $query -OutputPath $failedGitOutput }
+    finally { $env:PATH = $originalPath }
+    Need ($failedGit.ExitCode -ne 0) 'nonzero git rev-parse exit must block packaging'
+    Need (-not [IO.Directory]::Exists($failedGitOutput)) 'nonzero git rev-parse exit created output'
+    Need (@(Get-ChildItem -LiteralPath $scratch -Force -Directory | Where-Object { $_.Name -like '.failed-git-output.stage-*' }).Count -eq 0) 'nonzero git rev-parse exit left a stage'
+
     $sentinelOutput = Join-Path $scratch 'existing-output'
     [IO.Directory]::CreateDirectory($sentinelOutput) | Out-Null
     [IO.File]::WriteAllText((Join-Path $sentinelOutput 'sentinel'), 'preserve')
@@ -101,6 +113,20 @@ try {
     Need ($collision.ExitCode -ne 0) 'existing output directory must block packaging'
     Need (([string]::Join('|', (Get-Inventory -Path $sentinelOutput))) -ceq ([string]::Join('|', $beforeOutput))) 'existing output changed after collision'
 
+    $ignoredOutput = Join-Path $scratch 'ignored-stage-output'
+    $ignoredStageName = '.ignored-stage-output.stage-external'
+    $ignoredStage = Join-Path $scratch $ignoredStageName
+    [IO.Directory]::CreateDirectory($ignoredStage) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ignoredStage 'sentinel'), 'preserve')
+    $beforeIgnoredStage = Get-Inventory -Path $ignoredStage
+    $env:MYRD_M4_QUALIFICATION_STAGE_NAME = $ignoredStageName
+    Remove-Item Env:MYRD_M4_QUALIFICATION_TEST_MODE -ErrorAction SilentlyContinue
+    try { $ignoredInjection = Invoke-Packager -Root $fakeRoot -Artifact $artifact -Query $query -OutputPath $ignoredOutput }
+    finally { Remove-Item Env:MYRD_M4_QUALIFICATION_STAGE_NAME -ErrorAction SilentlyContinue }
+    Need ($ignoredInjection.ExitCode -eq 0) 'ordinary packaging must ignore stage injection'
+    Need ([IO.Directory]::Exists($ignoredOutput)) 'ordinary packaging did not create output'
+    Need (([string]::Join('|', (Get-Inventory -Path $ignoredStage))) -ceq ([string]::Join('|', $beforeIgnoredStage))) 'ordinary stage injection changed the pre-existing stage'
+
     $stageOutput = Join-Path $scratch 'stage-output'
     $stageName = '.stage-output.stage-testcollision'
     $stage = Join-Path $scratch $stageName
@@ -108,8 +134,9 @@ try {
     [IO.File]::WriteAllText((Join-Path $stage 'sentinel'), 'preserve')
     $beforeStage = Get-Inventory -Path $stage
     $env:MYRD_M4_QUALIFICATION_STAGE_NAME = $stageName
+    $env:MYRD_M4_QUALIFICATION_TEST_MODE = '1'
     try { $collision = Invoke-Packager -Root $fakeRoot -Artifact $artifact -Query $query -OutputPath $stageOutput }
-    finally { Remove-Item Env:MYRD_M4_QUALIFICATION_STAGE_NAME -ErrorAction SilentlyContinue }
+    finally { Remove-Item Env:MYRD_M4_QUALIFICATION_STAGE_NAME,Env:MYRD_M4_QUALIFICATION_TEST_MODE -ErrorAction SilentlyContinue }
     Need ($collision.ExitCode -ne 0) 'stage collision must block packaging'
     Need (-not [IO.Directory]::Exists($stageOutput)) 'stage collision created output'
     Need (([string]::Join('|', (Get-Inventory -Path $stage))) -ceq ([string]::Join('|', $beforeStage))) 'pre-existing stage changed after collision'
