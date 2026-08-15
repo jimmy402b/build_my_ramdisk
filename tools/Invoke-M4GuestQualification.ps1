@@ -121,6 +121,35 @@ function Append-QualificationEvent {
     }
 }
 
+function Complete-QualificationRecoveryArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Paths,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('CommitSucceeded', 'CommitNotApplied', 'RollbackSucceeded', 'RollbackFailed')]
+        [string]$Outcome
+    )
+
+    $cleanupErrors = @()
+    $retainedPaths = @()
+    foreach ($path in $Paths) {
+        if (-not [IO.File]::Exists($path)) { continue }
+        if ($Outcome -ceq 'RollbackFailed') {
+            $retainedPaths += $path
+            continue
+        }
+        try {
+            [IO.File]::Delete($path)
+        }
+        catch {
+            $cleanupErrors += "${path}: $($_.Exception.Message)"
+        }
+    }
+    return [pscustomobject]@{
+        cleanup_errors = @($cleanupErrors)
+        retained_paths = @($retainedPaths)
+    }
+}
+
 function Write-QualificationState {
     param(
         [Parameter(Mandatory = $true)][string]$QualificationRoot,
@@ -151,6 +180,9 @@ function Write-QualificationState {
     $hadEventFile = [IO.File]::Exists($eventPath)
     [int64]$eventLength = if ($hadEventFile) { ([IO.FileInfo]$eventPath).Length } else { 0 }
     $stateCommitted = $false
+    $transactionError = $null
+    $rollbackError = $null
+    $outcome = 'CommitNotApplied'
     try {
         $json = $State | ConvertTo-Json -Compress -Depth 4
         Write-DurableUtf8 -Path $tempPath -Content ($json + [Environment]::NewLine)
@@ -163,14 +195,10 @@ function Write-QualificationState {
         }
         $stateCommitted = $true
         Append-QualificationEvent -QualificationRoot $root -State $State
-
-        if ([IO.File]::Exists($backupPath)) {
-            [IO.File]::Delete($backupPath)
-        }
+        $outcome = 'CommitSucceeded'
     }
     catch {
-        $commitError = $_.Exception
-        $rollbackError = $null
+        $transactionError = $_.Exception
         if ($stateCommitted) {
             try {
                 if ($hadState) {
@@ -201,27 +229,51 @@ function Write-QualificationState {
                 elseif ([IO.File]::Exists($eventPath)) {
                     [IO.File]::Delete($eventPath)
                 }
+                $outcome = 'RollbackSucceeded'
             }
             catch {
                 $rollbackError = $_.Exception
+                $outcome = 'RollbackFailed'
             }
         }
-
-        if ($null -ne $rollbackError) {
-            throw [M4QualificationBlocked]::new("qualification commit failed: $($commitError.Message); rollback failed: $($rollbackError.Message)")
-        }
-        throw [M4QualificationBlocked]::new("qualification commit failed: $($commitError.Message)")
     }
-    finally {
-        if ([IO.File]::Exists($tempPath)) {
+
+    $tempCleanupError = $null
+    if ([IO.File]::Exists($tempPath)) {
+        try {
             [IO.File]::Delete($tempPath)
         }
-        if ([IO.File]::Exists($backupPath)) {
-            [IO.File]::Delete($backupPath)
+        catch {
+            $tempCleanupError = $_.Exception
         }
-        if ([IO.File]::Exists($rollbackBackupPath)) {
-            [IO.File]::Delete($rollbackBackupPath)
+    }
+    $artifactResult = Complete-QualificationRecoveryArtifacts `
+        -Paths @($backupPath, $rollbackBackupPath) -Outcome $outcome
+
+    $cleanupDetails = @()
+    if ($null -ne $tempCleanupError) {
+        $cleanupDetails += "temp cleanup failed at ${tempPath}: $($tempCleanupError.Message)"
+    }
+    $cleanupDetails += @($artifactResult.cleanup_errors)
+
+    if ($null -ne $transactionError) {
+        $message = "qualification commit failed: $($transactionError.Message)"
+        if ($null -ne $rollbackError) {
+            $message += "; rollback failed: $($rollbackError.Message)"
+            if ($artifactResult.retained_paths.Count -gt 0) {
+                $message += "; recovery artifacts retained at: $($artifactResult.retained_paths -join '; ')"
+            }
+            else {
+                $message += '; no recovery artifact remained; manual recovery may be required'
+            }
         }
+        if ($cleanupDetails.Count -gt 0) {
+            $message += "; cleanup failed: $($cleanupDetails -join '; ')"
+        }
+        throw [M4QualificationBlocked]::new($message)
+    }
+    if ($cleanupDetails.Count -gt 0) {
+        throw [M4QualificationBlocked]::new("qualification commit succeeded but cleanup failed: $($cleanupDetails -join '; ')")
     }
 }
 
@@ -258,6 +310,24 @@ function Invoke-SelfTest {
             'NegativeComplete', 'Complete'
         )
         Need (([string]::Join('|', $script:QualificationStates)) -ceq ([string]::Join('|', $expectedStates))) 'qualification state graph changed'
+
+        $commitArtifact = Join-Path $scratch '.selftest-commit.bak'
+        $rollbackArtifact = Join-Path $scratch '.selftest-rollback.bak'
+        $retainedArtifact = Join-Path $scratch '.selftest-retained.bak'
+        [IO.File]::WriteAllText($commitArtifact, 'commit')
+        $artifactResult = Complete-QualificationRecoveryArtifacts -Paths @($commitArtifact) -Outcome CommitSucceeded
+        Need (-not [IO.File]::Exists($commitArtifact)) 'successful commit retained a recovery artifact'
+        Need ($artifactResult.cleanup_errors.Count -eq 0) 'successful commit recovery cleanup failed'
+        [IO.File]::WriteAllText($rollbackArtifact, 'rollback')
+        $artifactResult = Complete-QualificationRecoveryArtifacts -Paths @($rollbackArtifact) -Outcome RollbackSucceeded
+        Need (-not [IO.File]::Exists($rollbackArtifact)) 'successful rollback retained a recovery artifact'
+        Need ($artifactResult.cleanup_errors.Count -eq 0) 'successful rollback recovery cleanup failed'
+        [IO.File]::WriteAllText($retainedArtifact, 'retained')
+        $artifactResult = Complete-QualificationRecoveryArtifacts -Paths @($retainedArtifact) -Outcome RollbackFailed
+        Need ([IO.File]::Exists($retainedArtifact)) 'failed rollback deleted its recovery artifact'
+        Need ($artifactResult.retained_paths.Count -eq 1 -and $artifactResult.retained_paths[0] -ceq $retainedArtifact) 'failed rollback did not report its retained recovery artifact'
+        [IO.File]::Delete($retainedArtifact)
+
         $state = [ordered]@{
             schema = 'myrd.m4.guest-qualification.v1'
             qualification_id = 'q1'
