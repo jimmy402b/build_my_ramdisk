@@ -168,7 +168,7 @@ function Write-QualificationState {
 }
 
 $script:QualificationStates = @(
-    'Initial', 'Preflight', 'FormalCreateReady', 'AwaitingCrashReset', 'CrashResetObserved',
+    'Initial', 'FormalCreateReady', 'AwaitingCrashReset', 'CrashResetObserved',
     'FormalRecovered', 'AwaitingLivePowerCut', 'LivePowerCutObserved',
     'LivePowerRecovered', 'FixturesPrepared', 'AwaitingMissingDriverReset',
     'MissingDriverResetObserved', 'MissingDriverCaptured', 'DriverRestored',
@@ -192,6 +192,14 @@ function Invoke-SelfTest {
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-guest-qualification-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($scratch) | Out-Null
     try {
+        $expectedStates = @(
+            'Initial', 'FormalCreateReady', 'AwaitingCrashReset', 'CrashResetObserved',
+            'FormalRecovered', 'AwaitingLivePowerCut', 'LivePowerCutObserved',
+            'LivePowerRecovered', 'FixturesPrepared', 'AwaitingMissingDriverReset',
+            'MissingDriverResetObserved', 'MissingDriverCaptured', 'DriverRestored',
+            'NegativeComplete', 'Complete'
+        )
+        Need (([string]::Join('|', $script:QualificationStates)) -ceq ([string]::Join('|', $expectedStates))) 'qualification state graph changed'
         $state = [ordered]@{
             schema = 'myrd.m4.guest-qualification.v1'
             qualification_id = 'q1'
@@ -204,16 +212,16 @@ function Invoke-SelfTest {
         Need ($roundTrip.qualification_id -ceq 'q1') 'qualification id did not round-trip'
         Need ($roundTrip.state -ceq 'Initial') 'initial state did not round-trip'
         Need ([int]$roundTrip.sequence -eq 0) 'initial sequence did not round-trip'
-        Assert-Transition -From 'Initial' -To 'Preflight'
+        Assert-Transition -From 'Initial' -To 'FormalCreateReady'
         $next = [ordered]@{
             schema = 'myrd.m4.guest-qualification.v1'
             qualification_id = 'q1'
-            state = 'Preflight'
+            state = 'FormalCreateReady'
             sequence = 1
         }
         Write-QualificationState -QualificationRoot $scratch -State $next
         $current = Read-QualificationState -QualificationRoot $scratch
-        Need ($current.state -ceq 'Preflight' -and [uint64]$current.sequence -eq 1) 'legal transition did not persist'
+        Need ($current.state -ceq 'FormalCreateReady' -and [uint64]$current.sequence -eq 1) 'legal transition did not persist'
         $events = @(
             Get-Content -LiteralPath (Join-Path $scratch 'events.jsonl') -Encoding UTF8 |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
@@ -241,15 +249,15 @@ function Invoke-SelfTest {
         }
 
         $blocked = $false
-        try { Assert-Transition -From 'Preflight' -To 'Complete' } catch [M4QualificationBlocked] { $blocked = $true }
-        Need $blocked 'Preflight -> Complete must be blocked'
+        try { Assert-Transition -From 'FormalCreateReady' -To 'Complete' } catch [M4QualificationBlocked] { $blocked = $true }
+        Need $blocked 'FormalCreateReady -> Complete must be blocked'
 
         $corruptPayloads = [Collections.Generic.List[byte[]]]::new()
         $corruptPayloads.Add([byte[]](0xFF, 0xFE, 0xFD))
         $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{not-json'))
-        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"invalid","qualification_id":"q1","state":"Preflight","sequence":1}'))
-        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"Schema":"myrd.m4.guest-qualification.v1","qualification_id":"q1","state":"Preflight","sequence":1}'))
-        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"myrd.m4.guest-qualification.v1","qualification_id":"q1","state":"preflight","sequence":1}'))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"invalid","qualification_id":"q1","state":"FormalCreateReady","sequence":1}'))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"Schema":"myrd.m4.guest-qualification.v1","qualification_id":"q1","state":"FormalCreateReady","sequence":1}'))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"myrd.m4.guest-qualification.v1","qualification_id":"q1","state":"formalcreateready","sequence":1}'))
         foreach ($corruptPayload in $corruptPayloads) {
             [IO.File]::WriteAllBytes($statePath, $corruptPayload)
             $blocked = $false
