@@ -17,6 +17,21 @@ if (-not [IO.File]::Exists($controller)) {
     throw 'guest qualification controller is missing'
 }
 
+$tokens = $null
+$parseErrors = $null
+$controllerAst = [Management.Automation.Language.Parser]::ParseFile(
+    $controller,
+    [ref]$tokens,
+    [ref]$parseErrors)
+Need ($parseErrors.Count -eq 0) 'guest qualification controller failed AST parsing'
+$tempCleanupFinally = @($controllerAst.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.TryStatementAst] -and
+        $null -ne $node.Finally -and
+        $node.Finally.Extent.Text -match '\[IO\.File\]::Delete\(\$tempPath\)'
+}, $true))
+Need ($tempCleanupFinally.Count -eq 1) 'qualification temp must be deleted in exactly one finally block'
+
 $controllerOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $controller -SelfTest)
 if ($LASTEXITCODE -ne 0) {
     throw "guest qualification controller selftest failed with exit code $LASTEXITCODE"

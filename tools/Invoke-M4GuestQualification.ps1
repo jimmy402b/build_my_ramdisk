@@ -182,6 +182,7 @@ function Write-QualificationState {
     $stateCommitted = $false
     $transactionError = $null
     $rollbackError = $null
+    $tempCleanupError = $null
     $outcome = 'CommitNotApplied'
     try {
         $json = $State | ConvertTo-Json -Compress -Depth 4
@@ -237,14 +238,14 @@ function Write-QualificationState {
             }
         }
     }
-
-    $tempCleanupError = $null
-    if ([IO.File]::Exists($tempPath)) {
-        try {
-            [IO.File]::Delete($tempPath)
-        }
-        catch {
-            $tempCleanupError = $_.Exception
+    finally {
+        if ([IO.File]::Exists($tempPath)) {
+            try {
+                [IO.File]::Delete($tempPath)
+            }
+            catch {
+                $tempCleanupError = $_.Exception
+            }
         }
     }
     $artifactResult = Complete-QualificationRecoveryArtifacts `
