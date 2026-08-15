@@ -24,11 +24,13 @@ $controllerAst = [Management.Automation.Language.Parser]::ParseFile(
     [ref]$tokens,
     [ref]$parseErrors)
 Need ($parseErrors.Count -eq 0) 'guest qualification controller failed AST parsing'
-$requiredFunctions = @('Get-GuestFacts', 'Assert-InitialGuestFacts', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'Assert-UnexpectedReset')
+$requiredFunctions = @('Get-GuestFacts', 'Assert-InitialGuestFacts', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Assert-UnexpectedReset')
 foreach ($name in $requiredFunctions) {
     $matches = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     Need ($matches.Count -eq 1) "guest qualification controller is missing $name"
 }
+$guestFacts = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-GuestFacts' }, $true))[0]
+Need ((@($guestFacts.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -join '|') -ceq 'QualificationRoot|Kit') 'Get-GuestFacts parameter contract is invalid'
 $tempCleanupFinally = @($controllerAst.FindAll({
     param($node)
     $node -is [Management.Automation.Language.TryStatementAst] -and
