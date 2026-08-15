@@ -40,11 +40,11 @@ function Assert-QualificationStateSchema {
     }
     Need ($actual.Count -eq $expected.Count) 'qualification state has an invalid property count'
     foreach ($name in $expected) {
-        Need ($actual -contains $name) "qualification state is missing $name"
+        Need ($actual -ccontains $name) "qualification state is missing $name"
     }
     Need ([string]$State.schema -ceq 'myrd.m4.guest-qualification.v1') 'qualification state schema is invalid'
     Need (-not [string]::IsNullOrWhiteSpace([string]$State.qualification_id)) 'qualification state id is invalid'
-    Need ($script:QualificationStates -contains [string]$State.state) 'qualification state value is invalid'
+    Need ($script:QualificationStates -ccontains [string]$State.state) 'qualification state value is invalid'
     $sequenceText = [string]$State.sequence
     Need ($sequenceText -match '^[0-9]+$') 'qualification state sequence is invalid'
     [uint64]$sequenceValue = 0
@@ -248,6 +248,8 @@ function Invoke-SelfTest {
         $corruptPayloads.Add([byte[]](0xFF, 0xFE, 0xFD))
         $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{not-json'))
         $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"invalid","qualification_id":"q1","state":"Preflight","sequence":1}'))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"Schema":"myrd.m4.guest-qualification.v1","qualification_id":"q1","state":"Preflight","sequence":1}'))
+        $corruptPayloads.Add([Text.UTF8Encoding]::new($false).GetBytes('{"schema":"myrd.m4.guest-qualification.v1","qualification_id":"q1","state":"preflight","sequence":1}'))
         foreach ($corruptPayload in $corruptPayloads) {
             [IO.File]::WriteAllBytes($statePath, $corruptPayload)
             $blocked = $false
