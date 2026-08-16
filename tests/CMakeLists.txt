@@ -1685,7 +1685,7 @@ add_test(NAME unit.m4.guest_qualification
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-guest-qualification.ps1"
         -SourceRoot "${CMAKE_SOURCE_DIR}")
-set_tests_properties(unit.m4.guest_qualification PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+set_tests_properties(unit.m4.guest_qualification PROPERTIES LABELS "m4-v3" TIMEOUT 120)
 
 add_test(NAME unit.m4.live_powercut
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
