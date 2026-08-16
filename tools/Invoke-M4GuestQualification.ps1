@@ -750,15 +750,15 @@ function Invoke-FormalRunnerCapture {
     $result = & $script:ProcessInvoker 'powershell.exe' $argv $TimeoutMs
     $outerExpected=@('pid','exit','timed_out','stdout','stderr','started_utc','ended_utc')
     Need ($null -ne $result -and ((Get-ExactPropertyNames $result) -join '|' -ceq ($outerExpected -join '|'))) 'formal runner outer result schema is invalid'
-    Need (($result.pid -is [int]) -or ($result.pid -is [long])) 'formal runner outer pid is invalid'
+    Need ((($result.pid -is [int]) -or ($result.pid -is [long])) -and $result.pid -gt 0) 'formal runner outer pid is invalid'
     Need (($result.exit -is [int]) -or ($result.exit -is [long])) 'formal runner outer exit is invalid'
-    Need ($result.timed_out -is [bool] -and $result.stdout -is [string] -and $result.stderr -is [string] -and $result.started_utc -is [string] -and $result.ended_utc -is [string]) 'formal runner outer result types are invalid'
+    Need ($result.timed_out -is [bool] -and $result.stdout -is [string] -and $result.stderr -is [string] -and $result.started_utc -is [string] -and $result.ended_utc -is [string]) 'formal runner outer result types are invalid';Assert-UtcEvidenceTimestamp $result.started_utc 'formal runner outer start UTC is invalid';Assert-UtcEvidenceTimestamp $result.ended_utc 'formal runner outer end UTC is invalid';Need([datetime]$result.started_utc-le[datetime]$result.ended_utc)'formal runner outer timing is invalid'
     Need (-not $result.timed_out -and $result.exit -eq 0 -and [string]::IsNullOrEmpty($result.stderr)) 'formal runner capture failed'
     try { $captureRecord = ([string]$result.stdout | ConvertFrom-Json) } catch { throw [M4QualificationBlocked]::new('formal runner capture JSON is invalid') }
     $captureExpected=@('mode','child_pid','start_utc','end_utc','child_exit','child_stdout','child_stderr')
     Need (((Get-ExactPropertyNames $captureRecord) -join '|' -ceq ($captureExpected -join '|'))) 'formal runner capture schema is invalid'
     Need ($captureRecord.mode -is [string] -and $captureRecord.mode -ceq 'Runner' -and (($captureRecord.child_pid -is [int]) -or ($captureRecord.child_pid -is [long])) -and $captureRecord.child_pid -gt 0) 'formal runner capture identity is invalid'
-    Need ($captureRecord.start_utc -is [string] -and $captureRecord.end_utc -is [string] -and $captureRecord.child_stdout -is [string] -and $captureRecord.child_stderr -is [string] -and (($captureRecord.child_exit -is [int]) -or ($captureRecord.child_exit -is [long]))) 'formal runner capture types are invalid'
+    Need ($captureRecord.start_utc -is [string] -and $captureRecord.end_utc -is [string] -and $captureRecord.child_stdout -is [string] -and $captureRecord.child_stderr -is [string] -and (($captureRecord.child_exit -is [int]) -or ($captureRecord.child_exit -is [long]))) 'formal runner capture types are invalid';Assert-UtcEvidenceTimestamp $captureRecord.start_utc 'formal runner capture start UTC is invalid';Assert-UtcEvidenceTimestamp $captureRecord.end_utc 'formal runner capture end UTC is invalid';Need([datetime]$captureRecord.start_utc-le[datetime]$captureRecord.end_utc)'formal runner capture timing is invalid'
     return [pscustomobject]@{ phase = $Phase; child_exit = [int]$captureRecord.child_exit; stdout = [string]$captureRecord.child_stdout; stderr = [string]$captureRecord.child_stderr; argv = @($argv) }
 }
 
@@ -1214,4 +1214,4 @@ if ($Status) {
 
 try { Invoke-QualificationRun -QualificationRoot $QualificationRoot; exit 0 }
 catch [M4QualificationBlocked] { try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $_.Exception.Message } catch [M4QualificationBlocked] { [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }; [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }
-catch { $message="unexpected qualification failure: $($_.Exception.Message)";try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $message } catch {};[Console]::Error.WriteLine("BLOCKED: $message");exit 77 }
+catch { $message="unexpected qualification failure: $($_.Exception.Message)";try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $message } catch { $message="$message; durable Blocked persistence failed: $($_.Exception.Message)" };[Console]::Error.WriteLine("BLOCKED: $message");exit 77 }
