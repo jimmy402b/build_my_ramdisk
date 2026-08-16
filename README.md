@@ -55,6 +55,34 @@ cmake --build --preset debug --target myrd
 ctest --preset debug --output-on-failure
 ```
 
+## v1.0 来宾资格测试（高级/发布维护者）
+
+本节是发布维护者在已批准、隔离的 Windows 来宾中执行的资格流程，不是普通用户安装步骤。资格 controller、helper 和 kit 只用于验证；资格脚本不进入 v1 六文件 release ZIP。先在 host 生成并冻结 qualification kit，再把**整个** kit 复制到 approved isolated guest 的本机 NTFS 目录。不要从网络共享、可移动介质或不完整的 kit 运行。
+
+在来宾的管理员 PowerShell 中，进入已复制的 kit 目录后，仅运行下面这一个命令；省略 `-Status` 即为开始或恢复，必须始终使用同一个随机 QualificationRoot（本机 NTFS 绝对路径）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualification.ps1 -QualificationRoot <本机NTFS绝对路径>
+```
+
+每次脚本返回后，只有在它已明确打印相应的 armed 标题及其全部提示行时，才可执行一次人工 UI 动作。不得使用 Windows 正常关机、脚本 shutdown，也不得额外 reset；断电/重置后启动 Windows，再以同一命令和同一随机 QualificationRoot 恢复。
+
+| 唯一人工 UI 动作 | 必须先等待的脚本提示 | 允许的动作与恢复 |
+| --- | --- | --- |
+| Reset 1 | `CRASH RESET ARMED`（Formal CreateKill 后） | VMware UI 中恰好一次 Reset 或 Power Off/On；回来后运行同一命令。 |
+| Reset 2 | `LIVE POWER-CUT ARMED`（live power-cut armed 后） | VMware UI 中恰好一次 Reset，或 Power Off/On，以模拟突然断电；回来后运行同一命令。 |
+| Reset 3 | `MISSING-DRIVER RESET ARMED`（`phdskmnt` Disabled missing-driver 后） | VMware UI 中恰好一次 Reset 或 Power Off/On；回来后运行同一命令。 |
+
+三次且仅三次 UI 动作是资格证据的一部分。每一轮都必须等待完整的 armed 提示，不能提前操作。QualificationRoot 与其中的 evidence 是证据链：成功后保留，不得删除或复用；失败 root 永久保留以便诊断，不得重试或新建替代 root 来掩盖失败。
+
+需要只读查看状态时，使用同一个 root：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualification.ps1 -QualificationRoot <本机NTFS绝对路径> -Status
+```
+
+退出码 10 表示仍需执行已 armed 的 reset，且该等待路径不写入状态；退出码 77 表示 `Blocked` 或安全拒绝；退出码 0 表示当前阶段成功，最终完成时输出唯一成功行 `M4 v1 QUALIFICATION PASS`。除该唯一 PASS 行外，不应把中间阶段成功视为 v1 资格通过。
+
 ## 许可证
 
 MyRamDisk 使用 GNU Affero General Public License v3.0。固定 AIM 协议参考来自 Arsenal Image Mounter 的 AGPL-3.0 源码；AIM 必须独立获取和安装。

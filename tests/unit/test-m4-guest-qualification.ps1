@@ -117,4 +117,69 @@ if ($LASTEXITCODE -ne 0) {
 Need ($controllerOutput.Count -eq 1) 'guest qualification controller selftest must emit exactly one line'
 Need ($controllerOutput[0] -ceq 'M4 guest qualification SelfTest PASS') 'guest qualification controller selftest output is not exact'
 
+function Read-Utf8NoBomText {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    Need ($bytes.Length -lt 3 -or -not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) "$Path must be UTF-8 without BOM"
+    return [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+}
+
+function Get-ProductionCommandAsts {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    Need ($errors.Count -eq 0) "$Path must parse for the static safety contract"
+    $excluded = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -match '(?i)(selftest|fixture)' }, $true))
+    return @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true) | Where-Object {
+        $offset = $_.Extent.StartOffset
+        -not @($excluded | Where-Object { $offset -ge $_.Extent.StartOffset -and $offset -lt $_.Extent.EndOffset }).Count
+    })
+}
+
+$readmePath = Join-Path $SourceRoot 'README.md'
+$notesPath = Join-Path $SourceRoot 'RELEASE_NOTES.md'
+$readme = Read-Utf8NoBomText -Path $readmePath
+$notes = Read-Utf8NoBomText -Path $notesPath
+function From-QualificationUtf8Base64 {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    return [Text.UTF8Encoding]::new($false, $true).GetString([Convert]::FromBase64String($Value))
+}
+foreach ($phrase in @(
+    (From-QualificationUtf8Base64 'djEuMCDmnaXlrr7otYTmoLzmtYvor5XvvIjpq5jnuqcv5Y+R5biD57u05oqk6ICF77yJ'),
+    (From-QualificationUtf8Base64 '6LWE5qC86ISa5pys5LiN6L+b5YWlIHYxIOWFreaWh+S7tiByZWxlYXNlIFpJUA=='),
+    (From-QualificationUtf8Base64 'aG9zdCDnlJ/miJDlubblhrvnu5MgcXVhbGlmaWNhdGlvbiBraXQ='),
+    'approved isolated guest',
+    (From-QualificationUtf8Base64 '5pys5py6IE5URlM='),
+    'CRASH RESET ARMED', 'LIVE POWER-CUT ARMED', 'MISSING-DRIVER RESET ARMED',
+    (From-QualificationUtf8Base64 '5ZCM5LiA6ZqP5py6IFF1YWxpZmljYXRpb25Sb290'), (From-QualificationUtf8Base64 '5rC45LmF5L+d55WZ'), (From-QualificationUtf8Base64 '5LiN5b6X6YeN6K+V'),
+    '-Status', (From-QualificationUtf8Base64 '6YCA5Ye656CBIDEw'), (From-QualificationUtf8Base64 '6YCA5Ye656CBIDc3'), 'M4 v1 QUALIFICATION PASS')) {
+    Need ($readme.Contains($phrase)) "README is missing Chinese qualification workflow phrase: $phrase"
+}
+Need ($readme.Contains(('powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualification.ps1 -QualificationRoot <' + (From-QualificationUtf8Base64 '5pys5py6TlRGU+e7neWvuei3r+W+hA==') + '>'))) 'README guest qualification command is not the real controller command'
+Need (-not ($readme -match '(?m)^powershell\.exe .*Invoke-M4GuestQualification\.ps1 .*\s-Run(?:\s|$)')) 'README documents the nonexistent -Run controller parameter'
+Need ($readme -match '(?s)Reset 1.*CreateKill.*Reset 2.*live power-cut.*Reset 3.*phdskmnt') 'README does not provide the ordered three-reset UI table'
+Need ($readme -match ((From-QualificationUtf8Base64 '5LiN5b6X6aKd5aSW') + '.*reset')) 'README does not prohibit extra resets'
+Need ($readme -match ((From-QualificationUtf8Base64 '5LiN5b6X') + '.*Windows.*' + (From-QualificationUtf8Base64 '5q2j5bi45YWz5py6'))) 'README does not prohibit normal Windows shutdown'
+Need ($readme -match ((From-QualificationUtf8Base64 '5LiN5b6X') + '.*' + 'shutdown')) 'README does not prohibit script shutdown'
+Need ($notes.Contains((From-QualificationUtf8Base64 '6LWE5qC8IGNvbnRyb2xsZXIvaGVscGVyL2tpdCDku4XkuLrpqozor4Hlt6XlhbfvvIzkuI3ov5vlhaUgdjEg5YWt5paH5Lu2IFpJUA=='))) 'release notes omit the qualification-tool ZIP boundary'
+Need ($notes.Contains((From-QualificationUtf8Base64 '5LiJ5qyh55yf5a6eIFVJIOa1i+ivleWwmuW+heeUqOaIt+aYjuehruWQr+WKqA=='))) 'release notes overstate the unstarted real-VM qualification'
+
+$paramNames = @($controllerAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+Need ($paramNames -ccontains 'QualificationRoot') 'controller parameter contract is missing QualificationRoot'
+Need ($paramNames -ccontains 'Status') 'controller parameter contract is missing Status'
+Need (-not ($paramNames -ccontains 'Run')) 'controller unexpectedly defines a Run parameter; README command contract must be reviewed'
+
+$forbiddenCommands = @('ssh.exe', 'scp.exe', 'vmrun', 'shutdown.exe', 'Restart-Computer', 'Stop-Computer', 'Register-ScheduledTask', 'schtasks', 'Format-Volume', 'Initialize-Disk', 'New-Partition', 'remove_device')
+$safetyScripts = @($controller, (Join-Path $SourceRoot 'tests\e2e\Invoke-M4LivePowerCut.ps1'), (Join-Path $SourceRoot 'tools\New-M4GuestQualificationKit.ps1'))
+foreach ($scriptPath in $safetyScripts) {
+    foreach ($command in Get-ProductionCommandAsts -Path $scriptPath) {
+        $name = $command.GetCommandName()
+        Need (-not ($forbiddenCommands -ccontains $name)) "production safety contract rejects direct command $name in $scriptPath"
+        if ($name -ceq 'Remove-Item') {
+            Need (-not ($command.Extent.Text -match '\$QualificationRoot\b')) "production safety contract rejects Remove-Item QualificationRoot in $scriptPath"
+        }
+        Need (-not ($command.Extent.Text -match '(?i)(password|private\s*key)')) "production safety contract rejects secret-bearing command text in $scriptPath"
+    }
+}
+
 Write-Output 'M4 guest qualification contract PASS'
