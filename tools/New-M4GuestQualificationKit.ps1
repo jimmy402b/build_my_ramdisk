@@ -30,12 +30,13 @@ try {
         [pscustomobject]@{ Source = (Join-Path $root 'tests\e2e\Invoke-M4RunLifecycle.ps1'); Name = 'Invoke-M4RunLifecycle.ps1' }
         [pscustomobject]@{ Source = (Join-Path $root 'tools\Invoke-M4Verification.ps1'); Name = 'Invoke-M4Verification.ps1' }
         [pscustomobject]@{ Source = (Join-Path $root 'tests\e2e\Prepare-M4NegativeFixtures.ps1'); Name = 'Prepare-M4NegativeFixtures.ps1' }
+        [pscustomobject]@{ Source = (Join-Path $root 'tests\e2e\Invoke-M4LivePowerCut.ps1'); Name = 'Invoke-M4LivePowerCut.ps1' }
         [pscustomobject]@{ Source = [IO.Path]::GetFullPath($Artifact); Name = 'myrd.exe' }
         [pscustomobject]@{ Source = [IO.Path]::GetFullPath($Query); Name = 'myrd_m4_aim_query.exe' }
     )
     foreach ($file in $files) { Need ([IO.File]::Exists($file.Source)) "Required kit file does not exist: $($file.Source)" }
-    Need (([IO.Path]::GetFileName($files[5].Source) -ceq 'myrd.exe')) 'Artifact basename must be exactly myrd.exe'
-    Need (([IO.Path]::GetFileName($files[6].Source) -ceq 'myrd_m4_aim_query.exe')) 'Query basename must be exactly myrd_m4_aim_query.exe'
+    Need (([IO.Path]::GetFileName($files[6].Source) -ceq 'myrd.exe')) 'Artifact basename must be exactly myrd.exe'
+    Need (([IO.Path]::GetFileName($files[7].Source) -ceq 'myrd_m4_aim_query.exe')) 'Query basename must be exactly myrd_m4_aim_query.exe'
 
     $name = [IO.Path]::GetFileName($destinationDirectory)
     $injected = [Environment]::GetEnvironmentVariable('MYRD_M4_QUALIFICATION_STAGE_NAME')

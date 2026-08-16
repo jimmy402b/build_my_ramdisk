@@ -39,14 +39,14 @@ function Assert-QualificationKit {
         $expectedNames = @(
             'Capture-M4Child.ps1', 'Invoke-M4GuestQualification.ps1',
             'Invoke-M4RunLifecycle.ps1', 'Invoke-M4Verification.ps1',
-            'Prepare-M4NegativeFixtures.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe')
+            'Prepare-M4NegativeFixtures.ps1', 'Invoke-M4LivePowerCut.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe')
         Need ($ExpectedCommit -cmatch '^[0-9a-f]{40}$') 'expected qualification-kit commit is invalid'
         $root = [IO.Path]::GetFullPath($Kit)
         Need ([IO.Directory]::Exists($root)) 'qualification kit root is missing'
         Need (@([IO.Directory]::GetDirectories($root)).Count -eq 0) 'qualification kit contains a subdirectory'
         $rootFiles = @([IO.Directory]::GetFiles($root) | ForEach-Object { [IO.Path]::GetFileName($_) })
         $allNames = @($expectedNames + 'qualification-kit.json')
-        Need ($rootFiles.Count -eq 8) 'qualification kit root file count is invalid'
+        Need ($rootFiles.Count -eq 9) 'qualification kit root file count is invalid'
         foreach ($name in $allNames) { Need ($rootFiles -ccontains $name) "qualification kit root is missing $name" }
 
         $manifestPath = Join-Path $root 'qualification-kit.json'
@@ -59,7 +59,7 @@ function Assert-QualificationKit {
         Need ([string]$manifest.schema -ceq 'myrd.m4.qualification-kit.v1') 'qualification kit manifest schema is invalid'
         Need ([string]$manifest.source_commit -ceq $ExpectedCommit) 'qualification kit manifest source commit is invalid'
         $records = @($manifest.files)
-        Need ($records.Count -eq 7) 'qualification kit manifest file count is invalid'
+        Need ($records.Count -eq 8) 'qualification kit manifest file count is invalid'
         Need (([string]::Join('|', @($records | ForEach-Object { [string]$_.name }))) -ceq ([string]::Join('|', $expectedNames))) 'qualification kit manifest names are invalid'
         foreach ($record in $records) {
             $properties = Get-ExactPropertyNames -Value $record
@@ -88,7 +88,7 @@ function Invoke-QualificationKitValidatorSelfTest {
 
     $kit = Join-Path $Scratch 'qualification-kit-selftest'
     [IO.Directory]::CreateDirectory($kit) | Out-Null
-    $names = @('Capture-M4Child.ps1', 'Invoke-M4GuestQualification.ps1', 'Invoke-M4RunLifecycle.ps1', 'Invoke-M4Verification.ps1', 'Prepare-M4NegativeFixtures.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe')
+    $names = @('Capture-M4Child.ps1', 'Invoke-M4GuestQualification.ps1', 'Invoke-M4RunLifecycle.ps1', 'Invoke-M4Verification.ps1', 'Prepare-M4NegativeFixtures.ps1', 'Invoke-M4LivePowerCut.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe')
     foreach ($name in $names) { [IO.File]::WriteAllText((Join-Path $kit $name), $name, [Text.UTF8Encoding]::new($false)) }
     $commit = ('a' * 40)
     $manifestPath = Join-Path $kit 'qualification-kit.json'
@@ -501,6 +501,17 @@ $script:ProcessInvoker = {
     param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
     Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
 }
+$script:LivePowerCutInvoker = {
+    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
+    Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
+}
+$script:LivePowerCutProcessProvider = {
+    param([int]$Pid)
+    $process = Get-Process -Id $Pid -ErrorAction SilentlyContinue
+    if ($null -eq $process) { return $null }
+    [ordered]@{ pid = [int]$process.Id; creation_utc = $process.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'); alive = (-not $process.HasExited) }
+}
+$script:LivePowerCutSleeper = { param([int]$Milliseconds) Start-Sleep -Milliseconds $Milliseconds }
 $script:QualificationObserver = { param([string]$Hook) }
 $script:FactsProvider = { param([string]$QualificationRoot, [string]$Kit) Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $Kit }
 $script:SystemEventProvider = {
@@ -602,7 +613,7 @@ function Initialize-QualificationRoot {
     try {
         [IO.Directory]::CreateDirectory($stage) | Out-Null; $stageCreated = $true
         foreach ($relative in @('formal\Release','formal\tests\e2e','formal\tools','powercut','evidence','logs','temp','kit')) { [IO.Directory]::CreateDirectory((Join-Path $stage $relative)) | Out-Null }
-        foreach ($name in @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe','qualification-kit.json')) { [IO.File]::Copy((Join-Path $SourceKit $name), (Join-Path $stage ('kit\' + $name)), $false) }
+        foreach ($name in @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','Invoke-M4LivePowerCut.ps1','myrd.exe','myrd_m4_aim_query.exe','qualification-kit.json')) { [IO.File]::Copy((Join-Path $SourceKit $name), (Join-Path $stage ('kit\' + $name)), $false) }
         Assert-QualificationKit -Kit (Join-Path $stage 'kit') -ExpectedCommit $ExpectedCommit | Out-Null
         [IO.File]::Copy((Join-Path $stage 'kit\myrd.exe'), (Join-Path $stage 'formal\Release\myrd.exe'), $false)
         [IO.File]::Copy((Join-Path $stage 'kit\Invoke-M4RunLifecycle.ps1'), (Join-Path $stage 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'), $false)
@@ -848,13 +859,87 @@ function Invoke-FormalRecoverySequence {
     return 0
 }
 
+function Assert-SeparateQualificationRoots {
+    param([Parameter(Mandatory=$true)][string]$FormalRoot,[Parameter(Mandatory=$true)][string]$PowerCutRoot)
+    $formal=[IO.Path]::GetFullPath($FormalRoot).TrimEnd('\'); $power=[IO.Path]::GetFullPath($PowerCutRoot).TrimEnd('\')
+    Need ($formal -cne $power -and -not $formal.StartsWith($power + '\',[StringComparison]::OrdinalIgnoreCase) -and -not $power.StartsWith($formal + '\',[StringComparison]::OrdinalIgnoreCase)) 'Formal and powercut roots must be absolute and disjoint'
+}
+
+function Get-LivePowerCutProcessIdentity {
+    param([Parameter(Mandatory=$true)][int]$Pid)
+    $identity=& $script:LivePowerCutProcessProvider $Pid
+    Need ($null -ne $identity -and ((Get-ExactPropertyNames $identity) -join '|') -ceq 'pid|creation_utc|alive' -and [int]$identity.pid -eq $Pid -and $identity.alive -is [bool] -and $identity.alive) 'exact armed PID is not alive'
+    Assert-UtcEvidenceTimestamp -Value ([string]$identity.creation_utc) -Message 'exact armed PID creation time is invalid'
+    return $identity
+}
+
+function Invoke-LivePowerCutHelper {
+    param([Parameter(Mandatory=$true)][string]$Helper,[Parameter(Mandatory=$true)][string[]]$Arguments,[Parameter(Mandatory=$true)][int]$TimeoutMs)
+    Need ([IO.File]::Exists($Helper)) 'live power-cut helper is missing'
+    $result=& $script:LivePowerCutInvoker 'powershell.exe' $Arguments $TimeoutMs
+    if ($result -is [Collections.IDictionary] -and $result.Contains('pid') -and $result.Contains('arm_evidence')) { return $result }
+    Need ($null -ne $result -and -not $result.timed_out -and $result.exit -eq 0 -and [string]::IsNullOrEmpty($result.stderr)) 'live power-cut helper failed'
+    return $result
+}
+
+function Get-LivePowerCutArmEvent {
+    param([Parameter(Mandatory=$true)]$State)
+    $matches=@($State.events|Where-Object {$_.kind -ceq 'LivePowerCutArm'}); Need ($matches.Count -eq 1) 'qualification state is missing LivePowerCutArm event'
+    $event=$matches[0]; $expected=@('kind','boot_utc','armed_utc','arm_evidence_sha256','pid','creation_utc','powercut_bundle_inventory','formal_inventory')
+    Need (((Get-ExactPropertyNames $event) -join '|') -ceq ($expected -join '|')) 'LivePowerCutArm event schema is invalid'
+    Need ($event.boot_utc -is [string] -and $event.armed_utc -is [string] -and $event.arm_evidence_sha256 -cmatch '^[0-9A-F]{64}$' -and (($event.pid -is [int])-or($event.pid -is [long])) -and $event.pid -gt 0 -and $event.creation_utc -is [string] -and $event.powercut_bundle_inventory -is [Array] -and $event.formal_inventory -is [Array]) 'LivePowerCutArm event types are invalid'
+    Assert-UtcEvidenceTimestamp $event.boot_utc 'LivePowerCutArm boot UTC is invalid'; Assert-UtcEvidenceTimestamp $event.armed_utc 'LivePowerCutArm armed UTC is invalid'; Assert-UtcEvidenceTimestamp $event.creation_utc 'LivePowerCutArm creation UTC is invalid'
+    return $event
+}
+
+function Assert-LivePowerCutArmEvidence {
+    param([Parameter(Mandatory=$true)]$Evidence,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)][string]$Artifact,[Parameter(Mandatory=$true)][string]$Bundle)
+    $expected=@('schema','status','source_commit','executable_path','executable_sha256','bundle_path','bundle_inventory','argv','armed_boot_utc','old_pid','pid_identity','armed_generation','ready_generation','volume','hashes_before','baseline_inventory','stdout_path','stderr_path','identity_sha256')
+    Assert-ExactEvidenceProperties $Evidence $expected 'live power-cut arm evidence schema is invalid'
+    Need ($Evidence.schema -ceq 'myrd.m4.live-powercut-arm.v1' -and $Evidence.status -ceq 'ARMED' -and $Evidence.source_commit -ceq $Commit -and $Evidence.executable_path -ceq [IO.Path]::GetFullPath($Artifact) -and $Evidence.executable_sha256 -ceq (Get-QualificationFileHash $Artifact) -and $Evidence.bundle_path -ceq [IO.Path]::GetFullPath($Bundle)) 'live power-cut arm evidence identity is invalid'
+    Need ($Evidence.bundle_inventory -is [Array] -and $Evidence.argv -is [Array] -and (($Evidence.old_pid -is [int])-or($Evidence.old_pid -is [long])) -and $Evidence.old_pid -gt 0 -and (($Evidence.armed_generation -is [int])-or($Evidence.armed_generation -is [long])) -and $Evidence.armed_generation -gt 0 -and $Evidence.hashes_before.'A.txt' -cmatch '^[0-9A-Fa-f]{64}$' -and $Evidence.hashes_before.'D.txt' -cmatch '^[0-9A-Fa-f]{64}$') 'live power-cut arm evidence values are invalid'
+    Assert-ExactEvidenceProperties $Evidence.pid_identity @('pid','creation_utc','started_utc','commandline','process_group') 'live power-cut PID identity schema is invalid'
+    Need ($Evidence.pid_identity.pid -eq $Evidence.old_pid -and $Evidence.pid_identity.process_group -eq $Evidence.old_pid -and $Evidence.pid_identity.creation_utc -is [string] -and $Evidence.stdout_path -is [string] -and $Evidence.stderr_path -is [string] -and [IO.File]::Exists($Evidence.stdout_path) -and [IO.File]::Exists($Evidence.stderr_path)) 'live power-cut arm process/log identity is invalid'
+    Assert-UtcEvidenceTimestamp $Evidence.pid_identity.creation_utc 'live power-cut PID creation time is invalid'
+    Need ((@($Evidence.bundle_inventory) -join "`n") -ceq (@(Get-TreeInventory $Bundle) -join "`n")) 'live power-cut arm bundle inventory is invalid'
+}
+
+function Invoke-LivePowerCutArm {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Kit,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)]$Facts)
+    $formal=Join-Path $QualificationRoot 'formal'; $power=Join-Path $QualificationRoot 'powercut'; Assert-SeparateQualificationRoots $formal $power
+    $formalBefore=@(Get-TreeInventory $formal); $helper=Join-Path $QualificationRoot 'kit\Invoke-M4LivePowerCut.ps1'; $artifact=Join-Path $QualificationRoot 'formal\Release\myrd.exe'; $bundle=Join-Path $power 'bundle'
+    $argv=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$helper,'-Mode','Arm','-Executable',$artifact,'-Bundle',$bundle,'-DriveLetter','R','-EvidenceDirectory',$power,'-SourceCommit',$Commit,'-TimeoutMs','120000')
+    $result=Invoke-LivePowerCutHelper $helper $argv 130000
+    $armPath=Join-Path $power 'myrd.m4.live-powercut-arm.v1.json'; if ($result -is [Collections.IDictionary] -and $result.Contains('arm_evidence')) { $armPath=[string]$result.arm_evidence }
+    Need ([IO.File]::Exists($armPath)) 'live power-cut Arm evidence is missing'; $armEvidence=Read-QualificationJson $armPath 'live power-cut arm evidence'; Assert-LivePowerCutArmEvidence $armEvidence $Commit $artifact $bundle
+    if ($result -is [Collections.IDictionary] -and $result.Contains('pid')) { Need ($result.pid -eq $armEvidence.old_pid -and $result.process_alive -eq $true) 'live power-cut Arm result is invalid' }; $identity=Get-LivePowerCutProcessIdentity $armEvidence.old_pid; Need ($identity.creation_utc -ceq $armEvidence.pid_identity.creation_utc) 'live power-cut Arm PID creation time differs from evidence'
+    Need ((@(Get-TreeInventory $formal) -join "`n") -ceq ($formalBefore -join "`n")) 'live power-cut Arm changed Formal inventory'
+    $event=[ordered]@{kind='LivePowerCutArm';boot_utc=[string]$Facts.boot_utc;armed_utc=[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ');arm_evidence_sha256=Get-QualificationFileHash $armPath;pid=[int64]$armEvidence.old_pid;creation_utc=[string]$identity.creation_utc;powercut_bundle_inventory=@(Get-TreeInventory $bundle);formal_inventory=$formalBefore}
+    $state=Read-QualificationState $QualificationRoot; Need ($state.state -ceq 'FormalRecovered') "live power-cut Arm cannot resume state $($state.state)"; Write-QualificationState $QualificationRoot (New-QualificationState $state.qualification_id 'AwaitingLivePowerCut' (([uint64]$state.sequence)+1) @($state.events+$event))
+    $reRead=Read-QualificationState $QualificationRoot; Invoke-QualificationHook 'ReReadState'; $armed=Get-LivePowerCutArmEvent $reRead; Need ((Get-QualificationFileHash $result.arm_evidence) -ceq $armed.arm_evidence_sha256) 'live power-cut arm evidence hash changed'; Invoke-QualificationHook 'VerifyLivePowerCutArmEvidence'; $check=Get-LivePowerCutProcessIdentity $armed.pid; Need ($check.creation_utc -ceq $armed.creation_utc) 'exact armed PID creation time changed'
+    Invoke-QualificationHook 'PrintLivePowerCutArmed'; Write-Output @('LIVE POWER-CUT ARMED','myrd.exe is still running and the durable checkpoint is verified.','You may use VMware UI to Reset or Power Off at any time.','Do not shut down Windows normally.','After Windows starts, run the same qualification command again.')
+    while ($true) { $live=Get-LivePowerCutProcessIdentity $armed.pid; Need ($live.creation_utc -ceq $armed.creation_utc) 'exact armed PID creation time changed'; Write-Output 'LIVE POWER-CUT ARMED'; & $script:LivePowerCutSleeper 10000 }
+}
+
+function Invoke-LivePowerCutRecovery {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Kit,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)]$Facts)
+    $state=Read-QualificationState $QualificationRoot; $arm=Get-LivePowerCutArmEvent $state; Need ($state.state -ceq 'AwaitingLivePowerCut') "live power-cut recovery cannot resume state $($state.state)"
+    [DateTimeOffset]$boot=[DateTimeOffset]::MinValue;[DateTimeOffset]$armedBoot=[DateTimeOffset]::MinValue;Need([DateTimeOffset]::TryParse($Facts.boot_utc,[ref]$boot)-and[DateTimeOffset]::TryParse($arm.boot_utc,[ref]$armedBoot)) 'live power-cut boot timestamp is invalid';if($boot -le $armedBoot){Write-Output 'RESET STILL REQUIRED: LivePowerCut';return 10}
+    Assert-UnexpectedReset ([ordered]@{boot_utc=$arm.boot_utc;armed_utc=$arm.armed_utc}) ([ordered]@{boot_utc=$Facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)});Assert-InitialGuestFacts $Facts|Out-Null;Need($null -eq (& $script:LivePowerCutProcessProvider $arm.pid)) 'armed live power-cut PID is still present after reset'
+    $formal=Join-Path $QualificationRoot 'formal';$power=Join-Path $QualificationRoot 'powercut';Assert-SeparateQualificationRoots $formal $power;Need((@(Get-TreeInventory $formal)-join "`n") -ceq (@($arm.formal_inventory)-join "`n")) 'live power-cut changed Formal inventory';$artifact=Join-Path $QualificationRoot 'formal\Release\myrd.exe';$bundle=Join-Path $power 'bundle';$armPath=Join-Path $power 'myrd.m4.live-powercut-arm.v1.json';Need((Get-QualificationFileHash $armPath) -ceq $arm.arm_evidence_sha256) 'live power-cut arm evidence is not immutable';Need((@(Get-TreeInventory $bundle)-join "`n") -ceq (@($arm.powercut_bundle_inventory)-join "`n")) 'live power-cut bundle inventory changed after reset';Assert-QualificationKit $Kit $Commit|Out-Null
+    Write-QualificationState $QualificationRoot (New-QualificationState $state.qualification_id 'LivePowerCutObserved' (([uint64]$state.sequence)+1) @($state.events));$helper=Join-Path $Kit 'Invoke-M4LivePowerCut.ps1';$argv=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$helper,'-Mode','Recover','-Executable',$artifact,'-Bundle',$bundle,'-DriveLetter','R','-EvidenceDirectory',$power,'-SourceCommit',$Commit,'-ArmEvidence',$armPath,'-ExpectedArmedPid',[string]$arm.pid,'-ExpectedArmEvidenceSha256',$arm.arm_evidence_sha256,'-TimeoutMs','120000');$result=Invoke-LivePowerCutHelper $helper $argv 130000
+    $evidencePath=Join-Path $power 'myrd.m4.live-powercut.v1.json';$evidence=Read-QualificationJson $evidencePath 'live power-cut recovery evidence';Need($evidence.schema -ceq 'myrd.m4.live-powercut.v1' -and $evidence.status -ceq 'PASS' -and $evidence.source_commit -ceq $Commit -and $evidence.executable_sha256 -ceq (Get-QualificationFileHash $artifact) -and $evidence.old_pid -eq $arm.pid -and $evidence.old_pid_absent -eq $true -and $evidence.graceful_exit -eq 0 -and $evidence.recovered_generation -gt $evidence.armed_generation) 'live power-cut recovery evidence is invalid'
+    $observed=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $observed.qualification_id 'LivePowerRecovered' (([uint64]$observed.sequence)+1) @($observed.events));return 0
+}
+
 function Invoke-QualificationRun {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot)
     $kit = Split-Path -Parent $PSCommandPath; $manifest = Get-Content -LiteralPath (Join-Path $kit 'qualification-kit.json') -Raw -Encoding UTF8 | ConvertFrom-Json; $commit = [string]$manifest.source_commit
     Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null
     if (-not [IO.Directory]::Exists($QualificationRoot)) { $facts = Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $kit; Initialize-QualificationRoot -QualificationRoot $QualificationRoot -SourceKit $kit -ExpectedCommit $commit -Facts $facts | Out-Null; Write-QualificationState $QualificationRoot (New-QualificationState ([Guid]::NewGuid().ToString('N')) 'Initial' 0 @()); $initial = Read-QualificationState $QualificationRoot; Write-QualificationState $QualificationRoot (New-QualificationState $initial.qualification_id 'FormalCreateReady' 1 @()); Invoke-FormalCreateSequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
     Assert-QualificationKit -Kit (Join-Path $QualificationRoot 'kit') -ExpectedCommit $commit | Out-Null; $state = Read-QualificationState $QualificationRoot
-    if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post -FullFacts $facts; if ($code -eq 10) { exit 10 }; return }
+    if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post -FullFacts $facts; if ($code -eq 10) { exit 10 }; Invoke-LivePowerCutArm -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
+    if ($state.state -ceq 'AwaitingLivePowerCut') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $code=Invoke-LivePowerCutRecovery -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; if($code -eq 10){exit 10}; return }
     throw [M4QualificationBlocked]::new("qualification Run cannot resume state $($state.state)")
 }
 
@@ -947,7 +1032,7 @@ function Invoke-SelfTest {
         try { Assert-UnexpectedReset -Armed $badArmed -Post $post } catch [M4QualificationBlocked] { $blocked=$true; $message=$_.Exception.Message }
         Need ($blocked -and $message -clike '*boot time type*') 'non-string armed reset time used the wrong reason'
         $sourceKit = Join-Path $scratch 'source-kit'; [IO.Directory]::CreateDirectory($sourceKit) | Out-Null
-        $kitNames = @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe')
+        $kitNames = @('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','Invoke-M4LivePowerCut.ps1','myrd.exe','myrd_m4_aim_query.exe')
         foreach ($name in $kitNames) { [IO.File]::WriteAllText((Join-Path $sourceKit $name), $name, [Text.UTF8Encoding]::new($false)) }
         $kitCommit = 'c' * 40
         $kitManifest = [ordered]@{ schema = 'myrd.m4.qualification-kit.v1'; source_commit = $kitCommit; files = @($kitNames | ForEach-Object { $p=Join-Path $sourceKit $_; [ordered]@{name=$_;length=[int64]([IO.FileInfo]$p).Length;sha256=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToUpperInvariant()} }) }
@@ -975,7 +1060,7 @@ function Invoke-SelfTest {
         Initialize-QualificationRoot -QualificationRoot $initialRoot -SourceKit $sourceKit -ExpectedCommit $kitCommit -Facts $goodFacts | Out-Null
         Need (((@(Get-ChildItem -LiteralPath $initialRoot -Force | ForEach-Object Name) -join '|')) -ceq 'evidence|formal|kit|logs|powercut|temp') 'qualification root directory set is invalid'
         Need (((@(Get-ChildItem -LiteralPath (Join-Path $initialRoot 'formal') -Force | ForEach-Object Name) -join '|')) -ceq 'Release|tests|tools') 'qualification formal directory set is invalid'
-        Need (((@(Get-ChildItem -LiteralPath (Join-Path $initialRoot 'kit') -Force | ForEach-Object Name) | Sort-Object) -join '|') -ceq ((@('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe','qualification-kit.json') | Sort-Object) -join '|')) 'qualification kit snapshot set is invalid'
+        Need (((@(Get-ChildItem -LiteralPath (Join-Path $initialRoot 'kit') -Force | ForEach-Object Name) | Sort-Object) -join '|') -ceq ((@('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','Invoke-M4LivePowerCut.ps1','myrd.exe','myrd_m4_aim_query.exe','qualification-kit.json') | Sort-Object) -join '|')) 'qualification kit snapshot set is invalid'
         foreach ($relative in @('formal\Release\myrd.exe','formal\tests\e2e\Invoke-M4RunLifecycle.ps1','formal\tools\Invoke-M4Verification.ps1','kit\qualification-kit.json')) { Need ([IO.File]::Exists((Join-Path $initialRoot $relative))) "qualification root missed $relative" }
         Invoke-QualificationKitValidatorSelfTest -Scratch $scratch
         $expectedStates = @(
@@ -1120,7 +1205,7 @@ function Invoke-SelfTest {
                 $copy = ($case.value | ConvertTo-Json -Depth 20 | ConvertFrom-Json); & $case.mutate $copy; $typed=$false; try { & $case.assert $copy } catch [M4QualificationBlocked] { $typed=$true }; Need $typed "$($case.name) strict mutation was accepted"
             }
             $activeOrchestrationRoot = Join-Path $scratch 'offline-failure-root'; foreach ($relative in @('kit','formal\tests\e2e','formal\Release','evidence')) { [IO.Directory]::CreateDirectory((Join-Path $activeOrchestrationRoot $relative)) | Out-Null }; foreach($relative in @('formal\tests\e2e\Invoke-M4RunLifecycle.ps1','formal\Release\myrd.exe')){[IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot $relative),'fixture')}
-            $kitNames=@('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','myrd.exe','myrd_m4_aim_query.exe'); foreach($name in $kitNames){[IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot ('kit\'+$name)),'fixture',[Text.UTF8Encoding]::new($false))}; $records=@($kitNames|ForEach-Object{[ordered]@{name=$_;length=[int64]([IO.FileInfo](Join-Path $activeOrchestrationRoot ('kit\'+$_))).Length;sha256=(Get-QualificationFileHash (Join-Path $activeOrchestrationRoot ('kit\'+$_)))}}); [IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot 'kit\qualification-kit.json'),([ordered]@{schema='myrd.m4.qualification-kit.v1';source_commit=('e'*40);files=$records}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+            $kitNames=@('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','Invoke-M4LivePowerCut.ps1','myrd.exe','myrd_m4_aim_query.exe'); foreach($name in $kitNames){[IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot ('kit\'+$name)),'fixture',[Text.UTF8Encoding]::new($false))}; $records=@($kitNames|ForEach-Object{[ordered]@{name=$_;length=[int64]([IO.FileInfo](Join-Path $activeOrchestrationRoot ('kit\'+$_))).Length;sha256=(Get-QualificationFileHash (Join-Path $activeOrchestrationRoot ('kit\'+$_)))}}); [IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot 'kit\qualification-kit.json'),([ordered]@{schema='myrd.m4.qualification-kit.v1';source_commit=('e'*40);files=$records}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
             $failureArtifact=Join-Path $activeOrchestrationRoot 'formal\Release\myrd.exe'; $failureBundle=Join-Path $activeOrchestrationRoot 'formal\bundle'; $failureCreate=($validCreate|ConvertTo-Json -Depth 20|ConvertFrom-Json);$failureCreate.executable_path=[IO.Path]::GetFullPath($failureArtifact);$failureCreate.executable_sha256=Get-QualificationFileHash $failureArtifact;$failureCreate.bundle_path=[IO.Path]::GetFullPath($failureBundle);$failureCreate.argv=@('run','--bundle',$failureCreate.bundle_path,'--size','64M','--drive-letter','R:','--checkpoint-seconds','5','--checkpoint-dirty-mb','1','--ram-limit','64M');$failureCreate.boot_identity=$goodFacts.boot_utc;$failureCreate.baseline_inventory.boot_identity=$goodFacts.boot_utc;$failureCreate.inventory_after.boot_identity=$goodFacts.boot_utc;[IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'),($failureCreate|ConvertTo-Json -Compress -Depth 20),[Text.UTF8Encoding]::new($false));$failureArm=New-CrashResetArmEvent -Facts $goodFacts -EvidencePath (Join-Path $activeOrchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json') -KilledPid 1234 -BundleInventory @() -ResidualAimIdentity @('AIM|fixture');Write-QualificationState $activeOrchestrationRoot (New-QualificationState 'failure-q' 'Initial' 0 @());Write-QualificationState $activeOrchestrationRoot (New-QualificationState 'failure-q' 'FormalCreateReady' 1 @());Write-QualificationState $activeOrchestrationRoot (New-QualificationState 'failure-q' 'AwaitingCrashReset' 2 @($failureArm))
             $recoveryFixture=($validRecover|ConvertTo-Json -Depth 20|ConvertFrom-Json);$recoveryFixture.executable_path=[IO.Path]::GetFullPath($failureArtifact);$recoveryFixture.executable_sha256=Get-QualificationFileHash $failureArtifact;$recoveryFixture.bundle_path=[IO.Path]::GetFullPath($failureBundle);$recoveryFixture.argv=@('run','--bundle',$recoveryFixture.bundle_path,'--size','64M','--drive-letter','R:','--checkpoint-seconds','5','--checkpoint-dirty-mb','1','--ram-limit','64M');$recoveryFixture.boot_identity='2026-08-16T00:01:00.0000000Z';$recoveryFixture.baseline_inventory.boot_identity=$recoveryFixture.boot_identity;$recoveryFixture.inventory_after.boot_identity=$recoveryFixture.boot_identity;$postFullFacts=&$copyFacts;$postFullFacts.boot_utc=$recoveryFixture.boot_identity;$event41=([DateTime]::Parse($failureArm.armed_utc).AddSeconds(1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'));$event6008=([DateTime]::Parse($failureArm.armed_utc).AddSeconds(2).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'));$offlineFailureFixture=$true;$beforeFailureAck=$recordedArgv.Count;$failed=$false
             $failureReason='';try { Invoke-FormalRecoverySequence -QualificationRoot $activeOrchestrationRoot -Kit (Join-Path $activeOrchestrationRoot 'kit') -Commit ('e'*40) -PostFacts ([ordered]@{boot_utc=$recoveryFixture.boot_identity;system_events=@([ordered]@{id=[int]41;time_utc=$event41},[ordered]@{id=[int]6008;time_utc=$event6008})}) -FullFacts $postFullFacts | Out-Null } catch [M4QualificationBlocked] { $failed=$true;$failureReason=$_.Exception.Message }

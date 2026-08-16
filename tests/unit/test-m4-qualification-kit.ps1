@@ -56,6 +56,7 @@ try {
         'tests\e2e\Invoke-M4RunLifecycle.ps1' = 'lifecycle'
         'tools\Invoke-M4Verification.ps1' = 'verification'
         'tests\e2e\Prepare-M4NegativeFixtures.ps1' = 'fixtures'
+        'tests\e2e\Invoke-M4LivePowerCut.ps1' = 'live-powercut'
     }
     foreach ($entry in $inputs.GetEnumerator()) {
         [IO.File]::WriteAllText((Join-Path $fakeRoot $entry.Key), $entry.Value, [Text.UTF8Encoding]::new($false))
@@ -78,10 +79,10 @@ try {
     $expectedNames = @(
         'Capture-M4Child.ps1', 'Invoke-M4GuestQualification.ps1',
         'Invoke-M4RunLifecycle.ps1', 'Invoke-M4Verification.ps1',
-        'Prepare-M4NegativeFixtures.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe',
+        'Prepare-M4NegativeFixtures.ps1', 'Invoke-M4LivePowerCut.ps1', 'myrd.exe', 'myrd_m4_aim_query.exe',
         'qualification-kit.json')
     $actualItems = @(Get-ChildItem -LiteralPath $kit -Force)
-    Need ($actualItems.Count -eq 8) 'kit root must contain exactly eight files'
+    Need ($actualItems.Count -eq 9) 'kit root must contain exactly nine files'
     Need (-not (@($actualItems | Where-Object { $_.PSIsContainer }).Count)) 'kit must not contain a subdirectory'
     Need ((Join-OrdinalNames -Names ([string[]]$actualItems.Name)) -ceq (Join-OrdinalNames -Names $expectedNames)) 'kit root names are not exact'
     Need (@(Get-ChildItem -LiteralPath $kit -Force -Recurse -Directory).Count -eq 0) 'kit must not contain nested directories'
@@ -93,7 +94,7 @@ try {
     Need ($manifest.schema -ceq 'myrd.m4.qualification-kit.v1') 'manifest schema is invalid'
     $commit = (& git -C $fakeRoot rev-parse HEAD).Trim().ToLowerInvariant()
     Need ($manifest.source_commit -ceq $commit) 'manifest source commit is invalid'
-    Need ($manifest.files.Count -eq 7) 'manifest must contain exactly seven payload files'
+    Need ($manifest.files.Count -eq 8) 'manifest must contain exactly eight payload files'
     $payloadNames = @($expectedNames | Where-Object { $_ -cne 'qualification-kit.json' })
     Need (([string]::Join('|', @($manifest.files.name))) -ceq ([string]::Join('|', $payloadNames))) 'manifest file order is invalid'
     foreach ($entry in $manifest.files) {
