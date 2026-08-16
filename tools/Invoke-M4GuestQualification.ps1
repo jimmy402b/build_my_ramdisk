@@ -396,7 +396,7 @@ $script:QualificationStates = @(
     'FormalRecovered', 'AwaitingLivePowerCut', 'LivePowerCutObserved',
     'LivePowerRecovered', 'FixturesPrepared', 'AwaitingMissingDriverReset',
     'MissingDriverResetObserved', 'MissingDriverCaptured', 'DriverRestored',
-    'NegativeComplete', 'Complete'
+    'NegativeComplete', 'Complete', 'Blocked'
 )
 
 function Assert-Transition {
@@ -407,6 +407,8 @@ function Assert-Transition {
 
     $fromIndex = [array]::IndexOf($script:QualificationStates, $From)
     $toIndex = [array]::IndexOf($script:QualificationStates, $To)
+    if ($From -ceq 'Blocked') { throw [M4QualificationBlocked]::new('Blocked is terminal') }
+    if ($To -ceq 'Blocked' -and $fromIndex -ge 0 -and $From -cne 'Complete') { return }
     if ($fromIndex -lt 0 -or $toIndex -lt 0 -or $toIndex -ne ($fromIndex + 1)) {
         throw [M4QualificationBlocked]::new("invalid transition $From -> $To")
     }
@@ -735,9 +737,10 @@ function New-QualificationState {
 }
 
 function New-CrashResetArmEvent {
-    param([Parameter(Mandatory = $true)]$Facts, [Parameter(Mandatory = $true)][string]$EvidencePath, [Parameter(Mandatory = $true)][int64]$KilledPid, [AllowEmptyCollection()][string[]]$BundleInventory)
+    param([Parameter(Mandatory = $true)]$Facts, [Parameter(Mandatory = $true)][string]$EvidencePath, [Parameter(Mandatory = $true)][int64]$KilledPid, [AllowEmptyCollection()][string[]]$BundleInventory, [Parameter(Mandatory=$true)][string[]]$ResidualAimIdentity)
     Need ($KilledPid -gt 0) 'formal CreateKill did not report a killed PID'
-    [ordered]@{ kind = 'CrashResetArm'; boot_utc = [string]$Facts.boot_utc; armed_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'); evidence_sha256 = Get-QualificationFileHash $EvidencePath; killed_pid = $KilledPid; formal_bundle_inventory = @($BundleInventory); residual_aim_identity = @($Facts.aim_ids) }
+    Need (@($ResidualAimIdentity).Count -gt 0) 'CreateKill residual AIM identity is empty'
+    [ordered]@{ kind = 'CrashResetArm'; boot_utc = [string]$Facts.boot_utc; armed_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'); evidence_sha256 = Get-QualificationFileHash $EvidencePath; killed_pid = $KilledPid; formal_bundle_inventory = @($BundleInventory); residual_aim_identity = @($ResidualAimIdentity) }
 }
 
 function Get-TreeInventory {
@@ -777,7 +780,7 @@ function Invoke-FormalCreateSequence {
     $evidencePath = Join-Path $QualificationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'; Need ([IO.File]::Exists($evidencePath)) 'formal CreateKill evidence is missing'
     $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-CreateKillEvidence -Evidence $evidence -Commit $Commit -Artifact $artifact -Bundle $bundle
-    $killed = [int64]$evidence.pid; $event = New-CrashResetArmEvent -Facts $Facts -EvidencePath $evidencePath -KilledPid $killed -BundleInventory @(Get-TreeInventory $bundle)
+    $killed = [int64]$evidence.pid; $residual=@($evidence.inventory_after.aim_stable | Where-Object { @($evidence.baseline_inventory.aim_stable) -cnotcontains $_ }); $event = New-CrashResetArmEvent -Facts $Facts -EvidencePath $evidencePath -KilledPid $killed -BundleInventory @(Get-TreeInventory $bundle) -ResidualAimIdentity $residual
     $previous = Read-QualificationState $QualificationRoot; $next = New-QualificationState $previous.qualification_id 'AwaitingCrashReset' (([uint64]$previous.sequence) + 1) @($event)
     Write-QualificationState -QualificationRoot $QualificationRoot -State $next; $reRead = Read-QualificationState $QualificationRoot; Invoke-QualificationHook 'ReReadState'; $arm = Get-CrashResetArmEvent $reRead
     Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence hash changed'; Invoke-QualificationHook 'VerifyEvidenceHash'
@@ -811,6 +814,17 @@ function Invoke-QualificationRun {
     Assert-QualificationKit -Kit (Join-Path $QualificationRoot 'kit') -ExpectedCommit $commit | Out-Null; $state = Read-QualificationState $QualificationRoot
     if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post; if ($code -eq 10) { exit 10 }; return }
     throw [M4QualificationBlocked]::new("qualification Run cannot resume state $($state.state)")
+}
+
+function Write-BlockedQualificationState {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Reason)
+    try {
+        if (-not [IO.Directory]::Exists($QualificationRoot) -or -not [IO.File]::Exists((Get-QualificationStatePath $QualificationRoot))) { return }
+        $current=Read-QualificationState $QualificationRoot
+        if ($current.state -ceq 'Blocked' -or $current.state -ceq 'Complete') { return }
+        $event=[ordered]@{kind='Blocked';reason=$Reason}
+        Write-QualificationState $QualificationRoot (New-QualificationState $current.qualification_id 'Blocked' (([uint64]$current.sequence)+1) @($current.events + $event))
+    } catch { throw [M4QualificationBlocked]::new("qualification failure could not be durably blocked: $($_.Exception.Message)") }
 }
 
 function Invoke-SelfTest {
@@ -927,7 +941,7 @@ function Invoke-SelfTest {
             'FormalRecovered', 'AwaitingLivePowerCut', 'LivePowerCutObserved',
             'LivePowerRecovered', 'FixturesPrepared', 'AwaitingMissingDriverReset',
             'MissingDriverResetObserved', 'MissingDriverCaptured', 'DriverRestored',
-            'NegativeComplete', 'Complete'
+            'NegativeComplete', 'Complete', 'Blocked'
         )
         Need (([string]::Join('|', $script:QualificationStates)) -ceq ([string]::Join('|', $expectedStates))) 'qualification state graph changed'
 
@@ -1115,4 +1129,4 @@ if ($Status) {
 }
 
 try { Invoke-QualificationRun -QualificationRoot $QualificationRoot; exit 0 }
-catch [M4QualificationBlocked] { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }
+catch [M4QualificationBlocked] { try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $_.Exception.Message } catch [M4QualificationBlocked] { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }; [Console]::Error.WriteLine($_.Exception.Message); exit 2 }
