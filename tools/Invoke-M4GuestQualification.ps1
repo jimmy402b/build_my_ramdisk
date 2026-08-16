@@ -505,6 +505,18 @@ $script:LivePowerCutInvoker = {
     param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
     Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
 }
+$script:DriverInvoker = {
+    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
+    Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
+}
+$script:PrepareInvoker = {
+    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
+    Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
+}
+$script:NegativeInvoker = {
+    param([string]$Kit, [string]$Runner, [string]$Commit, [string]$Artifact, [string]$Bundle, [string]$StateFile, [int]$TimeoutMs)
+    Invoke-FormalRunnerCapture -Kit $Kit -Runner $Runner -Commit $Commit -Phase Negative -Artifact $Artifact -FormalBundle $Bundle -FormalState $StateFile -TimeoutMs $TimeoutMs -SafetyAcknowledged
+}
 $script:LivePowerCutProcessProvider = {
     param([int]$Pid)
     $process = Get-Process -Id $Pid -ErrorAction SilentlyContinue
@@ -567,8 +579,10 @@ function Get-GuestFacts {
         $os = Get-CimInstance Win32_OperatingSystem; $computer = Get-CimInstance Win32_ComputerSystem
         $adapter = @(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.MACAddress -ceq '00:0C:29:02:90:C1' })
         $queryResult = Invoke-BoundedProcess -FilePath $query -Arguments @() -TimeoutMs 30000
-        Need (-not $queryResult.timed_out -and $queryResult.exit -eq 0 -and [string]::IsNullOrEmpty($queryResult.stderr)) 'guest AIM query helper failed'
-        $aimIds = @(ConvertFrom-AimQueryJson -Json $queryResult.stdout)
+        Need (-not $queryResult.timed_out) 'guest AIM query helper timed out'
+        if ($queryResult.exit -eq 0 -and [string]::IsNullOrEmpty($queryResult.stderr)) { $aimIds = @(ConvertFrom-AimQueryJson -Json $queryResult.stdout) }
+        elseif ($queryResult.exit -eq 1 -and $queryResult.stdout -ceq '' -and $queryResult.stderr -ceq "discover_aim_adapter failed`r`n") { $aimIds=@() }
+        else { Need $false 'guest AIM query helper failed' }
         $fullRoot = [IO.Path]::GetFullPath($QualificationRoot); $rootInfo = [IO.DirectoryInfo]$fullRoot
         while (-not $rootInfo.Exists -and $null -ne $rootInfo.Parent) { $rootInfo = $rootInfo.Parent }; $drive = [IO.DriveInfo]::new($rootInfo.Root.FullName)
         Need ($drive.DriveType -eq [IO.DriveType]::Fixed -and ([IO.DriveInfo]::new($rootInfo.Root.FullName).DriveFormat -ceq 'NTFS')) 'qualification root must be on local fixed NTFS'
@@ -993,6 +1007,65 @@ function Invoke-LivePowerCutRecovery {
     $observed=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $observed.qualification_id 'LivePowerRecovered' (([uint64]$observed.sequence)+1) @($observed.events));return 0
 }
 
+function Assert-MissingDriverGuestFacts {
+    param([Parameter(Mandatory=$true)]$Facts)
+    try {
+        $expected=@('admin','boot_utc','model','bios','mac','root_ntfs','service_start','service_state','service_pid','driver_start','driver_state','processes','aim_ids','R','S','physical_disks')
+        Need (((Get-ExactPropertyNames $Facts)-join '|') -ceq ($expected-join '|')) 'missing-driver facts schema is invalid'
+        Need ($Facts.admin -is [bool] -and $Facts.admin -and $Facts.root_ntfs -is [bool] -and $Facts.root_ntfs) 'missing-driver clean gate is invalid'
+        Need ($Facts.driver_start -is [string] -and $Facts.driver_start -ceq 'Disabled') 'missing-driver driver start is not Disabled'
+        Need ($Facts.driver_state -is [string] -and $Facts.driver_state -ceq 'Stopped') 'missing-driver driver state is not Stopped'
+        Need ($Facts.aim_ids -is [Array] -and @($Facts.aim_ids).Count -eq 0 -and $Facts.R -is [bool] -and -not $Facts.R -and $Facts.S -is [bool] -and -not $Facts.S) 'missing-driver guest is not clean'
+        Need ($Facts.processes -is [Array] -and @($Facts.processes).Count -eq 0 -and $Facts.physical_disks -is [Array]) 'missing-driver process or disk baseline is invalid'
+        return $Facts
+    } catch [M4QualificationBlocked] { throw }
+    catch { throw [M4QualificationBlocked]::new("missing-driver facts are invalid: $($_.Exception.Message)") }
+}
+
+function Assert-NegativeFixtureManifest {
+    param([Parameter(Mandatory=$true)]$Manifest,[Parameter(Mandatory=$true)][string]$FormalRoot,[Parameter(Mandatory=$true)][string]$GenerationZeroSource)
+    $cases=@('unknown_nonempty','size_mismatch','occupied_letter','gen0','writer_lock','missing_driver','busy_volume','compact_lock')
+    $fields=[ordered]@{unknown_nonempty=@('path','letter');size_mismatch=@('path','letter','expected_size');occupied_letter=@('path','letter','volume_guid');gen0=@('path','letter','expected_size');writer_lock=@('path','letter','expected_size');missing_driver=@('path','letter');busy_volume=@('path','letter','expected_size','holder_relative_path');compact_lock=@('path','letter','expected_size')}
+    Need (((Get-ExactPropertyNames $Manifest)-join '|') -ceq (('schema','active_cases')+$cases-join '|')) 'negative fixture manifest property set is invalid'
+    Need ($Manifest.schema -ceq 'myrd.m4.negative-fixtures.v1' -and ((@($Manifest.active_cases)-join ',') -ceq 'missing_driver')) 'negative fixture manifest identity is invalid'
+    $negativeRoot=[IO.Path]::GetFullPath("$(Join-Path $FormalRoot 'bundle').r7-negative")
+    foreach($case in $cases){$entry=$Manifest.$case;Need($null-ne $entry -and ((Get-ExactPropertyNames $entry|Sort-Object)-join '|') -ceq (($fields[$case]|Sort-Object)-join '|')) "negative fixture entry schema is invalid: $case";Need([IO.Path]::GetFullPath([string]$entry.path) -ceq (Join-Path $negativeRoot $case)) "negative fixture derived path is invalid: $case"}
+    foreach($case in @('unknown_nonempty','size_mismatch','gen0','writer_lock','missing_driver','busy_volume','compact_lock')){Need($Manifest.$case.letter -ceq 'S') "negative fixture letter is invalid: $case"}
+    Need($Manifest.occupied_letter.letter -ceq 'D' -and $Manifest.busy_volume.holder_relative_path -ceq 'holder.bin') 'negative fixture D/holder contract is invalid'
+    foreach($case in @('size_mismatch','gen0','writer_lock','busy_volume','compact_lock')){Need($Manifest.$case.expected_size -ceq '64M') "negative fixture 64M contract is invalid: $case"}
+    foreach($case in @('size_mismatch','writer_lock','busy_volume','compact_lock')){Need(@(Get-TreeInventory (Join-Path $negativeRoot $case)).Count -gt 0) "negative fixture compact copy is empty: $case"}
+    Need(@(Get-TreeInventory (Join-Path $negativeRoot 'gen0')).Count -gt 0) 'negative fixture gen0 copy is empty'
+}
+
+function Invoke-MissingDriverPrepare {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Kit,[Parameter(Mandatory=$true)]$Facts)
+    Assert-InitialGuestFacts $Facts | Out-Null
+    $formal=Join-Path $QualificationRoot 'formal';$bundle=Join-Path $formal 'bundle';$gen0=Join-Path $QualificationRoot 'powercut\bundle';$prepare=Join-Path $Kit 'Prepare-M4NegativeFixtures.ps1'
+    $mainBefore=@(Get-TreeInventory $bundle);$genBefore=@(Get-TreeInventory $gen0);$argv=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$prepare,'-FormalRoot',$formal,'-GenerationZeroSource',$gen0,'-OccupiedLetter','D','-OccupiedVolumeGuid','\\?\Volume{00000000-0000-0000-0000-000000000001}\')
+    $result=& $script:PrepareInvoker 'powershell.exe' $argv 120000;Need($result.exit -eq 0 -and -not $result.timed_out -and [string]::IsNullOrEmpty($result.stderr)) 'negative fixture preparation failed'
+    Need((@(Get-TreeInventory $bundle)-join "`n") -ceq ($mainBefore-join "`n") -and (@(Get-TreeInventory $gen0)-join "`n") -ceq ($genBefore-join "`n")) 'negative fixture preparation changed source inventory';$factsAfter=& $script:FactsProvider $QualificationRoot $Kit;Assert-InitialGuestFacts $factsAfter|Out-Null
+    $manifest=Read-QualificationJson (Join-Path $formal 'm4-lifecycle.state.json.negative-fixtures.json') 'negative fixture manifest';Assert-NegativeFixtureManifest $manifest $formal $gen0
+    $disabled=& $script:DriverInvoker 'sc.exe' @('config','phdskmnt','start=','disabled') 30000;Need($disabled.exit -eq 0 -and -not $disabled.timed_out) 'driver disable failed';$disabledReadback=& $script:DriverInvoker 'sc.exe' @('qc','phdskmnt') 30000;Need($disabledReadback.exit -eq 0 -and -not $disabledReadback.timed_out -and $disabledReadback.stdout -cmatch 'DISABLED') 'driver disable readback is invalid'
+    $next=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $next.qualification_id 'FixturesPrepared' (([uint64]$next.sequence)+1) @($next.events));$observed=Read-QualificationState $QualificationRoot;$event=[ordered]@{kind='MissingDriverResetArm';boot_utc=[string]$Facts.boot_utc;armed_utc=[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')};Write-QualificationState $QualificationRoot (New-QualificationState $observed.qualification_id 'AwaitingMissingDriverReset' (([uint64]$observed.sequence)+1) @($observed.events+$event));Invoke-QualificationHook 'PrintMissingDriverResetArmed';Write-Output @('MISSING-DRIVER RESET ARMED','phdskmnt is disabled. Use VMware UI to perform exactly one Reset or Power Off/On now.','After Windows starts, run the same qualification command again.')
+}
+
+function Invoke-MissingDriverRecovery {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Kit,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)]$Facts)
+    $state=Read-QualificationState $QualificationRoot;Need($state.state -ceq 'AwaitingMissingDriverReset') "missing-driver recovery cannot resume state $($state.state)";$arms=@($state.events|Where-Object{$_.kind-ceq'MissingDriverResetArm'});Need($arms.Count-eq1)'missing-driver reset arm is absent';$arm=[ordered]@{boot_utc=[string]$arms[0].boot_utc;armed_utc=[string]$arms[0].armed_utc}
+    [DateTimeOffset]$boot=[DateTimeOffset]::MinValue;[DateTimeOffset]$armed=[DateTimeOffset]::MinValue;Need([DateTimeOffset]::TryParse($Facts.boot_utc,[ref]$boot)-and [DateTimeOffset]::TryParse($arm.boot_utc,[ref]$armed)) 'missing-driver boot timestamp is invalid';if($boot -le $armed){Write-Output 'RESET STILL REQUIRED: MissingDriver';return 10}
+    Assert-UnexpectedReset $arm ([ordered]@{boot_utc=$Facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)});Assert-MissingDriverGuestFacts $Facts|Out-Null
+    $query=& $script:DriverInvoker (Join-Path $Kit 'myrd_m4_aim_query.exe') @() 30000;Need($query.exit -eq 1 -and -not $query.timed_out -and $query.stdout -ceq '' -and $query.stderr -ceq "discover_aim_adapter failed`r`n") 'missing-driver query contract is invalid'
+    $formal=Join-Path $QualificationRoot 'formal';$runner=Join-Path $formal 'tests\e2e\Invoke-M4RunLifecycle.ps1';$artifact=Join-Path $formal 'Release\myrd.exe';$stateFile=Join-Path $QualificationRoot 'evidence\formal-state.json';$result=& $script:NegativeInvoker $Kit $runner $Commit $artifact (Join-Path $formal 'bundle') $stateFile 420000;Need($result.child_exit -eq 77 -and $result.stdout -ceq "M4 lifecycle Negative BLOCKED: Negative remaining cases: unknown_nonempty,size_mismatch,occupied_letter,gen0,writer_lock,busy_volume,compact_lock`r`n" -and [string]::IsNullOrEmpty($result.stderr)) 'missing-driver negative boundary is invalid'
+    Need([IO.File]::Exists((Join-Path $QualificationRoot 'evidence\m4-negative-missing_driver.v1.json'))) 'missing-driver evidence is absent';$next=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $next.qualification_id 'MissingDriverResetObserved' (([uint64]$next.sequence)+1) @($next.events));$observed=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $observed.qualification_id 'MissingDriverCaptured' (([uint64]$observed.sequence)+1) @($observed.events));return 0
+}
+
+function Invoke-DriverRestoreAndNegative {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Kit,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)]$Facts)
+    $state=Read-QualificationState $QualificationRoot;Need($state.state -ceq 'MissingDriverCaptured') "driver restore cannot resume state $($state.state)";$demand=& $script:DriverInvoker 'sc.exe' @('config','phdskmnt','start=','demand') 30000;Need($demand.exit -eq 0 -and -not $demand.timed_out) 'driver demand restore failed';$start=& $script:DriverInvoker 'sc.exe' @('start','phdskmnt') 30000;Need($start.exit -eq 0 -and -not $start.timed_out) 'driver start restore failed';$restored=& $script:DriverInvoker 'sc.exe' @('query','phdskmnt') 30000;Need($restored.exit -eq 0 -and -not $restored.timed_out -and $restored.stdout -cmatch 'RUNNING') 'driver running readback is invalid';$restoredFacts=& $script:FactsProvider $QualificationRoot $Kit;Assert-InitialGuestFacts $restoredFacts|Out-Null
+    $formal=Join-Path $QualificationRoot 'formal';$prepare=Join-Path $Kit 'Prepare-M4NegativeFixtures.ps1';$before=Get-QualificationFileHash $prepare;$activate=& $script:PrepareInvoker 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',$prepare,'-FormalRoot',$formal,'-ActivateRemaining') 120000;Need($activate.exit -eq 0 -and -not $activate.timed_out -and [string]::IsNullOrEmpty($activate.stderr) -and (Get-QualificationFileHash $prepare) -ceq $before) 'remaining negative fixture activation failed';$manifest=Read-QualificationJson (Join-Path $formal 'm4-lifecycle.state.json.negative-fixtures.json') 'remaining fixture manifest';Need((@($manifest.active_cases)-join ',') -ceq 'unknown_nonempty,size_mismatch,occupied_letter,gen0,writer_lock,busy_volume,compact_lock') 'remaining negative cases are not exact'
+    $next=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $next.qualification_id 'DriverRestored' (([uint64]$next.sequence)+1) @($next.events));$runner=Join-Path $formal 'tests\e2e\Invoke-M4RunLifecycle.ps1';$result=& $script:NegativeInvoker $Kit $runner $Commit (Join-Path $formal 'Release\myrd.exe') (Join-Path $formal 'bundle') (Join-Path $QualificationRoot 'evidence\formal-state.json') 420000;Need($result.child_exit -eq 0 -and [string]::IsNullOrEmpty($result.stderr)) 'remaining negative run failed';$observed=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $observed.qualification_id 'NegativeComplete' (([uint64]$observed.sequence)+1) @($observed.events))
+}
+
 function Invoke-QualificationRun {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot)
     $kit = Split-Path -Parent $PSCommandPath; $manifest = Get-Content -LiteralPath (Join-Path $kit 'qualification-kit.json') -Raw -Encoding UTF8 | ConvertFrom-Json; $commit = [string]$manifest.source_commit
@@ -1000,7 +1073,10 @@ function Invoke-QualificationRun {
     if (-not [IO.Directory]::Exists($QualificationRoot)) { $facts = Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $kit; Initialize-QualificationRoot -QualificationRoot $QualificationRoot -SourceKit $kit -ExpectedCommit $commit -Facts $facts | Out-Null; Write-QualificationState $QualificationRoot (New-QualificationState ([Guid]::NewGuid().ToString('N')) 'Initial' 0 @()); $initial = Read-QualificationState $QualificationRoot; Write-QualificationState $QualificationRoot (New-QualificationState $initial.qualification_id 'FormalCreateReady' 1 @()); Invoke-FormalCreateSequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
     Assert-QualificationKit -Kit (Join-Path $QualificationRoot 'kit') -ExpectedCommit $commit | Out-Null; $state = Read-QualificationState $QualificationRoot
     if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post -FullFacts $facts; if ($code -eq 10) { exit 10 }; Invoke-LivePowerCutArm -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
-    if ($state.state -ceq 'AwaitingLivePowerCut') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $code=Invoke-LivePowerCutRecovery -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; if($code -eq 10){exit 10}; return }
+    if ($state.state -ceq 'AwaitingLivePowerCut') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $code=Invoke-LivePowerCutRecovery -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; if($code -eq 10){exit 10}; $state=Read-QualificationState $QualificationRoot }
+    if ($state.state -ceq 'LivePowerRecovered') { $facts=& $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit');Invoke-MissingDriverPrepare -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Facts $facts;return }
+    if ($state.state -ceq 'AwaitingMissingDriverReset') { $facts=& $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit');$code=Invoke-MissingDriverRecovery -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts;if($code-eq10){exit 10};return }
+    if ($state.state -ceq 'MissingDriverCaptured') { $facts=& $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit');Invoke-DriverRestoreAndNegative -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts;return }
     throw [M4QualificationBlocked]::new("qualification Run cannot resume state $($state.state)")
 }
 

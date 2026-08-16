@@ -24,7 +24,7 @@ $controllerAst = [Management.Automation.Language.Parser]::ParseFile(
     [ref]$tokens,
     [ref]$parseErrors)
 Need ($parseErrors.Count -eq 0) 'guest qualification controller failed AST parsing'
-$requiredFunctions = @('Get-GuestFacts', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-LivePowerCutArm', 'Assert-LivePowerCutRecoveryEvidence', 'Invoke-LivePowerCutRecovery', 'Invoke-QualificationRun')
+$requiredFunctions = @('Get-GuestFacts', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-LivePowerCutArm', 'Assert-LivePowerCutRecoveryEvidence', 'Invoke-LivePowerCutRecovery', 'Assert-NegativeFixtureManifest', 'Invoke-MissingDriverPrepare', 'Invoke-MissingDriverRecovery', 'Invoke-DriverRestoreAndNegative', 'Invoke-QualificationRun')
 foreach ($name in $requiredFunctions) {
     $matches = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     Need ($matches.Count -eq 1) "guest qualification controller is missing $name"
@@ -46,6 +46,8 @@ Need ($controllerText.Contains('Get-SystemResetEvents')) 'guest qualification co
 Need ($controllerText.Contains('$script:LivePowerCutInvoker')) 'guest qualification controller must inject LivePowerCutInvoker'
 Need ($controllerText.Contains('RESET STILL REQUIRED: LivePowerCut')) 'guest qualification controller must require the second VMware reset'
 Need ($controllerText.Contains('LIVE POWER-CUT ARMED')) 'guest qualification controller must arm live power cut explicitly'
+foreach ($requiredText in @('$script:DriverInvoker', '$script:PrepareInvoker', '$script:NegativeInvoker', 'RESET STILL REQUIRED: MissingDriver', "@('config','phdskmnt','start=','disabled')", "@('config','phdskmnt','start=','demand')", "@('start','phdskmnt')", 'm4-negative-missing_driver.v1.json')) { Need ($controllerText.Contains($requiredText)) "missing-driver controller source contract is missing $requiredText" }
+foreach ($forbiddenText in @('sc.exe stop phdskmnt', 'sc.exe delete phdskmnt')) { Need (-not $controllerText.Contains($forbiddenText)) "missing-driver controller source contract contains forbidden operation $forbiddenText" }
 $tempCleanupFinally = @($controllerAst.FindAll({
     param($node)
     $node -is [Management.Automation.Language.TryStatementAst] -and
