@@ -70,11 +70,8 @@ function Start-ExactChild([string]$File,[string[]]$Argv) {
     $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$File;$info.UseShellExecute=$false;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$info.CreateNoWindow=$true
     # PowerShell 5.1 lacks ArgumentList; quote each frozen argument explicitly.
     $info.Arguments=(@($Argv|ForEach-Object{Quote-WindowsArg ([string]$_)}) -join ' ')
-    $process=[Diagnostics.Process]::new();$process.StartInfo=$info;Need($process.Start())'ProcessStartInfo failed to start child'
-    $stdout=[Text.StringBuilder]::new();$stderr=[Text.StringBuilder]::new()
-    # Native stream ownership is fixed to this exact process; Arm polls its
-    # owned buffers and never consults a process name or global console.
-    [pscustomobject]@{Process=$process;argv=@($Argv);stdout=$stdout;stderr=$stderr;started_utc=[datetime]::UtcNow.ToString('o')}
+    $owned=[M4OwnedChild]::Start($File,$info.Arguments)
+    [pscustomobject]@{Process=$owned.Process;Owned=$owned;argv=@($Argv);stdout=$owned.Stdout;stderr=$owned.Stderr;started_utc=[datetime]::UtcNow.ToString('o')}
 }
 function Wait-Ready($Child,[string]$Letter,[int]$Milliseconds) {
     $deadline=[datetime]::UtcNow.AddMilliseconds($Milliseconds)
@@ -86,6 +83,22 @@ function Wait-SuccessorCheckpoint($Child,[uint64]$Generation,[int]$Milliseconds)
     while([datetime]::UtcNow -lt $deadline){$checkpoint=Latest-CheckpointText $Child.stdout.ToString();if($null -ne $checkpoint -and $checkpoint.generation -gt $Generation){return $checkpoint};if($Child.Process.HasExited){Block "child exited before successor checkpoint: $($Child.Process.ExitCode)"};Start-Sleep -Milliseconds 25}
     Block 'successor checkpoint timeout'
 }
+Add-Type @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+public sealed class M4OwnedChild : IDisposable {
+ public readonly Process Process; public readonly StringBuilder Stdout=new StringBuilder(), Stderr=new StringBuilder();
+ readonly Thread outputThread,errorThread; bool outputFailed,errorFailed;
+ M4OwnedChild(Process process) { Process=process; outputThread=new Thread(()=>Drain(process.StandardOutput,Stdout,true)); errorThread=new Thread(()=>Drain(process.StandardError,Stderr,false)); outputThread.IsBackground=true; errorThread.IsBackground=true; outputThread.Start(); errorThread.Start(); }
+ void Drain(StreamReader reader,StringBuilder target,bool output) { try { char[] buffer=new char[1024]; int count; while((count=reader.Read(buffer,0,buffer.Length))>0) lock(target) target.Append(buffer,0,count); } catch { if(output) outputFailed=true; else errorFailed=true; } }
+ public static M4OwnedChild Start(string file,string arguments) { var info=new ProcessStartInfo(); info.FileName=file; info.Arguments=arguments; info.UseShellExecute=false; info.RedirectStandardOutput=true; info.RedirectStandardError=true; info.CreateNoWindow=true; var process=new Process(); process.StartInfo=info; if(!process.Start()) throw new InvalidOperationException("ProcessStartInfo failed to start child"); return new M4OwnedChild(process); }
+ public void FinishDrains() { if(!outputThread.Join(5000)||!errorThread.Join(5000)) throw new IOException("owned stdout/stderr drain timeout"); if(outputFailed||errorFailed) throw new IOException("owned stdout/stderr drain failed"); }
+ public void Dispose() { Process.Dispose(); }
+}
+'@ -ErrorAction Stop
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -132,11 +145,9 @@ function SelfTest {
         $script=Join-Path $temp 'child.ps1'
         [IO.File]::WriteAllText($script,'[Console]::Out.WriteLine("Ready: R: generation 1."); [Console]::Error.WriteLine("owned-stderr"); [Console]::Out.WriteLine("Checkpoint committed generation 2."); Start-Sleep -Seconds 20',[Text.UTF8Encoding]::new($false))
         $child=Start-ExactChild (Get-Command powershell.exe).Source @('-NoProfile','-File',$script)
-        Start-Sleep -Milliseconds 300
-        Need(-not $child.Process.HasExited)'harmless child exited early'
-        $child.Process.Kill(); Need($child.Process.WaitForExit(5000))'harmless child did not stop'
-        $out=$child.stdout.ToString();$err=$child.stderr.ToString()
-        Need($child.Process.ExitCode -ne 0 -and $null -ne $out -and $null -ne $err)'harmless child stdout/stderr ownership contract failed'
+        $ready=Wait-Ready $child 'R' 10000;$checkpoint=Wait-SuccessorCheckpoint $child $ready 10000
+        Need($ready -eq 1 -and $checkpoint.generation -eq 2 -and -not $child.Process.HasExited -and $child.stderr.ToString() -match 'owned-stderr')'harmless child real Arm-path contract failed'
+        $child.Process.Kill(); Need($child.Process.WaitForExit(5000))'harmless child did not stop';$child.Owned.FinishDrains()
         $early=Start-ExactChild (Get-Command powershell.exe).Source @('-NoProfile','-Command','exit 9');try{Need($early.Process.WaitForExit(5000) -and $early.Process.ExitCode -eq 9)'early exit fixture failed'}finally{$early.Process.Dispose()}
         $noSuccessor='Ready: R: generation 1.';Need($null -eq (Latest-CheckpointText $noSuccessor))'missing successor accepted'
         $wrong=$child.Process.Id+1000000;Need($null -eq (Get-Process -Id $wrong -ErrorAction SilentlyContinue))'wrong PID fixture was unexpectedly live'
