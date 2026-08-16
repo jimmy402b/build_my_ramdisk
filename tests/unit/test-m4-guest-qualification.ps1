@@ -24,7 +24,7 @@ $controllerAst = [Management.Automation.Language.Parser]::ParseFile(
     [ref]$tokens,
     [ref]$parseErrors)
 Need ($parseErrors.Count -eq 0) 'guest qualification controller failed AST parsing'
-$requiredFunctions = @('Get-GuestFacts', 'Get-GuestBootProbe', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-LivePowerCutArm', 'Assert-LivePowerCutRecoveryEvidence', 'Invoke-LivePowerCutRecovery', 'Assert-NegativeFixtureManifest', 'Assert-MissingDriverNegativeEvidence', 'Get-MissingDriverCaptureEvent', 'Assert-RemainingNegativeFinalEvidence', 'Invoke-MissingDriverPrepare', 'Invoke-MissingDriverRecovery', 'Invoke-DriverRestoreAndNegative', 'Invoke-QualificationRun', 'Invoke-QualificationDispatcher', 'Invoke-QualificationDispatcherFailureMatrixSelfTest', 'Invoke-QualificationDispatcherRestoreFailureMatrixSelfTest')
+$requiredFunctions = @('Get-GuestFacts', 'Get-GuestBootProbe', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-LivePowerCutArm', 'Assert-LivePowerCutRecoveryEvidence', 'Invoke-LivePowerCutRecovery', 'Assert-NegativeFixtureManifest', 'Assert-NegativeCaseEvidence', 'Read-StrictNegativeEvidence', 'Assert-MissingDriverNegativeEvidence', 'Get-MissingDriverCaptureEvent', 'Assert-RemainingNegativeFinalEvidence', 'Invoke-MissingDriverPrepare', 'Invoke-MissingDriverRecovery', 'Invoke-DriverRestoreAndNegative', 'Invoke-QualificationRun', 'Invoke-QualificationDispatcher', 'Invoke-QualificationDispatcherFailureMatrixSelfTest', 'Invoke-QualificationDispatcherRestoreFailureMatrixSelfTest')
 foreach ($name in $requiredFunctions) {
     $matches = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     Need ($matches.Count -eq 1) "guest qualification controller is missing $name"
@@ -35,10 +35,19 @@ $controllerText = [IO.File]::ReadAllText($controller)
 $runner = Join-Path $root 'tests\e2e\Invoke-M4RunLifecycle.ps1'
 Need ([IO.File]::Exists($runner)) 'lifecycle runner is missing'
 $runnerText = [IO.File]::ReadAllText($runner)
-foreach ($requiredText in @('function Assert-MissingDriverNegativeRecord', 'Assert-MissingDriverNegativeRecord $record', 'Assert-MissingDriverNegativeRecord $x')) {
+foreach ($requiredText in @('function Assert-NegativeCaseEvidence', 'Assert-NegativeCaseEvidence $record', 'Assert-NegativeCaseEvidence $x')) {
     Need ($runnerText.Contains($requiredText)) "missing-driver runner strict evidence contract is missing $requiredText"
 }
 Need ($runnerText.Contains('Error: run failed for')) 'missing-driver runner must bind the native refusal to its bundle path'
+foreach ($requiredText in @('function Read-StrictNegativeEvidence', 'function Assert-NegativeCaseEvidence', 'Assert-ExactEvidenceProperties $Record', 'negative evidence is not canonical single JSON')) {
+    Need ($controllerText.Contains($requiredText)) "controller strict negative evidence mirror is missing $requiredText"
+}
+foreach ($requiredText in @('negative evidence must be single-line JSON', 'negative process schema is invalid', 'negative oracle schema is invalid', 'negative lock relation is invalid', 'busy_volume relation is invalid')) {
+    Need ($controllerText.Contains($requiredText)) "controller strict negative evidence mirror is missing $requiredText"
+}
+foreach ($requiredText in @('remaining negative final evidence schema is invalid', 'remaining negative final evidence type is invalid', 'remaining negative final evidence inventory is invalid', 'remaining negative final evidence is not canonical single JSON')) {
+    Need ($controllerText.Contains($requiredText)) "controller strict final lifecycle mirror is missing $requiredText"
+}
 foreach ($requiredText in @("Name='MyRamDiskService'", "Name='phdskmnt'", 'Get-Disk', 'Win32_Process', 'CommandLine')) { Need ($controllerText.Contains($requiredText)) "Get-GuestFacts source contract is missing $requiredText" }
 foreach ($forbiddenText in @('Win32_DiskDrive', "Name='myrd'")) { Need (-not $controllerText.Contains($forbiddenText)) "Get-GuestFacts source contract contains $forbiddenText" }
 Need ($controllerText.Contains('[IO.Directory]::Move($Stage, $Root)')) 'qualification root publish must atomically move the stage'
@@ -67,6 +76,8 @@ foreach ($failureRow in @('RestoreDemandNonzero', 'RestoreDemandTimeout', 'Resto
     Need ($controllerText.Contains("'$failureRow'")) "restore/final failure matrix row is missing: $failureRow"
 }
 Need ($controllerText.Contains("kind='NegativeComplete'")) 'final negative evidence must be durably anchored'
+Need ($controllerText.Contains('preexisting remaining negative evidence is forbidden')) 'remaining negative evidence must be absent before driver restore ACK'
+Need ($controllerText.Contains('Assert-NegativeCaseEvidence $record $case')) 'final evidence must validate every negative case through the strict mirror'
 $tempCleanupFinally = @($controllerAst.FindAll({
     param($node)
     $node -is [Management.Automation.Language.TryStatementAst] -and
