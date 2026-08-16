@@ -92,6 +92,9 @@ foreach ($failureRow in @('RestoreDemandNonzero', 'RestoreDemandTimeout', 'Resto
     Need ($controllerText.Contains("'$failureRow'")) "restore/final failure matrix row is missing: $failureRow"
 }
 Need ($controllerText.Contains("kind='NegativeComplete'")) 'final negative evidence must be durably anchored'
+$postGate = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-QualificationPostGate' }, $true))[0]
+Need ($postGate.Body.Extent.Text.Contains('$arm=Get-LivePowerCutArmEvent $state')) 'postgate must require exactly one durable LivePowerCutArm event'
+Need (-not $postGate.Body.Extent.Text.Contains("`$arms=@(`$state.events|Where-Object{`$_.kind -ceq 'LivePowerCutArm'});if(`$arms.Count-eq1)")) 'postgate must not allow a NegativeComplete state without a LivePowerCutArm event'
 Need ($controllerText.Contains('preexisting remaining negative evidence is forbidden')) 'remaining negative evidence must be absent before driver restore ACK'
 Need ($controllerText.Contains('Assert-NegativeCaseEvidence $record $case')) 'final evidence must validate every negative case through the strict mirror'
 $tempCleanupFinally = @($controllerAst.FindAll({
