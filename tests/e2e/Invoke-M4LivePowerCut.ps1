@@ -223,13 +223,105 @@ function SelfTest {
         $script:StorageInspector={param($op,$letter) if($op -eq 'Inventory'){return $baseline};if($op -eq 'Volume'){if(-not(Test-Path 'R:')){New-PSDrive -Name R -PSProvider FileSystem -Root $root -Scope Global|Out-Null};[IO.Directory]::CreateDirectory($Bundle)|Out-Null;return [ordered]@{volume_guid='selftest-volume';filesystem='NTFS';partition_style='GPT';disk_number=7;partition_number=1;expected_physical_identity='selftest-physical'}}}
         $script:WorkloadProvider={param($op,$letter,$payload) if($op -eq 'Write'){[IO.File]::WriteAllText((Join-Path $root $payload.name),$payload.text,[Text.UTF8Encoding]::new($false));return};$h=[ordered]@{};foreach($n in $payload.names){$h[$n]=(Get-FileHash -LiteralPath (Join-Path $root $n) -Algorithm SHA256).Hash};return $h}
         $arm=Invoke-LivePowerCutArm;Need($arm.process_alive -and $null -ne (Get-Process -Id $arm.pid -ErrorAction SilentlyContinue))'actual Arm did not return a live exact PID';$armRaw=[IO.File]::ReadAllBytes($arm.arm_evidence);Need($armRaw.Length -gt 3 -and -not($armRaw[0]-eq239-and$armRaw[1]-eq187-and$armRaw[2]-eq191))'arm evidence is not UTF8 without BOM';$armJson=Get-Content -LiteralPath $arm.arm_evidence -Raw -Encoding UTF8|ConvertFrom-Json;Need($armJson.schema -ceq 'myrd.m4.live-powercut-arm.v1' -and $armJson.old_pid -eq $arm.pid -and $armJson.armed_generation -eq 2 -and $armJson.pid_identity.creation_utc -and ((Read-OwnedLog $arm.stdout_path) -match 'Ready: R: generation'))'actual Arm evidence invalid'
-        (Get-Process -Id $arm.pid -ErrorAction Stop).Kill();Start-Sleep -Milliseconds 100;Remove-PSDrive -Name R -Force;$env:M4_LIVE_RECOVER='1';$script:EventProvider={param($armedBoot)$t=([datetime]$armedBoot).AddMilliseconds(1).ToUniversalTime().ToString('o');[pscustomobject]@{boot_utc=([datetime]$armedBoot).AddSeconds(1).ToUniversalTime().ToString('o');events=@([pscustomobject]@{id=[int]41;time_utc=$t},[pscustomobject]@{id=[int]6008;time_utc=$t})}};$script:SignalProvider={param($child) Need($child.Process.ProcessId -gt 0)'signal exact PID missing';[IO.File]::WriteAllText((Join-Path $root 'continue.txt'),'go',[Text.UTF8Encoding]::new($false))}
+        $armedProcess = Get-Process -Id $arm.pid -ErrorAction Stop
+        $armedProcess.Kill()
+        $armedProcess.WaitForExit()
+        Remove-PSDrive -Name R -Force
+        $env:M4_LIVE_RECOVER='1';$script:EventProvider={param($armedBoot)$t=([datetime]$armedBoot).AddMilliseconds(1).ToUniversalTime().ToString('o');[pscustomobject]@{boot_utc=([datetime]$armedBoot).AddSeconds(1).ToUniversalTime().ToString('o');events=@([pscustomobject]@{id=[int]41;time_utc=$t},[pscustomobject]@{id=[int]6008;time_utc=$t})}};$script:SignalProvider={param($child) Need($child.Process.ProcessId -gt 0)'signal exact PID missing';[IO.File]::WriteAllText((Join-Path $root 'continue.txt'),'go',[Text.UTF8Encoding]::new($false))}
         $ArmEvidence=$arm.arm_evidence;$ExpectedArmedPid=$arm.pid;$ExpectedArmEvidenceSha256=(Get-FileHash -LiteralPath $ArmEvidence -Algorithm SHA256).Hash;$recovered=Invoke-LivePowerCutRecover
         Need($recovered.schema -ceq 'myrd.m4.live-powercut.v1' -and $recovered.status -ceq 'PASS' -and $recovered.recovered_generation -eq 5 -and $recovered.graceful_exit -eq 0)'actual Recover evidence invalid'
-        foreach($case in @('source','artifact','bundle','missing41','missing6008','sameboot')) {
-            $ExpectedArmedPid=0;$ExpectedArmEvidenceSha256=''
-            $caseRoot=Join-Path $root ("mutation-$case-"+[guid]::NewGuid().ToString('N'));$caseBundle=Join-Path $caseRoot 'bundle';$savedBundle=$Bundle;[IO.Directory]::CreateDirectory($caseRoot)|Out-Null;Copy-Item -LiteralPath $savedBundle -Destination $caseBundle -Recurse;$before=@(Get-Process|ForEach-Object Id);$rejected=$false;$reason='';$savedEvent=$script:EventProvider;$savedArm=$ArmEvidence;$savedStorage=$script:StorageInspector;$savedWorkload=$script:WorkloadProvider
-            try {if(Get-PSDrive R -ErrorAction SilentlyContinue){Remove-PSDrive R -Force};$Bundle=$caseBundle;$script:StorageInspector={param($op,$letter)if($op-eq'Inventory'){return $baseline};if($op-eq'Volume'){if(-not(Test-Path 'R:')){New-PSDrive -Name R -PSProvider FileSystem -Root $caseRoot -Scope Global|Out-Null};return [ordered]@{volume_guid='case-volume';filesystem='NTFS';partition_style='GPT';disk_number=7;partition_number=1;expected_physical_identity='case-physical'}}};$script:WorkloadProvider={param($op,$letter,$payload)Block 'mutation must not reach workload'};$copy=Join-Path $caseRoot 'arm.json';$bad=Get-Content -LiteralPath $arm.arm_evidence -Raw|ConvertFrom-Json;$bad.bundle_path=[IO.Path]::GetFullPath($caseBundle);$bad.bundle_inventory=@(Bundle-Inventory $caseBundle);switch($case){'source'{$bad.source_commit=('b'*40)}'artifact'{$bad.executable_sha256=('0'*64)}'bundle'{$bad.bundle_path='C:\bad'}'wrongpid'{$bad.old_pid=999999;$bad.pid_identity.pid=999999;$bad.pid_identity.process_group=999999}};$bad.identity_sha256=Arm-IdentityHash $bad;[IO.File]::WriteAllText($copy,($bad|ConvertTo-Json -Depth 16),[Text.UTF8Encoding]::new($false));$ArmEvidence=$copy;if($case -eq 'missing41'){$script:EventProvider={param($x)[pscustomobject]@{boot_utc=([datetime]$x).AddSeconds(1).ToString('o');events=@([pscustomobject]@{id=6008;time_utc=([datetime]$x).AddMilliseconds(1).ToString('o')})}}};if($case -eq 'missing6008'){$script:EventProvider={param($x)[pscustomobject]@{boot_utc=([datetime]$x).AddSeconds(1).ToString('o');events=@([pscustomobject]@{id=41;time_utc=([datetime]$x).AddMilliseconds(1).ToString('o')})}}};if($case -eq 'sameboot'){$script:EventProvider={param($x)[pscustomobject]@{boot_utc=$x.ToString('o');events=@()}}};Invoke-LivePowerCutRecover|Out-Null}catch [M4LivePowerCutBlocked]{$rejected=$true;$reason=$_.Exception.Message}finally{if(Get-PSDrive R -ErrorAction SilentlyContinue){Remove-PSDrive R -Force};$script:StorageInspector=$savedStorage;$script:WorkloadProvider=$savedWorkload;$script:EventProvider=$savedEvent;$ArmEvidence=$savedArm;$Bundle=$savedBundle;Remove-Item -LiteralPath $caseRoot -Recurse -Force -ErrorAction SilentlyContinue};$expected=@{source='source identity changed';artifact='artifact identity changed';bundle='bundle path changed';missing41='event 41';missing6008='event 6008';sameboot='boot did not advance';wrongpid='PID is still present'}[$case];Need($rejected-and$reason-match[regex]::Escape($expected)-and-not(Test-Path -LiteralPath $caseRoot)-and@(Get-Process|ForEach-Object Id|Where-Object{$before-notcontains$_}).Count-eq0)"mutation $case accepted, wrong reason, or started a child"
+        foreach ($case in @('source', 'artifact', 'bundle', 'missing41', 'missing6008', 'sameboot', 'wrongpid', 'wrongsha')) {
+            $caseRoot = Join-Path $root ("mutation-$case-" + [guid]::NewGuid().ToString('N'))
+            $caseBundle = Join-Path $caseRoot 'bundle'
+            $savedBundle = $Bundle
+            $savedArm = $ArmEvidence
+            $savedEvent = $script:EventProvider
+            $savedStorage = $script:StorageInspector
+            $savedWorkload = $script:WorkloadProvider
+            $savedStart = ${function:Start-ExactChild}
+            $expectedPid = [int]$arm.pid
+            $script:MutationChildStartCount = 0
+            $rejected = $false
+            $reason = ''
+            [IO.Directory]::CreateDirectory($caseRoot) | Out-Null
+            Copy-Item -LiteralPath $savedBundle -Destination $caseBundle -Recurse
+            try {
+                if (Get-PSDrive R -ErrorAction SilentlyContinue) { Remove-PSDrive R -Force }
+                $Bundle = $caseBundle
+                $script:StorageInspector = {
+                    param($op, $letter)
+                    if ($op -eq 'Inventory') { return $baseline }
+                    if ($op -eq 'Volume') {
+                        if (-not (Test-Path 'R:')) { New-PSDrive -Name R -PSProvider FileSystem -Root $caseRoot -Scope Global | Out-Null }
+                        return [ordered]@{ volume_guid='case-volume'; filesystem='NTFS'; partition_style='GPT'; disk_number=7; partition_number=1; expected_physical_identity='case-physical' }
+                    }
+                }
+                $script:WorkloadProvider = { param($op, $letter, $payload) Block 'mutation must not reach workload' }
+                Set-Item -Path function:script:Start-ExactChild -Value {
+                    param($File, $Argv)
+                    $script:MutationChildStartCount++
+                    Block 'mutation reached child start'
+                }
+
+                $copy = Join-Path $caseRoot 'arm.json'
+                $bad = Get-Content -LiteralPath $arm.arm_evidence -Raw -Encoding UTF8 | ConvertFrom-Json
+                $bad.bundle_path = [IO.Path]::GetFullPath($caseBundle)
+                $bad.bundle_inventory = @(Bundle-Inventory $caseBundle)
+                switch ($case) {
+                    'source' { $bad.source_commit = ('b' * 40) }
+                    'artifact' { $bad.executable_sha256 = ('0' * 64) }
+                    'bundle' { $bad.bundle_path = 'C:\bad' }
+                    'wrongpid' {
+                        $bad.old_pid = 999999
+                        $bad.pid_identity.pid = 999999
+                        $bad.pid_identity.process_group = 999999
+                    }
+                }
+                $bad.identity_sha256 = Arm-IdentityHash $bad
+                [IO.File]::WriteAllText($copy, ($bad | ConvertTo-Json -Depth 16), [Text.UTF8Encoding]::new($false))
+                $ArmEvidence = $copy
+                $ExpectedArmedPid = $expectedPid
+                $ExpectedArmEvidenceSha256 = if ($case -eq 'wrongsha') { '0' * 64 } else { (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash }
+
+                if ($case -eq 'missing41') {
+                    $script:EventProvider = { param($x) [pscustomobject]@{ boot_utc=([datetime]$x).AddSeconds(1).ToString('o'); events=@([pscustomobject]@{ id=6008; time_utc=([datetime]$x).AddMilliseconds(1).ToString('o') }) } }
+                }
+                if ($case -eq 'missing6008') {
+                    $script:EventProvider = { param($x) [pscustomobject]@{ boot_utc=([datetime]$x).AddSeconds(1).ToString('o'); events=@([pscustomobject]@{ id=41; time_utc=([datetime]$x).AddMilliseconds(1).ToString('o') }) } }
+                }
+                if ($case -eq 'sameboot') {
+                    $script:EventProvider = { param($x) [pscustomobject]@{ boot_utc=$x.ToString('o'); events=@() } }
+                }
+
+                Invoke-LivePowerCutRecover | Out-Null
+            }
+            catch [M4LivePowerCutBlocked] {
+                $rejected = $true
+                $reason = $_.Exception.Message
+            }
+            finally {
+                if (Get-PSDrive R -ErrorAction SilentlyContinue) { Remove-PSDrive R -Force }
+                Set-Item -Path function:script:Start-ExactChild -Value $savedStart
+                $script:StorageInspector = $savedStorage
+                $script:WorkloadProvider = $savedWorkload
+                $script:EventProvider = $savedEvent
+                $ArmEvidence = $savedArm
+                $Bundle = $savedBundle
+                $ExpectedArmedPid = 0
+                $ExpectedArmEvidenceSha256 = ''
+                Remove-Item -LiteralPath $caseRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $expected = @{
+                source = 'source identity changed'
+                artifact = 'artifact identity changed'
+                bundle = 'bundle path changed'
+                missing41 = 'event 41'
+                missing6008 = 'event 6008'
+                sameboot = 'boot did not advance'
+                wrongpid = 'arm expected PID changed'
+                wrongsha = 'arm evidence SHA changed'
+            }[$case]
+            Need ($rejected -and $reason -match [regex]::Escape($expected) -and $script:MutationChildStartCount -eq 0 -and -not (Test-Path -LiteralPath $caseRoot)) "mutation $case accepted, wrong reason, or started a child"
         }
     } finally {Remove-Item Env:M4_LIVE_RECOVER -ErrorAction SilentlyContinue;if(Get-PSDrive R -ErrorAction SilentlyContinue){Remove-PSDrive R -Force};$Executable=$old.Executable;$Bundle=$old.Bundle;$DriveLetter=$old.DriveLetter;$EvidenceDirectory=$old.EvidenceDirectory;$SourceCommit=$old.SourceCommit;$TimeoutMs=$old.TimeoutMs;$script:StorageInspector=$old.Storage;$script:WorkloadProvider=$old.Workload;$script:EventProvider=$old.Event;$script:SignalProvider=$old.Signal;$script:RunArgvProvider=$old.Argv;$script:LiveLogPrefix=$null;Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
     Write-Output 'M4 live power-cut SelfTest PASS'
