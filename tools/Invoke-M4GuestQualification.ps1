@@ -1016,6 +1016,20 @@ function Invoke-SelfTest {
             for ($index = 0; $index -lt 5; $index++) { $argv = @($recordedArgv[$index]); Need (($argv[0..5] -join '|') -ceq '-NoProfile|-ExecutionPolicy|Bypass|-File|' + (Join-Path $orchestrationRoot 'kit\Capture-M4Child.ps1') + '|-Mode') 'formal capture argv prefix is invalid'; Need ($argv[$argv.IndexOf('-Phase') + 1] -ceq $expectedPhases[$index]) 'formal capture phase order is invalid'; Need ([int]$argv[$argv.IndexOf('-TimeoutMs') + 1] -eq $(if ($index -eq 4) {420000}else{20000})) 'formal capture timeout is invalid' }
             Need (-not (@($recordedArgv[0]) -ccontains '-SafetyAcknowledged') -and (@($recordedArgv[4]) -ccontains '-SafetyAcknowledged')) 'formal acknowledgement ordering is invalid'
             Need (($hookOrder -join '|') -ceq 'WriteState|FlushEvent|ReReadState|VerifyEvidenceHash|PrintCrashResetArmed') 'crash reset arm hooks are out of order'
+            foreach ($failedHook in @('WriteState','FlushEvent','ReReadState','VerifyEvidenceHash','PrintCrashResetArmed')) {
+                $script:QualificationObserver = { param($Hook) if ($Hook -ceq $failedHook) { throw 'fixture hook failure' } }
+                $typed = $false; try { Invoke-QualificationHook $failedHook } catch [M4QualificationBlocked] { $typed = $true }
+                Need $typed "qualification hook $failedHook did not fail closed by type"
+            }
+            $script:QualificationObserver = { param($Hook) $hookOrder.Add($Hook) }
+            $validCreate = Get-Content -LiteralPath (Join-Path $orchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-CreateKillEvidence -Evidence $validCreate -Commit ('e'*40) -Artifact (Join-Path $orchestrationRoot 'formal\Release\myrd.exe') -Bundle (Join-Path $orchestrationRoot 'formal\bundle')
+            foreach ($mutation in @('source_commit','executable_path','executable_sha256','bundle_path','status','pid','generation')) {
+                $copy = ($validCreate | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+                switch ($mutation) { 'source_commit' {$copy.source_commit='f'*40}; 'executable_path' {$copy.executable_path='X'}; 'executable_sha256' {$copy.executable_sha256='0'*64}; 'bundle_path' {$copy.bundle_path='X'}; 'status' {$copy.status='PASS'}; 'pid' {$copy.pid=0}; 'generation' {$copy.generation=1} }
+                $typed=$false; try { Assert-CreateKillEvidence -Evidence $copy -Commit ('e'*40) -Artifact (Join-Path $orchestrationRoot 'formal\Release\myrd.exe') -Bundle (Join-Path $orchestrationRoot 'formal\bundle') } catch [M4QualificationBlocked] {$typed=$true}
+                Need $typed "CreateKill mutation $mutation was accepted"
+            }
             $awaiting = Read-QualificationState $orchestrationRoot; $arm = Get-CrashResetArmEvent $awaiting; Need ($awaiting.state -ceq 'AwaitingCrashReset' -and $arm.killed_pid -eq 1234) 'formal CreateKill did not durably arm reset'
             $beforeRecoveryCalls = $recordedArgv.Count; $stillRequired = Invoke-FormalRecoverySequence -QualificationRoot $orchestrationRoot -Kit (Join-Path $orchestrationRoot 'kit') -Commit ('e'*40) -PostFacts ([ordered]@{boot_utc=$goodFacts.boot_utc;system_events=@()})
             Need ($stillRequired -eq 10 -and $recordedArgv.Count -eq $beforeRecoveryCalls) 'reset-still-required ran recovery or returned the wrong code'
