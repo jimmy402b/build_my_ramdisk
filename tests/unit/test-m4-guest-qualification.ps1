@@ -45,6 +45,13 @@ foreach ($requiredText in @('function Read-StrictNegativeEvidence', 'function As
 foreach ($requiredText in @('negative evidence must be single-line JSON', 'negative process schema is invalid', 'negative oracle schema is invalid', 'negative lock relation is invalid', 'busy_volume relation is invalid')) {
     Need ($controllerText.Contains($requiredText)) "controller strict negative evidence mirror is missing $requiredText"
 }
+foreach ($requiredText in @('function Assert-NegativeRefusalProtocol', 'function Assert-BusyVolumeProtocol', 'negative refusal stderr protocol is invalid', 'busy stdout protocol is invalid')) {
+    Need ($runnerText.Contains($requiredText)) "runner exact negative process protocol is missing $requiredText"
+    Need ($controllerText.Contains($requiredText)) "controller exact negative process protocol mirror is missing $requiredText"
+}
+foreach ($requiredText in @('unknown_nonempty fixture path must remain absent', 'occupied_letter fixture path must remain absent', 'missing_driver fixture path must remain absent', 'lifecycle boot identity is not bound to baseline inventory')) {
+    Need ($controllerText.Contains($requiredText)) "controller frozen fixture/lifecycle binding is missing $requiredText"
+}
 foreach ($requiredText in @('remaining negative final evidence schema is invalid', 'remaining negative final evidence type is invalid', 'remaining negative final evidence inventory is invalid', 'remaining negative final evidence is not canonical single JSON')) {
     Need ($controllerText.Contains($requiredText)) "controller strict final lifecycle mirror is missing $requiredText"
 }
