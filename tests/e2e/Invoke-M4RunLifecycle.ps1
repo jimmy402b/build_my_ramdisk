@@ -202,7 +202,11 @@ function Block-CleanupSelfTest {
     Need(-not[string]::IsNullOrWhiteSpace($env:MYRD_M4_BLOCK_CLEANUP_SENTINEL))'selftest cleanup sentinel was not supplied'
     $sentinel=[IO.Path]::GetFullPath($env:MYRD_M4_BLOCK_CLEANUP_SENTINEL)
     Need(-not(Test-Path -LiteralPath $sentinel))'selftest cleanup sentinel already exists'
-    $child=[pscustomobject]@{Process=[M4Child]::Start((Get-Command powershell.exe).Source,[string[]]@('-NoProfile','-Command','Start-Sleep -Seconds 30'))}
+    $marker=$env:MYRD_M4_BLOCK_CLEANUP_START_MARKER
+    if(-not[string]::IsNullOrWhiteSpace($marker)){ $marker=[IO.Path]::GetFullPath($marker);Need(-not(Test-Path -LiteralPath $marker))'selftest start marker already exists' }
+    $childScript=Join-Path $temp 'child.ps1';[IO.File]::WriteAllText($childScript,'param([string]$Marker) if(-not[string]::IsNullOrWhiteSpace($Marker)){$bytes=[Text.UTF8Encoding]::new($false).GetBytes("started`n");$stream=[IO.FileStream]::new($Marker,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough);try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}};Start-Sleep -Seconds 30',[Text.UTF8Encoding]::new($false))
+    $child=[pscustomobject]@{Process=[M4Child]::Start((Get-Command powershell.exe).Source,[string[]]@('-NoProfile','-File',$childScript,'-Marker',$marker))}
+    if($marker){$deadline=[datetime]::UtcNow.AddSeconds(5);while(-not(Test-Path -LiteralPath $marker)-and[datetime]::UtcNow-lt$deadline){Start-Sleep -Milliseconds 10};Need(Test-Path -LiteralPath $marker)'selftest child did not durably write start marker'}
     try { Block 'selftest forced block after child start.' }
     finally {
       try {$cleanup=Emergency $child}

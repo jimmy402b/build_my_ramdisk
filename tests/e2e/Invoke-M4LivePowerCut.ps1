@@ -22,6 +22,8 @@ $script:WorkloadProvider=$null
 $script:EventProvider=$null
 $script:SignalProvider=$null
 $script:FailureInjector=$null
+$script:ClockProvider={ [DateTime]::UtcNow }
+$script:WaitSleeper={ param([int]$Milliseconds) Start-Sleep -Milliseconds $Milliseconds }
 
 class M4LivePowerCutBlocked : System.Exception { M4LivePowerCutBlocked([string]$Message) : base($Message) {} }
 function Block([string]$Message) { throw [M4LivePowerCutBlocked]::new($Message) }
@@ -50,6 +52,8 @@ function Assert-DurableEvidence([string]$Path,$Expected,[string]$ExpectedSha256)
     Need($raw.TrimEnd("`r","`n") -ceq (Json $Expected)) 'durable evidence readback changed after atomic write'
 }
 function UInt64-Strict([string]$Text) { $value=[uint64]0; if(-not [uint64]::TryParse($Text,[ref]$value)){return $null}; if($value -eq 0){return $null}; return $value }
+function New-LivePowerCutDeadline([int]$Milliseconds) { (& $script:ClockProvider).AddMilliseconds($Milliseconds) }
+function Get-LivePowerCutRemainingMilliseconds([datetime]$Deadline,[string]$TimeoutMessage='live power-cut overall timeout') { $remaining=[int][Math]::Floor(($Deadline-(& $script:ClockProvider)).TotalMilliseconds); Need($remaining-gt0)$TimeoutMessage; return $remaining }
 function Ready-GenerationText([string]$Text,[string]$Letter) {
     $escaped=[regex]::Escape($Letter.ToUpperInvariant())
     $matches=[regex]::Matches($Text,"(?m)^Ready: $escaped`: generation ([0-9]+)\.(?=\r?\n|\z)")
@@ -127,21 +131,14 @@ function Start-ExactChild([string]$File,[string[]]$Argv) {
 function Read-OwnedLog([string]$Path) { if(-not [IO.File]::Exists($Path)){return ''};$share=[IO.FileShare]([int]([IO.FileShare]::ReadWrite) -bor [int]([IO.FileShare]::Delete));$stream=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,$share);try{[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false),$false).ReadToEnd()}finally{$stream.Dispose()} }
 function Child-Stdout($Child) { Read-OwnedLog $Child.stdout_path }
 function Child-Stderr($Child) { Read-OwnedLog $Child.stderr_path }
-function Wait-Ready($Child,[string]$Letter,[int]$Milliseconds) {
-    $deadline=[datetime]::UtcNow.AddMilliseconds($Milliseconds)
-    while([datetime]::UtcNow -lt $deadline){$generation=Ready-GenerationText (Child-Stdout $Child) $Letter;if($null -ne $generation){return $generation};if($Child.Process.HasExited){Block "child exited before Ready: $($Child.Process.ExitCode); stderr=$(Child-Stderr $Child)"};Start-Sleep -Milliseconds 25}
-    $captured=Child-Stdout $Child;$codes=(@($captured.ToCharArray()|ForEach-Object{[int][char]$_}) -join ',')
-    Block "Ready timeout; stdout=$captured; stdout_length=$($captured.Length); stdout_codepoints=$codes; stderr=$(Child-Stderr $Child)"
+function Wait-Ready($Child,[string]$Letter,[datetime]$Deadline) {
+    while($true){$remaining=Get-LivePowerCutRemainingMilliseconds $Deadline 'Ready timeout';$generation=Ready-GenerationText (Child-Stdout $Child) $Letter;if($null -ne $generation){return $generation};if($Child.Process.HasExited){Block "child exited before Ready: $($Child.Process.ExitCode); stderr=$(Child-Stderr $Child)"};& $script:WaitSleeper ([Math]::Min(25,$remaining))}
 }
-function Wait-SuccessorCheckpoint($Child,[uint64]$Generation,[int]$Milliseconds) {
-    $deadline=[datetime]::UtcNow.AddMilliseconds($Milliseconds)
-    while([datetime]::UtcNow -lt $deadline){$checkpoint=Latest-CheckpointText (Child-Stdout $Child);if($null -ne $checkpoint -and $checkpoint.generation -gt $Generation){return $checkpoint};if($Child.Process.HasExited){Block "child exited before successor checkpoint: $($Child.Process.ExitCode)"};Start-Sleep -Milliseconds 25}
-    Block 'successor checkpoint timeout'
+function Wait-SuccessorCheckpoint($Child,[uint64]$Generation,[datetime]$Deadline) {
+    while($true){$remaining=Get-LivePowerCutRemainingMilliseconds $Deadline 'successor checkpoint timeout';$checkpoint=Latest-CheckpointText (Child-Stdout $Child);if($null -ne $checkpoint -and $checkpoint.generation -gt $Generation){return $checkpoint};if($Child.Process.HasExited){Block "child exited before successor checkpoint: $($Child.Process.ExitCode)"};& $script:WaitSleeper ([Math]::Min(25,$remaining))}
 }
-function Wait-FinalSuccessorCheckpoint($Child,[uint64]$Generation,[int]$Milliseconds,[int]$Offset) {
-    $deadline=[datetime]::UtcNow.AddMilliseconds($Milliseconds)
-    while([datetime]::UtcNow -lt $deadline){$text=Child-Stdout $Child;if($text.Length -ge $Offset){$checkpoint=Latest-CheckpointText $text.Substring($Offset);if($null -ne $checkpoint -and $checkpoint.generation -gt $Generation){return $checkpoint}};if($Child.Process.HasExited){Block "child exited before final successor checkpoint: $($Child.Process.ExitCode)"};Start-Sleep -Milliseconds 25}
-    Block 'final successor checkpoint timeout'
+function Wait-FinalSuccessorCheckpoint($Child,[uint64]$Generation,[datetime]$Deadline,[int]$Offset) {
+    while($true){$remaining=Get-LivePowerCutRemainingMilliseconds $Deadline 'final successor checkpoint timeout';$text=Child-Stdout $Child;if($text.Length -ge $Offset){$checkpoint=Latest-CheckpointText $text.Substring($Offset);if($null -ne $checkpoint -and $checkpoint.generation -gt $Generation){return $checkpoint}};if($Child.Process.HasExited){Block "child exited before final successor checkpoint: $($Child.Process.ExitCode)"};& $script:WaitSleeper ([Math]::Min(25,$remaining))}
 }
 Add-Type @'
 using System;
@@ -197,7 +194,7 @@ public static class M4LiveCtrlBreak {
 }
 '@ -ErrorAction Stop
 function Exact-CtrlBreak($Child) { [M4LiveCtrlBreak]::Exact([uint32]$Child.Process.ProcessId) }
-function Wait-Exit0($Child,[int]$Milliseconds) { Need($Child.Process.WaitForExit($Milliseconds))'exact child exit timeout';$exit=[int]$Child.Process.ExitCode;Need($exit -eq 0)"exact child exit $exit" }
+function Wait-Exit0($Child,[datetime]$Deadline) { Need($Child.Process.WaitForExit((Get-LivePowerCutRemainingMilliseconds $Deadline)))'exact child exit timeout';$exit=[int]$Child.Process.ExitCode;Need($exit -eq 0)"exact child exit $exit" }
 function Complete-OwnedChildFailure($Child,$Primary) {
     $cleanupErrors = [Collections.Generic.List[string]]::new()
     if ($null -ne $Child) {
@@ -233,10 +230,10 @@ function Assert-Identity($Arm) {
 }
 function Invoke-LivePowerCutArm {
     Need($DriveLetter -match '^[A-Za-z]$')'DriveLetter must be one ASCII letter';Need([IO.File]::Exists($Executable))'Executable is missing';Need($SourceCommit -match '^[0-9A-Fa-f]{40}$')'SourceCommit must be exact 40 hex';Need([IO.Directory]::Exists($EvidenceDirectory))'EvidenceDirectory is missing';Need(-not(Test-Path "$DriveLetter`:"))'Arm requires a free drive letter';Need(-not(Test-Path -LiteralPath $Bundle))'Arm requires an absent bundle'
-    $base=Inventory;$child=$null;$success=$false
+    $deadline=New-LivePowerCutDeadline $TimeoutMs;$base=Inventory;$child=$null;$success=$false
     try {
-        $argv=Run-Argv $Bundle $DriveLetter;$child=Start-ExactChild $Executable $argv;Invoke-FailurePoint 'Arm.PostStart';Reject-ChildStderr $child 'Arm';$generation=Wait-Ready $child $DriveLetter $TimeoutMs;Reject-ChildStderr $child 'Arm';Invoke-FailurePoint 'Arm.Volume';$volume=Volume-Identity $DriveLetter;Need($volume.validated_expected -eq $true)'Ready volume did not validate the expected physical disk'
-        Invoke-FailurePoint 'Arm.Workload';Write-Workload $DriveLetter 'A.txt' 'live-powercut-A';Write-Workload $DriveLetter 'D.txt' 'live-powercut-D';$hashes=Workload-Hashes $DriveLetter @('A.txt','D.txt');Invoke-FailurePoint 'Arm.SuccessorTimeout';$successor=Wait-SuccessorCheckpoint $child $generation $TimeoutMs
+        $argv=Run-Argv $Bundle $DriveLetter;$child=Start-ExactChild $Executable $argv;Invoke-FailurePoint 'Arm.PostStart';Reject-ChildStderr $child 'Arm';$generation=Wait-Ready $child $DriveLetter $deadline;Reject-ChildStderr $child 'Arm';Invoke-FailurePoint 'Arm.Volume';$volume=Volume-Identity $DriveLetter;Need($volume.validated_expected -eq $true)'Ready volume did not validate the expected physical disk'
+        Invoke-FailurePoint 'Arm.Workload';Write-Workload $DriveLetter 'A.txt' 'live-powercut-A';Write-Workload $DriveLetter 'D.txt' 'live-powercut-D';$hashes=Workload-Hashes $DriveLetter @('A.txt','D.txt');Invoke-FailurePoint 'Arm.SuccessorTimeout';$successor=Wait-SuccessorCheckpoint $child $generation $deadline
         Reject-ChildStderr $child 'Arm';Need(-not $child.Process.HasExited)'exact armed child exited before evidence commit'
         $pidIdentity=[ordered]@{pid=[int]$child.Process.ProcessId;creation_utc=$child.creation_utc;started_utc=$child.started_utc;commandline=(Json @($argv));process_group=[int]$child.process_group}
         $armedBoot=([datetime](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUniversalTime().ToString('o');$armedUtc=[DateTime]::UtcNow.ToString('o');Need(([DateTimeOffset]$armedUtc)-gt([DateTimeOffset]$armedBoot))'arm timestamp is not after boot'
@@ -251,7 +248,7 @@ function Invoke-LivePowerCutRecover {
     if($ExpectedArmedPid -ne 0 -or -not [string]::IsNullOrWhiteSpace($ExpectedArmEvidenceSha256)){Need($ExpectedArmedPid -gt 0)'ExpectedArmedPid is required';Need($ExpectedArmEvidenceSha256 -match '^[0-9A-Fa-f]{64}$')'ExpectedArmEvidenceSha256 is required';Need((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ceq $ExpectedArmEvidenceSha256)'arm evidence SHA changed';Need($arm.old_pid -eq $ExpectedArmedPid -and $arm.pid_identity.pid -eq $ExpectedArmedPid)'arm expected PID changed'}
     [DateTimeOffset]$armedBoot=[DateTimeOffset]::MinValue;[DateTimeOffset]$armedUtc=[DateTimeOffset]::MinValue;[DateTimeOffset]$recoveredBoot=[DateTimeOffset]::MinValue;Need($arm.armed_boot_utc -is [string] -and $arm.armed_utc -is [string] -and [DateTimeOffset]::TryParse($arm.armed_boot_utc,[ref]$armedBoot) -and [DateTimeOffset]::TryParse($arm.armed_utc,[ref]$armedUtc) -and $armedUtc -gt $armedBoot)'arm timestamps are invalid';$eventRecord=Recovery-Events $arm.armed_utc;Need($eventRecord.boot_utc -is [string] -and [DateTimeOffset]::TryParse($eventRecord.boot_utc,[ref]$recoveredBoot) -and $recoveredBoot -gt $armedBoot)'recovered boot did not advance';$shutdownEvents=@($eventRecord.events);Need(@($shutdownEvents|Where-Object {$_.id -eq 41}).Count -gt 0)'unexpected shutdown event 41 missing';Need(@($shutdownEvents|Where-Object {$_.id -eq 6008}).Count -gt 0)'unexpected shutdown event 6008 missing';foreach($event in $shutdownEvents){[DateTimeOffset]$when=[DateTimeOffset]::MinValue;Need($event.id -in @(41,6008) -and $event.time_utc -is [string] -and [DateTimeOffset]::TryParse($event.time_utc,[ref]$when) -and $when -gt $armedUtc -and $when -le $recoveredBoot)'shutdown event time/type invalid'}
     $base=Inventory;Need((Json (StableInventory $base)) -ceq (Json (StableInventory $arm.baseline_inventory)))'recovery inventory is not armed baseline';Need(-not(Test-Path "$DriveLetter`:"))'Recover requires absent drive letter';Need($arm.old_pid -gt 0 -and $arm.pid_identity -and $arm.pid_identity.pid -eq $arm.old_pid)'armed PID identity invalid';Need($null -eq (Get-Process -Id ([int]$arm.old_pid) -ErrorAction SilentlyContinue))'armed PID is still present'
-    if([string]::IsNullOrWhiteSpace($script:LiveLogPrefix)){$script:LiveLogPrefix='powercut-recover'};$child=$null;$success=$false;try {$child=Start-ExactChild $Executable (Run-Argv $Bundle $DriveLetter);Reject-ChildStderr $child 'Recover';$ready=Wait-Ready $child $DriveLetter $TimeoutMs;Reject-ChildStderr $child 'Recover';$recoveredVolume=Volume-Identity $DriveLetter;Need((Json $recoveredVolume) -ceq (Json $arm.volume))'recovered volume identity changed';Need($ready -gt [uint64]$arm.armed_generation)'recovered generation did not advance';$pre=Workload-Hashes $DriveLetter @('A.txt','D.txt');Need($pre.'A.txt' -ceq $arm.hashes_before.'A.txt' -and $pre.'D.txt' -ceq $arm.hashes_before.'D.txt')'pre-recovery workload hash changed';Write-Workload $DriveLetter 'post-recovery.txt' 'post-recovery';$post=Workload-Hashes $DriveLetter @('A.txt','D.txt','post-recovery.txt');$beforeSignal=(Child-Stdout $child).Length;Invoke-FailurePoint 'Recover.Signal';if($null -ne $script:SignalProvider){& $script:SignalProvider $child}else{Exact-CtrlBreak $child};Invoke-FailurePoint 'Recover.FinalTimeout';$successor=Wait-FinalSuccessorCheckpoint $child $ready $TimeoutMs $beforeSignal;Wait-Exit0 $child $TimeoutMs;Reject-ChildStderr $child 'Recover';Invoke-FailurePoint 'Recover.CleanInventory';$after=Inventory;Need((Json (StableInventory $after)) -ceq (Json (StableInventory $base)))'clean inventory was not restored'
+    $deadline=New-LivePowerCutDeadline $TimeoutMs;if([string]::IsNullOrWhiteSpace($script:LiveLogPrefix)){$script:LiveLogPrefix='powercut-recover'};$child=$null;$success=$false;try {$child=Start-ExactChild $Executable (Run-Argv $Bundle $DriveLetter);Reject-ChildStderr $child 'Recover';$ready=Wait-Ready $child $DriveLetter $deadline;Reject-ChildStderr $child 'Recover';$recoveredVolume=Volume-Identity $DriveLetter;Need((Json $recoveredVolume) -ceq (Json $arm.volume))'recovered volume identity changed';Need($ready -gt [uint64]$arm.armed_generation)'recovered generation did not advance';$pre=Workload-Hashes $DriveLetter @('A.txt','D.txt');Need($pre.'A.txt' -ceq $arm.hashes_before.'A.txt' -and $pre.'D.txt' -ceq $arm.hashes_before.'D.txt')'pre-recovery workload hash changed';Write-Workload $DriveLetter 'post-recovery.txt' 'post-recovery';$post=Workload-Hashes $DriveLetter @('A.txt','D.txt','post-recovery.txt');$beforeSignal=(Child-Stdout $child).Length;Invoke-FailurePoint 'Recover.Signal';if($null -ne $script:SignalProvider){& $script:SignalProvider $child}else{Exact-CtrlBreak $child};Invoke-FailurePoint 'Recover.FinalTimeout';$successor=Wait-FinalSuccessorCheckpoint $child $ready $deadline $beforeSignal;Wait-Exit0 $child $deadline;Reject-ChildStderr $child 'Recover';Invoke-FailurePoint 'Recover.CleanInventory';$after=Inventory;Need((Json (StableInventory $after)) -ceq (Json (StableInventory $base)))'clean inventory was not restored'
         $result=[ordered]@{schema='myrd.m4.live-powercut.v1';status='PASS';source_commit=$SourceCommit.ToLowerInvariant();executable_sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;armed_boot_utc=$arm.armed_boot_utc;recovered_boot_utc=$recoveredBoot.ToString('o');shutdown_events=@($shutdownEvents);old_pid=[int]$arm.old_pid;old_pid_absent=$true;armed_generation=[uint64]$arm.armed_generation;recovered_generation=$successor.generation;baseline_inventory=$arm.baseline_inventory;inventory_after=$after;volume=$arm.volume;hashes_before=$arm.hashes_before;hashes_after=$post;bundle_inventory_before=$arm.bundle_inventory;bundle_inventory_after=@(Bundle-Inventory $Bundle);graceful_exit=0};$resultPath=Join-Path $EvidenceDirectory 'myrd.m4.live-powercut.v1.json';$resultSha256=Write-DurableAtomic $resultPath $result;Invoke-FailurePoint 'Recover.AfterEvidenceWrite';Assert-DurableEvidence $resultPath $result $resultSha256;$success=$true;return $result
     } catch { Complete-OwnedChildFailure $child $_.Exception
     } finally {if($success){Complete-OwnedChildSuccess $child}}
@@ -274,7 +271,7 @@ function SelfTest {
         $script=Join-Path $temp 'child.ps1'
         [IO.File]::WriteAllText($script,'[Console]::Out.WriteLine("Ready: R: generation 1."); [Console]::Error.WriteLine("owned-stderr"); [Console]::Out.WriteLine("Checkpoint committed generation 2."); Start-Sleep -Seconds 20',[Text.UTF8Encoding]::new($false))
         $script:LiveLogPrefix='parser';$child=Start-ExactChild (Get-Command powershell.exe).Source @('-NoProfile','-File',$script)
-        $ready=Wait-Ready $child 'R' 10000;$checkpoint=Wait-SuccessorCheckpoint $child $ready 10000
+        $deadline=New-LivePowerCutDeadline 10000;$ready=Wait-Ready $child 'R' $deadline;$checkpoint=Wait-SuccessorCheckpoint $child $ready $deadline
         Need($ready -eq 1 -and $checkpoint.generation -eq 2 -and -not $child.Process.HasExited -and (Child-Stderr $child) -match 'owned-stderr')'harmless child real Arm-path contract failed'
         $script:LiveLogPrefix='early';$early=Start-ExactChild (Get-Command powershell.exe).Source @('-NoProfile','-Command','exit 9');try{Need($early.Process.WaitForExit(5000))'early exit fixture failed'}finally{$early.Process.Dispose()}
         $noSuccessor='Ready: R: generation 1.';Need($null -eq (Latest-CheckpointText $noSuccessor))'missing successor accepted'
@@ -328,6 +325,7 @@ function SelfTest {
             Need($streamPid-gt 0-and$null-eq(Get-Process -Id $streamPid -ErrorAction SilentlyContinue))"$stream native-close failure left its exact PID alive"
         }
     } finally {if($null -ne $child){if(-not $child.Process.HasExited){$child.Process.Kill();$child.Process.WaitForExit(5000)|Out-Null};$child.Process.Dispose()};$EvidenceDirectory=$originalEvidenceDirectory;Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue}
+    $savedClock=$script:ClockProvider;$deadlineNow=[datetime]'2026-08-16T00:00:00Z';try{$script:ClockProvider={$script:DeadlineSelfTestNow};$script:DeadlineSelfTestNow=$deadlineNow;$deadline=New-LivePowerCutDeadline 1000;$script:DeadlineSelfTestNow=$deadlineNow.AddMilliseconds(900);Need((Get-LivePowerCutRemainingMilliseconds $deadline)-eq100)'shared deadline remaining budget was reset';$script:DeadlineSelfTestNow=$deadlineNow.AddMilliseconds(1000);$expired=$false;try{Get-LivePowerCutRemainingMilliseconds $deadline|Out-Null}catch [M4LivePowerCutBlocked]{$expired=$true};Need $expired 'shared deadline accepted expired final stage'}finally{$script:ClockProvider=$savedClock}
     # The complete orchestration is exercised with a real harmless PowerShell child;
     # only Windows storage/workload/signal observations are substituted.
     $old=@{Executable=$Executable;Bundle=$Bundle;DriveLetter=$DriveLetter;EvidenceDirectory=$EvidenceDirectory;SourceCommit=$SourceCommit;TimeoutMs=$TimeoutMs;Storage=$script:StorageInspector;Workload=$script:WorkloadProvider;Event=$script:EventProvider;Signal=$script:SignalProvider;Failure=$script:FailureInjector;Argv=(Get-Variable -Name RunArgvProvider -Scope Script -ValueOnly -ErrorAction SilentlyContinue)}
