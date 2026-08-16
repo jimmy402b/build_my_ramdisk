@@ -646,6 +646,12 @@ function Get-QualificationFileHash {
     Need ([IO.File]::Exists($Path)) "qualification evidence is missing: $Path"
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
 }
+function Read-QualificationJson {
+    param([Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)][string]$Kind)
+    try { Need ([IO.File]::Exists($Path)) "$Kind is missing"; return ([IO.File]::ReadAllText($Path,[Text.UTF8Encoding]::new($false,$true)) | ConvertFrom-Json) }
+    catch [M4QualificationBlocked] { throw }
+    catch { throw [M4QualificationBlocked]::new("$Kind JSON is invalid: $($_.Exception.Message)") }
+}
 
 function Assert-LifecycleEvidenceIdentity {
     param([Parameter(Mandatory=$true)]$Evidence,[Parameter(Mandatory=$true)][string]$Phase,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)][string]$Artifact,[Parameter(Mandatory=$true)][string]$Bundle)
@@ -711,7 +717,7 @@ function Assert-OfflineCompactEvidence {
     Need ($Evidence.status -ceq 'PASS' -and (($Evidence.exit_codes.compact -is [int]) -or ($Evidence.exit_codes.compact -is [long])) -and $Evidence.exit_codes.compact -eq 0 -and (($Evidence.exit_codes.third_run -is [int]) -or ($Evidence.exit_codes.third_run -is [long])) -and $Evidence.exit_codes.third_run -eq 0) 'OfflineCompact exits/status are invalid'
     Need ((($Evidence.generation -is [int]) -or ($Evidence.generation -is [long])) -and (($Evidence.compact_observed_generation -is [int]) -or ($Evidence.compact_observed_generation -is [long])) -and (($Evidence.third_ready_generation -is [int]) -or ($Evidence.third_ready_generation -is [long])) -and $Evidence.compact_observed_generation -eq ([uint64]$Recover.generation + 1) -and $Evidence.third_ready_generation -eq $Evidence.compact_observed_generation -and $Evidence.generation -eq $Evidence.compact_observed_generation) 'OfflineCompact generations are invalid'
     $compact=$Evidence.compact_process; Need ($compact.argv -is [Array] -and @($compact.argv).Count -eq 3 -and @($compact.argv|Where-Object{$_ -isnot [string]}).Count -eq 0 -and (($compact.pid -is [int]) -or ($compact.pid -is [long])) -and (($compact.exit -is [int]) -or ($compact.exit -is [long])) -and (($compact.timeout_seconds -is [int]) -or ($compact.timeout_seconds -is [long])) -and $compact.stdout -is [string] -and $compact.stderr -is [string]) 'OfflineCompact compact process types are invalid'; foreach($time in @($compact.started_utc,$compact.ended_utc)){Assert-UtcEvidenceTimestamp -Value $time -Message 'OfflineCompact compact process UTC is invalid'}
-    Need ($compact.argv[0] -ceq 'compact' -and $compact.argv[1] -ceq '--bundle' -and $compact.argv[2] -ceq $Evidence.bundle_path -and $compact.exit -eq 0 -and $Evidence.exit_codes.compact -eq $compact.exit -and [string]::IsNullOrEmpty($compact.stderr) -and $compact.stdout -ceq "Compacted bundle to generation $($Evidence.compact_observed_generation).") 'OfflineCompact compact result is invalid'
+    Need ($compact.argv[0] -ceq 'compact' -and $compact.argv[1] -ceq '--bundle' -and $compact.argv[2] -ceq $Evidence.bundle_path -and $compact.exit -eq 0 -and $Evidence.exit_codes.compact -eq $compact.exit -and [string]::IsNullOrEmpty($compact.stderr) -and $compact.stdout -cmatch ('\ACompacted bundle to generation '+[regex]::Escape([string]$Evidence.compact_observed_generation)+'\.(?:\r?\n)?\z')) 'OfflineCompact compact result is invalid'
     Need ($Evidence.hashes.'A.txt' -ceq $Recover.hashes.'A.txt' -and $Evidence.hashes.'D.txt' -ceq $Recover.hashes.'D.txt') 'OfflineCompact hashes are invalid'
     Assert-StableInventoryEqual $Recover.baseline_inventory $Evidence.inventory_after 'OfflineCompact clean inventory is invalid'
 }
@@ -805,7 +811,7 @@ function Invoke-FormalCreateSequence {
     $create = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase CreateKill -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged
     Need ($create.child_exit -eq 0 -and [string]::IsNullOrEmpty($create.stderr)) 'formal CreateKill failed'
     $evidencePath = Join-Path $QualificationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'; Need ([IO.File]::Exists($evidencePath)) 'formal CreateKill evidence is missing'
-    $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $evidence = Read-QualificationJson -Path $evidencePath -Kind 'CreateKill evidence'
     Assert-CreateKillEvidence -Evidence $evidence -Commit $Commit -Artifact $artifact -Bundle $bundle
     $killed = [int64]$evidence.pid; $residual=@($evidence.inventory_after.aim_stable | Where-Object { @($evidence.baseline_inventory.aim_stable) -cnotcontains $_ }); $event = New-CrashResetArmEvent -Facts $Facts -EvidencePath $evidencePath -KilledPid $killed -BundleInventory @(Get-TreeInventory $bundle) -ResidualAimIdentity $residual
     $previous = Read-QualificationState $QualificationRoot; $next = New-QualificationState $previous.qualification_id 'AwaitingCrashReset' (([uint64]$previous.sequence) + 1) @($event)
@@ -830,9 +836,9 @@ function Invoke-FormalRecoverySequence {
     Need ((@(Get-TreeInventory $bundle) -join "`n") -ceq (@($arm.formal_bundle_inventory) -join "`n")) 'formal bundle inventory changed after reset'
     $next = New-QualificationState $state.qualification_id 'CrashResetObserved' (([uint64]$state.sequence)+1) @($state.events); Write-QualificationState $QualificationRoot $next
     $recoverResult = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase RecoverShutdown -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged; Need ($recoverResult.child_exit -eq 0 -and [string]::IsNullOrEmpty($recoverResult.stderr)) 'formal RecoverShutdown failed'
-    $create=Get-Content $evidencePath -Raw -Encoding UTF8|ConvertFrom-Json; $recoverPath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-RecoverShutdown.v1.json'; Need([IO.File]::Exists($recoverPath)) 'RecoverShutdown evidence is missing'; $recover=Get-Content $recoverPath -Raw -Encoding UTF8|ConvertFrom-Json; Assert-RecoverShutdownEvidence $recover $create $Commit $artifact $bundle ([string]$PostFacts.boot_utc)
+    $create=Read-QualificationJson -Path $evidencePath -Kind 'CreateKill evidence'; $recoverPath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-RecoverShutdown.v1.json'; $recover=Read-QualificationJson -Path $recoverPath -Kind 'RecoverShutdown evidence'; Assert-RecoverShutdownEvidence $recover $create $Commit $artifact $bundle ([string]$PostFacts.boot_utc)
     $offlineResult = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase OfflineCompact -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged; Need ($offlineResult.child_exit -eq 0 -and [string]::IsNullOrEmpty($offlineResult.stderr)) 'formal OfflineCompact failed'
-    $offlinePath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-OfflineCompact.v1.json'; Need([IO.File]::Exists($offlinePath)) 'OfflineCompact evidence is missing'; $offline=Get-Content $offlinePath -Raw -Encoding UTF8|ConvertFrom-Json; Assert-OfflineCompactEvidence $offline $recover $Commit $artifact $bundle
+    $offlinePath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-OfflineCompact.v1.json'; $offline=Read-QualificationJson -Path $offlinePath -Kind 'OfflineCompact evidence'; Assert-OfflineCompactEvidence $offline $recover $Commit $artifact $bundle
     $observed = Read-QualificationState $QualificationRoot; $final = New-QualificationState $observed.qualification_id 'FormalRecovered' (([uint64]$observed.sequence)+1) @($observed.events); Write-QualificationState $QualificationRoot $final
     return 0
 }
@@ -1203,3 +1209,4 @@ if ($Status) {
 
 try { Invoke-QualificationRun -QualificationRoot $QualificationRoot; exit 0 }
 catch [M4QualificationBlocked] { try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $_.Exception.Message } catch [M4QualificationBlocked] { [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }; [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }
+catch { $message="unexpected qualification failure: $($_.Exception.Message)";try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $message } catch {};[Console]::Error.WriteLine("BLOCKED: $message");exit 77 }
