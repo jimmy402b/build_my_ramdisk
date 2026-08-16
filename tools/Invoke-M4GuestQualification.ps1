@@ -1129,6 +1129,16 @@ function Write-BlockedQualificationState {
     } catch { throw [M4QualificationBlocked]::new("qualification failure could not be durably blocked: $($_.Exception.Message)") }
 }
 
+function Invoke-QualificationDispatcher {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot)
+    try { return Invoke-QualificationRun -QualificationRoot $QualificationRoot }
+    catch [M4QualificationBlocked] {
+        try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $_.Exception.Message }
+        catch [M4QualificationBlocked] { throw }
+        throw
+    }
+}
+
 function Invoke-QualificationDispatcherHappyFlowSelfTest {
     param([Parameter(Mandatory=$true)][string]$Scratch,[Parameter(Mandatory=$true)]$GoodFacts)
     $root=Join-Path $Scratch 'dispatcher-happy';$kit=Join-Path $root 'kit';$formal=Join-Path $root 'formal';$bundle=Join-Path $formal 'bundle';$powerBundle=Join-Path $root 'powercut\bundle';$evidence=Join-Path $root 'evidence'
@@ -1156,6 +1166,24 @@ function Invoke-QualificationDispatcherHappyFlowSelfTest {
     } finally {$script:QualificationKitProvider=$saved.Kit;$script:ExitProvider=$saved.Exit;$script:FactsProvider=$saved.Facts;$script:BootProbeProvider=$saved.Probe;$script:SystemEventProvider=$saved.Events;$script:DriverInvoker=$saved.Driver;$script:PrepareInvoker=$saved.Prepare;$script:NegativeInvoker=$saved.Negative;$script:QualificationObserver=$saved.Observer;Remove-Variable -Scope Script -Name DispatcherHappyCalls,DispatcherHappyHooks,DispatcherHappyExit,DispatcherHappySystemEvents,DispatcherHappyDisabled,DispatcherHappyBoot,DispatcherHappyResult,DispatcherHappyWriteEvidence -ErrorAction SilentlyContinue}
 }
 
+function Invoke-QualificationDispatcherFailureMatrixSelfTest {
+    param([Parameter(Mandatory=$true)][string]$Scratch,[Parameter(Mandatory=$true)]$GoodFacts,[string]$Failure='')
+    # Each row starts from a newly constructed, legal dispatcher state.  Keep the
+    # first row deliberately small: it proves the production outer dispatcher
+    # persists a failure and never re-ACKs the failed guest-facing invoker.
+    if([string]::IsNullOrEmpty($Failure)){foreach($row in @('PrepareNonzero','PrepareTimeout','PrepareStderr')){Invoke-QualificationDispatcherFailureMatrixSelfTest -Scratch $Scratch -GoodFacts $GoodFacts -Failure $row};return}
+    $root=Join-Path $Scratch ('dispatcher-failure-'+[Guid]::NewGuid().ToString('N'));$kit=Join-Path $root 'kit';$formal=Join-Path $root 'formal';$bundle=Join-Path $formal 'bundle';$power=Join-Path $root 'powercut\bundle'
+    $saved=@{Kit=$script:QualificationKitProvider;Facts=$script:FactsProvider;Prepare=$script:PrepareInvoker;Driver=$script:DriverInvoker;Negative=$script:NegativeInvoker;Probe=$script:BootProbeProvider;Events=$script:SystemEventProvider}
+    try {
+        foreach($path in @($kit,$bundle,$power,(Join-Path $formal 'Release'),(Join-Path $formal 'tests\e2e'),(Join-Path $root 'evidence'))){[IO.Directory]::CreateDirectory($path)|Out-Null}
+        $names=@('Capture-M4Child.ps1','Invoke-M4GuestQualification.ps1','Invoke-M4RunLifecycle.ps1','Invoke-M4Verification.ps1','Prepare-M4NegativeFixtures.ps1','Invoke-M4LivePowerCut.ps1','myrd.exe','myrd_m4_aim_query.exe');foreach($name in $names){[IO.File]::WriteAllText((Join-Path $kit $name),$name,[Text.UTF8Encoding]::new($false))};$commit=('f'*40);$records=@($names|ForEach-Object{$p=Join-Path $kit $_;[ordered]@{name=$_;length=[int64]([IO.FileInfo]$p).Length;sha256=(Get-FileHash $p -Algorithm SHA256).Hash.ToUpperInvariant()}});[IO.File]::WriteAllText((Join-Path $kit 'qualification-kit.json'),([ordered]@{schema='myrd.m4.qualification-kit.v1';source_commit=$commit;files=$records}|ConvertTo-Json -Compress -Depth 5),[Text.UTF8Encoding]::new($false));[IO.File]::WriteAllText((Join-Path $root 'events.jsonl'),'',[Text.UTF8Encoding]::new($false));[IO.File]::WriteAllText((Join-Path $formal 'Release\myrd.exe'),'artifact',[Text.UTF8Encoding]::new($false));[IO.File]::WriteAllText((Join-Path $bundle 'bundle.dat'),'bundle',[Text.UTF8Encoding]::new($false));[IO.File]::WriteAllText((Join-Path $power 'power.dat'),'power',[Text.UTF8Encoding]::new($false))
+        Write-QualificationState $root (New-QualificationState 'dispatcher-failure' 'Initial' 0 @());foreach($stateName in @('FormalCreateReady','AwaitingCrashReset','CrashResetObserved','FormalRecovered','AwaitingLivePowerCut','LivePowerCutObserved','LivePowerRecovered')){$s=Read-QualificationState $root;Write-QualificationState $root (New-QualificationState $s.qualification_id $stateName (([uint64]$s.sequence)+1) @($s.events))}
+        $script:FailurePrepareCalls=0;$script:QualificationKitProvider={ $kit };$script:FactsProvider={param($qualificationRoot,$qualificationKit)$copy=[ordered]@{};foreach($p in $GoodFacts.GetEnumerator()){$copy[$p.Key]=$p.Value};$copy};$script:PrepareInvoker={param($file,$argv,$timeout)$script:FailurePrepareCalls++;switch($Failure){'PrepareNonzero'{[pscustomobject]@{exit=9;timed_out=$false;stdout='';stderr=''}};'PrepareTimeout'{[pscustomobject]@{exit=0;timed_out=$true;stdout='';stderr=''}};'PrepareStderr'{[pscustomobject]@{exit=0;timed_out=$false;stdout='';stderr='prepare failed'}};default{throw "unknown dispatcher failure row: $Failure"}}};$script:DriverInvoker={param($file,$argv,$timeout)throw 'driver must be gated after failed Prepare'};$script:NegativeInvoker={param($fakeKit,$runner,$fakeCommit,$artifact,$fakeBundle,$stateFile,$timeout)throw 'negative must be gated after failed Prepare'}
+        $typed=$false;try{Invoke-QualificationDispatcher -QualificationRoot $root|Out-Null}catch [M4QualificationBlocked]{$typed=$true};$blocked=Read-QualificationState $root;Need($typed-and$blocked.state-ceq'Blocked'-and@($blocked.events|Where-Object{$_.kind-ceq'Blocked'-and$_.reason-clike'*negative fixture preparation failed*'}).Count-eq1-and$script:FailurePrepareCalls-eq1)"dispatcher $Failure was not durably blocked"
+        $before=$script:FailurePrepareCalls;$retry=$false;try{Invoke-QualificationDispatcher -QualificationRoot $root|Out-Null}catch [M4QualificationBlocked]{$retry=$true};Need($retry-and$script:FailurePrepareCalls-eq$before-and(Read-QualificationState $root).state-ceq'Blocked')"blocked dispatcher retried Prepare after $Failure"
+    } finally {$script:QualificationKitProvider=$saved.Kit;$script:FactsProvider=$saved.Facts;$script:PrepareInvoker=$saved.Prepare;$script:DriverInvoker=$saved.Driver;$script:NegativeInvoker=$saved.Negative;$script:BootProbeProvider=$saved.Probe;$script:SystemEventProvider=$saved.Events;Remove-Variable -Scope Script -Name FailurePrepareCalls -ErrorAction SilentlyContinue;if([IO.Directory]::Exists($root)){Remove-Item -LiteralPath $root -Recurse -Force}}
+}
+
 function Invoke-SelfTest {
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-guest-qualification-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($scratch) | Out-Null
@@ -1169,6 +1197,7 @@ function Invoke-SelfTest {
         Assert-InitialGuestFacts -Facts $goodFacts | Out-Null
         Invoke-MissingDriverIntegrationSelfTest -Scratch $scratch -GoodFacts $goodFacts
         Invoke-QualificationDispatcherHappyFlowSelfTest -Scratch $scratch -GoodFacts $goodFacts
+        Invoke-QualificationDispatcherFailureMatrixSelfTest -Scratch $scratch -GoodFacts $goodFacts
         # Dispatcher same-boot flow: use a complete fake qualification kit and
         # invoke the production dispatcher, rather than calling its recovery
         # helper directly.  No guest-facing seam may run before the boot gate.
@@ -1568,6 +1597,6 @@ if ($Status) {
     catch [M4QualificationBlocked] { [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }
 }
 
-try { Invoke-QualificationRun -QualificationRoot $QualificationRoot; exit 0 }
-catch [M4QualificationBlocked] { try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $_.Exception.Message } catch [M4QualificationBlocked] { [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }; [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }
+try { Invoke-QualificationDispatcher -QualificationRoot $QualificationRoot; exit 0 }
+catch [M4QualificationBlocked] { [Console]::Error.WriteLine("BLOCKED: $($_.Exception.Message)"); exit 77 }
 catch { $message="unexpected qualification failure: $($_.Exception.Message)";try { Write-BlockedQualificationState -QualificationRoot $QualificationRoot -Reason $message } catch { $message="$message; durable Blocked persistence failed: $($_.Exception.Message)" };[Console]::Error.WriteLine("BLOCKED: $message");exit 77 }
