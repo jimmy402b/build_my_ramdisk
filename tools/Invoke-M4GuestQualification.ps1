@@ -788,15 +788,18 @@ function Invoke-FormalCreateSequence {
 }
 
 function Invoke-FormalRecoverySequence {
-    param([Parameter(Mandatory = $true)][string]$QualificationRoot, [Parameter(Mandatory = $true)][string]$Kit, [Parameter(Mandatory = $true)][string]$Commit, [Parameter(Mandatory = $true)]$PostFacts)
+    param([Parameter(Mandatory = $true)][string]$QualificationRoot, [Parameter(Mandatory = $true)][string]$Kit, [Parameter(Mandatory = $true)][string]$Commit, [Parameter(Mandatory = $true)]$PostFacts, [Parameter(Mandatory = $true)]$FullFacts)
     $state = Read-QualificationState $QualificationRoot; $arm = Get-CrashResetArmEvent $state
     [DateTimeOffset]$postBoot=[DateTimeOffset]::MinValue; [DateTimeOffset]$armBoot=[DateTimeOffset]::MinValue
     Need ([DateTimeOffset]::TryParse([string]$PostFacts.boot_utc,[ref]$postBoot) -and [DateTimeOffset]::TryParse([string]$arm.boot_utc,[ref]$armBoot)) 'reset boot timestamp is invalid'
     if ($postBoot -le $armBoot) { Write-Output 'RESET STILL REQUIRED: CrashReset'; return 10 }
     Assert-UnexpectedReset -Armed ([ordered]@{boot_utc=$arm.boot_utc;armed_utc=$arm.armed_utc}) -Post $PostFacts
+    Assert-InitialGuestFacts -Facts $FullFacts | Out-Null
+    Need ($null -eq (Get-Process -Id $arm.killed_pid -ErrorAction SilentlyContinue)) 'armed CreateKill PID is still present after reset'
     $evidencePath = Join-Path $QualificationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'; Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence is not immutable'
     $runner = Join-Path $QualificationRoot 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'; $artifact = Join-Path $QualificationRoot 'formal\Release\myrd.exe'; $bundle = Join-Path $QualificationRoot 'formal\bundle'; $formalState = Join-Path $QualificationRoot 'evidence\formal-state.json'
     Assert-QualificationKit -Kit $Kit -ExpectedCommit $Commit | Out-Null
+    Need ((@(Get-TreeInventory $bundle) -join "`n") -ceq (@($arm.formal_bundle_inventory) -join "`n")) 'formal bundle inventory changed after reset'
     $next = New-QualificationState $state.qualification_id 'CrashResetObserved' (([uint64]$state.sequence)+1) @($state.events); Write-QualificationState $QualificationRoot $next
     $recoverResult = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase RecoverShutdown -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged; Need ($recoverResult.child_exit -eq 0 -and [string]::IsNullOrEmpty($recoverResult.stderr)) 'formal RecoverShutdown failed'
     $create=Get-Content $evidencePath -Raw -Encoding UTF8|ConvertFrom-Json; $recoverPath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-RecoverShutdown.v1.json'; Need([IO.File]::Exists($recoverPath)) 'RecoverShutdown evidence is missing'; $recover=Get-Content $recoverPath -Raw -Encoding UTF8|ConvertFrom-Json; Assert-RecoverShutdownEvidence $recover $create $Commit $artifact $bundle
@@ -812,7 +815,7 @@ function Invoke-QualificationRun {
     Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null
     if (-not [IO.Directory]::Exists($QualificationRoot)) { $facts = Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $kit; Initialize-QualificationRoot -QualificationRoot $QualificationRoot -SourceKit $kit -ExpectedCommit $commit -Facts $facts | Out-Null; Write-QualificationState $QualificationRoot (New-QualificationState ([Guid]::NewGuid().ToString('N')) 'Initial' 0 @()); $initial = Read-QualificationState $QualificationRoot; Write-QualificationState $QualificationRoot (New-QualificationState $initial.qualification_id 'FormalCreateReady' 1 @()); Invoke-FormalCreateSequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
     Assert-QualificationKit -Kit (Join-Path $QualificationRoot 'kit') -ExpectedCommit $commit | Out-Null; $state = Read-QualificationState $QualificationRoot
-    if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post; if ($code -eq 10) { exit 10 }; return }
+    if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post -FullFacts $facts; if ($code -eq 10) { exit 10 }; return }
     throw [M4QualificationBlocked]::new("qualification Run cannot resume state $($state.state)")
 }
 
@@ -1045,7 +1048,7 @@ function Invoke-SelfTest {
                 Need $typed "CreateKill mutation $mutation was accepted"
             }
             $awaiting = Read-QualificationState $orchestrationRoot; $arm = Get-CrashResetArmEvent $awaiting; Need ($awaiting.state -ceq 'AwaitingCrashReset' -and $arm.killed_pid -eq 1234) 'formal CreateKill did not durably arm reset'
-            $beforeRecoveryCalls = $recordedArgv.Count; $stillRequired = Invoke-FormalRecoverySequence -QualificationRoot $orchestrationRoot -Kit (Join-Path $orchestrationRoot 'kit') -Commit ('e'*40) -PostFacts ([ordered]@{boot_utc=$goodFacts.boot_utc;system_events=@()})
+            $beforeRecoveryCalls = $recordedArgv.Count; $stillRequired = Invoke-FormalRecoverySequence -QualificationRoot $orchestrationRoot -Kit (Join-Path $orchestrationRoot 'kit') -Commit ('e'*40) -PostFacts ([ordered]@{boot_utc=$goodFacts.boot_utc;system_events=@()}) -FullFacts $goodFacts
             Need ($stillRequired -eq 10 -and $recordedArgv.Count -eq $beforeRecoveryCalls) 'reset-still-required ran recovery or returned the wrong code'
         }
         finally { $script:ProcessInvoker = $savedInvoker; $script:FactsProvider = $savedFactsProvider; $script:QualificationObserver = $savedObserver }
