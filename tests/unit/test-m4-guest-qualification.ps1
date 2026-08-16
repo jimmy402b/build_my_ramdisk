@@ -40,6 +40,9 @@ Need ($controllerText.Contains('$script:ProcessInvoker')) 'guest qualification c
 Need ($controllerText.Contains('RESET STILL REQUIRED: CrashReset')) 'guest qualification controller must require the VMware reset'
 Need ($controllerText.Contains('CRASH RESET ARMED')) 'guest qualification controller must arm crash reset explicitly'
 Need ($controllerText.Contains("'schema', 'qualification_id', 'state', 'sequence', 'events'")) 'qualification state schema must include events'
+Need ($controllerText.Contains('$script:QualificationObserver')) 'guest qualification controller must expose durable qualification hooks'
+Need ($controllerText.Contains('Assert-CreateKillEvidence')) 'guest qualification controller must validate real CreateKill evidence'
+Need ($controllerText.Contains('Get-SystemResetEvents')) 'guest qualification controller must sample reset events independently'
 $tempCleanupFinally = @($controllerAst.FindAll({
     param($node)
     $node -is [Management.Automation.Language.TryStatementAst] -and

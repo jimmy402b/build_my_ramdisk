@@ -306,7 +306,9 @@ function Write-QualificationState {
             [IO.File]::Move($tempPath, $statePath)
         }
         $stateCommitted = $true
+        & $script:QualificationObserver 'WriteState'
         Append-QualificationEvent -QualificationRoot $root -State $State
+        & $script:QualificationObserver 'FlushEvent'
         $outcome = 'CommitSucceeded'
     }
     catch {
@@ -497,6 +499,12 @@ $script:ProcessInvoker = {
     param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
     Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
 }
+$script:QualificationObserver = { param([string]$Hook) }
+$script:FactsProvider = { param([string]$QualificationRoot, [string]$Kit) Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $Kit }
+$script:SystemEventProvider = {
+    param([string]$ArmedUtc)
+    @(Get-WinEvent -FilterHashtable @{ LogName='System'; Id=@(41,6008); StartTime=([DateTime]::Parse($ArmedUtc).ToLocalTime()) } -ErrorAction Stop | ForEach-Object { [ordered]@{ id=[int]$_.Id; time_utc=$_.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ') } })
+}
 
 function ConvertFrom-AimQueryJson {
     param([Parameter(Mandatory = $true)][string]$Json)
@@ -631,6 +639,28 @@ function Get-QualificationFileHash {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
 }
 
+function Assert-LifecycleEvidenceIdentity {
+    param([Parameter(Mandatory=$true)]$Evidence,[Parameter(Mandatory=$true)][string]$Phase,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)][string]$Artifact,[Parameter(Mandatory=$true)][string]$Bundle)
+    $required=@('schema','phase','source_commit','executable_path','executable_sha256','bundle_path','drive_letter','argv','constants','boot_identity','baseline_inventory','inventory_after','hashes','generation','exit_codes','status')
+    foreach($name in $required){Need ($Evidence.PSObject.Properties.Name -ccontains $name) "lifecycle evidence is missing $name"}
+    Need ($Evidence.schema -ceq 'myrd.m4.lifecycle.v1' -and $Evidence.phase -ceq $Phase -and $Evidence.source_commit -ceq $Commit) 'lifecycle evidence identity is invalid'
+    Need ($Evidence.executable_path -ceq [IO.Path]::GetFullPath($Artifact) -and $Evidence.executable_sha256 -ceq (Get-QualificationFileHash $Artifact)) 'lifecycle executable identity is invalid'
+    Need ($Evidence.bundle_path -ceq [IO.Path]::GetFullPath($Bundle) -and $Evidence.drive_letter -ceq 'R') 'lifecycle bundle identity is invalid'
+}
+function Assert-CreateKillEvidence {
+    param([Parameter(Mandatory=$true)]$Evidence,[Parameter(Mandatory=$true)][string]$Commit,[Parameter(Mandatory=$true)][string]$Artifact,[Parameter(Mandatory=$true)][string]$Bundle)
+    Assert-LifecycleEvidenceIdentity $Evidence 'CreateKill' $Commit $Artifact $Bundle
+    Need ($Evidence.status -ceq 'REBOOT_REQUIRED_EXPECTED' -and $Evidence.pid -gt 0 -and $Evidence.kill.pid -eq $Evidence.pid -and $Evidence.kill.killed -eq $true -and $Evidence.kill.exit -ne 0 -and $Evidence.kill.exit -ne 259) 'CreateKill kill evidence is invalid'
+    Need ($Evidence.ready_observed.filesystem -ceq 'NTFS' -and $Evidence.ready_observed.partition_style -ceq 'GPT' -and $Evidence.ready_observed.generation -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$Evidence.ready_observed.volume_guid)) 'CreateKill ready evidence is invalid'
+    Need ($Evidence.checkpoint_observed.generation -gt $Evidence.ready_observed.generation -and $Evidence.generation -eq $Evidence.checkpoint_observed.generation) 'CreateKill checkpoint evidence is invalid'
+    Need ($Evidence.hashes.'A.txt' -cmatch '^[0-9A-Fa-f]{64}$') 'CreateKill A hash is invalid'
+    Need (@($Evidence.inventory_after.aim_stable).Count -gt @($Evidence.baseline_inventory.aim_stable).Count) 'CreateKill AIM inventory is invalid'
+}
+function Get-SystemResetEvents {
+    param([Parameter(Mandatory=$true)][string]$ArmedUtc)
+    return @(& $script:SystemEventProvider $ArmedUtc)
+}
+
 function Invoke-FormalRunnerCapture {
     param(
         [Parameter(Mandatory = $true)][string]$Kit,
@@ -648,10 +678,17 @@ function Invoke-FormalRunnerCapture {
     $argv = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$capture,'-Mode','Runner','-ChildFile',$Runner,'-SourceCommit',$Commit,'-Phase',$Phase,'-Executable',$Artifact,'-Bundle',$FormalBundle,'-DriveLetter','R','-StateFile',$FormalState,'-TimeoutMs',[string]$TimeoutMs)
     if ($SafetyAcknowledged) { $argv += '-SafetyAcknowledged' }
     $result = & $script:ProcessInvoker 'powershell.exe' $argv $TimeoutMs
-    Need ($null -ne $result -and -not $result.timed_out -and $result.exit -eq 0 -and [string]::IsNullOrEmpty([string]$result.stderr)) 'formal runner capture failed'
+    $outerExpected=@('pid','exit','timed_out','stdout','stderr','started_utc','ended_utc')
+    Need ($null -ne $result -and ((Get-ExactPropertyNames $result) -join '|' -ceq ($outerExpected -join '|'))) 'formal runner outer result schema is invalid'
+    Need (($result.pid -is [int]) -or ($result.pid -is [long])) 'formal runner outer pid is invalid'
+    Need (($result.exit -is [int]) -or ($result.exit -is [long])) 'formal runner outer exit is invalid'
+    Need ($result.timed_out -is [bool] -and $result.stdout -is [string] -and $result.stderr -is [string] -and $result.started_utc -is [string] -and $result.ended_utc -is [string]) 'formal runner outer result types are invalid'
+    Need (-not $result.timed_out -and $result.exit -eq 0 -and [string]::IsNullOrEmpty($result.stderr)) 'formal runner capture failed'
     try { $captureRecord = ([string]$result.stdout | ConvertFrom-Json) } catch { throw [M4QualificationBlocked]::new('formal runner capture JSON is invalid') }
-    foreach ($name in @('child_exit','child_stdout','child_stderr')) { Need ($captureRecord.PSObject.Properties.Name -ccontains $name) "formal runner capture is missing $name" }
-    Need (($captureRecord.child_exit -is [int]) -or ($captureRecord.child_exit -is [long])) 'formal runner child_exit is invalid'
+    $captureExpected=@('mode','child_pid','start_utc','end_utc','child_exit','child_stdout','child_stderr')
+    Need (((Get-ExactPropertyNames $captureRecord) -join '|' -ceq ($captureExpected -join '|'))) 'formal runner capture schema is invalid'
+    Need ($captureRecord.mode -is [string] -and $captureRecord.mode -ceq 'Runner' -and (($captureRecord.child_pid -is [int]) -or ($captureRecord.child_pid -is [long])) -and $captureRecord.child_pid -gt 0) 'formal runner capture identity is invalid'
+    Need ($captureRecord.start_utc -is [string] -and $captureRecord.end_utc -is [string] -and $captureRecord.child_stdout -is [string] -and $captureRecord.child_stderr -is [string] -and (($captureRecord.child_exit -is [int]) -or ($captureRecord.child_exit -is [long]))) 'formal runner capture types are invalid'
     return [pscustomobject]@{ phase = $Phase; child_exit = [int]$captureRecord.child_exit; stdout = [string]$captureRecord.child_stdout; stderr = [string]$captureRecord.child_stderr; argv = @($argv) }
 }
 
@@ -668,9 +705,15 @@ function New-QualificationState {
 }
 
 function New-CrashResetArmEvent {
-    param([Parameter(Mandatory = $true)]$Facts, [Parameter(Mandatory = $true)][string]$EvidencePath, [Parameter(Mandatory = $true)][int64]$KilledPid, [Parameter(Mandatory = $true)][string[]]$BundleInventory)
+    param([Parameter(Mandatory = $true)]$Facts, [Parameter(Mandatory = $true)][string]$EvidencePath, [Parameter(Mandatory = $true)][int64]$KilledPid, [AllowEmptyCollection()][string[]]$BundleInventory)
     Need ($KilledPid -gt 0) 'formal CreateKill did not report a killed PID'
     [ordered]@{ kind = 'CrashResetArm'; boot_utc = [string]$Facts.boot_utc; armed_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'); evidence_sha256 = Get-QualificationFileHash $EvidencePath; killed_pid = $KilledPid; formal_bundle_inventory = @($BundleInventory); residual_aim_identity = @($Facts.aim_ids) }
+}
+
+function Get-TreeInventory {
+    param([Parameter(Mandatory=$true)][string]$Root)
+    if (-not [IO.Directory]::Exists($Root)) { return @() }
+    return @(Get-ChildItem -LiteralPath $Root -Force -Recurse | Sort-Object FullName | ForEach-Object { if ($_.PSIsContainer) { 'D|' + $_.FullName.Substring($Root.Length) } else { 'F|' + $_.FullName.Substring($Root.Length) + '|' + $_.Length + '|' + (Get-QualificationFileHash $_.FullName) } })
 }
 
 function Get-CrashResetArmEvent {
@@ -689,28 +732,34 @@ function Invoke-FormalCreateSequence {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot, [Parameter(Mandatory = $true)][string]$Kit, [Parameter(Mandatory = $true)][string]$Commit, [Parameter(Mandatory = $true)]$Facts)
     $runner = Join-Path $QualificationRoot 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'; $artifact = Join-Path $QualificationRoot 'formal\Release\myrd.exe'; $bundle = Join-Path $QualificationRoot 'formal\bundle'; $formalState = Join-Path $QualificationRoot 'evidence\formal-state.json'
     $before = if ([IO.File]::Exists((Get-QualificationStatePath $QualificationRoot)) ) { Get-QualificationFileHash (Get-QualificationStatePath $QualificationRoot) } else { '' }
+    $rootBefore = @(Get-TreeInventory $QualificationRoot); $bundleBefore = @(Get-TreeInventory $bundle); $factsBefore = $Facts | ConvertTo-Json -Compress -Depth 8
     foreach ($phase in @('CreateKill','RecoverShutdown','OfflineCompact','Negative')) {
         $result = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase $phase -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 20000
         Assert-FormalNoAcknowledgement -Result $result -Phase $phase
         $after = if ([IO.File]::Exists((Get-QualificationStatePath $QualificationRoot))) { Get-QualificationFileHash (Get-QualificationStatePath $QualificationRoot) } else { '' }
         Need ($before -ceq $after) "formal $phase no-ack changed qualification state"
+        Need ((@(Get-TreeInventory $QualificationRoot) -join "`n") -ceq ($rootBefore -join "`n") -and (@(Get-TreeInventory $bundle) -join "`n") -ceq ($bundleBefore -join "`n")) "formal $phase no-ack changed files"
+        $factsAfter = (& $script:FactsProvider $QualificationRoot $Kit) | ConvertTo-Json -Compress -Depth 8
+        Need ($factsAfter -ceq $factsBefore) "formal $phase no-ack changed guest facts"
     }
     $create = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase CreateKill -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged
     Need ($create.child_exit -eq 0 -and [string]::IsNullOrEmpty($create.stderr)) 'formal CreateKill failed'
     $evidencePath = Join-Path $QualificationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'; Need ([IO.File]::Exists($evidencePath)) 'formal CreateKill evidence is missing'
     $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Need ($evidence.schema -ceq 'myrd.m4.lifecycle.v1' -and $evidence.status -ceq 'REBOOT_REQUIRED_EXPECTED') 'formal CreateKill evidence status is invalid'
-    $killed = [int64]$evidence.killed_pid; $event = New-CrashResetArmEvent -Facts $Facts -EvidencePath $evidencePath -KilledPid $killed -BundleInventory @($evidence.formal_bundle_inventory)
+    Assert-CreateKillEvidence -Evidence $evidence -Commit $Commit -Artifact $artifact -Bundle $bundle
+    $killed = [int64]$evidence.pid; $event = New-CrashResetArmEvent -Facts $Facts -EvidencePath $evidencePath -KilledPid $killed -BundleInventory @(Get-TreeInventory $bundle)
     $previous = Read-QualificationState $QualificationRoot; $next = New-QualificationState $previous.qualification_id 'AwaitingCrashReset' (([uint64]$previous.sequence) + 1) @($event)
-    Write-QualificationState -QualificationRoot $QualificationRoot -State $next; $reRead = Read-QualificationState $QualificationRoot; $arm = Get-CrashResetArmEvent $reRead
-    Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence hash changed'
-    Write-Output 'CRASH RESET ARMED'
+    Write-QualificationState -QualificationRoot $QualificationRoot -State $next; $reRead = Read-QualificationState $QualificationRoot; & $script:QualificationObserver 'ReReadState'; $arm = Get-CrashResetArmEvent $reRead
+    Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence hash changed'; & $script:QualificationObserver 'VerifyEvidenceHash'
+    & $script:QualificationObserver 'PrintCrashResetArmed'; Write-Output 'CRASH RESET ARMED'
 }
 
 function Invoke-FormalRecoverySequence {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot, [Parameter(Mandatory = $true)][string]$Kit, [Parameter(Mandatory = $true)][string]$Commit, [Parameter(Mandatory = $true)]$PostFacts)
     $state = Read-QualificationState $QualificationRoot; $arm = Get-CrashResetArmEvent $state
-    if ([string]$PostFacts.boot_utc -ceq [string]$arm.boot_utc) { Write-Output 'RESET STILL REQUIRED: CrashReset'; return 10 }
+    [DateTimeOffset]$postBoot=[DateTimeOffset]::MinValue; [DateTimeOffset]$armBoot=[DateTimeOffset]::MinValue
+    Need ([DateTimeOffset]::TryParse([string]$PostFacts.boot_utc,[ref]$postBoot) -and [DateTimeOffset]::TryParse([string]$arm.boot_utc,[ref]$armBoot)) 'reset boot timestamp is invalid'
+    if ($postBoot -le $armBoot) { Write-Output 'RESET STILL REQUIRED: CrashReset'; return 10 }
     Assert-UnexpectedReset -Armed ([ordered]@{boot_utc=$arm.boot_utc;armed_utc=$arm.armed_utc}) -Post $PostFacts
     $evidencePath = Join-Path $QualificationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'; Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence is not immutable'
     $runner = Join-Path $QualificationRoot 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'; $artifact = Join-Path $QualificationRoot 'formal\Release\myrd.exe'; $bundle = Join-Path $QualificationRoot 'formal\bundle'; $formalState = Join-Path $QualificationRoot 'evidence\formal-state.json'
@@ -725,7 +774,7 @@ function Invoke-QualificationRun {
     $kit = Split-Path -Parent $PSCommandPath; $manifest = Get-Content -LiteralPath (Join-Path $kit 'qualification-kit.json') -Raw -Encoding UTF8 | ConvertFrom-Json; $commit = [string]$manifest.source_commit
     if (-not [IO.Directory]::Exists($QualificationRoot)) { $facts = Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $kit; Initialize-QualificationRoot -QualificationRoot $QualificationRoot -SourceKit $kit -ExpectedCommit $commit -Facts $facts | Out-Null; Write-QualificationState $QualificationRoot (New-QualificationState ([Guid]::NewGuid().ToString('N')) 'Initial' 0 @()); $initial = Read-QualificationState $QualificationRoot; Write-QualificationState $QualificationRoot (New-QualificationState $initial.qualification_id 'FormalCreateReady' 1 @()); Invoke-FormalCreateSequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
     $state = Read-QualificationState $QualificationRoot
-    if ($state.state -ceq 'AwaitingCrashReset') { $post = Get-GuestFacts -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit'); $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post; if ($code -eq 10) { exit 10 }; return }
+    if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post; if ($code -eq 10) { exit 10 }; return }
     throw [M4QualificationBlocked]::new("qualification Run cannot resume state $($state.state)")
 }
 
@@ -905,19 +954,23 @@ function Invoke-SelfTest {
         Write-QualificationState $orchestrationRoot (New-QualificationState 'orchestration-q' 'FormalCreateReady' 1 @())
         $recordedArgv = [Collections.Generic.List[object]]::new()
         $savedInvoker = $script:ProcessInvoker
+        $savedFactsProvider = $script:FactsProvider
         try {
+            $script:FactsProvider = { param($Root,$Kit) $goodFacts }
             $script:ProcessInvoker = {
                 param($FilePath, $Arguments, $TimeoutMs)
                 $recordedArgv.Add(@($Arguments))
                 $phase = $Arguments[($Arguments.IndexOf('-Phase') + 1)]
                 $ack = $Arguments -ccontains '-SafetyAcknowledged'
                 if ($ack -and $phase -ceq 'CreateKill') {
-                    $evidence = [ordered]@{ schema='myrd.m4.lifecycle.v1'; status='REBOOT_REQUIRED_EXPECTED'; killed_pid=[int64]1234; formal_bundle_inventory=@('bundle'); checkpoint='checkpoint'; A_sha256=('A'*64) }
+                    $artifactPath = Join-Path $orchestrationRoot 'formal\Release\myrd.exe'; $bundlePath = Join-Path $orchestrationRoot 'formal\bundle'
+                    $baseInventory=[ordered]@{aim_stable=@()}; $afterInventory=[ordered]@{aim_stable=@('AIM|fixture')}
+                    $evidence = [ordered]@{ schema='myrd.m4.lifecycle.v1'; phase='CreateKill'; source_commit=('e'*40); executable_path=[IO.Path]::GetFullPath($artifactPath); executable_sha256=(Get-QualificationFileHash $artifactPath); bundle_path=[IO.Path]::GetFullPath($bundlePath); drive_letter='R'; argv=@(); constants=[ordered]@{}; boot_identity=$goodFacts.boot_utc; baseline_inventory=$baseInventory; inventory_after=$afterInventory; hashes=[ordered]@{'A.txt'=('A'*64)}; generation=[uint64]2; exit_codes=[ordered]@{run=1}; status='REBOOT_REQUIRED_EXPECTED'; pid=[int64]1234; kill=[ordered]@{pid=[int64]1234;killed=$true;exit=1}; ready_observed=[ordered]@{generation=[uint64]1;volume_guid='V';filesystem='NTFS';partition_style='GPT'}; checkpoint_observed=[ordered]@{generation=[uint64]2} }
                     [IO.File]::WriteAllText((Join-Path $orchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'), ($evidence | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
                 }
                 $childExit = if ($ack) { 0 } else { 77 }
                 $childOut = if ($ack) { '' } else { "M4 lifecycle $phase BLOCKED: SafetyAcknowledged is required.`r`n" }
-                [ordered]@{ pid=1; exit=0; timed_out=$false; stdout=([ordered]@{child_exit=$childExit;child_stdout=$childOut;child_stderr=''} | ConvertTo-Json -Compress); stderr='' }
+                [ordered]@{ pid=1; exit=0; timed_out=$false; stdout=([ordered]@{mode='Runner';child_pid=2;start_utc='2026-08-16T00:00:00Z';end_utc='2026-08-16T00:00:01Z';child_exit=$childExit;child_stdout=$childOut;child_stderr=''} | ConvertTo-Json -Compress); stderr=''; started_utc='2026-08-16T00:00:00Z'; ended_utc='2026-08-16T00:00:01Z' }
             }
             Invoke-FormalCreateSequence -QualificationRoot $orchestrationRoot -Kit (Join-Path $orchestrationRoot 'kit') -Commit ('e'*40) -Facts $goodFacts | Out-Null
             Need ($recordedArgv.Count -eq 5) 'formal orchestration did not make exactly four no-ack calls plus CreateKill'
@@ -928,7 +981,7 @@ function Invoke-SelfTest {
             $beforeRecoveryCalls = $recordedArgv.Count; $stillRequired = Invoke-FormalRecoverySequence -QualificationRoot $orchestrationRoot -Kit (Join-Path $orchestrationRoot 'kit') -Commit ('e'*40) -PostFacts ([ordered]@{boot_utc=$goodFacts.boot_utc;system_events=@()})
             Need ($stillRequired -eq 10 -and $recordedArgv.Count -eq $beforeRecoveryCalls) 'reset-still-required ran recovery or returned the wrong code'
         }
-        finally { $script:ProcessInvoker = $savedInvoker }
+        finally { $script:ProcessInvoker = $savedInvoker; $script:FactsProvider = $savedFactsProvider }
 
         $statePath = Join-Path $scratch 'state.json'
         $eventsPath = Join-Path $scratch 'events.jsonl'
