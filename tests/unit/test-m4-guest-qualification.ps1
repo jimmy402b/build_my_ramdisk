@@ -124,16 +124,65 @@ function Read-Utf8NoBomText {
     return [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
 }
 
-function Get-ProductionCommandAsts {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    $tokens = $null; $errors = $null
-    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
-    Need ($errors.Count -eq 0) "$Path must parse for the static safety contract"
-    $excluded = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -match '(?i)(selftest|fixture)' }, $true))
-    return @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true) | Where-Object {
-        $offset = $_.Extent.StartOffset
-        -not @($excluded | Where-Object { $offset -ge $_.Extent.StartOffset -and $offset -lt $_.Extent.EndOffset }).Count
-    })
+function Test-OrdinalIgnoreCaseMember {
+    param([Parameter(Mandatory = $true)][string[]]$Values, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Candidate)
+    return (@($Values | Where-Object { [string]::Equals($_, $Candidate, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0)
+}
+
+function Test-SafetyOffsetExcluded {
+    param([Parameter(Mandatory = $true)][int]$Offset, [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$ExcludedFunctions)
+    return (@($ExcludedFunctions | Where-Object { $Offset -ge $_.Extent.StartOffset -and $Offset -lt $_.Extent.EndOffset }).Count -gt 0)
+}
+
+function Get-ProductionSafetyNodes {
+    param([Parameter(Mandatory = $true)]$Ast, [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ExcludedFunctionNames, [Parameter(Mandatory = $true)][string]$Label)
+    $functions = @($Ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true))
+    $excluded = @()
+    foreach ($name in $ExcludedFunctionNames) {
+        $matches = @($functions | Where-Object { [string]::Equals($_.Name, $name, [StringComparison]::Ordinal) })
+        Need ($matches.Count -eq 1) "static safety exclusion must name one audited self-test function in ${Label}: $name"
+        $excluded += $matches[0]
+    }
+    foreach ($name in $ExcludedFunctionNames) {
+        foreach ($call in @($Ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and [string]::Equals($node.GetCommandName(), $name, [StringComparison]::OrdinalIgnoreCase) }, $true))) {
+            $caller = @($functions | Where-Object { $call.Extent.StartOffset -ge $_.Extent.StartOffset -and $call.Extent.StartOffset -lt $_.Extent.EndOffset } | Sort-Object { $_.Extent.EndOffset - $_.Extent.StartOffset } | Select-Object -First 1)
+            if ($caller.Count -eq 1) {
+                Need (Test-SafetyOffsetExcluded -Offset $caller[0].Extent.StartOffset -ExcludedFunctions $excluded) "static safety exclusion has a production caller in ${Label}: $name"
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Commands = @($Ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true) | Where-Object { -not (Test-SafetyOffsetExcluded -Offset $_.Extent.StartOffset -ExcludedFunctions $excluded) })
+        Strings = @($Ast.FindAll({ param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -or $node -is [Management.Automation.Language.ExpandableStringExpressionAst] }, $true) | Where-Object { -not (Test-SafetyOffsetExcluded -Offset $_.Extent.StartOffset -ExcludedFunctions $excluded) })
+    }
+}
+
+function Assert-ProductionSafetyAst {
+    param([Parameter(Mandatory = $true)]$Ast, [Parameter(Mandatory = $true)][string]$Label, [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ExcludedFunctionNames)
+    $forbiddenCommands = @('ssh.exe', 'scp.exe', 'vmrun', 'shutdown.exe', 'Restart-Computer', 'Stop-Computer', 'Register-ScheduledTask', 'schtasks', 'Format-Volume', 'Initialize-Disk', 'New-Partition', 'remove_device')
+    $removalAliases = @('Remove-Item', 'rm', 'ri', 'del', 'erase', 'rmdir')
+    $nodes = Get-ProductionSafetyNodes -Ast $Ast -ExcludedFunctionNames $ExcludedFunctionNames -Label $Label
+    foreach ($command in $nodes.Commands) {
+        $name = [string]$command.GetCommandName()
+        $literal = $null
+        if ([string]$command.InvocationOperator -eq 'Ampersand' -and $command.CommandElements.Count -gt 0) {
+            $first = $command.CommandElements[0]
+            if ($first -is [Management.Automation.Language.StringConstantExpressionAst] -or $first -is [Management.Automation.Language.ExpandableStringExpressionAst]) { $literal = [string]$first.Value }
+        }
+        if ($null -ne $literal -and (Test-OrdinalIgnoreCaseMember -Values ($forbiddenCommands + $removalAliases) -Candidate $literal)) {
+            throw "static safety rejects literal call-operator token $literal in $Label"
+        }
+        if (Test-OrdinalIgnoreCaseMember -Values $forbiddenCommands -Candidate $name) {
+            throw "static safety rejects direct command $name in $Label"
+        }
+        if (Test-OrdinalIgnoreCaseMember -Values $removalAliases -Candidate $name) {
+            $targetsRoot = @($command.FindAll({ param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and [string]::Equals($node.VariablePath.UserPath, 'QualificationRoot', [StringComparison]::OrdinalIgnoreCase) }, $true)).Count -gt 0
+            if ($targetsRoot) { throw "static safety rejects qualification-root removal alias $name in $Label" }
+        }
+    }
+    foreach ($stringNode in $nodes.Strings) {
+        if ([string]$stringNode.Value -match '(?i)(password|private\s*key)') { throw "static safety rejects secret-bearing literal in $Label" }
+    }
 }
 
 $readmePath = Join-Path $SourceRoot 'README.md'
@@ -157,6 +206,18 @@ foreach ($phrase in @(
 }
 Need ($readme.Contains(('powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualification.ps1 -QualificationRoot <' + (From-QualificationUtf8Base64 '5pys5py6TlRGU+e7neWvuei3r+W+hA==') + '>'))) 'README guest qualification command is not the real controller command'
 Need (-not ($readme -match '(?m)^powershell\.exe .*Invoke-M4GuestQualification\.ps1 .*\s-Run(?:\s|$)')) 'README documents the nonexistent -Run controller parameter'
+foreach ($requiredText in @('New-M4GuestQualificationKit.ps1', '-SourceRoot $SourceRoot', '-Artifact $Artifact', '-Query $Query', '-OutputDirectory $OutputDirectory', "Join-Path `$SourceRoot 'out\build\msvc\src\Release\myrd.exe'", "Join-Path `$SourceRoot 'out\build\msvc\tests\Release\myrd_m4_aim_query.exe'", 'Test-Path -LiteralPath', 'Get-FileHash -LiteralPath', 'qualification-kit-')) {
+    Need ($readme.Contains($requiredText)) "README host kit command contract is missing $requiredText"
+}
+$packagerPath = Join-Path $SourceRoot 'tools\New-M4GuestQualificationKit.ps1'
+$packagerTokens = $null; $packagerErrors = $null
+$packagerAst = [Management.Automation.Language.Parser]::ParseFile($packagerPath, [ref]$packagerTokens, [ref]$packagerErrors)
+Need ($packagerErrors.Count -eq 0) 'qualification kit packager must parse for README parameter validation'
+$packagerParameterNames = @($packagerAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+foreach ($parameterName in @('SourceRoot', 'Artifact', 'Query', 'OutputDirectory')) {
+    Need ($packagerParameterNames -ccontains $parameterName) "qualification kit packager parameter is missing: $parameterName"
+}
+Need ($readme -notmatch '(?i)C:\\Users\\') 'README must not hard-code a local user path'
 Need ($readme -match '(?s)Reset 1.*CreateKill.*Reset 2.*live power-cut.*Reset 3.*phdskmnt') 'README does not provide the ordered three-reset UI table'
 Need ($readme -match ((From-QualificationUtf8Base64 '5LiN5b6X6aKd5aSW') + '.*reset')) 'README does not prohibit extra resets'
 Need ($readme -match ((From-QualificationUtf8Base64 '5LiN5b6X') + '.*Windows.*' + (From-QualificationUtf8Base64 '5q2j5bi45YWz5py6'))) 'README does not prohibit normal Windows shutdown'
@@ -169,17 +230,35 @@ Need ($paramNames -ccontains 'QualificationRoot') 'controller parameter contract
 Need ($paramNames -ccontains 'Status') 'controller parameter contract is missing Status'
 Need (-not ($paramNames -ccontains 'Run')) 'controller unexpectedly defines a Run parameter; README command contract must be reviewed'
 
-$forbiddenCommands = @('ssh.exe', 'scp.exe', 'vmrun', 'shutdown.exe', 'Restart-Computer', 'Stop-Computer', 'Register-ScheduledTask', 'schtasks', 'Format-Volume', 'Initialize-Disk', 'New-Partition', 'remove_device')
-$safetyScripts = @($controller, (Join-Path $SourceRoot 'tests\e2e\Invoke-M4LivePowerCut.ps1'), (Join-Path $SourceRoot 'tools\New-M4GuestQualificationKit.ps1'))
-foreach ($scriptPath in $safetyScripts) {
-    foreach ($command in Get-ProductionCommandAsts -Path $scriptPath) {
-        $name = $command.GetCommandName()
-        Need (-not ($forbiddenCommands -ccontains $name)) "production safety contract rejects direct command $name in $scriptPath"
-        if ($name -ceq 'Remove-Item') {
-            Need (-not ($command.Extent.Text -match '\$QualificationRoot\b')) "production safety contract rejects Remove-Item QualificationRoot in $scriptPath"
-        }
-        Need (-not ($command.Extent.Text -match '(?i)(password|private\s*key)')) "production safety contract rejects secret-bearing command text in $scriptPath"
-    }
+$safetyContracts = @(
+    [pscustomobject]@{ Path = $controller; Excluded = @('Invoke-QualificationKitValidatorSelfTest', 'Invoke-MissingDriverIntegrationSelfTest', 'Invoke-QualificationDispatcherHappyFlowSelfTest', 'Invoke-QualificationDispatcherFailureMatrixSelfTest', 'New-QualificationPostGateFixture', 'Invoke-QualificationDispatcherPostGateFailureMatrixSelfTest', 'Invoke-NestedNegativeBaselineMutationSelfTest', 'Invoke-QualificationDispatcherRestoreFailureMatrixSelfTest', 'Invoke-SelfTest') },
+    [pscustomobject]@{ Path = (Join-Path $SourceRoot 'tests\e2e\Invoke-M4LivePowerCut.ps1'); Excluded = @('SelfTest') },
+    [pscustomobject]@{ Path = (Join-Path $SourceRoot 'tools\New-M4GuestQualificationKit.ps1'); Excluded = @() })
+foreach ($contract in $safetyContracts) {
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($contract.Path, [ref]$tokens, [ref]$errors)
+    Need ($errors.Count -eq 0) "$($contract.Path) must parse for the static safety contract"
+    Assert-ProductionSafetyAst -Ast $ast -Label $contract.Path -ExcludedFunctionNames $contract.Excluded
+}
+
+function Parse-SafetyFixture {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $fixtureTokens = $null; $fixtureErrors = $null
+    $fixtureAst = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$fixtureTokens, [ref]$fixtureErrors)
+    Need ($fixtureErrors.Count -eq 0) 'safety mutation fixture must parse'
+    return $fixtureAst
+}
+
+foreach ($mutation in @(
+    'function Production { ShUtDoWn.ExE }',
+    'function Production { rm $QualificationRoot -Recurse -Force }',
+    "function Production { & 'VmRuN' }")) {
+    $rejected = $false
+    $reason = ''
+    try { Assert-ProductionSafetyAst -Ast (Parse-SafetyFixture -Text $mutation) -Label 'mutation' -ExcludedFunctionNames @() }
+    catch { $rejected = $true; $reason = $_.Exception.Message }
+    Need $rejected "static safety mutation was accepted: $mutation"
+    Need ($reason -match '^static safety rejects ') "static safety mutation failed for the wrong reason: $reason"
 }
 
 Write-Output 'M4 guest qualification contract PASS'

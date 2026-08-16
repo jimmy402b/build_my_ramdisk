@@ -59,6 +59,23 @@ ctest --preset debug --output-on-failure
 
 本节是发布维护者在已批准、隔离的 Windows 来宾中执行的资格流程，不是普通用户安装步骤。资格 controller、helper 和 kit 只用于验证；资格脚本不进入 v1 六文件 release ZIP。先在 host 生成并冻结 qualification kit，再把**整个** kit 复制到 approved isolated guest 的本机 NTFS 目录。不要从网络共享、可移动介质或不完整的 kit 运行。
 
+在 host 的仓库根目录、完成 `release` 构建后，以下命令生成一个新的、带当前 commit 限定符和随机后缀的 kit 目录。先按你的本机 NTFS 路径设置 `$KitParent`（不使用任何特定用户目录）；脚本拒绝覆盖已存在的输出目录。`Test-Path` 和 SHA-256 输出用于在复制前确认两个 build 输入确实存在且已记录：
+
+```powershell
+$SourceRoot = (Resolve-Path .).Path
+$Artifact = Join-Path $SourceRoot 'out\build\msvc\src\Release\myrd.exe'
+$Query = Join-Path $SourceRoot 'out\build\msvc\tests\Release\myrd_m4_aim_query.exe'
+$KitParent = 'D:\M4QualificationKits'
+$Commit = (git -C $SourceRoot rev-parse --short=12 HEAD).Trim()
+$OutputDirectory = Join-Path $KitParent ('qualification-kit-' + $Commit + '-' + [Guid]::NewGuid().ToString('N'))
+
+Test-Path -LiteralPath $SourceRoot,$Artifact,$Query,$KitParent
+Get-FileHash -LiteralPath $Artifact,$Query -Algorithm SHA256
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\New-M4GuestQualificationKit.ps1 -SourceRoot $SourceRoot -Artifact $Artifact -Query $Query -OutputDirectory $OutputDirectory
+```
+
+确认命令输出的 `$OutputDirectory` 后，冻结该目录内容并完整复制整个 kit 到 approved isolated guest；不要向既有 kit 目录重跑，也不要只复制其中若干文件。
+
 在来宾的管理员 PowerShell 中，进入已复制的 kit 目录后，仅运行下面这一个命令；省略 `-Status` 即为开始或恢复，必须始终使用同一个随机 QualificationRoot（本机 NTFS 绝对路径）：
 
 ```powershell
@@ -82,6 +99,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualific
 ```
 
 退出码 10 表示仍需执行已 armed 的 reset，且该等待路径不写入状态；退出码 77 表示 `Blocked` 或安全拒绝；退出码 0 表示当前阶段成功，最终完成时输出唯一成功行 `M4 v1 QUALIFICATION PASS`。除该唯一 PASS 行外，不应把中间阶段成功视为 v1 资格通过。
+
+本流程的静态安全契约检查 PowerShell AST 中的直接调用、常见删除别名和 literal call-operator；它不声称能够证明任意运行时拼接命令的行为。
 
 ## 许可证
 
