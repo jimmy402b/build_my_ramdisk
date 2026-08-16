@@ -56,6 +56,7 @@ Need ($controllerText.Contains('LIVE POWER-CUT ARMED')) 'guest qualification con
 foreach ($requiredText in @('$script:DriverInvoker', '$script:PrepareInvoker', '$script:NegativeInvoker', 'RESET STILL REQUIRED: MissingDriver', "@('config','phdskmnt','start=','disabled')", "@('config','phdskmnt','start=','demand')", "@('start','phdskmnt')", 'm4-negative-missing_driver.v1.json')) { Need ($controllerText.Contains($requiredText)) "missing-driver controller source contract is missing $requiredText" }
 foreach ($forbiddenText in @('sc.exe stop phdskmnt', 'sc.exe delete phdskmnt')) { Need (-not $controllerText.Contains($forbiddenText)) "missing-driver controller source contract contains forbidden operation $forbiddenText" }
 Need ($controllerText.Contains('$script:BootProbeProvider')) 'missing-driver same-boot gate must inject BootProbeProvider'
+foreach ($requiredText in @('$script:QualificationKitProvider', '$script:ExitProvider', 'Invoke-QualificationRun -QualificationRoot')) { Need ($controllerText.Contains($requiredText)) "dispatcher fake-flow seam is missing $requiredText" }
 Need ($controllerText.Contains('missing-driver integration selftest PASS')) 'controller SelfTest must exercise injected missing-driver integration'
 Need ($controllerText.Contains("kind='MissingDriverCapture'")) 'missing-driver evidence must be durably hash-anchored'
 Need ($controllerText.Contains('Get-MissingDriverCaptureEvent $state')) 'driver restore must re-read the missing-driver capture anchor'
