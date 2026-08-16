@@ -1367,7 +1367,6 @@ function Invoke-NestedNegativeBaselineMutationSelfTest {
 }
 
 function Invoke-QualificationDispatcherRestoreFailureMatrixSelfTest {
-    # dispatcher failure seam vector is invalid
     param([Parameter(Mandatory=$true)][string]$Scratch,[Parameter(Mandatory=$true)]$GoodFacts)
     $rows=@('RestoreDemandNonzero','RestoreDemandTimeout','RestoreDemandReadbackNonzero','RestoreDemandReadbackNotDemand','RestoreStartNonzero','RestoreStartTimeout','RestoreFactsAims','RestoreFactsPd0','RestoreFactsPd1','RestoreFactsPd2','RestoreFactsService','RestoreFactsProcess','RestoreFactsDriver','ActivateNonzero','ActivateTimeout','ActivateStderr','ActivateHelperHash','ActivateManifestActiveCases','ActivateManifestProperty','ActivateManifestPath','ActivateCompactInventory','ActivateGen0Inventory','FinalNonzero','FinalTimeout','FinalStderr','FinalEvidenceSchema','FinalEvidenceCaseHash')
     foreach($Failure in $rows){

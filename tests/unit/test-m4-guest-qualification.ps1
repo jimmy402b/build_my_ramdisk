@@ -82,6 +82,7 @@ $selfTest = @($controllerAst.FindAll({ param($node) $node -is [Management.Automa
 foreach ($helper in @('Invoke-MissingDriverIntegrationSelfTest', 'Invoke-QualificationDispatcherHappyFlowSelfTest', 'Invoke-QualificationDispatcherFailureMatrixSelfTest', 'Invoke-QualificationDispatcherRestoreFailureMatrixSelfTest', 'Invoke-NestedNegativeBaselineMutationSelfTest')) {
     Need (@($selfTest.Body.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq $helper }, $true)).Count -eq 1) "controller SelfTest does not execute $helper"
 }
+Need (-not $controllerText.Contains('dispatcher failure seam vector is invalid')) 'controller retains obsolete dispatcher failure seam vector comment'
 Need ($controllerText.Contains("kind='MissingDriverCapture'")) 'missing-driver evidence must be durably hash-anchored'
 Need ($controllerText.Contains('Get-MissingDriverCaptureEvent $state')) 'driver restore must re-read the missing-driver capture anchor'
 foreach ($failureRow in @('DriverDisableNonzero', 'DriverDisableTimeout', 'DriverDisableReadbackNonzero', 'DriverDisableReadbackNotDisabled', 'NewBootFactsModel', 'QueryWrongExit', 'NegativeChildExit', 'NegativeStdoutNoCrLf', 'NegativeEvidenceEmpty', 'NegativeEvidenceStderrBundlePath', 'CaptureHashTamper')) {
