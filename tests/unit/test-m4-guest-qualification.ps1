@@ -24,7 +24,7 @@ $controllerAst = [Management.Automation.Language.Parser]::ParseFile(
     [ref]$tokens,
     [ref]$parseErrors)
 Need ($parseErrors.Count -eq 0) 'guest qualification controller failed AST parsing'
-$requiredFunctions = @('Get-GuestFacts', 'Get-GuestBootProbe', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-LivePowerCutArm', 'Assert-LivePowerCutRecoveryEvidence', 'Invoke-LivePowerCutRecovery', 'Assert-NegativeFixtureManifest', 'Assert-MissingDriverNegativeEvidence', 'Get-MissingDriverCaptureEvent', 'Invoke-MissingDriverPrepare', 'Invoke-MissingDriverRecovery', 'Invoke-DriverRestoreAndNegative', 'Invoke-QualificationRun', 'Invoke-QualificationDispatcher', 'Invoke-QualificationDispatcherFailureMatrixSelfTest')
+$requiredFunctions = @('Get-GuestFacts', 'Get-GuestBootProbe', 'Assert-InitialGuestFacts', 'Publish-QualificationRootStage', 'Initialize-QualificationRoot', 'ConvertTo-WindowsCommandLine', 'Invoke-BoundedProcess', 'ConvertFrom-AimQueryJson', 'Select-RelevantGuestProcesses', 'Assert-UnexpectedReset', 'Invoke-FormalRunnerCapture', 'Invoke-FormalCreateSequence', 'Invoke-FormalRecoverySequence', 'Invoke-LivePowerCutArm', 'Assert-LivePowerCutRecoveryEvidence', 'Invoke-LivePowerCutRecovery', 'Assert-NegativeFixtureManifest', 'Assert-MissingDriverNegativeEvidence', 'Get-MissingDriverCaptureEvent', 'Assert-RemainingNegativeFinalEvidence', 'Invoke-MissingDriverPrepare', 'Invoke-MissingDriverRecovery', 'Invoke-DriverRestoreAndNegative', 'Invoke-QualificationRun', 'Invoke-QualificationDispatcher', 'Invoke-QualificationDispatcherFailureMatrixSelfTest', 'Invoke-QualificationDispatcherRestoreFailureMatrixSelfTest')
 foreach ($name in $requiredFunctions) {
     $matches = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     Need ($matches.Count -eq 1) "guest qualification controller is missing $name"
@@ -63,6 +63,10 @@ Need ($controllerText.Contains('Get-MissingDriverCaptureEvent $state')) 'driver 
 foreach ($failureRow in @('DriverDisableNonzero', 'DriverDisableTimeout', 'DriverDisableReadbackNonzero', 'DriverDisableReadbackNotDisabled', 'NewBootFactsModel', 'QueryWrongExit', 'NegativeChildExit', 'NegativeStdoutNoCrLf', 'NegativeEvidenceEmpty', 'NegativeEvidenceStderrBundlePath', 'CaptureHashTamper')) {
     Need ($controllerText.Contains("'$failureRow'")) "missing-driver failure matrix row is missing: $failureRow"
 }
+foreach ($failureRow in @('RestoreDemandNonzero', 'RestoreDemandTimeout', 'RestoreManualNonzero', 'RestoreManualNotManual', 'RestoreStartNonzero', 'RestoreStartTimeout', 'RestoreFactsAims', 'RestoreFactsPd2', 'ActivateNonzero', 'ActivateHelperHash', 'ActivateManifestActiveCases', 'ActivateCompactInventory', 'FinalNonzero', 'FinalTimeout', 'FinalStderr', 'FinalEvidenceSchema', 'FinalEvidenceCaseHash')) {
+    Need ($controllerText.Contains("'$failureRow'")) "restore/final failure matrix row is missing: $failureRow"
+}
+Need ($controllerText.Contains("kind='NegativeComplete'")) 'final negative evidence must be durably anchored'
 $tempCleanupFinally = @($controllerAst.FindAll({
     param($node)
     $node -is [Management.Automation.Language.TryStatementAst] -and
