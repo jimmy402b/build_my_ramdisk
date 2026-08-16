@@ -306,9 +306,9 @@ function Write-QualificationState {
             [IO.File]::Move($tempPath, $statePath)
         }
         $stateCommitted = $true
-        & $script:QualificationObserver 'WriteState'
+        Invoke-QualificationHook 'WriteState'
         Append-QualificationEvent -QualificationRoot $root -State $State
-        & $script:QualificationObserver 'FlushEvent'
+        Invoke-QualificationHook 'FlushEvent'
         $outcome = 'CommitSucceeded'
     }
     catch {
@@ -504,6 +504,12 @@ $script:FactsProvider = { param([string]$QualificationRoot, [string]$Kit) Get-Gu
 $script:SystemEventProvider = {
     param([string]$ArmedUtc)
     @(Get-WinEvent -FilterHashtable @{ LogName='System'; Id=@(41,6008); StartTime=([DateTime]::Parse($ArmedUtc).ToLocalTime()) } -ErrorAction Stop | ForEach-Object { [ordered]@{ id=[int]$_.Id; time_utc=$_.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ') } })
+}
+function Invoke-QualificationHook {
+    param([Parameter(Mandatory=$true)][string]$Name)
+    try { & $script:QualificationObserver $Name }
+    catch [M4QualificationBlocked] { throw }
+    catch { throw [M4QualificationBlocked]::new("qualification hook $Name failed: $($_.Exception.Message)") }
 }
 
 function ConvertFrom-AimQueryJson {
@@ -773,9 +779,9 @@ function Invoke-FormalCreateSequence {
     Assert-CreateKillEvidence -Evidence $evidence -Commit $Commit -Artifact $artifact -Bundle $bundle
     $killed = [int64]$evidence.pid; $event = New-CrashResetArmEvent -Facts $Facts -EvidencePath $evidencePath -KilledPid $killed -BundleInventory @(Get-TreeInventory $bundle)
     $previous = Read-QualificationState $QualificationRoot; $next = New-QualificationState $previous.qualification_id 'AwaitingCrashReset' (([uint64]$previous.sequence) + 1) @($event)
-    Write-QualificationState -QualificationRoot $QualificationRoot -State $next; $reRead = Read-QualificationState $QualificationRoot; & $script:QualificationObserver 'ReReadState'; $arm = Get-CrashResetArmEvent $reRead
-    Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence hash changed'; & $script:QualificationObserver 'VerifyEvidenceHash'
-    & $script:QualificationObserver 'PrintCrashResetArmed'; Write-Output 'CRASH RESET ARMED'
+    Write-QualificationState -QualificationRoot $QualificationRoot -State $next; $reRead = Read-QualificationState $QualificationRoot; Invoke-QualificationHook 'ReReadState'; $arm = Get-CrashResetArmEvent $reRead
+    Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence hash changed'; Invoke-QualificationHook 'VerifyEvidenceHash'
+    Invoke-QualificationHook 'PrintCrashResetArmed'; Write-Output 'CRASH RESET ARMED'
 }
 
 function Invoke-FormalRecoverySequence {
@@ -984,8 +990,11 @@ function Invoke-SelfTest {
         $recordedArgv = [Collections.Generic.List[object]]::new()
         $savedInvoker = $script:ProcessInvoker
         $savedFactsProvider = $script:FactsProvider
+        $savedObserver = $script:QualificationObserver
+        $hookOrder = [Collections.Generic.List[string]]::new()
         try {
             $script:FactsProvider = { param($Root,$Kit) $goodFacts }
+            $script:QualificationObserver = { param($Hook) $hookOrder.Add($Hook) }
             $script:ProcessInvoker = {
                 param($FilePath, $Arguments, $TimeoutMs)
                 $recordedArgv.Add(@($Arguments))
@@ -1006,11 +1015,12 @@ function Invoke-SelfTest {
             $expectedPhases = @('CreateKill','RecoverShutdown','OfflineCompact','Negative','CreateKill')
             for ($index = 0; $index -lt 5; $index++) { $argv = @($recordedArgv[$index]); Need (($argv[0..5] -join '|') -ceq '-NoProfile|-ExecutionPolicy|Bypass|-File|' + (Join-Path $orchestrationRoot 'kit\Capture-M4Child.ps1') + '|-Mode') 'formal capture argv prefix is invalid'; Need ($argv[$argv.IndexOf('-Phase') + 1] -ceq $expectedPhases[$index]) 'formal capture phase order is invalid'; Need ([int]$argv[$argv.IndexOf('-TimeoutMs') + 1] -eq $(if ($index -eq 4) {420000}else{20000})) 'formal capture timeout is invalid' }
             Need (-not (@($recordedArgv[0]) -ccontains '-SafetyAcknowledged') -and (@($recordedArgv[4]) -ccontains '-SafetyAcknowledged')) 'formal acknowledgement ordering is invalid'
+            Need (($hookOrder -join '|') -ceq 'WriteState|FlushEvent|ReReadState|VerifyEvidenceHash|PrintCrashResetArmed') 'crash reset arm hooks are out of order'
             $awaiting = Read-QualificationState $orchestrationRoot; $arm = Get-CrashResetArmEvent $awaiting; Need ($awaiting.state -ceq 'AwaitingCrashReset' -and $arm.killed_pid -eq 1234) 'formal CreateKill did not durably arm reset'
             $beforeRecoveryCalls = $recordedArgv.Count; $stillRequired = Invoke-FormalRecoverySequence -QualificationRoot $orchestrationRoot -Kit (Join-Path $orchestrationRoot 'kit') -Commit ('e'*40) -PostFacts ([ordered]@{boot_utc=$goodFacts.boot_utc;system_events=@()})
             Need ($stillRequired -eq 10 -and $recordedArgv.Count -eq $beforeRecoveryCalls) 'reset-still-required ran recovery or returned the wrong code'
         }
-        finally { $script:ProcessInvoker = $savedInvoker; $script:FactsProvider = $savedFactsProvider }
+        finally { $script:ProcessInvoker = $savedInvoker; $script:FactsProvider = $savedFactsProvider; $script:QualificationObserver = $savedObserver }
 
         $statePath = Join-Path $scratch 'state.json'
         $eventsPath = Join-Path $scratch 'events.jsonl'
