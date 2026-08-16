@@ -656,6 +656,30 @@ function Assert-CreateKillEvidence {
     Need ($Evidence.hashes.'A.txt' -cmatch '^[0-9A-Fa-f]{64}$') 'CreateKill A hash is invalid'
     Need (@($Evidence.inventory_after.aim_stable).Count -gt @($Evidence.baseline_inventory.aim_stable).Count) 'CreateKill AIM inventory is invalid'
 }
+function Assert-StableInventoryEqual {
+    param($Expected,$Actual,[string]$Message)
+    $left=[ordered]@{stable_identities=@($Expected.stable_identities);aim_stable=@($Expected.aim_stable);physical_devices=@($Expected.physical_devices);drive_mappings=@($Expected.drive_mappings)}
+    $right=[ordered]@{stable_identities=@($Actual.stable_identities);aim_stable=@($Actual.aim_stable);physical_devices=@($Actual.physical_devices);drive_mappings=@($Actual.drive_mappings)}
+    Need (($left|ConvertTo-Json -Compress -Depth 8) -ceq ($right|ConvertTo-Json -Compress -Depth 8)) $Message
+}
+function Assert-RecoverShutdownEvidence {
+    param($Evidence,$Create,[string]$Commit,[string]$Artifact,[string]$Bundle)
+    Assert-LifecycleEvidenceIdentity $Evidence 'RecoverShutdown' $Commit $Artifact $Bundle
+    Need ($Evidence.status -ceq 'PASS' -and $Evidence.boot_identity -ne $Create.boot_identity -and $Evidence.exit_codes.run -eq 0) 'RecoverShutdown status/boot/exit is invalid'
+    Assert-StableInventoryEqual $Create.baseline_inventory $Evidence.baseline_inventory 'RecoverShutdown baseline inventory is invalid'
+    Assert-StableInventoryEqual $Create.baseline_inventory $Evidence.inventory_after 'RecoverShutdown clean inventory is invalid'
+    Need ($Evidence.checkpoint_observed.generation -gt $Evidence.ready_observed.generation -and $Evidence.final_checkpoint_observed.generation -gt $Evidence.checkpoint_observed.generation -and $Evidence.generation -eq $Evidence.final_checkpoint_observed.generation) 'RecoverShutdown generations are invalid'
+    Need ($Evidence.hashes.'A.txt' -ceq $Create.hashes.'A.txt' -and $Evidence.hashes.'D.txt' -cmatch '^[0-9A-Fa-f]{64}$') 'RecoverShutdown hashes are invalid'
+    $audit=$Evidence.recovery_audit; Need ($audit.schema -ceq 'myrd.m4.recovery-process-audit.v1' -and $audit.myrd_pid -gt 0 -and $audit.started_utc -is [string] -and $audit.ended_utc -is [string] -and $audit.children -is [Array]) 'RecoverShutdown audit is invalid'
+}
+function Assert-OfflineCompactEvidence {
+    param($Evidence,$Recover,[string]$Commit,[string]$Artifact,[string]$Bundle)
+    Assert-LifecycleEvidenceIdentity $Evidence 'OfflineCompact' $Commit $Artifact $Bundle
+    Need ($Evidence.status -ceq 'PASS' -and $Evidence.exit_codes.compact -eq 0 -and $Evidence.exit_codes.third_run -eq 0) 'OfflineCompact exits/status are invalid'
+    Need ($Evidence.compact_observed_generation -eq ([uint64]$Recover.generation + 1) -and $Evidence.third_ready_generation -eq $Evidence.compact_observed_generation -and $Evidence.generation -eq $Evidence.compact_observed_generation) 'OfflineCompact generations are invalid'
+    Need ($Evidence.hashes.'A.txt' -ceq $Recover.hashes.'A.txt' -and $Evidence.hashes.'D.txt' -ceq $Recover.hashes.'D.txt') 'OfflineCompact hashes are invalid'
+    Assert-StableInventoryEqual $Recover.baseline_inventory $Evidence.inventory_after 'OfflineCompact clean inventory is invalid'
+}
 function Get-SystemResetEvents {
     param([Parameter(Mandatory=$true)][string]$ArmedUtc)
     return @(& $script:SystemEventProvider $ArmedUtc)
@@ -763,8 +787,12 @@ function Invoke-FormalRecoverySequence {
     Assert-UnexpectedReset -Armed ([ordered]@{boot_utc=$arm.boot_utc;armed_utc=$arm.armed_utc}) -Post $PostFacts
     $evidencePath = Join-Path $QualificationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'; Need ((Get-QualificationFileHash $evidencePath) -ceq $arm.evidence_sha256) 'formal CreateKill evidence is not immutable'
     $runner = Join-Path $QualificationRoot 'formal\tests\e2e\Invoke-M4RunLifecycle.ps1'; $artifact = Join-Path $QualificationRoot 'formal\Release\myrd.exe'; $bundle = Join-Path $QualificationRoot 'formal\bundle'; $formalState = Join-Path $QualificationRoot 'evidence\formal-state.json'
-    foreach ($phase in @('RecoverShutdown','OfflineCompact')) { $result = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase $phase -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged; Need ($result.child_exit -eq 0 -and [string]::IsNullOrEmpty($result.stderr)) "formal $phase failed" }
+    Assert-QualificationKit -Kit $Kit -ExpectedCommit $Commit | Out-Null
     $next = New-QualificationState $state.qualification_id 'CrashResetObserved' (([uint64]$state.sequence)+1) @($state.events); Write-QualificationState $QualificationRoot $next
+    $recoverResult = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase RecoverShutdown -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged; Need ($recoverResult.child_exit -eq 0 -and [string]::IsNullOrEmpty($recoverResult.stderr)) 'formal RecoverShutdown failed'
+    $create=Get-Content $evidencePath -Raw -Encoding UTF8|ConvertFrom-Json; $recoverPath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-RecoverShutdown.v1.json'; Need([IO.File]::Exists($recoverPath)) 'RecoverShutdown evidence is missing'; $recover=Get-Content $recoverPath -Raw -Encoding UTF8|ConvertFrom-Json; Assert-RecoverShutdownEvidence $recover $create $Commit $artifact $bundle
+    $offlineResult = Invoke-FormalRunnerCapture -Kit $Kit -Runner $runner -Commit $Commit -Phase OfflineCompact -Artifact $artifact -FormalBundle $bundle -FormalState $formalState -TimeoutMs 420000 -SafetyAcknowledged; Need ($offlineResult.child_exit -eq 0 -and [string]::IsNullOrEmpty($offlineResult.stderr)) 'formal OfflineCompact failed'
+    $offlinePath=Join-Path $QualificationRoot 'evidence\m4-lifecycle-OfflineCompact.v1.json'; Need([IO.File]::Exists($offlinePath)) 'OfflineCompact evidence is missing'; $offline=Get-Content $offlinePath -Raw -Encoding UTF8|ConvertFrom-Json; Assert-OfflineCompactEvidence $offline $recover $Commit $artifact $bundle
     $observed = Read-QualificationState $QualificationRoot; $final = New-QualificationState $observed.qualification_id 'FormalRecovered' (([uint64]$observed.sequence)+1) @($observed.events); Write-QualificationState $QualificationRoot $final
     return 0
 }
@@ -772,8 +800,9 @@ function Invoke-FormalRecoverySequence {
 function Invoke-QualificationRun {
     param([Parameter(Mandatory = $true)][string]$QualificationRoot)
     $kit = Split-Path -Parent $PSCommandPath; $manifest = Get-Content -LiteralPath (Join-Path $kit 'qualification-kit.json') -Raw -Encoding UTF8 | ConvertFrom-Json; $commit = [string]$manifest.source_commit
+    Assert-QualificationKit -Kit $kit -ExpectedCommit $commit | Out-Null
     if (-not [IO.Directory]::Exists($QualificationRoot)) { $facts = Get-GuestFacts -QualificationRoot $QualificationRoot -Kit $kit; Initialize-QualificationRoot -QualificationRoot $QualificationRoot -SourceKit $kit -ExpectedCommit $commit -Facts $facts | Out-Null; Write-QualificationState $QualificationRoot (New-QualificationState ([Guid]::NewGuid().ToString('N')) 'Initial' 0 @()); $initial = Read-QualificationState $QualificationRoot; Write-QualificationState $QualificationRoot (New-QualificationState $initial.qualification_id 'FormalCreateReady' 1 @()); Invoke-FormalCreateSequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -Facts $facts; return }
-    $state = Read-QualificationState $QualificationRoot
+    Assert-QualificationKit -Kit (Join-Path $QualificationRoot 'kit') -ExpectedCommit $commit | Out-Null; $state = Read-QualificationState $QualificationRoot
     if ($state.state -ceq 'AwaitingCrashReset') { $facts = & $script:FactsProvider $QualificationRoot (Join-Path $QualificationRoot 'kit'); $arm=Get-CrashResetArmEvent $state; $post=[ordered]@{boot_utc=$facts.boot_utc;system_events=@(Get-SystemResetEvents $arm.armed_utc)}; $code = Invoke-FormalRecoverySequence -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit -PostFacts $post; if ($code -eq 10) { exit 10 }; return }
     throw [M4QualificationBlocked]::new("qualification Run cannot resume state $($state.state)")
 }
