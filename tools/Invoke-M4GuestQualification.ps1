@@ -521,6 +521,16 @@ $script:VerifierInvoker = {
     param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutMs)
     Invoke-BoundedProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs $TimeoutMs
 }
+function Assert-QualificationPostGate {
+    param([Parameter(Mandatory=$true)][string]$QualificationRoot,[Parameter(Mandatory=$true)][string]$Kit,[Parameter(Mandatory=$true)][string]$Commit)
+    $facts=& $script:FactsProvider $QualificationRoot $Kit;Assert-InitialGuestFacts $facts|Out-Null;Assert-QualificationKit $Kit $Commit|Out-Null
+    $state=Read-QualificationState $QualificationRoot;$neg=@($state.events|Where-Object{$_.kind-ceq'NegativeComplete'});Need($neg.Count-eq1)'postgate NegativeComplete anchor is absent';$n=$neg[0]
+    Assert-ExactEvidenceProperties $n @('kind','final_evidence_path','final_evidence_sha256','missing_driver_evidence_sha256','case_evidence_sha256','source_commit','executable_sha256','bundle_inventory') 'postgate NegativeComplete anchor schema is invalid'
+    $formal=[IO.Path]::GetFullPath((Join-Path $QualificationRoot 'formal'));$power=[IO.Path]::GetFullPath((Join-Path $QualificationRoot 'powercut'));$artifact=Join-Path $formal 'Release\myrd.exe';$bundle=Join-Path $formal 'bundle';Need($n.source_commit-ceq$Commit-and$n.executable_sha256-ceq(Get-QualificationFileHash $artifact)-and(@($n.bundle_inventory)-join"`n")-ceq(@(Get-TreeInventory $bundle)-join"`n"))'postgate artifact/formal inventory anchor changed'
+    Need($n.final_evidence_sha256-ceq(Get-QualificationFileHash $n.final_evidence_path))'postgate final evidence hash changed';foreach($case in @('unknown_nonempty','size_mismatch','occupied_letter','gen0','writer_lock','missing_driver','busy_volume','compact_lock')){Need($n.case_evidence_sha256.$case-ceq(Get-QualificationFileHash (Join-Path $formal "m4-negative-$case.v1.json")))"postgate negative evidence hash changed: $case"}
+    $capture=Get-MissingDriverCaptureEvent $state $QualificationRoot $Commit $artifact $bundle;Need($capture.evidence_sha256-ceq$n.missing_driver_evidence_sha256)'postgate missing-driver anchor changed'
+    $arms=@($state.events|Where-Object{$_.kind-ceq'LivePowerCutArm'});if($arms.Count-eq1){$arm=Get-LivePowerCutArmEvent $state;$armPath=Join-Path $power 'myrd.m4.live-powercut-arm.v1.json';Need($arm.arm_evidence_sha256-ceq(Get-QualificationFileHash $armPath)-and(@($arm.powercut_bundle_inventory)-join"`n")-ceq(@(Get-TreeInventory (Join-Path $power 'bundle'))-join"`n"))'postgate powercut inventory/arm anchor changed';Need([IO.File]::Exists((Join-Path $power 'myrd.m4.live-powercut.v1.json')))'postgate powercut recovery evidence is absent'}
+}
 $script:LivePowerCutProcessProvider = {
     param([int]$Pid)
     $process = Get-Process -Id $Pid -ErrorAction SilentlyContinue
@@ -1240,6 +1250,7 @@ function Invoke-QualificationRun {
         $verifier=[IO.Path]::GetFullPath((Join-Path $QualificationRoot 'formal\tools\Invoke-M4Verification.ps1'))
         $formal=[IO.Path]::GetFullPath((Join-Path $QualificationRoot 'evidence'));$power=[IO.Path]::GetFullPath((Join-Path $QualificationRoot 'powercut'))
         foreach($tier in @(@('Final',$formal),@('PowerCut',$power))){$argv=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$verifier,'-Tier',$tier[0],'-EvidenceDirectory',$tier[1],'-HostArtifact',$artifact,'-ExpectedSourceCommit',$commit);$r=&$script:VerifierInvoker 'powershell.exe' $argv 120000;Need($r.exit-eq0-and-not$r.timed_out-and[string]::IsNullOrEmpty($r.stderr)-and$r.stdout-ceq("M4 $($tier[0]) PASS: same-commit evidence for $commit`r`n"))"$($tier[0]) verifier gate failed"}
+        Assert-QualificationPostGate -QualificationRoot $QualificationRoot -Kit (Join-Path $QualificationRoot 'kit') -Commit $commit
         $next=Read-QualificationState $QualificationRoot;Write-QualificationState $QualificationRoot (New-QualificationState $next.qualification_id 'Complete' (([uint64]$next.sequence)+1) @($next.events));Write-Output 'M4 v1 QUALIFICATION PASS';return
     }
     if ($state.state -ceq 'Complete') { return }
