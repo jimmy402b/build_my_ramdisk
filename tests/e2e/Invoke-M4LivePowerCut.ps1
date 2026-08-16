@@ -13,6 +13,13 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 
+# External effects are named seams.  Production binds these to the real
+# Windows implementations below; SelfTest may replace only these providers.
+$script:StorageInspector=$null
+$script:WorkloadProvider=$null
+$script:EventProvider=$null
+$script:SignalProvider=$null
+
 class M4LivePowerCutBlocked : System.Exception { M4LivePowerCutBlocked([string]$Message) : base($Message) {} }
 function Block([string]$Message) { throw [M4LivePowerCutBlocked]::new($Message) }
 function Need([bool]$Condition,[string]$Message) { if(-not $Condition){ Block $Message } }
@@ -39,6 +46,7 @@ function Latest-CheckpointText([string]$Text) {
     return $last
 }
 function Inventory {
+    if($null -ne $script:StorageInspector){ return & $script:StorageInspector 'Inventory' }
     $disks=@(Get-CimInstance Win32_DiskDrive -ErrorAction Stop)
     $volumes=@(Get-Volume -ErrorAction Stop | Where-Object {$_.DriveLetter} | ForEach-Object {
         $letter=[string]$_.DriveLetter; $parts=@(Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue)
@@ -54,6 +62,7 @@ function Bundle-Inventory([string]$Root) {
     }))
 }
 function Volume-Identity([string]$Letter) {
+    if($null -ne $script:StorageInspector){ return & $script:StorageInspector 'Volume' $Letter }
     $volume=Get-Volume -DriveLetter $Letter -ErrorAction Stop
     $part=Get-Partition -DriveLetter $Letter -ErrorAction Stop
     $disk=Get-Disk -Number $part.DiskNumber -ErrorAction Stop
@@ -62,7 +71,12 @@ function Volume-Identity([string]$Letter) {
     [ordered]@{volume_guid=[string]$volume.UniqueId;filesystem='NTFS';partition_style='GPT';disk_number=[int]$disk.Number;partition_number=[int]$part.PartitionNumber}
 }
 function Workload-Hashes([string]$Letter,[string[]]$Names) {
+    if($null -ne $script:WorkloadProvider){ return & $script:WorkloadProvider 'Hashes' $Letter ([pscustomobject]@{names=@($Names)}) }
     $hashes=[ordered]@{}; foreach($name in $Names){$path=Join-Path "$Letter`:" $name;Need([IO.File]::Exists($path))"missing workload $name";$hashes[$name]=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash};$hashes
+}
+function Write-Workload([string]$Letter,[string]$Name,[string]$Text) {
+    if($null -ne $script:WorkloadProvider){ & $script:WorkloadProvider 'Write' $Letter ([pscustomobject]@{name=$Name;text=$Text}); return }
+    [IO.File]::WriteAllText((Join-Path "$Letter`:" $Name),$Text,[Text.UTF8Encoding]::new($false))
 }
 function Run-Argv([string]$Root,[string]$Letter) { @('run','--bundle',$Root,'--size','64M','--drive-letter',"$Letter`:",'--checkpoint-seconds','5','--checkpoint-dirty-mb','1','--ram-limit','64M') }
 function Quote-WindowsArg([string]$Value) { '"'+($Value -replace '(\\*)"','$1$1\"' -replace '(\\*)$','$1$1')+'"' }
@@ -76,7 +90,8 @@ function Start-ExactChild([string]$File,[string[]]$Argv) {
 function Wait-Ready($Child,[string]$Letter,[int]$Milliseconds) {
     $deadline=[datetime]::UtcNow.AddMilliseconds($Milliseconds)
     while([datetime]::UtcNow -lt $deadline){$generation=Ready-GenerationText $Child.stdout.ToString() $Letter;if($null -ne $generation){return $generation};if($Child.Process.HasExited){Block "child exited before Ready: $($Child.Process.ExitCode); stderr=$($Child.stderr.ToString())"};Start-Sleep -Milliseconds 25}
-    Block "Ready timeout; stdout=$($Child.stdout.ToString()); stderr=$($Child.stderr.ToString())"
+    $captured=$Child.stdout.ToString();$codes=(@($captured.ToCharArray()|ForEach-Object{[int][char]$_}) -join ',')
+    Block "Ready timeout; stdout=$captured; stdout_length=$($captured.Length); stdout_codepoints=$codes; stderr=$($Child.stderr.ToString())"
 }
 function Wait-SuccessorCheckpoint($Child,[uint64]$Generation,[int]$Milliseconds) {
     $deadline=[datetime]::UtcNow.AddMilliseconds($Milliseconds)
@@ -118,25 +133,27 @@ function Assert-Identity($Arm) {
     Need($Arm.executable_sha256 -ceq (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash)'arm artifact identity changed'
     Need((Json @($Arm.bundle_inventory)) -ceq (Json @(Bundle-Inventory $Bundle)))'arm bundle inventory changed'
 }
-function Arm {
+function Invoke-LivePowerCutArm {
     Need($DriveLetter -match '^[A-Za-z]$')'DriveLetter must be one ASCII letter';Need([IO.File]::Exists($Executable))'Executable is missing';Need($SourceCommit -match '^[0-9A-Fa-f]{40}$')'SourceCommit must be exact 40 hex';Need([IO.Directory]::Exists($EvidenceDirectory))'EvidenceDirectory is missing';Need(-not(Test-Path "$DriveLetter`:"))'Arm requires a free drive letter';Need(-not(Test-Path -LiteralPath $Bundle))'Arm requires an absent bundle'
     $base=Inventory;$child=$null
     try {
         $argv=Run-Argv $Bundle $DriveLetter;$child=Start-ExactChild $Executable $argv;$generation=Wait-Ready $child $DriveLetter $TimeoutMs;$volume=Volume-Identity $DriveLetter
-        [IO.File]::WriteAllText((Join-Path "$DriveLetter`:" 'A.txt'),'live-powercut-A',[Text.UTF8Encoding]::new($false));[IO.File]::WriteAllText((Join-Path "$DriveLetter`:" 'D.txt'),'live-powercut-D',[Text.UTF8Encoding]::new($false));$hashes=Workload-Hashes $DriveLetter @('A.txt','D.txt');$successor=Wait-SuccessorCheckpoint $child $generation $TimeoutMs
+        Write-Workload $DriveLetter 'A.txt' 'live-powercut-A';Write-Workload $DriveLetter 'D.txt' 'live-powercut-D';$hashes=Workload-Hashes $DriveLetter @('A.txt','D.txt');$successor=Wait-SuccessorCheckpoint $child $generation $TimeoutMs
         Need(-not $child.Process.HasExited)'exact armed child exited before evidence commit'
-        $evidence=[ordered]@{schema='myrd.m4.live-powercut-arm.v1';status='ARMED';source_commit=$SourceCommit.ToLowerInvariant();executable_path=[IO.Path]::GetFullPath($Executable);executable_sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;bundle_path=[IO.Path]::GetFullPath($Bundle);bundle_inventory=@(Bundle-Inventory $Bundle);argv=@($argv);armed_boot_utc=([datetime](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUniversalTime().ToString('o');old_pid=$child.Process.Id;armed_generation=$successor.generation;ready_generation=$generation;volume=$volume;hashes_before=$hashes;baseline_inventory=$base;stdout_path='owned-stdout-memory';stderr_path='owned-stderr-memory'}
+        $evidence=[ordered]@{schema='myrd.m4.live-powercut-arm.v1';status='ARMED';source_commit=$SourceCommit.ToLowerInvariant();executable_path=[IO.Path]::GetFullPath($Executable);executable_sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;bundle_path=[IO.Path]::GetFullPath($Bundle);bundle_inventory=@(Bundle-Inventory $Bundle);argv=@($argv);armed_boot_utc=([datetime](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUniversalTime().ToString('o');old_pid=$child.Process.Id;armed_generation=$successor.generation;ready_generation=$generation;volume=$volume;hashes_before=$hashes;baseline_inventory=$base;stdout=$child.stdout.ToString();stderr=$child.stderr.ToString();stdout_path='owned-stdout-memory';stderr_path='owned-stderr-memory'}
         $path=Arm-EvidencePath $EvidenceDirectory;Write-New $path ((Json $evidence)+[Environment]::NewLine);Need(-not $child.Process.HasExited)'exact armed child exited after evidence commit'
         [pscustomobject]@{pid=$child.Process.Id;generation=$successor.generation;arm_evidence=$path;bundle_inventory=$evidence.bundle_inventory;stdout=$child.stdout.ToString();stderr=$child.stderr.ToString();process_alive=$true}
     } finally { if($null -ne $child){$child.Process.Dispose()} }
 }
-function Recover {
+function Invoke-LivePowerCutRecover {
     Need($DriveLetter -match '^[A-Za-z]$')'DriveLetter must be one ASCII letter';Need([IO.File]::Exists($Executable))'Executable is missing';Need($SourceCommit -match '^[0-9A-Fa-f]{40}$')'SourceCommit must be exact 40 hex';$path=$(if($ArmEvidence){$ArmEvidence}else{Arm-EvidencePath $EvidenceDirectory});$arm=Load-Arm $path;Assert-Identity $arm
     $base=Inventory;Need((Json (StableInventory $base)) -ceq (Json (StableInventory $arm.baseline_inventory)))'recovery inventory is not armed baseline';Need(-not(Test-Path "$DriveLetter`:"))'Recover requires absent drive letter';Need($null -eq (Get-Process -Id ([int]$arm.old_pid) -ErrorAction SilentlyContinue))'armed PID is still present'
-    $child=$null;try {$child=Start-ExactChild $Executable (Run-Argv $Bundle $DriveLetter);$ready=Wait-Ready $child $DriveLetter $TimeoutMs;Need($ready -gt [uint64]$arm.armed_generation)'recovered generation did not advance';$pre=Workload-Hashes $DriveLetter @('A.txt','D.txt');Need($pre.'A.txt' -ceq $arm.hashes_before.'A.txt' -and $pre.'D.txt' -ceq $arm.hashes_before.'D.txt')'pre-recovery workload hash changed';[IO.File]::WriteAllText((Join-Path "$DriveLetter`:" 'post-recovery.txt'),'post-recovery',[Text.UTF8Encoding]::new($false));$post=Workload-Hashes $DriveLetter @('A.txt','D.txt','post-recovery.txt');$successor=Wait-SuccessorCheckpoint $child $ready $TimeoutMs;Exact-CtrlBreak $child;Wait-Exit0 $child $TimeoutMs;$after=Inventory;Need((Json (StableInventory $after)) -ceq (Json (StableInventory $base)))'clean inventory was not restored'
+    $child=$null;try {$child=Start-ExactChild $Executable (Run-Argv $Bundle $DriveLetter);$ready=Wait-Ready $child $DriveLetter $TimeoutMs;$null=Volume-Identity $DriveLetter;Need($ready -gt [uint64]$arm.armed_generation)'recovered generation did not advance';$pre=Workload-Hashes $DriveLetter @('A.txt','D.txt');Need($pre.'A.txt' -ceq $arm.hashes_before.'A.txt' -and $pre.'D.txt' -ceq $arm.hashes_before.'D.txt')'pre-recovery workload hash changed';Write-Workload $DriveLetter 'post-recovery.txt' 'post-recovery';$post=Workload-Hashes $DriveLetter @('A.txt','D.txt','post-recovery.txt');$successor=Wait-SuccessorCheckpoint $child $ready $TimeoutMs;if($null -ne $script:SignalProvider){& $script:SignalProvider $child}else{Exact-CtrlBreak $child};Wait-Exit0 $child $TimeoutMs;$after=Inventory;Need((Json (StableInventory $after)) -ceq (Json (StableInventory $base)))'clean inventory was not restored'
         [pscustomobject]@{schema='myrd.m4.live-powercut.v1';status='PASS';source_commit=$SourceCommit.ToLowerInvariant();executable_sha256=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash;armed_boot_utc=$arm.armed_boot_utc;recovered_boot_utc=([datetime](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUniversalTime().ToString('o');shutdown_events=@();old_pid=[int]$arm.old_pid;old_pid_absent=$true;armed_generation=[uint64]$arm.armed_generation;recovered_generation=$successor.generation;baseline_inventory=$arm.baseline_inventory;inventory_after=$after;volume=$arm.volume;hashes_before=$arm.hashes_before;hashes_after=$post;bundle_inventory_before=$arm.bundle_inventory;bundle_inventory_after=@(Bundle-Inventory $Bundle);graceful_exit=0}
     } finally {if($null -ne $child){$child.Process.Dispose()}}
 }
+function Arm { Invoke-LivePowerCutArm }
+function Recover { Invoke-LivePowerCutRecover }
 function SelfTest {
     Need((Ready-GenerationText "Ready: R: generation 1.`r`n" 'R') -eq 1)'Ready CRLF rejected';Need((Ready-GenerationText "Ready: R: generation 2.`n" 'R') -eq 2)'Ready LF rejected';Need((Ready-GenerationText 'Ready: R: generation 3.' 'R') -eq 3)'Ready EOF rejected';foreach($bad in @("Ready: R: generation 0.`r`n","Ready: S: generation 1.`r`n","Ready: R: generation 1. `r`n","Ready: R: generation 1.`r","Ready: R: generation 18446744073709551616.`n")){Need($null -eq (Ready-GenerationText $bad 'R'))'Ready parser accepted invalid input'}
     Need((Latest-CheckpointText "Checkpoint committed generation 2.`r`n").generation -eq 2)'checkpoint CRLF rejected';Need((Latest-CheckpointText "Checkpoint committed generation 3.`n").generation -eq 3)'checkpoint LF rejected';Need((Latest-CheckpointText 'Checkpoint committed generation 4.').generation -eq 4)'checkpoint EOF rejected';foreach($bad in @("Checkpoint committed generation 0.`n","Checkpoint committed generation 1. `n","Checkpoint committed generation 1.`r","Checkpoint committed generation 18446744073709551616.`n")){Need($null -eq (Latest-CheckpointText $bad))'checkpoint parser accepted invalid input'}
@@ -152,6 +169,22 @@ function SelfTest {
         $noSuccessor='Ready: R: generation 1.';Need($null -eq (Latest-CheckpointText $noSuccessor))'missing successor accepted'
         $wrong=$child.Process.Id+1000000;Need($null -eq (Get-Process -Id $wrong -ErrorAction SilentlyContinue))'wrong PID fixture was unexpectedly live'
     } finally {if($null -ne $child){$child.Process.Dispose()};Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue}
+    # The complete orchestration is exercised with a real harmless cmd child;
+    # only Windows storage/workload/signal observations are substituted.
+    $old=@{Executable=$Executable;Bundle=$Bundle;DriveLetter=$DriveLetter;EvidenceDirectory=$EvidenceDirectory;SourceCommit=$SourceCommit;TimeoutMs=$TimeoutMs;Storage=$script:StorageInspector;Workload=$script:WorkloadProvider;Signal=$script:SignalProvider}
+    $root=Join-Path ([IO.Path]::GetTempPath()) ('m4-live-orchestration-'+[guid]::NewGuid().ToString('N'));[IO.Directory]::CreateDirectory($root)|Out-Null
+    try {
+        $batch=Join-Path $root 'harmless.cmd'
+        [IO.File]::WriteAllText($batch,"@echo off`r`nif `"%M4_LIVE_RECOVER%`"==`"1`" goto recover`r`necho Ready: R: generation 1.`r`necho Checkpoint committed generation 2.`r`necho owned-stderr 1>&2`r`nping -n 30 127.0.0.1 >nul`r`nexit /b 0`r`n:recover`r`necho Ready: R: generation 3.`r`necho Checkpoint committed generation 4.`r`nexit /b 0`r`n",[Text.UTF8Encoding]::new($false))
+        $Executable=$batch;$Bundle=Join-Path $root 'bundle';$DriveLetter='R';$EvidenceDirectory=$root;$SourceCommit=('a'*40);$TimeoutMs=10000
+        $baseline=[ordered]@{stable_identities=@('baseline');drive_mappings=@('C:|baseline')}
+        $script:StorageInspector={param($op,$letter) if($op -eq 'Inventory'){return $baseline};if($op -eq 'Volume'){if(-not(Test-Path 'R:')){New-PSDrive -Name R -PSProvider FileSystem -Root $root -Scope Global|Out-Null};[IO.Directory]::CreateDirectory($Bundle)|Out-Null;return [ordered]@{volume_guid='selftest-volume';filesystem='NTFS';partition_style='GPT';disk_number=7;partition_number=1}}}
+        $script:WorkloadProvider={param($op,$letter,$payload) if($op -eq 'Write'){[IO.File]::WriteAllText((Join-Path $root $payload.name),$payload.text,[Text.UTF8Encoding]::new($false));return};$h=[ordered]@{};foreach($n in $payload.names){$h[$n]=(Get-FileHash -LiteralPath (Join-Path $root $n) -Algorithm SHA256).Hash};return $h}
+        $arm=Invoke-LivePowerCutArm;Need($arm.process_alive -and $null -ne (Get-Process -Id $arm.pid -ErrorAction SilentlyContinue))'actual Arm did not return a live exact PID';$armRaw=[IO.File]::ReadAllBytes($arm.arm_evidence);Need($armRaw.Length -gt 3 -and -not($armRaw[0]-eq239-and$armRaw[1]-eq187-and$armRaw[2]-eq191))'arm evidence is not UTF8 without BOM';$armJson=Get-Content -LiteralPath $arm.arm_evidence -Raw -Encoding UTF8|ConvertFrom-Json;Need($armJson.schema -ceq 'myrd.m4.live-powercut-arm.v1' -and $armJson.old_pid -eq $arm.pid -and $armJson.armed_generation -eq 2 -and $armJson.stderr -match 'owned-stderr')'actual Arm evidence invalid'
+        (Get-Process -Id $arm.pid -ErrorAction Stop).Kill();Start-Sleep -Milliseconds 100;Remove-PSDrive -Name R -Force;$env:M4_LIVE_RECOVER='1';$script:SignalProvider={param($child) Need($child.Process.Id -gt 0)'signal exact PID missing'}
+        $ArmEvidence=$arm.arm_evidence;$recovered=Invoke-LivePowerCutRecover
+        Need($recovered.schema -ceq 'myrd.m4.live-powercut.v1' -and $recovered.status -ceq 'PASS' -and $recovered.recovered_generation -eq 4 -and $recovered.graceful_exit -eq 0)'actual Recover evidence invalid'
+    } finally {Remove-Item Env:M4_LIVE_RECOVER -ErrorAction SilentlyContinue;if(Get-PSDrive R -ErrorAction SilentlyContinue){Remove-PSDrive R -Force};$Executable=$old.Executable;$Bundle=$old.Bundle;$DriveLetter=$old.DriveLetter;$EvidenceDirectory=$old.EvidenceDirectory;$SourceCommit=$old.SourceCommit;$TimeoutMs=$old.TimeoutMs;$script:StorageInspector=$old.Storage;$script:WorkloadProvider=$old.Workload;$script:SignalProvider=$old.Signal;Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
     Write-Output 'M4 live power-cut SelfTest PASS'
 }
 try {
