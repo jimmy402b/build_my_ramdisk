@@ -13,7 +13,9 @@ $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($helper, [ref]$tokens, [ref]$errors)
 Need ($errors.Count -eq 0) 'live power-cut helper failed AST parsing'
 $text = [IO.File]::ReadAllText($helper)
-foreach($required in @('Invoke-LivePowerCutArm','Invoke-LivePowerCutRecover','StorageInspector','WorkloadProvider','EventProvider','SignalProvider','Arm','Recover','SelfTest','Ready-GenerationText','Latest-CheckpointText','[uint64]::TryParse','(?=\r?\n|\z)','ProcessStartInfo','M4OwnedChild','GenerateConsoleCtrlEvent','myrd.m4.live-powercut-arm.v1','myrd.m4.live-powercut.v1')) { Need ($text.Contains($required)) "live power-cut helper lacks $required" }
+foreach($required in @('Invoke-LivePowerCutArm','Invoke-LivePowerCutRecover','StorageInspector','WorkloadProvider','EventProvider','SignalProvider','Arm','Recover','SelfTest','Ready-GenerationText','Latest-CheckpointText','[uint64]::TryParse','(?=\r?\n|\z)','CreateProcessW','CREATE_NEW_PROCESS_GROUP','GenerateConsoleCtrlEvent','owned-stdout.log','owned-stderr.log','Flush($true)','myrd.m4.live-powercut-arm.v1','myrd.m4.live-powercut.v1')) { Need ($text.Contains($required)) "live power-cut helper lacks $required" }
+foreach($forbiddenOwned in @('RedirectStandardOutput=$true','RedirectStandardError=$true','new Thread(','M4OwnedChild')) { Need (-not $text.Contains($forbiddenOwned)) "live power-cut helper retains unsafe owned stream handling $forbiddenOwned" }
+Need ($text.Contains('public short wShowWindow,cbReserved2')) 'native STARTUPINFO layout does not preserve WORD fields'
 foreach($forbidden in @('ssh.exe','scp.exe','vmrun','shutdown.exe','Restart-Computer','Stop-Computer','Get-Process -Name','Stop-Process -Name')) { Need (-not $text.Contains($forbidden)) "live power-cut helper contains forbidden $forbidden" }
 $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -Mode SelfTest 2>&1 | ForEach-Object { [string]$_ })
 Need ($LASTEXITCODE -eq 0) "live power-cut selftest exit ${LASTEXITCODE}: $($out -join '|')"
