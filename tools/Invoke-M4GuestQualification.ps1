@@ -1035,6 +1035,7 @@ function Invoke-SelfTest {
         $savedFactsProvider = $script:FactsProvider
         $savedObserver = $script:QualificationObserver
         $hookOrder = [Collections.Generic.List[string]]::new()
+        $activeOrchestrationRoot = $orchestrationRoot
         try {
             $script:FactsProvider = { param($Root,$Kit) $goodFacts }
             $script:QualificationObserver = { param($Hook) $hookOrder.Add($Hook) }
@@ -1044,10 +1045,10 @@ function Invoke-SelfTest {
                 $phase = $Arguments[($Arguments.IndexOf('-Phase') + 1)]
                 $ack = $Arguments -ccontains '-SafetyAcknowledged'
                 if ($ack -and $phase -ceq 'CreateKill') {
-                    $artifactPath = Join-Path $orchestrationRoot 'formal\Release\myrd.exe'; $bundlePath = Join-Path $orchestrationRoot 'formal\bundle'
+                    $artifactPath = Join-Path $activeOrchestrationRoot 'formal\Release\myrd.exe'; $bundlePath = Join-Path $activeOrchestrationRoot 'formal\bundle'
                     $baseInventory=[ordered]@{boot_identity=$goodFacts.boot_utc;stable_identities=@('disk|fixture');aim_stable=@();physical_devices=@('physical|fixture');drive_mappings=@('C:|fixture')}; $afterInventory=[ordered]@{boot_identity=$goodFacts.boot_utc;stable_identities=@('disk|fixture','aim|fixture');aim_stable=@('AIM|fixture');physical_devices=@('physical|fixture','aimphysical|fixture');drive_mappings=@('C:|fixture','R:|fixture')}
                     $evidence = [ordered]@{ schema='myrd.m4.lifecycle.v1'; phase='CreateKill'; source_commit=('e'*40); executable_path=[IO.Path]::GetFullPath($artifactPath); executable_sha256=(Get-QualificationFileHash $artifactPath); bundle_path=[IO.Path]::GetFullPath($bundlePath); drive_letter='R'; argv=@('run','--bundle',$bundlePath,'--size','64M','--drive-letter','R:','--checkpoint-seconds','5','--checkpoint-dirty-mb','1','--ram-limit','64M'); constants=[ordered]@{size='64M';checkpoint_seconds='5';checkpoint_dirty_mb='1';ram_limit='64M'}; boot_identity=$goodFacts.boot_utc; baseline_inventory=$baseInventory; inventory_after=$afterInventory; hashes=[ordered]@{'A.txt'=('A'*64)}; generation=[uint64]2; exit_codes=[ordered]@{run=[int64]1}; status='REBOOT_REQUIRED_EXPECTED'; pid=[int64]1234; kill=[ordered]@{pid=[int64]1234;killed=$true;exit=[int64]1}; ready_observed=[ordered]@{generation=[uint64]1;volume_guid='V';filesystem='NTFS';partition_style='GPT';disk_number=[int64]3;partition_number=[int64]1}; checkpoint_observed=[ordered]@{generation=[uint64]2;line='Checkpoint committed generation 2.'} }
-                    [IO.File]::WriteAllText((Join-Path $orchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'), ($evidence | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+                    [IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json'), ($evidence | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
                 }
                 $childExit = if ($ack) { 0 } else { 77 }
                 $childOut = if ($ack) { '' } else { "M4 lifecycle $phase BLOCKED: SafetyAcknowledged is required.`r`n" }
@@ -1065,6 +1066,17 @@ function Invoke-SelfTest {
                 Need $typed "qualification hook $failedHook did not fail closed by type"
             }
             $script:QualificationObserver = { param($Hook) $hookOrder.Add($Hook) }
+            foreach ($failedHook in @('WriteState','FlushEvent','ReReadState','VerifyEvidenceHash','PrintCrashResetArmed')) {
+                $activeOrchestrationRoot = Join-Path $scratch ("hook-" + $failedHook)
+                foreach ($relative in @('kit','formal\tests\e2e','formal\Release','evidence')) { [IO.Directory]::CreateDirectory((Join-Path $activeOrchestrationRoot $relative)) | Out-Null }
+                foreach ($relative in @('kit\Capture-M4Child.ps1','formal\tests\e2e\Invoke-M4RunLifecycle.ps1','formal\Release\myrd.exe')) { [IO.File]::WriteAllText((Join-Path $activeOrchestrationRoot $relative), 'fixture') }
+                $script:QualificationObserver = { param($Hook) }
+                Write-QualificationState $activeOrchestrationRoot (New-QualificationState 'hook-q' 'Initial' 0 @()); Write-QualificationState $activeOrchestrationRoot (New-QualificationState 'hook-q' 'FormalCreateReady' 1 @())
+                $script:QualificationObserver = { param($Hook) if ($Hook -ceq $failedHook) { throw 'fixture hook failure' } }
+                $typed=$false; $output=@(); try { $output=@(Invoke-FormalCreateSequence -QualificationRoot $activeOrchestrationRoot -Kit (Join-Path $activeOrchestrationRoot 'kit') -Commit ('e'*40) -Facts $goodFacts) } catch [M4QualificationBlocked] { $typed=$true }
+                Need $typed "Create sequence hook $failedHook did not fail closed by type"; Need ((@($output)-join "`n") -cnotmatch 'CRASH RESET ARMED') "Create sequence hook $failedHook printed the armed instruction"
+            }
+            $activeOrchestrationRoot = $orchestrationRoot; $script:QualificationObserver = { param($Hook) $hookOrder.Add($Hook) }
             $validCreate = Get-Content -LiteralPath (Join-Path $orchestrationRoot 'evidence\m4-lifecycle-CreateKill.v1.json') -Raw -Encoding UTF8 | ConvertFrom-Json
             Assert-CreateKillEvidence -Evidence $validCreate -Commit ('e'*40) -Artifact (Join-Path $orchestrationRoot 'formal\Release\myrd.exe') -Bundle (Join-Path $orchestrationRoot 'formal\bundle')
             foreach ($mutation in @('source_commit','executable_path','executable_sha256','bundle_path','status','pid','generation')) {
