@@ -29,9 +29,12 @@ foreach ($name in $requiredFunctions) {
     $matches = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     Need ($matches.Count -eq 1) "guest qualification controller is missing $name"
 }
+$controllerText = [IO.File]::ReadAllText($controller)
 $guestFacts = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-GuestFacts' }, $true))[0]
 Need ((@($guestFacts.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -join '|') -ceq 'QualificationRoot|Kit') 'Get-GuestFacts parameter contract is invalid'
-$controllerText = [IO.File]::ReadAllText($controller)
+Need ($guestFacts.Body.Extent.Text.Contains("`$partitions = @(if (`$_.PartitionStyle -ceq 'RAW')")) 'Get-GuestFacts must preserve the RAW-disk empty partition collection under StrictMode'
+Need (-not $guestFacts.Body.Extent.Text.Contains('ManagementDateTimeConverter')) 'Get-GuestFacts must consume the DateTime returned by Get-CimInstance directly'
+Need ($controllerText -notmatch 'ManagementDateTimeConverter') 'guest boot probes must not apply a DMTF converter to Get-CimInstance DateTime values'
 $boundedFunction = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-BoundedProcess' }, $true))[0]
 $boundedArguments = @($boundedFunction.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'Arguments' })[0]
 Need ($null -ne $boundedArguments) 'Invoke-BoundedProcess Arguments parameter is missing'

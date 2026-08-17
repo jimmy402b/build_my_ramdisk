@@ -555,7 +555,7 @@ $script:QualificationKitProvider = { Split-Path -Parent $PSCommandPath }
 $script:ExitProvider = { param([int]$Code) exit $Code }
 $script:BootProbeProvider = {
     $os=Get-CimInstance Win32_OperatingSystem
-    [ordered]@{boot_utc=([Management.ManagementDateTimeConverter]::ToDateTime($os.LastBootUpTime).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'))}
+    [ordered]@{boot_utc=([datetime]$os.LastBootUpTime).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')}
 }
 $script:SystemEventProvider = {
     param([string]$ArmedUtc)
@@ -616,9 +616,9 @@ function Get-GuestFacts {
         Need ([string]$computer.Name -ceq [Environment]::MachineName) 'guest computer name and environment name disagree'
         $service = @(Get-CimInstance Win32_Service -Filter "Name='MyRamDiskService'"); $driver = @(Get-CimInstance Win32_SystemDriver -Filter "Name='phdskmnt'")
         Need ($service.Count -eq 1) 'guest service inventory is invalid'; Need ($driver.Count -eq 1) 'guest driver inventory is invalid'
-        $disks = @(Get-Disk | Sort-Object Number | ForEach-Object { $partitions = if ($_.PartitionStyle -ceq 'RAW') { @() } else { @(Get-Partition -DiskNumber $_.Number) }; '{0}|{1}|{2}|{3}' -f $_.Number,$_.Size,$_.PartitionStyle,$partitions.Count })
+        $disks = @(Get-Disk | Sort-Object Number | ForEach-Object { $partitions = @(if ($_.PartitionStyle -ceq 'RAW') { @() } else { @(Get-Partition -DiskNumber $_.Number) }); '{0}|{1}|{2}|{3}' -f $_.Number,$_.Size,$_.PartitionStyle,$partitions.Count })
         # Historical field name: the frozen "bios" value is ComputerSystem.Name (T_VIRTUAL), not SMBIOS text.
-        [ordered]@{ admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); boot_utc = ([Management.ManagementDateTimeConverter]::ToDateTime($os.LastBootUpTime).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')); model = [string]$computer.Model; bios = [string]$computer.Name; mac = if ($adapter.Count -eq 1) { [string]$adapter[0].MACAddress } else { '' }; root_ntfs = $true; service_start = [string]$service[0].StartMode; service_state = [string]$service[0].State; service_pid = [int64]$service[0].ProcessId; driver_start = if ([string]$driver[0].StartMode -ceq 'Manual') { 'DEMAND_START' } else { [string]$driver[0].StartMode }; driver_state = [string]$driver[0].State; processes = @(Select-RelevantGuestProcesses -Processes @(Get-CimInstance Win32_Process) -CurrentProcessId $PID); aim_ids = $aimIds; R = [bool](Test-Path 'R:\'); S = [bool](Test-Path 'S:\'); physical_disks = $disks }
+        [ordered]@{ admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); boot_utc = ([datetime]$os.LastBootUpTime).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'); model = [string]$computer.Model; bios = [string]$computer.Name; mac = if ($adapter.Count -eq 1) { [string]$adapter[0].MACAddress } else { '' }; root_ntfs = $true; service_start = [string]$service[0].StartMode; service_state = [string]$service[0].State; service_pid = [int64]$service[0].ProcessId; driver_start = if ([string]$driver[0].StartMode -ceq 'Manual') { 'DEMAND_START' } else { [string]$driver[0].StartMode }; driver_state = [string]$driver[0].State; processes = @(Select-RelevantGuestProcesses -Processes @(Get-CimInstance Win32_Process) -CurrentProcessId $PID); aim_ids = $aimIds; R = [bool](Test-Path 'R:\'); S = [bool](Test-Path 'S:\'); physical_disks = $disks }
     }
     catch [M4QualificationBlocked] { throw }
     catch { throw [M4QualificationBlocked]::new("guest fact sampling failed: $($_.Exception.Message)") }
