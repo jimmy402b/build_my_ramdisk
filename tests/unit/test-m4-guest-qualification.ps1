@@ -36,6 +36,10 @@ $boundedFunction = @($controllerAst.FindAll({ param($node) $node -is [Management
 $boundedArguments = @($boundedFunction.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'Arguments' })[0]
 Need ($null -ne $boundedArguments) 'Invoke-BoundedProcess Arguments parameter is missing'
 Need (@($boundedArguments.Attributes | Where-Object { $_.TypeName.Name -ceq 'AllowEmptyCollection' }).Count -eq 1) 'Invoke-BoundedProcess must accept an empty argument collection for zero-argument helpers'
+$commandLineFunction = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'ConvertTo-WindowsCommandLine' }, $true))[0]
+$commandLineArguments = @($commandLineFunction.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'Arguments' })[0]
+Need ($null -ne $commandLineArguments) 'ConvertTo-WindowsCommandLine Arguments parameter is missing'
+Need (@($commandLineArguments.Attributes | Where-Object { $_.TypeName.Name -ceq 'AllowEmptyCollection' }).Count -eq 1) 'ConvertTo-WindowsCommandLine must accept an empty argument collection for zero-argument helpers'
 $runner = Join-Path $root 'tests\e2e\Invoke-M4RunLifecycle.ps1'
 Need ([IO.File]::Exists($runner)) 'lifecycle runner is missing'
 $runnerText = [IO.File]::ReadAllText($runner)

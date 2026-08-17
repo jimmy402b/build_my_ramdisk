@@ -454,7 +454,7 @@ function Assert-InitialGuestFacts {
 }
 
 function ConvertTo-WindowsCommandLine {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Arguments)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Arguments)
     $quoted = foreach ($argument in $Arguments) {
         if ($argument.Length -eq 0) { '""'; continue }
         if ($argument -notmatch '[\s"]') { $argument; continue }
