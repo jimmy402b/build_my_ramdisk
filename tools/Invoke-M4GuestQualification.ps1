@@ -472,7 +472,7 @@ function ConvertTo-WindowsCommandLine {
 }
 
 function Invoke-BoundedProcess {
-    param([Parameter(Mandatory = $true)][string]$FilePath, [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Arguments, [Parameter(Mandatory = $true)][int]$TimeoutMs)
+    param([Parameter(Mandatory = $true)][string]$FilePath, [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Arguments, [Parameter(Mandatory = $true)][int]$TimeoutMs)
     $process = $null
     try {
         Need ($TimeoutMs -gt 0) 'bounded process timeout must be a positive integer'

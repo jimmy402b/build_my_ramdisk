@@ -32,6 +32,10 @@ foreach ($name in $requiredFunctions) {
 $guestFacts = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-GuestFacts' }, $true))[0]
 Need ((@($guestFacts.Body.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -join '|') -ceq 'QualificationRoot|Kit') 'Get-GuestFacts parameter contract is invalid'
 $controllerText = [IO.File]::ReadAllText($controller)
+$boundedFunction = @($controllerAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-BoundedProcess' }, $true))[0]
+$boundedArguments = @($boundedFunction.Body.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'Arguments' })[0]
+Need ($null -ne $boundedArguments) 'Invoke-BoundedProcess Arguments parameter is missing'
+Need (@($boundedArguments.Attributes | Where-Object { $_.TypeName.Name -ceq 'AllowEmptyCollection' }).Count -eq 1) 'Invoke-BoundedProcess must accept an empty argument collection for zero-argument helpers'
 $runner = Join-Path $root 'tests\e2e\Invoke-M4RunLifecycle.ps1'
 Need ([IO.File]::Exists($runner)) 'lifecycle runner is missing'
 $runnerText = [IO.File]::ReadAllText($runner)
