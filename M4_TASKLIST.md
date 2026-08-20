@@ -47,7 +47,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 |---|---|---|---|---|---|
 | M4-00 | ON_TRACK | — | `c20c269` | 本提交 | `docs/validation/m4-driver-unavailable-baseline.md` |
 | M4-01 | ON_TRACK | M4-00 | `c9bc81a` | 本提交 | 预检纯分类 RED |
-| M4-02 | NOT_STARTED | M4-01 | — | — | SCM 包装与错误映射 |
+| M4-02 | ON_TRACK | M4-01 | `d134963` | 本提交 | SCM 包装与错误映射 |
 | M4-03 | NOT_STARTED | M4-02 | — | — | `main.cpp` 精确插入点 |
 | M4-04 | NOT_STARTED | M4-03 | — | — | discovery/query 协议回归 |
 | M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
@@ -89,12 +89,12 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 
 **范围：** `src/run/driver_preflight.h`、`src/run/driver_preflight.cpp`、`src/CMakeLists.txt`、`tests/unit/m4_driver_preflight_tests.cpp`
 
-- [ ] M4-02.1 实现纯函数：服务缺失或 `SERVICE_DISABLED` 归为 `unavailable`；四种列出的有效启动类型归为 `available`。
-- [ ] M4-02.2 实现只含 SCM 访问的包装：`OpenSCManagerW`、`OpenServiceW`、`QueryServiceConfigW`、精确 close handle；不得读取 bundle、枚举 StoragePort、打开 AIM、检查盘符或创建设备。
-- [ ] M4-02.3 仅将 `ERROR_SERVICE_DOES_NOT_EXIST` 和 `SERVICE_DISABLED` 映射为：`ErrorDomain::usage`、code `1`、`operation=L"driver_unavailable"`、`message=L"phdskmnt is disabled or absent"`。
-- [ ] M4-02.4 将所有其他 SCM 失败映射为 `ErrorDomain::win32`、原始 `GetLastError()` 和各自操作名 `OpenSCManagerW`/`OpenServiceW`/`QueryServiceConfigW`；禁止借用 `driver_unavailable` operation/message。
-- [ ] M4-02.5 重跑 `unit.m4.driver_preflight` 到 GREEN，并添加 handle-close/错误优先级断言。
-- [ ] M4-02.6 提交实现；复盘确认没有 adapter handle、StoragePort、SRB QUERY_VERSION、设备、盘符或 bundle 依赖进入新模块。
+- [x] M4-02.1 实现纯函数：服务缺失或 `SERVICE_DISABLED` 归为 `unavailable`；四种列出的有效启动类型归为 `available`。
+- [x] M4-02.2 实现只含 SCM 访问的包装：`OpenSCManagerW`、`OpenServiceW`、`QueryServiceConfigW`、精确 close handle；不得读取 bundle、枚举 StoragePort、打开 AIM、检查盘符或创建设备。
+- [x] M4-02.3 仅将 `ERROR_SERVICE_DOES_NOT_EXIST` 和 `SERVICE_DISABLED` 映射为：`ErrorDomain::usage`、code `1`、`operation=L"driver_unavailable"`、`message=L"phdskmnt is disabled or absent"`。
+- [x] M4-02.4 将所有其他 SCM 失败映射为 `ErrorDomain::win32`、原始 `GetLastError()` 和各自操作名 `OpenSCManagerW`/`OpenServiceW`/`QueryServiceConfigW`；禁止借用 `driver_unavailable` operation/message。
+- [x] M4-02.5 重跑 `unit.m4.driver_preflight` 到 GREEN，并添加 handle-close/错误优先级断言。
+- [x] M4-02.6 提交实现；复盘确认没有 adapter handle、StoragePort、SRB QUERY_VERSION、设备、盘符或 bundle 依赖进入新模块。
 
 ### M4-03 — 将预检插入 `myrd run` 的唯一安全位置
 
@@ -311,4 +311,25 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
   - 无偏差。
 - 安全检查：`无 VMware/驱动/设备动作`。测试为纯内存 seam，未调用真实 `OpenSCManagerW`/`OpenServiceW`/`QueryServiceConfigW`，未运行 `myrd.exe`，未触碰服务、设备、磁盘或电源边界。
 - 环境记录：`out/build/msvc` 原有 CMake 缓存指向 CLion 自带 MinGW `g++.exe`，与本仓库 `CMakeLists.txt:5` 的 `M0 requires MSVC` 冲突，导致 `cmake --preset msvc` 失败。已用 CMake 官方 `--fresh` 重建缓存为 MSVC 19.44；该目录是可重新生成的构建产物，未触碰任何源码或用户文档。
+- 结论：`ON_TRACK`
+
+### Review Record — M4-02
+
+- Start commit: `46e739d`
+- Implementation commit: `d134963`
+- 允许文件与实际文件：`一致（允许集的子集）`。实际改动为 `src/run/driver_preflight.cpp`（新增）、`src/CMakeLists.txt`、`tests/unit/m4_driver_preflight_tests.cpp`。`src/run/driver_preflight.h` 在允许集内但无需再改——M4-01 已冻结其声明。未触碰 `tests/CMakeLists.txt`：测试沿用本仓库既有惯例，直接 `#include "src/run/driver_preflight.cpp"`（与 `m4_run_policy_tests.cpp` 包含 `run_loop.cpp` 一致），因此无需新增构建注册。
+- RED 证据：见 M4-01（LNK2019 / LNK1120；ctest `Not Run`）。本任务开始时该 RED 仍然成立。
+- GREEN 证据：
+  - `cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests` → exit 0，`Linking CXX executable tests\Debug\myrd_m4_driver_preflight_tests.exe`。
+  - `ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure` → exit 0，`1/1 Test #126: unit.m4.driver_preflight ... Passed`，`100% tests passed, 0 tests failed out of 1`。
+  - `cmake --build --preset debug --parallel 1 --target myrd` → exit 0，确认新增源文件已进入产品目标且不破坏 `myrd` 链接。
+- Debug/Release 证据：`Release 未运行`。原因：M4-02 只要求 focused Debug 目标；双配置 `m4-v3` 全量属 M4-14。
+- Spec/Plan 对齐：
+  - Plan 不变量 1 — 已满足且已加测试固定：`driver_unavailable` 只代表两种已知结果。未定义启动类型归为 `available`（新增测试 `m4_driver_preflight_undefined_start_type_is_left_to_adapter_discovery`），避免该协议代表第三种未知条件。
+  - M4-02.3 字节协议 — `ErrorDomain::usage`、code `1`、`driver_unavailable`、`phdskmnt is disabled or absent`，四项逐字段断言。
+  - M4-02.4 — 三类 SCM 失败各自保留 `ErrorDomain::win32`、原始错误码与自身操作名，并断言渲染文本不含 `driver_unavailable`。
+  - M4-02.5 handle-close — 新增 `m4_driver_preflight_closes_every_handle_it_opened`，逐场景断言精确的关闭序列（含「未打开则不关闭」）。错误优先级 — 新增 `m4_driver_preflight_stops_at_the_first_failing_scm_call` 与 `m4_driver_preflight_reads_the_open_error_before_closing_the_manager`，后者证明先读 `last_error` 再 `close_handle`（`CloseServiceHandle` 会覆盖线程错误值）。
+  - M4-02.6 — `driver_preflight.cpp` 仅 include `driver_preflight.h` 与 `<vector>`；无 adapter handle、StoragePort、SRB QUERY_VERSION、设备枚举、盘符检查或 bundle 访问。
+  - 无偏差。
+- 安全检查：`无 VMware/驱动/设备动作`。全部测试走内存 seam；未调用真实 SCM，未运行 `myrd.exe`，未触碰服务、设备、磁盘或电源边界。
 - 结论：`ON_TRACK`
