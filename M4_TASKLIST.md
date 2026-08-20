@@ -48,7 +48,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 | M4-00 | ON_TRACK | — | `c20c269` | 本提交 | `docs/validation/m4-driver-unavailable-baseline.md` |
 | M4-01 | ON_TRACK | M4-00 | `c9bc81a` | 本提交 | 预检纯分类 RED |
 | M4-02 | ON_TRACK | M4-01 | `d134963` | 本提交 | SCM 包装与错误映射 |
-| M4-03 | NOT_STARTED | M4-02 | — | — | `main.cpp` 精确插入点 |
+| M4-03 | ON_TRACK | M4-02 | `def1812` | 本提交 | `main.cpp` 精确插入点 |
 | M4-04 | NOT_STARTED | M4-03 | — | — | discovery/query 协议回归 |
 | M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
 | M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
@@ -100,12 +100,12 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 
 **范围：** `src/run/main.cpp`、`src/CMakeLists.txt`、`tests/unit/m4_product_boundary_tests.ps1`
 
-- [ ] M4-03.1 在产品边界 PowerShell 合同中写 RED：`require_phdskmnt_service_available()` 必须在 `require_elevation()` 成功分支之后、`classify_bundle()` 之前；Create 与 Recover 不得各自有第二个预检入口。
-- [ ] M4-03.2 在该合同中写 RED 字节协议断言：已知不可用时 `print_run_error` 的字段必须是 `driver_unavailable` 和 `phdskmnt is disabled or absent`，stdout 空、exit 1、stderr CRLF；SCM I/O 失败 stderr 不得含该 operation。
-- [ ] M4-03.3 在 `main.cpp` 仅在提权成功后插入预检；失败时调用既有 `print_run_error(options.bundle, error)` 并 `return 1`，然后才调用 `classify_bundle()`。
-- [ ] M4-03.4 确认预检之前不读取/创建/修改/挂载 bundle；在合同中用源码位置检查覆盖 `classify_bundle`、`create_image`、recover、provider start。
-- [ ] M4-03.5 运行 `ctest --preset debug -R '^unit\.m4\.(driver_preflight|product_boundary)$' --output-on-failure`，预期全绿。
-- [ ] M4-03.6 提交实现并复盘错误优先级：未提权时仍优先报告 `require_elevation`，不会报告服务状态。
+- [x] M4-03.1 在产品边界 PowerShell 合同中写 RED：`require_phdskmnt_service_available()` 必须在 `require_elevation()` 成功分支之后、`classify_bundle()` 之前；Create 与 Recover 不得各自有第二个预检入口。
+- [x] M4-03.2 在该合同中写 RED 字节协议断言：已知不可用时 `print_run_error` 的字段必须是 `driver_unavailable` 和 `phdskmnt is disabled or absent`，stdout 空、exit 1、stderr CRLF；SCM I/O 失败 stderr 不得含该 operation。
+- [x] M4-03.3 在 `main.cpp` 仅在提权成功后插入预检；失败时调用既有 `print_run_error(options.bundle, error)` 并 `return 1`，然后才调用 `classify_bundle()`。
+- [x] M4-03.4 确认预检之前不读取/创建/修改/挂载 bundle；在合同中用源码位置检查覆盖 `classify_bundle`、`create_image`、recover、provider start。
+- [x] M4-03.5 运行 `ctest --preset debug -R '^unit\.m4\.(driver_preflight|product_boundary)$' --output-on-failure`，预期全绿。
+- [x] M4-03.6 提交实现并复盘错误优先级：未提权时仍优先报告 `require_elevation`，不会报告服务状态。
 
 ### M4-04 — 冻结 discovery 唯一权威与 query 字节协议
 
@@ -332,4 +332,23 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
   - M4-02.6 — `driver_preflight.cpp` 仅 include `driver_preflight.h` 与 `<vector>`；无 adapter handle、StoragePort、SRB QUERY_VERSION、设备枚举、盘符检查或 bundle 访问。
   - 无偏差。
 - 安全检查：`无 VMware/驱动/设备动作`。全部测试走内存 seam；未调用真实 SCM，未运行 `myrd.exe`，未触碰服务、设备、磁盘或电源边界。
+- 结论：`ON_TRACK`
+
+### Review Record — M4-03
+
+- Start commit: `714ec09`
+- Implementation commit: `def1812`
+- 允许文件与实际文件：`有一处受控扩展`。实际改动为 `src/run/main.cpp`、`tests/unit/m4_product_boundary_tests.ps1`（均在允许集内），外加 `src/run/driver_preflight.h`。该头文件不在 M4-03 允许集内，但必须改：它在 `main.cpp` 的新 include 位置先于项目头引入 `<windows.h>`，`min`/`max` 宏破坏了 `src/common/operation_context.h:13` 与 `src/storage/block_math.h:64`（`error C2589/C2059/C3615`）。修法为采用本仓库既有头文件惯例 `#define WIN32_LEAN_AND_MEAN` + `#define NOMINMAX`（与 `src/common/unique_handle.h` 完全一致），未改变任何声明或语义。`src/CMakeLists.txt` 在允许集内但无需再改——M4-02 已注册该源文件。
+- RED 证据：`ctest --preset debug -R '^unit\.m4\.product_boundary$' --output-on-failure` → exit 8，`1/1 Test #120: unit.m4.product_boundary ***Failed`，失败文本 `product main must call the phdskmnt service preflight`。
+- GREEN 证据：
+  - `cmake --build --preset debug --parallel 1 --target myrd` → exit 0（先于 ctest 重建，确保合同不是对着旧 exe 通过）。
+  - `ctest --preset debug -R '^unit\.m4\.(driver_preflight|product_boundary)$' --output-on-failure` → exit 0，`100% tests passed, 0 tests failed out of 2`（#120 product_boundary 24.84s、#126 driver_preflight 0.02s）。
+- Debug/Release 证据：`Release 未运行`。原因：M4-03 只要求上述 focused Debug 命令；双配置 `m4-v3` 全量属 M4-14。
+- Spec/Plan 对齐：
+  - Spec §3.1「预检完成前不得读取、创建、修改或挂载 bundle」— 合同以 wmain 内源码偏移逐项断言预检早于 `classify_bundle(`、`create_image(`、`recover_complete_image(`、`M3AimRuntime::create(`、`find_recovered_volume(`、`provision_new_volume(`。
+  - Plan 任务 1「精确插入在 `require_elevation()` 成功之后」— 已满足并被断言；错误优先级保持：未提权时 `require_elevation` 先返回并 `return 1`，永不报告服务状态。
+  - M4-03.1「Create 与 Recover 不得各自有第二个预检入口」— 以全文件 `Measure-LiteralOccurrence` 断言恰好一次调用。
+  - M4-03.2 字节协议 — 断言 `L"driver_unavailable"` 与 `L"phdskmnt is disabled or absent"` 在 `driver_preflight.cpp` 中各恰好出现一次、`ErrorDomain::usage, 1`、三个 SCM 操作名各恰好一次且与 `driver_unavailable` 构造点不相邻，因此 SCM I/O 失败的 stderr 不可能含该 operation。exit 1 与 CRLF 由既有 `print_run_error` 路径保证，并已在 M4-02 的 C++ 单测逐字段冻结。
+  - 无偏差（头文件扩展已如实记录并说明原因）。
+- 安全检查：`无 VMware/驱动/设备动作`。`unit.m4.product_boundary` 会运行 `myrd.exe`，但仅限既有的受审计有界调用集合（`--help`、无参、`run --help`、`compact --help`、缺失 bundle 的 compact、无效 run，以及一个临时目录中的 unknown bundle）；该集合由合同自身的 `Assert-SafeBoundaryInvocations` 白名单强制，未创建 AIM 设备、未挂载盘符、未触碰服务或电源边界。本机 `phdskmnt` 处于可用状态，因此新预检放行、unknown bundle 仍按既有 `classify_bundle` 协议失败——预检未修改任何服务状态。
 - 结论：`ON_TRACK`
