@@ -46,7 +46,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 | Task | 状态 | 前置 | 实现提交 | 复盘提交 | 证据/阻断 |
 |---|---|---|---|---|---|
 | M4-00 | ON_TRACK | — | `c20c269` | 本提交 | `docs/validation/m4-driver-unavailable-baseline.md` |
-| M4-01 | NOT_STARTED | M4-00 | — | — | 预检纯分类 RED |
+| M4-01 | ON_TRACK | M4-00 | `c9bc81a` | 本提交 | 预检纯分类 RED |
 | M4-02 | NOT_STARTED | M4-01 | — | — | SCM 包装与错误映射 |
 | M4-03 | NOT_STARTED | M4-02 | — | — | `main.cpp` 精确插入点 |
 | M4-04 | NOT_STARTED | M4-03 | — | — | discovery/query 协议回归 |
@@ -78,12 +78,12 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 
 **范围：** `tests/unit/m4_driver_preflight_tests.cpp`（新增）、`tests/CMakeLists.txt`、`src/run/driver_preflight.h`（仅声明）
 
-- [ ] M4-01.1 创建 `m4_driver_preflight_tests.cpp`，先编写 `classify_phdskmnt_service` 的失败测试：服务不存在与 `SERVICE_DISABLED` 返回 `unavailable`。
-- [ ] M4-01.2 在同一测试添加四种可用启动类型 RED：`SERVICE_BOOT_START`、`SERVICE_SYSTEM_START`、`SERVICE_DEMAND_START`、`SERVICE_AUTO_START` 均返回 `available`。
-- [ ] M4-01.3 为 SCM 包装定义可替换 I/O seam 的测试输入，加入 `OpenSCManagerW` 失败、`OpenServiceW(ERROR_ACCESS_DENIED)`、`QueryServiceConfigW` 失败三条 RED；每条断言 `ErrorDomain::win32`、具体操作名且渲染文本不含 `driver_unavailable`。
-- [ ] M4-01.4 在 `tests/CMakeLists.txt` 注册 `unit.m4.driver_preflight`、标签 `m4-v3`、超时 30 秒。
-- [ ] M4-01.5 构建并运行：`cmake --preset msvc`、`cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests`、`ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure`；预期失败为缺声明/缺实现。
-- [ ] M4-01.6 提交仅含 RED 测试与必要声明的变更；复盘 RED 输出和文件范围。
+- [x] M4-01.1 创建 `m4_driver_preflight_tests.cpp`，先编写 `classify_phdskmnt_service` 的失败测试：服务不存在与 `SERVICE_DISABLED` 返回 `unavailable`。
+- [x] M4-01.2 在同一测试添加四种可用启动类型 RED：`SERVICE_BOOT_START`、`SERVICE_SYSTEM_START`、`SERVICE_DEMAND_START`、`SERVICE_AUTO_START` 均返回 `available`。
+- [x] M4-01.3 为 SCM 包装定义可替换 I/O seam 的测试输入，加入 `OpenSCManagerW` 失败、`OpenServiceW(ERROR_ACCESS_DENIED)`、`QueryServiceConfigW` 失败三条 RED；每条断言 `ErrorDomain::win32`、具体操作名且渲染文本不含 `driver_unavailable`。
+- [x] M4-01.4 在 `tests/CMakeLists.txt` 注册 `unit.m4.driver_preflight`、标签 `m4-v3`、超时 30 秒。
+- [x] M4-01.5 构建并运行：`cmake --preset msvc`、`cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests`、`ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure`；预期失败为缺声明/缺实现。
+- [x] M4-01.6 提交仅含 RED 测试与必要声明的变更；复盘 RED 输出和文件范围。
 
 ### M4-02 — 实现 SCM 包装及三类预检结果映射
 
@@ -291,4 +291,24 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
   - Spec §7 证据字节规范 — 基线记录为 UTF-8 无 BOM、CRLF 结尾，写后重读校验：7216 字节、BOM=False、裸 LF=0、SHA-256 `9A8A5813B6693667696D622D4501DE58CAC125813A50F94F07310DD06EE342C1`。
   - 无偏差。
 - 安全检查：`无 VMware/驱动/设备动作`。未执行任何 VMware 操作、SSH、`sc.exe`、`pnputil.exe`、`Get-PnpDevice`/`Get-Disk`/`Get-WinEvent`、`myrd.exe`、`myrd_m4_aim_query.exe`、AIM 设备创建、bundle 读写或电源边界。`out/` 下的原生 artifact 只被哈希读取，未被构建、运行或替换。
+- 结论：`ON_TRACK`
+
+### Review Record — M4-01
+
+- Start commit: `c20c269`（M4-00 实现提交；本任务开始时 HEAD 为 `c2e8171`）
+- Implementation commit: `c9bc81a`
+- 允许文件与实际文件：`一致`。实际改动恰为 `tests/unit/m4_driver_preflight_tests.cpp`（新增）、`src/run/driver_preflight.h`（新增，仅声明与注释）、`tests/CMakeLists.txt`（新增一处测试注册）。未新增 `.cpp` 实现，未触碰 `src/CMakeLists.txt` 与 `main.cpp`。
+- RED 证据：
+  - `cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests` → 构建失败（ninja 停止）。预期失败文本：`error LNK2019: 无法解析的外部符号 ... myrd::classify_phdskmnt_service(bool,unsigned long)` 与 `... myrd::require_phdskmnt_service_available(struct myrd::ScmServiceProbe const &)`，收敛为 `fatal error LNK1120: 2 个无法解析的外部命令`。
+  - `ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure` → exit 8，`1/1 Test #126: unit.m4.driver_preflight ***Not Run`，`0% tests passed, 1 tests failed out of 1`。
+  - 两级 RED 均为「缺实现」，符合 M4-01.5 的预期失败类别。
+- GREEN 证据：`本任务不产生 GREEN`。M4-01 只交付 RED 与声明；GREEN 属 M4-02。
+- Debug/Release 证据：`未运行 Release`。原因：M4-01 只要求 Debug focused 目标；双配置全量属 M4-14。Debug 配置成功：`cmake --preset msvc --fresh` → exit 0，`The CXX compiler identification is MSVC 19.44.35228.0`。
+- Spec/Plan 对齐：
+  - Plan 任务 1 的 RED 矩阵四行全部覆盖（服务不存在、`SERVICE_DISABLED`、四种可用启动类型、三类 SCM I/O 失败）。
+  - Plan 任务 1「不依赖测试机上实际 `phdskmnt` 服务的存在、权限或启动类型」— 已满足：`FakeScm` 为纯内存 seam，测试不触碰真实 SCM。
+  - Spec §3.1「预检不读取 bundle」— 已满足：新头文件不引用 bundle、adapter handle、StoragePort、SRB QUERY_VERSION、设备或盘符。
+  - 无偏差。
+- 安全检查：`无 VMware/驱动/设备动作`。测试为纯内存 seam，未调用真实 `OpenSCManagerW`/`OpenServiceW`/`QueryServiceConfigW`，未运行 `myrd.exe`，未触碰服务、设备、磁盘或电源边界。
+- 环境记录：`out/build/msvc` 原有 CMake 缓存指向 CLion 自带 MinGW `g++.exe`，与本仓库 `CMakeLists.txt:5` 的 `M0 requires MSVC` 冲突，导致 `cmake --preset msvc` 失败。已用 CMake 官方 `--fresh` 重建缓存为 MSVC 19.44；该目录是可重新生成的构建产物，未触碰任何源码或用户文档。
 - 结论：`ON_TRACK`
