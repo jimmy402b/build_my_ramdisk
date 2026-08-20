@@ -1,716 +1,294 @@
-# M4 Contracted Product TASKLIST
+# M4 驱动不可用与断电恢复资格验收执行台账
 
-This is the execution control file for the final MyRamDisk milestone. It is not
-an independent requirement source. Every task must follow, in order:
+> **唯一执行台账：** M4 的状态变更、实现提交、复盘记录和 VM 验收证据只写入本文件；不回写历史 `tasklist.md`，也不使用任何 M0/M1 台账作为进度来源。
 
-1. `docs/superpowers/specs/2026-08-13-m4-contracted-product-design.md`
-2. `docs/superpowers/plans/2026-08-13-m4-contracted-product.md`
-3. this file
-4. the accepted M0-M3 contracts
+> **执行依据：** [M4 驱动不可用与断电恢复验收重设计 Spec](docs/superpowers/specs/2026-08-20-m4-driver-unavailable-qualification-design.md) → [M4 驱动不可用与断电恢复资格验收实施计划](docs/superpowers/plans/2026-08-21-m4-driver-unavailable-qualification.md) → 本台账。发生冲突时按 `安全不变量 > Spec > Plan > 本台账摘要` 处理，并停止实施直至更新并批准上游文档。
 
-Implementation base and workspace:
+> 状态：待实施。旧 kit、旧资格根目录和旧协议只可用于诊断，不得迁移、兼容、覆盖或作为通过证据。
 
-```text
-4f9f912de56160062a007483fc56d5a02d5ff613
-C:\Users\JimmyLin\Desktop\build_my_ramdisk\.worktrees\m4-contracted-product
-feature/m4-contracted-product
-```
+## M4-0. 执行规则
 
-The historical `feature/m4-task23-restart` branch is not an implementation
-dependency and must not be merged or cherry-picked wholesale.
+1. 每次只将一个任务标记为 `IN_PROGRESS`；其前置任务必须是 `ON_TRACK`。
+2. 每个任务先完成其 RED 项，再实现最小变更至 GREEN；未经记录的 GREEN 不得作为证据。
+3. 每个实现任务完成后必须运行该任务列出的验证，执行 `git diff --check`，并在单独提交中仅记录本台账复盘。
+4. `Blocked` 是资格根目录的产品终态；任何测试都必须断言同一资格根不自动重试、不改写状态、不再次触发子进程或 VMware 电源边界。
+5. VMware 只能由用户人工操作。VM 正式验收总共恰好三次边界：Formal、Live Power-Cut、Missing-driver；每段选择 Reset 或一次 Power Off→Power On，绝不正常关机。
+6. `pnputil.exe /restart-device` 不得进入实现。只有在干净 VM 前置实验已证明 `sc start phdskmnt` 不足时，才可停止本任务表、补充决策与 Spec 后重新规划。
+7. 物理盘号、分区号、PnP 实例号、序列号和显示文本仅能写入诊断；通过条件只能使用当前轮 AIM 所拥有的 `S:` 与 Formal 来源 bundle 最后 checkpoint 的 `A.txt`/`D.txt` 内容哈希。
 
----
-
-## A. Execution contract
-
-### A1. Subagent-driven implementation
-
-The project owner has frozen M4 to subagent-driven execution. For every R0-R8
-implementation task, assign a fresh `gpt-5.6-terra` agent at medium reasoning
-as implementer. After it implements the task, assign independent fresh
-Terra/medium reviewers first for SPEC compliance and then for code quality.
-The implementer fixes every review finding and the work is re-reviewed.
-
-The main Sol/xhigh controller performs structural analysis with CodeGraph and
-gives the implementer the needed context, maintains sequence and the one-DOING
-limit, reads the diff, independently reruns verification, updates this ledger,
-and creates each exact task commit. Never run multiple implementation agents
-concurrently in the shared worktree. If implementation fails, the controller
-first determines whether the task or plan is defective, context is missing, the
-task is too large, or the work is difficult. If the plan is wrong, pause and
-request or record a decision; only take over implementation when the task is
-sound but Terra cannot complete it.
-
-### A2. Before a task
-
-- [ ] Confirm the fixed worktree, branch, HEAD and status.
-- [ ] Protect every pre-existing modification and untracked path.
-- [ ] Read the full SPEC sections referenced by the task.
-- [ ] Read the matching PLAN task and this task card.
-- [ ] Require every dependency to be `DONE` with accessible evidence.
-- [ ] Ensure the table has at most one `DOING` task.
-- [ ] Change the task from `PENDING` to `DOING` and fill the start record.
-- [ ] Assign the fresh implementer and reserve independent fresh SPEC-compliance and code-quality reviewers.
-- [ ] Have the implementer add and run the focused RED before product implementation.
-
-### A3. Before a task is DONE
-
-- [ ] Run the PLAN's focused Debug verification.
-- [ ] Run the task's cumulative M3/M4 labels.
-- [ ] Run the required Release check.
-- [ ] Run `tools/Measure-M4ProductLines.ps1`.
-- [ ] Run product-boundary/prohibited-string and test-seam scans.
-- [ ] Run `git diff --check` and `git status --short`.
-- [ ] Map the actual files to the allowed-file list.
-- [ ] Obtain independent SPEC-compliance and code-quality reviews; have the implementer fix findings and obtain re-review.
-- [ ] Have the main controller read the diff and independently rerun the required verification.
-- [ ] Record the implementer's RED and implementation, the reviewers' findings and re-review, the main-controller verification, and remaining exclusions.
-- [ ] Update status to `DONE` only with fresh evidence.
-- [ ] Have the main controller stage exact paths and create the fixed task commit.
-
-### A4. Status values
-
-- `PENDING`: not started.
-- `DOING`: active; at most one task.
-- `BLOCKED`: a concrete external/environmental blocker prevents progress.
-- `BLOCKED_DECISION`: R1 found a product decision that only the owner can make.
-- `DONE`: implementation, tests, record and exact commit are complete.
-
-An ordinary test failure is not `BLOCKED`; keep the task `DOING` and debug it.
-
-### A5. Stop conditions
-
-Stop the current task without beginning the next if a change would:
-
-- add Service, Host, Worker, named-pipe IPC, profile or operation-store code;
-- add M4 durable phase, transition, admission, evidence or revision state;
-- add an interface/manager/strategy for a single concrete call;
-- copy M3 checkpoint or compaction durability algorithms;
-- format a recovery-path disk;
-- dismount after volume-lock failure;
-- clean up an orphan AIM device without reboot-bound identity;
-- exceed 2500 product lines;
-- weaken an accepted M0-M3 contract;
-- require an M5 for product usability.
-
-Preserve the RED, document the exact conflict and request a scoped decision.
-
----
-
-## B. Build, test and evidence conventions
-
-### B1. Standard local commands
-
-Run inside an MSVC x64 developer environment:
-
-```powershell
-cmake --preset msvc
-cmake --build --preset debug --parallel 1
-ctest --preset debug --output-on-failure
-cmake --build --preset release --parallel 1
-ctest --preset release --output-on-failure
-```
-
-If CMake selects MinGW or `cl` reports a missing standard header, load:
+### M4 状态定义
 
 ```text
-C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat
+NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
+                                  |                 |
+                                  +-> DEVIATED      +-> BLOCKED
+                                                    +-> NO_GO_EVIDENCE
 ```
 
-Do not classify that environment failure as a code RED.
+`DEVIATED`、`BLOCKED`、`NO_GO_EVIDENCE` 均停止后续任务；必须先更新并批准 Spec/Plan，或由用户解除外部阻断。
 
-### B2. M4 labels
+## M4-0.1 Spec、Plan 与任务的完整对应
 
-```powershell
-ctest --preset release -L m4-v0 --output-on-failure
-ctest --preset release -L m4-v1 --output-on-failure
-ctest --preset release -L m4-v2 --output-on-failure
-ctest --preset release -L m4-v3 --output-on-failure
-```
+| Spec 要求 | Plan 任务 | 本台账任务 | 闭环证据 |
+|---|---|---|---|
+| §1–§3.1：服务缺失/禁用零 bundle 写入；SCM 其他错误独立报告；提权后预检 | 任务 1 | M4-01、M4-02、M4-03 | 纯函数/SCM seam RED→GREEN、产品边界顺序与字节协议合同 |
+| §3.2：`discover_aim_adapter` 是唯一 AIM 权威；query 严格协议 | 任务 2 | M4-04 | discovery/query source、字节与类型 mutation 合同 |
+| §4–§5：九负例、`missing_driver_create` 零写入、`driver_lost_recover` 克隆与恢复内容 | 任务 3 | M4-05、M4-06 | runner/fixture 生产形状 evidence、原始字节和目录树 mutation 矩阵 |
+| §4、§6、§7：Reset3 顺序、服务恢复、独立阶段证据、精确 cleanup 与 Blocked | 任务 4 | M4-07、M4-08、M4-09、M4-10、M4-11 | production dispatcher fake flow、精确 seam 向量、失败矩阵与无重试断言 |
+| §8：只读、离线、可重复复算 verifier | 任务 5 | M4-12 | evidence/hash mutation 矩阵与 AST/命令 allowlist 合同 |
+| §2、§7：新协议 kit、manifest/哈希冻结、旧 kit/root 不兼容 | 任务 6 | M4-13 | packager/controller 双侧 manifest mutation 矩阵 |
+| §9–§10：本地 Debug/Release、全新 kit/root、前置实验、恰好三次人工电源边界 | 任务 7 | M4-00、M4-14、M4-15 | 基线台账、双配置 `m4-v3`、kit hash、VM 三边界与离线 verifier |
 
-`m4-v4` is the explicit real VM route; it is not silently skipped inside local
-CTest.
+本表用于核查覆盖关系，不能替代每项任务中的精确文件、RED/GREEN、命令和完成条件。
 
-### B3. Evidence record format
+## M4-1. 总进度表
 
-Each task record must use:
-
-```text
-Task / status:
-Executor / UTC timestamp:
-Start commit / branch / end commit:
-Allowed files / actual files:
-Dependencies and evidence:
-RED command / observed failure / exit code:
-Implementation summary:
-Focused Debug verification / exit code:
-Cumulative and Release verification / exit code:
-Line count / architecture and seam scans:
-VM evidence paths and SHA-256, if applicable:
-SPEC/PLAN/TASKLIST drift audit:
-Open risks / explicitly excluded follow-up:
-Commit subject / commit hash:
-```
-
-No old-branch result, reviewer assertion or earlier-turn output counts as fresh
-task evidence.
-
----
-
-## C. Overall status
-
-| ID | Task | Status | Depends on | Primary gate | Fixed commit subject |
+| Task | 状态 | 前置 | 实现提交 | 复盘提交 | 证据/阻断 |
 |---|---|---|---|---|---|
-| R0 | Clean product boundary | DONE | M3 GO | `m4-v0`, product ancestry and line counter | `build(m4): establish contracted product boundary` |
-| R1 | Online compaction feasibility | DONE | R0 | NO-GO evidence, owner amendment, explicit defer | `docs(m4): resolve compaction scope` |
-| R2 | Exact product CLI | DONE | R1 | run/compact CLI matrix, `m4-v0` | `feat(m4): add minimal product commands` |
-| R3 | Minimal M3 product runtime | DONE | R2 | create/recover/offline compact, stats, typed journal capacity, `m3-v2`, `m4-v1` | `feat(m4): expose minimal m3 product runtime` |
-| R4 | Exact Windows volume | DONE | R3 | anti-misformat, no-format recovery, `m4-v2` | `feat(m4): provision and recover exact windows volume` |
-| R5 | Persistence maintenance loop | DONE | R4 | checkpoint, 80% warning, full-journal stop-retry policy, `m4-v3` | `feat(m4): schedule persistence maintenance` |
-| R6 | Safe Ctrl+C shutdown | DONE | R5 | lock/flush/dismount order, busy refusal, `m4-v3` | `feat(m4): shut down ram disk safely` |
-| R7 | Real AIM/NTFS lifecycle | DOING | R6 | create-kill-reboot-recover-shutdown VM PASS | `test(m4): prove real run lifecycle` |
-| R8 | Final regression and GO | PENDING | R7 | Debug/Release full, M0-M4 labels, OFF scan, <=2500 | `docs(m4): close contracted product milestone` |
+| M4-00 | ON_TRACK | — | `c20c269` | 本提交 | `docs/validation/m4-driver-unavailable-baseline.md` |
+| M4-01 | NOT_STARTED | M4-00 | — | — | 预检纯分类 RED |
+| M4-02 | NOT_STARTED | M4-01 | — | — | SCM 包装与错误映射 |
+| M4-03 | NOT_STARTED | M4-02 | — | — | `main.cpp` 精确插入点 |
+| M4-04 | NOT_STARTED | M4-03 | — | — | discovery/query 协议回归 |
+| M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
+| M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
+| M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
+| M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
+| M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
+| M4-10 | NOT_STARTED | M4-09 | — | — | 服务恢复、query 与真实副本恢复 |
+| M4-11 | NOT_STARTED | M4-10 | — | — | 七个其余负例、失败矩阵、Blocked |
+| M4-12 | NOT_STARTED | M4-11 | — | — | 纯离线 verifier |
+| M4-13 | NOT_STARTED | M4-12 | — | — | 新协议 kit 冻结 |
+| M4-14 | NOT_STARTED | M4-13 | — | — | 本地全量验证与发布说明 |
+| M4-15 | NOT_STARTED | M4-14 | — | — | VM 前置实验与三边界人工验收 |
 
-R1's NO-GO experiment is closed by the owner-approved v1 amendment. R2 may
-start only after the exact decision-document commit exists.
+## M4-2. 细颗粒度执行清单
 
----
+### M4-00 — 冻结起点、读取约束并建立 M4 证据台账
 
-## D. Task cards
+**范围：** `M4_TASKLIST.md`、`docs/validation/m4-driver-unavailable-*`（新增）
 
-## R0 — Clean product boundary
+- [x] M4-00.1 阅读 Spec §1–§10、Plan 全文及本节 M4-0；记录当前 `git status --short --branch` 与 `git log -5 --oneline`。
+- [x] M4-00.2 记录当前 kit schema、kit 固定文件清单、`myrd.exe`/query SHA-256、控制器/runner/verifier 文件 SHA-256；不生成新 kit。
+- [x] M4-00.3 运行只读基线：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\unit\test-m4-guest-qualification.ps1 -SourceRoot .`、`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\unit\test-m4-qualification-kit.ps1 -SourceRoot .`、PowerShell AST 解析三份生产脚本。
+- [x] M4-00.4 在 `docs/validation/` 写入仅含起始 commit、命令、退出码、文件哈希和“不触碰 VM/驱动/设备”的 M4 基线记录。
+- [x] M4-00.5 提交基线记录，复盘文件范围只含该记录和本台账，状态改为 `ON_TRACK`。
 
-**SPEC:** Sections 1, 4, 6, 13.
-**PLAN:** Task R0.
-**Allowed files:**
+### M4-01 — 为服务预检纯分类写出 RED 测试
 
-```text
-src/run/main.cpp
-src/CMakeLists.txt
-tests/CMakeLists.txt
-tests/unit/m4_product_boundary_tests.ps1
-tools/Measure-M4ProductLines.ps1
-M4_TASKLIST.md
+**范围：** `tests/unit/m4_driver_preflight_tests.cpp`（新增）、`tests/CMakeLists.txt`、`src/run/driver_preflight.h`（仅声明）
+
+- [ ] M4-01.1 创建 `m4_driver_preflight_tests.cpp`，先编写 `classify_phdskmnt_service` 的失败测试：服务不存在与 `SERVICE_DISABLED` 返回 `unavailable`。
+- [ ] M4-01.2 在同一测试添加四种可用启动类型 RED：`SERVICE_BOOT_START`、`SERVICE_SYSTEM_START`、`SERVICE_DEMAND_START`、`SERVICE_AUTO_START` 均返回 `available`。
+- [ ] M4-01.3 为 SCM 包装定义可替换 I/O seam 的测试输入，加入 `OpenSCManagerW` 失败、`OpenServiceW(ERROR_ACCESS_DENIED)`、`QueryServiceConfigW` 失败三条 RED；每条断言 `ErrorDomain::win32`、具体操作名且渲染文本不含 `driver_unavailable`。
+- [ ] M4-01.4 在 `tests/CMakeLists.txt` 注册 `unit.m4.driver_preflight`、标签 `m4-v3`、超时 30 秒。
+- [ ] M4-01.5 构建并运行：`cmake --preset msvc`、`cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests`、`ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure`；预期失败为缺声明/缺实现。
+- [ ] M4-01.6 提交仅含 RED 测试与必要声明的变更；复盘 RED 输出和文件范围。
+
+### M4-02 — 实现 SCM 包装及三类预检结果映射
+
+**范围：** `src/run/driver_preflight.h`、`src/run/driver_preflight.cpp`、`src/CMakeLists.txt`、`tests/unit/m4_driver_preflight_tests.cpp`
+
+- [ ] M4-02.1 实现纯函数：服务缺失或 `SERVICE_DISABLED` 归为 `unavailable`；四种列出的有效启动类型归为 `available`。
+- [ ] M4-02.2 实现只含 SCM 访问的包装：`OpenSCManagerW`、`OpenServiceW`、`QueryServiceConfigW`、精确 close handle；不得读取 bundle、枚举 StoragePort、打开 AIM、检查盘符或创建设备。
+- [ ] M4-02.3 仅将 `ERROR_SERVICE_DOES_NOT_EXIST` 和 `SERVICE_DISABLED` 映射为：`ErrorDomain::usage`、code `1`、`operation=L"driver_unavailable"`、`message=L"phdskmnt is disabled or absent"`。
+- [ ] M4-02.4 将所有其他 SCM 失败映射为 `ErrorDomain::win32`、原始 `GetLastError()` 和各自操作名 `OpenSCManagerW`/`OpenServiceW`/`QueryServiceConfigW`；禁止借用 `driver_unavailable` operation/message。
+- [ ] M4-02.5 重跑 `unit.m4.driver_preflight` 到 GREEN，并添加 handle-close/错误优先级断言。
+- [ ] M4-02.6 提交实现；复盘确认没有 adapter handle、StoragePort、SRB QUERY_VERSION、设备、盘符或 bundle 依赖进入新模块。
+
+### M4-03 — 将预检插入 `myrd run` 的唯一安全位置
+
+**范围：** `src/run/main.cpp`、`src/CMakeLists.txt`、`tests/unit/m4_product_boundary_tests.ps1`
+
+- [ ] M4-03.1 在产品边界 PowerShell 合同中写 RED：`require_phdskmnt_service_available()` 必须在 `require_elevation()` 成功分支之后、`classify_bundle()` 之前；Create 与 Recover 不得各自有第二个预检入口。
+- [ ] M4-03.2 在该合同中写 RED 字节协议断言：已知不可用时 `print_run_error` 的字段必须是 `driver_unavailable` 和 `phdskmnt is disabled or absent`，stdout 空、exit 1、stderr CRLF；SCM I/O 失败 stderr 不得含该 operation。
+- [ ] M4-03.3 在 `main.cpp` 仅在提权成功后插入预检；失败时调用既有 `print_run_error(options.bundle, error)` 并 `return 1`，然后才调用 `classify_bundle()`。
+- [ ] M4-03.4 确认预检之前不读取/创建/修改/挂载 bundle；在合同中用源码位置检查覆盖 `classify_bundle`、`create_image`、recover、provider start。
+- [ ] M4-03.5 运行 `ctest --preset debug -R '^unit\.m4\.(driver_preflight|product_boundary)$' --output-on-failure`，预期全绿。
+- [ ] M4-03.6 提交实现并复盘错误优先级：未提权时仍优先报告 `require_elevation`，不会报告服务状态。
+
+### M4-04 — 冻结 discovery 唯一权威与 query 字节协议
+
+**范围：** `src/driver/adapter_discovery.cpp`、`src/m3/m3_windows_acceptance.cpp`、`tests/e2e/m4_aim_query.cpp`、`tests/unit/m4_product_boundary_tests.ps1`、对应 C++ 单元测试
+
+- [ ] M4-04.1 写 RED 源码合同：`discover_aim_adapter` 继续使用 `GUID_DEVICEINTERFACE_STORAGEPORT`、`SPDRP_SERVICE == phdskmnt`、既有 QUERY_VERSION 与唯一候选拒绝规则。
+- [ ] M4-04.2 写 RED 合同，禁止新预检或控制器使用 `FriendlyName`、Class、PnP 实例号、序列号或 PhysicalDrive 作为 adapter 匹配权威。
+- [ ] M4-04.3 在 query 测试冻结失败协议：exit 1、stdout 空、stderr 精确 `discover_aim_adapter failed\r\n`。
+- [ ] M4-04.4 在 query 测试冻结成功协议：exit 0、stderr 空、单一 JSON、`success` 为布尔 true、版本为数值、`ids` 为数值数组；BOM、多 JSON、错误 CRLF、额外/错误类型均失败。
+- [ ] M4-04.5 验证服务可用但 provider discovery 失败仍采用既有 `discover_aim_adapter: no AIM adapter found`，测试不得要求此场景零 bundle 写入。
+- [ ] M4-04.6 运行 query/selftest 与相关 unit 到 GREEN，提交并复盘 provider 中 discovery 的位置未前移。
+
+### M4-05 — 将 negative fixture manifest 升级为精确九案
+
+**范围：** `tests/e2e/Prepare-M4NegativeFixtures.ps1`、`tests/e2e/Invoke-M4RunLifecycle.ps1`、`tests/unit/test-m4-guest-qualification.ps1`、`tests/CMakeLists.txt`
+
+- [ ] M4-05.1 写 RED：旧八案或旧单一 `missing_driver` manifest 必须被拒绝。
+- [ ] M4-05.2 将 manifest 固定为恰好九项：`unknown_nonempty`、`size_mismatch`、`occupied_letter`、`gen0`、`writer_lock`、`missing_driver_create`、`driver_lost_recover`、`busy_volume`、`compact_lock`。
+- [ ] M4-05.3 为每项写入并验证绝对 case 路径、相对路径/长度/SHA-256 清单、输入常量和确定性 schema；拒绝缺项、额外项、重排、路径逃逸、数组非字符串、BOM 与非 CRLF JSON。
+- [ ] M4-05.4 更新 runner 自测的 producer-shaped 九案正例，运行 `MYRD_M4_NEGATIVE_SELFTEST=1` 得到 GREEN。
+- [ ] M4-05.5 运行 guest qualification 合同与标签 `m4-v3` 中 runner 测试；若完整矩阵超时，只增加显式 CTest timeout，禁止删减案例。
+- [ ] M4-05.6 提交 runner/fixture manifest 改动并复盘固定文件名、StateFile 与 Prepare/Negative 生命周期文件路径一致。
+
+### M4-06 — 实现两种驱动缺失 runner evidence 与不变量
+
+**范围：** `tests/e2e/Invoke-M4RunLifecycle.ps1`、`tests/e2e/Prepare-M4NegativeFixtures.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-06.1 写 `missing_driver_create` RED：预检拒绝后 case 根仍不存在，且没有 bundle、journal、AIM 或目标盘符证据。
+- [ ] M4-06.2 写 `driver_lost_recover` RED：拒绝前后完整相对路径/长度/SHA-256 树不同（含 journal）时必须失败。
+- [ ] M4-06.3 为两种拒绝固定 `driver_unavailable` run stderr，并把 query 的 exit 1/空 stdout/固定 stderr 作为独立协议；禁止比较二者 stderr 文本。
+- [ ] M4-06.4 为真实 `driver_lost_recover` 成功 evidence 加入本轮 owned AIM/`S:`、`A.txt`/`D.txt`、Formal 来源最后 checkpoint、exit/stderr、精确清理和仅诊断性设备字段。
+- [ ] M4-06.5 写 mutation RED/GREEN：截断 JSON、错误 CRLF/BOM、来源 hash、树成对伪造、owned `S:`、A/D hash、exit/stderr、数组元素/PID 类型、清理失败与重复运行。
+- [ ] M4-06.6 运行 runner selftest、guest contract 和 `git diff --check`；提交后确认不存在旧 `missing_driver` 成功证据兼容分支。
+
+### M4-07 — 创建 Formal 副本并扩展控制器状态/事件 schema
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-07.1 写 RED 状态转换测试：新增 `MissingDriverCreateCaptured`、`DriverLostRecoverCaptured`、`DriverRestored`、`DriverLostRecoverRecovered` 及其事件必须 forward-only；非法回退、跳跃、sequence 复用和 Blocked 恢复全部 typed 拒绝。
+- [ ] M4-07.2 在 Formal 成功后复制已验证的 Formal bundle 到专用 `driver_lost_recover` 根；复制前后生成相对路径/长度/SHA-256 inventory 并写 durable event。
+- [ ] M4-07.3 写 RED：控制器若把 Formal 原 bundle 作为第三阶段写入目标、复制树不相等、source commit/kit hash 不一致或 clone 路径逃逸，必须 Blocked。
+- [ ] M4-07.4 实现严格事件 schema：clone source、clone inventory、路径、hash、时间、状态/sequence 与证据 SHA 全部明确类型并写后重读。
+- [ ] M4-07.5 运行 controller SelfTest 和 guest unit；提交并复盘每个新状态都已接入 `WriteState → FlushEvent → ReReadState → VerifyEvidenceHash`。
+
+### M4-08 — 实现 Reset3 的启动门与 same-boot 零副作用
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-08.1 写 RED：`AwaitingMissingDriverReset` 同 boot 重调必须以规定 exit 返回，状态/事件字节完全不变。
+- [ ] M4-08.2 在 same-boot 测试中记录所有 seam；断言不调用 Facts、query、runner、Driver、Prepare、fixture、observer 写入或 VMware 相关动作。
+- [ ] M4-08.3 写 RED：new boot 缺 41、缺 6008、boot 时间未前进、服务并非缺失/禁用、query 意外成功、AIM 盘存在或 `S:` 存在均 Blocked。
+- [ ] M4-08.4 实现 Reset3 新 boot gate，并为每个失败先写独立阶段 Blocked evidence 后封存资格根。
+- [ ] M4-08.5 运行 production dispatcher 的 fake same-boot/new-boot 集成 selftest 到 GREEN；提交并复盘调用向量精确匹配。
+
+### M4-09 — 编排 `missing_driver_create` 并证明零 bundle 写入
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-09.1 写 RED：控制器必须在新 boot gate 后同时执行 run 与 query；任何一方 exit 0、超时、其他 exit、非空 stdout 或不匹配 stderr 均 Blocked。
+- [ ] M4-09.2 将 run 拒绝 evidence 和 query evidence 分别严格解析并写入 `MissingDriverCreateCaptured` 的独立哈希锚点。
+- [ ] M4-09.3 写 RED：case 根存在、树清单不为空、出现 bundle/journal/AIM/`S:` 任何一项时拒绝；控制器自身 evidence/临时文件不进入零写入比较。
+- [ ] M4-09.4 实现 zero-write validator、路径 containment 与完整 typed schema；每个 validator 失败都写子步骤名、主错误和清理错误。
+- [ ] M4-09.5 运行生产 dispatcher fake 流：Reset3 new boot → `missing_driver_create` 成功捕获；随后 mutation matrix 必须在启动下一个 runner 前阻止。
+- [ ] M4-09.6 提交并复盘 query/run “一致”只按两者均 exit 1 判断，不比较两条 stderr 的字面文本。
+
+### M4-10 — 恢复服务、探测 AIM，并执行 `driver_lost_recover` 的真实恢复
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-10.1 写 RED：恢复只允许按顺序调用 `sc.exe config phdskmnt start= demand`、`sc.exe start phdskmnt`；`pnputil.exe /restart-device` 任何引用均被静态安全合同拒绝。
+- [ ] M4-10.2 写 RED：`sc qc` 必须严格证明 `START_TYPE : 3 DEMAND_START`，`sc query` 必须严格证明 `STATE : 4 RUNNING`；非零 exit、stderr、重复/缺失字段、Disabled/Manual/Stopped 均失败。
+- [ ] M4-10.3 写 RED：恢复后的 `myrd_m4_aim_query.exe` 必须 exit 0、stderr 空、单一严格成功 JSON；否则在真实恢复前 Blocked。
+- [ ] M4-10.4 写 RED：`driver_lost_recover` 拒绝后副本树变化（包括 journal）或恢复后 `S:` 不属于本轮 owned AIM、A/D 不等于 Formal 来源最后 checkpoint 时失败。
+- [ ] M4-10.5 实现服务恢复、query 探针、真实 recovery runner、来源内容/owned `S:` 验证和独立事件；保留 PhysicalDrive/分区/PnP 为诊断，不参与条件。
+- [ ] M4-10.6 运行完整 fake production dispatcher：两个拒绝 → service restore → query success → real recovery success；提交并复盘每个失败均在后续 runner 前停止。
+
+### M4-11 — 完成其余七负例、全失败矩阵与永久 Blocked 行为
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`、`tests/e2e/Invoke-M4RunLifecycle.ps1`
+
+- [ ] M4-11.1 写 RED：真实恢复未成功时，`unknown_nonempty`、`size_mismatch`、`occupied_letter`、`gen0`、`writer_lock`、`busy_volume`、`compact_lock` 任一项不得启动。
+- [ ] M4-11.2 为七个 case 的每一项写 production-shaped evidence、严格 raw/schema/hash/路径/argv/process/oracle/inventory 验证，并将最终集合固定为完整九案。
+- [ ] M4-11.3 为每一个 Reset3 子步骤和七个 case 建立 fresh fake root 的失败矩阵；每行断言精确 Blocked reason、事件 reason、调用全序列、后续 seam 为零、owned cleanup 完成。
+- [ ] M4-11.4 在每行失败后重调同一资格根；断言没有 runner、service、query、observer 或状态字节改变，且无自动重试。
+- [ ] M4-11.5 写 RED/GREEN：最终 `NegativeComplete` evidence 缺 case、额外 case、弱 schema、错误 final lifecycle、缺 missing-driver capture hash 或来源/kit/commit 不绑定时拒绝。
+- [ ] M4-11.6 运行 controller SelfTest、guest contract、runner native/protocol/negative selftest，提交并复盘所有矩阵 reason 不是“非空字符串”而是每行精确期望。
+
+### M4-12 — 实现纯离线最终 verifier
+
+**范围：** `tools/Invoke-M4Verification.ps1`、`tests/unit/test-m4-guest-qualification.ps1` 或新增 `tests/unit/test-m4-verification.ps1`、`tests/CMakeLists.txt`
+
+- [ ] M4-12.1 写 RED：verifier 缺任一 driver-unavailable evidence、缺九案、篡改 clone tree/来源 checkpoint/A-D/owned `S:`/event hash 时必须失败。
+- [ ] M4-12.2 实现只读 `Verify-DriverUnavailable`：严格重读 kit/source commit、Formal clone、两个缺驱动 evidence、目录清单、恢复内容、九案、final lifecycle 和所有状态事件哈希。
+- [ ] M4-12.3 写 AST/命令 allowlist RED：verifier 不得调用 `myrd.exe`、query、SCM、PnP、Disk、WinEvent、VMware、Reset 或任何设备/电源命令。
+- [ ] M4-12.4 添加 raw bytes、BOM、非 CRLF、额外字段、错误类型/数组元素、资格根逃逸、重复/缺失事件、hash 不符、旧 protocol 的离线 mutation matrix。
+- [ ] M4-12.5 运行 verifier SelfTest 和对应 CTest 到 GREEN；提交并复盘 verifier 可在资格根目录副本上运行，不依赖当前 VM。
+
+### M4-13 — 冻结新的 qualification kit 协议
+
+**范围：** `tools/New-M4GuestQualificationKit.ps1`、`tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-qualification-kit.ps1`、`tests/CMakeLists.txt`
+
+- [ ] M4-13.1 写 RED：旧 manifest schema、旧文件数/顺序、旧 source commit、旧 artifact/query 或旧脚本 hash 不能被新 controller 装载。
+- [ ] M4-13.2 升级 manifest schema，固定所有 payload 的相对路径、顺序、长度、SHA-256、source commit、artifact/query SHA 与确定性 UTF-8 无 BOM JSON。
+- [ ] M4-13.3 写 packager mutation matrix：同名输出目录、缺文件、额外文件、重排、BOM、长度/hash/commit 改写、artifact/query 不匹配均 fail closed。
+- [ ] M4-13.4 写 controller startup 复验：VM 内 kit manifest 与每个文件 hash/length 必须相等，运行中覆盖 kit 或混用旧 kit/root 必须 Blocked。
+- [ ] M4-13.5 将所有新增原生/runner/controller/verifier/kit 测试纳入 `m4-v3`，调整超时但不得缩减测试。
+- [ ] M4-13.6 运行 kit 合同与 Debug/Release focused CTest，提交并复盘 exact 文件清单没有遗漏或额外测试工具。
+
+### M4-14 — 完成发布前本地验证和人工验收说明
+
+**范围：** `README.md`、`docs/validation/*`、`M4_TASKLIST.md`
+
+- [ ] M4-14.1 更新 README：给出 host kit 生成四参数命令、Release artifact/query 路径、hash 检查、完整 kit 复制、新 qualification root、控制器命令（不写不存在的 `-Run` 参数）。
+- [ ] M4-14.2 更新人工步骤：恰好三次电源边界、每段 Reset 或 Power Off→Power On 二选一、不得正常关机、不得手动修改资格根、Windows 修复屏的判定规则。
+- [ ] M4-14.3 运行 PowerShell AST、guest/kit/verifier selftest 和以下全量命令：
+
+  ```powershell
+  cmake --preset msvc
+  cmake --build --preset debug --parallel 1
+  cmake --build --preset release --parallel 1
+  ctest --preset debug -L m4-v3 --output-on-failure
+  ctest --preset release -L m4-v3 --output-on-failure
+  git diff --check
+  ```
+
+- [ ] M4-14.4 记录命令、退出码、测试总数、commit、没有真实 VM 资格结论的原因；任何失败回到最早相关任务。
+- [ ] M4-14.5 在宿主机生成 commit+GUID 的新 kit，逐文件验证 manifest/hash/length，并记录发布候选证据；禁止覆盖旧 kit。
+- [ ] M4-14.6 提交文档/本地验证记录，复盘后才允许开始 VM 前置实验。
+
+### M4-15 — 执行 VM 前置实验与三次人工电源边界验收
+
+**范围：** 仅新 kit、新 VM、新 qualification root 与 `docs/validation/m4-driver-unavailable-vm-*`（新增）
+
+- [ ] M4-15.1 在干净 VM 上记录服务、query、AIM/盘符、事件和 kit hash 基线；新建从未存在过的 qualification root。
+- [ ] M4-15.2 先单独验证服务恢复前置实验：将 `phdskmnt` 从 Disabled 恢复为 demand，执行 `sc start phdskmnt` 与 query；记录 query 是否严格成功。失败则标记 `BLOCKED`，不得调用 `pnputil` 或继续正式资格流程。
+- [ ] M4-15.3 仅在 M4-15.2 成功后，执行 Formal：运行控制器至 armed，用户做一次 Reset 或一次 Power Off→Power On，再运行同一命令并保存全部 evidence hash。
+- [ ] M4-15.4 执行 Live Power-Cut：运行控制器至 armed，用户做一次且仅一次允许电源边界，再运行同一命令并保存 evidence hash。
+- [ ] M4-15.5 执行 Missing-driver：运行控制器至 armed，用户做一次且仅一次允许电源边界；重新运行命令，让控制器完成两个缺驱动 case、服务恢复、真实副本恢复与余下七例。
+- [ ] M4-15.6 在不改变 VM 的条件下运行最终离线 verifier；保存 stdout、退出码、资格根哈希与三段电源边界记录。
+- [ ] M4-15.7 仅当 M4-14 全绿、M4-15.2 前置实验成功、三段都通过且 verifier 通过时记录“VM 已资格验证”；否则只记录“VM 验收未完成”，禁止夸大为 M4 已通过。
+
+## M4-3. 每个任务的复盘模板
+
+每个任务的 implementation commit 后，必须先将状态标为 `REVIEWING`，填完以下字段，再单独提交本 `M4_TASKLIST.md`：
+
+```markdown
+### Review Record — M4-XX
+
+- Start commit: `<sha>`
+- Implementation commit: `<sha>`
+- 允许文件与实际文件：`一致 | 偏差说明`
+- RED 证据：`命令、退出码、预期失败文本`
+- GREEN 证据：`命令、退出码、通过数量`
+- Debug/Release 证据：`命令、通过数量；未运行时写原因`
+- Spec/Plan 对齐：`逐条确认或列出偏差`
+- 安全检查：`无 VMware/驱动/设备动作，或已授权的精确动作与证据`
+- 结论：`ON_TRACK | DEVIATED | BLOCKED | NO_GO_EVIDENCE`
 ```
 
-**Acceptance:**
-
-- [x] Branch descends from M3 GO and does not descend from Task23.
-- [x] `myrd.exe` exists and exposes only the temporary contracted help shell.
-- [x] Product binary has no old-M4 component tokens.
-- [x] Line-count tool fails closed above a supplied maximum and reports the
-  real 2500-line gate.
-- [x] `unit.m4.product_boundary` is GREEN in Debug and Release.
-- [x] Exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R0 / DONE
-Executor / UTC timestamp: fresh gpt-5.6-terra medium implementer / 2026-08-12T20:07:15Z
-Start commit / branch / end commit: b66b812a42b25581335787975abc2b8cef7a408a / feature/m4-contracted-product / this R0 commit at Git HEAD
-Allowed files / actual files: R0 frozen allowlist / src/run/main.cpp; src/CMakeLists.txt; tests/CMakeLists.txt; tests/unit/m4_product_boundary_tests.ps1; tools/Measure-M4ProductLines.ps1; M4_TASKLIST.md
-Dependencies and evidence: M3 GO 4f9f912 is ancestor (exit 0); Task23 5acc289 is not ancestor (exit 1); start worktree clean before R0 ledger update
-RED command / observed failure / exit code: `cmd /d /c 'call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --preset msvc && cmake --build --preset debug --target myrd_m4_product_boundary_tests --parallel 1'`; CMake generator expression `$<TARGET_FILE:myrd>` failed because target `myrd` did not exist; exit 1
-Implementation summary: added the temporary `myrd --help` usage shell, focused PowerShell product-boundary assertion (bounded process, exact stdout/empty stderr, timeout cleanup, ASCII/UTF-16LE forbidden-token scan with self-audit, stderr-pollution and default/max-zero line-count self-checks), CMake custom target/CTest registration, and fail-closed M4 product-line counter; review repairs added language-aware comment handling, UTF-8/NUL/path guards, exact Git hunk counting without base-text reconstruction, cross-line C++ string/raw-string and PowerShell block/here-string handling, process cleanup hardening, and isolated regression fixtures including a five-file binary-base/no-hunk fail-closed proof
-Focused Debug verification / exit code: MSVC Debug `myrd_m4_product_boundary_tests` target and `ctest --preset debug -R '^unit\.m4\.product_boundary$' --output-on-failure`; both exit 0
-Cumulative and Release verification / exit code: MSVC Release `myrd_m4_product_boundary_tests` target and `ctest --preset release -R '^unit\.m4\.product_boundary$' --output-on-failure`; both exit 0; no full M3/VM route run per R0 exclusion
-Line count / architecture and seam scans: main-controller fresh counter reported `src/run/main.cpp=12`, `TOTAL=12 MAXIMUM=2500` exit 0; `-Maximum 0` exit 1; invalid Base exit 1; Debug/Release product binary scan for old-M4 and representative test-seam tokens had no match; exact six-file allowlist and `git diff --check` passed
-VM evidence paths and SHA-256, if applicable: not applicable to R0
-SPEC/PLAN/TASKLIST drift audit: execution contract aligned by b66b812 and R0 sample include corrected; all SPEC findings and review-driven regression gaps were repaired and re-reviewed; final independent SPEC review APPROVED and final independent code-quality review APPROVED with no Critical/Important/Minor; main controller read the full diff and reran the required verification at 2026-08-13T04:12:21Z; no R1 or old-M4 content entered R0
-Open risks / explicitly excluded follow-up: R0 is only a boundary/help shell; no M3 VM rerun and no R1 work; `vswhere.exe` emits a non-fatal vcvars warning after successful commands
-Commit subject / commit hash: build(m4): establish contracted product boundary / this R0 commit at Git HEAD
-```
-
-## R1 — Online compaction feasibility
-
-**SPEC:** Sections 7, 9.5 and 10.2.
-**PLAN:** Task R1.
-**Historical spike allowlist (the experiment was removed):**
-
-```text
-src/m3/m3_provider.h
-src/m3/m3_provider.cpp
-src/m3/m3_windows_acceptance.h
-src/m3/m3_windows_acceptance.cpp
-tests/integration/m3_online_compaction_spike_tests.cpp
-tests/CMakeLists.txt
-M4_TASKLIST.md
-```
-
-**Acceptance:**
-
-- [x] Historical RED proves live provider lacks online compaction.
-- [x] NO-GO proves a bounded method would require algorithm copy or an
-  independently scoped shared M3 finalization refactor.
-- [x] No algorithm copy, fake revision, durable M4 record or new abstraction is
-  retained; final experimental production delta is zero.
-- [x] If any bound fails, experiment is removed, evidence is recorded, task is
-  `BLOCKED_DECISION`, and no later task starts.
-- [x] Owner selected removal of online/automatic compaction from v1.
-- [x] SPEC/PLAN/TASKLIST define supported offline `myrd compact`, 80% journal
-  warning, typed full-journal handling and actionable recovery.
-- [x] `docs/deferred/online-compaction.md` records the R1 root cause and
-  independent reconsideration conditions outside v1.
-- [x] Exact decision-document commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R1 / DONE
-Executor / UTC timestamp: spike by fresh gpt-5.6-terra medium implementer; owner amendment and final document review by main Sol/xhigh / 2026-08-13
-Start commit / branch / end commit: 89b441b06d8fcc926094cf7cc28805845a28cb9d / feature/m4-contracted-product / this decision-document commit at Git HEAD
-Allowed files / actual files: R1 decision documents / M4_TASKLIST.md; docs/superpowers/specs/2026-08-13-m4-contracted-product-design.md; docs/superpowers/plans/2026-08-13-m4-contracted-product.md; docs/deferred/online-compaction.md; all experimental product, test and CMake edits removed
-Dependencies and evidence: R0 DONE at 89b441b with Debug/Release m4-v0 boundary evidence; M3 GO remains ancestor and Task23 remains outside ancestry
-Historical observed RED (experiment reverted): `cmd /d /c 'call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --build --preset debug --target myrd_m3_online_compaction_spike_tests --parallel 1'`; after adding the missing test-only VHDX header, MSVC C2039 reported `M3Provider::compact` does not exist (the sole effective RED); exit 1. The target and test were removed with the experiment, so this command cannot be run against the final tree.
-Implementation summary: attempted only the permitted provider bridge: concrete outcome/method, provider-local artifact names/identities and `CompactionCoordinator::begin/build_artifacts/prepare_delta`. The bridge reached a prepared transaction but cannot use the provider's existing `resume_pending_checkpoint`, because that method starts after manifest publication. Correct online behavior would require reproducing manifest mutation, publication disposition handling, commit resolution and reconciliation before that helper, or moving that common transaction-finalization algorithm from the lifecycle runner/provider into an M3 shared refactor. The former is a second lifecycle implementation and the latter exceeds this spike's allowed scope.
-Focused Debug verification / exit code: RED command above exit 1 as required; GO verification not run because the bound failed before a valid implementation existed
-Cumulative and Release verification / exit code: not applicable to the NO-GO decision; no online implementation retained
-Line count / architecture and seam scans: experiment measured 204 net lines across the scoped source+spike-test paths before finalization; exact source-only split was not retained. Regardless, independent structural review confirmed completing publish/resolve/reconcile would violate the no-copy/shared-refactor boundary. The line count was pressure evidence; the blocker is the required algorithm copy or disallowed shared refactor. Experimental delta was then exactly removed. Final R1 production delta is 0.
-VM evidence paths and SHA-256, if applicable: not applicable to R1
-SPEC/PLAN/TASKLIST drift audit: R1's specified decision condition occurred. SPEC BLOCKER APPROVED. Quality review findings in the blocker ledger were fixed and re-review passed. On 2026-08-13 the owner approved removing online/automatic compaction from v1, adding the same-executable offline `myrd compact --bundle <path>` path, requiring the R5 80% warning and typed full-journal stop-retry behavior, and recording the online work explicitly outside v1. The amended documents were self-reviewed for command, task, test, line-budget and README consistency before this decision commit. No coordinator interface was changed and no algorithm copy was retained.
-Open risks / explicitly excluded follow-up: online compaction remains outside v1 and may be reconsidered only through the independent M3 design conditions in docs/deferred/online-compaction.md. R3 must prove the offline command is ordinary-user usable and does not expose the engineering CLI. No revisions, records, abstractions or production spike remain.
-Commit subject / commit hash: docs(m4): resolve compaction scope / this decision-document commit at Git HEAD
-```
-
-## R2 — Exact product CLI
-
-**SPEC:** Section 3.
-**PLAN:** Task R2.
-**Allowed files:**
-
-```text
-src/run/cli.h
-src/run/cli.cpp
-src/run/main.cpp
-src/CMakeLists.txt
-tests/unit/m4_cli_tests.cpp
-tests/unit/m4_product_boundary_tests.ps1
-tests/CMakeLists.txt
-M4_TASKLIST.md
-```
-
-**Acceptance:**
-
-- [x] Only `myrd --help`, `myrd run --help`, the exact run form,
-  `myrd compact --help` and `myrd compact --bundle <path>` parse.
-- [x] Defaults and every numeric/path/drive-letter bound are frozen by tests.
-- [x] Duplicate, unknown, incomplete and device-path inputs exit 2 before
-  filesystem, AIM or volume access.
-- [x] Output is human-only and stderr/stdout purity is tested.
-- [x] Debug/Release CLI and `m4-v0` pass.
-- [x] Exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R2 / DONE
-Executor / UTC timestamp: Terra/medium implementer; independent Terra/medium SPEC and quality reviewers; main Sol/xhigh controller / 2026-08-13T08:17:54Z
-Start commit / branch / end commit: 4cb5a76905ec6c22d923029258316a6af2daaaae / feature/m4-contracted-product / this R2 commit at Git HEAD
-Allowed files / actual files: frozen R2 allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/run/cli.h; src/run/cli.cpp; src/run/main.cpp; tests/CMakeLists.txt; tests/unit/m4_cli_tests.cpp; tests/unit/m4_product_boundary_tests.ps1
-Dependencies and evidence: R0 DONE at 89b441b; R1 DONE at 4cb5a76; fresh Debug and Release unit.m4.product_boundary each 1/1 PASS before R2
-RED command / observed failure / exit code: initial `cmake --build --preset debug --target myrd_m4_cli_tests --parallel 1` reported unknown target `myrd_m4_cli_tests`, exit 1. Expansion RED: `ctest --preset debug -R ^unit\.m4\.cli$ --output-on-failure` failed because parser errors had empty messages, exit 1. ADS coverage also initially failed before its parser repair. Final R2 scope RED: the same CLI target failed the new ordinary `C:\globalroot-not-device` path case because lexical substring rejection treated it as a device path, exit 1; rejection was narrowed to actual namespace prefixes. Quality RED: same CLI test command failed new `\GLOBAL??\root` / `\DosDevices\root` cases before those native namespace prefixes were rejected, exit 1. The lexical runtime-API scan is a coverage strengthening with self-audited positive/negative synthetic source snippets. Final scanner RED: Debug product-boundary target failed because a raw string self-audit containing `DeviceIoControl(` was falsely detected, exit 1; bounded C++ raw-literal stripping and malformed/unterminated fail-closed checks were added. Final minor RED: form-feed and vertical-tab raw delimiter self-audits did not fail closed, exit 1; delimiter validation now uses PS5.1-compatible `[char]::IsControl` with strict-mode-safe array counting. Main-controller-found contract RED: changing the process assertion to global-usage-only for no arguments made the Debug boundary target fail because `unknown command` prefixed stderr, exit 1; `main` now emits only global usage for an empty argument list while other parser errors remain actionable. Additional accepted-form/boundary cases that passed on first run are coverage repairs, not new RED evidence.
-Implementation summary: added the filesystem-free exact CLI parser using bounded ASCII narrowing plus `std::from_chars`, frozen final option/result types, actionable parser messages, exact process routing/output coverage and runtime-API static boundary assertion; parser tests assert actual K/M/G/T scaling, defaults and accepted numeric boundary values. The first value-assertion test run failed only because its new helper accidentally duplicated `--size`; after correcting the test helper, values passed without production change (coverage repair). Valid run and compact forms print their temporary unavailable result.
-Focused Debug verification / exit code: main-controller fresh MSVC Debug build of myrd_m4_cli_tests, myrd_m4_product_boundary_tests and myrd; focused CTest unit.m4.cli plus unit.m4.product_boundary 2/2 PASS; full m4-v0 2/2 PASS; combined command exit 0
-Cumulative and Release verification / exit code: main-controller fresh MSVC Release build of the same targets; focused CTest 2/2 PASS; full m4-v0 2/2 PASS; combined Debug/Release command exit 0
-Line count / architecture and seam scans: product line counter exit 0, cli.cpp=71 cli.h=27 main.cpp=17 TOTAL=115/2500; exact eight-file allowlist, diff check, unfinished/prohibited src/run scans, Release product-binary old-M4/test-seam scan and manual no-args/valid-compact/invalid-run process contracts all PASS
-VM evidence paths and SHA-256, if applicable: not applicable to R2
-SPEC/PLAN/TASKLIST drift audit: independent SPEC review initially found required from_chars/final/actionable-message/full-matrix/process-output and namespace/false-rejection gaps; implementer repaired and re-review APPROVED. Independent quality review found native GLOBAL??/DosDevices path gaps and a shallow source-API scanner; repairs added namespace coverage and a self-audited comment/string/raw-string-aware scanner. Raw delimiter control-character finding was fixed and final quality re-review APPROVED with zero Critical/Important/Minor. Main controller then found the no-argument exact-output drift, obtained a real boundary RED, required the narrow fix, and both reviewers re-approved before the main fresh verification above.
-Open risks / explicitly excluded follow-up: R2 implements parsing/rendering only; create/recover/offline compaction execution remains R3
-Commit subject / commit hash: feat(m4): add minimal product commands / this R2 commit at Git HEAD
-```
-
-## R3 — Minimal M3 product runtime
-
-**SPEC:** Sections 8 and 9.1-9.5.
-**PLAN:** Task R3.
-**Allowed files:**
-
-```text
-src/m3/m3_provider.h
-src/m3/m3_provider.cpp
-src/m3/m3_windows_acceptance.h
-src/m3/m3_windows_acceptance.cpp
-src/m3/m3_aim_server_main.cpp
-src/m3/m3_lifecycle_runner.h
-src/m3/m3_lifecycle_runner.cpp
-src/persistence/persistence_types.h
-src/persistence/journal_writer.h
-src/persistence/journal_writer.cpp
-src/run/main.cpp
-src/CMakeLists.txt
-tests/unit/m3_journal_writer_tests.cpp
-tests/unit/m3_persistence_types_tests.cpp
-tests/unit/m4_product_boundary_tests.ps1
-tests/integration/m4_product_composition_tests.cpp
-tests/CMakeLists.txt
-tools/Measure-M4ProductLines.ps1
-M4_TASKLIST.md
-```
-
-**Acceptance:**
-
-- [x] Shared production persistence/store values preserve accepted M3 limits.
-- [x] The product RAM-policy matrix freezes 64 MiB, default 2 GiB and 1 TiB:
-  hard is the largest storage-block-aligned value no greater than the requested
-  `ram-limit`, soft is half that aligned hard value rounded down to a block,
-  low watermark is one quarter rounded down to a block, and every case
-  preserves accepted M2 `soft < hard`. It also freezes 65537 KiB -> hard
-  64 MiB / soft 32 MiB / low 16 MiB and validates every resulting option set
-  with `validate_dynamic_block_store_options()`.
-- [x] Generation-zero create uses existing creator and independently reopens.
-- [x] Internal new-image generation zero bypasses only the existing-bundle
-  product gate; an existing generation-zero bundle is rejected.
-- [x] Recover requires exact geometry.
-- [x] Maintenance stats use checked dirty-byte math and current journal truth.
-- [x] Provider and runtime stats return `Result`; fact/arithmetic failure is
-  never truncated or treated as a successful zero value.
-- [x] The M4 product provider alone enforces the 2048 MiB cumulative committed
-  journal ceiling and reports typed `JournalCapacityExhausted` without changing
-  existing M3 per-operation resource semantics.
-- [x] `JournalCapacityExhausted` has frozen value 20; equality succeeds,
-  crossing does not advance selected manifest/generation/committed length, and
-  an unset ceiling preserves accepted M3 behavior.
-- [x] Provider checkpoint outcome preserves the typed capacity error unchanged.
-- [x] Offline compact fixes `disk.rdm` and product limits, rejects generation
-  zero/writer conflict, advances one committed generation, reopens identical
-  data and starts no AIM runtime.
-- [x] Offline compact freezes actionable success/in-use output and never exposes
-  `myrd_m3_e2e`, `RawTest` or engineering store/persistence options.
-- [x] M3 `m3-v2`, provider, recovery and Windows acceptance pass.
-- [x] Exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R3 / DONE
-Executor / UTC timestamp: assigned gpt-5.6-terra medium implementer; independent Terra/medium SPEC and quality reviewers; main Sol/xhigh controller / 2026-08-13T12:38:53Z
-Start commit / branch / end commit: 65559b4f26c619a423a58199541aecc40db79848 / feature/m4-contracted-product / 3dc1e2eb95a02048fa5499a07984414096fefb52
-Allowed files / actual files: frozen R3 allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/m3/m3_aim_server_main.cpp; src/m3/m3_lifecycle_runner.h; src/m3/m3_lifecycle_runner.cpp; src/m3/m3_provider.h; src/m3/m3_provider.cpp; src/m3/m3_windows_acceptance.h; src/m3/m3_windows_acceptance.cpp; src/persistence/journal_writer.h; src/persistence/journal_writer.cpp; src/persistence/persistence_types.h; src/run/main.cpp; tests/CMakeLists.txt; tests/integration/m4_product_composition_tests.cpp; tests/unit/m3_journal_writer_tests.cpp; tests/unit/m3_persistence_types_tests.cpp; tests/unit/m4_product_boundary_tests.ps1; tools/Measure-M4ProductLines.ps1
-Dependencies and evidence: R2 DONE at 65559b4; owner-approved RAM-policy amendment committed as 8135fa160ea7760582f9d2136bd0d09eb4c695c7 before final R3 implementation; branch remains feature/m4-contracted-product and M3 GO remains its accepted base
-RED command / observed failure / exit code: initial MSVC Debug `cmake --build --preset debug --target myrd_m4_product_composition_tests --parallel 1` failed because the product composition target/default and maintenance-stat APIs did not exist, exit 1. Independent slice REDs then proved missing frozen code-20/wire support, optional JournalWriter equality/crossing behavior, live provider maintenance facts, provider typed capacity preservation/nonadvance and the offline product wrapper. The amended RAM matrix failed because the former store constructor copied the requested 2 GiB into soft instead of deriving hard/soft/low; shared-limit RED also caught journal 512 MiB and BAT 64 MiB drift from the accepted engineering values. Process REDs proved absent-directory create did not retain generation zero, existing generation zero lacked actionable output, locked compact printed the literal `<the same bundle path>`, unknown nonempty directories lacked the M3 operation/message, runtime start cleanup was ignored, post-start runtime facts were unchecked and newly created generation zero was incorrectly rejected by an unconditional post-start generation gate. Static boundary RED proved the offline wrapper compared its final result to stale pre-lock discovery. Each RED exited 1 for the intended missing behavior before its minimal repair; test-setup mistakes (fixture namespace typo, strict-mode scalar Count and incomplete line-counter fixture files) were recorded as test repairs, not feature REDs.
-Implementation summary: extracted exact accepted M3 production persistence/store values and retained engineering defaults; implemented the owner-approved aligned hard/half/quarter RAM policy; added checked Result maintenance stats and the concrete runtime forwarder; froze PersistenceErrorCode::JournalCapacityExhausted=20 with string/wire mappings; added an optional absolute committed-end ceiling used only by product main and preserved provider error context plus selected generation/committed-length nonadvance. Added one offline product-compaction wrapper that discovers geometry, rejects generation zero, supplies fixed disk.rdm/product limits, delegates to the existing lifecycle algorithm and requires exit 0, cleanup and Committed without a stale pre-lock generation comparison. Product main now classifies absent/empty/recover/unknown bundles fail-closed, creates random-identity generation zero through the existing creator, requires exact recover geometry, routes compact with exact actual-path output, validates started runtime size and Result maintenance facts, rejects post-start generation zero only in recover mode, cleans up start/fact failures, and temporarily stops at the R4 unavailable boundary. Ordinary run errors include the safe bundle path plus the concrete operation/message; existing generation zero has the dedicated verify-path/manual-remove/rerun message and remains unmodified. Product composition tests cover the RAM matrix, current dirty/journal facts, typed ceiling behavior, generation-one offline compact/reopen bytes, held-writer process output and nonmutation. R7 safety follow-up: after the product gained real AIM/volume behavior, the ordinary host boundary no longer executes the formerly temporary mutating valid-run/create and generation-zero sequence; it retains run/compact help, invalid-parser, missing-compact, unknown-directory nonmutation, line-counter and prohibited-token contracts, while real create artifacts/GPT/NTFS are owned by the acknowledged R7 VM harness.
-Focused Debug verification / exit code: main-controller fresh exact focused CTest set `unit.m3.persistence_types`, `unit.m3.journal_writer`, `integration.m3.recovery`, `integration.m3.image_create`, `integration.m3.compaction`, `integration.m3.provider`, `integration.m3.windows_acceptance`, `integration.m4.product_composition` passed 8/8, exit 0; fresh Debug product-boundary target/test passed, exit 0
-Cumulative and Release verification / exit code: main-controller fresh Debug `ctest --preset debug -L m3-v2 --output-on-failure` passed 32/32 and `-L m4-v1` passed 1/1, exit 0; fresh Release exact focused set passed 8/8 and Release product boundary passed, exit 0
-Line count / architecture and seam scans: main-controller fresh counter reported TOTAL=452 MAXIMUM=2500, exit 0; exact pre-ledger implementation allowlist was 18/18 and this record adds only M4_TASKLIST.md; `git diff --check` passed; Release product-binary prohibited-token scan and diff prohibited-concept/placeholder scan passed; no online/automatic compaction, new interface, copied publication/reconciliation algorithm, engineering command or test seam entered the product
-VM evidence paths and SHA-256, if applicable: not applicable to R3; real AIM/NTFS lifecycle and destructive/reboot evidence remain R7
-SPEC/PLAN/TASKLIST drift audit: owner RAM-policy amendment is commit 8135fa160ea7760582f9d2136bd0d09eb4c695c7. Independent SPEC review findings for actual-path writer-conflict output and actionable existing-generation-zero recovery were repaired with process-level nonmutation evidence; final SPEC review APPROVED. Independent quality review findings for stale pre-lock compaction comparison, post-start runtime fact validation and safe run diagnostics were repaired; the final create-path generation-zero condition was narrowed to recover mode; final quality review APPROVED. Main controller read the diff and independently reran the fresh evidence above. Exact R3 implementation commit 3dc1e2eb95a02048fa5499a07984414096fefb52 satisfies A4, so R3 is DONE.
-Open risks / explicitly excluded follow-up: Windows elevation, exact-volume discovery/provisioning/anti-misformat and first filesystem checkpoint are R4; maintenance scheduling/journal warning policy is R5; Ctrl+C locked shutdown is R6; real VM kill/reboot/recover is R7; online/automatic compaction remains explicitly deferred outside v1 and was not reintroduced
-Commit subject / commit hash: feat(m4): expose minimal m3 product runtime / 3dc1e2eb95a02048fa5499a07984414096fefb52
-```
-
-## R4 — Exact Windows volume
-
-**SPEC:** Sections 5, 9 and 11.2.
-**PLAN:** Task R4.
-**Allowed files:**
-
-```text
-src/run/windows_volume.h
-src/run/windows_volume.cpp
-src/run/provision_volume.ps1
-src/run/run_resources.rc
-src/run/main.cpp
-src/CMakeLists.txt
-tests/unit/m4_windows_volume_tests.cpp
-tests/unit/test-m4-provision-script.ps1
-tests/CMakeLists.txt
-M4_TASKLIST.md
-```
-
-**Acceptance:**
-
-- [x] All seven pre-provision anti-misformat checks fail closed.
-- [x] Provision helper is fixed, embedded, bounded and accepts only disk number
-  and drive letter.
-- [x] Create produces exactly one GPT basic-data partition and NTFS volume on
-  the exact runtime PhysicalDrive.
-- [x] First volume flush precedes committed generation-one checkpoint.
-- [x] Recover locates exact volume by disk extents and never calls provisioning.
-- [x] Occupied drive letters and ambiguous/mixed volumes are rejected.
-- [x] `m4-v2`, M3 Windows acceptance and product composition pass.
-- [x] Exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R4 / DONE
-Executor / UTC timestamp: delegated implementation agent; independent SPEC and quality reviewers; main controller / 2026-08-13
-Start commit / branch: 62414f2286b84dfcc02c5e3aaec90ba2cf87ccb7 / feature/m4-contracted-product
-Initial RED: correctly loaded VS2022 BuildTools Debug build of myrd_m4_windows_volume_tests failed because src/run/windows_volume.h was missing, exit 1.
-TDD and safety record: subsequent REDs exposed missing native device-number proof, finite-query rejection, create/recover call graph, pre-start drive-letter preflight, one-TU predicate naming, script AST ordering, temporary-file error precedence, and token duplication access. GREEN adds fail-closed runtime/device/address/geometry/sector/layout/extents/mount validation; fixed embedded GPT/NTFS script AST allowlist; bounded helper resource extraction, restricted child handle inheritance, bounded output draining/timeout behavior and cleanup; exact volume device opens/flush; recovery-only discovery; create flush then generation-one checkpoint; elevation/admin preflight; and ownership-safe mount removal.
-Independent approvals: final SPEC review and quality review APPROVED. The R4 temporary cleanup boundary was approved narrowly: mount removal is ordered before stop; R6 owns busy-volume keep-running/shutdown behavior.
-Main-controller verification: fresh Debug exact 4/4, Debug m4-v2 3/3, Debug m3-v2 32/32; fresh Release exact 4/4 and Release m4-v2 3/3; both configuration product-boundary tests PASS. Line count 841/2500. Exact 10/10 allowlist, stage-0, prohibited/resource/callgraph scans and git diff --check PASS.
-R7 follow-up: real destructive AIM/NTFS provisioning, forced-kill/reboot and VM evidence remain R7.
-Exact implementation commit: d7d33c008e3fba2d11d585e9ebb0879b5326bd33 / feat(m4): provision and recover exact windows volume
-```
-
-## R5 — Persistence maintenance loop
-
-**SPEC:** Section 10.
-**PLAN:** Task R5.
-**Allowed files:**
-
-```text
-src/run/run_loop.h
-src/run/run_loop.cpp
-src/run/main.cpp
-src/CMakeLists.txt
-tests/unit/m4_run_policy_tests.cpp
-tests/CMakeLists.txt
-M4_TASKLIST.md
-```
-
-**Acceptance:**
-
-- [x] One-second loop has no scheduler interface, queue or thread pool.
-- [x] Time and dirty threshold equality trigger checkpoint exactly.
-- [x] Journal usage below 1717986919 bytes is silent; at/above it prints one
-  process-lifetime warning with the exact stopped-bundle compact command.
-- [x] Every operation revalidates and flushes the exact volume first.
-- [x] `NotCommitted` retries once and suppresses 60 seconds after second failure.
-- [x] Maintenance-stat failure requests controlled failure shutdown, preserves
-  an otherwise permitted final checkpoint and exits 1 after cleanup.
-- [x] Typed `JournalCapacityExhausted` is not retried, disables later and final
-  checkpoints, keeps the disk mounted until Ctrl+C, prints the exact recovery
-  path and ultimately exits 1 after safe cleanup.
-- [x] Reconciliation converges through existing M3 ownership.
-- [x] Indeterminate commit requests controlled failure shutdown and suppresses
-  final checkpoint.
-- [x] `m4-v3` and affected M3 checkpoint/compaction tests pass.
-- [x] Exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R5 / DONE
-Executor / UTC timestamp: fresh gpt-5.6-terra medium implementer / 2026-08-13
-Start commit / branch / end commit: f23b586ec77ae644f01aa939664b6f6af1ca16b7 / feature/m4-contracted-product / 946fd8ffecd20ac73f8c426913ea0a2e7b0fc3d3
-Allowed files / actual files: R5 frozen allowlist / M4_TASKLIST.md; src/CMakeLists.txt; src/run/main.cpp; src/run/run_loop.h; src/run/run_loop.cpp; tests/CMakeLists.txt; tests/unit/m4_run_policy_tests.cpp
-Dependencies and evidence: R4 is DONE at start HEAD f23b586ec77ae644f01aa939664b6f6af1ca16b7; worktree was clean before this ledger update.
-RED command / observed failure / exit code: initial `cmake --build --preset debug --target myrd_m4_run_policy_tests --parallel 1` reported `unknown target 'myrd_m4_run_policy_tests'`, exit 1; after target/test creation it failed CMake generation because `src/run/run_loop.cpp` did not exist, exit 1. SPEC REDs then proved missing second reconciliation flush, missing ordinary second-failure warning, reconciliation failure treated as suppression-only, and missing committed-generation output. Quality REDs proved typed-context-only capacity misclassification, post-sleep work despite shutdown, and absent Windows argv command round-trip. Main-review RED proved status used a time captured before the checkpoint result rather than the result time.
-Implementation summary: concrete one-second loop with private same-source behavior helpers, exact due/outcome policy, flush before every checkpoint/reconciliation attempt, one retry and exact 60-second suppression, typed capacity handling, Windows argv-safe compact recovery command, post-sleep shutdown check, ready line and committed-generation output. No scheduler/interface/queue/thread pool, persistent M4 state, R6 handler, lock/dismount or final-checkpoint implementation.
-Focused Debug verification / exit code: main controller fresh Debug built product/run-policy/boundary and ran focused 5/5 plus `m4-v3` 1/1, exit 0. After the final result-time repair, focused 5/5 and `m4-v3` 1/1 were rerun GREEN.
-Cumulative and Release verification / exit code: Debug `m3-v2` 32/32 passed in the same review round before the final result-time repair; do not treat it as rerun after that repair. Main controller fresh Release built product/boundary and ran focused 5/5 plus `m4-v3` 1/1, exit 0.
-Line count / architecture and seam scans: fresh line counter reports TOTAL=1059 MAXIMUM=2500, exit 0; exact allowlist is 7/7 staged paths, stage is otherwise empty; prohibited architecture scan and `git diff --check` exit 0.
-VM evidence paths and SHA-256, if applicable: not applicable; R7 is excluded.
-SPEC/PLAN/TASKLIST drift audit: final independent SPEC and quality reviews APPROVED. R5 is DONE; R6/R7 remain later work.
-Open risks / explicitly excluded follow-up: R6 console handler, locked final checkpoint and dismount cleanup remain deliberately unimplemented; R7 real VM lifecycle remains deferred. The current atomic is only the R5 local shutdown entry.
-Commit subject / commit hash: feat(m4): schedule persistence maintenance / 946fd8ffecd20ac73f8c426913ea0a2e7b0fc3d3
-```
-
-## R6 — Safe Ctrl+C shutdown
-
-**SPEC:** Section 11.
-**PLAN:** Task R6.
-**Allowed files:**
-
-```text
-src/run/windows_volume.h
-src/run/windows_volume.cpp
-src/run/run_loop.h
-src/run/run_loop.cpp
-src/run/main.cpp
-tests/unit/m4_windows_volume_tests.cpp
-tests/unit/m4_run_policy_tests.cpp
-tests/integration/m4_product_composition_tests.cpp
-M4_TASKLIST.md
-```
-
-**Acceptance:**
-
-- [x] Console handler only stores an atomic flag.
-- [x] Clean order is lock, extent check, flush, final checkpoint, dismount,
-  mount removal and runtime stop.
-- [x] Dismount is unreachable without a held volume lock.
-- [x] Busy lock performs no cleanup mutation, prints Defender/Search guidance,
-  clears the request and resumes running.
-- [x] Forced termination is documented as requiring Windows reboot.
-- [x] Only complete confirmed cleanup exits 0.
-- [x] Debug/Release `m4-v3` pass and exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R6 / DONE
-Start commit / branch: 72fc264c1af0e6fab5c8a73eb8893b49dac7ea2e / feature/m4-contracted-product
-Initial RED: Debug locked-volume contract compilation failed for missing R6 symbols. SPEC REDs then proved each final retry needs its own flush, lock/verify failures need zero cleanup mutation and request clear, reconciliation needs one flushed retry, and indeterminate/capacity R5 state skips final checkpoint while retaining cleanup. Quality REDs proved a `Committed` outcome carrying an error cannot be success, typed capacity cannot retry, handler cleanup must not overwrite the registration error, and resumed maintenance must retain post-wait shutdown gating.
-Implementation and review: exact locked-volume ownership verifies extents on the locked handle; shutdown preserves the frozen action order, logs safe cleanup failures, and only confirmed success prints the exact goodbye. Console callback performs only relaxed atomic store. Final SPEC and quality reviews APPROVED.
-Fresh verification: Debug build, boundary, focused 6/6, m4-v3 1/1 and m3-v2 32/32 passed; Release build, boundary, focused 6/6 and m4-v3 1/1 passed. Allowlist 9/9, stage-0 prohibited scan and diffcheck passed; product lines 1217/2500.
-Open risk / follow-up: R7 retains real destructive AIM/NTFS VM lifecycle evidence; R6 is complete.
-Implementation commit: 03df02face954302f7d3618e6eacb3516eb735dc / feat(m4): shut down ram disk safely
-```
-
-## R7 — Real AIM/NTFS lifecycle
-
-**SPEC:** Section 12.2.
-**PLAN:** Task R7.
-**Allowed files:**
-
-```text
-tests/e2e/Invoke-M4RunLifecycle.ps1
-tools/Invoke-M4Verification.ps1
-tests/CMakeLists.txt
-M4_TASKLIST.md
-src/run/main.cpp
-src/run/run_loop.cpp
-tests/integration/m4_product_composition_tests.cpp
-tests/unit/m4_product_boundary_tests.ps1
-src/run/windows_volume.cpp
-tests/unit/m4_windows_volume_tests.cpp
-tests/unit/test-m4-provision-script.ps1
-```
-
-**Acceptance:**
-
-- [ ] Host-built Release artifacts and hashes are recorded.
-- [ ] Create phase provisions exact GPT/NTFS and commits file A.
-- [ ] Exact PID is force-killed and Windows is rebooted.
-- [ ] Recover phase never invokes provisioning and verifies A.
-- [ ] Ctrl+C commits D, safely dismounts and returns inventory to baseline.
-- [ ] Third run verifies D.
-- [ ] Offline compact after clean shutdown advances one generation, preserves
-  all hashes and changes no AIM/PhysicalDrive inventory.
-- [ ] Negative matrix proves no overwrite, no letter theft, no gen-zero retry,
-  writer lock, driver preflight and busy refusal across the ordered eight
-  realistic VM cases; local tests retain zero/multiple-volume refusal.
-- [ ] Evidence contains no password, private key or secret.
-- [ ] Final route says PASS and exact commit exists.
-
-**Execution record:**
-
-```text
-Task / status: R7 / DOING
-Formal12 support contract is GREEN. Task1's separate, still-untracked `test-m4-release-contract.ps1` remains RED at its original CMake contract. Review RED: the strengthened Formal12 test observed inherited approval/source environment in Control mode, `remaining fixture activation accepted an extra case field`, and `runner capture command-line quoting did not round-trip frozen arguments`; GREEN explicitly removes inherited approval/source, requires a Runner source commit, uses CRT-compatible frozen-argument quoting, records a failed child start without reading an unavailable PID, and atomically replaces manifests without backup residue while validating immutable fixture metadata and exact per-case property schemas. The Start-failure test was made deterministic after its unrelated global PowerShell PID snapshot flaked: a unique synthetic-child marker now proves the exact child never started, with exact marker/PID cleanup in `finally`; five consecutive direct runs passed. Exact Task2 files: `tests/e2e/Capture-M4Child.ps1`, `tests/e2e/Prepare-M4NegativeFixtures.ps1`, `tests/e2e/m4_aim_query.cpp`, `tests/unit/test-m4-formal12-support.ps1`, `tests/CMakeLists.txt`, and `M4_TASKLIST.md`. No VM or product/driver execution occurred; R7 remains DOING.
-Executor / UTC timestamp: gpt-5.6-terra medium implementers, with gpt-5.6-sol xhigh controller fallback / 2026-08-13T18:48:28Z
-Start commit / branch / end commit: 0f7c1186c1c8acb659b44a594e4de05b99626627 / feature/m4-contracted-product / pending
-Allowed files / actual files: R7 frozen allowlist plus owner-approved real-VM follow-ups for AIM compatibility, native-pipe observability, shutdown cleanup, removal of the obsolete mutating host boundary valid-run, exact mounted-volume discovery, and realistic eight-case VM Negative scope: src/run/main.cpp; src/run/run_loop.cpp; src/run/windows_volume.cpp; tests/integration/m4_product_composition_tests.cpp; tests/unit/m4_product_boundary_tests.ps1; tests/unit/m4_windows_volume_tests.cpp; tests/unit/test-m4-provision-script.ps1 / tests/e2e/Invoke-M4RunLifecycle.ps1; tools/Invoke-M4Verification.ps1; tests/CMakeLists.txt; M4_TASKLIST.md; docs/superpowers/plans/2026-08-13-m4-contracted-product.md; src/run/main.cpp; src/run/run_loop.cpp; src/run/windows_volume.cpp; tests/integration/m4_product_composition_tests.cpp; tests/unit/m4_product_boundary_tests.ps1; tests/unit/m4_windows_volume_tests.cpp; tests/unit/test-m4-provision-script.ps1
-Dependencies and evidence: R6 is recorded DONE; worktree supplied clean at HEAD 0f7c1186c1c8acb659b44a594e4de05b99626627.
-RED command / observed failure / exit code: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\\e2e\\Invoke-M4RunLifecycle.ps1 ...`; PowerShell reported that the file did not exist; process exit represented Windows file-not-found (77 low byte). This was the required missing-script RED before creation. Owner-approved 708b51a follow-up RED: rebuilt Debug `integration.m4.product_composition` failed `committed_count == 3u` because the final Ctrl+C checkpoint emitted no committed-generation status line; exit 1. The same source-contract required RecoverShutdown and OfflineCompact catch paths to pair Emergency with finally Dispose. Quality-review mutation RED removed CTest `PASS_REGULAR_EXPRESSION`, kept the exact BLOCKED line present, deliberately expected sentinel content `mutation-cleaned`, and CTest failed `cleanup sentinel was not written`, exit 1; this proves output matching cannot hide wrapper assertion failures. Host-boundary safety RED: the obsolete `valid run` timed out after 10 seconds once real AIM was available and left exact AIM DeviceId 0 / 67108864 bytes / logical and physical sector 512; the controller removed only that exact helper-validated device. A pre-execution source contract then failed `ordinary product boundary must not execute a mutating valid run`, exit 1, without starting the product or touching AIM. SPEC-review RED renamed the dangerous call and exercised double-quoted and variable `run --bundle` arguments; the old InvocationName regex missed the renamed fixture and failed its self-audit, exit 1. The replacement AST audit rejects arguments by semantics before any product call. Quality-review mutation RED kept the allowed unknown call but changed its assignment to a dangerous constant, added a second `+=` assignment, or appended a dynamic function invocation; the previous argument-only AST gate accepted the first mutation and failed its self-audit, exit 1. The hardened audit freezes the single assignment source/order and rejects indirect command AST/token shapes. Exact mounted-volume RED: same-commit CreateKill attempts reached GPT/NTFS and R: but timed out with empty stdout/stderr and an 8192-byte journal. File redirection disproved the native pipe hypothesis. Temporary markers, later fully reverted, proved `run_helper` returned and execution stopped inside `find_recovered_volume` before its return. The new target-selection test first failed to compile because the policy did not exist; SPEC review then produced a real `target validation failure is retried instead of failing closed` test failure. GREEN resolves the already-mounted requested letter first, validates only its GUID/extent/NTFS/exact mount, immediately rejects target failures, and enumerates other volumes only when the requested letter is absent.
-CRLF protocol follow-up: external observer formal2 RED found all storage predicates true for 117 seconds while `Wait-ReadyFor` rejected the child stream's `Ready: R: generation 1.\r\n`; the observer and direct source inspection isolated the root cause to its bare-LF `$` line terminator, not M4Child append/locking. TDD RED added the bounded `unit.m4.lifecycle_protocol_selftest`, extracted the actual Ready parser without changing its original terminator, and observed `protocol Ready CRLF was not accepted` with exit 77. GREEN routes Ready, latest committed checkpoint, and offline compact parsing through the same exact-line seams, accepting CRLF, LF, or EOF and rejecting bare CR, wrong drive, generation zero, trailing spaces, and trailing garbage; Debug and Release local `m4-v3` each pass 12/12. R7 remains DOING pending fresh same-commit approved-VM evidence; no VM or device was started for this follow-up.
-SPEC-review coverage repair: the protocol selftest now independently asserts CRLF, LF, and EOF success against each production parser seam (Ready, latest committed checkpoint, and offline compact), while retaining latest-generation selection and all negative cases. The first expanded-matrix run passed without a parser change, so this is coverage repair and not new RED evidence.
-Quality-review overflow RED→GREEN: exact UInt64-max-plus-one lines for Ready, checkpoint, and compact all threw `System.Management.Automation.RuntimeException` from the production seams; the bounded protocol selftest collected all three failures and exited 77 with `Cannot convert value "18446744073709551616" to type "System.UInt64"`. Minimal GREEN replaces only those unchecked casts with PS5.1-compatible typed-reference `UInt64.TryParse`; overflow is now a no-match without a broad catch, the exact protocol regexes remain frozen, UInt64 max stays accepted by all three seams, and checkpoint selection continues across invalid overflow lines to the greatest valid generation.
-Implementation summary: review repair RED→GREEN: strict exit-77/no-state-mutation wrappers first failed on CMake escaping; the native helper then failed stdout inheritance and Ctrl-Break delivery until it used exact SECURITY_ATTRIBUTES, NUL stdin, STARTUPINFOEX/HANDLE_LIST, CREATE_NEW_PROCESS_GROUP, exact argv quoting, bounded drains and idempotent handle cleanup. The harness freezes 64M/5s/1MiB/64M argv, Ready/NTFS, committed checkpoint successor, exact-PID kill, source-commit marker, stable inventory, recovery child-process audit, clean-shutdown final generation, offline compact successor and third-run hashes. Negative is a concrete ordered eight-case serial executor using a data-only `myrd.m4.negative-fixtures.v1` manifest: commands/refusal patterns remain frozen in code, paths are constrained below `<bundle>.r7-negative`, and per-case immutable evidence proves nonmutation, lock, driver and busy-volume behavior. Zero/multiple matching-volume refusal remains a local same-TU plus production-wiring safety boundary and does not require real-VM repartitioning. Final consumes all four same-commit phase files plus eight negative files and fail-closes on identity, argv, inventory, hash, generation, recovery-audit, refusal-output or oracle drift.
-Focused Debug verification / exit code: fresh controller verification configured and built `myrd` plus all focused M4 targets, then ran Debug `m4-v0` through `m4-v3`; 2/2, 1/1, 3/3 and 11/11 passed (16/16 total), exit 0. TDD repairs additionally proved >64 KiB rejection, latest/final checkpoint selection, hostile negative manifest rejection, process-handle cleanup, synthetic Final mutation rejection, typed-Block cleanup and precondition-no-child behavior. The first approved-VM CreateKill was a genuine product RED: exit 77 with `validate_exact_disk: disk native facts did not match runtime identity`; read-only VM facts proved AIM 1.2.28.93 reports logical/physical 512/512. The R4 predicate then RED on 512 and GREEN with an exact 512-or-4096 Windows physical-sector whitelist while preserving exact size/logical/device/layout checks.
-Cumulative and Release verification / exit code: fresh controller verification built Release `myrd` plus all focused M4 targets and ran Release `m4-v0` through `m4-v3`; 2/2, 1/1, 3/3 and 11/11 passed (16/16 total), exit 0. The VM route with no acknowledgement returns 77 before mutation as required; a fresh same-commit Final route remains pending real phase evidence.
-Line count / architecture and seam scans: parser validation passed for both scripts; safety probes for every phase and malformed acknowledged input returned 77 before VM action. Native selftest exercises process group, argv quoting, controlled stdio, overflow drain, finite waits, exact Ctrl-Break and exact emergency termination. Final synthetic evidence accepts the valid set and rejects changed SHA, compact/final generation, inventory, audit, target escape, refusal text, duplicate case and failed status. After the mounted-volume repair, product line count is `1264 / 2500`; `git diff --check` and the current R7 allowlist audit pass. Fresh controller Debug and Release `m4-v2` plus `m4-v3` each passed 14/14. Independent SPEC and quality reviews APPROVED the mounted-target fast path and immediate fail-closed retry policy.
-VM evidence paths and SHA-256, if applicable: approved target is the existing VMware `Windows 11 x64` guest recorded by M3, reached through its dedicated Task41 passwordless SSH key and pinned known-host entry. Host artifact `dfe8621` SHA-256 `BCCB6DC738C6AE6E80497F92C0E3F5DAD2F1A7450525E9B5FD0D0A6475309CA0` produced the first geometry RED, not acceptance evidence. Artifact `708b51a` SHA-256 `CE36331FEE4EF60E4F96B09FD84451B5921DDABC161D64106C3CDD0B46E07BAA` passed four exact no-ack exit-77/no-mutation probes, then produced the native-pipe/cleanup RED at `E:\myrd-m4-r7-708b51a-formal1`; no phase evidence was accepted. Artifact `75c15e7` SHA-256 `14B076E8B3CA977E35EAF2257089FBAD55B5D83FB0BF61D6668221C2460DFB6E` passed no-ack probes but its CreateKill also timed out before Ready. Diagnostic roots `filediag3-54aa2cca`, `cpdiag-cb28b6f2` and `provdiag-002` are RED-only evidence: the last proved helper success followed by a hang inside all-volume discovery. Exact guarded cleanup or the required post-unclean reboot restored AIM/R to baseline; system Disk 0 and approved non-system 64 GiB Disk 1 remained unchanged. Fresh evidence from the mounted-volume fix commit and a new guest root is required.
-SPEC/PLAN/TASKLIST drift audit: the full local harness and operator fixture contract are implemented. Independent SPEC and quality re-reviews APPROVED the local harness. The VM-discovered sector-reporting drift is now stated explicitly: M3/VHDX image geometry remains 512/4096, while the Windows AIM disk may report physical 512 or 4096; independent SPEC and quality reviews APPROVED that narrow compatibility correction with all anti-misformat checks preserved. R7 remains DOING until fresh same-fix-commit VM evidence passes.
-Open risks / explicitly excluded follow-up: R7 cannot be marked DONE without same-commit approved-VM evidence. The approved guest and safe access route are now available; destructive phases still require the explicit in-guest safety marker/switch and are never auto-rebooted.
-Formal3 LetterGuid definition-order repair (R7 remains DOING): the approved-VM CreateKill run reached Ready/GPT/NTFS and then failed at `Invoke-M4RunLifecycle.ps1:217` with `LetterGuid $DriveLetter` reported as CommandNotFound before exact-PID Emergency cleanup; no phase evidence was accepted and the exact device was cleaned up. Root cause: PowerShell's sequential script execution reached that phase call before the sole `LetterGuid` definition at line 224. TDD RED first added the bounded protocol selftest's real runtime `Get-Command LetterGuid -CommandType Function` and `LetterGuid '?'` assertions; before the move it exited 77 with `protocol LetterGuid helper is not available before selftest dispatch.` GREEN moved the complete unchanged helper into the pre-dispatch helper section and removed the old definition, without changing ready/evidence/verifier behavior. Fresh PS5.1 parse plus FunctionDefinitionAst audit found no phase normal-path call before its definition; protocol selftest and Debug/Release `m4-v3` each passed 12/12. No VM, device action, staging, or commit occurred for formal3.
-Formal7 lifecycle RED (R7 remains DOING): fresh root `E:\myrd-m4-r7-cf818ea-formal7-e71276716909` deployed commit `cf818ea94055e6782d7d1bb193cfca04cc46a5fe` Release artifact SHA-256 `D0DD0A237E0B94061FA8B27E74A840B299C0F1DC4B957DFFE385735ABC35DDC5`; all four no-ack probes returned 77 without mutation. CreateKill passed with immutable evidence SHA-256 `71F55078BD21BCCB22B1485CDB6230A5B97DDDB869AB2303990EE4AEFC41519D`, Ready generation 1 on GPT/NTFS R:, checkpoint generation 2, exact PID 10200 force-killed with exit 1, promised A hash `BFAC78A1D4E5642CF6F258FA333AC9A0820B7D10CB2ABAC3B7CAC45F0629C904`, and AIM baseline-to-one delta. The single approved host `vmrun reset <exact VMX> hard` call returned -1 because the VM required a password and did not reset; the user subsequently performed the authorized manual power reset. The recovery gate then passed on boot `2026-08-14T12:04:56.5000000Z`, unchanged CreateKill evidence, empty AIM/R, exact PD0/1/2, and disabled/stopped Task23 service.
-Formal7 recovery-audit race RED/TDD repair (R7 remains DOING): RecoverShutdown exited 1 at `Invoke-M4RunLifecycle.ps1:135` when a `Win32_ProcessStartTrace` event outlived its short-lived process; `Get-CimInstance Win32_Process -ErrorAction SilentlyContinue` returned null and StrictMode raised `PropertyNotFoundStrict` on `$proc.CommandLine`. Exact child PID 3960 had already exited 0, AIM/R returned clean and PD0/1/2 stayed exact, but `disk.rdm` and the journal had advanced with no immutable RecoverShutdown evidence, so formal7 and all downstream phases remain stopped and the root is never reused. TDD RED added a Native selftest against the intended production single-event seam with a synthetic event and null injected lookup; focused execution exited 1 because `Record-ProcessAuditEvent` did not exist. Initial GREEN added that seam and recorded event name/parent/PID with `command_line=''` and `identity_available=false` when lookup raced with exit. Quality review then identified PID-reuse ambiguity: Windows CIM metadata established that `Win32_ProcessStartTrace.TIME_CREATED` is `UInt64` FILETIME event-generation time, while runtime inspection established that `Win32_Process.CreationDate` is a local `DateTime`, so exact equality is invalid; a bounded local non-VM probe produced no trustworthy delta and its subscription, events and child process were removed in `finally`. Strengthened TDD RED used the actual seam with the same PID/name but a creation time after the event and exited 77 with `audit accepted same PID/name created after trace event`. Minimal GREEN now preserves a command line only when queried PID, case-insensitive name, parent PID and session all equal the event and UTC creation is no later than event generation by at most five seconds; missing fields, lookup/conversion failure or any mismatch record blank/false without throwing, and Native coverage also rejects name/parent/session mismatches while accepting a complete boundary match. SPEC review then found the recoverable metadata catch also covered core parent/PID extraction and could emit a zero/default record outside the descendant closure. Actual-seam TDD first exited 77 with `audit missing PID core identity was emitted instead of failing phase`, then separately exited 77 with `audit missing SessionID did not preserve core identity fail-closed`. The narrow GREEN extracts and converts parent/PID before the recoverable catch, optionally preserves ProcessName, throws without recording for missing/invalid core identity, and preserves valid core identity with blank/false for missing/invalid session, trace time or lookup metadata so the existing descendant assertion rejects it. A subsequent SPEC review found PowerShell 5.1 converts `[int]$null` to zero even when the core property exists; actual-seam REDs separately exited 77 with `audit null PID core identity was emitted instead of failing phase` and `audit null parent PID core identity was emitted instead of failing phase`. The single-line GREEN now requires each core property and its value to be non-null before the unchanged integer conversion, so invalid conversion still throws and no other behavior changes. Final SPEC review found the same null-conversion gap in recoverable SessionID/TIME_CREATED metadata. Lookup-shaped actual-seam REDs each emitted `command_line=cmd.exe` with `identity_available=True` before exiting 77 with `audit null SessionID metadata was accepted` and `audit null TIME_CREATED metadata was accepted`. The optional-metadata loop now also requires each property and value to be non-null inside the existing recoverable catch, preserving valid core identity with blank/false for either null case; no other behavior changed. `Assert-AuditDescendants` and the Final verifier contract remain unchanged. Focused Native selftest printed `M4 native harness selftest PASS`; fresh PS5.1 parsing passed for runner and verifier, focused protocol passed 1/1, Debug and Release `m4-v3` each passed 12/12 sequentially, product lines remained 1264/2500, and diff check plus the exact two-file allowlist/cached-empty gate passed. An earlier concurrent Debug/Release invocation made each global PowerShell-process precondition scan see the other suite's child; no CTest process remained and the isolated sequential reruns above passed. Before the exact follow-up commit, no further VM action, reset, cleanup, staging, or commit occurred for this repair.
-Formal8 OfflineCompact diagnostic repair (R7 remains DOING): fresh root `E:\myrd-m4-r7-53db772-formal8-a84c2f1d09be` deployed commit `53db77224ccaf048c88c3b72325ede26d3885a8f` Release artifact SHA-256 `22E5F8C4E134A82591382E403D87E179D9DBCAAECAB5F99CBAF3D6C490495862`; all four no-ack probes returned 77 without mutation. CreateKill immutable evidence SHA-256 `259EDA34BD8C3647D5AA00532DB2910C71871CFF5E2D57411189EF2BA85C4A65` recorded Ready generation 1, checkpoint generation 2 and exact PID 3932 killed with exit 1. After a newer Windows boot, RecoverShutdown passed generations 3 through final-checkpoint 4 with immutable evidence SHA-256 `63E92E26E6DE4148AADC44FE485068C8A670C0700B3DFCA2E71CFB6FAA010357`. OfflineCompact then exited 77 after 124.6 seconds with two transport records, `System.Collections.Specialized.OrderedDictionary` followed by `M4 lifecycle OfflineCompact BLOCKED: ready/GPT/NTFS deadline; stdout=; stderr=`; no OfflineCompact evidence was written, Negative/Final stayed stopped and this root is never reused. The new `base-g0000-c5.vhdx` and `journal-e0002-c5.rdj` prove compact generation 5 committed before the third-run Ready deadline. Read-only diagnosis reproduced that the unassigned `Emergency $third` in the catch leaked its ordered result while `$compact=Compact-Run` assignment did not; because `Wait-ReadyFor` constructed the Block before Emergency finished the drains, the terminal record lost killed/exit/post-drain detail and could not distinguish a still-live child from a just-exited product. TDD RED added actual-M4Child live, already-exited and generic-error cases to the Native selftest; focused Debug `unit.m4.lifecycle_native_selftest` executed all fixture cleanup and failed 1/1 with selftest exit 77 and `offline emergency live-child diagnostic contract failed`. Minimal GREEN adds one private rethrow helper, assigns the Emergency result, appends deterministic exact PID/killed/exit/post-drain stdout/stderr only for `M4LifecycleBlocked`, preserves a generic exception's identity and lets cleanup failures supersede the original error fail-closed; only the OfflineCompact third-run catch uses it. The first GREEN run exposed the PowerShell tokenization error `throw[M4LifecycleBlocked]::new`; adding the required separator produced a focused 1/1 PASS. No VM/product phase, reset, cleanup, staging or commit occurred during this local repair.
-Formal8 diagnostic single-line review repair (R7 remains DOING): quality review found that directly interpolating the drained streams into the new `M4LifecycleBlocked` allowed a child's CRLF and other control characters to split the trap's one BLOCKED record and inject unprefixed log lines. The actual-M4Child live fixture was changed to `WriteLine`; before the production repair the focused Native test failed 1/1 with selftest exit 77 while reporting `pipeline=0`, `errors=1`, `type=M4LifecycleBlocked` and a raw multiline `stdout=live-stdout<CRLF>; stderr=live-stderr<CRLF>` instead of the exact quoted single-line scalars. Minimal GREEN uses PowerShell 5.1 `ConvertTo-Json -Compress -InputObject` inside the existing helper for each post-drain string. The live case now requires exact `"live-stdout\r\n"` / `"live-stderr\r\n"`; the already-exited case also requires exact `\u0001`, tab and CRLF escapes. Both reject every raw C0 character, retain one error/no success-pipeline object, and the generic-exception identity and cleanup-failure precedence paths are unchanged. Focused Native then passed 1/1. No other phase catch, Final/evidence contract, VM, product process, staging or commit was touched.
-Formal8 original-reason single-line review repair (R7 remains DOING): narrow review then established that `Wait-ReadyFor` had already embedded the child's pre-Emergency stdout/stderr in the original Block reason, so encoding only the post-drain fields still allowed raw controls. The actual helper seam now receives an `M4LifecycleBlocked` reason containing CRLF and U+0001. Before the production change the focused Native test failed 1/1 with selftest exit 77 while retaining `pipeline=0`, `errors=1` and `type=M4LifecycleBlocked`, but its final message split after `original-stdout` and contained the raw U+0001 instead of exact `reason="ready/GPT/NTFS deadline; stdout=original-stdout\r\n; stderr=original-stderr\u0001"`. Minimal GREEN JSON-encodes the complete original exception message inside the existing Blocked-only branch and emits `reason=<quoted scalar>; emergency ...; stdout=<quoted scalar>; stderr=<quoted scalar>`. Focused Native then passed 1/1; live and already-exited exact messages contain no raw C0, while generic identity, cleanup precedence, the zero-success-output/one-error contract and every other phase catch remain unchanged. No VM, product phase, staging or commit occurred.
-Formal9/offdiag recovery-discovery RED (R7 remains DOING): fresh root `E:\myrd-m4-r7-f854a2c-formal9-cfa5a79d00c0` deployed commit `f854a2c85870f2fee69d01466bac63e1c55a5855` Release artifact SHA-256 `7D08E81530889E17CC4BF059C8A7DCDC5A3718188539D3D13AA5125859A3892B`. Four no-ack runner results were exact exit 77/no mutation; an outer setup loader emitted a BOM-only warning that was not runner output and was not retried. CreateKill passed Ready generation 1/checkpoint 2 with exact PID 8448 killed at exit 1 and immutable evidence SHA-256 `366D8854BCE0B8EAC47134BEF11700505FE9F026CBEC1550A13F2F6165019BCF`. The single password-authorized hard reset returned 0 and the recovery gate proved a newer boot, unchanged evidence, empty AIM/R and exact PD0/1/2. After one pre-body parameter-binding setup error, the unique effective RecoverShutdown passed checkpoint 3/final 4, A/D hashes and empty child audit with evidence SHA-256 `C7195197D16EC48D6BB396B6AE7213EE01FEE7DF76622CBD0D15CAF23F6C80CA`. OfflineCompact committed generation 5 but its third run ended after 123.462 seconds with exact single-line `reason="ready/GPT/NTFS deadline; stdout=; stderr="; emergency pid=6456 killed=True exit=1; stdout=""; stderr=""`; no Offline evidence was written and Negative/Final stayed stopped. The formal9 root is never reused.
-The post-RED hard-reset gate returned AIM/R/PD to baseline. A complete five-file compacted-bundle copy in fresh diagnostic root `E:\myrd-m4-r7-f854a2c-offdiag1-72ba45465511` preserved every relative path, length and SHA. Direct execution of the same artifact, without lifecycle `Wait-Ready`, self-exited after 121.102 seconds with exact stderr `find_recovered_volume: volume extent query failed`, then self-cleaned AIM/R. A standalone read-only Win32 helper on the clean guest enumerated five volume GUIDs: four returned one disk extent, while only `\\?\Volume{985302cf-921f-11f1-b964-806e6f6e6963}\` (stable mapping `D:|GUID|none`) opened successfully but rejected `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` with native `ERROR_INVALID_FUNCTION` (1), zero bytes. Source tracing proved that `discover` aborted the entire enumeration for this unrelated non-disk volume and `find_recovered_volume` retried that generic failure for its full 120-second deadline.
-Exact-volume enumeration TDD repair (R7 remains DOING): a new same-TU predicate test first failed the Debug build because `classify_enumerated_extent_query` and `EnumeratedExtentQueryClass` did not exist. Minimal GREEN classifies successful queries for inspection, only observed `ERROR_INVALID_FUNCTION` as an unsupported enumerated volume to skip, `ERROR_MORE_DATA` as the existing finite-cap failure and all other errors as failure. The mounted target fast path is unchanged; skipping cannot accept a volume because only a subsequent exact single-extent match is collected, and enumeration continues through all remaining volumes so mixed/ambiguous guards remain effective. Focused Debug then passed 14/14. The first cumulative Debug `m4-v2` run exposed a stale composition source contract from the earlier Offline diagnostic commit: it still required every lifecycle catch to contain literal `catch{Emergency` and failed at that assertion. The narrow GREEN now freezes the RecoverShutdown direct Emergency catch separately from OfflineCompact's `Rethrow-OfflineEmergency`, and requires both exact `finally` disposal paths. Independent SPEC and quality reviews approved the four-file repair without findings. Fresh final verification passed Debug and Release `m4-v2` 3/3 and `m4-v3` 12/12; the product line counter reported `TOTAL=1274 MAXIMUM=2500`, and diff, exact 4/4 allowlist and empty-index checks passed. No further VM/product run occurred during the local repair.
-Formal10 lifecycle and Negative-scope boundary (R7 remains DOING): fresh same-commit root used commit `74f16ca` and Release artifact SHA-256 `E5E710E00823A7C8426E39BBD89D0724AF05A4B3B73DA216EED648E298F919EB`. CreateKill passed with immutable evidence SHA-256 `36BBCF688EAC3C0C50D4CDF89D232C83D815C355FED106F870FFA3ED0092E8E1`; the password-authorized hard reset produced a newer boot and clean AIM/R/PD baseline; RecoverShutdown passed with evidence SHA-256 `EC4E361F885BF0EACDD84C3530AFE59E9389D939EB2FFD12D479BAEE7C671341`; OfflineCompact passed in 5.6 seconds with evidence SHA-256 `2C062C6455D2B6A6ED227F0C877ACA2B5BB7B033F49A403B91C5A714D9D97E4D`. Negative then stopped exactly at exit 1 with `M4 lifecycle Negative BLOCKED: Negative missing fixture manifest.`; Final was not started. Post-RED product/helper processes were absent, R: was absent and DirectAimAdapter reported `ids=[]`; the root is preserved and never reused.
-Realistic Negative scope TDD repair (R7 remains DOING): same-TU unit RED failed the Debug build because `VolumeMatchClass`/`classify_volume_matches` did not exist, and the scoped composition RED could not find production classification before `matches[0]`. Minimal GREEN maps zero to Missing, one to Exact and every larger count to Ambiguous, replacing only the previous `matches.size()!=1` branch while retaining its exact error and every enumeration/extent/mount guard. Runner RED exited 77 with `negative contract case count`, and its composition contract rejected the old ordered nine-case literal. Minimal GREEN removes only the VM `ambiguous_recovery` manifest/validator/execution case, retains a hostile unknown-case probe and freezes the ordered eight realistic cases. Final synthetic evidence was first blocked by a pre-existing test-fixture omission of `CreateKill.generation`; after adding the already-required generation 2 fact, the intended RED was exact `Missing negative evidence: ambiguous_recovery`. Minimal GREEN removes that case from Final maps, switch, list and synthetic oracles, changes cardinality to eight, and adds mutations proving both a missing case and an extra reintroduced ambiguity case are rejected. The first cumulative Debug `m4-v2` RED found the existing provision-script source contract still required literal `matches.size() != 1`; its only change now requires the equivalent classifier expression. Fresh sequential Debug and Release `m4-v2` each passed 3/3 and `m4-v3` each passed 12/12; PowerShell 5.1 parsing passed for runner/verifier, product lines are `1281 / 2500`, `git diff --check` passed, the exact eight-file allowlist is dirty and the index is empty. Independent SPEC and quality reviews both APPROVED with no Critical, Important or Minor findings; the quality reviewer independently passed the focused Debug/Release five-test set and diff check.
-Commit subject / commit hash: test(m4): prove real run lifecycle / dfe86219a617f3cdddcab8180519ddba65a0f09d; AIM compatibility follow-ups 64fbcbc2b45d133a785135557d02a53b40e33c04, 708b51aac823b1961b085568ef7d4a3ad044c859 and 75c15e7e51d3829c1960be5ec39310a48a76d101; mounted-volume discovery follow-up 5becdca9e09ff73ecb27e3362851e69db10ee6f6 / fix(m4): resolve the exact mounted volume
-```
-
-## R8 — Final regression and GO
-
-**SPEC:** All sections.
-**PLAN:** Task R8.
-**Allowed files:**
-
-```text
-README.md
-M4_TASKLIST.md
-docs/superpowers/specs/2026-08-13-m4-contracted-product-design.md
-docs/superpowers/plans/2026-08-13-m4-contracted-product.md
-```
-
-SPEC/PLAN edits are allowed only for factual drift discovered during final
-audit, not for adding features.
-
-**Acceptance:**
-
-- [ ] README contains exact command, defaults, recovery no-format guarantee,
-  80%/full-journal behavior, exact offline compact recovery, busy-volume
-  guidance, clean/full/forced-kill offline-compaction sequences, forced-kill
-  reboot limitation, online-compaction defer link and exit codes.
-- [ ] Fresh Debug full CTest passes.
-- [ ] Fresh Release full CTest passes.
-- [ ] Formal M0-M3 labels and all local M4 labels pass.
-- [ ] R7 same-commit VM final evidence passes.
-- [ ] `BUILD_TESTING=OFF` product builds and contains no test seam.
-- [ ] Architecture and unfinished-marker scans are clean.
-- [ ] Product line count is at most 2500.
-- [ ] No requirement is deferred to M5; no M5 is planned.
-- [ ] Drift audit maps every SPEC requirement and changed product file.
-- [ ] Exact final commit exists and M4 status is GO.
-
-**Execution record:** Not started.
-
----
-
-## E. Final GO checklist
-
-- [ ] R0-R8 are DONE, including the exact R1 owner-decision document commit.
-- [ ] One product executable and one resident MyRamDisk process are shipped.
-- [ ] Create, periodic persistence, forced-kill/reboot recovery and Ctrl+C
-  shutdown pass on real AIM/NTFS.
-- [ ] Recovery never formats.
-- [ ] Busy volume never dismounts.
-- [ ] Old M4 management architecture is absent from product source and binary.
-- [ ] Product implementation is at most 2500 lines.
-- [ ] Full local regression and same-commit VM evidence are fresh.
-- [ ] README states every v1 limitation.
-- [ ] Online compaction appears only as the explicit external defer and no v1
-  placeholder API, option or scheduler hook exists.
-- [ ] `src/run/run_loop.*` contains no compact/compaction path; offline compact
-  is routed only by product `main`.
-- [ ] M4 is declared the final milestone; no M5 tasklist or plan exists.
-
-## F. Owner-approved v1 release-candidate preparation
-
-**Status:** candidate preparation only; R7 remains DOING and R8 remains not DOING.
-
-The owner approved a documentation, version-resource and local packaging
-preparation pass for v1.0.0 before Formal12. All compiled product and lifecycle
-inputs are frozen before Formal12; this pass does not run a VM, product process,
-driver action, package stage, release upload or tag.
-
-**Exact allowlist:** `CMakeLists.txt`; `src/run/run_resources.rc`; `README.md`;
-`RELEASE_NOTES.md`; `tools/New-M4ReleasePackage.ps1`;
-`tests/unit/test-m4-release-contract.ps1`; `tests/CMakeLists.txt`;
-`M4_TASKLIST.md`; `docs/superpowers/plans/2026-08-13-m4-contracted-product.md`.
-
-The release-contract test is a local static/package-layout contract. Formal12
-registration and its `m4-v3` label are unchanged. The packager is deliberately
-local-only and rejects existing stage or ZIP paths rather than publishing or
-overwriting anything.
-
-**Release-surface review repair:** the strengthened contract first REDed with
-`README is missing support requirement: bundle 目录必须位于本机 NTFS 卷`.
-README and RELEASE_NOTES now state the local-NTFS bundle and currently-free
-creation-drive-letter prerequisites using the same frozen phrases. Direct
-release-contract and focused Formal12/release-contract CTests are rerun before
-the follow-up documentation commit; no VM, product or driver action is used.
-
-**Collision-preservation coverage repair:** the local release contract now
-snapshots an existing ZIP's exact bytes and SHA-256, and an existing stage's
-sentinel content plus complete file/hash inventory. Rejected ZIP-only and
-stage-only invocations must preserve those pre-existing outputs and create
-neither counterpart. This strengthening passed on its first run; it is not a
-new implementation RED.
-
-**Formal12 frozen RED and optional Negative fixture-size repair (R7 remains DOING; R8 remains not DOING):** Formal12 root `E:\myrd-m4-v1-formal12-46bc78b-296671e5adf7` is preserved and never reused. Its sole `missing_driver` Negative invocation returned child exit 1 with `StrictMode PropertyNotFoundStrict` for `$entry.expected_size` before the case switch; no missing-driver evidence or aggregate Negative evidence was written. Later driver restoration failed discovery, so Formal12 stopped with no R7 closure or R8 work. The local TDD RED first extended only `Negative-ContractSelfTest`: valid `unknown_nonempty`, `occupied_letter`, and `missing_driver` entries without `expected_size` required frozen fallback `64M`, while valid `size_mismatch` with `expected_size='128M'` required `128M`; the direct selftest then failed solely because `Resolve-NegativeExpectedSize` did not exist. Minimal GREEN added that PS5.1/StrictMode-safe resolver using `PSObject.Properties['expected_size']`, returning the fallback only when the property is absent, and replaced only the shared pre-switch size assignment. Direct `MYRD_M4_NEGATIVE_SELFTEST` then printed PASS; PowerShell 5.1 parsing passed for runner and verifier; focused Debug and Release `unit.m4.lifecycle_negative_contract` passed 1/1; sequential Debug and Release `m4-v3` passed 13/13; sequential Local verifier runs printed `M4 Local PASS: Debug m4-v0..v3` and `M4 Local PASS: Release m4-v0..v3`. No VM, SSH, driver, product, lifecycle, evidence, reset, fixture-schema, verifier, CMake, test-list, or candidate-freeze action occurred. Formal13 is the single pending owner-approved full rerun after the required clean VM baseline; it has not started.
-
-## G. Task 9-A — 中文资格文档与静态安全契约
-
-Task 1–8 的 commit、RED、GREEN 与独立 review 记录保持本账本既有原文；本任务不重写、更正或补造这些历史事实。R7 仍为 `DOING`，R8 仍为 `PENDING`。这里的“真实 VM 尚未启动”仅指 Task 9-A 的来宾资格运行：本任务没有启动真实 VM、SSH、driver、device、reset 或断电。
-
-Task 9-A / status: DONE pending this exact independent documentation-contract commit.
-Start commit / branch: `637848a` / `feature/formal13-guest-qualification`.
-Allowed files: `README.md`; `RELEASE_NOTES.md`; `M4_TASKLIST.md`; `tests/unit/test-m4-guest-qualification.ps1`; `tests/unit/test-m4-qualification-kit.ps1` only.
-RED: the expanded direct PowerShell contract first failed with exit 1 because README lacked `v1.0 来宾资格测试（高级/发布维护者）`.
-GREEN: the direct guest contract and direct qualification-kit contract both passed with exit 0 after the documentation change. The guest contract parsed the real controller parameters, validated UTF-8 without BOM, and inspected AST direct calls, common deletion aliases and literal call-operator forms in the controller, live helper and kit packager; it does not claim to prove arbitrary runtime command construction. `git diff --check` passed. No release ZIP is built or frozen here (Task 9-B owns that work), and no real VM/SSH/driver/device action occurred.
-Commit subject / hash: `docs(m4): document guest qualification contract` / this Task 9-A commit at Git HEAD.
-
-Quality-repair RED/GREEN (Task 9-A remains documentation/static-contract only): RED first failed because README did not provide `New-M4GuestQualificationKit.ps1`; a second focused RED proved that the requested synthetic safety mutations could not reach a safety scanner before `Assert-ProductionSafetyAst` existed. GREEN documents the four real packager parameters and the MSVC Release artifact/query paths, checks their presence and SHA-256 before packaging, and uses a commit-labeled random output directory that the packager refuses to overwrite. The replacement scanner has an exact audited self-test-function allowlist, verifies each named extent exists and has no non-allowlisted function caller, and scans production AST direct calls, deletion aliases and literal call-operator tokens using ordinal case-insensitive comparison. It intentionally makes no claim about arbitrary runtime command construction. The three synthetic mutations (`ShUtDoWn.ExE`, `rm $QualificationRoot`, and `& 'VmRuN'`) are rejected by the scanner before production scripts are accepted. No VM, SSH, driver, device, reset, release build, freeze or ZIP operation occurred.
-Quality-repair commit subject / hash: `test(m4): harden guest qualification safety contract` / this repair commit at Git HEAD.
+只有 `ON_TRACK` 才能解锁下一项。任何偏差先更新并批准 Spec/Plan，再更新本台账。
+
+## M4-4. 复盘记录
+
+### Review Record — M4-00
+
+- Start commit: `157bdb5cd5849b52386846d7c3fff8a7b1f9bb0a`
+- Implementation commit: `c20c269`（仅新增 `docs/validation/m4-driver-unavailable-baseline.md`）
+- 允许文件与实际文件：`一致`。实现提交只含 `docs/validation/m4-driver-unavailable-baseline.md`；复盘提交只含本 `M4_TASKLIST.md`。注意：本文件在 M4-00 开始前已存在未提交的用户改写（整份台账重写），该改写随本复盘提交一并入库，因为它就是 M4-00 所要更新的台账本体。`tasklist.md` 的未提交修改与未跟踪的 `docs/superpowers/plans/2026-08-21-m4-driver-unavailable-qualification.md` 均在允许范围之外，未被 stage、未被提交、未被改动。
+- RED 证据：`不适用`。M4-00 是只读基线与台账建立任务，本任务表未为其定义 RED 项；不引入任何产品或测试代码。
+- GREEN 证据：
+  - `git status --short --branch` → exit 0
+  - `git log -5 --oneline` → exit 0
+  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\unit\test-m4-guest-qualification.ps1 -SourceRoot .` → exit 0，输出 `M4 guest qualification contract PASS`
+  - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\unit\test-m4-qualification-kit.ps1 -SourceRoot .` → exit 0，输出 `M4 qualification kit PASS`
+  - PowerShell AST `Parser::ParseFile` 解析 controller/runner/verifier → exit 0，三份脚本各 0 个解析错误（tokens 分别为 50035 / 13059 / 5363）
+  - 通过数量：两份合同脚本只输出单行 PASS 汇总，未输出用例计数，因此不记录用例数量。
+  - `git diff --check` 与 `git diff --cached --check` → exit 0，无空白错误。
+- Debug/Release 证据：`未运行`。原因：M4-00 范围不含 C++ 构建与 CTest；`cmake --preset msvc`、Debug/Release 构建与 `-L m4-v3` 属 M4-01 起的任务，M4-14 负责全量双配置验证。
+- Spec/Plan 对齐：
+  - Spec §9–§10 与 Plan 任务 7 要求先冻结起点与本地只读基线 — 已满足，且未生成 kit、未创建资格根目录。
+  - Spec §2 “不迁移旧 kit/旧资格根目录” — 已满足：只记录既有 kit schema `myrd.m4.qualification-kit.v1` 与固定文件清单作为对照基线，未复用、未迁移。
+  - Spec §6 “恰好三个 VMware 电源边界” — 本任务消耗 0 个边界。
+  - Spec §7 证据字节规范 — 基线记录为 UTF-8 无 BOM、CRLF 结尾，写后重读校验：7216 字节、BOM=False、裸 LF=0、SHA-256 `9A8A5813B6693667696D622D4501DE58CAC125813A50F94F07310DD06EE342C1`。
+  - 无偏差。
+- 安全检查：`无 VMware/驱动/设备动作`。未执行任何 VMware 操作、SSH、`sc.exe`、`pnputil.exe`、`Get-PnpDevice`/`Get-Disk`/`Get-WinEvent`、`myrd.exe`、`myrd_m4_aim_query.exe`、AIM 设备创建、bundle 读写或电源边界。`out/` 下的原生 artifact 只被哈希读取，未被构建、运行或替换。
+- 结论：`ON_TRACK`
