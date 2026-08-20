@@ -47,7 +47,7 @@ stdout: 空
 stderr: Error: run failed for <绝对 bundle 路径>: driver_unavailable: phdskmnt is disabled or absent\r\n
 ```
 
-此协议对 `missing_driver_create` 与 `driver_lost_recover` 完全相同。发生该错误时不读取 bundle，也不创建 AIM 设备、目标盘符或任何 bundle 文件。服务看似可用但完整 adapter discovery 失败时，使用既有协议 `discover_aim_adapter: no AIM adapter found`，同样要求在 bundle 操作前失败。
+此协议对 `missing_driver_create` 与 `driver_lost_recover` 完全相同。发生该错误时不读取 bundle，也不创建 AIM 设备、目标盘符或任何 bundle 文件。服务看似可用但完整 adapter discovery 失败时，使用既有协议 `discover_aim_adapter: no AIM adapter found`；此时 bundle 可能已创建，不承诺零 bundle 写入，适用本节 §3.2 与下文的运行时失败处理。
 
 查询工具 `myrd_m4_aim_query.exe` 保持独立只读协议。缺驱动交叉检查时，它必须 exit 1、stdout 为空、stderr 严格为 `discover_aim_adapter failed\r\n`。这里“一致”只按结果类别判断：query exit 1 且 run exit 1，表示两者都判定驱动不可用；任一方 exit 0 都是不一致，控制器立即 `Blocked`；query 其他 exit、超时或违反上述 stdout/stderr 字节协议，也立即 `Blocked`。这不要求两条 stderr 文本相同：run 使用 `driver_unavailable`，query 使用其自身固定协议。
 
