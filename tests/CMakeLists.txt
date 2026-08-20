@@ -1635,6 +1635,20 @@ add_test(NAME unit.m4.driver_preflight COMMAND myrd_m4_driver_preflight_tests)
 set_tests_properties(unit.m4.driver_preflight PROPERTIES
     LABELS "m4-v3" TIMEOUT 30)
 
+# Exercises the frozen query success JSON without a driver: the emission is
+# compiled in with wmain suppressed, so no device is enumerated or opened.
+add_executable(myrd_m4_aim_query_protocol_tests
+    unit/m4_aim_query_protocol_tests.cpp)
+target_link_libraries(myrd_m4_aim_query_protocol_tests PRIVATE
+    myrd_test_support myrd_driver)
+target_include_directories(myrd_m4_aim_query_protocol_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_aim_query_protocol_tests)
+add_test(NAME unit.m4.aim_query_protocol
+    COMMAND myrd_m4_aim_query_protocol_tests)
+set_tests_properties(unit.m4.aim_query_protocol PROPERTIES
+    LABELS "m4-v3" TIMEOUT 30)
+
 # R7 is intentionally a non-destructive CTest contract.  It exercises every
 # phase without the acknowledgement switch, so no VM, driver, bundle, or drive
 # is ever required for ordinary local regression.

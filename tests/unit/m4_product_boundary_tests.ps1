@@ -381,6 +381,96 @@ function Assert-DriverPreflightBoundary {
     }
 }
 
+# discover_aim_adapter is the single AIM authority. It must keep enumerating
+# the StoragePort interface class and filtering on SPDRP_SERVICE == phdskmnt,
+# and no second matcher may appear anywhere on the qualification path.
+function Assert-AdapterDiscoveryAuthority {
+    param(
+        [Parameter(Mandatory = $true)][string]$DiscoverySource,
+        [Parameter(Mandatory = $true)][string]$PreflightSource,
+        [Parameter(Mandatory = $true)][string]$QuerySource,
+        [Parameter(Mandatory = $true)][string]$AcceptanceSource
+    )
+
+    $discoveryCode = Remove-CppNonCode $DiscoverySource
+    # The StoragePort interface GUID, spelled as the frozen literal bytes.
+    if ($DiscoverySource -notmatch '0x2ACCFE60,\s*0xC130,\s*0x11D2') {
+        throw 'discover_aim_adapter must keep enumerating GUID_DEVICEINTERFACE_STORAGEPORT'
+    }
+    foreach ($required in @(
+        'SetupDiGetClassDevsW', 'SetupDiEnumDeviceInterfaces',
+        'SetupDiGetDeviceRegistryPropertyW', 'SPDRP_SERVICE')) {
+        if ($discoveryCode.IndexOf($required, [StringComparison]::Ordinal) -lt 0) {
+            throw "discover_aim_adapter must keep using $required"
+        }
+    }
+    if ($DiscoverySource -notmatch 'phdskmnt') {
+        throw 'discover_aim_adapter must keep filtering on the phdskmnt service'
+    }
+    if ($discoveryCode.IndexOf('kQueryVersion', [StringComparison]::Ordinal) -lt 0 -or
+        $discoveryCode.IndexOf('kDriverVersion', [StringComparison]::Ordinal) -lt 0) {
+        throw 'discover_aim_adapter must keep the QUERY_VERSION probe and version match'
+    }
+    if ($discoveryCode -notmatch 'candidates\.empty\(\)' -or
+        $discoveryCode -notmatch 'candidates\.size\(\)\s*>\s*1') {
+        throw 'discover_aim_adapter must keep rejecting zero and multiple candidates'
+    }
+    if ($QuerySource -notmatch 'no AIM adapter found' -and
+        $DiscoverySource -notmatch 'no AIM adapter found') {
+        throw 'the zero-candidate protocol text must stay discover_aim_adapter: no AIM adapter found'
+    }
+
+    # No parallel PnP matcher. These fields are diagnostics only.
+    $secondaryMatchers = @(
+        'SPDRP_FRIENDLYNAME', 'FriendlyName', 'SPDRP_CLASS', 'SPDRP_CLASSGUID',
+        'PNPDeviceID', 'PhysicalDrive', 'SerialNumber')
+    foreach ($guarded in @(
+        @{ Name = 'adapter discovery'; Code = $discoveryCode },
+        @{ Name = 'the service preflight'; Code = (Remove-CppNonCode $PreflightSource) },
+        @{ Name = 'the AIM query'; Code = (Remove-CppNonCode $QuerySource) })) {
+        foreach ($matcher in $secondaryMatchers) {
+            if ($guarded.Code.IndexOf($matcher, [StringComparison]::Ordinal) -ge 0) {
+                throw "$($guarded.Name) must not use $matcher as an adapter matching authority"
+            }
+        }
+    }
+
+    # The query's two frozen byte protocols.
+    if ((Measure-LiteralOccurrence $QuerySource 'L"discover_aim_adapter failed"') -ne 1) {
+        throw 'the query discovery failure text must be frozen in exactly one place'
+    }
+    $queryCode = Remove-CppNonCode $QuerySource
+    $failureOffset = $QuerySource.IndexOf('L"discover_aim_adapter failed"', [StringComparison]::Ordinal)
+    $returnOne = $QuerySource.IndexOf('return 1;', $failureOffset, [StringComparison]::Ordinal)
+    if ($returnOne -lt 0 -or ($returnOne - $failureOffset) -gt 80) {
+        throw 'the query must exit 1 immediately after the discovery failure text'
+    }
+    if ($QuerySource -notmatch 'std::wcerr\s*<<\s*L"discover_aim_adapter failed"') {
+        throw 'the query discovery failure must go to stderr'
+    }
+    if ($QuerySource -notmatch '\{\\"success\\":true,\\"api_version\\":') {
+        throw 'the query success JSON prefix must stay frozen'
+    }
+    if ($queryCode.IndexOf('write_m4_query_json', [StringComparison]::Ordinal) -lt 0) {
+        throw 'the query success JSON must be emitted through the audited formatter'
+    }
+
+    # Full discovery stays where it is: after the provider has started, not
+    # hoisted in front of it as a second driver_unavailable gate.
+    $acceptanceCode = Remove-CppNonCode $AcceptanceSource
+    $discoveryCall = $acceptanceCode.IndexOf('aim::discover_aim_adapter()', [StringComparison]::Ordinal)
+    if ($discoveryCall -lt 0) {
+        throw 'the provider start path must still call discover_aim_adapter'
+    }
+    $providerStart = $acceptanceCode.IndexOf('provider_->start(', [StringComparison]::Ordinal)
+    if ($providerStart -lt 0 -or $discoveryCall -lt $providerStart) {
+        throw 'discover_aim_adapter must stay after provider start, not hoisted into a preflight'
+    }
+    if ($acceptanceCode.IndexOf('require_phdskmnt_service_available', [StringComparison]::Ordinal) -ge 0) {
+        throw 'the provider must not gain a second service preflight entry'
+    }
+}
+
 function Invoke-LineCounterFixture {
     param([Parameter(Mandatory = $true)][string]$MeasureScript)
 
@@ -616,6 +706,37 @@ if ($mainSource -notmatch 'info\(\)\.virtual_bytes\s*!=\s*options\.virtual_bytes
 }
 $preflightSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\driver_preflight.cpp')
 Assert-DriverPreflightBoundary -MainSource $mainSource -PreflightSource $preflightSource
+$discoverySource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\driver\adapter_discovery.cpp')
+$querySource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\tests\e2e\m4_aim_query.cpp')
+$acceptanceSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\m3\m3_windows_acceptance.cpp')
+
+# Prove the authority contract rejects each way the single-matcher rule could
+# be broken, so a green run means something.
+foreach ($mutation in @(
+    @{ Name = 'dropped StoragePort GUID'; Discovery = ($discoverySource -replace '0x2ACCFE60', '0xDEADBEEF'); Preflight = $preflightSource; Query = $querySource; Acceptance = $acceptanceSource },
+    @{ Name = 'dropped SPDRP_SERVICE filter'; Discovery = ($discoverySource -replace 'SPDRP_SERVICE', 'SPDRP_HARDWAREID'); Preflight = $preflightSource; Query = $querySource; Acceptance = $acceptanceSource },
+    @{ Name = 'dropped QUERY_VERSION probe'; Discovery = ($discoverySource -replace 'kQueryVersion', 'kNoProbe'); Preflight = $preflightSource; Query = $querySource; Acceptance = $acceptanceSource },
+    @{ Name = 'dropped multiple-candidate rejection'; Discovery = ($discoverySource -replace 'candidates\.size\(\) > 1', 'false'); Preflight = $preflightSource; Query = $querySource; Acceptance = $acceptanceSource },
+    @{ Name = 'FriendlyName second matcher'; Discovery = ($discoverySource -replace 'SPDRP_SERVICE,', 'SPDRP_FRIENDLYNAME,'); Preflight = $preflightSource; Query = $querySource; Acceptance = $acceptanceSource },
+    @{ Name = 'PhysicalDrive matcher in the preflight'; Discovery = $discoverySource; Preflight = ($preflightSource -replace 'kServiceName\[\]', 'kPhysicalDrive[]'); Query = $querySource; Acceptance = $acceptanceSource },
+    @{ Name = 'renamed discovery failure text'; Discovery = $discoverySource; Preflight = $preflightSource; Query = ($querySource -replace 'discover_aim_adapter failed', 'discovery failed'); Acceptance = $acceptanceSource },
+    @{ Name = 'discovery failure sent to stdout'; Discovery = $discoverySource; Preflight = $preflightSource; Query = ($querySource -replace 'std::wcerr << L"discover_aim_adapter failed"', 'std::wcout << L"discover_aim_adapter failed"'); Acceptance = $acceptanceSource },
+    @{ Name = 'unaudited success emission'; Discovery = $discoverySource; Preflight = $preflightSource; Query = ($querySource -replace 'write_m4_query_json', 'inline_json'); Acceptance = $acceptanceSource },
+    @{ Name = 'removed provider discovery call'; Discovery = $discoverySource; Preflight = $preflightSource; Query = $querySource; Acceptance = ($acceptanceSource -replace 'auto discovered = aim::discover_aim_adapter\(\);', '') }
+)) {
+    $rejected = $false
+    try {
+        Assert-AdapterDiscoveryAuthority -DiscoverySource $mutation.Discovery `
+            -PreflightSource $mutation.Preflight -QuerySource $mutation.Query `
+            -AcceptanceSource $mutation.Acceptance
+    }
+    catch { $rejected = $true }
+    if (-not $rejected) { throw "adapter authority self-audit missed: $($mutation.Name)" }
+}
+
+Assert-AdapterDiscoveryAuthority -DiscoverySource $discoverySource `
+    -PreflightSource $preflightSource -QuerySource $querySource `
+    -AcceptanceSource $acceptanceSource
 $cliRuntimeApi = Find-CliRuntimeApi $cliSource
 if ($null -ne $cliRuntimeApi) { throw "CLI parser must not access runtime APIs: $cliRuntimeApi" }
 foreach ($fixture in @(
