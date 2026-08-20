@@ -290,6 +290,97 @@ function Find-CliRuntimeApi {
     return $null
 }
 
+function Get-ExactlyOneIndex {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Needle,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $first = $Text.IndexOf($Needle, [StringComparison]::Ordinal)
+    if ($first -lt 0) { throw "product main must call $Name" }
+    if ($Text.IndexOf($Needle, $first + $Needle.Length, [StringComparison]::Ordinal) -ge 0) {
+        throw "product main must call $Name exactly once"
+    }
+    return $first
+}
+
+function Measure-LiteralOccurrence {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Needle
+    )
+    $count = 0
+    $index = $Text.IndexOf($Needle, [StringComparison]::Ordinal)
+    while ($index -ge 0) {
+        ++$count
+        $index = $Text.IndexOf($Needle, $index + $Needle.Length, [StringComparison]::Ordinal)
+    }
+    return $count
+}
+
+# The service preflight is the only cheap, known-result driver gate. It must
+# sit after elevation (so an unelevated run still reports elevation first) and
+# before every bundle, image, provider and volume entry point, so that a
+# disabled or absent phdskmnt produces zero bundle writes.
+function Assert-DriverPreflightBoundary {
+    param(
+        [Parameter(Mandatory = $true)][string]$MainSource,
+        [Parameter(Mandatory = $true)][string]$PreflightSource
+    )
+
+    $mainCode = Remove-CppNonCode $MainSource
+    $wmainOffset = $mainCode.IndexOf('int wmain(', [StringComparison]::Ordinal)
+    if ($wmainOffset -lt 0) { throw 'product main must define wmain' }
+    $wmainCode = $mainCode.Substring($wmainOffset)
+
+    $preflightCall = Get-ExactlyOneIndex $wmainCode 'require_phdskmnt_service_available()' 'the phdskmnt service preflight'
+    if ((Measure-LiteralOccurrence $mainCode 'require_phdskmnt_service_available(') -ne 1) {
+        throw 'create and recover must share exactly one phdskmnt preflight entry'
+    }
+    $elevationCall = $wmainCode.IndexOf('require_elevation()', [StringComparison]::Ordinal)
+    if ($elevationCall -lt 0) { throw 'product main must call require_elevation' }
+    if ($preflightCall -lt $elevationCall) {
+        throw 'phdskmnt preflight must run after require_elevation so elevation keeps error priority'
+    }
+    foreach ($guarded in @(
+        'classify_bundle(', 'create_image(', 'recover_complete_image(',
+        'M3AimRuntime::create(', 'find_recovered_volume(', 'provision_new_volume(')) {
+        $index = $wmainCode.IndexOf($guarded, [StringComparison]::Ordinal)
+        if ($index -lt 0) { throw "product main must still call $guarded" }
+        if ($preflightCall -ge $index) {
+            throw "phdskmnt preflight must run before $guarded"
+        }
+    }
+
+    $normalizedMain = $wmainCode -replace '\s+', ' '
+    $expectedFailure = 'const auto driver_ready = myrd::require_phdskmnt_service_available(); if (!driver_ready.ok()) { print_run_error(options.bundle, driver_ready.error()); return 1; }'
+    if ($normalizedMain.IndexOf($expectedFailure, [StringComparison]::Ordinal) -lt 0) {
+        throw 'phdskmnt preflight failure must print through print_run_error and return 1'
+    }
+
+    # The frozen usage protocol lives in exactly one place, so a Win32 SCM
+    # failure can never borrow it.
+    if ((Measure-LiteralOccurrence $PreflightSource 'L"driver_unavailable"') -ne 1 -or
+        (Measure-LiteralOccurrence $PreflightSource 'L"phdskmnt is disabled or absent"') -ne 1) {
+        throw 'driver_unavailable operation and message must be frozen in exactly one place'
+    }
+    if ((Remove-CppNonCode $PreflightSource) -notmatch 'ErrorDomain::usage,\s*1,') {
+        throw 'driver_unavailable must stay ErrorDomain::usage with code 1'
+    }
+    foreach ($scmOperation in @('L"OpenSCManagerW"', 'L"OpenServiceW"', 'L"QueryServiceConfigW"')) {
+        if ((Measure-LiteralOccurrence $PreflightSource $scmOperation) -ne 1) {
+            throw "SCM failures must keep exactly one distinct operation name: $scmOperation"
+        }
+    }
+    $unavailableOffset = $PreflightSource.IndexOf('L"driver_unavailable"', [StringComparison]::Ordinal)
+    foreach ($scmOperation in @('L"OpenSCManagerW"', 'L"OpenServiceW"', 'L"QueryServiceConfigW"')) {
+        $operationOffset = $PreflightSource.IndexOf($scmOperation, [StringComparison]::Ordinal)
+        if ([Math]::Abs($operationOffset - $unavailableOffset) -lt 8) {
+            throw "SCM failure $scmOperation must not share the driver_unavailable error construction"
+        }
+    }
+}
+
 function Invoke-LineCounterFixture {
     param([Parameter(Mandatory = $true)][string]$MeasureScript)
 
@@ -523,6 +614,8 @@ if ($mainSource -notmatch 'info\(\)\.virtual_bytes\s*!=\s*options\.virtual_bytes
     $mainSource -notmatch 'recover\s*&&\s*stats\.value\(\)\.generation\s*==\s*0') {
     throw 'product main must validate runtime size and nonzero durable generation after start'
 }
+$preflightSource = Get-Content -Raw (Join-Path $PSScriptRoot '..\..\src\run\driver_preflight.cpp')
+Assert-DriverPreflightBoundary -MainSource $mainSource -PreflightSource $preflightSource
 $cliRuntimeApi = Find-CliRuntimeApi $cliSource
 if ($null -ne $cliRuntimeApi) { throw "CLI parser must not access runtime APIs: $cliRuntimeApi" }
 foreach ($fixture in @(

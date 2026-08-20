@@ -1,4 +1,5 @@
 #include "cli.h"
+#include "driver_preflight.h"
 #include "src/m3/m3_lifecycle_runner.h"
 #include "src/m3/m3_windows_acceptance.h"
 #include "windows_volume.h"
@@ -169,6 +170,14 @@ int wmain(int argc, wchar_t* argv[]) {
     const auto& options = *parsed.run;
     const auto elevated=require_elevation();
     if(!elevated.ok()){print_run_error(options.bundle,elevated.error());return 1;}
+    // Cheap, known-result driver gate. Create and Recover share this single
+    // entry, and it runs before any bundle classification, creation, opening
+    // or mount, so an absent or DISABLED phdskmnt writes nothing at all.
+    const auto driver_ready = myrd::require_phdskmnt_service_available();
+    if (!driver_ready.ok()) {
+        print_run_error(options.bundle, driver_ready.error());
+        return 1;
+    }
     const auto context = myrd::OperationContext{
         {}, std::chrono::steady_clock::now() + std::chrono::minutes(5)};
     const auto mode = classify_bundle(options.bundle);
