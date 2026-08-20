@@ -12,7 +12,7 @@
 
 1. 驱动或 AIM 不可用时，在任何 bundle/AIM/目标盘操作前确定性拒绝，并保证零 bundle 写入。
 2. 将旧 `missing_driver` 拆成两个可观测场景：空 bundle 的创建拒绝，以及完整 checkpoint bundle 的驱动丢失拒绝与恢复。
-3. 断电后的真正成功条件聚焦 checkpoint 文件内容与目标盘符，不依赖 VMware 物理磁盘编号、PnP 实例号等易变枚举。
+3. 断电后的真正成功条件是 RAM 盘稳定映射回目标盘符 `S:` 且 checkpoint 内容一致，不依赖 VMware 物理磁盘编号、PnP 实例号等易变枚举。字面上的 PhysicalDrive 编号不属于验收条件。
 4. 保持 Formal 与 Live Power-Cut 的既有成功目标，仅替换第三阶段不可靠的判定。
 5. 让最终 verifier 只读、离线、可重复复算，不重新运行产品、不触发电源边界。
 
@@ -26,14 +26,20 @@ kit 在生成时冻结 source commit、artifact/query 以及全部脚本的 SHA-
 
 ## 3. 运行前驱动/AIM 预检
 
-`myrd run` 的 Create 与 Recover 都必须先执行同一预检，且预检完成前不得读取、创建、修改或挂载 bundle：
+### 3.1 已知驱动不可用的廉价服务判定
 
-1. 查询 `phdskmnt` 服务是否存在、配置是否可用。
-2. 唯一匹配 Arsenal Image Mounter 设备：`Class=SCSIAdapter`、`FriendlyName=Arsenal Image Mounter`、PnP `Service=phdskmnt` 精确匹配。零个或多个匹配均拒绝；不得硬编码 `ROOT\\UNKNOWN\\0000`。
-3. 完成 `discover_aim_adapter`，取得 `AdapterHandle`。
-4. 将同一 `AdapterHandle` 传给 `M3AimRuntime`，不得在 Create/Recover 后重新发现。
+`myrd run` 的 Create 与 Recover 都必须先执行同一项廉价服务预检，且预检完成前不得读取、创建、修改或挂载 bundle：
 
-已知驱动不可用（服务缺失、禁用或停止，或相应预检端点明确不可用）统一协议：
+1. 通过 `QueryServiceConfig(phdskmnt)` 检查服务是否存在以及是否被配置为 `DISABLED`。服务缺失或 `DISABLED` 时，立即使用 `driver_unavailable` 协议。
+2. 此判定只解决已知的服务缺失/禁用情形；它不以服务当前是否 `RUNNING` 代替产品启动语义，也不读取 bundle。
+
+### 3.2 既有 adapter discovery 的保留位置
+
+服务预检通过后，继续沿用产品已有的 `discover_aim_adapter` 作为唯一设备发现权威。该函数枚举 `GUID_DEVICEINTERFACE_STORAGEPORT` 接口，并以 `SPDRP_SERVICE=phdskmnt`、QUERY_VERSION 及现有的零个/多个候选拒绝逻辑为准；Spec 不再定义第二套基于 `Class`、`FriendlyName`、固定 PnP 实例号或其他显示字段的匹配规则。
+
+全量 `discover_aim_adapter` 保持在 provider 启动流程中的既有位置，用于覆盖“服务在但 adapter 不在、QUERY_VERSION 失败或版本不匹配”等更宽失效模式，并沿用既有 `discover_aim_adapter: no AIM adapter found` 协议。除非另有产品负责人决定，不把完整 discovery、SRB QUERY_VERSION 或 `AdapterHandle` 生命周期前置为 `driver_unavailable` 的判定条件。
+
+已知驱动不可用（服务缺失或禁用）统一协议：
 
 ```text
 exit 1
@@ -45,7 +51,7 @@ stderr: Error: run failed for <绝对 bundle 路径>: driver_unavailable: phdskm
 
 查询工具 `myrd_m4_aim_query.exe` 保持独立只读协议：exit 1、stdout 为空、stderr 严格为 `discover_aim_adapter failed\r\n`。第三阶段必须运行该交叉检查；若与 `driver_unavailable` 结果不一致，控制器立即 `Blocked`。
 
-预检通过后若同一 adapter handle 因竞态失效，允许保留已有 bundle，但必须清理本次创建的 AIM 设备和目标盘符；该情况是普通运行时失败，不得伪装为已知 `driver_unavailable`。
+服务预检通过后若 provider 内部 discovery 或后续挂载因竞态失效，允许保留已有 bundle，但必须清理本次创建的 AIM 设备和目标盘符；该情况是普通运行时失败，不得伪装为已知 `driver_unavailable`。
 
 ## 4. 第三阶段场景与执行顺序
 
@@ -66,9 +72,11 @@ Reset3 后，在同一 Windows 启动内严格按以下顺序执行：
 1. 验证新启动、事件和驱动/PnP 负状态。
 2. 执行 `missing_driver_create`。
 3. 执行 `driver_lost_recover`。
-4. 恢复 `phdskmnt` 与唯一 AIM PnP 设备。
+4. 恢复 `phdskmnt`，并确认既有 adapter discovery 已再次可用。
 5. 对 `driver_lost_recover` 副本执行真实恢复并验证 checkpoint 内容。
 6. 继续其余七个负例。
+
+这是全状态机中复杂度最高、最需要真实 VM 验证的编排段。每个子步骤（启动事实、两个缺驱动拒绝、驱动恢复、真实恢复、七个剩余负例）必须各自写入独立的阶段证据；链式流程中的任一步失败，都必须先写出该子步骤的明确 `Blocked` 记录，再封存整个资格根目录，不得只留下一个无法定位的链式错误。
 
 任一步失败即持久化 `Blocked`，不自动重试、不跳过、不继续。资格根目录进入 `Blocked` 后永久封存；后续运行只报告该状态，重新测试必须使用新的资格根目录。
 
@@ -86,24 +94,23 @@ Formal 成功后，立即将已验证的 Formal bundle 完整复制为 `driver_l
 
 - `myrd run` exit 0，stderr 为空；成功提示文字不冻结；
 - `S:` 出现并属于本次 AIM 挂载；
-- `A.txt`、`D.txt` SHA-256 与断电前 checkpoint 完全一致；
-- 其余全局磁盘编号、PnP 实例号和日志文字只保存为诊断，不作为通过条件。
+- `A.txt`、`D.txt` SHA-256 与 Formal 副本来源 bundle 的最后 checkpoint 内容完全一致；该场景的唯一内容比较基准就是这份来源 bundle；
+- 其余全局磁盘编号、分区编号、PnP 实例号和日志文字只保存为诊断，不作为通过条件。
 
 ## 6. 驱动恢复与 Windows 边界
 
-人工只操作 VMware 电源边界，控制器负责恢复驱动：
+人工只操作 VMware 电源边界，控制器负责恢复驱动。恢复顺序首先只执行并验证服务动作：
 
 ```text
 sc.exe config phdskmnt start= demand
 sc.exe start phdskmnt
-pnputil.exe /restart-device <唯一匹配的设备实例>
 ```
 
-随后必须验证 `DEMAND_START`、`RUNNING`、唯一 PnP 设备 `OK`。命令失败、匹配设备为零/多个或状态不符，立即 `Blocked`，不自动重试。
+随后必须验证 `DEMAND_START`、`RUNNING` 以及既有 `discover_aim_adapter` 已再次可用。实施前必须在干净 VM 上做一项独立前置实验，确认 `sc start phdskmnt` 足以恢复 adapter discovery；在该实验证实前，资格控制器不得调用 `pnputil.exe /restart-device`，以免引入设备实例匹配和输出解析的第二条失败链。若实验表明 `sc start` 不足，此设计须先增补单独的设备恢复决策与测试，再开始实现；本 Spec 当前不授权该命令进入资格运行路径。
 
-设备匹配必须动态查询：`Class=SCSIAdapter`、`FriendlyName=Arsenal Image Mounter`、PnP `Service=phdskmnt`。PNPDeviceID、序列号、PhysicalDrive 编号、分区编号及无关盘符只作诊断。
+设备身份只能来自产品 `discover_aim_adapter` 的 STORAGEPORT 接口枚举与 `SPDRP_SERVICE=phdskmnt` 过滤。PNPDeviceID、FriendlyName、Class、序列号、PhysicalDrive 编号、分区编号及无关盘符只作诊断，不能成为第二套匹配权威。
 
-Windows 在 Reset3 后出现“正在诊断”“自动修复”或“继续使用 Windows”不自动判失败；只要最终可登录，并满足新启动、事件 41/6008、驱动禁用/停止、唯一 Arsenal PnP 为禁用服务状态、无 AIM 盘、`S:` 不存在，即可继续。
+Windows 在 Reset3 后出现“正在诊断”“自动修复”或“继续使用 Windows”不自动判失败；只要最终可登录，并满足新启动、事件 41/6008、`phdskmnt` 服务缺失或 `DISABLED`、query 拒绝、无 AIM 盘、`S:` 不存在，即可继续。显示名称、PnP 实例及其错误代码只作诊断，不是判定前提。
 
 全流程恰好三个 VMware 电源边界：Formal 一次、Live Power-Cut 一次、Missing-driver 一次。每阶段优先 VMware Reset；可用 Power Off→Power On 替代同一边界，但不可同阶段两者都做，也不可正常关机 Windows。
 
