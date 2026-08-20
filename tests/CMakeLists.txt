@@ -1622,6 +1622,19 @@ myrd_enable_warnings(myrd_m4_run_policy_tests)
 add_test(NAME unit.m4.run_policy COMMAND myrd_m4_run_policy_tests)
 set_tests_properties(unit.m4.run_policy PROPERTIES LABELS "m4-v3" TIMEOUT 30)
 
+# The preflight matrix is fully in-memory: it fakes the SCM seam, so it never
+# depends on this machine's phdskmnt service, privileges or start type.
+add_executable(myrd_m4_driver_preflight_tests
+    unit/m4_driver_preflight_tests.cpp)
+target_link_libraries(myrd_m4_driver_preflight_tests PRIVATE
+    myrd_test_support advapi32)
+target_include_directories(myrd_m4_driver_preflight_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_driver_preflight_tests)
+add_test(NAME unit.m4.driver_preflight COMMAND myrd_m4_driver_preflight_tests)
+set_tests_properties(unit.m4.driver_preflight PROPERTIES
+    LABELS "m4-v3" TIMEOUT 30)
+
 # R7 is intentionally a non-destructive CTest contract.  It exercises every
 # phase without the acknowledgement switch, so no VM, driver, bundle, or drive
 # is ever required for ordinary local regression.
