@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include "src/run/driver_preflight.h"
+#include "src/run/driver_preflight.cpp"
 
 #include <string>
 #include <vector>
@@ -155,4 +156,78 @@ TEST_CASE(m4_driver_preflight_query_config_failure_is_a_win32_error) {
     REQUIRE_EQ(result.error().code, std::uint32_t{ERROR_INVALID_HANDLE});
     REQUIRE_EQ(result.error().operation, std::wstring(L"QueryServiceConfigW"));
     REQUIRE(!mentions_driver_unavailable(result.error()));
+}
+
+// An undefined start type must not be reported as the frozen
+// `driver_unavailable` protocol: that protocol stands for exactly two known
+// results, and widening it would let it represent a third, unknown condition.
+TEST_CASE(m4_driver_preflight_undefined_start_type_is_left_to_adapter_discovery) {
+    REQUIRE(classify_phdskmnt_service(true, 0x7fffffff) ==
+            driver_preflight_result::available);
+    FakeScm scm{};
+    scm.start_type = 0x7fffffff;
+    REQUIRE(require_phdskmnt_service_available(scm.probe()).ok());
+}
+
+TEST_CASE(m4_driver_preflight_closes_every_handle_it_opened) {
+    FakeScm available{};
+    REQUIRE(require_phdskmnt_service_available(available.probe()).ok());
+    REQUIRE_EQ(available.closed,
+               std::vector<SC_HANDLE>({service_handle(), manager_handle()}));
+
+    FakeScm disabled{};
+    disabled.start_type = SERVICE_DISABLED;
+    REQUIRE(!require_phdskmnt_service_available(disabled.probe()).ok());
+    REQUIRE_EQ(disabled.closed,
+               std::vector<SC_HANDLE>({service_handle(), manager_handle()}));
+
+    FakeScm query_failed{};
+    query_failed.query_ok = false;
+    query_failed.error = ERROR_INVALID_HANDLE;
+    REQUIRE(!require_phdskmnt_service_available(query_failed.probe()).ok());
+    REQUIRE_EQ(query_failed.closed,
+               std::vector<SC_HANDLE>({service_handle(), manager_handle()}));
+
+    FakeScm absent{};
+    absent.service_ok = false;
+    absent.error = ERROR_SERVICE_DOES_NOT_EXIST;
+    REQUIRE(!require_phdskmnt_service_available(absent.probe()).ok());
+    REQUIRE_EQ(absent.closed, std::vector<SC_HANDLE>({manager_handle()}));
+
+    FakeScm no_manager{};
+    no_manager.manager_ok = false;
+    no_manager.error = ERROR_ACCESS_DENIED;
+    REQUIRE(!require_phdskmnt_service_available(no_manager.probe()).ok());
+    REQUIRE(no_manager.closed.empty());
+}
+
+// The error must be read before the handle is closed, because
+// CloseServiceHandle overwrites the thread's last-error value.
+TEST_CASE(m4_driver_preflight_reads_the_open_error_before_closing_the_manager) {
+    FakeScm scm{};
+    scm.service_ok = false;
+    scm.error = ERROR_ACCESS_DENIED;
+    auto seam = scm.probe();
+    seam.close_handle = [&scm](SC_HANDLE handle) {
+        scm.closed.push_back(handle);
+        scm.error = ERROR_SUCCESS;
+    };
+    const auto result = require_phdskmnt_service_available(seam);
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(result.error().code, std::uint32_t{ERROR_ACCESS_DENIED});
+    REQUIRE_EQ(result.error().operation, std::wstring(L"OpenServiceW"));
+}
+
+TEST_CASE(m4_driver_preflight_stops_at_the_first_failing_scm_call) {
+    // A manager failure must not be masked by a later service or query result.
+    FakeScm scm{};
+    scm.manager_ok = false;
+    scm.service_ok = false;
+    scm.query_ok = false;
+    scm.error = ERROR_ACCESS_DENIED;
+    const auto result = require_phdskmnt_service_available(scm.probe());
+    REQUIRE_EQ(result.error().operation, std::wstring(L"OpenSCManagerW"));
+    REQUIRE_EQ(scm.manager_calls, 1);
+    REQUIRE_EQ(scm.service_calls, 0);
+    REQUIRE_EQ(scm.query_calls, 0);
 }

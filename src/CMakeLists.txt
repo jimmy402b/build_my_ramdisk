@@ -267,7 +267,8 @@ add_executable(myrd
     run/main.cpp
     run/run_loop.cpp run/run_loop.h
     run/cli.cpp run/cli.h
+    run/driver_preflight.cpp run/driver_preflight.h
     run/windows_volume.cpp run/windows_volume.h
     run/run_resources.rc)
-target_link_libraries(myrd PRIVATE myrd_m3_windows shell32)
+target_link_libraries(myrd PRIVATE myrd_m3_windows shell32 advapi32)
 myrd_enable_warnings(myrd)
