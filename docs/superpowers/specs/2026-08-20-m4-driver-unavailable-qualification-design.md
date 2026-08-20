@@ -10,7 +10,7 @@
 
 目标：
 
-1. 驱动或 AIM 不可用时，在任何 bundle/AIM/目标盘操作前确定性拒绝，并保证零 bundle 写入。
+1. 驱动服务缺失或被禁用时，在任何 bundle/AIM/目标盘操作前确定性拒绝，并保证零 bundle 写入。服务在但 AIM 适配器不可用的更宽失效沿用既有 `discover_aim_adapter: no AIM adapter found` 协议，不承诺零 bundle 写入。
 2. 将旧 `missing_driver` 拆成两个可观测场景：空 bundle 的创建拒绝，以及完整 checkpoint bundle 的驱动丢失拒绝与恢复。
 3. 断电后的真正成功条件是 RAM 盘稳定映射回目标盘符 `S:` 且 checkpoint 内容一致，不依赖 VMware 物理磁盘编号、PnP 实例号等易变枚举。字面上的 PhysicalDrive 编号不属于验收条件。
 4. 保持 Formal 与 Live Power-Cut 的既有成功目标，仅替换第三阶段不可靠的判定。
@@ -49,7 +49,7 @@ stderr: Error: run failed for <绝对 bundle 路径>: driver_unavailable: phdskm
 
 此协议对 `missing_driver_create` 与 `driver_lost_recover` 完全相同。发生该错误时不读取 bundle，也不创建 AIM 设备、目标盘符或任何 bundle 文件。服务看似可用但完整 adapter discovery 失败时，使用既有协议 `discover_aim_adapter: no AIM adapter found`，同样要求在 bundle 操作前失败。
 
-查询工具 `myrd_m4_aim_query.exe` 保持独立只读协议：exit 1、stdout 为空、stderr 严格为 `discover_aim_adapter failed\r\n`。第三阶段必须运行该交叉检查；若与 `driver_unavailable` 结果不一致，控制器立即 `Blocked`。
+查询工具 `myrd_m4_aim_query.exe` 保持独立只读协议。缺驱动交叉检查时，它必须 exit 1、stdout 为空、stderr 严格为 `discover_aim_adapter failed\r\n`。这里“一致”只按结果类别判断：query exit 1 且 run exit 1，表示两者都判定驱动不可用；任一方 exit 0 都是不一致，控制器立即 `Blocked`；query 其他 exit、超时或违反上述 stdout/stderr 字节协议，也立即 `Blocked`。这不要求两条 stderr 文本相同：run 使用 `driver_unavailable`，query 使用其自身固定协议。
 
 服务预检通过后若 provider 内部 discovery 或后续挂载因竞态失效，允许保留已有 bundle，但必须清理本次创建的 AIM 设备和目标盘符；该情况是普通运行时失败，不得伪装为已知 `driver_unavailable`。
 
@@ -72,7 +72,7 @@ Reset3 后，在同一 Windows 启动内严格按以下顺序执行：
 1. 验证新启动、事件和驱动/PnP 负状态。
 2. 执行 `missing_driver_create`。
 3. 执行 `driver_lost_recover`。
-4. 恢复 `phdskmnt`，并确认既有 adapter discovery 已再次可用。
+4. 恢复 `phdskmnt`，并确认既有 adapter discovery 已再次可用。控制器使用 `myrd_m4_aim_query.exe` 作为恢复后的可用性探针；成功判据为 exit 0、stderr 为空，stdout 为合法的单个 query JSON：`success` 为布尔 `true`，`api_version` 与 `sub_version` 为数值字段，`ids` 为数值数组。
 5. 对 `driver_lost_recover` 副本执行真实恢复并验证 checkpoint 内容。
 6. 继续其余七个负例。
 
@@ -106,7 +106,7 @@ sc.exe config phdskmnt start= demand
 sc.exe start phdskmnt
 ```
 
-随后必须验证 `DEMAND_START`、`RUNNING` 以及既有 `discover_aim_adapter` 已再次可用。实施前必须在干净 VM 上做一项独立前置实验，确认 `sc start phdskmnt` 足以恢复 adapter discovery；在该实验证实前，资格控制器不得调用 `pnputil.exe /restart-device`，以免引入设备实例匹配和输出解析的第二条失败链。若实验表明 `sc start` 不足，此设计须先增补单独的设备恢复决策与测试，再开始实现；本 Spec 当前不授权该命令进入资格运行路径。
+随后必须验证 `DEMAND_START`、`RUNNING` 以及上述 query 探针成功。实施前必须在干净 VM 上做一项独立前置实验，确认 `sc start phdskmnt` 足以恢复 query 探针；在该实验证实前，资格控制器不得调用 `pnputil.exe /restart-device`，以免引入设备实例匹配和输出解析的第二条失败链。若实验表明 `sc start` 不足，此设计须先增补单独的设备恢复决策与测试，再开始实现；本 Spec 当前不授权该命令进入资格运行路径。
 
 设备身份只能来自产品 `discover_aim_adapter` 的 STORAGEPORT 接口枚举与 `SPDRP_SERVICE=phdskmnt` 过滤。PNPDeviceID、FriendlyName、Class、序列号、PhysicalDrive 编号、分区编号及无关盘符只作诊断，不能成为第二套匹配权威。
 
