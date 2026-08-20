@@ -49,7 +49,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 | M4-01 | ON_TRACK | M4-00 | `c9bc81a` | 本提交 | 预检纯分类 RED |
 | M4-02 | ON_TRACK | M4-01 | `d134963` | 本提交 | SCM 包装与错误映射 |
 | M4-03 | ON_TRACK | M4-02 | `def1812` | 本提交 | `main.cpp` 精确插入点 |
-| M4-04 | NOT_STARTED | M4-03 | — | — | discovery/query 协议回归 |
+| M4-04 | ON_TRACK | M4-03 | `0db6eb9` | 本提交 | discovery/query 协议回归 |
 | M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
 | M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
 | M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
@@ -111,12 +111,12 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 
 **范围：** `src/driver/adapter_discovery.cpp`、`src/m3/m3_windows_acceptance.cpp`、`tests/e2e/m4_aim_query.cpp`、`tests/unit/m4_product_boundary_tests.ps1`、对应 C++ 单元测试
 
-- [ ] M4-04.1 写 RED 源码合同：`discover_aim_adapter` 继续使用 `GUID_DEVICEINTERFACE_STORAGEPORT`、`SPDRP_SERVICE == phdskmnt`、既有 QUERY_VERSION 与唯一候选拒绝规则。
-- [ ] M4-04.2 写 RED 合同，禁止新预检或控制器使用 `FriendlyName`、Class、PnP 实例号、序列号或 PhysicalDrive 作为 adapter 匹配权威。
-- [ ] M4-04.3 在 query 测试冻结失败协议：exit 1、stdout 空、stderr 精确 `discover_aim_adapter failed\r\n`。
-- [ ] M4-04.4 在 query 测试冻结成功协议：exit 0、stderr 空、单一 JSON、`success` 为布尔 true、版本为数值、`ids` 为数值数组；BOM、多 JSON、错误 CRLF、额外/错误类型均失败。
-- [ ] M4-04.5 验证服务可用但 provider discovery 失败仍采用既有 `discover_aim_adapter: no AIM adapter found`，测试不得要求此场景零 bundle 写入。
-- [ ] M4-04.6 运行 query/selftest 与相关 unit 到 GREEN，提交并复盘 provider 中 discovery 的位置未前移。
+- [x] M4-04.1 写 RED 源码合同：`discover_aim_adapter` 继续使用 `GUID_DEVICEINTERFACE_STORAGEPORT`、`SPDRP_SERVICE == phdskmnt`、既有 QUERY_VERSION 与唯一候选拒绝规则。
+- [x] M4-04.2 写 RED 合同，禁止新预检或控制器使用 `FriendlyName`、Class、PnP 实例号、序列号或 PhysicalDrive 作为 adapter 匹配权威。
+- [x] M4-04.3 在 query 测试冻结失败协议：exit 1、stdout 空、stderr 精确 `discover_aim_adapter failed\r\n`。
+- [x] M4-04.4 在 query 测试冻结成功协议：exit 0、stderr 空、单一 JSON、`success` 为布尔 true、版本为数值、`ids` 为数值数组；BOM、多 JSON、错误 CRLF、额外/错误类型均失败。
+- [x] M4-04.5 验证服务可用但 provider discovery 失败仍采用既有 `discover_aim_adapter: no AIM adapter found`，测试不得要求此场景零 bundle 写入。
+- [x] M4-04.6 运行 query/selftest 与相关 unit 到 GREEN，提交并复盘 provider 中 discovery 的位置未前移。
 
 ### M4-05 — 将 negative fixture manifest 升级为精确九案
 
@@ -350,5 +350,26 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
   - M4-03.1「Create 与 Recover 不得各自有第二个预检入口」— 以全文件 `Measure-LiteralOccurrence` 断言恰好一次调用。
   - M4-03.2 字节协议 — 断言 `L"driver_unavailable"` 与 `L"phdskmnt is disabled or absent"` 在 `driver_preflight.cpp` 中各恰好出现一次、`ErrorDomain::usage, 1`、三个 SCM 操作名各恰好一次且与 `driver_unavailable` 构造点不相邻，因此 SCM I/O 失败的 stderr 不可能含该 operation。exit 1 与 CRLF 由既有 `print_run_error` 路径保证，并已在 M4-02 的 C++ 单测逐字段冻结。
   - 无偏差（头文件扩展已如实记录并说明原因）。
+### Review Record — M4-04
+
+- Start commit: `b949b44`
+- Implementation commit: `0db6eb9`
+- 允许文件与实际文件：`一致（允许集的子集，外加一处必要注册）`。实际改动为 `tests/e2e/m4_aim_query.cpp`、`tests/unit/m4_product_boundary_tests.ps1`、新增 `tests/unit/m4_aim_query_protocol_tests.cpp`（即允许集中的「对应 C++ 单元测试」）、`tests/CMakeLists.txt`（注册该测试，与 M4-01 同例）。`src/driver/adapter_discovery.cpp` 与 `src/m3/m3_windows_acceptance.cpp` 在允许集内但**未修改**——Plan 任务 2 规定「仅在必要时补可测导出/注释，不改变权威逻辑」，经审阅两者的权威逻辑与调用位置均已正确，无需改动。
+- RED 证据：
+  - `write_m4_query_json` 断言在重构前不可能通过（当时 query 内联拼接 JSON，无该标识符）；`ctest -R '^unit\.m4\.aim_query_protocol$'` 在测试文件存在前为 `Not Run`。
+  - 更强的 RED：合同内置 10 条 self-audit 变异，每条都必须被拒绝，否则测试抛出 `adapter authority self-audit missed: <name>`。变异覆盖：StoragePort GUID 被改、`SPDRP_SERVICE` 换成 `SPDRP_HARDWAREID`、QUERY_VERSION 探针移除、多候选拒绝被短路、`SPDRP_FRIENDLYNAME` 顶替服务过滤、预检引入 PhysicalDrive 匹配、query 失败文本改名、失败输出改到 stdout、成功发射绕过受审计 formatter、provider 的 discovery 调用被删除。
+  - 过程中出现一次真实 RED：初版 self-audit 用了 `&{...}` 动态调用，被本文件既有的 `Assert-SafeBoundaryInvocations` 判为 `boundary invocation safety found a dynamic or qualified command invocation`。已改为静态 hashtable 表驱动，不削弱既有安全规则。
+- GREEN 证据：`ctest --preset debug -R '^unit\.m4\.(driver_preflight|aim_query_protocol|product_boundary)$' --output-on-failure` → exit 0，`100% tests passed, 0 tests failed out of 3`（#120 product_boundary 24.70s、#126 driver_preflight 0.01s、#127 aim_query_protocol 0.01s）。
+- Debug/Release 证据：`Release 未运行`。原因：焦点验证属本任务，双配置 `m4-v3` 全量属 M4-14。
+- Spec/Plan 对齐：
+  - Spec §3.2「`discover_aim_adapter` 是唯一设备发现权威」— 以源码合同冻结四项标记（StoragePort GUID、`SPDRP_SERVICE`、`phdskmnt`、QUERY_VERSION/版本匹配）与零/多候选拒绝。
+  - Spec §3.2 与 §6「不把 FriendlyName/Class/PnP/序列号/PhysicalDrive 作为第二匹配权威」— 对 discovery、preflight、query 三处源码同时禁止。
+  - Spec §3「query 失败协议 exit 1 / stdout 空 / stderr `discover_aim_adapter failed\r\n`」— 冻结文本唯一性、`std::wcerr` 去向、以及紧随其后的 `return 1`。CRLF 由 Windows 宽字符文本流对 `std::endl` 的换行转换保证。
+  - Spec §4「成功探针 JSON 严格类型」— 新 C++ 单测逐字节断言：单行、无 BOM、恰好一个换行且位于末尾、`success` 为不带引号的 `true`、`api_version`/`sub_version` 为不带引号的数值、`ids` 为裸数值数组、uint32 全量程。
+  - Spec §3.2 / M4-04.5「服务可用但 discovery 失败仍走既有协议且不承诺零 bundle 写入」— 合同断言 `no AIM adapter found` 文本仍在，且断言 `discover_aim_adapter` 调用仍位于 `provider_->start(` **之后**（未前移为第二道 `driver_unavailable` 闸门）；本任务未新增任何该场景的零写入主张。
+  - 无偏差。
+- 安全检查：`无 VMware/驱动/设备动作`。新 C++ 单测以 `MYRD_M4_AIM_QUERY_NO_MAIN` 抑制 `wmain`，只编译并调用纯 formatter，不枚举设备、不打开句柄、不发 SRB。未运行 `myrd_m4_aim_query.exe`。`unit.m4.product_boundary` 仍只运行既有白名单内的 `myrd.exe` 调用。
+- 结论：`ON_TRACK`
+
 - 安全检查：`无 VMware/驱动/设备动作`。`unit.m4.product_boundary` 会运行 `myrd.exe`，但仅限既有的受审计有界调用集合（`--help`、无参、`run --help`、`compact --help`、缺失 bundle 的 compact、无效 run，以及一个临时目录中的 unknown bundle）；该集合由合同自身的 `Assert-SafeBoundaryInvocations` 白名单强制，未创建 AIM 设备、未挂载盘符、未触碰服务或电源边界。本机 `phdskmnt` 处于可用状态，因此新预检放行、unknown bundle 仍按既有 `classify_bundle` 协议失败——预检未修改任何服务状态。
 - 结论：`ON_TRACK`
