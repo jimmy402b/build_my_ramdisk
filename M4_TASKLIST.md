@@ -96,7 +96,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-03 | ON_TRACK | M4-02 | `def1812` | `b949b44` | `main.cpp` 精确插入点 |
 | M4-04 | ON_TRACK | M4-03 | `0db6eb9` | `84c1acf` | discovery/query 协议回归 |
 | M4-05 | ON_TRACK | M4-04 | `8bb2410` + `b8a3162` | `9b0a986` | 九负例 manifest 与 fixture |
-| M4-06 | ON_TRACK | M4-05 | `15e1c01` | `4f32f28` | 两种驱动缺失 runner evidence |
+| M4-06 | ON_TRACK | M4-05 | `15e1c01` | `7c57b54` | 两种驱动缺失 runner evidence |
 | M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
 | M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
 | M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
