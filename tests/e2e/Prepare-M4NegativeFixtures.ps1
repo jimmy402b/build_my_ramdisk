@@ -33,20 +33,21 @@ function Write-Utf8NoBomAtomic([string]$Path, [string]$Text) {
     }
 }
 function Assert-InitialManifest($Manifest, [string]$Root) {
-    $cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'missing_driver', 'busy_volume', 'compact_lock')
+    $cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'missing_driver_create', 'driver_lost_recover', 'busy_volume', 'compact_lock')
     $entryFields = @{
         unknown_nonempty = @('path', 'letter')
         size_mismatch = @('path', 'letter', 'expected_size')
         occupied_letter = @('path', 'letter', 'volume_guid')
         gen0 = @('path', 'letter', 'expected_size')
         writer_lock = @('path', 'letter', 'expected_size')
-        missing_driver = @('path', 'letter')
+        missing_driver_create = @('path', 'letter')
+        driver_lost_recover = @('path', 'letter', 'expected_size', 'clone_source')
         busy_volume = @('path', 'letter', 'expected_size', 'holder_relative_path')
         compact_lock = @('path', 'letter', 'expected_size')
     }
-    Need ($Manifest.schema -ceq 'myrd.m4.negative-fixtures.v1') 'negative fixture schema mismatch'
+    Need ($Manifest.schema -ceq 'myrd.m4.negative-fixtures.v2') 'negative fixture schema mismatch'
     Need ((@($Manifest.PSObject.Properties.Name) -join ',') -ceq (('schema', 'active_cases') + $cases -join ',')) 'negative fixture fields are not exact'
-    Need ((@($Manifest.active_cases) -join ',') -ceq 'missing_driver') 'negative fixture active cases are not initial'
+    Need ((@($Manifest.active_cases) -join ',') -ceq 'missing_driver_create,driver_lost_recover') 'negative fixture active cases are not initial'
     foreach ($case in $cases) {
         $entry = $Manifest.$case
         Need ($null -ne $entry) "negative fixture entry is absent: $case"
@@ -54,16 +55,17 @@ function Assert-InitialManifest($Manifest, [string]$Root) {
         $expectedPath = Join-Path $Root $case
         Need ([IO.Path]::GetFullPath([string]$entry.path) -ceq $expectedPath) "negative fixture path is invalid: $case"
     }
-    foreach ($case in @('unknown_nonempty', 'size_mismatch', 'gen0', 'writer_lock', 'missing_driver', 'busy_volume', 'compact_lock')) {
+    foreach ($case in @('unknown_nonempty', 'size_mismatch', 'gen0', 'writer_lock', 'missing_driver_create', 'driver_lost_recover', 'busy_volume', 'compact_lock')) {
         Need ([string]$Manifest.$case.letter -ceq 'S') "negative fixture letter is invalid: $case"
     }
-    foreach ($case in @('size_mismatch', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')) {
+    foreach ($case in @('size_mismatch', 'gen0', 'writer_lock', 'driver_lost_recover', 'busy_volume', 'compact_lock')) {
         Need ([string]$Manifest.$case.expected_size -ceq '64M') "negative fixture size is invalid: $case"
     }
+    Need ([string]$Manifest.driver_lost_recover.clone_source -match '^[A-Za-z]:[\\/]') 'negative fixture driver-lost-recover clone source is invalid'
     Need ([string]$Manifest.busy_volume.holder_relative_path -ceq 'holder.bin') 'negative fixture busy holder is invalid'
     Need ([string]$Manifest.occupied_letter.letter -match '^[A-Z]$') 'negative fixture occupied letter is invalid'
     Need ([string]$Manifest.occupied_letter.volume_guid -match '^\\\\\?\\Volume\{[0-9A-Fa-f-]+\}\\$') 'negative fixture occupied GUID is invalid'
-    foreach ($case in @('unknown_nonempty', 'occupied_letter', 'missing_driver')) { Need (-not (Test-Path -LiteralPath (Join-Path $Root $case))) "negative fixture absent path exists: $case" }
+    foreach ($case in @('unknown_nonempty', 'occupied_letter', 'missing_driver_create', 'driver_lost_recover')) { Need (-not (Test-Path -LiteralPath (Join-Path $Root $case))) "negative fixture absent path exists: $case" }
     foreach ($case in @('size_mismatch', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')) { Need ([IO.File]::Exists((Join-Path $Root "$case\disk.rdm"))) "negative fixture disk is absent: $case" }
 }
 
@@ -74,7 +76,8 @@ $manifestPath = Join-Path $formal 'm4-lifecycle.state.json.negative-fixtures.jso
 
 if ($ActivateRemaining) {
     Need ([IO.File]::Exists($manifestPath)) 'negative fixture manifest is absent'
-    Need ([IO.File]::Exists((Join-Path $formal 'm4-negative-missing_driver.v1.json'))) 'immutable missing-driver evidence is absent'
+    Need ([IO.File]::Exists((Join-Path $formal 'm4-negative-missing_driver_create.v1.json'))) 'immutable missing-driver-create evidence is absent'
+    Need ([IO.File]::Exists((Join-Path $formal 'm4-negative-driver_lost_recover.v1.json'))) 'immutable driver-lost-recover evidence is absent'
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InitialManifest $manifest $negativeRoot
     $manifest.active_cases = @('unknown_nonempty', 'size_mismatch', 'occupied_letter', 'gen0', 'writer_lock', 'busy_volume', 'compact_lock')
@@ -97,18 +100,19 @@ foreach ($case in @('size_mismatch', 'writer_lock', 'busy_volume', 'compact_lock
 Copy-Item -LiteralPath $generationZero -Destination (Join-Path $negativeRoot 'gen0') -Recurse -ErrorAction Stop
 Need ((Inventory $bundle) -ceq $bundleBefore) 'current compacted source inventory changed'
 Need ((Inventory $generationZero) -ceq $gen0Before) 'generation-zero source inventory changed'
-foreach ($case in @('unknown_nonempty', 'occupied_letter', 'missing_driver')) { Need (-not (Test-Path -LiteralPath (Join-Path $negativeRoot $case))) "fixture path must be absent: $case" }
+foreach ($case in @('unknown_nonempty', 'occupied_letter', 'missing_driver_create', 'driver_lost_recover')) { Need (-not (Test-Path -LiteralPath (Join-Path $negativeRoot $case))) "fixture path must be absent: $case" }
 
 $letter = $OccupiedLetter.ToUpperInvariant()
 $manifest = [ordered]@{
-    schema = 'myrd.m4.negative-fixtures.v1'
-    active_cases = @('missing_driver')
+    schema = 'myrd.m4.negative-fixtures.v2'
+    active_cases = @('missing_driver_create', 'driver_lost_recover')
     unknown_nonempty = [ordered]@{path = (Join-Path $negativeRoot 'unknown_nonempty'); letter = 'S'}
     size_mismatch = [ordered]@{path = (Join-Path $negativeRoot 'size_mismatch'); letter = 'S'; expected_size = '64M'}
     occupied_letter = [ordered]@{path = (Join-Path $negativeRoot 'occupied_letter'); letter = $letter; volume_guid = $OccupiedVolumeGuid}
     gen0 = [ordered]@{path = (Join-Path $negativeRoot 'gen0'); letter = 'S'; expected_size = '64M'}
     writer_lock = [ordered]@{path = (Join-Path $negativeRoot 'writer_lock'); letter = 'S'; expected_size = '64M'}
-    missing_driver = [ordered]@{path = (Join-Path $negativeRoot 'missing_driver'); letter = 'S'}
+    missing_driver_create = [ordered]@{path = (Join-Path $negativeRoot 'missing_driver_create'); letter = 'S'}
+    driver_lost_recover = [ordered]@{path = (Join-Path $negativeRoot 'driver_lost_recover'); letter = 'S'; expected_size = '64M'; clone_source = $bundle}
     busy_volume = [ordered]@{path = (Join-Path $negativeRoot 'busy_volume'); letter = 'S'; expected_size = '64M'; holder_relative_path = 'holder.bin'}
     compact_lock = [ordered]@{path = (Join-Path $negativeRoot 'compact_lock'); letter = 'S'; expected_size = '64M'}
 }

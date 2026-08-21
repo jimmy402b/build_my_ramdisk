@@ -174,7 +174,7 @@ exit 0
     Need ([IO.File]::Exists($manifestPath)) 'normal negative-fixture manifest is missing'
     Assert-NoManifestResidue -ManifestPath $manifestPath
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Need (($manifest.active_cases -join ',') -eq 'missing_driver') 'normal fixture manifest active_cases is not exactly missing_driver'
+    Need (($manifest.active_cases -join ',') -eq 'missing_driver_create,driver_lost_recover') 'normal fixture manifest active_cases is not exactly the two driver cases'
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
     Assert-SourceInventoryUnchanged -Path $gen0 -Before $gen0Before -Label 'generation-zero'
 
@@ -182,7 +182,8 @@ exit 0
     $tampered = $validManifestText | ConvertFrom-Json
     $tampered.size_mismatch.path = (Join-Path $scratch 'outside')
     [IO.File]::WriteAllText($manifestPath, (($tampered | ConvertTo-Json -Compress -Depth 8) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $formal 'm4-negative-missing_driver.v1.json'), '{}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $formal 'm4-negative-missing_driver_create.v1.json'), '{}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $formal 'm4-negative-driver_lost_recover.v1.json'), '{}', [Text.UTF8Encoding]::new($false))
     $tamperedText = [IO.File]::ReadAllText($manifestPath)
     $savedErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -212,7 +213,7 @@ exit 0
     Need ($LASTEXITCODE -eq 0) 'remaining negative-fixture preparation failed'
     $remaining = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Need (($remaining.active_cases -join ',') -eq 'unknown_nonempty,size_mismatch,occupied_letter,gen0,writer_lock,busy_volume,compact_lock') 'remaining fixture cases are not exact or ordered'
-    $remaining.active_cases = @('missing_driver')
+    $remaining.active_cases = @('missing_driver_create', 'driver_lost_recover')
     Need (($remaining | ConvertTo-Json -Compress -Depth 8) -ceq (($validManifestText | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 8))) 'activation changed fixture metadata beyond active_cases'
     Assert-NoManifestResidue -ManifestPath $manifestPath
     Assert-SourceInventoryUnchanged -Path $bundle -Before $bundleBefore -Label 'bundle'
