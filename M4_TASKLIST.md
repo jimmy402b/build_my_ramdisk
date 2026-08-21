@@ -95,7 +95,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-02 | ON_TRACK | M4-01 | `d134963` | `714ec09` | SCM 包装与错误映射 |
 | M4-03 | ON_TRACK | M4-02 | `def1812` | `b949b44` | `main.cpp` 精确插入点 |
 | M4-04 | ON_TRACK | M4-03 | `0db6eb9` | `84c1acf` | discovery/query 协议回归 |
-| M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
+| M4-05 | ON_TRACK | M4-04 | `8bb2410` + `b8a3162` | 本提交 | 九负例 manifest 与 fixture |
 | M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
 | M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
 | M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
@@ -170,7 +170,13 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 
 **实施前置分析（已完成，供实施者直接使用，勿重新推导）：**
 
-1. **原子性要求（安全约束）**：M4-05 必须在**一次提交内**同时改完 `Prepare-M4NegativeFixtures.ps1`（生产方）与 `Invoke-M4RunLifecycle.ps1`（消费方）。原因：runner 的 schema 闸门在**运行期**读取 fixture 文件（`Invoke-M4RunLifecycle.ps1:355`），而 runner selftest 自建 fixture、不读该文件。因此「只改 Prepare 为 v2」会**通过全部本地测试**却在真实 VM 的 Negative 阶段以 `Negative fixture schema mismatch.` 失败——一个本地绿灯掩盖的破窗。不得分两次提交。
+1. **原子性要求（安全约束）**：M4-05 必须在**一次提交内**同时改完 `Prepare-M4NegativeFixtures.ps1`（生产方）与 `Invoke-M4RunLifecycle.ps1`（消费方）。原因：runner 的 schema 闸门在**运行期**读取 fixture 文件（`Invoke-M4RunLifecycle.ps1:355`），而 runner selftest 自建 fixture、不读该文件。不得分两次提交。
+
+   **实施后更正（本条原文有误，勿再引用旧说法）**：原文断言「只改 Prepare 会**通过全部本地测试**」。实测为假——共有**两处本地测试**断言案例清单，会捕获该改动：
+   - `tests/unit/test-m4-formal12-support.ps1`（端到端跑 Prepare 并断言 manifest 形状）
+   - `tests/integration/m4_product_composition_tests.cpp`（源码文本断言 `$NegativeCases` 整行）
+
+   原子性结论本身仍然成立且更强：这两处必须与生产方/消费方**同批**改完，因此 M4-05 的允许文件清单原先是**不完整的**（漏列这两个文件）。真正的教训不是「本地测不出来」，而是「案例清单是跨 4 个文件的共享契约」。
 2. **协议变更点**：`Invoke-M4RunLifecycle.ps1:265` 当前把 `missing_driver` 的期望 stderr 固定为 `discover_aim_adapter: no AIM adapter found`。按新 Spec §3，`missing_driver_create` 与 `driver_lost_recover` 两例的期望 stderr 都必须改为 `driver_unavailable: phdskmnt is disabled or absent`。这是本任务实质性的协议改动，旧文本不得保留为兼容分支。
 3. **schema 必须升版**：`myrd.m4.negative-fixtures.v1` → `v2`。依据 Spec §2「不得提供自动迁移或兼容分支」。
 4. **initial `active_cases` 应为两例驱动场景** `('missing_driver_create','driver_lost_recover')`（Spec §4 的执行顺序是先跑这两个），`-ActivateRemaining` 置为其余七例。
@@ -477,3 +483,36 @@ M4-04 的其余子项（M4-04.1/.2/.3/.5/.6）未受影响，其证据与 10 条
 | `ctest --preset debug -L m4-v3 --output-on-failure` | 0 | `100% tests passed, 0 tests failed out of 18` |
 
 结论：M4-01 → M4-04 的产出在 Debug 与 Release 双配置下均无回归，**无需返工**。本记录不替代 M4-14 的发布前全量验证——M4-14 仍须在其自身的起始 commit 上重新执行完整命令表。
+
+### Review Record — M4-05
+
+- Start commit: `b474157`
+- Implementation commit: `8bb2410`（九案拆分）+ `b8a3162`（composition 合同回归修复）。两次实现提交，不合并、不改写历史——`8bb2410` 引入的回归由 `b8a3162` 显式修复，保留可追溯性。
+- 允许文件与实际文件：**`偏差（允许集原先不完整，已更正）`**。台账原定允许集为 `Prepare-M4NegativeFixtures.ps1`、`Invoke-M4RunLifecycle.ps1`、`test-m4-guest-qualification.ps1`、`tests/CMakeLists.txt`。实际必须改动：
+  - `tests/e2e/Prepare-M4NegativeFixtures.ps1`（生产方，允许集内）
+  - `tests/e2e/Invoke-M4RunLifecycle.ps1`（消费方，允许集内）
+  - `tests/unit/test-m4-formal12-support.ps1`（**允许集外**：端到端跑 Prepare 并断言旧 manifest 形状）
+  - `tests/integration/m4_product_composition_tests.cpp`（**允许集外**：源码文本断言 `$NegativeCases` 整行）
+
+  后两者不是范围蔓延，而是同一共享契约的必要组成：案例清单被 4 个文件断言，不同批改就是红的。允许集的遗漏已回写至 M4-05 实施前置分析第 1 条。`test-m4-guest-qualification.ps1` 与 `tests/CMakeLists.txt` 在允许集内但无需改动。
+- RED 证据：
+  - 负例 runner selftest（`MYRD_M4_NEGATIVE_SELFTEST=1`，Phase `Negative`）→ exit **77**，`M4 lifecycle Negative BLOCKED: negative contract case count`。断言收紧为 `Count -eq 9` 并新增 `$NegativeCases -notcontains 'missing_driver'`，旧八案与旧单一 `missing_driver` 均被拒绝。
+  - 第二次真实 RED（由独立复核发现，非计划内）：`ctest --preset debug -R '^integration\.m4\.product_composition$'` → exit 8，`FAIL m4_product_composition_tests.cpp:162`，该测试仍断言旧八案整行。
+- GREEN 证据：
+  - 负例 runner selftest → exit 0，`M4 negative contract selftest PASS`
+  - `test-m4-guest-qualification.ps1 -SourceRoot .` → exit 0，`M4 guest qualification contract PASS`
+  - `ctest --preset debug -L m4-v1` → `100% tests passed, 0 tests failed out of 1`
+  - `ctest --preset debug -L m4-v2` → `100% tests passed, 0 tests failed out of 3`
+  - `ctest --preset debug -L m4-v3` → `100% tests passed, 0 tests failed out of 18`
+  - `ctest --preset debug`（全量 143 项）→ `99% tests passed, 1 tests failed`，唯一失败为 `integration.m3.recovery`（标签 `m3-v2`）。**已用 `git stash` 在剔除本次全部改动的前提下复现该失败**，确认为先于 M4-05 存在的问题，与本任务无关，未被本任务引入也未被掩盖。
+  - `git diff --check` → 干净。
+- Debug/Release 证据：Debug 三个 m4 标签与全量套件如上。Release 未在本任务重跑（M4-05 只改测试/fixture 脚本与一处测试源码文本断言，无产品代码变更）；双配置全量属 M4-14。
+- Spec/Plan 对齐：
+  - Spec §4「负例总数由 8 增至 9」及其固定顺序 — 已满足，`$NegativeCases` 与 `$NegativeContracts` 顺序一致并有断言。
+  - Spec §3「两个缺驱动场景的统一协议」— 两例期望 stderr 均为 `driver_unavailable: phdskmnt is disabled or absent`；旧 `discover_aim_adapter: no AIM adapter found` 文本已从 runner 中**完全移除**，并由 `m4_product_composition_tests.cpp` 断言其不得复现。
+  - Spec §2「不得提供自动迁移或兼容分支」— schema 升为 `myrd.m4.negative-fixtures.v2`，无 v1 兼容分支。
+  - Spec §4 执行顺序 — 初始 `active_cases` 为 `missing_driver_create`、`driver_lost_recover`；`-ActivateRemaining` 置其余七例。
+  - clone 权威边界 — Prepare 只声明 `clone_source`，不自行 clone；副本仍由 M4-07.2 的控制器创建。
+- 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。本任务只改测试与 fixture 脚本，未运行 `myrd.exe`、query 工具、`sc.exe`、`pnputil`，未生成 kit，未创建资格根目录。runner 中的 `Get-Service -Name 'phdskmnt'` 为既有 fixture 代码，仅在真实 VM 的 Negative 阶段执行，本任务未触发。
+- 过程记录（供后续任务参照）：本任务的实现由 subagent 完成，其自验仅运行了 `m4-v3` 标签，因而**未发现**自己引入的 `m4-v1;m4-v2` 回归。教训：**改动跨标签共享的契约时，按标签验证不充分，必须跑全量套件**。后续任务的 GREEN 证据一律以全量 `ctest --preset debug` 为准，并对任何失败项用 `git stash` 判定是否先于本任务存在。
+- 结论：`ON_TRACK`
