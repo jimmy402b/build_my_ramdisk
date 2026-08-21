@@ -63,7 +63,7 @@ foreach ($requiredText in @('function Assert-NegativeRefusalProtocol', 'function
     Need ($runnerText.Contains($requiredText)) "runner exact negative process protocol is missing $requiredText"
     Need ($controllerText.Contains($requiredText)) "controller exact negative process protocol mirror is missing $requiredText"
 }
-foreach ($requiredText in @('unknown_nonempty fixture path must remain absent', 'occupied_letter fixture path must remain absent', 'missing_driver fixture path must remain absent', 'lifecycle boot identity is not bound to baseline inventory')) {
+foreach ($requiredText in @('unknown_nonempty fixture path must remain absent', 'occupied_letter fixture path must remain absent', 'missing_driver_create fixture path must remain absent', 'driver_lost_recover fixture path must remain absent', 'lifecycle boot identity is not bound to baseline inventory')) {
     Need ($controllerText.Contains($requiredText)) "controller frozen fixture/lifecycle binding is missing $requiredText"
 }
 foreach ($requiredText in @('remaining negative final evidence schema is invalid', 'remaining negative final evidence type is invalid', 'remaining negative final evidence inventory is invalid', 'remaining negative final evidence is not canonical single JSON')) {
@@ -83,9 +83,9 @@ Need ($controllerText.Contains('Get-SystemResetEvents')) 'guest qualification co
 Need ($controllerText.Contains('$script:LivePowerCutInvoker')) 'guest qualification controller must inject LivePowerCutInvoker'
 Need ($controllerText.Contains('RESET STILL REQUIRED: LivePowerCut')) 'guest qualification controller must require the second VMware reset'
 Need ($controllerText.Contains('LIVE POWER-CUT ARMED')) 'guest qualification controller must arm live power cut explicitly'
-foreach ($requiredText in @('$script:DriverInvoker', '$script:PrepareInvoker', '$script:NegativeInvoker', 'RESET STILL REQUIRED: MissingDriver', "@('config','phdskmnt','start=','disabled')", "@('config','phdskmnt','start=','demand')", "@('start','phdskmnt')", 'm4-negative-missing_driver.v1.json')) { Need ($controllerText.Contains($requiredText)) "missing-driver controller source contract is missing $requiredText" }
+foreach ($requiredText in @('$script:DriverInvoker', '$script:PrepareInvoker', '$script:NegativeInvoker', 'RESET STILL REQUIRED: MissingDriver', "@('config','phdskmnt','start=','disabled')", "@('config','phdskmnt','start=','demand')", "@('start','phdskmnt')", 'm4-negative-missing_driver_create.v1.json', 'query_evidence_sha256', 'Assert-MissingDriverCreateZeroWrite', '-Query (Join-Path $Kit ''myrd_m4_aim_query.exe'')')) { Need ($controllerText.Contains($requiredText)) "missing-driver controller source contract is missing $requiredText" }
 foreach ($forbiddenText in @('sc.exe stop phdskmnt', 'sc.exe delete phdskmnt')) { Need (-not $controllerText.Contains($forbiddenText)) "missing-driver controller source contract contains forbidden operation $forbiddenText" }
-foreach ($requiredText in @('Join-Path $formal ''m4-lifecycle.state.json.negative-fixtures.json''', 'Join-Path $formal ''m4-negative-missing_driver.v1.json''', 'Join-Path $FormalRoot "m4-negative-$case.v1.json"')) { Need ($controllerText.Contains($requiredText)) "producer formal-state path contract is missing $requiredText" }
+foreach ($requiredText in @('Join-Path $formal ''m4-lifecycle.state.json.negative-fixtures.json''', 'Join-Path $formal ''m4-negative-missing_driver_create.v1.json''', 'Join-Path $FormalRoot "m4-negative-$case.v1.json"')) { Need ($controllerText.Contains($requiredText)) "producer formal-state path contract is missing $requiredText" }
 foreach ($requiredText in @("`$stateFile=Join-Path `$formal 'm4-lifecycle.state.json'", '$StateFile.negative-fixtures.json', "Join-Path (Split-Path -Parent (`[IO.Path`]::GetFullPath(`$StateFile))) 'm4-lifecycle-Negative.v1.json'")) { Need ($controllerText.Contains($requiredText)) "controller exact state-file contract is missing $requiredText" }
 Need (-not $controllerText.Contains("Join-Path `$root 'evidence\m4-negative-")) 'producer retains a legacy root evidence path'
 foreach ($requiredText in @('function Assert-ScQueryLine', "'START_TYPE'", "'STATE'", "'DISABLED'", "'DEMAND_START'", "'RUNNING'", "'86400'", "'1048576'")) { Need ($controllerText.Contains($requiredText)) "producer strict protocol contract is missing $requiredText" }
@@ -105,7 +105,18 @@ foreach ($requiredText in @("'MissingDriverCreateCaptured'", "'DriverLostRecover
     Need ($controllerText.Contains($requiredText)) "controller driver-lost-recover clone/state contract is missing $requiredText"
 }
 Need (-not $controllerText.Contains("'MissingDriverCaptured'")) 'controller retains the obsolete MissingDriverCaptured state'
-foreach ($failureRow in @('DriverDisableNonzero', 'DriverDisableTimeout', 'DriverDisableReadbackNonzero', 'DriverDisableReadbackNotDisabled', 'NewBootFactsModel', 'NewBootFactsBootTime', 'NewBootFactsAim', 'NewBootFactsDriveS', 'NewBootEvent41Missing', 'NewBootEvent6008Missing', 'QueryWrongExit', 'NegativeChildExit', 'NegativeStdoutNoCrLf', 'NegativeEvidenceEmpty', 'NegativeEvidenceStderrBundlePath', 'CaptureHashTamper')) {
+Need (-not $controllerText.Contains('m4-negative-missing_driver.v1.json')) 'controller retains the obsolete missing_driver evidence filename'
+Need (-not $controllerText.Contains('discover_aim_adapter: no AIM adapter found')) 'controller retains the obsolete discover_aim_adapter refusal text'
+foreach ($requiredText in @('missing_driver_create case root escapes the negative root', 'missing_driver_create case root exists after refusal', 'missing_driver_create case tree is non-empty')) {
+    Need ($controllerText.Contains($requiredText)) "missing-driver zero-write validator is missing $requiredText"
+}
+Need ($controllerText.Contains("'missing_driver_create','driver_lost_recover','busy_volume','compact_lock'")) 'controller mirror does not enumerate the nine negative cases'
+$captureChildPath = Join-Path $root 'tests\e2e\Capture-M4Child.ps1'
+Need ([IO.File]::Exists($captureChildPath)) 'Capture-M4Child.ps1 is missing'
+$captureChildText = [IO.File]::ReadAllText($captureChildPath)
+Need ($captureChildText.Contains('[string]$Query')) 'Capture-M4Child.ps1 must expose a Query parameter'
+Need ($captureChildText.Contains("'-Query', (Quote-ChildArgument `$Query)")) 'Capture-M4Child.ps1 must forward the Query parameter to the runner'
+foreach ($failureRow in @('DriverDisableNonzero', 'DriverDisableTimeout', 'DriverDisableReadbackNonzero', 'DriverDisableReadbackNotDisabled', 'NewBootFactsModel', 'NewBootFactsBootTime', 'NewBootFactsAim', 'NewBootFactsDriveS', 'NewBootEvent41Missing', 'NewBootEvent6008Missing', 'QueryWrongExit', 'NegativeChildExit', 'NegativeStdoutNoCrLf', 'NegativeEvidenceEmpty', 'NegativeEvidenceStderrBundlePath', 'MissingDriverCreateCaseRootExists', 'CaptureHashTamper')) {
     Need ($controllerText.Contains("'$failureRow'")) "missing-driver failure matrix row is missing: $failureRow"
 }
 foreach ($failureRow in @('RestoreDemandNonzero', 'RestoreDemandTimeout', 'RestoreDemandReadbackNonzero', 'RestoreDemandReadbackNotDemand', 'RestoreStartNonzero', 'RestoreStartTimeout', 'RestoreFactsAims', 'RestoreFactsPd2', 'ActivateNonzero', 'ActivateHelperHash', 'ActivateManifestActiveCases', 'ActivateCompactInventory', 'FinalNonzero', 'FinalTimeout', 'FinalStderr', 'FinalEvidenceSchema', 'FinalEvidenceCaseHash')) {

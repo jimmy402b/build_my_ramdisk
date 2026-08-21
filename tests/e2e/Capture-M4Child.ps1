@@ -8,6 +8,7 @@ param(
     [string]$Bundle,
     [string]$DriveLetter,
     [string]$StateFile,
+    [string]$Query,
     [switch]$SafetyAcknowledged,
     [ValidateRange(1000, 600000)][int]$TimeoutMs = 20000
 )
@@ -49,6 +50,7 @@ if ($Mode -eq 'Runner') {
 $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Quote-ChildArgument $ChildFile))
 if ($Mode -eq 'Runner') {
     $arguments += @('-Phase', (Quote-ChildArgument $Phase), '-Executable', (Quote-ChildArgument $Executable), '-Bundle', (Quote-ChildArgument $Bundle), '-DriveLetter', (Quote-ChildArgument $DriveLetter), '-StateFile', (Quote-ChildArgument $StateFile))
+    if (-not [string]::IsNullOrWhiteSpace($Query)) { $arguments += @('-Query', (Quote-ChildArgument $Query)) }
     if ($SafetyAcknowledged) { $arguments += '-SafetyAcknowledged' }
 }
 
