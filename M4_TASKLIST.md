@@ -97,7 +97,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-04 | ON_TRACK | M4-03 | `0db6eb9` | `84c1acf` | discovery/query 协议回归 |
 | M4-05 | ON_TRACK | M4-04 | `8bb2410` + `b8a3162` | `9b0a986` | 九负例 manifest 与 fixture |
 | M4-06 | ON_TRACK | M4-05 | `15e1c01` | `7c57b54` | 两种驱动缺失 runner evidence |
-| M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
+| M4-07 | ON_TRACK | M4-06 | `212f27e` | `PENDING` | Formal clone 与控制器状态/事件 schema |
 | M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
 | M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
 | M4-PRE | NOT_STARTED | M4-09 | — | — | **用户执行**：`sc start` 恢复探针前置实验（Spec §6 强制先于 M4-10） |
@@ -544,3 +544,32 @@ M4-04 的其余子项（M4-04.1/.2/.3/.5/.6）未受影响，其证据与 10 条
   1. runner 新增可选 `-Query` 参数，但 `Capture-M4Child.ps1` 与 `tools/Invoke-M4GuestQualification.ps1` **尚未接线传入**。该接线属控制器侧工作，须在 **M4-09**（`missing_driver_create` 同时调用 run 与 query）落实，否则 query 证据分支在真实 VM 中不会被触发。
   2. `driver_lost_recover` 真实恢复的成功证据在本任务交付为**冻结 schema + 严格校验器 + selftest fixture**；真实产出方在控制器，属 **M4-10**。这与既有 `Assert-NegativeCaseEvidence` 的 runner/controller 镜像模式一致。
 - 结论：`ON_TRACK`
+
+## M4-0.3 环境前提（E 系列）
+
+### E-1（验证前提，非缺陷）— 全量 ctest 必须在提权会话中运行
+
+实测：`Elevated=False` 的会话中 `ctest --preset debug` 全量为 **136/143**；失败 7 项全部依赖管理员令牌，且已用 `git stash` 证明与代码改动无关：
+
+`integration.shm`、`unit.lifecycle_runner`、`integration.m2.shm`、`unit.m2.windows_acceptance`、`integration.m3.windows_vhdx`、`integration.m3.provider`、`unit.m4.product_boundary`
+
+在 `Elevated=True` 的会话中，全量基线为 **142/143**，唯一失败是已知先存问题 `integration.m3.recovery`（标签 `m3-v2`）。
+
+规则：
+
+1. 所有「全量 ctest」的 GREEN 证据必须注明运行会话是否提权。
+2. 在未提权会话中，GREEN 证据只以不依赖提权的子集为准（`m4-v1`/`m4-v2`/`m4-v3` 标签与 runner/controller/kit selftest）。
+3. M4-14 的发布前全量验收**必须**在提权会话中运行，否则不得宣称「本地验证通过」。
+
+## M4-0.4 组件间协议漂移（D 系列续）
+
+### D-3（待收口，属 M4-09）— 控制器与 runner 的证据文件名/拒绝协议已漂移
+
+M4-05/M4-06 把 runner 拆成 `missing_driver_create` 与 `driver_lost_recover` 两例，证据文件名变为 `m4-negative-missing_driver_create.v1.json` 与 `m4-negative-driver_lost_recover.v1.json`，拒绝协议改为 `driver_unavailable: phdskmnt is disabled or absent`。
+
+但 `tools/Invoke-M4GuestQualification.ps1` 仍有 **8 处**硬编码旧名 `m4-negative-missing_driver.v1.json`，以及 **7 处**旧拒绝文本 `discover_aim_adapter: no AIM adapter found`（后者大多位于 selftest 自造 fixture 内）。真实 VM 流程中控制器会去读一个 runner 再也不会生成的文件。
+
+为何测试抓不到：控制器的 SelfTest 与失败矩阵用旧名字**自造 fixture**，因此 `M4 guest qualification SelfTest PASS` 是本地绿灯，掩盖了跨组件断裂。
+
+收口归属：**M4-09**（编排 `missing_driver_create` 控制器路径）必须把控制器的证据文件名、拒绝协议、以及 M4-06 遗留的 runner `-Query` 接线一并对齐。D-3 未关闭前，任何复盘不得声称「控制器与 runner 已端到端一致」。
+
