@@ -159,9 +159,17 @@ TEST_CASE(lifecycle_negative_contract_uses_only_realistic_vm_cases) {
     const std::string text{std::istreambuf_iterator<char>(source), {}};
     REQUIRE(text.find(
         "$NegativeCases=@('unknown_nonempty','size_mismatch','occupied_letter',"
-        "'gen0','writer_lock','missing_driver','busy_volume','compact_lock')")
+        "'gen0','writer_lock','missing_driver_create','driver_lost_recover',"
+        "'busy_volume','compact_lock')")
         != std::string::npos);
     REQUIRE(text.find("'ambiguous_recovery' {") == std::string::npos);
+    // The pre-split case carried the discover_aim_adapter refusal protocol.
+    // Spec section 2 forbids keeping it as a compatibility branch, so the old
+    // refusal text must be gone entirely. The runner keeps its own runtime
+    // guard naming 'missing_driver', so this asserts the protocol, not the
+    // identifier.
+    REQUIRE(text.find("discover_aim_adapter: no AIM adapter found") ==
+            std::string::npos);
 }
 
 TEST_CASE(product_defaults_are_shared_m3_values) {
