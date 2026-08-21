@@ -98,7 +98,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-05 | ON_TRACK | M4-04 | `8bb2410` + `b8a3162` | `9b0a986` | 九负例 manifest 与 fixture |
 | M4-06 | ON_TRACK | M4-05 | `15e1c01` | `7c57b54` | 两种驱动缺失 runner evidence |
 | M4-07 | ON_TRACK | M4-06 | `212f27e` | `19824bd` | Formal clone 与控制器状态/事件 schema |
-| M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
+| M4-08 | ON_TRACK | M4-07 | `98b7bcc` | `PENDING` | Reset3 启动门与零副作用 |
 | M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
 | M4-PRE | NOT_STARTED | M4-09 | — | — | **用户执行**：`sc start` 恢复探针前置实验（Spec §6 强制先于 M4-10） |
 | M4-10 | NOT_STARTED | M4-PRE | — | — | 服务恢复、query 与真实副本恢复 |
@@ -597,3 +597,25 @@ M4-05/M4-06 把 runner 拆成 `missing_driver_create` 与 `driver_lost_recover` 
 - 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。核验过程仅 grep/Read/SelfTest/ctest；未运行 `myrd.exe`、query 工具、`sc.exe`、`pnputil`，未生成 kit，未创建真实资格根目录（SelfTest 用临时目录）。
 - 未完成/待接续（如实记录）：见 **D-3**——控制器与 runner 的证据文件名/拒绝协议漂移，属 M4-09 收口。M4-07 不关闭 D-3，只负责 clone 与状态机。
 - 结论：`ON_TRACK`（来源已注明并逐条核验；D-3 阻断项已在台账登记并归入 M4-09）
+
+### Review Record — M4-08
+
+- Start commit: `4c0be05`
+- Implementation commit: `98b7bcc`
+- 允许文件与实际文件：`一致`。实际改动 `tools/Invoke-M4GuestQualification.ps1`（+13/-8）、`tests/unit/test-m4-guest-qualification.ps1`（+4/-1）。未触碰 `tests/CMakeLists.txt`（无需改动）。
+- **核验说明**：subagent 报告措辞有误导——它称「移除了 `Invoke-MissingDriverRecovery` 内冗余的 same-boot `return 10`」同时又称「保留 same-boot 行为」。经我逐行核验，代码是对的，报告是含糊的：same-boot 判定已从 recovery 函数（`:1287`，其中已无 `RESET STILL REQUIRED`）**上移到 dispatcher 的 probe 闸门**（`:1312`，`$probe=Get-GuestBootProbe` → `RESET STILL REQUIRED: MissingDriver` + exit 10）。合同第 95 行断言 recovery 函数体不含该文本，第 86 行断言 dispatcher 闸门含该文本——两者都成立，方向相反但一致。
+- RED 证据：
+  - `NewBootFactsBootTime` 失败矩阵行：非推进 boot 曾被误判为 same-boot（`return 10` 命中矩阵默认 `ExitProvider`），证明闸门分类错误。
+  - 合同 RED：`test-m4-guest-qualification.ps1 -SourceRoot .` → exit 1，`missing-driver recovery must not return same-boot exit 10; the dispatcher probe gate is the sole same-boot authority`。
+- GREEN 证据（主控制器独立复核）：
+  - `cmake --build --preset debug --parallel 1` → exit 0，0 编译错误
+  - `tools/Invoke-M4GuestQualification.ps1 -SelfTest` → exit 0，`M4 guest qualification SelfTest PASS`
+  - `test-m4-guest-qualification.ps1 -SourceRoot .` → exit 0，`M4 guest qualification contract PASS`
+  - `ctest -L m4-v1` → 1/1；`-L m4-v2` → 3/3；`-L m4-v3` → 18/18
+  - 逐点核验：五条新失败矩阵行 `NewBootFactsBootTime`/`NewBootFactsAim`/`NewBootFactsDriveS`/`NewBootEvent41Missing`/`NewBootEvent6008Missing` 各出现 4 次（行定义 + 合同 + 断言），覆盖 new-boot 缺 41/缺 6008/服务仍在/AIM 盘仍在/`S:` 仍在五类 Blocked 条件；same-boot seam 向量 `BootProbe|Exit:10` 出现 1 次，证明 probe 是唯一 same-boot 权威。
+  - `git diff --check` 干净。
+- Debug/Release 证据：Debug 三个标签全绿；Release 未重跑（纯 PowerShell）。全量 ctest 属 E-1：本会话未提权，已知 7 项提权依赖失败，未修复未掩盖。
+- Spec/Plan 对齐：Spec §4「Reset3 同 boot 以规定 exit 返回且零副作用」→ probe 闸门 exit 10 + seam 向量 `BootProbe|Exit:10`（无 Facts/query/runner/driver/fixture/observer 调用）+ durable 字节逐字节不变；Spec §4「任一步失败先写 Blocked 证据再封存」→ 五类 new-boot 失败各行独立 Blocked reason；Spec §6「Windows 诊断屏不自动判失败」→ 未引入额外判定。无偏差。
+- 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。核验仅 grep/Read/SelfTest/ctest；SelfTest 用内存 fake 与临时目录，未运行 `myrd.exe`、query、`sc.exe`、`pnputil`。
+- 未完成/待接续：D-3（控制器/runner 证据文件名与拒绝协议漂移）仍未关闭，属 **M4-09**。本任务的失败矩阵 fixture 仍含旧 `m4-negative-missing_driver.v1.json`（属 D-3 范围，M4-09 一并改）。
+- 结论：`ON_TRACK`
