@@ -99,7 +99,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-06 | ON_TRACK | M4-05 | `15e1c01` | `7c57b54` | 两种驱动缺失 runner evidence |
 | M4-07 | ON_TRACK | M4-06 | `212f27e` | `19824bd` | Formal clone 与控制器状态/事件 schema |
 | M4-08 | ON_TRACK | M4-07 | `98b7bcc` | `e9a144e` | Reset3 启动门与零副作用 |
-| M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
+| M4-09 | ON_TRACK | M4-08 | `91a3a19` | `PENDING` | `missing_driver_create` 控制器路径 |
 | M4-PRE | NOT_STARTED | M4-09 | — | — | **用户执行**：`sc start` 恢复探针前置实验（Spec §6 强制先于 M4-10） |
 | M4-10 | NOT_STARTED | M4-PRE | — | — | 服务恢复、query 与真实副本恢复 |
 | M4-11 | NOT_STARTED | M4-10 | — | — | 七个其余负例、失败矩阵、Blocked |
@@ -619,3 +619,31 @@ M4-05/M4-06 把 runner 拆成 `missing_driver_create` 与 `driver_lost_recover` 
 - 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。核验仅 grep/Read/SelfTest/ctest；SelfTest 用内存 fake 与临时目录，未运行 `myrd.exe`、query、`sc.exe`、`pnputil`。
 - 未完成/待接续：D-3（控制器/runner 证据文件名与拒绝协议漂移）仍未关闭，属 **M4-09**。本任务的失败矩阵 fixture 仍含旧 `m4-negative-missing_driver.v1.json`（属 D-3 范围，M4-09 一并改）。
 - 结论：`ON_TRACK`
+
+### Review Record — M4-09
+
+- Start commit: `481ab2c`
+- Implementation commit: `91a3a19`
+- **来源说明**：实现由 subagent 进行，但该 agent 因 **API 402 余额不足**中断，留下未提交的半成品。经主控制器独立核验，该半成品是连贯可用的（D-3 已清零、合同与 SelfTest 全绿、标签全绿），按「核验后采纳」采纳并提交。提交信息已如实注明中断。
+- 允许文件与实际文件：`一致`。实际改动 `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`、`tests/e2e/Capture-M4Child.ps1`。`tests/CMakeLists.txt` 无需改动。
+- RED 证据：D-3 漂移即为本任务最硬的 RED——改造前控制器有 8 处旧证据文件名 `m4-negative-missing_driver.v1.json`、7 处旧拒绝文本 `discover_aim_adapter: no AIM adapter found`；改造后二者计数均 **0**（D-3 关闭）。
+- GREEN 证据（主控制器独立复核）：
+  - `cmake --build --preset debug --parallel 1` → exit 0，0 编译错误
+  - `tools/Invoke-M4GuestQualification.ps1 -SelfTest` → exit 0，`M4 guest qualification SelfTest PASS`
+  - `test-m4-guest-qualification.ps1 -SourceRoot .` → exit 0，`M4 guest qualification contract PASS`
+  - `ctest -L m4-v1` 1/1、`-L m4-v2` 3/3、`-L m4-v3` 18/18
+  - 全量 ctest → 136/143，7 项失败全在 E-1 已知提权依赖集内，无回归
+  - `git diff --check` 干净
+- 逐条核验：
+  - D-3：`grep -c "m4-negative-missing_driver\.v1\.json"` → 0；`grep -c "discover_aim_adapter: no AIM adapter found"` → 0（仅剩 test 合同里用于**拒绝**该旧文本的断言，符合预期）。
+  - query 一致性：`Invoke-MissingDriverRecovery` 经 `DriverInvoker` 直调 query，断言 `exit -eq 1` + stdout 空 + stderr 精确 `discover_aim_adapter failed\r\n`（`:1313`），与 run 的 `driver_unavailable` 文本**从不字面比较**。
+  - zero-write：新增 `Assert-MissingDriverCreateZeroWrite`，仅对受管 case 根 `$negativeRoot` 做断言，控制器证据目录/临时文件/事件日志不进比较。
+  - 证据锚点：`MissingDriverCapture` 事件新增 `query_evidence_sha256` 字段，`Get-MissingDriverCaptureEvent` 对 `$record.query` 做对象哈希锚定（`:1172`）。
+  - 状态推进：`MissingDriverResetObserved → MissingDriverCreateCaptured → DriverLostRecoverCaptured` 前向推进（`:1315`）。
+- Debug/Release 证据：Debug 三标签全绿。Release 未重跑（纯 PowerShell）。全量 ctest 见 E-1，需提权。
+- 未完成/待接续（如实记录）：
+  1. **`-Query` 的 negative 路径接线未验证**：`Capture-M4Child.ps1` 与 `Invoke-FormalRunnerCapture` 已把 `-Query` 贯通，但 `Invoke-MissingDriverRecovery` 直调 query 后，NegativeInvoker 调用 runner 时**未传 `-Query`**。在真实 VM 中，`missing_driver_create` 记录的 `query` 字段是否被 runner 填出、能否与 `query_evidence_sha256` 一致，尚未在真机上闭环。**必须在 M4-10（真实恢复）或 VM 集成时验证**，若 runner 的 negative 路径确实需要 `-Query` 才能产出 query 字段，则此处为待补缺陷。
+  2. M4-09 的 RED 矩阵行（M4-09.5「mutation matrix 必须在启动下一 runner 前阻止」）未逐行独立核验——agent 中断前是否写全了全部变异行未经确认，仅靠 SelfTest 整体通过。
+- Spec/Plan 对齐：Spec §3「query 与 run 一致性只按 exit 1 判定」落实；Spec §5.1「零写入」由 `Assert-MissingDriverCreateZeroWrite` 落实；Spec §2「无兼容分支」由 D-3 清零落实。偏差：`-Query` negative 路径接线存疑（见上），记为待验证而非偏差。
+- 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。核验仅 grep/Read/SelfTest/ctest；SelfTest 用内存 fake 与临时目录。
+- 结论：`ON_TRACK`（D-3 已关闭、编排与 zero-write 落地；两条待接续项已记录，其一须在 M4-10 真机验证）
