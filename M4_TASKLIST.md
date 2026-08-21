@@ -168,6 +168,16 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 
 **范围：** `tests/e2e/Prepare-M4NegativeFixtures.ps1`、`tests/e2e/Invoke-M4RunLifecycle.ps1`、`tests/unit/test-m4-guest-qualification.ps1`、`tests/CMakeLists.txt`
 
+**实施前置分析（已完成，供实施者直接使用，勿重新推导）：**
+
+1. **原子性要求（安全约束）**：M4-05 必须在**一次提交内**同时改完 `Prepare-M4NegativeFixtures.ps1`（生产方）与 `Invoke-M4RunLifecycle.ps1`（消费方）。原因：runner 的 schema 闸门在**运行期**读取 fixture 文件（`Invoke-M4RunLifecycle.ps1:355`），而 runner selftest 自建 fixture、不读该文件。因此「只改 Prepare 为 v2」会**通过全部本地测试**却在真实 VM 的 Negative 阶段以 `Negative fixture schema mismatch.` 失败——一个本地绿灯掩盖的破窗。不得分两次提交。
+2. **协议变更点**：`Invoke-M4RunLifecycle.ps1:265` 当前把 `missing_driver` 的期望 stderr 固定为 `discover_aim_adapter: no AIM adapter found`。按新 Spec §3，`missing_driver_create` 与 `driver_lost_recover` 两例的期望 stderr 都必须改为 `driver_unavailable: phdskmnt is disabled or absent`。这是本任务实质性的协议改动，旧文本不得保留为兼容分支。
+3. **schema 必须升版**：`myrd.m4.negative-fixtures.v1` → `v2`。依据 Spec §2「不得提供自动迁移或兼容分支」。
+4. **initial `active_cases` 应为两例驱动场景** `('missing_driver_create','driver_lost_recover')`（Spec §4 的执行顺序是先跑这两个），`-ActivateRemaining` 置为其余七例。
+5. **各例初始存在性**：`unknown_nonempty`、`occupied_letter`、`missing_driver_create`、`driver_lost_recover` 初始**不存在**；`size_mismatch`、`gen0`、`writer_lock`、`busy_volume`、`compact_lock` 由 Prepare 复制生成并带 `disk.rdm`。
+6. **`driver_lost_recover` 的副本由控制器创建**（M4-07.2 拥有 clone 与 inventory 的权威），Prepare 只声明 `path`、`letter`、`expected_size` 与 `clone_source`（即 Formal bundle 路径），不得自行 clone，避免与 M4-07 争夺权威。
+7. **改动位置清单**（`Invoke-M4RunLifecycle.ps1`）：`224`（案例列表）、`231`（契约表）、`265`/`268`（stderr 协议）、`294`/`300`（oracle schema 与关系）、`312`/`326`–`334`（selftest fixtures）、`355`（schema 闸门）、`377`–`378`（实跑分支）。该文件为压缩风格，上述多行单行长度在 1000–1700 字符之间，编辑前必须读取整行原文。
+
 - [ ] M4-05.1 写 RED：旧八案或旧单一 `missing_driver` manifest 必须被拒绝。
 - [ ] M4-05.2 将 manifest 固定为恰好九项：`unknown_nonempty`、`size_mismatch`、`occupied_letter`、`gen0`、`writer_lock`、`missing_driver_create`、`driver_lost_recover`、`busy_volume`、`compact_lock`。
 - [ ] M4-05.3 为每项写入并验证绝对 case 路径、相对路径/长度/SHA-256 清单、输入常量和确定性 schema；拒绝缺项、额外项、重排、路径逃逸、数组非字符串、BOM 与非 CRLF JSON。
