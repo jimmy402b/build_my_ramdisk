@@ -99,7 +99,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-06 | ON_TRACK | M4-05 | `15e1c01` | `7c57b54` | 两种驱动缺失 runner evidence |
 | M4-07 | ON_TRACK | M4-06 | `212f27e` | `19824bd` | Formal clone 与控制器状态/事件 schema |
 | M4-08 | ON_TRACK | M4-07 | `98b7bcc` | `e9a144e` | Reset3 启动门与零副作用 |
-| M4-09 | ON_TRACK | M4-08 | `91a3a19` | `PENDING` | `missing_driver_create` 控制器路径 |
+| M4-09 | ON_TRACK | M4-08 | `91a3a19` | `071bc53` | `missing_driver_create` 控制器路径 |
 | M4-PRE | NOT_STARTED | M4-09 | — | — | **用户执行**：`sc start` 恢复探针前置实验（Spec §6 强制先于 M4-10） |
 | M4-10 | NOT_STARTED | M4-PRE | — | — | 服务恢复、query 与真实副本恢复 |
 | M4-11 | NOT_STARTED | M4-10 | — | — | 七个其余负例、失败矩阵、Blocked |
