@@ -96,7 +96,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 | M4-03 | ON_TRACK | M4-02 | `def1812` | `b949b44` | `main.cpp` 精确插入点 |
 | M4-04 | ON_TRACK | M4-03 | `0db6eb9` | `84c1acf` | discovery/query 协议回归 |
 | M4-05 | ON_TRACK | M4-04 | `8bb2410` + `b8a3162` | `9b0a986` | 九负例 manifest 与 fixture |
-| M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
+| M4-06 | ON_TRACK | M4-05 | `15e1c01` | `4f32f28` | 两种驱动缺失 runner evidence |
 | M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
 | M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
 | M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
@@ -515,4 +515,32 @@ M4-04 的其余子项（M4-04.1/.2/.3/.5/.6）未受影响，其证据与 10 条
   - clone 权威边界 — Prepare 只声明 `clone_source`，不自行 clone；副本仍由 M4-07.2 的控制器创建。
 - 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。本任务只改测试与 fixture 脚本，未运行 `myrd.exe`、query 工具、`sc.exe`、`pnputil`，未生成 kit，未创建资格根目录。runner 中的 `Get-Service -Name 'phdskmnt'` 为既有 fixture 代码，仅在真实 VM 的 Negative 阶段执行，本任务未触发。
 - 过程记录（供后续任务参照）：本任务的实现由 subagent 完成，其自验仅运行了 `m4-v3` 标签，因而**未发现**自己引入的 `m4-v1;m4-v2` 回归。教训：**改动跨标签共享的契约时，按标签验证不充分，必须跑全量套件**。后续任务的 GREEN 证据一律以全量 `ctest --preset debug` 为准，并对任何失败项用 `git stash` 判定是否先于本任务存在。
+- 结论：`ON_TRACK`
+
+### Review Record — M4-06
+
+- Start commit: `ee97f58`
+- Implementation commit: `15e1c01`
+- 允许文件与实际文件：`一致（允许集的子集）`。实际改动 `tests/e2e/Invoke-M4RunLifecycle.ps1`、`tests/unit/test-m4-guest-qualification.ps1`。`Prepare-M4NegativeFixtures.ps1` 在允许集内但无需改动（九案 manifest 已由 M4-05 落地）。**未**触碰 M4-05 暴露的两个共享契约文件，也未触碰 `src/`、`tools/`、`M4_TASKLIST.md`、`tasklist.md`。
+- RED 证据：`MYRD_M4_NEGATIVE_SELFTEST=1` 负例 selftest → exit **77**，`M4 lifecycle Negative BLOCKED: driver-lost-recover success contract accepted cleanup_exit`。这是实现过程中变异矩阵抓到的**真实校验器缺口**：成功证据校验器初版只对 `cleanup.exit` 做整数类型检查，导致非零退出（清理失败）可以蒙混通过；收紧为 `exit -eq 0` 后转 GREEN。变异矩阵本身即常驻 RED 装置——任一变异被接受都会以 `... accepted <mutation>` + exit 77 暴露。
+- GREEN 证据（由主控制器独立复核，非采信 subagent 自报）：
+  - `cmake --build --preset debug --parallel 1` → exit 0，0 个编译错误（**先重建再测**，避免 M4-05 出现过的陈旧测试二进制假象）
+  - `ctest --preset debug --output-on-failure`（全量 143 项）→ `99% tests passed, 1 tests failed out of 143`
+  - 唯一失败 `integration.m3.recovery`（标签 `m3-v2`），为 M4-05 已用 `git stash` 判定的先存问题，未被修复也未被掩盖
+  - `MYRD_M4_NEGATIVE_SELFTEST=1` 负例 selftest → exit 0，`M4 negative contract selftest PASS`
+  - `test-m4-guest-qualification.ps1 -SourceRoot .` → exit 0，`M4 guest qualification contract PASS`
+  - `test-m4-formal12-support.ps1 -SourceRoot .` → exit 0，`M4 Formal12 support contract PASS`
+  - 协议 grep 复核：`Invoke-M4RunLifecycle.ps1` 中 `discover_aim_adapter: no AIM adapter found` 出现 **0** 次；`driver_unavailable: phdskmnt is disabled or absent` 出现 3 次；query 自有协议 `discover_aim_adapter failed` 出现 3 次
+  - `git diff --check` 干净；两文件 UTF-8 无 BOM、CRLF、零裸 LF
+- Debug/Release 证据：Debug 全量如上。Release 未在本任务重跑（改动为纯 PowerShell 测试/fixture 脚本，无 C++ 产品或测试源码变更）；双配置全量属 M4-14。
+- Spec/Plan 对齐：
+  - Spec §5.1 `missing_driver_create` 零写入 — 拒绝后断言 `case_root_absent`（`-not (Test-Path $path)`）、`bundle_hash='ABSENT'`（`TreeHash` 仅当受管 case 根不存在时返回 `ABSENT`，因此其下无 bundle/journal）、`letter_guid='ABSENT'`、`windows_unchanged`（稳定盘清单比对覆盖「无 AIM 盘」）。比较范围**只含受管 case 根**，不含控制器证据目录、临时文件或 Windows 事件日志。
+  - Spec §5.2 `driver_lost_recover` 树不变 — `bundle_hash = TreeHash $path` 为逐文件「相对路径 | 长度 | SHA-256」全量清单（含 journal），断言拒绝前后非 `ABSENT` 且逐字节相等。
+  - Spec §3「run 与 query 协议独立」— query 走独立字段与独立校验器 `Assert-DriverUnavailableQueryProtocol`（exit 1、stdout 空、`discover_aim_adapter failed\r\n`），**两条 stderr 从不做字面比较**，「一致」只按二者均 exit 1 判定。
+  - Spec §5.2 / 执行规则 7「物理枚举仅作诊断」— `physical_drive`/`partition_number`/`pnp_device_id` 位于 `diagnostics` 字段，校验器只做类型检查（int-or-null / string-or-null），**不参与任何通过判据**。
+  - Spec §2 无兼容分支 — 旧单一 `missing_driver` 与旧拒绝文本均已不存在。
+- 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。仅本地 PowerShell 测试代码改动；未运行 `myrd.exe`、query 工具、`sc.exe`、`pnputil`，未生成 kit，未创建资格根目录。新增的 `Refusal-Query` 子进程助手只存在于 VM 专用真实分支，本地从未执行。
+- 未完成/待接续（如实记录，勿遗忘）：
+  1. runner 新增可选 `-Query` 参数，但 `Capture-M4Child.ps1` 与 `tools/Invoke-M4GuestQualification.ps1` **尚未接线传入**。该接线属控制器侧工作，须在 **M4-09**（`missing_driver_create` 同时调用 run 与 query）落实，否则 query 证据分支在真实 VM 中不会被触发。
+  2. `driver_lost_recover` 真实恢复的成功证据在本任务交付为**冻结 schema + 严格校验器 + selftest fixture**；真实产出方在控制器，属 **M4-10**。这与既有 `Assert-NegativeCaseEvidence` 的 runner/controller 镜像模式一致。
 - 结论：`ON_TRACK`
