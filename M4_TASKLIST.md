@@ -13,7 +13,7 @@
 3. 每个实现任务完成后必须运行该任务列出的验证，执行 `git diff --check`，并在单独提交中仅记录本台账复盘。
 4. `Blocked` 是资格根目录的产品终态；任何测试都必须断言同一资格根不自动重试、不改写状态、不再次触发子进程或 VMware 电源边界。
 5. VMware 只能由用户人工操作。VM 正式验收总共恰好三次边界：Formal、Live Power-Cut、Missing-driver；每段选择 Reset 或一次 Power Off→Power On，绝不正常关机。
-6. `pnputil.exe /restart-device` 不得进入实现。只有在干净 VM 前置实验已证明 `sc start phdskmnt` 不足时，才可停止本任务表、补充决策与 Spec 后重新规划。
+6. `pnputil.exe /restart-device` 不得进入实现。只有在干净 VM 前置实验已证明 `sc start phdskmnt` 不足时，才可停止本任务表、补充决策与 Spec 后重新规划。该实验即 **M4-PRE**，按 Spec §6「实施前必须」的要求排在 M4-10 之前，由用户执行；M4-PRE 未 `ON_TRACK` 前，M4-10 → M4-14 不得开始。
 7. 物理盘号、分区号、PnP 实例号、序列号和显示文本仅能写入诊断；通过条件只能使用当前轮 AIM 所拥有的 `S:` 与 Formal 来源 bundle 最后 checkpoint 的 `A.txt`/`D.txt` 内容哈希。
 
 ### M4 状态定义
@@ -37,9 +37,54 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 | §4、§6、§7：Reset3 顺序、服务恢复、独立阶段证据、精确 cleanup 与 Blocked | 任务 4 | M4-07、M4-08、M4-09、M4-10、M4-11 | production dispatcher fake flow、精确 seam 向量、失败矩阵与无重试断言 |
 | §8：只读、离线、可重复复算 verifier | 任务 5 | M4-12 | evidence/hash mutation 矩阵与 AST/命令 allowlist 合同 |
 | §2、§7：新协议 kit、manifest/哈希冻结、旧 kit/root 不兼容 | 任务 6 | M4-13 | packager/controller 双侧 manifest mutation 矩阵 |
-| §9–§10：本地 Debug/Release、全新 kit/root、前置实验、恰好三次人工电源边界 | 任务 7 | M4-00、M4-14、M4-15 | 基线台账、双配置 `m4-v3`、kit hash、VM 三边界与离线 verifier |
+| §6：`sc config`+`sc start` 是否足以恢复 query 探针（Spec 明文要求「实施前」验证） | 任务 7 中的前置实验 | **M4-PRE**（已按 Spec 前移至 M4-10 之前） | 干净 VM 的独立实验记录 |
+| §9–§10：本地 Debug/Release、全新 kit/root、恰好三次人工电源边界 | 任务 7 | M4-00、M4-14、M4-15 | 基线台账、双配置 `m4-v3`、kit hash、VM 三边界与离线 verifier |
 
 本表用于核查覆盖关系，不能替代每项任务中的精确文件、RED/GREEN、命令和完成条件。
+
+## M4-0.2 开放决策与结构性风险
+
+以下条目在关闭前不得被任何任务的「完成」掩盖。决策类条目只能由用户关闭；关闭时必须先更新 Spec/Plan，再回写本节。
+
+### D-1（待决策，阻断 M4-14 的协议声明）— 冻结协议写「绝对 bundle 路径」，产品输出「原样路径」
+
+Spec §3 冻结的 stderr 为：
+
+```text
+Error: run failed for <绝对 bundle 路径>: driver_unavailable: phdskmnt is disabled or absent\r\n
+```
+
+实测（`out/build/msvc/src/Debug/myrd.exe`，commit `0db6eb9`）：
+
+```text
+$ myrd.exe run --bundle docs --size 64M --drive-letter R:
+Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
+```
+
+`src/run/cli.cpp` 的 `bundle_ok()` 显式允许相对路径（`colon == npos` 即通过），`parse_cli` 不做 canonicalize，`print_run_error` 原样打印 `options.bundle`。该行为对**所有** run 错误一致，不是 M4-03 引入的。
+
+影响：资格 runner/控制器一律传绝对路径，因此正式流程碰不到；但冻结的字节协议与实现不一致，verifier 复算时若出现相对路径将不匹配。
+
+二选一（必须由用户决定，不得由实施方自选）：
+
+1. 修改 Spec §3，把「绝对 bundle 路径」改为「与命令行传入完全一致的 bundle 路径」，并在合同中断言不做 canonicalize；
+2. 修改产品，在 `parse_cli` 或 `print_run_error` 处 canonicalize 为绝对路径，并为相对路径输入新增合同用例。
+
+在 D-1 关闭前，M4-14 不得声明「`driver_unavailable` 字节协议已与 Spec 一致」。
+
+### D-2（待决策，阻断 M4-13 的 kit 冻结）— 权威文档未入库
+
+`docs/superpowers/plans/2026-08-21-m4-driver-unavailable-qualification.md` 至今为未跟踪文件，`tasklist.md` 有未提交修改。M4-13 要把 `source_commit` 冻进 kit manifest，但定义本协议的 Plan 文档不在任何 commit 内，kit 因此无法指向完整的权威设计。
+
+在 M4-13 之前必须由用户决定该文档是否入库；实施方不得代为提交用户的未提交改动。
+
+### R-1（结构性风险，影响 M4-07 → M4-11）— 控制器已超出可审阅规模
+
+`tools/Invoke-M4GuestQualification.ps1` 当前为 301,504 字节（PowerShell AST 50,035 tokens）的单文件。M4-07 → M4-11 五个任务全部修改该文件，且 M4-11 还需在其中追加「每个 Reset3 子步骤 × 七负例 × fresh fake root」的完整失败矩阵。
+
+后果：单次实施会话无法完整读取并安全修改该文件；任何一次中断都会留下半改状态。本风险不因任务拆分而消失——拆分反而使同一文件被五次连续重写。
+
+建议在 M4-07 开始前单独立项处理（按状态机、证据 schema、seam 注入分离为多个脚本），或由用户明示接受该风险并说明如何保证可审阅性。
 
 ## M4-1. 总进度表
 
@@ -55,12 +100,13 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 | M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
 | M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
 | M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
-| M4-10 | NOT_STARTED | M4-09 | — | — | 服务恢复、query 与真实副本恢复 |
+| M4-PRE | NOT_STARTED | M4-09 | — | — | **用户执行**：`sc start` 恢复探针前置实验（Spec §6 强制先于 M4-10） |
+| M4-10 | NOT_STARTED | M4-PRE | — | — | 服务恢复、query 与真实副本恢复 |
 | M4-11 | NOT_STARTED | M4-10 | — | — | 七个其余负例、失败矩阵、Blocked |
 | M4-12 | NOT_STARTED | M4-11 | — | — | 纯离线 verifier |
 | M4-13 | NOT_STARTED | M4-12 | — | — | 新协议 kit 冻结 |
 | M4-14 | NOT_STARTED | M4-13 | — | — | 本地全量验证与发布说明 |
-| M4-15 | NOT_STARTED | M4-14 | — | — | VM 前置实验与三边界人工验收 |
+| M4-15 | NOT_STARTED | M4-14（且 M4-PRE 必须 `ON_TRACK`） | — | — | VM 三边界人工验收（前置实验已移至 M4-PRE） |
 
 ## M4-2. 细颗粒度执行清单
 
@@ -114,7 +160,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 - [x] M4-04.1 写 RED 源码合同：`discover_aim_adapter` 继续使用 `GUID_DEVICEINTERFACE_STORAGEPORT`、`SPDRP_SERVICE == phdskmnt`、既有 QUERY_VERSION 与唯一候选拒绝规则。
 - [x] M4-04.2 写 RED 合同，禁止新预检或控制器使用 `FriendlyName`、Class、PnP 实例号、序列号或 PhysicalDrive 作为 adapter 匹配权威。
 - [x] M4-04.3 在 query 测试冻结失败协议：exit 1、stdout 空、stderr 精确 `discover_aim_adapter failed\r\n`。
-- [x] M4-04.4 在 query 测试冻结成功协议：exit 0、stderr 空、单一 JSON、`success` 为布尔 true、版本为数值、`ids` 为数值数组；BOM、多 JSON、错误 CRLF、额外/错误类型均失败。
+- [~] M4-04.4 **部分完成（发射端已冻结，拒收端移交 M4-10.7）**。已完成：`unit.m4.aim_query_protocol` 对 query 成功 JSON 的**发射**逐字节断言（单行、无 BOM、恰好一个末尾换行、`success` 为不带引号的 `true`、版本为不带引号数值、`ids` 为裸数值数组、uint32 全量程）。**未完成**：「BOM、多 JSON、错误 CRLF、额外/错误类型均**失败**」需要一个严格**拒收方**（parser），而消费 query 输出的是控制器；按 M4-0.1 的职责映射，该拒收矩阵属控制器任务，已移交 M4-10.7。在 M4-10.7 完成前，不得声称 query 严格协议已双向闭环。
 - [x] M4-04.5 验证服务可用但 provider discovery 失败仍采用既有 `discover_aim_adapter: no AIM adapter found`，测试不得要求此场景零 bundle 写入。
 - [x] M4-04.6 运行 query/selftest 与相关 unit 到 GREEN，提交并复盘 provider 中 discovery 的位置未前移。
 
@@ -171,6 +217,27 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 - [ ] M4-09.5 运行生产 dispatcher fake 流：Reset3 new boot → `missing_driver_create` 成功捕获；随后 mutation matrix 必须在启动下一个 runner 前阻止。
 - [ ] M4-09.6 提交并复盘 query/run “一致”只按两者均 exit 1 判断，不比较两条 stderr 的字面文本。
 
+### M4-PRE — 服务恢复前置实验（由用户在干净 VM 上执行）
+
+**排期依据：** Spec §6 规定「**实施前**必须在干净 VM 上做一项独立前置实验，确认 `sc start phdskmnt` 足以恢复 query 探针」，并规定「若实验表明 `sc start` 不足，此设计须**先增补单独的设备恢复决策与测试，再开始实现**」。本任务表原先把该实验放在 M4-15.2（全部实现之后），与 Spec 冲突；按本台账 `安全不变量 > Spec > Plan > 本台账摘要` 的冲突规则，以 Spec 为准，实验前移至 M4-10 之前。
+
+**为什么必须前移：** M4-10 实现的正是「只用 `sc config` + `sc start` 恢复服务」这一条路径，M4-11 → M4-14 全部依赖 M4-10。若实验证伪，这 5 个任务需要按新的设备恢复决策重做。
+
+**范围：** 仅 `docs/validation/m4-driver-unavailable-vm-pre-experiment.md`（新增）。不改任何产品、runner、控制器、verifier、kit 或测试。
+
+**执行者：** 用户。本实验必须改变 `phdskmnt` 服务状态并在真实 VM 上运行 query，实施代理无权执行。
+
+- [ ] M4-PRE.1 在干净 VM 上记录基线：`sc qc phdskmnt`、`sc query phdskmnt`、`myrd_m4_aim_query.exe` 的 exit/stdout/stderr。
+- [ ] M4-PRE.2 将 `phdskmnt` 置为 `DISABLED`，重启进入无驱动状态，确认 query 严格满足 exit 1、stdout 空、stderr `discover_aim_adapter failed\r\n`。
+- [ ] M4-PRE.3 仅执行 `sc.exe config phdskmnt start= demand` 与 `sc.exe start phdskmnt`，**不得调用 `pnputil.exe /restart-device`**。
+- [ ] M4-PRE.4 严格验证 `sc qc` 为 `START_TYPE : 3 DEMAND_START`、`sc query` 为 `STATE : 4 RUNNING`。
+- [ ] M4-PRE.5 运行 `myrd_m4_aim_query.exe`，记录是否严格满足成功协议：exit 0、stderr 空、单一合法 JSON（`success` 布尔 true、版本为数值、`ids` 为数值数组）。
+- [ ] M4-PRE.6 写入结论：
+  - **成功** → M4-PRE 记 `ON_TRACK`，解锁 M4-10，且 M4-15.2 降级为「复用本实验结论，不重复执行」。
+  - **失败（`sc start` 不足以恢复 query 探针）** → M4-PRE 记 `BLOCKED`。**停止 M4-10 → M4-14**，先补充设备恢复决策并更新 Spec §6，再重新规划。不得以 `pnputil` 作为临时补丁绕过。
+
+**完成条件：** 有一份来自真实 VM 的独立记录，明确回答「`sc config` + `sc start` 是否足以让 query 探针严格成功」，且该结论未与任何资格根目录或正式三边界流程混用。
+
 ### M4-10 — 恢复服务、探测 AIM，并执行 `driver_lost_recover` 的真实恢复
 
 **范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
@@ -181,6 +248,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 - [ ] M4-10.4 写 RED：`driver_lost_recover` 拒绝后副本树变化（包括 journal）或恢复后 `S:` 不属于本轮 owned AIM、A/D 不等于 Formal 来源最后 checkpoint 时失败。
 - [ ] M4-10.5 实现服务恢复、query 探针、真实 recovery runner、来源内容/owned `S:` 验证和独立事件；保留 PhysicalDrive/分区/PnP 为诊断，不参与条件。
 - [ ] M4-10.6 运行完整 fake production dispatcher：两个拒绝 → service restore → query success → real recovery success；提交并复盘每个失败均在后续 runner 前停止。
+- [ ] M4-10.7 **（自 M4-04.4 移交）** 实现并测试控制器侧的 query **拒收**矩阵：对探针 stdout 严格拒绝 BOM、前后缀空白、多个 JSON 对象、JSON 数组、非 CRLF/多余换行、缺字段、额外字段、`success` 为字符串 `"true"` 或 `false`、`api_version`/`sub_version` 为字符串或非整数、`ids` 为非数组或含非数值元素；并拒绝非空 stderr 与非 0 exit。每条变异断言精确的 Blocked reason，而非「非空字符串」。发射端已在 M4-04 的 `unit.m4.aim_query_protocol` 冻结，本项闭合另一半。
 
 ### M4-11 — 完成其余七负例、全失败矩阵与永久 Blocked 行为
 
@@ -235,12 +303,12 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
 - [ ] M4-14.5 在宿主机生成 commit+GUID 的新 kit，逐文件验证 manifest/hash/length，并记录发布候选证据；禁止覆盖旧 kit。
 - [ ] M4-14.6 提交文档/本地验证记录，复盘后才允许开始 VM 前置实验。
 
-### M4-15 — 执行 VM 前置实验与三次人工电源边界验收
+### M4-15 — 执行三次人工电源边界验收（前置实验见 M4-PRE）
 
 **范围：** 仅新 kit、新 VM、新 qualification root 与 `docs/validation/m4-driver-unavailable-vm-*`（新增）
 
 - [ ] M4-15.1 在干净 VM 上记录服务、query、AIM/盘符、事件和 kit hash 基线；新建从未存在过的 qualification root。
-- [ ] M4-15.2 先单独验证服务恢复前置实验：将 `phdskmnt` 从 Disabled 恢复为 demand，执行 `sc start phdskmnt` 与 query；记录 query 是否严格成功。失败则标记 `BLOCKED`，不得调用 `pnputil` 或继续正式资格流程。
+- [ ] M4-15.2 **复用 M4-PRE 的结论，不重复执行前置实验**。确认 M4-PRE 为 `ON_TRACK` 且其记录来自干净 VM；核对本次 VM 的 `phdskmnt` 恢复路径与 M4-PRE 所验证的一致（仅 `sc config` + `sc start`，无 `pnputil`）。若 M4-PRE 不是 `ON_TRACK`，本任务立即 `BLOCKED`，不得开始三边界流程。
 - [ ] M4-15.3 仅在 M4-15.2 成功后，执行 Formal：运行控制器至 armed，用户做一次 Reset 或一次 Power Off→Power On，再运行同一命令并保存全部 evidence hash。
 - [ ] M4-15.4 执行 Live Power-Cut：运行控制器至 armed，用户做一次且仅一次允许电源边界，再运行同一命令并保存 evidence hash。
 - [ ] M4-15.5 执行 Missing-driver：运行控制器至 armed，用户做一次且仅一次允许电源边界；重新运行命令，让控制器完成两个缺驱动 case、服务恢复、真实副本恢复与余下七例。
@@ -349,6 +417,7 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
   - Plan 任务 1「精确插入在 `require_elevation()` 成功之后」— 已满足并被断言；错误优先级保持：未提权时 `require_elevation` 先返回并 `return 1`，永不报告服务状态。
   - M4-03.1「Create 与 Recover 不得各自有第二个预检入口」— 以全文件 `Measure-LiteralOccurrence` 断言恰好一次调用。
   - M4-03.2 字节协议 — 断言 `L"driver_unavailable"` 与 `L"phdskmnt is disabled or absent"` 在 `driver_preflight.cpp` 中各恰好出现一次、`ErrorDomain::usage, 1`、三个 SCM 操作名各恰好一次且与 `driver_unavailable` 构造点不相邻，因此 SCM I/O 失败的 stderr 不可能含该 operation。exit 1 与 CRLF 由既有 `print_run_error` 路径保证，并已在 M4-02 的 C++ 单测逐字段冻结。
+  - **未决**：Spec §3 把该协议中的 bundle 路径写为「绝对 bundle 路径」，但产品对所有 run 错误一律原样打印命令行传入的路径（相对路径不会被 canonicalize）。该行为先于本任务存在，非 M4-03 引入，已登记为 **D-1** 待用户决策；本任务的合同只断言 `print_run_error` 的字段与形状，未对路径绝对性作出任何主张。
   - 无偏差（头文件扩展已如实记录并说明原因）。
 ### Review Record — M4-04
 
@@ -369,7 +438,19 @@ NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
   - Spec §3.2 / M4-04.5「服务可用但 discovery 失败仍走既有协议且不承诺零 bundle 写入」— 合同断言 `no AIM adapter found` 文本仍在，且断言 `discover_aim_adapter` 调用仍位于 `provider_->start(` **之后**（未前移为第二道 `driver_unavailable` 闸门）；本任务未新增任何该场景的零写入主张。
   - 无偏差。
 - 安全检查：`无 VMware/驱动/设备动作`。新 C++ 单测以 `MYRD_M4_AIM_QUERY_NO_MAIN` 抑制 `wmain`，只编译并调用纯 formatter，不枚举设备、不打开句柄、不发 SRB。未运行 `myrd_m4_aim_query.exe`。`unit.m4.product_boundary` 仍只运行既有白名单内的 `myrd.exe` 调用。
-- 结论：`ON_TRACK`
+- 结论：`ON_TRACK`（范围已按下述更正缩小）
+
+#### 更正 — M4-04.4 曾被过度声明
+
+初版复盘把 M4-04.4 记为完成，但该子项要求「BOM、多 JSON、错误 CRLF、额外/错误类型均**失败**」。实际交付的只是 query 成功 JSON 的**发射端**逐字节断言；「均失败」需要一个严格**拒收方**，而当时不存在任何会拒绝畸形 query 输出的代码。
+
+更正内容：
+
+1. M4-04.4 改记为 `[~]` 部分完成，明确写出已完成/未完成的边界；
+2. 拒收矩阵移交新增的 M4-10.7，与「控制器是 query 的消费方」这一职责映射一致；
+3. 在 M4-10.7 完成前，任何复盘不得声称 query 严格协议已双向闭环。
+
+M4-04 的其余子项（M4-04.1/.2/.3/.5/.6）未受影响，其证据与 10 条 self-audit 变异仍然有效。
 
 - 安全检查：`无 VMware/驱动/设备动作`。`unit.m4.product_boundary` 会运行 `myrd.exe`，但仅限既有的受审计有界调用集合（`--help`、无参、`run --help`、`compact --help`、缺失 bundle 的 compact、无效 run，以及一个临时目录中的 unknown bundle）；该集合由合同自身的 `Assert-SafeBoundaryInvocations` 白名单强制，未创建 AIM 设备、未挂载盘符、未触碰服务或电源边界。本机 `phdskmnt` 处于可用状态，因此新预检放行、unknown bundle 仍按既有 `classify_bundle` 协议失败——预检未修改任何服务状态。
 - 结论：`ON_TRACK`
