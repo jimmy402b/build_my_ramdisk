@@ -90,11 +90,11 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 
 | Task | 状态 | 前置 | 实现提交 | 复盘提交 | 证据/阻断 |
 |---|---|---|---|---|---|
-| M4-00 | ON_TRACK | — | `c20c269` | 本提交 | `docs/validation/m4-driver-unavailable-baseline.md` |
-| M4-01 | ON_TRACK | M4-00 | `c9bc81a` | 本提交 | 预检纯分类 RED |
-| M4-02 | ON_TRACK | M4-01 | `d134963` | 本提交 | SCM 包装与错误映射 |
-| M4-03 | ON_TRACK | M4-02 | `def1812` | 本提交 | `main.cpp` 精确插入点 |
-| M4-04 | ON_TRACK | M4-03 | `0db6eb9` | 本提交 | discovery/query 协议回归 |
+| M4-00 | ON_TRACK | — | `c20c269` | `c2e8171` | `docs/validation/m4-driver-unavailable-baseline.md` |
+| M4-01 | ON_TRACK | M4-00 | `c9bc81a` | `46e739d` | 预检纯分类 RED |
+| M4-02 | ON_TRACK | M4-01 | `d134963` | `714ec09` | SCM 包装与错误映射 |
+| M4-03 | ON_TRACK | M4-02 | `def1812` | `b949b44` | `main.cpp` 精确插入点 |
+| M4-04 | ON_TRACK | M4-03 | `0db6eb9` | `84c1acf` | discovery/query 协议回归 |
 | M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
 | M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
 | M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
@@ -371,7 +371,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
   - `ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure` → exit 8，`1/1 Test #126: unit.m4.driver_preflight ***Not Run`，`0% tests passed, 1 tests failed out of 1`。
   - 两级 RED 均为「缺实现」，符合 M4-01.5 的预期失败类别。
 - GREEN 证据：`本任务不产生 GREEN`。M4-01 只交付 RED 与声明；GREEN 属 M4-02。
-- Debug/Release 证据：`未运行 Release`。原因：M4-01 只要求 Debug focused 目标；双配置全量属 M4-14。Debug 配置成功：`cmake --preset msvc --fresh` → exit 0，`The CXX compiler identification is MSVC 19.44.35228.0`。
+- Debug/Release 证据：Debug 配置成功：`cmake --preset msvc --fresh` → exit 0，`The CXX compiler identification is MSVC 19.44.35228.0`。Release 已于 M4-04 之后补跑，见 [跨任务 Release 证据](#m4-42-跨任务-release-证据)。
 - Spec/Plan 对齐：
   - Plan 任务 1 的 RED 矩阵四行全部覆盖（服务不存在、`SERVICE_DISABLED`、四种可用启动类型、三类 SCM I/O 失败）。
   - Plan 任务 1「不依赖测试机上实际 `phdskmnt` 服务的存在、权限或启动类型」— 已满足：`FakeScm` 为纯内存 seam，测试不触碰真实 SCM。
@@ -391,7 +391,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
   - `cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests` → exit 0，`Linking CXX executable tests\Debug\myrd_m4_driver_preflight_tests.exe`。
   - `ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure` → exit 0，`1/1 Test #126: unit.m4.driver_preflight ... Passed`，`100% tests passed, 0 tests failed out of 1`。
   - `cmake --build --preset debug --parallel 1 --target myrd` → exit 0，确认新增源文件已进入产品目标且不破坏 `myrd` 链接。
-- Debug/Release 证据：`Release 未运行`。原因：M4-02 只要求 focused Debug 目标；双配置 `m4-v3` 全量属 M4-14。
+- Debug/Release 证据：Debug focused 目标已绿（见上）。Release 已于 M4-04 之后补跑，见 [跨任务 Release 证据](#m4-42-跨任务-release-证据)。
 - Spec/Plan 对齐：
   - Plan 不变量 1 — 已满足且已加测试固定：`driver_unavailable` 只代表两种已知结果。未定义启动类型归为 `available`（新增测试 `m4_driver_preflight_undefined_start_type_is_left_to_adapter_discovery`），避免该协议代表第三种未知条件。
   - M4-02.3 字节协议 — `ErrorDomain::usage`、code `1`、`driver_unavailable`、`phdskmnt is disabled or absent`，四项逐字段断言。
@@ -411,7 +411,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
 - GREEN 证据：
   - `cmake --build --preset debug --parallel 1 --target myrd` → exit 0（先于 ctest 重建，确保合同不是对着旧 exe 通过）。
   - `ctest --preset debug -R '^unit\.m4\.(driver_preflight|product_boundary)$' --output-on-failure` → exit 0，`100% tests passed, 0 tests failed out of 2`（#120 product_boundary 24.84s、#126 driver_preflight 0.02s）。
-- Debug/Release 证据：`Release 未运行`。原因：M4-03 只要求上述 focused Debug 命令；双配置 `m4-v3` 全量属 M4-14。
+- Debug/Release 证据：Debug focused 命令已绿（见上）。Release 已于 M4-04 之后补跑，见 [跨任务 Release 证据](#m4-42-跨任务-release-证据)。
 - Spec/Plan 对齐：
   - Spec §3.1「预检完成前不得读取、创建、修改或挂载 bundle」— 合同以 wmain 内源码偏移逐项断言预检早于 `classify_bundle(`、`create_image(`、`recover_complete_image(`、`M3AimRuntime::create(`、`find_recovered_volume(`、`provision_new_volume(`。
   - Plan 任务 1「精确插入在 `require_elevation()` 成功之后」— 已满足并被断言；错误优先级保持：未提权时 `require_elevation` 先返回并 `return 1`，永不报告服务状态。
@@ -429,7 +429,7 @@ Error: run failed for docs: classify_bundle: non-empty bundle has no disk.rdm
   - 更强的 RED：合同内置 10 条 self-audit 变异，每条都必须被拒绝，否则测试抛出 `adapter authority self-audit missed: <name>`。变异覆盖：StoragePort GUID 被改、`SPDRP_SERVICE` 换成 `SPDRP_HARDWAREID`、QUERY_VERSION 探针移除、多候选拒绝被短路、`SPDRP_FRIENDLYNAME` 顶替服务过滤、预检引入 PhysicalDrive 匹配、query 失败文本改名、失败输出改到 stdout、成功发射绕过受审计 formatter、provider 的 discovery 调用被删除。
   - 过程中出现一次真实 RED：初版 self-audit 用了 `&{...}` 动态调用，被本文件既有的 `Assert-SafeBoundaryInvocations` 判为 `boundary invocation safety found a dynamic or qualified command invocation`。已改为静态 hashtable 表驱动，不削弱既有安全规则。
 - GREEN 证据：`ctest --preset debug -R '^unit\.m4\.(driver_preflight|aim_query_protocol|product_boundary)$' --output-on-failure` → exit 0，`100% tests passed, 0 tests failed out of 3`（#120 product_boundary 24.70s、#126 driver_preflight 0.01s、#127 aim_query_protocol 0.01s）。
-- Debug/Release 证据：`Release 未运行`。原因：焦点验证属本任务，双配置 `m4-v3` 全量属 M4-14。
+- Debug/Release 证据：Debug focused 验证已绿（见上）。Release 已于 M4-04 之后补跑，见 [跨任务 Release 证据](#m4-42-跨任务-release-证据)。
 - Spec/Plan 对齐：
   - Spec §3.2「`discover_aim_adapter` 是唯一设备发现权威」— 以源码合同冻结四项标记（StoragePort GUID、`SPDRP_SERVICE`、`phdskmnt`、QUERY_VERSION/版本匹配）与零/多候选拒绝。
   - Spec §3.2 与 §6「不把 FriendlyName/Class/PnP/序列号/PhysicalDrive 作为第二匹配权威」— 对 discovery、preflight、query 三处源码同时禁止。
@@ -454,3 +454,16 @@ M4-04 的其余子项（M4-04.1/.2/.3/.5/.6）未受影响，其证据与 10 条
 
 - 安全检查：`无 VMware/驱动/设备动作`。`unit.m4.product_boundary` 会运行 `myrd.exe`，但仅限既有的受审计有界调用集合（`--help`、无参、`run --help`、`compact --help`、缺失 bundle 的 compact、无效 run，以及一个临时目录中的 unknown bundle）；该集合由合同自身的 `Assert-SafeBoundaryInvocations` 白名单强制，未创建 AIM 设备、未挂载盘符、未触碰服务或电源边界。本机 `phdskmnt` 处于可用状态，因此新预检放行、unknown bundle 仍按既有 `classify_bundle` 协议失败——预检未修改任何服务状态。
 - 结论：`ON_TRACK`
+
+## M4-4.2 跨任务 Release 证据
+
+在 M4-04 完成后补跑，覆盖 M4-01 → M4-04 的全部产出。补跑动机：这四份复盘原先都记「Release 未运行，属 M4-14」，而本仓库 `myrd_enable_warnings` 将告警视为错误、Release 的告警集与 Debug 不同，因此「是否需要回头返工」在 Release 通过前无法回答。
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `cmake --build --preset release --parallel 1` | 0 | 全量 Release 构建，零 error、零 warning |
+| `ctest --preset release -L m4-v3 --output-on-failure` | 0 | `100% tests passed, 0 tests failed out of 18` |
+| `cmake --build --preset debug --parallel 1` | 0 | 全量 Debug 构建，零 error |
+| `ctest --preset debug -L m4-v3 --output-on-failure` | 0 | `100% tests passed, 0 tests failed out of 18` |
+
+结论：M4-01 → M4-04 的产出在 Debug 与 Release 双配置下均无回归，**无需返工**。本记录不替代 M4-14 的发布前全量验证——M4-14 仍须在其自身的起始 commit 上重新执行完整命令表。
