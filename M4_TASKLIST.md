@@ -573,3 +573,27 @@ M4-05/M4-06 把 runner 拆成 `missing_driver_create` 与 `driver_lost_recover` 
 
 收口归属：**M4-09**（编排 `missing_driver_create` 控制器路径）必须把控制器的证据文件名、拒绝协议、以及 M4-06 遗留的 runner `-Query` 接线一并对齐。D-3 未关闭前，任何复盘不得声称「控制器与 runner 已端到端一致」。
 
+
+### Review Record — M4-07
+
+- Start commit: `45050cc`
+- Implementation commit: `212f27e`
+- **来源说明**：本任务的实现（`tools/Invoke-M4GuestQualification.ps1` +155 行、`tests/unit/test-m4-guest-qualification.ps1`）在会话恢复后以**未提交改动**出现在工作树中，非本主控制器直接产出；内容与当初派发给被中断 subagent 的 M4-07 brief 逐项吻合，最可能是该 agent 写完但未提交。按用户决策「逐条核验后采纳」，先逐条核验，再提交；提交信息已如实注明来源。
+- 允许文件与实际文件：`一致`。实际改动恰为允许集内的 `tools/Invoke-M4GuestQualification.ps1` 与 `tests/unit/test-m4-guest-qualification.ps1`。`tests/CMakeLists.txt` 无需改动。
+- RED 证据：`tools/Invoke-M4GuestQualification.ps1 -SelfTest` → exit 0，`M4 guest qualification SelfTest PASS`。本任务的前向状态机与 clone 拒绝条件由**合同断言**与**失败矩阵行**冻结：合同新增 `MissingDriverCreateCaptured`/`DriverLostRecoverCaptured`/`DriverRestored`/`DriverLostRecoverRecovered`/`DriverLostRecoverClone`、`clone path escapes qualification root`、`cloned driver_lost_recover tree is not equal`、`driver_lost_recover clone already exists`、`Blocked is terminal`、`invalid transition`，并断言 `MissingDriverCaptured`（旧状态）不复存在。逐条核验见下。
+- 逐条核验（不采信 SelfTest 通过即等于完成）：
+  - M4-07.1 四新状态 + forward-only：`grep` 确认四状态在转换表（`:398`、`:1666`）与事件流中一致出现；`M4QualificationBlocked` 出现 101 次；`invalid transition` 与 `Blocked is terminal` 文本存在，且测试断言旧 `MissingDriverCaptured` 已移除。
+  - M4-07.2 clone：`Invoke-FormalDriverLostRecoverClone`（`:1164`）复制 Formal bundle 到 `driver_lost_recover` 根，复制前后 `Get-TreeInventory` 全量清单逐字节相等（`:1184`）。
+  - M4-07.3 四类 Blocked：kit/commit 经 `Assert-QualificationKit` 校验（`:1170`）；clone 路径 `StartsWith(rootFull+'\')` 防逃逸（`:1176`）；**Formal 原 bundle 保护**——clone 与 Formal 路径双向不互相嵌套（`:1177`）；clone 已存在拒绝（`:1178`）；树不等拒绝（`:1184`）。
+  - M4-07.4 严格事件 schema：clone 事件经 `[ordered]` 结构写回（`:1185` 起），状态推进采用 `New-QualificationState ... (([uint64]$s.sequence)+1)`，事件追加后 `Read-QualificationState` 重读。
+  - M4-07.5 durable hook 链：`Write-QualificationState` 出现 60 次、`WriteState` 40、`FlushEvent` 40、`ReReadState` 8、`VerifyEvidenceHash` 6，与既有持久化链一致。
+- GREEN 证据：
+  - `tools/Invoke-M4GuestQualification.ps1 -SelfTest` → exit 0，`M4 guest qualification SelfTest PASS`
+  - `tests/unit/test-m4-guest-qualification.ps1 -SourceRoot .` → 通过（全量 ctest 中非失败项）
+  - `cmake --build --preset debug --parallel 1` → exit 0
+  - `ctest --preset debug` 全量 → 见 E-1：本会话未提权，136/143，失败 7 项均为提权依赖，已用 stash 证明与本改动无关。
+- Debug/Release 证据：Debug 见上（未提权子集全绿）。Release 未重跑（改动为纯 PowerShell）。双配置全量属 M4-14，且按 E-1 必须在提权会话。
+- Spec/Plan 对齐：Spec §4「Formal 原 bundle 永不作为第三阶段写入目标」→ clone 用独立根 + 双向碰撞拒绝落实；Spec §8「forward-only，Blocked 终态」→ 转换表与 `Blocked is terminal` 断言落实；Spec §7「证据写后重读」→ durable hook 链落实。无偏差。
+- 安全检查：`无 VMware/驱动/服务/设备/磁盘/电源动作`。核验过程仅 grep/Read/SelfTest/ctest；未运行 `myrd.exe`、query 工具、`sc.exe`、`pnputil`，未生成 kit，未创建真实资格根目录（SelfTest 用临时目录）。
+- 未完成/待接续（如实记录）：见 **D-3**——控制器与 runner 的证据文件名/拒绝协议漂移，属 M4-09 收口。M4-07 不关闭 D-3，只负责 clone 与状态机。
+- 结论：`ON_TRACK`（来源已注明并逐条核验；D-3 阻断项已在台账登记并归入 M4-09）
