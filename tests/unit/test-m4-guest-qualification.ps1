@@ -50,6 +50,9 @@ foreach ($requiredText in @('function Assert-NegativeCaseEvidence', 'Assert-Nega
     Need ($runnerText.Contains($requiredText)) "missing-driver runner strict evidence contract is missing $requiredText"
 }
 Need ($runnerText.Contains('Error: run failed for')) 'missing-driver runner must bind the native refusal to its bundle path'
+foreach ($requiredText in @('driver_unavailable: phdskmnt is disabled or absent', 'discover_aim_adapter failed', 'function Assert-DriverUnavailableQueryProtocol', 'function Assert-DriverLostRecoverSuccessEvidence', 'myrd.m4.driver-lost-recover-success.v1', 'case_root_absent', 'owned_aim', 's_letter_owned', 'source_checkpoint_hash', 'physical_drive', 'partition_number', 'pnp_device_id')) {
+    Need ($runnerText.Contains($requiredText)) "missing-driver runner evidence contract is missing $requiredText"
+}
 foreach ($requiredText in @('function Read-StrictNegativeEvidence', 'function Assert-NegativeCaseEvidence', 'Assert-ExactEvidenceProperties $Record', 'negative evidence is not canonical single JSON')) {
     Need ($controllerText.Contains($requiredText)) "controller strict negative evidence mirror is missing $requiredText"
 }
