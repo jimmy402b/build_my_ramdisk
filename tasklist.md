@@ -1,6 +1,8 @@
 # M0 Driver-only Execution Tasklist
 
-> 状态：可交付其他 Agent 执行
+> 本文件是已经完成的 M0 历史执行台账。M1 实现不得在此继续记录；当前 M1 执行入口是 [`M1_TASKLIST.md`](M1_TASKLIST.md)。
+
+> 状态：M0 已完成；仅保留历史证据
 >
 > 批准日期：2026-08-01
 >
@@ -1104,3 +1106,258 @@ Plan 对齐复盘：
 - 最终 verdict 与 Operational SPEC 一致。
 - 工作区无未解释改动。
 - M0 结论没有被描述成 Toolkit 卸载授权或完整产品完成。
+
+---
+
+# M4 驱动不可用与断电恢复资格验收执行台账
+
+> 本节是当前活跃的 M4 执行台账；上文 M0 内容仅为历史记录，禁止回写或重新执行。实现依据是 [M4 驱动不可用与断电恢复资格验收实施计划](docs/superpowers/plans/2026-08-21-m4-driver-unavailable-qualification.md) 和 [对应 Spec](docs/superpowers/specs/2026-08-20-m4-driver-unavailable-qualification-design.md)。
+
+> 状态：待实施。旧 kit、旧资格根目录和旧协议只可用于诊断，不得迁移、兼容、覆盖或作为通过证据。
+
+## M4-0. 执行规则
+
+1. 每次只将一个任务标记为 `IN_PROGRESS`；其前置任务必须是 `ON_TRACK`。
+2. 每个任务先完成其 RED 项，再实现最小变更至 GREEN；未经记录的 GREEN 不得作为证据。
+3. 每个实现任务完成后必须运行该任务列出的验证，执行 `git diff --check`，并在单独提交中仅记录本台账复盘。
+4. `Blocked` 是资格根目录的产品终态；任何测试都必须断言同一资格根不自动重试、不改写状态、不再次触发子进程或 VMware 电源边界。
+5. VMware 只能由用户人工操作。VM 正式验收总共恰好三次边界：Formal、Live Power-Cut、Missing-driver；每段选择 Reset 或一次 Power Off→Power On，绝不正常关机。
+6. `pnputil.exe /restart-device` 不得进入实现。只有在干净 VM 前置实验已证明 `sc start phdskmnt` 不足时，才可停止本任务表、补充决策与 Spec 后重新规划。
+7. 物理盘号、分区号、PnP 实例号、序列号和显示文本仅能写入诊断；通过条件只能使用当前轮 AIM 所拥有的 `S:` 与 Formal 来源 bundle 最后 checkpoint 的 `A.txt`/`D.txt` 内容哈希。
+
+### M4 状态定义
+
+```text
+NOT_STARTED -> IN_PROGRESS -> IMPLEMENTED -> REVIEWING -> ON_TRACK
+                                  |                 |
+                                  +-> DEVIATED      +-> BLOCKED
+                                                    +-> NO_GO_EVIDENCE
+```
+
+`DEVIATED`、`BLOCKED`、`NO_GO_EVIDENCE` 均停止后续任务；必须先更新并批准 Spec/Plan，或由用户解除外部阻断。
+
+## M4-1. 总进度表
+
+| Task | 状态 | 前置 | 实现提交 | 复盘提交 | 证据/阻断 |
+|---|---|---|---|---|---|
+| M4-00 | NOT_STARTED | — | — | — | 冻结起点与范围 |
+| M4-01 | NOT_STARTED | M4-00 | — | — | 预检纯分类 RED |
+| M4-02 | NOT_STARTED | M4-01 | — | — | SCM 包装与错误映射 |
+| M4-03 | NOT_STARTED | M4-02 | — | — | `main.cpp` 精确插入点 |
+| M4-04 | NOT_STARTED | M4-03 | — | — | discovery/query 协议回归 |
+| M4-05 | NOT_STARTED | M4-04 | — | — | 九负例 manifest 与 fixture |
+| M4-06 | NOT_STARTED | M4-05 | — | — | 两种驱动缺失 runner evidence |
+| M4-07 | NOT_STARTED | M4-06 | — | — | Formal clone 与控制器状态/事件 schema |
+| M4-08 | NOT_STARTED | M4-07 | — | — | Reset3 启动门与零副作用 |
+| M4-09 | NOT_STARTED | M4-08 | — | — | `missing_driver_create` 控制器路径 |
+| M4-10 | NOT_STARTED | M4-09 | — | — | 服务恢复、query 与真实副本恢复 |
+| M4-11 | NOT_STARTED | M4-10 | — | — | 七个其余负例、失败矩阵、Blocked |
+| M4-12 | NOT_STARTED | M4-11 | — | — | 纯离线 verifier |
+| M4-13 | NOT_STARTED | M4-12 | — | — | 新协议 kit 冻结 |
+| M4-14 | NOT_STARTED | M4-13 | — | — | 本地全量验证与发布说明 |
+| M4-15 | NOT_STARTED | M4-14 | — | — | VM 前置实验与三边界人工验收 |
+
+## M4-2. 细颗粒度执行清单
+
+### M4-00 — 冻结起点、读取约束并建立 M4 证据台账
+
+**范围：** `tasklist.md`、`docs/validation/m4-driver-unavailable-*`（新增）
+
+- [ ] M4-00.1 阅读 Spec §1–§10、Plan 全文及本节 M4-0；记录当前 `git status --short --branch` 与 `git log -5 --oneline`。
+- [ ] M4-00.2 记录当前 kit schema、kit 固定文件清单、`myrd.exe`/query SHA-256、控制器/runner/verifier 文件 SHA-256；不生成新 kit。
+- [ ] M4-00.3 运行只读基线：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\unit\test-m4-guest-qualification.ps1 -SourceRoot .`、`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\unit\test-m4-qualification-kit.ps1 -SourceRoot .`、PowerShell AST 解析三份生产脚本。
+- [ ] M4-00.4 在 `docs/validation/` 写入仅含起始 commit、命令、退出码、文件哈希和“不触碰 VM/驱动/设备”的 M4 基线记录。
+- [ ] M4-00.5 提交基线记录，复盘文件范围只含该记录和本台账，状态改为 `ON_TRACK`。
+
+### M4-01 — 为服务预检纯分类写出 RED 测试
+
+**范围：** `tests/unit/m4_driver_preflight_tests.cpp`（新增）、`tests/CMakeLists.txt`、`src/run/driver_preflight.h`（仅声明）
+
+- [ ] M4-01.1 创建 `m4_driver_preflight_tests.cpp`，先编写 `classify_phdskmnt_service` 的失败测试：服务不存在与 `SERVICE_DISABLED` 返回 `unavailable`。
+- [ ] M4-01.2 在同一测试添加四种可用启动类型 RED：`SERVICE_BOOT_START`、`SERVICE_SYSTEM_START`、`SERVICE_DEMAND_START`、`SERVICE_AUTO_START` 均返回 `available`。
+- [ ] M4-01.3 为 SCM 包装定义可替换 I/O seam 的测试输入，加入 `OpenSCManagerW` 失败、`OpenServiceW(ERROR_ACCESS_DENIED)`、`QueryServiceConfigW` 失败三条 RED；每条断言 `ErrorDomain::win32`、具体操作名且渲染文本不含 `driver_unavailable`。
+- [ ] M4-01.4 在 `tests/CMakeLists.txt` 注册 `unit.m4.driver_preflight`、标签 `m4-v3`、超时 30 秒。
+- [ ] M4-01.5 构建并运行：`cmake --preset msvc`、`cmake --build --preset debug --parallel 1 --target myrd_m4_driver_preflight_tests`、`ctest --preset debug -R '^unit\.m4\.driver_preflight$' --output-on-failure`；预期失败为缺声明/缺实现。
+- [ ] M4-01.6 提交仅含 RED 测试与必要声明的变更；复盘 RED 输出和文件范围。
+
+### M4-02 — 实现 SCM 包装及三类预检结果映射
+
+**范围：** `src/run/driver_preflight.h`、`src/run/driver_preflight.cpp`、`src/CMakeLists.txt`、`tests/unit/m4_driver_preflight_tests.cpp`
+
+- [ ] M4-02.1 实现纯函数：服务缺失或 `SERVICE_DISABLED` 归为 `unavailable`；四种列出的有效启动类型归为 `available`。
+- [ ] M4-02.2 实现只含 SCM 访问的包装：`OpenSCManagerW`、`OpenServiceW`、`QueryServiceConfigW`、精确 close handle；不得读取 bundle、枚举 StoragePort、打开 AIM、检查盘符或创建设备。
+- [ ] M4-02.3 仅将 `ERROR_SERVICE_DOES_NOT_EXIST` 和 `SERVICE_DISABLED` 映射为：`ErrorDomain::usage`、code `1`、`operation=L"driver_unavailable"`、`message=L"phdskmnt is disabled or absent"`。
+- [ ] M4-02.4 将所有其他 SCM 失败映射为 `ErrorDomain::win32`、原始 `GetLastError()` 和各自操作名 `OpenSCManagerW`/`OpenServiceW`/`QueryServiceConfigW`；禁止借用 `driver_unavailable` operation/message。
+- [ ] M4-02.5 重跑 `unit.m4.driver_preflight` 到 GREEN，并添加 handle-close/错误优先级断言。
+- [ ] M4-02.6 提交实现；复盘确认没有 adapter handle、StoragePort、SRB QUERY_VERSION、设备、盘符或 bundle 依赖进入新模块。
+
+### M4-03 — 将预检插入 `myrd run` 的唯一安全位置
+
+**范围：** `src/run/main.cpp`、`src/CMakeLists.txt`、`tests/unit/m4_product_boundary_tests.ps1`
+
+- [ ] M4-03.1 在产品边界 PowerShell 合同中写 RED：`require_phdskmnt_service_available()` 必须在 `require_elevation()` 成功分支之后、`classify_bundle()` 之前；Create 与 Recover 不得各自有第二个预检入口。
+- [ ] M4-03.2 在该合同中写 RED 字节协议断言：已知不可用时 `print_run_error` 的字段必须是 `driver_unavailable` 和 `phdskmnt is disabled or absent`，stdout 空、exit 1、stderr CRLF；SCM I/O 失败 stderr 不得含该 operation。
+- [ ] M4-03.3 在 `main.cpp` 仅在提权成功后插入预检；失败时调用既有 `print_run_error(options.bundle, error)` 并 `return 1`，然后才调用 `classify_bundle()`。
+- [ ] M4-03.4 确认预检之前不读取/创建/修改/挂载 bundle；在合同中用源码位置检查覆盖 `classify_bundle`、`create_image`、recover、provider start。
+- [ ] M4-03.5 运行 `ctest --preset debug -R '^unit\.m4\.(driver_preflight|product_boundary)$' --output-on-failure`，预期全绿。
+- [ ] M4-03.6 提交实现并复盘错误优先级：未提权时仍优先报告 `require_elevation`，不会报告服务状态。
+
+### M4-04 — 冻结 discovery 唯一权威与 query 字节协议
+
+**范围：** `src/driver/adapter_discovery.cpp`、`src/m3/m3_windows_acceptance.cpp`、`tests/e2e/m4_aim_query.cpp`、`tests/unit/m4_product_boundary_tests.ps1`、对应 C++ 单元测试
+
+- [ ] M4-04.1 写 RED 源码合同：`discover_aim_adapter` 继续使用 `GUID_DEVICEINTERFACE_STORAGEPORT`、`SPDRP_SERVICE == phdskmnt`、既有 QUERY_VERSION 与唯一候选拒绝规则。
+- [ ] M4-04.2 写 RED 合同，禁止新预检或控制器使用 `FriendlyName`、Class、PnP 实例号、序列号或 PhysicalDrive 作为 adapter 匹配权威。
+- [ ] M4-04.3 在 query 测试冻结失败协议：exit 1、stdout 空、stderr 精确 `discover_aim_adapter failed\r\n`。
+- [ ] M4-04.4 在 query 测试冻结成功协议：exit 0、stderr 空、单一 JSON、`success` 为布尔 true、版本为数值、`ids` 为数值数组；BOM、多 JSON、错误 CRLF、额外/错误类型均失败。
+- [ ] M4-04.5 验证服务可用但 provider discovery 失败仍采用既有 `discover_aim_adapter: no AIM adapter found`，测试不得要求此场景零 bundle 写入。
+- [ ] M4-04.6 运行 query/selftest 与相关 unit 到 GREEN，提交并复盘 provider 中 discovery 的位置未前移。
+
+### M4-05 — 将 negative fixture manifest 升级为精确九案
+
+**范围：** `tests/e2e/Prepare-M4NegativeFixtures.ps1`、`tests/e2e/Invoke-M4RunLifecycle.ps1`、`tests/unit/test-m4-guest-qualification.ps1`、`tests/CMakeLists.txt`
+
+- [ ] M4-05.1 写 RED：旧八案或旧单一 `missing_driver` manifest 必须被拒绝。
+- [ ] M4-05.2 将 manifest 固定为恰好九项：`unknown_nonempty`、`size_mismatch`、`occupied_letter`、`gen0`、`writer_lock`、`missing_driver_create`、`driver_lost_recover`、`busy_volume`、`compact_lock`。
+- [ ] M4-05.3 为每项写入并验证绝对 case 路径、相对路径/长度/SHA-256 清单、输入常量和确定性 schema；拒绝缺项、额外项、重排、路径逃逸、数组非字符串、BOM 与非 CRLF JSON。
+- [ ] M4-05.4 更新 runner 自测的 producer-shaped 九案正例，运行 `MYRD_M4_NEGATIVE_SELFTEST=1` 得到 GREEN。
+- [ ] M4-05.5 运行 guest qualification 合同与标签 `m4-v3` 中 runner 测试；若完整矩阵超时，只增加显式 CTest timeout，禁止删减案例。
+- [ ] M4-05.6 提交 runner/fixture manifest 改动并复盘固定文件名、StateFile 与 Prepare/Negative 生命周期文件路径一致。
+
+### M4-06 — 实现两种驱动缺失 runner evidence 与不变量
+
+**范围：** `tests/e2e/Invoke-M4RunLifecycle.ps1`、`tests/e2e/Prepare-M4NegativeFixtures.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-06.1 写 `missing_driver_create` RED：预检拒绝后 case 根仍不存在，且没有 bundle、journal、AIM 或目标盘符证据。
+- [ ] M4-06.2 写 `driver_lost_recover` RED：拒绝前后完整相对路径/长度/SHA-256 树不同（含 journal）时必须失败。
+- [ ] M4-06.3 为两种拒绝固定 `driver_unavailable` run stderr，并把 query 的 exit 1/空 stdout/固定 stderr 作为独立协议；禁止比较二者 stderr 文本。
+- [ ] M4-06.4 为真实 `driver_lost_recover` 成功 evidence 加入本轮 owned AIM/`S:`、`A.txt`/`D.txt`、Formal 来源最后 checkpoint、exit/stderr、精确清理和仅诊断性设备字段。
+- [ ] M4-06.5 写 mutation RED/GREEN：截断 JSON、错误 CRLF/BOM、来源 hash、树成对伪造、owned `S:`、A/D hash、exit/stderr、数组元素/PID 类型、清理失败与重复运行。
+- [ ] M4-06.6 运行 runner selftest、guest contract 和 `git diff --check`；提交后确认不存在旧 `missing_driver` 成功证据兼容分支。
+
+### M4-07 — 创建 Formal 副本并扩展控制器状态/事件 schema
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-07.1 写 RED 状态转换测试：新增 `MissingDriverCreateCaptured`、`DriverLostRecoverCaptured`、`DriverRestored`、`DriverLostRecoverRecovered` 及其事件必须 forward-only；非法回退、跳跃、sequence 复用和 Blocked 恢复全部 typed 拒绝。
+- [ ] M4-07.2 在 Formal 成功后复制已验证的 Formal bundle 到专用 `driver_lost_recover` 根；复制前后生成相对路径/长度/SHA-256 inventory 并写 durable event。
+- [ ] M4-07.3 写 RED：控制器若把 Formal 原 bundle 作为第三阶段写入目标、复制树不相等、source commit/kit hash 不一致或 clone 路径逃逸，必须 Blocked。
+- [ ] M4-07.4 实现严格事件 schema：clone source、clone inventory、路径、hash、时间、状态/sequence 与证据 SHA 全部明确类型并写后重读。
+- [ ] M4-07.5 运行 controller SelfTest 和 guest unit；提交并复盘每个新状态都已接入 `WriteState → FlushEvent → ReReadState → VerifyEvidenceHash`。
+
+### M4-08 — 实现 Reset3 的启动门与 same-boot 零副作用
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-08.1 写 RED：`AwaitingMissingDriverReset` 同 boot 重调必须以规定 exit 返回，状态/事件字节完全不变。
+- [ ] M4-08.2 在 same-boot 测试中记录所有 seam；断言不调用 Facts、query、runner、Driver、Prepare、fixture、observer 写入或 VMware 相关动作。
+- [ ] M4-08.3 写 RED：new boot 缺 41、缺 6008、boot 时间未前进、服务并非缺失/禁用、query 意外成功、AIM 盘存在或 `S:` 存在均 Blocked。
+- [ ] M4-08.4 实现 Reset3 新 boot gate，并为每个失败先写独立阶段 Blocked evidence 后封存资格根。
+- [ ] M4-08.5 运行 production dispatcher 的 fake same-boot/new-boot 集成 selftest 到 GREEN；提交并复盘调用向量精确匹配。
+
+### M4-09 — 编排 `missing_driver_create` 并证明零 bundle 写入
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-09.1 写 RED：控制器必须在新 boot gate 后同时执行 run 与 query；任何一方 exit 0、超时、其他 exit、非空 stdout 或不匹配 stderr 均 Blocked。
+- [ ] M4-09.2 将 run 拒绝 evidence 和 query evidence 分别严格解析并写入 `MissingDriverCreateCaptured` 的独立哈希锚点。
+- [ ] M4-09.3 写 RED：case 根存在、树清单不为空、出现 bundle/journal/AIM/`S:` 任何一项时拒绝；控制器自身 evidence/临时文件不进入零写入比较。
+- [ ] M4-09.4 实现 zero-write validator、路径 containment 与完整 typed schema；每个 validator 失败都写子步骤名、主错误和清理错误。
+- [ ] M4-09.5 运行生产 dispatcher fake 流：Reset3 new boot → `missing_driver_create` 成功捕获；随后 mutation matrix 必须在启动下一个 runner 前阻止。
+- [ ] M4-09.6 提交并复盘 query/run “一致”只按两者均 exit 1 判断，不比较两条 stderr 的字面文本。
+
+### M4-10 — 恢复服务、探测 AIM，并执行 `driver_lost_recover` 的真实恢复
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`
+
+- [ ] M4-10.1 写 RED：恢复只允许按顺序调用 `sc.exe config phdskmnt start= demand`、`sc.exe start phdskmnt`；`pnputil.exe /restart-device` 任何引用均被静态安全合同拒绝。
+- [ ] M4-10.2 写 RED：`sc qc` 必须严格证明 `START_TYPE : 3 DEMAND_START`，`sc query` 必须严格证明 `STATE : 4 RUNNING`；非零 exit、stderr、重复/缺失字段、Disabled/Manual/Stopped 均失败。
+- [ ] M4-10.3 写 RED：恢复后的 `myrd_m4_aim_query.exe` 必须 exit 0、stderr 空、单一严格成功 JSON；否则在真实恢复前 Blocked。
+- [ ] M4-10.4 写 RED：`driver_lost_recover` 拒绝后副本树变化（包括 journal）或恢复后 `S:` 不属于本轮 owned AIM、A/D 不等于 Formal 来源最后 checkpoint 时失败。
+- [ ] M4-10.5 实现服务恢复、query 探针、真实 recovery runner、来源内容/owned `S:` 验证和独立事件；保留 PhysicalDrive/分区/PnP 为诊断，不参与条件。
+- [ ] M4-10.6 运行完整 fake production dispatcher：两个拒绝 → service restore → query success → real recovery success；提交并复盘每个失败均在后续 runner 前停止。
+
+### M4-11 — 完成其余七负例、全失败矩阵与永久 Blocked 行为
+
+**范围：** `tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-guest-qualification.ps1`、`tests/e2e/Invoke-M4RunLifecycle.ps1`
+
+- [ ] M4-11.1 写 RED：真实恢复未成功时，`unknown_nonempty`、`size_mismatch`、`occupied_letter`、`gen0`、`writer_lock`、`busy_volume`、`compact_lock` 任一项不得启动。
+- [ ] M4-11.2 为七个 case 的每一项写 production-shaped evidence、严格 raw/schema/hash/路径/argv/process/oracle/inventory 验证，并将最终集合固定为完整九案。
+- [ ] M4-11.3 为每一个 Reset3 子步骤和七个 case 建立 fresh fake root 的失败矩阵；每行断言精确 Blocked reason、事件 reason、调用全序列、后续 seam 为零、owned cleanup 完成。
+- [ ] M4-11.4 在每行失败后重调同一资格根；断言没有 runner、service、query、observer 或状态字节改变，且无自动重试。
+- [ ] M4-11.5 写 RED/GREEN：最终 `NegativeComplete` evidence 缺 case、额外 case、弱 schema、错误 final lifecycle、缺 missing-driver capture hash 或来源/kit/commit 不绑定时拒绝。
+- [ ] M4-11.6 运行 controller SelfTest、guest contract、runner native/protocol/negative selftest，提交并复盘所有矩阵 reason 不是“非空字符串”而是每行精确期望。
+
+### M4-12 — 实现纯离线最终 verifier
+
+**范围：** `tools/Invoke-M4Verification.ps1`、`tests/unit/test-m4-guest-qualification.ps1` 或新增 `tests/unit/test-m4-verification.ps1`、`tests/CMakeLists.txt`
+
+- [ ] M4-12.1 写 RED：verifier 缺任一 driver-unavailable evidence、缺九案、篡改 clone tree/来源 checkpoint/A-D/owned `S:`/event hash 时必须失败。
+- [ ] M4-12.2 实现只读 `Verify-DriverUnavailable`：严格重读 kit/source commit、Formal clone、两个缺驱动 evidence、目录清单、恢复内容、九案、final lifecycle 和所有状态事件哈希。
+- [ ] M4-12.3 写 AST/命令 allowlist RED：verifier 不得调用 `myrd.exe`、query、SCM、PnP、Disk、WinEvent、VMware、Reset 或任何设备/电源命令。
+- [ ] M4-12.4 添加 raw bytes、BOM、非 CRLF、额外字段、错误类型/数组元素、资格根逃逸、重复/缺失事件、hash 不符、旧 protocol 的离线 mutation matrix。
+- [ ] M4-12.5 运行 verifier SelfTest 和对应 CTest 到 GREEN；提交并复盘 verifier 可在资格根目录副本上运行，不依赖当前 VM。
+
+### M4-13 — 冻结新的 qualification kit 协议
+
+**范围：** `tools/New-M4GuestQualificationKit.ps1`、`tools/Invoke-M4GuestQualification.ps1`、`tests/unit/test-m4-qualification-kit.ps1`、`tests/CMakeLists.txt`
+
+- [ ] M4-13.1 写 RED：旧 manifest schema、旧文件数/顺序、旧 source commit、旧 artifact/query 或旧脚本 hash 不能被新 controller 装载。
+- [ ] M4-13.2 升级 manifest schema，固定所有 payload 的相对路径、顺序、长度、SHA-256、source commit、artifact/query SHA 与确定性 UTF-8 无 BOM JSON。
+- [ ] M4-13.3 写 packager mutation matrix：同名输出目录、缺文件、额外文件、重排、BOM、长度/hash/commit 改写、artifact/query 不匹配均 fail closed。
+- [ ] M4-13.4 写 controller startup 复验：VM 内 kit manifest 与每个文件 hash/length 必须相等，运行中覆盖 kit 或混用旧 kit/root 必须 Blocked。
+- [ ] M4-13.5 将所有新增原生/runner/controller/verifier/kit 测试纳入 `m4-v3`，调整超时但不得缩减测试。
+- [ ] M4-13.6 运行 kit 合同与 Debug/Release focused CTest，提交并复盘 exact 文件清单没有遗漏或额外测试工具。
+
+### M4-14 — 完成发布前本地验证和人工验收说明
+
+**范围：** `README.md`、`docs/validation/*`、`tasklist.md`
+
+- [ ] M4-14.1 更新 README：给出 host kit 生成四参数命令、Release artifact/query 路径、hash 检查、完整 kit 复制、新 qualification root、控制器命令（不写不存在的 `-Run` 参数）。
+- [ ] M4-14.2 更新人工步骤：恰好三次电源边界、每段 Reset 或 Power Off→Power On 二选一、不得正常关机、不得手动修改资格根、Windows 修复屏的判定规则。
+- [ ] M4-14.3 运行 PowerShell AST、guest/kit/verifier selftest 和以下全量命令：
+
+  ```powershell
+  cmake --preset msvc
+  cmake --build --preset debug --parallel 1
+  cmake --build --preset release --parallel 1
+  ctest --preset debug -L m4-v3 --output-on-failure
+  ctest --preset release -L m4-v3 --output-on-failure
+  git diff --check
+  ```
+
+- [ ] M4-14.4 记录命令、退出码、测试总数、commit、没有真实 VM 资格结论的原因；任何失败回到最早相关任务。
+- [ ] M4-14.5 在宿主机生成 commit+GUID 的新 kit，逐文件验证 manifest/hash/length，并记录发布候选证据；禁止覆盖旧 kit。
+- [ ] M4-14.6 提交文档/本地验证记录，复盘后才允许开始 VM 前置实验。
+
+### M4-15 — 执行 VM 前置实验与三次人工电源边界验收
+
+**范围：** 仅新 kit、新 VM、新 qualification root 与 `docs/validation/m4-driver-unavailable-vm-*`（新增）
+
+- [ ] M4-15.1 在干净 VM 上记录服务、query、AIM/盘符、事件和 kit hash 基线；新建从未存在过的 qualification root。
+- [ ] M4-15.2 先单独验证服务恢复前置实验：将 `phdskmnt` 从 Disabled 恢复为 demand，执行 `sc start phdskmnt` 与 query；记录 query 是否严格成功。失败则标记 `BLOCKED`，不得调用 `pnputil` 或继续正式资格流程。
+- [ ] M4-15.3 仅在 M4-15.2 成功后，执行 Formal：运行控制器至 armed，用户做一次 Reset 或一次 Power Off→Power On，再运行同一命令并保存全部 evidence hash。
+- [ ] M4-15.4 执行 Live Power-Cut：运行控制器至 armed，用户做一次且仅一次允许电源边界，再运行同一命令并保存 evidence hash。
+- [ ] M4-15.5 执行 Missing-driver：运行控制器至 armed，用户做一次且仅一次允许电源边界；重新运行命令，让控制器完成两个缺驱动 case、服务恢复、真实副本恢复与余下七例。
+- [ ] M4-15.6 在不改变 VM 的条件下运行最终离线 verifier；保存 stdout、退出码、资格根哈希与三段电源边界记录。
+- [ ] M4-15.7 仅当 M4-14 全绿、M4-15.2 前置实验成功、三段都通过且 verifier 通过时记录“VM 已资格验证”；否则只记录“VM 验收未完成”，禁止夸大为 M4 已通过。
+
+## M4-3. 每个任务的复盘模板
+
+每个任务的 implementation commit 后，必须先将状态标为 `REVIEWING`，填完以下字段，再单独提交本 `tasklist.md`：
+
+```markdown
+### Review Record — M4-XX
+
+- Start commit: `<sha>`
+- Implementation commit: `<sha>`
+- 允许文件与实际文件：`一致 | 偏差说明`
+- RED 证据：`命令、退出码、预期失败文本`
+- GREEN 证据：`命令、退出码、通过数量`
+- Debug/Release 证据：`命令、通过数量；未运行时写原因`
+- Spec/Plan 对齐：`逐条确认或列出偏差`
+- 安全检查：`无 VMware/驱动/设备动作，或已授权的精确动作与证据`
+- 结论：`ON_TRACK | DEVIATED | BLOCKED | NO_GO_EVIDENCE`
+```
+
+只有 `ON_TRACK` 才能解锁下一项。任何偏差先更新并批准 Spec/Plan，再更新本台账。
