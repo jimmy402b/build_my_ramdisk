@@ -327,17 +327,59 @@ Result<void> run_helper(std::uint32_t disk, wchar_t letter, std::chrono::millise
     const DWORD create_error=GetLastError(); if(attribute_initialized) DeleteProcThreadAttributeList(list);
     CloseHandle(stdout_write); CloseHandle(stderr_write);
     if (!created) { CloseHandle(stdout_read); CloseHandle(stderr_read); DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume", L"CreateProcessW failed", create_error)); }
-    std::atomic<DWORD> stdout_bytes{}, stderr_bytes{}; std::atomic_bool pipe_error{}, producer_done{}, cancel_drains{};
-    auto drain = [&](HANDLE h, std::atomic<DWORD>& total) { std::array<std::byte,4096> buffer{}; for (;;) { if(cancel_drains) return; DWORD available{}; if(!PeekNamedPipe(h,nullptr,0,nullptr,&available,nullptr)) { if(GetLastError()!=ERROR_BROKEN_PIPE) pipe_error=true; return; } if(available) { const DWORD chunk=(std::min)(available,static_cast<DWORD>(buffer.size())); DWORD read{}; if(!ReadFile(h,buffer.data(),chunk,&read,nullptr) || read!=chunk) { pipe_error=true; return; } if(total.fetch_add(read)+read>kOutputCap) { pipe_error=true; cancel_drains=true; return; } continue; } if(producer_done) return; std::this_thread::sleep_for(std::chrono::milliseconds(10)); } };
+    std::atomic<DWORD> stdout_bytes{}, stderr_bytes{};
+    std::atomic_bool pipe_error{}, producer_done{}, cancel_drains{}, output_overflow{};
+    auto drain = [&](HANDLE h, std::atomic<DWORD>& total) {
+        std::array<std::byte,4096> buffer{};
+        for (;;) {
+            if (cancel_drains) return;
+            DWORD available{};
+            if (!PeekNamedPipe(h,nullptr,0,nullptr,&available,nullptr)) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_BROKEN_PIPE && !producer_done) pipe_error = true;
+                return;
+            }
+            if (available) {
+                const DWORD chunk=(std::min)(available,static_cast<DWORD>(buffer.size()));
+                DWORD read{};
+                if (!ReadFile(h,buffer.data(),chunk,&read,nullptr) || read!=chunk) {
+                    if (!producer_done) pipe_error = true;
+                    return;
+                }
+                const DWORD previous = total.fetch_add(read);
+                if (previous > kOutputCap || read > kOutputCap - previous) {
+                    output_overflow = true;
+                    cancel_drains = true;
+                    return;
+                }
+                continue;
+            }
+            if (producer_done) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
     std::thread stdout_thread(drain,stdout_read,std::ref(stdout_bytes)); std::thread stderr_thread(drain,stderr_read,std::ref(stderr_bytes));
-    const DWORD wait = WaitForSingleObject(process.hProcess, static_cast<DWORD>(timeout.count()));
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    DWORD wait = WAIT_TIMEOUT;
     bool termination_failed = false;
-    bool child_exited = wait == WAIT_OBJECT_0;
-    if (wait != WAIT_OBJECT_0) {
-        if (!TerminateProcess(process.hProcess, wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : ERROR_BUFFER_OVERFLOW) ||
-            (child_exited = WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0) == false) {
-            termination_failed = true;
+    bool child_exited = false;
+    // Poll in short slices so an output overflow or pipe failure terminates
+    // this exact child immediately instead of waiting for the full timeout.
+    for (;;) {
+        wait = WaitForSingleObject(process.hProcess, 10);
+        if (wait == WAIT_OBJECT_0) { child_exited = true; break; }
+        if (wait == WAIT_FAILED || output_overflow || pipe_error ||
+            std::chrono::steady_clock::now() >= deadline) {
+            const DWORD terminate_code = output_overflow ? ERROR_BUFFER_OVERFLOW :
+                (pipe_error ? ERROR_READ_FAULT : ERROR_TIMEOUT);
+            if (!TerminateProcess(process.hProcess, terminate_code)) {
+                termination_failed = true;
+            } else {
+                child_exited = WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0;
+                if (!child_exited) termination_failed = true;
+            }
             cancel_drains = true;
+            break;
         }
     }
     producer_done = true;
@@ -346,7 +388,8 @@ Result<void> run_helper(std::uint32_t disk, wchar_t letter, std::chrono::millise
     DWORD exit_code{}; const BOOL exit_ok=GetExitCodeProcess(process.hProcess, &exit_code); const DWORD exit_error=GetLastError(); CloseHandle(process.hThread); CloseHandle(process.hProcess);
     if(!child_exited) return Result<void>::failure(fail(L"provision_new_volume",L"helper cleanup failed; temporary script retained",termination_failed ? ERROR_TIMEOUT : exit_error));
     const BOOL deleted=DeleteFileW(path.c_str()); const DWORD delete_error=GetLastError();
-    if (!exit_ok || !deleted || pipe_error || termination_failed || wait != WAIT_OBJECT_0 || exit_code != 0) return Result<void>::failure(fail(L"provision_new_volume", L"provisioning helper failed", !deleted ? delete_error : exit_code));
+    if (!exit_ok || !deleted || pipe_error || output_overflow || termination_failed || wait != WAIT_OBJECT_0 || exit_code != 0)
+        return Result<void>::failure(fail(L"provision_new_volume", output_overflow ? L"provisioning helper output exceeded 64 KiB" : L"provisioning helper failed", !deleted ? delete_error : exit_code));
     return Result<void>::success();
 }
 } // namespace
