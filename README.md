@@ -1,107 +1,162 @@
 # MyRamDisk
 
-MyRamDisk 是一个前台运行的、持久化的 Windows RAM disk 产品。它使用已单独安装的 Arsenal Image Mounter (AIM)；本项目遵循 GNU Affero General Public License v3.0，详情见 [LICENSE](LICENSE)。
+## M4 offline evidence verification
 
-## 支持范围
-
-v1 支持 Windows 11 x64 上的一个 AIM-backed NTFS RAM disk。必须在提升权限的 Administrator PowerShell 中运行，并且 AIM 已安装且可用；本发行包不包含 AIM 或驱动安装程序。bundle 目录必须位于本机 NTFS 卷；创建时指定的盘符必须当前空闲。产品不承诺广泛 Windows 认证，也不提供服务、GUI、开机自启、多磁盘、驱动安装或在线压缩。
-
-## 快速开始
+After the manual Windows VM cases complete, run the read-only evidence verifier:
 
 ```powershell
-.\myrd.exe run --bundle "D:\MyRamDisk\work" --size 4G --drive-letter R:
+.\tools\Verify-M4SingleMultiDiskEvidence.ps1 `
+  -EvidenceRoot E:\m4\evidence\qualification `
+  -ExpectedSourceCommit <40-hex-commit> `
+  -ExpectedReleaseSha256 <64-hex-release-hash> `
+  -ExpectedDebugSha256 <64-hex-debug-hash>
 ```
 
-`--size` 接受 64 MiB 到 1 TiB 的 `K`、`M`、`G` 或 `T` 后缀。bundle 目录必须位于本机 NTFS 卷，且创建时指定的盘符必须当前空闲。默认 checkpoint 间隔为 600 秒，脏数据阈值为 256 MiB，RAM 上限为 2 GiB；可分别用 `--checkpoint-seconds`、`--checkpoint-dirty-mb` 和 `--ram-limit` 调整。
+It reads only the explicitly supplied evidence root: it does not start the
+product, query devices, change services, or control VMware. Only exit code `0`
+with the literal `M4 VM EVIDENCE PASS` output qualifies the evidence set.
 
-## 创建与恢复
+## M4 single-disk VM runbook
 
-不存在或为空的 bundle 会创建新的镜像和 NTFS 卷。包含完整 `disk.rdm` 的 bundle 会恢复既有镜像；恢复路径绝不会格式化卷。恢复必须使用与原来相同的 `run` 命令（特别是相同的 bundle、大小和盘符）。
-
-## Checkpoint 与 journal
-
-运行中会按间隔或脏数据阈值发布 checkpoint；只有已发布的 checkpoint 才能在非正常停止后恢复。journal 到 80% 时会给出一次警告。journal 写满时，产品停止后续 checkpoint 并在安全清理后以退出码 1 结束；此时先离线压缩，再重新运行原来的 `run` 命令。
-
-## 离线压缩
-
-仅在 `myrd run` 已停止、且 bundle 写入锁可独占取得时执行：
+Run this observer from an elevated PowerShell in the approved Windows 11 VMware
+guest. It never controls VMware or changes device state. It records VM UUID and
+MAC addresses, Windows/AIM/phdskmnt versions, administrator-token status,
+NTFS bundle-parent and `R:`/`S:` preconditions, process/AIM/volume observations,
+command output and exit code, bundle generation files and SHA-256 hashes.
 
 ```powershell
-.\myrd.exe compact --bundle "D:\MyRamDisk\work"
+.\tests\e2e\m4_vm_lifecycle.ps1 `
+  -Executable .\out\build\msvc\src\Release\myrd.exe `
+  -Bundle E:\m4\disk-a `
+  -DriveLetter R: -SpareDriveLetter S: `
+  -EvidenceDirectory E:\m4\evidence-preflight
 ```
 
-离线压缩不启动或发现 AIM，只需要 bundle 文件系统访问和独占写入锁。v1 没有在线压缩；相关未来工作见 [docs/deferred/online-compaction.md](docs/deferred/online-compaction.md)。
+Review `preflight.json` and require `administrator`, NTFS parent, free target
+and spare letters, no existing `myrd` process/AIM disk, and the approved driver
+before running the product command. After the operator runs the explicitly
+approved command manually, capture its literal command line and output files
+without adding any VM-control operation:
 
-## 安全关闭与强制终止
+```powershell
+.\tests\e2e\m4_vm_lifecycle.ps1 `
+  -Executable .\out\build\msvc\src\Release\myrd.exe `
+  -Bundle E:\m4\disk-a -EvidenceDirectory E:\m4\evidence-run `
+  -CommandLine 'myrd.exe run --bundle E:\m4\disk-a --size 64M --drive-letter R: --checkpoint-seconds 10 --checkpoint-dirty-mb 1' `
+  -CommandStdout E:\m4\command.stdout.log -CommandStderr E:\m4\command.stderr.log -CommandExitCode 0
+```
 
-先关闭使用该盘的应用，再按 Ctrl+C。MyRamDisk 按锁定卷、验证 extent、刷新、最终 checkpoint、卸载、移除盘符、停止运行时的顺序清理；若卷被占用，请关闭 Defender 或 Windows Search 对该盘的扫描/索引后重试 Ctrl+C。
+The observer reports exactly one classification: `PRODUCT_FAIL` (the approved
+environment was ready but the product command violated its contract),
+`ENVIRONMENT_BLOCKED` (preconditions were not met), `HARNESS_FAIL` (observer or
+evidence failure), or `USER_ABORTED` (manual VM action did not follow the
+runbook). It performs no automated power, remote, driver, or reboot operation;
+manual VMware Reset/Power Off→Power On and post-boot rerun are operator steps.
 
-普通关闭后，等待 `myrd` 退出，运行相同 bundle 的 `compact`，再运行原来的 `run` 命令。若 journal 已满，也按 Ctrl+C 等待安全清理（退出码 1），离线压缩后再重启。若产品进程被强制终止，只能终止该产品进程；在恢复前先对 VMware 或 Windows 执行硬重置，然后重新运行完全相同的 `run` 命令。强制终止不承诺清理或身份后续处理。
+## M4 前台运行模型
 
-## 退出码
+M4 的运行核心是单进程、单盘的 `DiskRuntime`。每次 `myrd run` 只拥有一个 bundle、一个 AIM 设备和一个 Windows 卷；本阶段不启动 Windows Service、worker 或集中式 IPC 管理层。
 
-`0` 表示成功；`1` 表示运行、checkpoint、压缩或清理失败；`2` 表示命令行用法错误。
+```powershell
+myrd run --bundle E:\myrd\disk-a --size 64M --drive-letter R:
+myrd run --bundle E:\myrd\disk-b --size 64M --drive-letter S:
+```
 
-## 已知限制
+启动两个命令即可运行两个相互隔离的磁盘。每个实例必须使用不同的 bundle 和盘符；同一个 bundle 的第二个实例会因 writer lock 拒绝，已运行的实例不会受到影响。M4 当前没有 `disk list`、`disk start` 或 `disk stop` 等集中式管理命令。
 
-只支持一个前台磁盘。没有服务、GUI、自动恢复、自动压缩、在线压缩、多磁盘或驱动安装。不要在产品运行时执行离线压缩。
+运行期间会按策略自动提交 checkpoint。只有成功提交的 checkpoint 对异常退出、重启和断电恢复负责；最近一次 checkpoint 之后的写入允许丢失。恢复已有 bundle 时只重新打开最后一个完整 generation、发现并重新挂载其卷，不会重新格式化或创建新的卷。
 
-## 构建与验证
+正常按 Ctrl+C 退出时，程序依次 flush 卷、提交最终 checkpoint、卸载卷、移除本次分配的盘符、停止 AIM 运行时并释放 bundle lock。失败路径只清理本实例实际取得的资源，不会删除其他实例的设备、卷或 bundle。
+
+基于已安装的 `phdskmnt.sys` 内核驱动、由本项目自行实现 Shared Memory Proxy 和内存块后端的 Windows RAM Disk 项目。
+
+## 当前状态
+
+- M0：driver-only 可行性验证，机器范围内 GO。
+- M1：Shared Memory Proxy 产品化里程碑，机器范围内 GO。
+- M2/M2.1：动态按块分配、首次访问加载和一致性快照基础已完成。
+- M3：VHDX + journal + 双槽 manifest 持久化里程碑已通过最终验收（证据冻结提交 `4ece675`）；Task41 真实 AIM+NTFS、Task42 崩溃矩阵、Task43 Formal 和 Task44 漂移审计均为 GO。
+
+M1 已能直接调用内核驱动创建 64 MiB RAM disk，并通过 Windows 原始磁盘路径完成真实 READ、WRITE、ZERO、UNMAP、flush 和精确删除。Release 可执行文件已连续完成 20/20 次实机生命周期；完整证据见 `docs/validation/m1-proxy-acceptance.md`。
+
+M3 可以创建和重开镜像 bundle，在第一次访问块时从已提交的 journal/VHDX 按需加载，手动执行 checkpoint 和 compaction，并在异常退出或断电后恢复最近一次完整、已确认提交的 checkpoint。最终真实 AIM + NTFS、Windows 原生 VHDX、8 次进程终止、2 次受控断电和 100-seed Formal soak 证据见 `docs/validation/m3-persistence-acceptance.md` 与 `docs/validation/m3-final-audit.md`。
+
+M3 仍不是最终桌面产品：定时 checkpoint、Windows 服务、开机自动恢复、关机策略、自动压缩、GUI 和多磁盘策略属于 M4。普通写入进入 RAM 后即可完成；只有成功发布的 checkpoint 才有断电恢复承诺。
+
+## 环境要求
+
+- Windows 11 x64
+- Visual Studio 2022 Build Tools 与 MSVC x64
+- CMake >= 3.25
+- Ninja >= 1.11
+- 已安装并运行的签名 `phdskmnt.sys`（本机验收版本 1.2.28.93）
+- 实机驱动测试需要管理员权限
+
+## 构建与本地测试
 
 ```powershell
 . .\tools\Enter-MsvcEnvironment.ps1
 cmake --preset msvc
-cmake --build --preset debug --target myrd
+cmake --build --preset debug
 ctest --preset debug --output-on-failure
+cmake --build --preset release
+ctest --preset release --output-on-failure
 ```
 
-## v1.0 来宾资格测试（高级/发布维护者）
+## M3 操作边界与验证
 
-本节是发布维护者在已批准、隔离的 Windows 来宾中执行的资格流程，不是普通用户安装步骤。资格 controller、helper 和 kit 只用于验证；资格脚本不进入 v1 六文件 release ZIP。先在 host 生成并冻结 qualification kit，再把**整个** kit 复制到 approved isolated guest 的本机 NTFS 目录。不要从网络共享、可移动介质或不完整的 kit 运行。
+- M3 bundle、支持的 VHDX profile、备份/恢复、checkpoint、compaction、关闭和故障处置：`docs/operations/m3-persistence.md`
+- M3 真实环境测试：`docs/testing/m3-e2e.md`
+- M3 实现与验收证据：`docs/validation/m3-persistence-acceptance.md`
+- M3 最终 Task 44 审计：`docs/validation/m3-final-audit.md`
 
-在 host 的仓库根目录、完成 `release` 构建后，以下命令生成一个新的、带当前 commit 限定符和随机后缀的 kit 目录。先按你的本机 NTFS 路径设置 `$KitParent`（不使用任何特定用户目录）；脚本拒绝覆盖已存在的输出目录。`Test-Path` 和 SHA-256 输出用于在复制前确认两个 build 输入确实存在且已记录：
+列出 M3 验证层级不会改变系统：
 
 ```powershell
-$SourceRoot = (Resolve-Path .).Path
-$Artifact = Join-Path $SourceRoot 'out\build\msvc\src\Release\myrd.exe'
-$Query = Join-Path $SourceRoot 'out\build\msvc\tests\Release\myrd_m4_aim_query.exe'
-$KitParent = 'D:\M4QualificationKits'
-$Commit = (git -C $SourceRoot rev-parse --short=12 HEAD).Trim()
-$OutputDirectory = Join-Path $KitParent ('qualification-kit-' + $Commit + '-' + [Guid]::NewGuid().ToString('N'))
-
-Test-Path -LiteralPath $SourceRoot,$Artifact,$Query,$KitParent
-Get-FileHash -LiteralPath $Artifact,$Query -Algorithm SHA256
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\New-M4GuestQualificationKit.ps1 -SourceRoot $SourceRoot -Artifact $Artifact -Query $Query -OutputDirectory $OutputDirectory
+.\tools\Invoke-M3Verification.ps1 -ListCommands
 ```
 
-确认命令输出的 `$OutputDirectory` 后，冻结该目录内容并完整复制整个 kit 到 approved isolated guest；不要向既有 kit 目录重跑，也不要只复制其中若干文件。
-
-在来宾的管理员 PowerShell 中，进入已复制的 kit 目录后，仅运行下面这一个命令；省略 `-Status` 即为开始或恢复，必须始终使用同一个随机 QualificationRoot（本机 NTFS 绝对路径）：
+本地 Debug/Release 回归不创建真实 AIM 设备：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualification.ps1 -QualificationRoot <本机NTFS绝对路径>
+.\tools\Invoke-M3Verification.ps1 -Tier Local -Configuration Debug
+.\tools\Invoke-M3Verification.ps1 -Tier Local -Configuration Release
 ```
 
-每次脚本返回后，只有在它已明确打印相应的 armed 标题及其全部提示行时，才可执行一次人工 UI 动作。不得使用 Windows 正常关机、脚本 shutdown，也不得额外 reset；断电/重置后启动 Windows，再以同一命令和同一随机 QualificationRoot 恢复。
+`RealFunctional`、`Crash Full` 和 `Soak Formal` 是需要显式证据路径、安全确认或管理员来宾机的正式门禁。不要把 `Preflight`、`Crash Simulated`、`Soak Quick` 或 required `SKIP/BLOCKED` 解释为 M3 GO。
 
-| 唯一人工 UI 动作 | 必须先等待的脚本提示 | 允许的动作与恢复 |
-| --- | --- | --- |
-| Reset 1 | `CRASH RESET ARMED`（Formal CreateKill 后） | VMware UI 中恰好一次 Reset 或 Power Off/On；回来后运行同一命令。 |
-| Reset 2 | `LIVE POWER-CUT ARMED`（live power-cut armed 后） | VMware UI 中恰好一次 Reset，或 Power Off/On，以模拟突然断电；回来后运行同一命令。 |
-| Reset 3 | `MISSING-DRIVER RESET ARMED`（`phdskmnt` Disabled missing-driver 后） | VMware UI 中恰好一次 Reset 或 Power Off/On；回来后运行同一命令。 |
+## M1 验证
 
-三次且仅三次 UI 动作是资格证据的一部分。每一轮都必须等待完整的 armed 提示，不能提前操作。QualificationRoot 与其中的 evidence 是证据链：成功后保留，不得删除或复用；失败 root 永久保留以便诊断，不得重试或新建替代 root 来掩盖失败。
-
-需要只读查看状态时，使用同一个 root：
+列出将执行的门，不改变系统：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-M4GuestQualification.ps1 -QualificationRoot <本机NTFS绝对路径> -Status
+.\tools\Invoke-M1Verification.ps1 -Tier M1-V6 -ListCommands
 ```
 
-退出码 10 表示仍需执行已 armed 的 reset，且该等待路径不写入状态；退出码 77 表示 `Blocked` 或安全拒绝；退出码 0 表示当前阶段成功，最终完成时输出唯一成功行 `M4 v1 QUALIFICATION PASS`。除该唯一 PASS 行外，不应把中间阶段成功视为 v1 资格通过。
+在管理员 PowerShell 中执行完整 M1 V0-V6：
 
-本流程的静态安全契约检查 PowerShell AST 中的直接调用、常见删除别名和 literal call-operator；它不声称能够证明任意运行时拼接命令的行为。
+```powershell
+.\tools\Invoke-M1Verification.ps1 -Tier M1-V6 -Configuration Debug
+```
+
+完整流程会构建 Debug/Release，运行 M1 单元测试、10,000-case fuzz、50 次本地 SHM、Release import audit、M0 只读驱动查询、8 个故障注入和 20 次 Release 实机生命周期。
+
+E2E harness 会串行化真实运行，只在 `try/finally` 保护的测试窗口停止 `deviosvc`，随后恢复原状态并确认 StartMode 未改变。报告写入被忽略的 `reports/` 目录，child report 原子发布后会被哈希锁定并再次校验。
+
+## M0 回归
+
+```powershell
+.\tools\Invoke-M0Verification.ps1 -Tier V4
+```
+
+M1 provider 公布 ZERO/UNMAP 能力；M0 provider 保持冻结的旧 INFO flags=0。M0 实机回归必须持续通过。
+
+## 安全与授权边界
+
+M0/M1 GO 不授权卸载 AIM Toolkit、删除 `deviosvc`、替换驱动或分发独立驱动安装包。当前代码只验证在本机已有签名驱动上的 driver-only 运行时路径。独立安装和 Toolkit 移除仍需在一次性虚拟机中单独验证。
 
 ## 许可证
 
-MyRamDisk 使用 GNU Affero General Public License v3.0。固定 AIM 协议参考来自 Arsenal Image Mounter 的 AGPL-3.0 源码；AIM 必须独立获取和安装。
+本项目使用 GNU Affero General Public License v3.0，详见 `LICENSE`。
+
+固定 AIM 协议参考来自 Arsenal Image Mounter 的 AGPL-3.0 源码，固定提交为 `d379caa027d21902e45fce8c9daf02fd116c2dda`。

@@ -1,10 +1,12 @@
 #include "src/m3/m3_provider.h"
 
 #include "src/persistence/checkpoint_coordinator.h"
+#include "src/persistence/compaction_coordinator.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/journal_format.h"
 #include "src/persistence/journal_writer.h"
 #include "src/persistence/recovered_store_adapter.h"
+#include "src/persistence/retention_manager.h"
 #include "src/persistence/vhdx_reader.h"
 #include "src/proxy/request_processor.h"
 #include "src/proxy/shared_memory_channel.h"
@@ -12,7 +14,16 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <string>
 #include <utility>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace myrd::m3 {
 namespace {
@@ -75,9 +86,7 @@ M3ProviderFactories normalize(M3ProviderFactories factories) {
     return factories;
 }
 
-JournalWriterOptions writer_options(
-    const PersistenceLimits& limits,
-    const std::optional<std::uint64_t>& committed_end_ceiling) {
+JournalWriterOptions writer_options(const PersistenceLimits& limits) {
     JournalWriterOptions options{};
     options.index_builder.reader_cache = {
         limits.max_index_cache_bytes, limits.max_index_cache_entries};
@@ -87,7 +96,6 @@ JournalWriterOptions writer_options(
     options.index_builder.max_plan_image_bytes = limits.max_index_cache_bytes;
     options.max_checkpoint_records = limits.max_journal_records;
     options.max_checkpoint_bytes = limits.max_journal_committed_bytes;
-    options.committed_end_ceiling = committed_end_ceiling;
     return options;
 }
 
@@ -111,6 +119,295 @@ Result<CompletePersistenceErrorContext> checkpoint_correlation(
     }
     return Result<CompletePersistenceErrorContext>::success(
         std::move(*complete));
+}
+
+std::string compact_base_name(const std::uint64_t generation) {
+    return "base-g0000-c" + std::to_string(generation) + ".vhdx";
+}
+
+std::string compact_base_temporary_name(const std::uint64_t generation) {
+    return "base-g0000-c" + std::to_string(generation) + ".tmp";
+}
+
+std::string compact_journal_name(const std::uint64_t generation) {
+    return "journal-e0002-c" + std::to_string(generation) + ".rdj";
+}
+
+VhdxWriterIdentity make_compact_base_identity(
+    const RecoveredImage& image,
+    const std::uint64_t generation) noexcept {
+    VhdxWriterIdentity result{};
+    result.virtual_disk_id = image.backing_identity.virtual_disk_id;
+    for (std::size_t index = 0; index < sizeof(generation); ++index) {
+        const auto value = static_cast<std::byte>(
+            (generation >> (index * 8U)) & 0xffU);
+        result.file_identity.file_write_guid[index] = value;
+        result.file_identity.data_write_guid[index] = value;
+    }
+    result.file_identity.file_write_guid[8] = std::byte{0xb1};
+    result.file_identity.data_write_guid[8] = std::byte{0xc1};
+    return result;
+}
+
+JournalFileIdentity make_compact_journal_identity(
+    const std::uint64_t generation) noexcept {
+    JournalFileIdentity result{};
+    for (std::size_t index = 0; index < sizeof(generation); ++index) {
+        result.journal_uuid[index] = static_cast<std::byte>(
+            (generation >> (index * 8U)) & 0xffU);
+    }
+    result.journal_uuid[8] = std::byte{0xa1};
+    return result;
+}
+
+VhdxWriterLimits provider_vhdx_limits(
+    const PersistenceLimits& limits) noexcept {
+    const auto payloads =
+        limits.max_virtual_bytes / kVhdxDataBlockBytes + 1;
+    return {
+        payloads,
+        payloads,
+        (std::max)(limits.max_io_scratch_bytes,
+                   static_cast<std::uint64_t>(kVhdxDataBlockBytes))};
+}
+
+Result<CompletePersistenceErrorContext> compaction_correlation(
+    const RecoveredImage& image,
+    const std::uint64_t operation_id) {
+    PersistenceErrorContext value{};
+    value.operation = "compaction.prepare";
+    value.code = PersistenceErrorCode::InvalidFormat;
+    value.phase = SessionPhase::Ready;
+    value.operation_id = operation_id;
+    value.image_uuid = image.image_uuid;
+    value.generation = image.checkpoint_generation + 1;
+    value.disposition = CommitDisposition::NotCommitted;
+    value.safe_context = "M3 provider compaction";
+    auto complete = CompletePersistenceErrorContext::create(std::move(value));
+    if (!complete.has_value()) {
+        return Result<CompletePersistenceErrorContext>::failure(
+            provider_error(L"M3Provider::compact",
+                           L"could not create compaction correlation"));
+    }
+    return Result<CompletePersistenceErrorContext>::success(
+        std::move(*complete));
+}
+
+bool checked_add(
+    std::uint64_t& total,
+    const std::uint64_t value) noexcept {
+    if (value > (std::numeric_limits<std::uint64_t>::max)() - total) {
+        return false;
+    }
+    total += value;
+    return true;
+}
+
+Result<void> compaction_preflight(
+    const M3ProviderConfig& config,
+    BundleWriterLock& writer,
+    const RecoveredImage& image,
+    const std::uint64_t operation_id,
+    M3CompactionBoundaryEvidence& evidence) {
+    auto writer_valid = writer.verify();
+    if (!writer_valid.ok()) return writer_valid;
+    if (operation_id == 0 ||
+        image.checkpoint_generation >= kInvalidGeneration - 1) {
+        return Result<void>::failure(
+            provider_error(L"M3Provider::compact",
+                           L"compaction identity is invalid"));
+    }
+    std::uint64_t required{};
+    const auto& limits = config.recovery.limits;
+    if (!checked_add(required, image.geometry.virtual_bytes) ||
+        !checked_add(required, limits.max_journal_committed_bytes) ||
+        !checked_add(required, limits.max_io_scratch_bytes) ||
+        !checked_add(required, config.store.snapshot_cow_max_bytes) ||
+        !checked_add(required, 2ULL * kVhdxDataBlockBytes)) {
+        return Result<void>::failure(
+            provider_error(L"M3Provider::compact",
+                           L"compaction peak-space calculation overflowed"));
+    }
+    const auto proportional_margin = required / 20;
+    constexpr std::uint64_t kMinimumSafetyMargin = 64ULL * 1024 * 1024;
+    if (!checked_add(
+            required,
+            (std::max)(proportional_margin, kMinimumSafetyMargin))) {
+        return Result<void>::failure(
+            provider_error(L"M3Provider::compact",
+                           L"compaction safety margin overflowed"));
+    }
+
+    ULARGE_INTEGER available{};
+    if (!GetDiskFreeSpaceExW(
+            config.bundle_root.c_str(), &available, nullptr, nullptr)) {
+        return Result<void>::failure({
+            ErrorDomain::persistence,
+            static_cast<std::uint32_t>(PersistenceErrorCode::IoError),
+            L"M3Provider::compact",
+            L"querying exact bundle-volume free space failed",
+            GetLastError()});
+    }
+    writer_valid = writer.verify();
+    if (!writer_valid.ok()) return writer_valid;
+    evidence = {
+        operation_id,
+        image.image_uuid,
+        image.checkpoint_generation,
+        image.checkpoint_generation + 1,
+        image.selected_manifest.base_expected_length,
+        image.backing_identity.journal_committed_length,
+        required,
+        available.QuadPart};
+    if (available.QuadPart < required) {
+        return Result<void>::failure({
+            ErrorDomain::persistence,
+            static_cast<std::uint32_t>(PersistenceErrorCode::DiskFull),
+            L"M3Provider::compact",
+            L"bundle volume lacks compaction peak-space headroom"});
+    }
+    return Result<void>::success();
+}
+
+std::array<OwnedImmutableArtifact, 2> retired_artifacts(
+    const RecoveredImage& image) {
+    OwnedImmutableArtifact base{};
+    base.kind = ImmutableArtifactKind::BaseVhdx;
+    base.relative_name = image.selected_manifest.base_relative_name;
+    base.windows_identity = image.backing_identity.base_windows_identity;
+    base.image_uuid = image.image_uuid;
+    base.base_identity = image.backing_identity.base_vhdx_identity;
+    base.virtual_disk_id = image.backing_identity.virtual_disk_id;
+
+    OwnedImmutableArtifact journal{};
+    journal.kind = ImmutableArtifactKind::Journal;
+    journal.relative_name = image.selected_manifest.journal_relative_name;
+    journal.windows_identity =
+        image.backing_identity.journal_windows_identity;
+    journal.image_uuid = image.image_uuid;
+    journal.journal_identity = image.backing_identity.journal_identity;
+    journal.journal_epoch = image.backing_identity.journal_epoch;
+    return {std::move(base), std::move(journal)};
+}
+
+constexpr std::size_t kMaxProviderRetentionCandidates = 4096;
+
+bool same_owned_artifact(
+    const OwnedImmutableArtifact& left,
+    const OwnedImmutableArtifact& right) noexcept {
+    return left.kind == right.kind
+        && left.relative_name == right.relative_name
+        && same_file_object(
+            left.windows_identity, right.windows_identity);
+}
+
+template <std::size_t Count>
+void remember_retention_artifacts(
+    std::vector<OwnedImmutableArtifact>& retained,
+    const std::array<OwnedImmutableArtifact, Count>& candidates) {
+    for (const auto& candidate : candidates) {
+        const auto duplicate = std::find_if(
+            retained.begin(), retained.end(), [&](const auto& existing) {
+                return same_owned_artifact(existing, candidate);
+            });
+        if (duplicate != retained.end()) {
+            *duplicate = candidate;
+            continue;
+        }
+        if (retained.size() == kMaxProviderRetentionCandidates) return;
+        retained.push_back(candidate);
+    }
+}
+
+void forget_active_retention_artifacts(
+    std::vector<OwnedImmutableArtifact>& retained,
+    const RecoveredImage& active) {
+    const auto active_artifacts = retired_artifacts(active);
+    retained.erase(
+        std::remove_if(
+            retained.begin(), retained.end(), [&](const auto& candidate) {
+                return std::any_of(
+                    active_artifacts.begin(), active_artifacts.end(),
+                    [&](const auto& active_artifact) {
+                        return same_owned_artifact(
+                            candidate, active_artifact);
+                    });
+            }),
+        retained.end());
+}
+
+void cleanup_provider_retention(
+    const OperationContext& context,
+    ImageSession& session,
+    BundleWriterLock& writer,
+    DynamicBlockStore& store,
+    const M3ProviderConfig& config,
+    std::vector<OwnedImmutableArtifact>& retained,
+    M3CompactionMetrics& metrics) {
+    metrics.retained_candidate_count = retained.size();
+    if (retained.empty()) return;
+    auto cleanup_lease = session.begin_cleanup();
+    if (!cleanup_lease.ok()) return;
+    RetentionCleanupOptions options{};
+    options.max_candidates = kMaxProviderRetentionCandidates;
+    options.dry_run = false;
+    options.max_live_views = kMaxProviderRetentionCandidates;
+    options.recovery = config.recovery;
+    auto cleanup = cleanup_retention_artifacts(
+        context,
+        cleanup_lease.move_value(),
+        writer,
+        store,
+        config.bundle_root,
+        config.manifest_name,
+        retained,
+        options);
+    if (!cleanup.ok()) return;
+    metrics.deleted_candidate_count += cleanup.value().deleted_count;
+    const auto& entries = cleanup.value().entries;
+    retained.erase(
+        std::remove_if(
+            retained.begin(), retained.end(),
+            [&](const OwnedImmutableArtifact& candidate) {
+                return std::any_of(
+                    entries.begin(), entries.end(),
+                    [&](const RetentionCleanupEntry& entry) {
+                        return entry.action
+                                == RetentionCleanupAction::Deleted
+                            && entry.kind == candidate.kind
+                            && entry.relative_name
+                                == candidate.relative_name;
+                    });
+            }),
+        retained.end());
+    metrics.retained_candidate_count = retained.size();
+}
+
+std::array<OwnedImmutableArtifact, 2> prepared_compaction_artifacts(
+    const PreparedCompactionOperation& operation,
+    const RecoveredImage& source,
+    const CompactionArtifactBuildRequest& request) {
+    const auto& published_base = *operation.published_base();
+    const auto& journal_header = *operation.new_journal_header();
+    const auto& journal_windows_identity =
+        *operation.new_journal_windows_identity();
+
+    OwnedImmutableArtifact base{};
+    base.kind = ImmutableArtifactKind::BaseVhdx;
+    base.relative_name = request.base_relative_name;
+    base.windows_identity = published_base.windows_identity();
+    base.image_uuid = source.image_uuid;
+    base.base_identity = published_base.layout().file_identity();
+    base.virtual_disk_id = published_base.layout().virtual_disk_id();
+
+    OwnedImmutableArtifact journal{};
+    journal.kind = ImmutableArtifactKind::Journal;
+    journal.relative_name = request.journal_relative_name;
+    journal.windows_identity = journal_windows_identity;
+    journal.image_uuid = source.image_uuid;
+    journal.journal_identity = journal_header.journal_identity;
+    journal.journal_epoch = journal_header.epoch;
+    return {std::move(base), std::move(journal)};
 }
 
 Result<std::shared_ptr<IPersistenceFile>> open_journal(
@@ -236,29 +533,6 @@ M3CheckpointOutcome preserve_or_normalize_checkpoint_failure(
 }
 
 } // namespace
-
-persistence::PersistenceLimits production_persistence_limits(
-    const std::uint64_t virtual_bytes) {
-    constexpr std::uint64_t kMiB = 1024ull * 1024ull;
-    constexpr std::uint64_t kJournalBytes = 2ull * 1024ull * kMiB;
-    return {virtual_bytes, kJournalBytes,
-            kJournalBytes / persistence::kJournalAlignment - 1,
-            64ull * kMiB, 64ull * kMiB / persistence::kIndexNodeBytes,
-            16ull * kMiB, 16ull * kMiB / persistence::kVhdxBatPageBytes,
-            8ull * kMiB, 8ull * kMiB};
-}
-
-DynamicBlockStoreOptions production_store_options(
-    const std::uint64_t ram_limit) {
-    constexpr std::uint64_t block = kM2BlockSize;
-    const auto aligned = ram_limit - (ram_limit % block);
-    const auto hard = (aligned < block ? block : aligned);
-    const auto soft = (hard / 2) - ((hard / 2) % block);
-    const auto low = (hard / 4) - ((hard / 4) % block);
-    return {soft, hard, low, 8ull * 1024ull * 1024ull,
-            8192, 256, 64ull * 1024ull * 1024ull,
-            std::chrono::milliseconds(250)};
-}
 
 M3Provider::M3Provider(
     M3ProviderConfig config,
@@ -444,6 +718,605 @@ M3CheckpointOutcome M3Provider::checkpoint(
     return result;
 }
 
+M3CompactionOutcome M3Provider::compact(
+    const OperationContext& context,
+    const M3CompactionRequest request,
+    const M3CompactionBoundaryHandler& boundary_handler,
+    const M3CompactionCutHandler& cut_handler) {
+    std::scoped_lock lock(operation_mutex_);
+    const auto target_generation = image_.checkpoint_generation + 1;
+    M3CompactionBoundaryEvidence boundary{};
+    M3CompactionMetrics metrics{};
+    const auto fail = [&](
+        const Error& error,
+        const CommitDisposition disposition,
+        const std::uint64_t generation,
+        std::optional<PersistenceErrorContext> error_context,
+        const std::string_view operation,
+        const SessionPhase phase,
+        const std::string_view safe_context) {
+        const auto normalized = preserve_or_normalize_checkpoint_failure(
+            image_, request.operation_id, error, disposition, generation,
+            std::move(error_context), operation, phase, safe_context);
+        return M3CompactionOutcome{
+            normalized.disposition,
+            normalized.generation,
+            boundary,
+            metrics,
+            normalized.error,
+            normalized.error_context};
+    };
+
+    if (state() != M3ProviderState::Ready || !store_) {
+        return fail(
+            provider_error(L"M3Provider::compact", L"provider is not ready"),
+            CommitDisposition::NotCommitted, target_generation, std::nullopt,
+            "compaction.preflight", SessionPhase::Ready,
+            "provider is not ready for compaction");
+    }
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return fail(
+            live.error(), CommitDisposition::NotCommitted, target_generation,
+            std::nullopt, "compaction.preflight", SessionPhase::Ready,
+            "compaction operation context rejected");
+    }
+    if (!is_valid_barrier_for_checkpoint(request.barrier) ||
+        request.operation_id == 0 || !boundary_handler || !cut_handler ||
+        pending_checkpoint_.has_value()) {
+        return fail(
+            provider_error(
+                L"M3Provider::compact",
+                L"compaction request, barrier, or provider state is invalid"),
+            CommitDisposition::NotCommitted, target_generation, std::nullopt,
+            "compaction.preflight", SessionPhase::Ready,
+            "compaction request or persistence state is invalid");
+    }
+
+    cleanup_provider_retention(
+        context, session_, writer_, *store_, config_,
+        retention_candidates_, metrics);
+
+    auto preflight = compaction_preflight(
+        config_, writer_, image_, request.operation_id, boundary);
+    if (!preflight.ok()) {
+        metrics.source_generation = boundary.source_generation;
+        metrics.source_base_bytes = boundary.source_base_bytes;
+        metrics.source_journal_bytes = boundary.source_journal_bytes;
+        metrics.required_peak_free_bytes =
+            boundary.required_peak_free_bytes;
+        metrics.available_free_bytes = boundary.available_free_bytes;
+        return fail(
+            preflight.error(), CommitDisposition::NotCommitted,
+            target_generation, std::nullopt, "compaction.preflight",
+            SessionPhase::Ready, "compaction preflight failed");
+    }
+    metrics.source_generation = boundary.source_generation;
+    metrics.source_base_bytes = boundary.source_base_bytes;
+    metrics.source_journal_bytes = boundary.source_journal_bytes;
+    metrics.required_peak_free_bytes = boundary.required_peak_free_bytes;
+    metrics.available_free_bytes = boundary.available_free_bytes;
+
+    Result<M3CompactionBoundaryDecision> decision =
+        Result<M3CompactionBoundaryDecision>::failure(provider_error(
+            L"M3Provider::compact",
+            L"compaction boundary callback did not execute"));
+    try {
+        decision = boundary_handler(boundary);
+    } catch (...) {
+        decision = Result<M3CompactionBoundaryDecision>::failure(
+            provider_error(L"M3Provider::compact",
+                           L"compaction boundary callback threw"));
+    }
+    if (!decision.ok()) {
+        return fail(
+            decision.error(), CommitDisposition::NotCommitted,
+            target_generation, std::nullopt, "compaction.boundary",
+            SessionPhase::Ready, "compaction boundary callback failed");
+    }
+    if (!decision.value().continue_compaction
+        || decision.value().durable_operation_revision == 0
+        || decision.value().durable_profile_revision == 0
+        || decision.value().evidence != boundary) {
+        return fail(
+            provider_error(
+                L"M3Provider::compact",
+                L"compaction boundary continue proof was denied or mismatched"),
+            CommitDisposition::NotCommitted, target_generation, std::nullopt,
+            "compaction.boundary", SessionPhase::Ready,
+            "compaction boundary continue proof was invalid");
+    }
+
+    auto correlation = compaction_correlation(image_, request.operation_id);
+    if (!correlation.ok()) {
+        return fail(
+            correlation.error(), CommitDisposition::NotCommitted,
+            target_generation, std::nullopt, "compaction.prepare",
+            SessionPhase::Ready, "compaction correlation creation failed");
+    }
+    auto journal_writer = JournalWriter::create(
+        writer_options(config_.recovery.limits));
+    if (!journal_writer.ok()) {
+        return fail(
+            journal_writer.error(), CommitDisposition::NotCommitted,
+            target_generation, std::nullopt, "compaction.prepare",
+            SessionPhase::Ready,
+            "compaction journal writer creation failed");
+    }
+
+    CompactionCoordinator coordinator(session_, *store_);
+    auto begun = coordinator.begin(context);
+    if (!begun.ok()) {
+        return fail(
+            begun.error(), CommitDisposition::NotCommitted,
+            target_generation, std::nullopt, "compaction.prepare",
+            SessionPhase::Compacting, "compaction operation did not begin");
+    }
+    auto operation = begun.move_value();
+    CompactionArtifactBuildRequest artifacts{};
+    artifacts.writer_lock = &writer_;
+    artifacts.active_slot = image_.selected_manifest;
+    artifacts.base_temporary_name =
+        compact_base_temporary_name(target_generation);
+    artifacts.base_relative_name = compact_base_name(target_generation);
+    artifacts.base_identity =
+        make_compact_base_identity(image_, target_generation);
+    artifacts.journal_relative_name =
+        compact_journal_name(target_generation);
+    artifacts.journal_identity =
+        make_compact_journal_identity(target_generation);
+    artifacts.journal_epoch = image_.journal_epoch + 1;
+    artifacts.operation_id = request.operation_id;
+    artifacts.extent_options.max_extent_bytes = kVhdxDataBlockBytes;
+    artifacts.vhdx_limits = provider_vhdx_limits(config_.recovery.limits);
+    artifacts.limits.max_live_extents =
+        artifacts.vhdx_limits.max_candidate_payloads;
+    artifacts.offline_vhdx_validator = [](
+        const OperationContext&,
+        const std::filesystem::path& path) -> Result<WindowsFileIdentity> {
+        auto opened = open_bundle_file_for_inspection(
+            path.parent_path(), path.filename().string());
+        if (!opened.ok()) {
+            return Result<WindowsFileIdentity>::failure(opened.error());
+        }
+        return Result<WindowsFileIdentity>::success(
+            opened.value().identity());
+    };
+    auto built = operation.build_artifacts(context, artifacts);
+    if (!built.ok()) {
+        return fail(
+            built.error(), CommitDisposition::NotCommitted,
+            target_generation, std::nullopt, "compaction.artifacts",
+            SessionPhase::Compacting, "compaction artifact build failed");
+    }
+    metrics.live_extent_count = built.value().extents.extents_emitted;
+    metrics.candidate_payloads = built.value().candidate_payloads;
+    metrics.candidate_base_bytes = built.value().published_base_bytes;
+    auto candidate_artifacts = prepared_compaction_artifacts(
+        operation, image_, artifacts);
+    remember_retention_artifacts(
+        retention_candidates_, candidate_artifacts);
+    metrics.retained_candidate_count = retention_candidates_.size();
+
+    CompactionDeltaPrepareRequest delta{correlation.move_value()};
+    delta.volume_barrier = request.barrier;
+    delta.snapshot_batch_bytes = (std::min)(
+        config_.recovery.limits.max_io_scratch_bytes,
+        config_.store.max_snapshot_batch_bytes);
+    delta.after_snapshot_begin = [&](
+        const ConsistentSnapshotToken& token) -> Result<void> {
+        if (token.source_backing_generation != boundary.source_generation) {
+            return Result<void>::failure(provider_error(
+                L"M3Provider::compact",
+                L"compaction snapshot returned an invalid consistency cut"));
+        }
+        auto cut_evidence = boundary;
+        cut_evidence.cut_dirty_epoch = token.cutoff_dirty_epoch;
+        cut_evidence.cut_dirty_epoch_known = true;
+        Result<M3CompactionBoundaryDecision> cut_decision =
+            Result<M3CompactionBoundaryDecision>::failure(provider_error(
+                L"M3Provider::compact",
+                L"compaction cut callback did not execute"));
+        try {
+            cut_decision = cut_handler(cut_evidence);
+        } catch (...) {
+            cut_decision =
+                Result<M3CompactionBoundaryDecision>::failure(
+                    provider_error(
+                        L"M3Provider::compact",
+                        L"compaction cut callback threw"));
+        }
+        if (!cut_decision.ok()) {
+            return Result<void>::failure(cut_decision.error());
+        }
+        if (!cut_decision.value().continue_compaction
+            || cut_decision.value().durable_operation_revision == 0
+            || cut_decision.value().durable_profile_revision == 0
+            || cut_decision.value().evidence != cut_evidence) {
+            return Result<void>::failure(provider_error(
+                L"M3Provider::compact",
+                L"compaction cut continue proof was denied or mismatched"));
+        }
+        boundary = cut_evidence;
+        return Result<void>::success();
+    };
+    auto prepared = coordinator.prepare_delta(
+        context, std::move(operation), delta, *journal_writer.value());
+    if (!prepared.ok()) {
+        const auto& outcome = prepared.failure()->outcome;
+        return fail(
+            outcome.error.value_or(provider_error(
+                L"M3Provider::compact", L"compaction delta prepare failed")),
+            outcome.disposition, outcome.generation, outcome.error_context,
+            "compaction.prepare", SessionPhase::Compacting,
+            "compaction delta preparation failed without complete context");
+    }
+    auto transaction = prepared.move_transaction();
+    auto final_journal_identity = open_bundle_file_for_inspection(
+        config_.bundle_root, artifacts.journal_relative_name);
+    if (!final_journal_identity.ok()) {
+        const auto error = final_journal_identity.error();
+        (void)transaction.abort();
+        return fail(
+            error, CommitDisposition::NotCommitted, target_generation,
+            std::nullopt, "compaction.prepare", SessionPhase::Compacting,
+            "compaction journal identity refresh failed");
+    }
+    candidate_artifacts[1].windows_identity =
+        final_journal_identity.value().identity();
+    remember_retention_artifacts(
+        retention_candidates_, candidate_artifacts);
+    const auto checkpoint = transaction.checkpoint();
+    const auto prepare_metrics = transaction.metrics();
+    metrics.snapshot_records = prepare_metrics.snapshot_records;
+    metrics.data_records = checkpoint.data_count;
+    metrics.zero_records = checkpoint.zero_count;
+    metrics.discard_records = checkpoint.discard_count;
+    metrics.index_nodes = checkpoint.index_node_count;
+    metrics.candidate_journal_bytes = checkpoint.committed_length;
+
+    auto manifest_capability = open_locked_manifest_for_mutation(writer_);
+    if (!manifest_capability.ok()) {
+        const auto error = manifest_capability.error();
+        (void)transaction.abort();
+        return fail(
+            error, CommitDisposition::NotCommitted, target_generation,
+            std::nullopt, "compaction.publish", SessionPhase::Compacting,
+            "compaction manifest capability open failed");
+    }
+    auto manifest = open_validated_persistence_file(
+        manifest_capability.move_value());
+    if (!manifest.ok()) {
+        const auto error = manifest.error();
+        (void)transaction.abort();
+        return fail(
+            error, CommitDisposition::NotCommitted, target_generation,
+            std::nullopt, "compaction.publish", SessionPhase::Compacting,
+            "compaction manifest open failed");
+    }
+    CheckpointManifestPublishRequest publish{};
+    publish.manifest_file = manifest.move_value();
+    publish.active_slot = image_.selected_manifest;
+    publish.committed_time_100ns = target_generation + 2;
+    publish.complete_validation = CompleteCandidateValidation{
+        config_.bundle_root, config_.manifest_name, config_.recovery};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    publish.test_phase_hook = manifest_phase_hook_;
+#endif
+    auto published = transaction.publish_manifest(context, std::move(publish));
+    if (published.disposition == CommitDisposition::CommitIndeterminate) {
+        published = transaction.resolve_commit(
+            context,
+            {FilesystemCommitResolution{
+                config_.bundle_root,
+                config_.manifest_name,
+                config_.recovery,
+                &writer_}});
+    }
+    if (published.disposition != CommitDisposition::Committed &&
+        published.disposition !=
+            CommitDisposition::CommittedNeedsReconciliation) {
+        const auto error = published.error.value_or(provider_error(
+            L"M3Provider::compact", L"compaction was not committed"));
+        if (published.disposition == CommitDisposition::NotCommitted) {
+            (void)transaction.abort();
+        }
+        return fail(
+            error, published.disposition, published.generation,
+            published.error_context, "compaction.publish",
+            published.disposition == CommitDisposition::CommitIndeterminate
+                ? SessionPhase::ResolvingCommit
+                : SessionPhase::Compacting,
+            "compaction publication failed without complete context");
+    }
+
+    CheckpointReconcileRequest reconcile_request{};
+#if defined(MYRD_ENABLE_TEST_SEAMS)
+    if (before_checkpoint_reconcile_ || reconcile_phase_hook_) {
+        reconcile_request.test_phase_hook = [this](
+            const CheckpointReconcileTestPhase phase) {
+            if (phase == CheckpointReconcileTestPhase::BeforeRecoverView &&
+                before_checkpoint_reconcile_) {
+                auto observed = before_checkpoint_reconcile_();
+                if (!observed.ok()) return observed;
+            }
+            if (reconcile_phase_hook_) return reconcile_phase_hook_(phase);
+            return Result<void>::success();
+        };
+    }
+#endif
+    const auto reconciled = transaction.reconcile(context, reconcile_request);
+    if (!reconciled.ok()) {
+        return fail(
+            reconciled.error.value_or(provider_error(
+                L"M3Provider::compact", L"compaction reconciliation failed")),
+            reconciled.disposition, reconciled.generation,
+            reconciled.error_context, "compaction.reconcile",
+            SessionPhase::Reconciling,
+            "compaction reconciliation failed without complete context");
+    }
+    metrics.newer_dirty_preserved = reconciled.ack.newer_dirty_preserved;
+
+    auto refreshed = recover_complete_image(
+        context, config_.bundle_root, config_.manifest_name, config_.recovery);
+    if (!refreshed.ok() || !refreshed.image.has_value()) {
+        return fail(
+            refreshed.error.value_or(provider_error(
+                L"M3Provider::compact", L"committed image did not reopen")),
+            CommitDisposition::CommittedNeedsReconciliation,
+            reconciled.generation, std::nullopt, "compaction.reconcile",
+            SessionPhase::Reconciling,
+            "committed compaction did not reopen");
+    }
+    auto retired = retired_artifacts(image_);
+    image_ = std::move(*refreshed.image);
+    metrics.committed_generation = image_.checkpoint_generation;
+    metrics.candidate_journal_bytes =
+        image_.backing_identity.journal_committed_length;
+
+    forget_active_retention_artifacts(retention_candidates_, image_);
+    remember_retention_artifacts(retention_candidates_, retired);
+    cleanup_provider_retention(
+        context, session_, writer_, *store_, config_,
+        retention_candidates_, metrics);
+    return {
+        CommitDisposition::Committed,
+        image_.checkpoint_generation,
+        boundary,
+        metrics,
+        std::nullopt,
+        std::nullopt};
+}
+
+M3CompactionOutcome M3Provider::reconcile_compaction(
+    const OperationContext& context,
+    const M3CompactionBoundaryEvidence& boundary) {
+    std::scoped_lock lock(operation_mutex_);
+    M3CompactionMetrics metrics{};
+    metrics.source_generation = boundary.source_generation;
+    metrics.source_base_bytes = boundary.source_base_bytes;
+    metrics.source_journal_bytes = boundary.source_journal_bytes;
+    metrics.required_peak_free_bytes = boundary.required_peak_free_bytes;
+    metrics.available_free_bytes = boundary.available_free_bytes;
+    const auto fail = [&](
+        const Error& error,
+        const CommitDisposition disposition,
+        const std::uint64_t generation,
+        const std::string_view safe_context) {
+        auto source = error;
+        if (disposition == CommitDisposition::CommitIndeterminate) {
+            source.domain = ErrorDomain::persistence;
+            source.code = static_cast<std::uint32_t>(
+                PersistenceErrorCode::CommitIndeterminate);
+        }
+        const auto normalized = provider_checkpoint_failure(
+            image_, boundary.operation_id, source, disposition, generation,
+            "compaction.recover", SessionPhase::Reconciling, safe_context);
+        return M3CompactionOutcome{
+            normalized.disposition,
+            normalized.generation,
+            boundary,
+            metrics,
+            normalized.error,
+            normalized.error_context};
+    };
+
+    if (state() != M3ProviderState::Ready || !store_
+        || boundary.operation_id == 0 || boundary.image_uuid.is_nil()
+        || (!boundary.cut_dirty_epoch_known
+            && boundary.cut_dirty_epoch != 0)
+        || boundary.image_uuid != image_.image_uuid
+        || boundary.source_generation >= kInvalidGeneration - 1
+        || boundary.candidate_generation
+            != boundary.source_generation + 1) {
+        return fail(
+            provider_error(
+                L"M3Provider::reconcile_compaction",
+                L"compaction recovery correlation is invalid"),
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "compaction recovery correlation rejected");
+    }
+    auto live = check_operation_context(context);
+    if (!live.ok()) {
+        return fail(
+            live.error(),
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "compaction recovery operation context rejected");
+    }
+    auto recovered = recover_complete_image(
+        context, config_.bundle_root, config_.manifest_name,
+        config_.recovery);
+    if (!recovered.ok() || !recovered.image.has_value()) {
+        return fail(
+            recovered.error.value_or(provider_error(
+                L"M3Provider::reconcile_compaction",
+                L"compaction recovery found no complete image")),
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "compaction recovery found no authoritative generation");
+    }
+    if (recovered.image->image_uuid != boundary.image_uuid) {
+        return fail(
+            provider_error(
+                L"M3Provider::reconcile_compaction",
+                L"compaction recovery image identity changed"),
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "compaction recovery image identity mismatch");
+    }
+    if (recovered.image->checkpoint_generation
+        == boundary.source_generation) {
+        if (session_.phase() == SessionPhase::Reconciling) {
+            auto reconciliation = session_.begin_reconciliation();
+            if (!reconciliation.ok()) {
+                return fail(
+                    reconciliation.error(),
+                    CommitDisposition::CommitIndeterminate,
+                    boundary.source_generation,
+                    "compaction source recovery could not own reconciliation");
+            }
+            auto finished = reconciliation.value().finish(
+                CommitDisposition::Committed);
+            if (!finished.ok()) {
+                return fail(
+                    finished.error(),
+                    CommitDisposition::CommitIndeterminate,
+                    boundary.source_generation,
+                    "compaction source recovery could not finish reconciliation");
+            }
+        } else if (session_.phase() != SessionPhase::Ready) {
+            return fail(
+                provider_error(
+                    L"M3Provider::reconcile_compaction",
+                    L"source recovery found an invalid session phase"),
+                CommitDisposition::CommitIndeterminate,
+                boundary.source_generation,
+                "compaction source recovery session was contradictory");
+        }
+        cleanup_provider_retention(
+            context, session_, writer_, *store_, config_,
+            retention_candidates_, metrics);
+        return fail(
+            Error{
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(
+                    PersistenceErrorCode::VerificationFailed),
+                L"M3Provider::reconcile_compaction",
+                L"normal recovery selected the recorded source generation"},
+            CommitDisposition::NotCommitted,
+            boundary.source_generation,
+            "compaction recovery proved source generation authoritative");
+    }
+    if (recovered.image->checkpoint_generation
+        != boundary.candidate_generation) {
+        return fail(
+            Error{
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(
+                    PersistenceErrorCode::CommitIndeterminate),
+                L"M3Provider::reconcile_compaction",
+                L"normal recovery selected an unexpected generation"},
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "compaction recovery generation was contradictory");
+    }
+    if (!boundary.cut_dirty_epoch_known) {
+        return fail(
+            Error{
+                ErrorDomain::persistence,
+                static_cast<std::uint32_t>(
+                    PersistenceErrorCode::CommitIndeterminate),
+                L"M3Provider::reconcile_compaction",
+                L"candidate recovery lacks the exact consistency cut"},
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "committed compaction cut proof was unavailable");
+    }
+
+    std::optional<std::array<OwnedImmutableArtifact, 2>> retired_source;
+    if (image_.checkpoint_generation == boundary.source_generation) {
+        retired_source = retired_artifacts(image_);
+    } else if (image_.checkpoint_generation
+               != boundary.candidate_generation) {
+        return fail(
+            provider_error(
+                L"M3Provider::reconcile_compaction",
+                L"live provider generation contradicts compaction recovery"),
+            CommitDisposition::CommitIndeterminate,
+            boundary.candidate_generation,
+            "live compaction generation was contradictory");
+    }
+
+    std::optional<PublishOperationLease> reconciliation;
+    if (session_.phase() == SessionPhase::Reconciling) {
+        auto started = session_.begin_reconciliation();
+        if (!started.ok()) {
+            return fail(
+                started.error(),
+                CommitDisposition::CommittedNeedsReconciliation,
+                boundary.candidate_generation,
+                "committed compaction could not own reconciliation");
+        }
+        reconciliation.emplace(started.move_value());
+    } else if (session_.phase() != SessionPhase::Ready) {
+        return fail(
+            provider_error(
+                L"M3Provider::reconcile_compaction",
+                L"candidate recovery found an invalid session phase"),
+            CommitDisposition::CommittedNeedsReconciliation,
+            boundary.candidate_generation,
+            "committed compaction session was contradictory");
+    }
+
+    auto installed = install_recovered_backing_view(
+        *store_, *recovered.image);
+    if (!installed.ok()) {
+        if (reconciliation.has_value()) {
+            (void)reconciliation->finish(
+                CommitDisposition::CommittedNeedsReconciliation);
+        }
+        return fail(
+            installed.error(),
+            CommitDisposition::CommittedNeedsReconciliation,
+            boundary.candidate_generation,
+            "committed compaction backing installation failed");
+    }
+    image_ = std::move(*recovered.image);
+    metrics.committed_generation = image_.checkpoint_generation;
+    metrics.candidate_base_bytes =
+        image_.selected_manifest.base_expected_length;
+    metrics.candidate_journal_bytes =
+        image_.backing_identity.journal_committed_length;
+    if (reconciliation.has_value()) {
+        auto finished = reconciliation->finish(
+            CommitDisposition::Committed);
+        if (!finished.ok()) {
+            return fail(
+                finished.error(),
+                CommitDisposition::CommittedNeedsReconciliation,
+                boundary.candidate_generation,
+                "committed compaction could not finish reconciliation");
+        }
+    }
+    forget_active_retention_artifacts(retention_candidates_, image_);
+    if (retired_source.has_value()) {
+        remember_retention_artifacts(
+            retention_candidates_, retired_source.value());
+    }
+    cleanup_provider_retention(
+        context, session_, writer_, *store_, config_,
+        retention_candidates_, metrics);
+    return {
+        CommitDisposition::Committed,
+        image_.checkpoint_generation,
+        boundary,
+        metrics,
+        std::nullopt,
+        std::nullopt};
+}
+
 M3CheckpointOutcome M3Provider::checkpoint_impl(
     const OperationContext& context,
     const VolumeBarrierKind barrier) {
@@ -493,8 +1366,7 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
             "checkpoint.prepare", SessionPhase::Ready,
             "checkpoint journal open failed");
     }
-    auto options = writer_options(config_.recovery.limits,
-                                  config_.journal_committed_end_ceiling);
+    auto options = writer_options(config_.recovery.limits);
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     options.phase_hook = journal_phase_hook_;
 #endif
@@ -870,22 +1742,6 @@ DynamicBlockStoreStats M3Provider::storage_stats() const {
     std::scoped_lock lock(operation_mutex_);
     if (store_) return store_->stats();
     return final_stats_.value_or(DynamicBlockStoreStats{});
-}
-
-Result<M3MaintenanceStats> M3Provider::maintenance_stats() const {
-    std::scoped_lock lock(operation_mutex_);
-    const auto stats = store_ ? store_->stats()
-                              : final_stats_.value_or(DynamicBlockStoreStats{});
-    constexpr std::uint64_t kBlockBytes = persistence::kM2BlockSize;
-    const auto dirty_blocks = stats.resident_dirty_blocks + stats.zero_dirty_blocks;
-    if (dirty_blocks < stats.resident_dirty_blocks ||
-        dirty_blocks > (std::numeric_limits<std::uint64_t>::max)() / kBlockBytes) {
-        return Result<M3MaintenanceStats>::failure(provider_error(
-            L"M3Provider::maintenance_stats", L"dirty byte arithmetic overflow"));
-    }
-    return Result<M3MaintenanceStats>::success({
-        image_.checkpoint_generation, dirty_blocks * kBlockBytes,
-        image_.backing_identity.journal_committed_length});
 }
 
 proxy::SessionSnapshot M3Provider::transport_snapshot() const {

@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -49,6 +50,13 @@ public:
 
 OperationContext context() {
     return {{}, std::chrono::steady_clock::now() + std::chrono::seconds(10)};
+}
+
+Result<M3CompactionBoundaryDecision> accept_compaction_cut(
+    const M3CompactionBoundaryEvidence& evidence) {
+    REQUIRE(evidence.cut_dirty_epoch_known);
+    return Result<M3CompactionBoundaryDecision>::success(
+        {true, 303, 404, evidence});
 }
 
 PersistenceLimits limits() {
@@ -698,5 +706,442 @@ TEST_CASE(m3_provider_exposes_test_only_checkpoint_durability_phases) {
         if (cursor < required.size() && item == required[cursor]) ++cursor;
     }
     REQUIRE_EQ(cursor, required.size());
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_active_compaction_uses_read_only_boundary_and_keeps_io_live) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+
+    std::vector<std::byte> first(kM2BlockSize, std::byte{0x61});
+    REQUIRE(probe->device->write(context(), 0, first).ok());
+    const auto checkpoint = provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache);
+    REQUIRE(checkpoint.ok());
+    REQUIRE_EQ(checkpoint.generation, 1ull);
+
+    bool boundary_called{};
+    std::vector<std::byte> second(kM2BlockSize, std::byte{0x62});
+    const auto compacted = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7301},
+        [&](const M3CompactionBoundaryEvidence& evidence)
+            -> Result<M3CompactionBoundaryDecision> {
+            boundary_called = true;
+            REQUIRE_EQ(evidence.operation_id, 7301ull);
+            REQUIRE_EQ(evidence.source_generation, 1ull);
+            REQUIRE_EQ(evidence.candidate_generation, 2ull);
+            REQUIRE(evidence.required_peak_free_bytes > 0);
+            REQUIRE(evidence.available_free_bytes
+                    >= evidence.required_peak_free_bytes);
+            REQUIRE(!std::filesystem::exists(
+                bundle.root / L"base-g0000-c2.vhdx"));
+            REQUIRE(!std::filesystem::exists(
+                bundle.root / L"journal-e0002-c2.rdj"));
+
+            std::vector<std::byte> actual(kM2BlockSize);
+            REQUIRE(probe->device->read(context(), 0, actual).ok());
+            REQUIRE_EQ(actual, first);
+            REQUIRE(probe->device->write(
+                context(), kM2BlockSize, second).ok());
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 101, 202, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE(boundary_called);
+    REQUIRE(compacted.ok());
+    REQUIRE_EQ(compacted.disposition, CommitDisposition::Committed);
+    REQUIRE_EQ(compacted.generation, 2ull);
+    REQUIRE_EQ(compacted.metrics.source_generation, 1ull);
+    REQUIRE_EQ(compacted.metrics.committed_generation, 2ull);
+    REQUIRE(compacted.metrics.candidate_base_bytes > 0);
+    REQUIRE(compacted.metrics.candidate_journal_bytes >= kJournalAlignment);
+    REQUIRE_EQ(compacted.metrics.retained_candidate_count, 2ull);
+    REQUIRE_EQ(compacted.metrics.deleted_candidate_count, 0ull);
+    REQUIRE_EQ(compacted.metrics.required_peak_free_bytes,
+               compacted.boundary.required_peak_free_bytes);
+    REQUIRE_EQ(provider.value()->generation(), 2ull);
+    REQUIRE_EQ(provider.value()->storage_stats().backing_generation, 2ull);
+
+    std::vector<std::byte> actual(kM2BlockSize);
+    REQUIRE(probe->device->read(context(), 0, actual).ok());
+    REQUIRE_EQ(actual, first);
+    REQUIRE(probe->device->read(
+        context(), kM2BlockSize, actual).ok());
+    REQUIRE_EQ(actual, second);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+
+    auto reopened_probe = std::make_shared<TransportProbe>();
+    auto reopened = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(reopened_probe));
+    REQUIRE(reopened.ok());
+    REQUIRE_EQ(reopened.value()->generation(), 2ull);
+    REQUIRE(reopened.value()->start(context()).ok());
+    REQUIRE(reopened_probe->device->read(
+        context(), kM2BlockSize, actual).ok());
+    REQUIRE_EQ(actual, second);
+    REQUIRE(reopened.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_compaction_denied_boundary_creates_no_artifacts) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x31});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+
+    const auto denied = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7302},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {false, 0, 0, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE_EQ(denied.disposition, CommitDisposition::NotCommitted);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"base-g0000-c2.vhdx"));
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"journal-e0002-c2.rdj"));
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_compaction_requires_durable_continue_revisions) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x35});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+
+    const auto denied = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7306},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 0, 0, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE_EQ(denied.disposition, CommitDisposition::NotCommitted);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"base-g0000-c2.vhdx"));
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"journal-e0002-c2.rdj"));
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_compaction_requires_exact_persisted_snapshot_cut) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x36});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+    bool cut_called{};
+
+    const auto denied = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7307},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            REQUIRE(!evidence.cut_dirty_epoch_known);
+            REQUIRE_EQ(evidence.cut_dirty_epoch, 0U);
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 101, 202, evidence});
+        },
+        [&](const M3CompactionBoundaryEvidence& evidence) {
+            cut_called = true;
+            REQUIRE(evidence.cut_dirty_epoch_known);
+            return Result<M3CompactionBoundaryDecision>::success(
+                {false, 303, 404, evidence});
+        });
+
+    REQUIRE(cut_called);
+    REQUIRE_EQ(denied.disposition, CommitDisposition::NotCommitted);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"base-g0000-c2.tmp"));
+    REQUIRE(std::filesystem::exists(
+        bundle.root / L"base-g0000-c2.vhdx"));
+    REQUIRE(std::filesystem::exists(
+        bundle.root / L"journal-e0002-c2.rdj"));
+
+    const auto retried = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7310},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 505, 606, evidence});
+        }, accept_compaction_cut);
+    REQUIRE(retried.ok());
+    REQUIRE_EQ(retried.generation, 2U);
+    REQUIRE(retried.metrics.deleted_candidate_count >= 2U);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_compaction_precommit_fault_preserves_old_generation) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto configured = factories(probe);
+    bool inject_compaction_fault{};
+    configured.manifest_phase_hook = [&](ManifestPublishTestPhase phase) {
+        if (inject_compaction_fault
+            && phase == ManifestPublishTestPhase::BeforeSlotWrite) {
+            return Result<void>::failure({
+                ErrorDomain::persistence, 0x39f1,
+                L"compaction.test", L"injected precommit fault"});
+        }
+        return Result<void>::success();
+    };
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), std::move(configured));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x32});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+    inject_compaction_fault = true;
+
+    const auto failed = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7303},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 101, 202, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE_EQ(failed.disposition, CommitDisposition::NotCommitted);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    inject_compaction_fault = false;
+    const auto resolved_source = provider.value()->reconcile_compaction(
+        context(), failed.boundary);
+    REQUIRE_EQ(
+        resolved_source.disposition,
+        CommitDisposition::NotCommitted);
+    REQUIRE_EQ(resolved_source.generation, 1ull);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+    auto reopened_probe = std::make_shared<TransportProbe>();
+    auto reopened = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(reopened_probe));
+    REQUIRE(reopened.ok());
+    REQUIRE_EQ(reopened.value()->generation(), 1ull);
+    REQUIRE(reopened.value()->start(context()).ok());
+    std::vector<std::byte> actual(kM2BlockSize);
+    REQUIRE(reopened_probe->device->read(context(), 0, actual).ok());
+    REQUIRE_EQ(actual, payload);
+    REQUIRE(reopened.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_compaction_postcommit_reconcile_fault_reopens_candidate) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto configured = factories(probe);
+    bool inject_compaction_fault{};
+    configured.reconcile_phase_hook = [&] (
+        CheckpointReconcileTestPhase phase) {
+        if (inject_compaction_fault
+            && phase == CheckpointReconcileTestPhase::BeforeRecoverView) {
+            return Result<void>::failure({
+                ErrorDomain::persistence, 0x39f2,
+                L"compaction.test", L"injected reconciliation fault"});
+        }
+        return Result<void>::success();
+    };
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), std::move(configured));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x33});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+    inject_compaction_fault = true;
+
+    const auto unresolved = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7304},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 101, 202, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE_EQ(
+        unresolved.disposition,
+        CommitDisposition::CommittedNeedsReconciliation);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    inject_compaction_fault = false;
+    const auto resolved = provider.value()->reconcile_compaction(
+        context(), unresolved.boundary);
+    REQUIRE(resolved.ok());
+    REQUIRE_EQ(resolved.generation, 2ull);
+    REQUIRE_EQ(provider.value()->generation(), 2ull);
+
+    const auto followup = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7311},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 707, 808, evidence});
+        }, accept_compaction_cut);
+    REQUIRE(followup.ok());
+    REQUIRE_EQ(followup.generation, 3U);
+    REQUIRE_EQ(followup.metrics.deleted_candidate_count, 2U);
+    REQUIRE(!std::filesystem::exists(bundle.root / L"base-0000.vhdx"));
+    REQUIRE(!std::filesystem::exists(bundle.root / L"journal-e0001.rdj"));
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+    auto reopened_probe = std::make_shared<TransportProbe>();
+    auto reopened = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(reopened_probe));
+    REQUIRE(reopened.ok());
+    REQUIRE_EQ(reopened.value()->generation(), 3ull);
+    REQUIRE(reopened.value()->start(context()).ok());
+    std::vector<std::byte> actual(kM2BlockSize);
+    REQUIRE(reopened_probe->device->read(context(), 0, actual).ok());
+    REQUIRE_EQ(actual, payload);
+    REQUIRE(reopened.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_compaction_low_space_returns_exact_preflight_proof) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    ULARGE_INTEGER available{};
+    REQUIRE(GetDiskFreeSpaceExW(
+        bundle.root.c_str(), &available, nullptr, nullptr) != FALSE);
+    REQUIRE(available.QuadPart
+        < (std::numeric_limits<std::uint64_t>::max)() - (128ULL << 20));
+    auto constrained = config(bundle);
+    constrained.recovery.limits.max_journal_committed_bytes =
+        available.QuadPart + (128ULL << 20);
+
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, constrained, factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> payload(kM2BlockSize, std::byte{0x34});
+    REQUIRE(probe->device->write(context(), 0, payload).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+    bool boundary_called{};
+
+    const auto deferred = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7305},
+        [&](const M3CompactionBoundaryEvidence& evidence) {
+            boundary_called = true;
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 101, 202, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE(!boundary_called);
+    REQUIRE_EQ(deferred.disposition, CommitDisposition::NotCommitted);
+    REQUIRE(deferred.error.has_value());
+    REQUIRE(deferred.error_context.has_value());
+    REQUIRE_EQ(
+        deferred.error_context->code,
+        PersistenceErrorCode::DiskFull);
+    REQUIRE_EQ(deferred.boundary.operation_id, 7305ull);
+    REQUIRE_EQ(deferred.boundary.source_generation, 1ull);
+    REQUIRE_EQ(deferred.boundary.candidate_generation, 2ull);
+    REQUIRE(deferred.boundary.required_peak_free_bytes
+        > deferred.boundary.available_free_bytes);
+    REQUIRE_EQ(
+        deferred.metrics.required_peak_free_bytes,
+        deferred.boundary.required_peak_free_bytes);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"base-g0000-c2.vhdx"));
+    REQUIRE(!std::filesystem::exists(
+        bundle.root / L"journal-e0002-c2.rdj"));
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_provider_second_compaction_deletes_only_unreferenced_retired_pair) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> first(kM2BlockSize, std::byte{0x37});
+    REQUIRE(probe->device->write(context(), 0, first).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+
+    const auto first_compaction = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7308},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 101, 202, evidence});
+        }, accept_compaction_cut);
+    REQUIRE(first_compaction.ok());
+    REQUIRE_EQ(first_compaction.generation, 2U);
+    REQUIRE_EQ(first_compaction.metrics.retained_candidate_count, 2U);
+    REQUIRE_EQ(first_compaction.metrics.deleted_candidate_count, 0U);
+
+    std::vector<std::byte> second(kM2BlockSize, std::byte{0x38});
+    REQUIRE(probe->device->write(context(), kM2BlockSize, second).ok());
+    const auto second_compaction = provider.value()->compact(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7309},
+        [](const M3CompactionBoundaryEvidence& evidence) {
+            return Result<M3CompactionBoundaryDecision>::success(
+                {true, 303, 404, evidence});
+        }, accept_compaction_cut);
+
+    REQUIRE(second_compaction.ok());
+    REQUIRE_EQ(second_compaction.generation, 3U);
+    REQUIRE_EQ(second_compaction.metrics.deleted_candidate_count, 2U);
+    REQUIRE_EQ(second_compaction.metrics.retained_candidate_count, 2U);
+    REQUIRE(!std::filesystem::exists(bundle.root / L"base-0000.vhdx"));
+    REQUIRE(!std::filesystem::exists(bundle.root / L"journal-e0001.rdj"));
+    REQUIRE(std::filesystem::exists(bundle.root / L"base-g0000-c2.vhdx"));
+    REQUIRE(std::filesystem::exists(bundle.root / L"journal-e0002-c2.rdj"));
     REQUIRE(provider.value()->stop(context(), {}).ok());
 }

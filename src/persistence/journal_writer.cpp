@@ -551,12 +551,6 @@ Result<PreparedCheckpoint> JournalWriter::prepare_streaming(
             L"checkpoint layout overflows configured limits",
             PersistenceErrorCode::SnapshotResourceExhausted);
     }
-    if (impl_->options.committed_end_ceiling.has_value() &&
-        committed_end > *impl_->options.committed_end_ceiling) {
-        return writer_failure<PreparedCheckpoint>(
-            L"journal committed-end capacity exceeded",
-            PersistenceErrorCode::JournalCapacityExhausted);
-    }
     auto assigned = impl_->index_builder->assign_offsets(
         plan.value(), base_view, cursor, block_count,
         committed_end);

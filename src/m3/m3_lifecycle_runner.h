@@ -27,8 +27,4 @@ struct M3LifecycleOutcome final {
     const OperationContext& context,
     const M3CliConfig& config);
 
-[[nodiscard]] M3LifecycleOutcome run_product_offline_compaction(
-    const OperationContext& context,
-    const std::filesystem::path& bundle_root);
-
 } // namespace myrd::m3

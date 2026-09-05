@@ -42,7 +42,6 @@ struct Registrar {
             std::_Exit(1);                                                      \
         }                                                                      \
     } while (0)
-
 #define REQUIRE_EQ(a, b)                                                       \
     do {                                                                       \
         if (!((a) == (b))) {                                                   \

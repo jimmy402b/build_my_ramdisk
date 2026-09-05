@@ -1431,17 +1431,17 @@ Result<std::wstring> normalized_final_path(HANDLE handle) {
         return path_failure<std::wstring>(
             ImagePathErrorCode::IoError,
             L"image_path.final_path",
-            L"normalized final path requires a valid handle",
+            L"opened handle path requires a valid handle",
             ERROR_INVALID_HANDLE);
     }
-    constexpr DWORD kFlags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    constexpr DWORD kFlags = FILE_NAME_OPENED | VOLUME_NAME_DOS;
     const auto required = GetFinalPathNameByHandleW(handle, nullptr, 0, kFlags);
     if (required == 0) {
         const auto native_code = GetLastError();
         return path_failure<std::wstring>(
             ImagePathErrorCode::IoError,
             L"image_path.final_path",
-            L"querying normalized final path length failed",
+            L"querying opened handle path length failed",
             native_code);
     }
     constexpr DWORD kMaximumFinalPathChars = 32768;
@@ -1449,7 +1449,7 @@ Result<std::wstring> normalized_final_path(HANDLE handle) {
         return path_failure<std::wstring>(
             ImagePathErrorCode::PathEscape,
             L"image_path.final_path",
-            L"normalized final path exceeds the hard limit");
+            L"opened handle path exceeds the hard limit");
     }
     try {
         std::wstring path(static_cast<std::size_t>(required), L'\0');
@@ -1460,7 +1460,7 @@ Result<std::wstring> normalized_final_path(HANDLE handle) {
             return path_failure<std::wstring>(
                 ImagePathErrorCode::IoError,
                 L"image_path.final_path",
-                L"querying normalized final path failed",
+                L"querying opened handle path failed",
                 native_code);
         }
         path.resize(written);
@@ -1469,7 +1469,7 @@ Result<std::wstring> normalized_final_path(HANDLE handle) {
         return path_failure<std::wstring>(
             ImagePathErrorCode::IoError,
             L"image_path.final_path",
-            L"allocating normalized final path failed",
+            L"allocating opened handle path failed",
             ERROR_NOT_ENOUGH_MEMORY);
     }
 }

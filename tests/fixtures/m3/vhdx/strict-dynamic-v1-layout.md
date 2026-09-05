@@ -21,4 +21,3 @@ Virtual Disk ID, Logical Sector Size and Physical Sector Size.  The disk is a
 64 MiB dynamic, non-differencing image with 2 MiB payload blocks, 512-byte
 logical sectors and 4096-byte physical sectors.  Its dynamic BAT has 32
 entries because the final payload block precedes the first sector-bitmap slot.
-

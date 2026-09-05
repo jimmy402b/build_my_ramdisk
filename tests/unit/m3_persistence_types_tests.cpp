@@ -656,7 +656,6 @@ TEST_CASE(persistence_error_code_fixed_values) {
     REQUIRE_EQ(static_cast<std::uint32_t>(PersistenceErrorCode::DeadlineExceeded), 17U);
     REQUIRE_EQ(static_cast<std::uint32_t>(PersistenceErrorCode::VerificationFailed), 18U);
     REQUIRE_EQ(static_cast<std::uint32_t>(PersistenceErrorCode::FatalInternalInvariant), 19U);
-    REQUIRE_EQ(static_cast<std::uint32_t>(PersistenceErrorCode::JournalCapacityExhausted), 20U);
 }
 
 TEST_CASE(persistence_error_code_stable_strings) {
@@ -679,7 +678,6 @@ TEST_CASE(persistence_error_code_stable_strings) {
     REQUIRE_EQ(to_string(PersistenceErrorCode::DeadlineExceeded), string_view("DeadlineExceeded"));
     REQUIRE_EQ(to_string(PersistenceErrorCode::VerificationFailed), string_view("VerificationFailed"));
     REQUIRE_EQ(to_string(PersistenceErrorCode::FatalInternalInvariant), string_view("FatalInternalInvariant"));
-    REQUIRE_EQ(to_string(PersistenceErrorCode::JournalCapacityExhausted), string_view("JournalCapacityExhausted"));
 }
 
 // ============================================================================
@@ -1105,7 +1103,7 @@ TEST_CASE(error_context_phase_covers_all_session_phases) {
 // ============================================================================
 
 TEST_CASE(all_persistence_error_codes_have_non_empty_to_string) {
-    for (std::uint32_t i = 1; i <= 20; ++i) {
+    for (std::uint32_t i = 1; i <= 19; ++i) {
         auto code = static_cast<PersistenceErrorCode>(i);
         auto s = to_string(code);
         REQUIRE(!s.empty());
@@ -1202,7 +1200,6 @@ TEST_CASE(all_stable_enums_round_trip_explicit_wire_values) {
         WireCase{PersistenceErrorCode::DeadlineExceeded, 17U},
         WireCase{PersistenceErrorCode::VerificationFailed, 18U},
         WireCase{PersistenceErrorCode::FatalInternalInvariant, 19U},
-        WireCase{PersistenceErrorCode::JournalCapacityExhausted, 20U},
     };
     for (const auto& item : error_cases) {
         REQUIRE_EQ(encode_wire(item.value), std::optional{item.wire});

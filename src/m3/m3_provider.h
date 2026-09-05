@@ -3,9 +3,11 @@
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
 #include "src/persistence/checkpoint_coordinator.h"
+#include "src/persistence/compaction_coordinator.h"
 #include "src/persistence/image_session.h"
 #include "src/persistence/persistence_types.h"
 #include "src/persistence/recovery_engine.h"
+#include "src/persistence/retention_manager.h"
 #include "src/persistence/writer_lock.h"
 #include "src/proxy/object_names.h"
 #include "src/proxy/shm_proxy_session.h"
@@ -19,13 +21,9 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace myrd::m3 {
-
-[[nodiscard]] persistence::PersistenceLimits production_persistence_limits(
-    std::uint64_t virtual_bytes);
-[[nodiscard]] DynamicBlockStoreOptions production_store_options(
-    std::uint64_t ram_limit);
 
 enum class M3ProviderState : std::uint8_t {
     Constructed = 0,
@@ -42,13 +40,6 @@ struct M3ProviderConfig final {
     persistence::RecoveryOptions recovery;
     DynamicBlockStoreOptions store;
     std::chrono::milliseconds request_timeout{30000};
-    std::optional<std::uint64_t> journal_committed_end_ceiling{};
-};
-
-struct M3MaintenanceStats final {
-    std::uint64_t generation{};
-    std::uint64_t dirty_bytes{};
-    std::uint64_t journal_committed_bytes{};
 };
 
 class IM3ProviderTransport {
@@ -91,6 +82,79 @@ struct M3CheckpointOutcome final {
 
     [[nodiscard]] bool ok() const noexcept {
         return disposition == persistence::CommitDisposition::Committed &&
+               !error.has_value() && !error_context.has_value();
+    }
+};
+
+struct M3CompactionRequest final {
+    persistence::VolumeBarrierKind barrier{
+        static_cast<persistence::VolumeBarrierKind>(0xff)};
+    std::uint64_t operation_id{};
+};
+
+struct M3CompactionBoundaryEvidence final {
+    std::uint64_t operation_id{};
+    persistence::ImageUuid image_uuid{};
+    std::uint64_t source_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint64_t source_base_bytes{};
+    std::uint64_t source_journal_bytes{};
+    std::uint64_t required_peak_free_bytes{};
+    std::uint64_t available_free_bytes{};
+    std::uint64_t cut_dirty_epoch{};
+    bool cut_dirty_epoch_known{};
+
+    bool operator==(const M3CompactionBoundaryEvidence&) const noexcept =
+        default;
+};
+
+struct M3CompactionBoundaryDecision final {
+    bool continue_compaction{};
+    std::uint64_t durable_operation_revision{};
+    std::uint64_t durable_profile_revision{};
+    M3CompactionBoundaryEvidence evidence{};
+};
+
+using M3CompactionBoundaryHandler = std::function<
+    Result<M3CompactionBoundaryDecision>(
+        const M3CompactionBoundaryEvidence&)>;
+using M3CompactionCutHandler = M3CompactionBoundaryHandler;
+
+struct M3CompactionMetrics final {
+    std::uint64_t source_generation{};
+    std::uint64_t committed_generation{};
+    std::uint64_t source_base_bytes{};
+    std::uint64_t source_journal_bytes{};
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+    std::uint64_t required_peak_free_bytes{};
+    std::uint64_t available_free_bytes{};
+    std::uint64_t live_extent_count{};
+    std::uint64_t candidate_payloads{};
+    std::uint64_t snapshot_records{};
+    std::uint64_t data_records{};
+    std::uint64_t zero_records{};
+    std::uint64_t discard_records{};
+    std::uint64_t index_nodes{};
+    std::uint64_t newer_dirty_preserved{};
+    std::uint64_t retained_candidate_count{};
+    std::uint64_t deleted_candidate_count{};
+
+    bool operator==(const M3CompactionMetrics&) const noexcept = default;
+};
+
+struct M3CompactionOutcome final {
+    persistence::CommitDisposition disposition{
+        persistence::CommitDisposition::NotCommitted};
+    std::uint64_t generation{};
+    M3CompactionBoundaryEvidence boundary{};
+    M3CompactionMetrics metrics{};
+    std::optional<Error> error{};
+    std::optional<persistence::PersistenceErrorContext> error_context{};
+
+    [[nodiscard]] bool ok() const noexcept {
+        return disposition == persistence::CommitDisposition::Committed &&
+               generation != persistence::kInvalidGeneration &&
                !error.has_value() && !error_context.has_value();
     }
 };
@@ -140,6 +204,14 @@ public:
     M3CheckpointOutcome checkpoint(
         const OperationContext& context,
         persistence::VolumeBarrierKind barrier);
+    M3CompactionOutcome compact(
+        const OperationContext& context,
+        M3CompactionRequest request,
+        const M3CompactionBoundaryHandler& boundary,
+        const M3CompactionCutHandler& cut);
+    M3CompactionOutcome reconcile_compaction(
+        const OperationContext& context,
+        const M3CompactionBoundaryEvidence& boundary);
     M3StopOutcome stop(
         const OperationContext& context,
         M3StopRequest request = {});
@@ -149,7 +221,6 @@ public:
     [[nodiscard]] std::uint64_t generation() const;
     [[nodiscard]] persistence::ImageGeometry geometry() const;
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
-    [[nodiscard]] Result<M3MaintenanceStats> maintenance_stats() const;
     [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
     [[nodiscard]] proxy::ProxyObjectNames names() const;
 
@@ -209,6 +280,8 @@ private:
     std::optional<Error> last_checkpoint_error_{};
     std::optional<persistence::PersistenceErrorContext>
         last_checkpoint_error_context_{};
+    std::vector<persistence::OwnedImmutableArtifact>
+        retention_candidates_{};
 };
 
 } // namespace myrd::m3

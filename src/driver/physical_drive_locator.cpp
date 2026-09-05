@@ -347,4 +347,31 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         L"wait_for_created_physical_drive", L"timed out"});
 }
 
+Result<std::vector<LocatedDisk>> enumerate_present_physical_drives() {
+    auto candidates = enumerate_disk_candidates();
+    if (!candidates) {
+        return Result<std::vector<LocatedDisk>>::failure(candidates.error());
+    }
+    std::vector<LocatedDisk> disks;
+    try {
+        disks.reserve(candidates.value().size());
+        for (const auto& candidate : candidates.value()) {
+            disks.push_back({
+                candidate.physical_drive_number,
+                std::wstring(L"\\\\.\\PhysicalDrive")
+                    + std::to_wstring(candidate.physical_drive_number),
+                candidate.length_bytes,
+                candidate.path_id,
+                candidate.target_id,
+                candidate.lun});
+        }
+    } catch (...) {
+        return Result<std::vector<LocatedDisk>>::failure({
+            ErrorDomain::internal, ERROR_OUTOFMEMORY,
+            L"enumerate_present_physical_drives",
+            L"failed to allocate bounded physical-drive observations"});
+    }
+    return Result<std::vector<LocatedDisk>>::success(std::move(disks));
+}
+
 } // namespace myrd::aim

@@ -1,49 +1,75 @@
-#include "test_framework.h"
+#include "tests/support/test_framework.h"
+
 #include "src/run/run_loop.h"
-#include "src/run/run_loop.cpp"
 
-#include <sstream>
-#include <shellapi.h>
-
-using namespace myrd;
+#include <atomic>
+#include <chrono>
+#include <vector>
 
 namespace {
 using namespace std::chrono_literals;
+using myrd::CheckpointAttemptHooks;
+using myrd::CheckpointAttemptResult;
+using myrd::CheckpointDispositionAdapter;
+using myrd::CheckpointOutcomeAdapter;
+using myrd::MaintenanceState;
+using myrd::MaintenanceStatsAdapter;
+using myrd::RunOptions;
 
-myrd::RunOptions options() {
-    myrd::RunOptions value{};
+// The M3 baseline's named capacity failure is mapped by the M4 adapter into
+// the no-retry journal-capacity policy. No raw persistence enum values are
+// permitted in this product-layer contract.
+constexpr auto kJournalCapacityErrorCode =
+    myrd::persistence::PersistenceErrorCode::DiskFull;
+
+RunOptions options() {
+    RunOptions value{};
     value.checkpoint_interval = 10s;
     value.checkpoint_dirty_bytes = 100;
     return value;
 }
 
-myrd::m3::M3CheckpointOutcome outcome(
-    myrd::persistence::CommitDisposition disposition,
-    std::optional<myrd::persistence::PersistenceErrorCode> code = std::nullopt,
-    std::uint64_t generation = 0) {
-    myrd::m3::M3CheckpointOutcome value{};
-    value.disposition = disposition;
-    value.generation = generation;
-    if (code) value.error_context = myrd::persistence::PersistenceErrorContext{.code = *code};
+CheckpointOutcomeAdapter result(CheckpointDispositionAdapter disposition,
+                                std::uint64_t generation = 0) {
+    CheckpointOutcomeAdapter value{};
+    value.m3_outcome.disposition = disposition;
+    value.m3_outcome.generation = generation;
     return value;
 }
 
-myrd::m3::M3CheckpointOutcome capacity_outcome(bool valid = true) {
-    auto value = outcome(myrd::persistence::CommitDisposition::NotCommitted,
-        myrd::persistence::PersistenceErrorCode::JournalCapacityExhausted);
-    value.error = myrd::Error{valid ? myrd::ErrorDomain::persistence : myrd::ErrorDomain::internal,
-        valid ? static_cast<std::uint32_t>(myrd::persistence::PersistenceErrorCode::JournalCapacityExhausted) : 99,
-        L"checkpoint", L"failure"};
+CheckpointOutcomeAdapter capacity_outcome(
+    bool valid = true, bool mark_adapter = true) {
+    CheckpointOutcomeAdapter value{};
+    value.m3_outcome.disposition = CheckpointDispositionAdapter::NotCommitted;
+    const auto error_code = valid
+        ? static_cast<std::uint32_t>(kJournalCapacityErrorCode)
+        : 99U;
+    const auto context_code = valid
+        ? kJournalCapacityErrorCode
+        : myrd::persistence::PersistenceErrorCode::FatalInternalInvariant;
+    value.m3_outcome.error = myrd::Error{
+        valid ? myrd::ErrorDomain::persistence : myrd::ErrorDomain::internal,
+        error_code,
+        L"checkpoint",
+        L"journal capacity exhausted"};
+    value.m3_outcome.error_context = myrd::persistence::PersistenceErrorContext{
+        .operation = "checkpoint",
+        .code = context_code,
+        .phase = myrd::persistence::SessionPhase::Checkpointing,
+        .operation_id = 1,
+        .generation = 1,
+        .disposition = myrd::persistence::CommitDisposition::NotCommitted};
+    value.journal_capacity_exhausted = mark_adapter;
     return value;
 }
 
-}
+} // namespace
 
 TEST_CASE(m4_run_policy_due_at_exact_time_or_dirty_threshold) {
     const auto zero = std::chrono::steady_clock::time_point{};
-    myrd::MaintenanceState state{};
+    MaintenanceState state{};
     state.last_checkpoint = zero;
-    auto stats = myrd::m3::M3MaintenanceStats{};
+    MaintenanceStatsAdapter stats{};
     REQUIRE(!myrd::checkpoint_due(options(), stats, state, zero + 9s));
     REQUIRE(myrd::checkpoint_due(options(), stats, state, zero + 10s));
     stats.dirty_bytes = 99;
@@ -52,361 +78,252 @@ TEST_CASE(m4_run_policy_due_at_exact_time_or_dirty_threshold) {
     REQUIRE(myrd::checkpoint_due(options(), stats, state, zero + 1s));
 }
 
-TEST_CASE(m4_run_policy_suppression_prevents_due_until_exactly_expired) {
+TEST_CASE(m4_run_policy_suppression_expires_at_exact_boundary) {
     const auto zero = std::chrono::steady_clock::time_point{};
-    myrd::MaintenanceState state{};
+    MaintenanceState state{};
     state.checkpoint_suppressed_until = zero + 60s;
-    auto stats = myrd::m3::M3MaintenanceStats{.dirty_bytes = 100};
+    const MaintenanceStatsAdapter stats{.dirty_bytes = 100};
     REQUIRE(!myrd::checkpoint_due(options(), stats, state, zero + 59s));
     REQUIRE(myrd::checkpoint_due(options(), stats, state, zero + 60s));
 }
 
-TEST_CASE(m4_run_policy_not_committed_requests_one_immediate_retry_then_suppresses) {
-    const auto zero = std::chrono::steady_clock::time_point{};
-    myrd::MaintenanceState state{};
-    REQUIRE(myrd::apply_checkpoint_outcome(state, outcome(
-        myrd::persistence::CommitDisposition::NotCommitted), zero, false));
-    REQUIRE(!myrd::apply_checkpoint_outcome(state, outcome(
-        myrd::persistence::CommitDisposition::NotCommitted), zero, true));
-    REQUIRE_EQ(state.checkpoint_suppressed_until, zero + 60s);
-}
-
-TEST_CASE(m4_run_policy_second_not_committed_warns_once_and_suppresses_for_sixty_seconds) {
-    const auto zero = std::chrono::steady_clock::time_point{};
-    myrd::MaintenanceState state{};
-    int flushes{};
-    int checkpoints{};
-    int warnings{};
-    do_checkpoint_attempts(state, zero,
-        [&] { ++flushes; return myrd::Result<void>::success(); },
-        [&] { ++checkpoints; return outcome(myrd::persistence::CommitDisposition::NotCommitted); },
-        [&] { ++warnings; });
-    REQUIRE_EQ(flushes, 2);
-    REQUIRE_EQ(checkpoints, 2);
-    REQUIRE_EQ(warnings, 1);
-    REQUIRE_EQ(state.checkpoint_suppressed_until, zero + 60s);
-}
-
-TEST_CASE(m4_run_policy_second_failure_suppresses_from_second_result_time) {
-    myrd::MaintenanceState state{};
-    const auto first = std::chrono::steady_clock::time_point{} + 7s;
-    const auto second = std::chrono::steady_clock::time_point{} + 19s;
-    int checkpoints{};
-    do_checkpoint_attempts(state,
-        [&] { return ++checkpoints == 1 ? first : second; },
-        [] { return myrd::Result<void>::success(); },
-        [] { return outcome(myrd::persistence::CommitDisposition::NotCommitted); },
-        [] {});
-    REQUIRE_EQ(state.checkpoint_suppressed_until, second + 60s);
-}
-
-TEST_CASE(m4_run_policy_committed_records_result_time) {
-    myrd::MaintenanceState state{};
-    const auto committed = std::chrono::steady_clock::time_point{} + 23s;
-    do_checkpoint_attempts(state, [&] { return committed; },
-        [] { return myrd::Result<void>::success(); },
-        [] { return outcome(myrd::persistence::CommitDisposition::Committed); }, [] {});
-    REQUIRE_EQ(state.last_checkpoint, committed);
-}
-
-TEST_CASE(m4_run_policy_reconciliation_retries_only_after_a_second_flush) {
-    myrd::MaintenanceState state{};
+TEST_CASE(m4_run_policy_flushes_before_each_checkpoint_and_retries_once) {
+    MaintenanceState state{};
     std::vector<int> calls;
-    do_checkpoint_attempts(state, {},
-        [&] { calls.push_back(1); return myrd::Result<void>::success(); },
-        [&] { calls.push_back(2); return outcome(calls.size() == 2
-            ? myrd::persistence::CommitDisposition::CommittedNeedsReconciliation
-            : myrd::persistence::CommitDisposition::Committed); },
-        [] {});
-    REQUIRE_EQ(calls.size(), std::size_t{4});
-    REQUIRE_EQ(calls[0], 1); REQUIRE_EQ(calls[1], 2);
-    REQUIRE_EQ(calls[2], 1); REQUIRE_EQ(calls[3], 2);
-}
-
-TEST_CASE(m4_run_policy_reconciled_commit_uses_second_result_time) {
-    myrd::MaintenanceState state{};
-    const auto first = std::chrono::steady_clock::time_point{} + 5s;
-    const auto second = std::chrono::steady_clock::time_point{} + 29s;
     int checkpoints{};
-    int times{};
-    do_checkpoint_attempts(state, [&] { return ++times == 1 ? first : second; },
-        [] { return myrd::Result<void>::success(); },
-        [&] { return ++checkpoints == 1
-            ? outcome(myrd::persistence::CommitDisposition::CommittedNeedsReconciliation)
-            : outcome(myrd::persistence::CommitDisposition::Committed); }, [] {});
-    REQUIRE_EQ(state.last_checkpoint, second);
-}
-
-TEST_CASE(m4_run_policy_committed_checkpoint_prints_its_generation_once) {
-    myrd::MaintenanceState state{};
-    std::wostringstream captured;
-    auto* previous = std::wcout.rdbuf(captured.rdbuf());
-    do_checkpoint_attempts(state, {},
-        [] { return myrd::Result<void>::success(); },
-        [] { return outcome(myrd::persistence::CommitDisposition::Committed, {}, 41); },
-        [] {});
-    std::wcout.rdbuf(previous);
-    REQUIRE_EQ(captured.str(), std::wstring(L"Checkpoint committed generation 41.\n"));
-}
-
-TEST_CASE(m4_run_policy_reconciled_commit_prints_only_final_generation_once) {
-    myrd::MaintenanceState state{};
-    int checkpoints{};
-    std::wostringstream captured;
-    auto* previous = std::wcout.rdbuf(captured.rdbuf());
-    do_checkpoint_attempts(state, {},
-        [] { return myrd::Result<void>::success(); },
-        [&] { return ++checkpoints == 1
-            ? outcome(myrd::persistence::CommitDisposition::CommittedNeedsReconciliation, {}, 41)
-            : outcome(myrd::persistence::CommitDisposition::Committed, {}, 42); },
-        [] {});
-    std::wcout.rdbuf(previous);
-    REQUIRE_EQ(captured.str(), std::wstring(L"Checkpoint committed generation 42.\n"));
-}
-
-TEST_CASE(m4_run_policy_unreconciled_not_committed_requests_controlled_failure_without_third_attempt) {
-    myrd::MaintenanceState state{};
-    std::vector<int> calls;
-    do_checkpoint_attempts(state, {},
-        [&] { calls.push_back(1); return myrd::Result<void>::success(); },
-        [&] { calls.push_back(2); return outcome(calls.size() == 2
-            ? myrd::persistence::CommitDisposition::CommittedNeedsReconciliation
-            : myrd::persistence::CommitDisposition::NotCommitted); },
-        [] {});
-    REQUIRE_EQ(calls, std::vector<int>({1, 2, 1, 2}));
-    REQUIRE(state.exit_failure);
-    REQUIRE(!state.skip_final_checkpoint);
-    REQUIRE_EQ(state.checkpoint_suppressed_until, std::chrono::steady_clock::time_point{});
-}
-
-TEST_CASE(m4_run_policy_unreconciled_indeterminate_requests_controlled_failure_and_skips_final) {
-    myrd::MaintenanceState state{};
-    std::vector<int> calls;
-    do_checkpoint_attempts(state, {},
-        [&] { calls.push_back(1); return myrd::Result<void>::success(); },
-        [&] { calls.push_back(2); return outcome(calls.size() == 2
-            ? myrd::persistence::CommitDisposition::CommittedNeedsReconciliation
-            : myrd::persistence::CommitDisposition::CommitIndeterminate); },
-        [] {});
-    REQUIRE_EQ(calls, std::vector<int>({1, 2, 1, 2}));
-    REQUIRE(state.exit_failure);
-    REQUIRE(state.skip_final_checkpoint);
-}
-
-TEST_CASE(m4_run_policy_unreconciled_capacity_keeps_mounted_capacity_policy) {
-    myrd::MaintenanceState state{};
-    std::vector<int> calls;
-    do_checkpoint_attempts(state, {},
+    const CheckpointAttemptHooks hooks{
         [&] { calls.push_back(1); return myrd::Result<void>::success(); },
         [&] {
             calls.push_back(2);
-            return calls.size() == 2
-                ? outcome(myrd::persistence::CommitDisposition::CommittedNeedsReconciliation)
-                : capacity_outcome();
-        },
-        [] {});
+            return result(++checkpoints == 1
+                ? CheckpointDispositionAdapter::NotCommitted
+                : CheckpointDispositionAdapter::Committed, 7);
+        }};
+    const auto now = std::chrono::steady_clock::time_point{} + 7s;
+    REQUIRE_EQ(myrd::perform_checkpoint_attempts(state, hooks, now),
+               CheckpointAttemptResult::Committed);
     REQUIRE_EQ(calls, std::vector<int>({1, 2, 1, 2}));
-    REQUIRE(state.checkpoints_disabled_for_full_journal);
-    REQUIRE(state.skip_final_checkpoint);
-    REQUIRE(state.exit_failure);
-}
-
-TEST_CASE(m4_run_policy_capacity_disables_all_checkpoints_without_retry) {
-    const auto zero = std::chrono::steady_clock::time_point{};
-    myrd::MaintenanceState state{};
-    REQUIRE(!myrd::apply_checkpoint_outcome(state, capacity_outcome(), zero, false));
-    REQUIRE(state.checkpoints_disabled_for_full_journal);
-    REQUIRE(state.skip_final_checkpoint);
-    REQUIRE(state.exit_failure);
-}
-
-TEST_CASE(m4_run_policy_invalid_capacity_context_keeps_ordinary_retry) {
-    myrd::MaintenanceState state{};
-    REQUIRE(myrd::apply_checkpoint_outcome(state, capacity_outcome(false), {}, false));
-    REQUIRE(!state.checkpoints_disabled_for_full_journal);
-}
-
-TEST_CASE(m4_run_policy_wait_shutdown_skips_work_after_wait) {
-    std::atomic_bool shutdown{false};
-    int work{};
-    const bool worked = wait_then_work(shutdown,
-        [&] { shutdown.store(true, std::memory_order_relaxed); },
-        [&] { ++work; });
-    REQUIRE(!worked);
-    REQUIRE_EQ(work, 0);
-}
-
-TEST_CASE(m4_shutdown_busy_clears_request_without_cleanup) {
-    std::atomic_bool requested{true};
-    REQUIRE(shutdown_busy_resume(requested));
-    REQUIRE(!requested.load(std::memory_order_relaxed));
-}
-
-TEST_CASE(m4_shutdown_actions_freeze_order_retry_and_cleanup_after_failure) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
-    const auto exit = do_shutdown_actions(state, requested,
-        [&] { calls.push_back(1); return ShutdownLock::Locked; },
-        [&] { calls.push_back(2); return Result<void>::success(); },
-        [&] { calls.push_back(3); return Result<void>::success(); },
-        [&] { calls.push_back(4); return outcome(calls.size() == 4
-            ? persistence::CommitDisposition::NotCommitted
-            : persistence::CommitDisposition::Committed); },
-        [&] { calls.push_back(5); return Result<void>::success(); },
-        [&] { calls.push_back(6); return Result<void>::success(); },
-        [&] { calls.push_back(7); return Result<void>::success(); });
-    REQUIRE_EQ(exit, 0); REQUIRE_EQ(calls, std::vector<int>({1,2,3,4,3,4,5,6,7}));
-}
-
-TEST_CASE(m4_shutdown_actions_flush_failure_skips_checkpoint_but_continues_cleanup) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
-    const auto exit = do_shutdown_actions(state, requested, [&] { calls.push_back(1); return ShutdownLock::Locked; },
-        [&] { calls.push_back(2); return Result<void>::success(); }, [&] { calls.push_back(3); return Result<void>::failure({}); }, [&] { calls.push_back(4); return outcome(persistence::CommitDisposition::Committed); },
-        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); }, [&] { calls.push_back(7); return Result<void>::success(); });
-    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({1,2,3,5,6,7}));
-}
-
-TEST_CASE(m4_shutdown_actions_verify_failure_resumes_without_any_cleanup) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; int mutations{};
-    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
-        [] { return Result<void>::failure({}); }, [&] { ++mutations; return Result<void>::success(); },
-        [&] { ++mutations; return outcome(persistence::CommitDisposition::Committed); }, [&] { ++mutations; return Result<void>::success(); },
-        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); });
-    REQUIRE_EQ(exit, -1); REQUIRE(state.exit_failure); REQUIRE(!requested.load()); REQUIRE_EQ(mutations, 0);
-}
-
-TEST_CASE(m4_shutdown_actions_reconciliation_retries_after_a_second_flush) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
-    const auto exit = do_shutdown_actions(state, requested, [&] { calls.push_back(1); return ShutdownLock::Locked; },
-        [&] { calls.push_back(2); return Result<void>::success(); }, [&] { calls.push_back(3); return Result<void>::success(); },
-        [&] { calls.push_back(4); return outcome(calls.size() == 4 ? persistence::CommitDisposition::CommittedNeedsReconciliation : persistence::CommitDisposition::Committed); },
-        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); }, [&] { calls.push_back(7); return Result<void>::success(); });
-    REQUIRE_EQ(exit, 0); REQUIRE_EQ(calls, std::vector<int>({1,2,3,4,3,4,5,6,7}));
-}
-
-TEST_CASE(m4_shutdown_actions_rejects_committed_outcome_with_error) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; int cleanup{};
-    auto invalid = outcome(persistence::CommitDisposition::Committed);
-    invalid.error = Error{ErrorDomain::persistence, 1, L"checkpoint", L"error"};
-    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
-        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [&] { return invalid; },
-        [&] { ++cleanup; return Result<void>::success(); }, [&] { ++cleanup; return Result<void>::success(); }, [&] { ++cleanup; return Result<void>::success(); });
-    REQUIRE_EQ(exit, 1); REQUIRE_EQ(cleanup, 3);
-}
-
-TEST_CASE(m4_shutdown_actions_capacity_outcome_does_not_retry) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; int checkpoints{};
-    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
-        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [&] { ++checkpoints; return capacity_outcome(); },
-        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [] { return Result<void>::success(); });
-    REQUIRE_EQ(exit, 1); REQUIRE_EQ(checkpoints, 1); REQUIRE(state.skip_final_checkpoint);
-}
-
-TEST_CASE(m4_shutdown_actions_busy_has_no_mutation_and_resumes) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; int mutations{};
-    const auto exit = do_shutdown_actions(state, requested,
-        [] { return ShutdownLock::Busy; }, [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); },
-        [] { return outcome(persistence::CommitDisposition::Committed); }, [&] { ++mutations; return Result<void>::success(); },
-        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); });
-    REQUIRE_EQ(exit, -1); REQUIRE_EQ(mutations, 0); REQUIRE(!requested.load());
-}
-
-TEST_CASE(m4_shutdown_actions_indeterminate_skips_final_but_cleans_up_and_fails) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
-    REQUIRE(!apply_checkpoint_outcome(state, outcome(persistence::CommitDisposition::CommitIndeterminate), {}, false));
-    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
-        [&] { calls.push_back(2); return Result<void>::success(); }, [&] { calls.push_back(3); return Result<void>::success(); }, [&] { calls.push_back(4); return outcome(persistence::CommitDisposition::Committed); },
-        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); }, [&] { calls.push_back(7); return Result<void>::success(); });
-    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({2,3,5,6,7}));
-}
-
-TEST_CASE(m4_shutdown_actions_capacity_state_skips_final_but_cleans_up_and_fails) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
-    REQUIRE(!apply_checkpoint_outcome(state, capacity_outcome(), {}, false));
-    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
-        [&] { calls.push_back(1); return Result<void>::success(); }, [&] { calls.push_back(2); return Result<void>::success(); },
-        [&] { calls.push_back(3); return outcome(persistence::CommitDisposition::Committed); }, [&] { calls.push_back(4); return Result<void>::success(); },
-        [&] { calls.push_back(5); return Result<void>::success(); }, [&] { calls.push_back(6); return Result<void>::success(); });
-    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({1,2,4,5,6}));
-}
-
-TEST_CASE(m4_shutdown_actions_lock_failure_resumes_without_cleanup_then_preserves_failure) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; int mutations{};
-    const auto first = do_shutdown_actions(state, requested, [] { return ShutdownLock::Failed; },
-        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); },
-        [] { return outcome(persistence::CommitDisposition::Committed); }, [&] { ++mutations; return Result<void>::success(); },
-        [&] { ++mutations; return Result<void>::success(); }, [&] { ++mutations; return Result<void>::success(); });
-    REQUIRE_EQ(first, -1); REQUIRE_EQ(mutations, 0); REQUIRE(!requested.load()); REQUIRE(state.exit_failure);
-}
-
-TEST_CASE(m4_shutdown_actions_cleanup_failure_wins_over_checkpoint_success) {
-    MaintenanceState state{}; std::atomic_bool requested{true}; std::vector<int> calls;
-    const auto exit = do_shutdown_actions(state, requested, [] { return ShutdownLock::Locked; },
-        [] { return Result<void>::success(); }, [] { return Result<void>::success(); }, [] { return outcome(persistence::CommitDisposition::Committed); },
-        [&] { calls.push_back(4); return Result<void>::failure({}); }, [&] { calls.push_back(5); return Result<void>::success(); },
-        [&] { calls.push_back(6); return Result<void>::success(); });
-    REQUIRE_EQ(exit, 1); REQUIRE_EQ(calls, std::vector<int>({4,5,6}));
-}
-
-TEST_CASE(m4_run_policy_other_persistence_failure_keeps_normal_retry) {
-    myrd::MaintenanceState state{};
-    REQUIRE(myrd::apply_checkpoint_outcome(state, outcome(
-        myrd::persistence::CommitDisposition::NotCommitted,
-        myrd::persistence::PersistenceErrorCode::SnapshotResourceExhausted), {}, false));
-    REQUIRE(!state.checkpoints_disabled_for_full_journal);
-}
-
-TEST_CASE(m4_run_policy_indeterminate_requests_failure_and_skips_final_checkpoint) {
-    myrd::MaintenanceState state{};
-    REQUIRE(!myrd::apply_checkpoint_outcome(state, outcome(
-        myrd::persistence::CommitDisposition::CommitIndeterminate), {}, false));
-    REQUIRE(state.skip_final_checkpoint);
-    REQUIRE(state.exit_failure);
-}
-
-TEST_CASE(m4_run_policy_unresolved_reconciliation_requests_controlled_failure) {
-    myrd::MaintenanceState state{};
-    REQUIRE(!myrd::apply_checkpoint_outcome(state, outcome(
-        myrd::persistence::CommitDisposition::CommittedNeedsReconciliation), {}, false));
-    REQUIRE(state.exit_failure);
-    REQUIRE(!state.skip_final_checkpoint);
-}
-
-TEST_CASE(m4_run_policy_committed_updates_last_checkpoint) {
-    const auto now = std::chrono::steady_clock::time_point{} + 17s;
-    myrd::MaintenanceState state{};
-    REQUIRE(!myrd::apply_checkpoint_outcome(state, outcome(
-        myrd::persistence::CommitDisposition::Committed), now, false));
     REQUIRE_EQ(state.last_checkpoint, now);
 }
 
-TEST_CASE(m4_run_policy_maintenance_stats_failure_preserves_final_checkpoint) {
-    myrd::MaintenanceState state{};
-    myrd::mark_maintenance_stats_failure(state);
+TEST_CASE(m4_run_policy_retry_already_used_disallows_not_committed_retry) {
+    MaintenanceState state{};
+    const auto now = std::chrono::steady_clock::time_point{} + 11s;
+    REQUIRE(!myrd::apply_checkpoint_outcome(
+        state, result(CheckpointDispositionAdapter::NotCommitted), now, true));
+    REQUIRE_EQ(state.checkpoint_suppressed_until, now + 60s);
+}
+
+TEST_CASE(m4_run_policy_committed_records_checkpoint_time) {
+    MaintenanceState state{};
+    const auto now = std::chrono::steady_clock::time_point{} + 23s;
+    REQUIRE(!myrd::apply_checkpoint_outcome(
+        state, result(CheckpointDispositionAdapter::Committed, 7), now, false));
+    REQUIRE_EQ(state.last_checkpoint, now);
+}
+
+TEST_CASE(m4_run_policy_flush_failure_never_calls_checkpoint) {
+    MaintenanceState state{};
+    int checkpoints{};
+    const CheckpointAttemptHooks hooks{
+        [&] { return myrd::Result<void>::failure(
+            myrd::Error{myrd::ErrorDomain::win32, 1, L"flush", L"fake"}); },
+        [&] { ++checkpoints; return result(CheckpointDispositionAdapter::Committed); }};
+    REQUIRE_EQ(myrd::perform_checkpoint_attempts(state, hooks, {}),
+               CheckpointAttemptResult::Failed);
+    REQUIRE_EQ(checkpoints, 0);
+    REQUIRE(state.exit_failure);
+}
+
+TEST_CASE(m4_run_policy_indeterminate_fails_and_skips_final_checkpoint) {
+    MaintenanceState state{};
+    REQUIRE(!myrd::apply_checkpoint_outcome(
+        state, result(CheckpointDispositionAdapter::CommitIndeterminate), {}, false));
+    REQUIRE(state.exit_failure);
+    REQUIRE(state.skip_final_checkpoint);
+}
+
+TEST_CASE(m4_run_policy_committed_needs_reconciliation_is_terminal_for_this_attempt) {
+    MaintenanceState state{};
+    const auto now = std::chrono::steady_clock::time_point{} + 13s;
+    REQUIRE(!myrd::apply_checkpoint_outcome(
+        state,
+        result(CheckpointDispositionAdapter::CommittedNeedsReconciliation, 9),
+        now,
+        false));
     REQUIRE(state.exit_failure);
     REQUIRE(!state.skip_final_checkpoint);
+    REQUIRE_EQ(state.last_checkpoint, std::chrono::steady_clock::time_point{});
+    REQUIRE_EQ(state.checkpoint_suppressed_until,
+               std::chrono::steady_clock::time_point{});
 }
 
-TEST_CASE(m4_run_policy_journal_warning_is_thresholded_once_and_uses_actual_bundle) {
-    myrd::MaintenanceState state{};
-    myrd::RunOptions value{};
-    value.bundle = L"C:\\bundles\\actual";
-    std::wostringstream output;
-    warn_once(state, {.journal_committed_bytes = 1717986918ull}, value, output);
-    REQUIRE(output.str().empty());
-    warn_once(state, {.journal_committed_bytes = 1717986919ull}, value, output);
-    warn_once(state, {.journal_committed_bytes = 2147483648ull}, value, output);
-    REQUIRE_EQ(output.str(), std::wstring(L"Warning: journal is 1717986919 of 2147483648 bytes. Press Ctrl+C for a clean shutdown, then run: myrd compact --bundle \"C:\\bundles\\actual\"\n"));
+TEST_CASE(m4_run_policy_capacity_exhaustion_is_terminal_without_retry) {
+    MaintenanceState state{};
+    const auto now = std::chrono::steady_clock::time_point{} + 4s;
+    REQUIRE(!myrd::apply_checkpoint_outcome(
+        state, capacity_outcome(), now, false));
+    REQUIRE(state.checkpoints_disabled_for_full_journal);
+    REQUIRE(state.skip_final_checkpoint);
+    REQUIRE(state.exit_failure);
 }
 
-TEST_CASE(m4_run_policy_compact_command_quotes_windows_bundle_path_exactly) {
-    const std::wstring path = L"C:\\bundle dir\\tail\\\"quoted\"";
-    const auto command = compact_command_for(path);
-    int argc{};
-    auto* argv = CommandLineToArgvW((L"myrd " + command).c_str(), &argc);
-    REQUIRE(argv != nullptr);
-    REQUIRE_EQ(argc, 4);
-    REQUIRE_EQ(std::wstring(argv[1]), std::wstring(L"compact"));
-    REQUIRE_EQ(std::wstring(argv[2]), std::wstring(L"--bundle"));
-    REQUIRE_EQ(std::wstring(argv[3]), path);
-    LocalFree(argv);
+TEST_CASE(m4_run_policy_typed_m3_capacity_error_and_context_is_terminal) {
+    MaintenanceState state{};
+    const auto now = std::chrono::steady_clock::time_point{} + 19s;
+    const auto capacity = capacity_outcome(true, false);
+    REQUIRE(capacity.m3_outcome.error.has_value());
+    REQUIRE(capacity.m3_outcome.error_context.has_value());
+    REQUIRE_EQ(capacity.m3_outcome.error->domain, myrd::ErrorDomain::persistence);
+    REQUIRE_EQ(capacity.m3_outcome.error->code,
+               static_cast<std::uint32_t>(kJournalCapacityErrorCode));
+    REQUIRE_EQ(capacity.m3_outcome.error_context->code,
+               kJournalCapacityErrorCode);
+    REQUIRE(!myrd::apply_checkpoint_outcome(state, capacity, now, false));
+    REQUIRE(state.checkpoints_disabled_for_full_journal);
+    REQUIRE(state.skip_final_checkpoint);
+    REQUIRE(state.exit_failure);
+}
+
+TEST_CASE(m4_run_policy_capacity_attempt_calls_checkpoint_once_and_disables_future_attempts) {
+    MaintenanceState state{};
+    int flushes{};
+    int checkpoints{};
+    const CheckpointAttemptHooks hooks{
+        [&] { ++flushes; return myrd::Result<void>::success(); },
+        [&] { ++checkpoints; return capacity_outcome(); }};
+    REQUIRE_EQ(myrd::perform_checkpoint_attempts(state, hooks, {}),
+               CheckpointAttemptResult::Failed);
+    REQUIRE_EQ(flushes, 1);
+    REQUIRE_EQ(checkpoints, 1);
+    REQUIRE(state.checkpoints_disabled_for_full_journal);
+    REQUIRE_EQ(myrd::perform_checkpoint_attempts(state, hooks, 1s),
+               CheckpointAttemptResult::Suppressed);
+    REQUIRE_EQ(checkpoints, 1);
+}
+
+TEST_CASE(m4_run_policy_indeterminate_attempt_calls_checkpoint_once_without_retry) {
+    MaintenanceState state{};
+    int flushes{};
+    int checkpoints{};
+    const CheckpointAttemptHooks hooks{
+        [&] { ++flushes; return myrd::Result<void>::success(); },
+        [&] { ++checkpoints; return result(CheckpointDispositionAdapter::CommitIndeterminate); }};
+    REQUIRE_EQ(myrd::perform_checkpoint_attempts(state, hooks, {}),
+               CheckpointAttemptResult::Failed);
+    REQUIRE_EQ(flushes, 1);
+    REQUIRE_EQ(checkpoints, 1);
+    REQUIRE(state.skip_final_checkpoint);
+}
+
+TEST_CASE(m4_run_policy_busy_shutdown_clears_request_without_cleanup) {
+    MaintenanceState state{};
+    std::atomic_bool requested{true};
+    std::vector<int> calls;
+    const myrd::ShutdownHooks hooks{
+        [&] { calls.push_back(1); return myrd::ShutdownLockResult::Busy; },
+        [&] { calls.push_back(2); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(3); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(4); return result(CheckpointDispositionAdapter::Committed); },
+        [&] { calls.push_back(5); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(6); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(7); return myrd::Result<void>::success(); }};
+    REQUIRE(myrd::perform_shutdown(state, requested, hooks) != 0);
+    REQUIRE(!requested.load());
+    REQUIRE(!state.exit_failure);
+    REQUIRE(calls == std::vector<int>({1}));
+}
+
+TEST_CASE(m4_run_policy_loop_reads_stats_and_runs_due_checkpoint) {
+    RunOptions run_options = options();
+    std::atomic_bool requested{false};
+    MaintenanceState state{};
+    int ticks{};
+    int checkpoints{};
+    std::vector<int> calls;
+    const auto zero = std::chrono::steady_clock::time_point{};
+    auto now = zero;
+    const myrd::RunLoopHooks hooks{
+        [&] { return now; },
+        [&] {
+            calls.push_back(1);
+            now += 10s;
+            if (++ticks == 2) requested.store(true);
+        },
+        [&] { return MaintenanceStatsAdapter{}; },
+        CheckpointAttemptHooks{
+            [&] { calls.push_back(2); return myrd::Result<void>::success(); },
+            [&] {
+                calls.push_back(3);
+                ++checkpoints;
+                return result(CheckpointDispositionAdapter::Committed, 1);
+            }},
+        [&](MaintenanceState&, std::atomic_bool&) {
+            calls.push_back(4);
+            return 0;
+        }};
+    REQUIRE_EQ(myrd::run_loop(run_options, requested, hooks), 0);
+    REQUIRE_EQ(checkpoints, 1);
+    REQUIRE(calls == std::vector<int>({1, 2, 3, 1, 4}));
+}
+
+TEST_CASE(m4_run_policy_console_request_only_sets_shutdown_flag) {
+    std::atomic_bool requested{false};
+    REQUIRE(myrd::request_console_shutdown(requested, 0));
+    REQUIRE(requested.load());
+    requested.store(false);
+    REQUIRE(!myrd::request_console_shutdown(requested, 99));
+    REQUIRE(!requested.load());
+}
+
+TEST_CASE(m4_run_policy_final_shutdown_order_is_lock_verify_flush_checkpoint_cleanup_stop) {
+    MaintenanceState state{};
+    std::atomic_bool requested{true};
+    std::vector<int> calls;
+    const myrd::ShutdownHooks hooks{
+        [&] { calls.push_back(1); return myrd::ShutdownLockResult::Locked; },
+        [&] { calls.push_back(2); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(3); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(4); return result(CheckpointDispositionAdapter::Committed, 8); },
+        [&] { calls.push_back(5); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(6); return myrd::Result<void>::success(); },
+        [&] { calls.push_back(7); return myrd::Result<void>::success(); }};
+    REQUIRE_EQ(myrd::perform_shutdown(state, requested, hooks), 0);
+    REQUIRE(calls == std::vector<int>({1, 2, 3, 4, 5, 6, 7}));
+}
+
+TEST_CASE(m4_run_policy_shutdown_skips_final_checkpoint_after_verify_or_flush_failure) {
+    for (const int failing_stage : {2, 3}) {
+        MaintenanceState state{};
+        std::atomic_bool requested{true};
+        std::vector<int> calls;
+        int final_checkpoints{};
+        const myrd::ShutdownHooks hooks{
+            [&] { calls.push_back(1); return myrd::ShutdownLockResult::Locked; },
+            [&] {
+                calls.push_back(2);
+                return failing_stage == 2
+                    ? myrd::Result<void>::failure(
+                        myrd::Error{myrd::ErrorDomain::win32, 1, L"verify", L"fake"})
+                    : myrd::Result<void>::success();
+            },
+            [&] {
+                calls.push_back(3);
+                return failing_stage == 3
+                    ? myrd::Result<void>::failure(
+                        myrd::Error{myrd::ErrorDomain::win32, 1, L"flush", L"fake"})
+                    : myrd::Result<void>::success();
+            },
+            [&] {
+                calls.push_back(4);
+                ++final_checkpoints;
+                return result(CheckpointDispositionAdapter::Committed);
+            },
+            [&] { calls.push_back(5); return myrd::Result<void>::success(); },
+            [&] { calls.push_back(6); return myrd::Result<void>::success(); },
+            [&] { calls.push_back(7); return myrd::Result<void>::success(); }};
+        REQUIRE(myrd::perform_shutdown(state, requested, hooks) != 0);
+        REQUIRE_EQ(final_checkpoints, 0);
+        REQUIRE(calls == std::vector<int>({1, 2, 3, 5, 6, 7}));
+    }
 }

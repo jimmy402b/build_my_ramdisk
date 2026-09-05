@@ -117,6 +117,103 @@ target_include_directories(myrd_m1_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m1_cli_tests)
 add_test(NAME unit.m1.cli COMMAND myrd_m1_cli_tests)
 
+# ---- M4 single/multi-disk CLI parser contract (T01) ----------------------
+add_executable(myrd_m4_cli_tests
+    unit/m4_cli_tests.cpp
+)
+target_link_libraries(myrd_m4_cli_tests PRIVATE myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_cli_tests)
+add_test(NAME unit.m4.cli COMMAND myrd_m4_cli_tests)
+
+# ---- M4 exact volume ownership seams (T04; RED until implementation) -----
+add_executable(myrd_m4_windows_volume_tests
+    unit/m4_windows_volume_tests.cpp
+)
+target_link_libraries(myrd_m4_windows_volume_tests PRIVATE
+    myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_windows_volume_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_windows_volume_tests)
+add_test(NAME unit.m4.windows_volume COMMAND myrd_m4_windows_volume_tests)
+
+add_executable(myrd_m4_disk_runtime_tests
+    unit/m4_disk_runtime_tests.cpp
+)
+target_link_libraries(myrd_m4_disk_runtime_tests PRIVATE
+    myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_disk_runtime_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_disk_runtime_tests)
+add_test(NAME unit.m4.disk_runtime COMMAND myrd_m4_disk_runtime_tests)
+set_tests_properties(unit.m4.disk_runtime PROPERTIES TIMEOUT 30)
+
+# ---- M4 checkpoint and shutdown policy (T10; RED until implementation) ----
+add_executable(myrd_m4_run_policy_tests
+    unit/m4_run_policy_tests.cpp
+)
+target_link_libraries(myrd_m4_run_policy_tests PRIVATE
+    myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_run_policy_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_run_policy_tests)
+add_test(NAME unit.m4.run_policy COMMAND myrd_m4_run_policy_tests)
+
+add_executable(myrd_m4_run_loop_runtime_tests
+    integration/m4_run_loop_runtime_tests.cpp)
+target_link_libraries(myrd_m4_run_loop_runtime_tests PRIVATE
+    myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_run_loop_runtime_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_run_loop_runtime_tests)
+add_test(NAME integration.m4.run_loop_runtime
+    COMMAND myrd_m4_run_loop_runtime_tests)
+set_tests_properties(integration.m4.run_loop_runtime PROPERTIES TIMEOUT 30)
+
+add_executable(myrd_m4_persistence_adapter_tests
+    unit/m4_persistence_adapter_tests.cpp)
+target_link_libraries(myrd_m4_persistence_adapter_tests PRIVATE
+    myrd_test_support myrd_m4_run myrd_m3_management)
+target_include_directories(myrd_m4_persistence_adapter_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_persistence_adapter_tests)
+add_test(NAME unit.m4.persistence_adapter
+    COMMAND myrd_m4_persistence_adapter_tests)
+set_tests_properties(unit.m4.persistence_adapter PROPERTIES TIMEOUT 60)
+
+add_test(NAME unit.m4.provision_script
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-provision-script.ps1"
+        -SourceRoot "${CMAKE_SOURCE_DIR}")
+set_tests_properties(unit.m4.provision_script PROPERTIES TIMEOUT 30)
+
+# ---- M4 foreground composition (T13/T14) ---------------------------------
+add_executable(myrd_m4_product_composition_tests
+    integration/m4_product_composition_tests.cpp)
+target_link_libraries(myrd_m4_product_composition_tests PRIVATE
+    myrd_test_support)
+target_include_directories(myrd_m4_product_composition_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m4_product_composition_tests PRIVATE
+    MYRD_PRODUCT_EXE_PATH=L"$<TARGET_FILE:myrd>")
+add_dependencies(myrd_m4_product_composition_tests myrd)
+myrd_enable_warnings(myrd_m4_product_composition_tests)
+add_test(NAME integration.m4.product_composition
+    COMMAND myrd_m4_product_composition_tests)
+set_tests_properties(integration.m4.product_composition PROPERTIES TIMEOUT 30)
+
+add_executable(myrd_m4_multi_instance_tests
+    integration/m4_multi_instance_tests.cpp)
+target_link_libraries(myrd_m4_multi_instance_tests PRIVATE
+    myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_multi_instance_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_multi_instance_tests)
+add_test(NAME integration.m4.multi_instance
+    COMMAND myrd_m4_multi_instance_tests)
+set_tests_properties(integration.m4.multi_instance PROPERTIES
+    LABELS "m4-v1" TIMEOUT 30)
+
 add_executable(myrd_m1_lifecycle_runner_tests
     unit/m1_lifecycle_runner_tests.cpp
 )
@@ -1563,171 +1660,608 @@ set_tests_properties(unit.m2.orchestrator_report_gate PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
 
-add_custom_target(myrd_m4_product_boundary_tests
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m4_product_boundary_tests.ps1"
-        -Executable "$<TARGET_FILE:myrd>"
-    DEPENDS myrd
-    VERBATIM)
-
-add_test(
-    NAME unit.m4.product_boundary
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m4_product_boundary_tests.ps1"
-        -Executable "$<TARGET_FILE:myrd>")
-set_tests_properties(unit.m4.product_boundary PROPERTIES
+# ---- M4 product contracts tests (Task 01) ----------------------------------
+add_executable(myrd_m4_product_contracts_tests
+    unit/m4_product_contracts_tests.cpp
+)
+target_link_libraries(myrd_m4_product_contracts_tests PRIVATE
+    myrd_test_support myrd_product_contracts)
+target_include_directories(myrd_m4_product_contracts_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_product_contracts_tests)
+add_test(NAME unit.m4.product_contracts
+    COMMAND myrd_m4_product_contracts_tests)
+set_tests_properties(unit.m4.product_contracts PROPERTIES
     LABELS "m4-v0"
+    TIMEOUT 20)
+
+# ---- M4 strict quantity parser tests (Task 02) ----------------------------
+add_executable(myrd_m4_quantity_parser_tests
+    unit/m4_quantity_parser_tests.cpp
+)
+target_link_libraries(myrd_m4_quantity_parser_tests PRIVATE
+    myrd_test_support myrd_product_contracts)
+target_include_directories(myrd_m4_quantity_parser_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_quantity_parser_tests)
+add_test(NAME unit.m4.quantity_parser
+    COMMAND myrd_m4_quantity_parser_tests)
+set_tests_properties(unit.m4.quantity_parser PROPERTIES
+    LABELS "m4-v0"
+    TIMEOUT 20)
+
+# ---- M4 CLI/JSON contract tests (Task 03) ---------------------------------
+add_executable(myrd_m4_cli_contract_tests
+    unit/m4_cli_contract_tests.cpp
+)
+target_link_libraries(myrd_m4_cli_contract_tests PRIVATE
+    myrd_test_support myrd_cli_core)
+target_include_directories(myrd_m4_cli_contract_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m4_cli_contract_tests PRIVATE
+    "MYRD_CLI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/m4/cli_golden\"")
+myrd_enable_warnings(myrd_m4_cli_contract_tests)
+add_test(NAME unit.m4.cli_contract
+    COMMAND myrd_m4_cli_contract_tests)
+set_tests_properties(unit.m4.cli_contract PROPERTIES
+    LABELS "m4-v0"
+    TIMEOUT 20)
+
+# ---- M4 bounded IPC codec tests (Task 04) ---------------------------------
+add_executable(myrd_m4_ipc_codec_tests
+    unit/m4_ipc_codec_tests.cpp
+)
+target_link_libraries(myrd_m4_ipc_codec_tests PRIVATE
+    myrd_test_support myrd_product_ipc)
+target_include_directories(myrd_m4_ipc_codec_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_ipc_codec_tests)
+add_test(NAME unit.m4.ipc_codec COMMAND myrd_m4_ipc_codec_tests)
+set_tests_properties(unit.m4.ipc_codec PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 30)
+
+add_executable(myrd_m4_ipc_fuzz_tests
+    model/m4_ipc_fuzz_tests.cpp
+)
+target_link_libraries(myrd_m4_ipc_fuzz_tests PRIVATE
+    myrd_test_support myrd_product_ipc)
+target_include_directories(myrd_m4_ipc_fuzz_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_ipc_fuzz_tests)
+add_test(NAME model.m4.ipc_fuzz COMMAND myrd_m4_ipc_fuzz_tests)
+set_tests_properties(model.m4.ipc_fuzz PROPERTIES
+    LABELS "m4-v1"
     TIMEOUT 120)
 
-add_executable(myrd_m4_cli_tests unit/m4_cli_tests.cpp
-    "${CMAKE_SOURCE_DIR}/src/run/cli.cpp")
-target_link_libraries(myrd_m4_cli_tests PRIVATE myrd_test_support)
-target_include_directories(myrd_m4_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_cli_tests)
-add_test(NAME unit.m4.cli COMMAND myrd_m4_cli_tests)
-set_tests_properties(unit.m4.cli PROPERTIES LABELS "m4-v0" TIMEOUT 30)
-
-add_executable(myrd_m4_product_composition_tests
-    integration/m4_product_composition_tests.cpp)
-target_link_libraries(myrd_m4_product_composition_tests PRIVATE
-    myrd_test_support myrd_m3_windows)
-target_compile_definitions(myrd_m4_product_composition_tests PRIVATE
-    MYRD_PRODUCT_EXECUTABLE=L"$<TARGET_FILE:myrd>")
-add_dependencies(myrd_m4_product_composition_tests myrd)
-target_include_directories(myrd_m4_product_composition_tests PRIVATE
+# ---- M4 local named-pipe transport tests (Task 05) ------------------------
+add_executable(myrd_m4_pipe_transport_tests
+    integration/m4_pipe_transport_tests.cpp
+)
+target_link_libraries(myrd_m4_pipe_transport_tests PRIVATE
+    myrd_test_support myrd_product_ipc)
+target_include_directories(myrd_m4_pipe_transport_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_product_composition_tests)
-add_test(NAME integration.m4.product_composition
-    COMMAND myrd_m4_product_composition_tests)
-set_tests_properties(integration.m4.product_composition PROPERTIES
-    LABELS "m4-v1;m4-v2" TIMEOUT 120)
+myrd_enable_warnings(myrd_m4_pipe_transport_tests)
+add_test(NAME integration.m4.pipe_transport
+    COMMAND myrd_m4_pipe_transport_tests)
+set_tests_properties(integration.m4.pipe_transport PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 60)
 
-add_executable(myrd_m4_windows_volume_tests
-    unit/m4_windows_volume_tests.cpp)
-target_link_libraries(myrd_m4_windows_volume_tests PRIVATE myrd_test_support bcrypt)
-target_include_directories(myrd_m4_windows_volume_tests PRIVATE "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_windows_volume_tests)
-add_test(NAME unit.m4.windows_volume COMMAND myrd_m4_windows_volume_tests)
-set_tests_properties(unit.m4.windows_volume PROPERTIES LABELS "m4-v2" TIMEOUT 30)
-add_test(NAME unit.m4.provision_script
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File
-        "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-provision-script.ps1")
-set_tests_properties(unit.m4.provision_script PROPERTIES LABELS "m4-v2" TIMEOUT 30)
-
-add_executable(myrd_m4_run_policy_tests unit/m4_run_policy_tests.cpp
-    "${CMAKE_SOURCE_DIR}/src/run/windows_volume.cpp")
-target_link_libraries(myrd_m4_run_policy_tests PRIVATE myrd_test_support myrd_m3_windows shell32)
-target_include_directories(myrd_m4_run_policy_tests PRIVATE "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_run_policy_tests)
-add_test(NAME unit.m4.run_policy COMMAND myrd_m4_run_policy_tests)
-set_tests_properties(unit.m4.run_policy PROPERTIES LABELS "m4-v3" TIMEOUT 30)
-
-# The preflight matrix is fully in-memory: it fakes the SCM seam, so it never
-# depends on this machine's phdskmnt service, privileges or start type.
-add_executable(myrd_m4_driver_preflight_tests
-    unit/m4_driver_preflight_tests.cpp)
-target_link_libraries(myrd_m4_driver_preflight_tests PRIVATE
-    myrd_test_support advapi32)
-target_include_directories(myrd_m4_driver_preflight_tests PRIVATE
+# ---- M4 real caller authorization (Task 06) -------------------------------
+add_executable(myrd_m4_authorization_tests
+    security/m4_authorization_tests.cpp
+)
+target_link_libraries(myrd_m4_authorization_tests PRIVATE
+    myrd_test_support myrd_product_ipc Advapi32)
+target_include_directories(myrd_m4_authorization_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_driver_preflight_tests)
-add_test(NAME unit.m4.driver_preflight COMMAND myrd_m4_driver_preflight_tests)
-set_tests_properties(unit.m4.driver_preflight PROPERTIES
-    LABELS "m4-v3" TIMEOUT 30)
+myrd_enable_warnings(myrd_m4_authorization_tests)
+add_test(NAME security.m4.authorization
+    COMMAND myrd_m4_authorization_tests)
+set_tests_properties(security.m4.authorization PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 60)
 
-# Exercises the frozen query success JSON without a driver: the emission is
-# compiled in with wmain suppressed, so no device is enumerated or opened.
-add_executable(myrd_m4_aim_query_protocol_tests
-    unit/m4_aim_query_protocol_tests.cpp)
-target_link_libraries(myrd_m4_aim_query_protocol_tests PRIVATE
-    myrd_test_support myrd_driver)
-target_include_directories(myrd_m4_aim_query_protocol_tests PRIVATE
+# ---- M4 crash-safe profile store (Task 08) -------------------------------
+add_executable(myrd_m4_profile_store_tests
+    unit/m4_profile_store_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_store_tests PRIVATE
+    myrd_test_support myrd_profile)
+target_include_directories(myrd_m4_profile_store_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_aim_query_protocol_tests)
-add_test(NAME unit.m4.aim_query_protocol
-    COMMAND myrd_m4_aim_query_protocol_tests)
-set_tests_properties(unit.m4.aim_query_protocol PROPERTIES
-    LABELS "m4-v3" TIMEOUT 30)
+myrd_enable_warnings(myrd_m4_profile_store_tests)
+add_test(NAME unit.m4.profile_store
+    COMMAND myrd_m4_profile_store_tests)
+set_tests_properties(unit.m4.profile_store PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 60)
 
-# R7 is intentionally a non-destructive CTest contract.  It exercises every
-# phase without the acknowledgement switch, so no VM, driver, bundle, or drive
-# is ever required for ordinary local regression.
-foreach(_myrd_r7_phase IN ITEMS CreateKill RecoverShutdown OfflineCompact Negative)
-    add_test(NAME unit.m4.lifecycle_safety_${_myrd_r7_phase}
-        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-            "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-r7-safety-' + [guid]::NewGuid().ToString('N') + '.json'); & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase '${_myrd_r7_phase}' -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile $s; $e=$LASTEXITCODE; if($e -ne 77){throw \"expected exit 77, got $e\"}; if(Test-Path -LiteralPath $s){throw 'safety gate mutated state file'}")
-    set_tests_properties(unit.m4.lifecycle_safety_${_myrd_r7_phase} PROPERTIES
-        LABELS "m4-v3" TIMEOUT 30)
-endforeach()
+add_executable(myrd_m4_profile_crash_model_tests
+    model/m4_profile_crash_model_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_crash_model_tests PRIVATE
+    myrd_test_support myrd_profile)
+target_include_directories(myrd_m4_profile_crash_model_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_profile_crash_model_tests)
+add_test(NAME model.m4.profile_crash
+    COMMAND myrd_m4_profile_crash_model_tests)
+set_tests_properties(model.m4.profile_crash PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.lifecycle_native_selftest
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$env:MYRD_M4_HARNESS_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"native selftest exit $e\"}")
-set_tests_properties(unit.m4.lifecycle_native_selftest PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+# ---- M4 durable idempotent operation records (Task 09) ------------------
+add_executable(myrd_m4_operation_store_tests
+    unit/m4_operation_store_tests.cpp
+)
+target_link_libraries(myrd_m4_operation_store_tests PRIVATE
+    myrd_test_support myrd_operation_store)
+target_include_directories(myrd_m4_operation_store_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_operation_store_tests)
+add_test(NAME unit.m4.operation_store
+    COMMAND myrd_m4_operation_store_tests)
+set_tests_properties(unit.m4.operation_store PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 60)
 
-add_test(NAME unit.m4.lifecycle_protocol_selftest
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$env:MYRD_M4_PROTOCOL_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"protocol selftest exit $e\"}")
-set_tests_properties(unit.m4.lifecycle_protocol_selftest PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+add_executable(myrd_m4_operation_recovery_tests
+    model/m4_operation_recovery_tests.cpp
+)
+target_link_libraries(myrd_m4_operation_recovery_tests PRIVATE
+    myrd_test_support myrd_operation_store)
+target_include_directories(myrd_m4_operation_recovery_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_operation_recovery_tests)
+add_test(NAME model.m4.operation_recovery
+    COMMAND myrd_m4_operation_recovery_tests)
+set_tests_properties(model.m4.operation_recovery PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.lifecycle_ack_invalid_no_mutation
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-r7-invalid-'+[guid]::NewGuid().ToString('N')+'.json'); & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile $s -SafetyAcknowledged; if($LASTEXITCODE -ne 77){throw 'expected invalid gate exit 77'}; if(Test-Path $s){throw 'invalid acknowledged input wrote state'}")
-set_tests_properties(unit.m4.lifecycle_ack_invalid_no_mutation PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+# ---- M4 pure product state machine (Task 10) ---------------------------
+add_executable(myrd_m4_state_machine_tests
+    model/m4_state_machine_tests.cpp
+)
+target_link_libraries(myrd_m4_state_machine_tests PRIVATE
+    myrd_test_support myrd_state_machine)
+target_include_directories(myrd_m4_state_machine_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_state_machine_tests)
+add_test(NAME model.m4.state_machine
+    COMMAND myrd_m4_state_machine_tests)
+set_tests_properties(model.m4.state_machine PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.lifecycle_block_cleanup
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$s=Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-block-cleanup-'+[guid]::NewGuid().ToString('N')+'.sentinel'); $m=Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-block-cleanup-'+[guid]::NewGuid().ToString('N')+'.started'); $env:MYRD_M4_BLOCK_CLEANUP_SELFTEST='1'; $env:MYRD_M4_BLOCK_CLEANUP_SENTINEL=$s; $env:MYRD_M4_BLOCK_CLEANUP_START_MARKER=$m; try {$o=@(& '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged 2>&1 | ForEach-Object {[string]$_}); $e=$LASTEXITCODE; if($e -ne 77){throw \"expected cleanup selftest exit 77, got $e\"}; $expected='M4 lifecycle CreateKill BLOCKED: selftest forced block after child start.'; if($o.Count -ne 1 -or $o[0] -cne $expected){throw \"cleanup selftest output mismatch: $($o -join '|')\"}; if(-not(Test-Path -LiteralPath $s) -or [IO.File]::ReadAllText($s) -cne 'cleaned'){throw 'cleanup sentinel was not written'}; if(-not(Test-Path -LiteralPath $m) -or [IO.File]::ReadAllText($m).Trim() -cne 'started'){throw 'cleanup start marker was not durably written'}} finally {Remove-Item -LiteralPath $s,$m -Force -ErrorAction SilentlyContinue; Remove-Item Env:MYRD_M4_BLOCK_CLEANUP_SELFTEST,Env:MYRD_M4_BLOCK_CLEANUP_SENTINEL,Env:MYRD_M4_BLOCK_CLEANUP_START_MARKER -ErrorAction SilentlyContinue}; exit 0")
-set_tests_properties(unit.m4.lifecycle_block_cleanup PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+add_executable(myrd_m4_start_lifecycle_tests
+    model/m4_start_lifecycle_tests.cpp
+)
+target_link_libraries(myrd_m4_start_lifecycle_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_start_lifecycle_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_start_lifecycle_tests)
+add_test(NAME model.m4.start_lifecycle
+    COMMAND myrd_m4_start_lifecycle_tests)
+set_tests_properties(model.m4.start_lifecycle PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.lifecycle_block_cleanup_precondition
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$m=Join-Path ([IO.Path]::GetTempPath()) ('myrd-m4-block-cleanup-'+[guid]::NewGuid().ToString('N')+'.started'); $env:MYRD_M4_BLOCK_CLEANUP_SELFTEST='1'; $env:MYRD_M4_BLOCK_CLEANUP_START_MARKER=$m; Remove-Item Env:MYRD_M4_BLOCK_CLEANUP_SENTINEL -ErrorAction SilentlyContinue; try {$o=@(& '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase CreateKill -Executable 'C:\\R7-NoTouch\\Release\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged 2>&1 | ForEach-Object {[string]$_}); $e=$LASTEXITCODE; if($e -ne 77){throw \"expected precondition exit 77, got $e\"}; $expected='M4 lifecycle CreateKill BLOCKED: selftest cleanup sentinel was not supplied'; if($o.Count -ne 1 -or $o[0] -cne $expected){throw \"precondition output mismatch: $($o -join '|')\"}; if(Test-Path -LiteralPath $m){throw 'invalid precondition started a child'}} finally {Remove-Item -LiteralPath $m -Force -ErrorAction SilentlyContinue; Remove-Item Env:MYRD_M4_BLOCK_CLEANUP_SELFTEST,Env:MYRD_M4_BLOCK_CLEANUP_SENTINEL,Env:MYRD_M4_BLOCK_CLEANUP_START_MARKER -ErrorAction SilentlyContinue}; exit 0")
-set_tests_properties(unit.m4.lifecycle_block_cleanup_precondition PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+add_executable(myrd_m4_create_import_tests
+    integration/m4_create_import_tests.cpp
+)
+target_link_libraries(myrd_m4_create_import_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_create_import_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_create_import_tests)
+add_test(NAME integration.m4.create_import
+    COMMAND myrd_m4_create_import_tests)
+set_tests_properties(integration.m4.create_import PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
 
-# The Final verifier synthesizes evidence only when this private switch is set;
-# it never invokes the lifecycle runner or touches a VM.
-add_test(NAME unit.m4.lifecycle_final_verifier
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$env:MYRD_M4_FINAL_SELFTEST='1'; & '${CMAKE_SOURCE_DIR}/tools/Invoke-M4Verification.ps1' -Tier Final; $e=$LASTEXITCODE; if($e -ne 0){throw \"final verifier selftest exit $e\"}")
-set_tests_properties(unit.m4.lifecycle_final_verifier PROPERTIES LABELS "m4-v3" TIMEOUT 60)
+add_executable(myrd_m4_checkpoint_operation_tests
+    model/m4_checkpoint_operation_tests.cpp
+)
+target_link_libraries(myrd_m4_checkpoint_operation_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_checkpoint_operation_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_checkpoint_operation_tests)
+add_test(NAME model.m4.checkpoint_operation
+    COMMAND myrd_m4_checkpoint_operation_tests)
+set_tests_properties(model.m4.checkpoint_operation PROPERTIES
+    LABELS "m4-v3"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.lifecycle_negative_contract
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
-        "$env:MYRD_M4_NEGATIVE_SELFTEST='1'; & '${CMAKE_CURRENT_SOURCE_DIR}/e2e/Invoke-M4RunLifecycle.ps1' -Phase Negative -Executable 'C:\\R7-NoTouch\\myrd.exe' -Bundle 'C:\\R7-NoTouch\\bundle' -DriveLetter 'R' -StateFile 'C:\\R7-NoTouch\\state.json' -SafetyAcknowledged; $e=$LASTEXITCODE; if($e -ne 0){throw \"negative contract selftest exit $e\"}")
-set_tests_properties(unit.m4.lifecycle_negative_contract PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+add_executable(myrd_m4_compaction_operation_tests
+    model/m4_compaction_operation_tests.cpp
+)
+target_link_libraries(myrd_m4_compaction_operation_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_compaction_operation_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_compaction_operation_tests)
+add_test(NAME model.m4.compaction_operation
+    COMMAND myrd_m4_compaction_operation_tests)
+set_tests_properties(model.m4.compaction_operation PROPERTIES
+    LABELS "m4-v3;m4-v4;m3-v4"
+    TIMEOUT 120)
 
-add_executable(myrd_m4_aim_query e2e/m4_aim_query.cpp)
-target_link_libraries(myrd_m4_aim_query PRIVATE myrd_driver)
-target_include_directories(myrd_m4_aim_query PRIVATE "${CMAKE_SOURCE_DIR}")
-myrd_enable_warnings(myrd_m4_aim_query)
+add_executable(myrd_m4_recovery_commands_tests
+    model/m4_recovery_commands_tests.cpp
+)
+target_link_libraries(myrd_m4_recovery_commands_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_recovery_commands_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_recovery_commands_tests)
+add_test(NAME model.m4.recovery_commands
+    COMMAND myrd_m4_recovery_commands_tests)
+set_tests_properties(model.m4.recovery_commands PROPERTIES
+    LABELS "m4-v4"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.formal12_support
+add_executable(myrd_m4_stop_forget_tests
+    integration/m4_stop_forget_tests.cpp
+)
+target_link_libraries(myrd_m4_stop_forget_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_stop_forget_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_stop_forget_tests)
+add_test(NAME integration.m4.stop_forget
+    COMMAND myrd_m4_stop_forget_tests)
+set_tests_properties(integration.m4.stop_forget PROPERTIES
+    LABELS "m4-v4"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_worker_supervisor_tests
+    model/m4_worker_supervisor_tests.cpp
+    support/m4_fake_clock.cpp support/m4_fake_clock.h
+)
+target_link_libraries(myrd_m4_worker_supervisor_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_worker_supervisor_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_worker_supervisor_tests)
+add_test(NAME model.m4.worker_supervisor
+    COMMAND myrd_m4_worker_supervisor_tests)
+set_tests_properties(model.m4.worker_supervisor PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_worker_reattach_tests
+    integration/m4_worker_reattach_tests.cpp
+    support/m4_fake_clock.cpp support/m4_fake_clock.h
+)
+target_link_libraries(myrd_m4_worker_reattach_tests PRIVATE
+    myrd_test_support myrd_management_core myrd_host_core)
+target_include_directories(myrd_m4_worker_reattach_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_worker_reattach_tests)
+add_test(NAME integration.m4.worker_reattach
+    COMMAND myrd_m4_worker_reattach_tests)
+set_tests_properties(integration.m4.worker_reattach PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_worker_restart_tests
+    model/m4_worker_restart_tests.cpp
+    support/m4_fake_clock.cpp support/m4_fake_clock.h
+)
+target_link_libraries(myrd_m4_worker_restart_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_worker_restart_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_worker_restart_tests)
+add_test(NAME model.m4.worker_restart
+    COMMAND myrd_m4_worker_restart_tests)
+set_tests_properties(model.m4.worker_restart PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_residual_device_tests
+    integration/m4_residual_device_tests.cpp
+)
+target_link_libraries(myrd_m4_residual_device_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_residual_device_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_residual_device_tests)
+add_test(NAME integration.m4.residual_device
+    COMMAND myrd_m4_residual_device_tests)
+set_tests_properties(integration.m4.residual_device PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_test(NAME integration.m4.windows_service_model
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-formal12-support.ps1"
-        -SourceRoot "${CMAKE_SOURCE_DIR}")
-set_tests_properties(unit.m4.formal12_support PROPERTIES LABELS "m4-v3" TIMEOUT 30)
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/integration/m4_windows_service_tests.ps1"
+        -ServiceExe "$<TARGET_FILE:myrd_service>"
+        -HostExe "$<TARGET_FILE:myrd_host>"
+        -Mode Model)
+set_tests_properties(integration.m4.windows_service_model PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.guest_qualification
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-guest-qualification.ps1"
-        -SourceRoot "${CMAKE_SOURCE_DIR}")
-set_tests_properties(unit.m4.guest_qualification PROPERTIES LABELS "m4-v3" TIMEOUT 120)
+add_executable(myrd_m4_windows_worker_recovery_tests
+    integration/m4_windows_worker_recovery_tests.cpp)
+target_link_libraries(myrd_m4_windows_worker_recovery_tests PRIVATE
+    myrd_test_support myrd_windows_service)
+target_include_directories(myrd_m4_windows_worker_recovery_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+target_compile_definitions(myrd_m4_windows_worker_recovery_tests PRIVATE
+    MYRD_ENABLE_TEST_SEAMS=1)
+myrd_enable_warnings(myrd_m4_windows_worker_recovery_tests)
+add_test(NAME integration.m4.windows_worker_recovery
+    COMMAND myrd_m4_windows_worker_recovery_tests)
+set_tests_properties(integration.m4.windows_worker_recovery PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
 
-add_test(NAME unit.m4.live_powercut
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-live-powercut.ps1"
-        -SourceRoot "${CMAKE_SOURCE_DIR}")
-set_tests_properties(unit.m4.live_powercut PROPERTIES LABELS "m4-v3" TIMEOUT 60)
+# A non-installed VM acceptance fixture.  It creates one exact protected
+# profile record so BUILD_TESTING=OFF Service/Host binaries can exercise the
+# real restricted worker composition without adding a product-only backdoor.
+add_executable(myrd_m4_product_profile_fixture
+    helpers/m4_product_profile_fixture.cpp)
+target_link_libraries(myrd_m4_product_profile_fixture PRIVATE
+    myrd_profile myrd_persistence)
+target_include_directories(myrd_m4_product_profile_fixture PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_product_profile_fixture)
 
-add_test(NAME unit.m4.qualification_kit
-    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-qualification-kit.ps1"
-        -SourceRoot "${CMAKE_SOURCE_DIR}")
-set_tests_properties(unit.m4.qualification_kit PROPERTIES LABELS "m4-v3" TIMEOUT 45)
+# Read-only real-driver inventory used by VM acceptance to distinguish an AIM
+# registration from a stale Windows PhysicalDrive devnode. It is not shipped.
+add_executable(myrd_m4_aim_inventory_fixture
+    helpers/m4_aim_inventory_fixture.cpp)
+target_link_libraries(myrd_m4_aim_inventory_fixture PRIVATE myrd_driver)
+target_include_directories(myrd_m4_aim_inventory_fixture PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_aim_inventory_fixture)
 
-add_test(NAME unit.m4.release_contract
+add_test(NAME e2e.m4.windows_service_scm
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-        -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m4-release-contract.ps1"
-        -SourceRoot "${CMAKE_SOURCE_DIR}")
-set_tests_properties(unit.m4.release_contract PROPERTIES LABELS "m4-v0" TIMEOUT 30)
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/integration/m4_windows_service_tests.ps1"
+        -ServiceExe "$<TARGET_FILE:myrd_service>"
+        -HostExe "$<TARGET_FILE:myrd_host>"
+        -Mode Scm)
+set_tests_properties(e2e.m4.windows_service_scm PROPERTIES
+    LABELS "m4-v2;m4-v7"
+    SKIP_RETURN_CODE 77
+    TIMEOUT 180)
+
+add_executable(myrd_m4_profile_registration_codec_tests
+    unit/m4_profile_registration_codec_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_registration_codec_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_profile_registration_codec_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_profile_registration_codec_tests)
+add_test(NAME unit.m4.profile_registration_codec
+    COMMAND myrd_m4_profile_registration_codec_tests)
+set_tests_properties(unit.m4.profile_registration_codec PROPERTIES
+    LABELS "m4-v2;m4-v4"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_checkpoint_reconciliation_tests
+    integration/m4_checkpoint_reconciliation_tests.cpp
+)
+target_link_libraries(myrd_m4_checkpoint_reconciliation_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_checkpoint_reconciliation_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_checkpoint_reconciliation_tests)
+add_test(NAME integration.m4.checkpoint_reconciliation
+    COMMAND myrd_m4_checkpoint_reconciliation_tests)
+set_tests_properties(integration.m4.checkpoint_reconciliation PROPERTIES
+    LABELS "m4-v3;m3-v3"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_host_protocol_tests
+    unit/m4_host_protocol_tests.cpp
+)
+target_link_libraries(myrd_m4_host_protocol_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_host_protocol_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_host_protocol_tests)
+add_test(NAME unit.m4.host_protocol
+    COMMAND myrd_m4_host_protocol_tests)
+set_tests_properties(unit.m4.host_protocol PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_host_core_tests
+    unit/m4_host_core_tests.cpp
+)
+target_link_libraries(myrd_m4_host_core_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_host_core_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_host_core_tests)
+add_test(NAME unit.m4.host_core
+    COMMAND myrd_m4_host_core_tests)
+set_tests_properties(unit.m4.host_core PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_volume_identity_tests
+    unit/m4_volume_identity_tests.cpp
+)
+target_link_libraries(myrd_m4_volume_identity_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_volume_identity_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_volume_identity_tests)
+add_test(NAME unit.m4.volume_identity
+    COMMAND myrd_m4_volume_identity_tests)
+set_tests_properties(unit.m4.volume_identity PROPERTIES
+    LABELS "m4-v4"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_volume_flush_tests
+    integration/m4_volume_flush_tests.cpp
+)
+target_link_libraries(myrd_m4_volume_flush_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_volume_flush_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_volume_flush_tests)
+add_test(NAME integration.m4.volume_flush
+    COMMAND myrd_m4_volume_flush_tests)
+set_tests_properties(integration.m4.volume_flush PROPERTIES
+    LABELS "m4-v4"
+    TIMEOUT 120
+    RUN_SERIAL TRUE)
+
+add_executable(myrd_m4_provisioner_policy_tests
+    unit/m4_provisioner_policy_tests.cpp
+)
+target_link_libraries(myrd_m4_provisioner_policy_tests PRIVATE
+    myrd_test_support myrd_host_core)
+target_include_directories(myrd_m4_provisioner_policy_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_provisioner_policy_tests)
+add_test(NAME unit.m4.provisioner_policy
+    COMMAND myrd_m4_provisioner_policy_tests)
+set_tests_properties(unit.m4.provisioner_policy PROPERTIES
+    LABELS "m4-v4"
+    TIMEOUT 120)
+
+add_test(
+    NAME e2e.m4.provisioning_gate
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/m4_provisioning_tests.ps1"
+            -TestBinary "$<TARGET_FILE:myrd_m4_provisioner_policy_tests>"
+            -EvidenceDirectory "${CMAKE_BINARY_DIR}/m4-provisioning-gate-evidence")
+set_tests_properties(e2e.m4.provisioning_gate PROPERTIES
+    LABELS "m4-v4"
+    SKIP_REGULAR_EXPRESSION "SKIPPED:"
+    TIMEOUT 30)
+
+add_executable(myrd_m4_host_m3_adapter_tests
+    integration/m4_host_m3_adapter_tests.cpp
+)
+target_link_libraries(myrd_m4_host_m3_adapter_tests PRIVATE
+    myrd_test_support myrd_host_core myrd_m3_management)
+target_include_directories(myrd_m4_host_m3_adapter_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_host_m3_adapter_tests)
+add_test(NAME integration.m4.host_m3_adapter
+    COMMAND myrd_m4_host_m3_adapter_tests)
+set_tests_properties(integration.m4.host_m3_adapter PROPERTIES
+    LABELS "m4-v2;m3-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_host_ipc_tests
+    integration/m4_host_ipc_tests.cpp
+)
+target_link_libraries(myrd_m4_host_ipc_tests PRIVATE
+    myrd_test_support myrd_host_core myrd_product_ipc Advapi32)
+target_include_directories(myrd_m4_host_ipc_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_host_ipc_tests)
+add_test(NAME integration.m4.host_ipc
+    COMMAND myrd_m4_host_ipc_tests)
+set_tests_properties(integration.m4.host_ipc PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+add_executable(myrd_m4_service_core_tests
+    unit/m4_service_core_tests.cpp
+    support/m4_fake_clock.cpp support/m4_fake_clock.h
+    support/m4_fake_worker.cpp support/m4_fake_worker.h
+    support/m4_fake_profile_store.cpp support/m4_fake_profile_store.h
+)
+target_link_libraries(myrd_m4_service_core_tests PRIVATE
+    myrd_test_support myrd_management_core)
+target_include_directories(myrd_m4_service_core_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_service_core_tests)
+add_test(NAME unit.m4.service_core
+    COMMAND myrd_m4_service_core_tests)
+set_tests_properties(unit.m4.service_core PROPERTIES
+    LABELS "m4-v2"
+    TIMEOUT 120)
+
+# ---- M4 durable profile format tests (Task 07) ---------------------------
+add_executable(myrd_m4_profile_codec_tests
+    unit/m4_profile_codec_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_codec_tests PRIVATE
+    myrd_test_support myrd_profile)
+target_include_directories(myrd_m4_profile_codec_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_profile_codec_tests)
+add_test(NAME unit.m4.profile_codec COMMAND myrd_m4_profile_codec_tests)
+set_tests_properties(unit.m4.profile_codec PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 30)
+
+add_executable(myrd_m4_profile_fuzz_tests
+    model/m4_profile_fuzz_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_fuzz_tests PRIVATE
+    myrd_test_support myrd_profile)
+target_include_directories(myrd_m4_profile_fuzz_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_profile_fuzz_tests)
+add_test(NAME model.m4.profile_fuzz COMMAND myrd_m4_profile_fuzz_tests)
+set_tests_properties(model.m4.profile_fuzz PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 120)
+
+# ---- M4 driver manifest tests (Task 11) ------------------------------------
+add_executable(myrd_m4_driver_manifest_tests
+    unit/m4_driver_manifest_tests.cpp
+)
+target_link_libraries(myrd_m4_driver_manifest_tests PRIVATE
+    myrd_test_support myrd_setup)
+target_include_directories(myrd_m4_driver_manifest_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_driver_manifest_tests)
+add_test(NAME unit.m4.driver_manifest
+    COMMAND myrd_m4_driver_manifest_tests)
+set_tests_properties(unit.m4.driver_manifest PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 20)
+
+add_executable(myrd_m4_driver_status_tests
+    integration/m4_driver_status_tests.cpp
+)
+target_link_libraries(myrd_m4_driver_status_tests PRIVATE
+    myrd_test_support myrd_setup)
+target_include_directories(myrd_m4_driver_status_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_driver_status_tests)
+add_test(NAME integration.m4.driver_status
+    COMMAND myrd_m4_driver_status_tests)
+set_tests_properties(integration.m4.driver_status PROPERTIES
+    LABELS "m4-v1"
+    TIMEOUT 30)
+
+# ---- M4 build boundary test (Task 00) --------------------------------------
+get_property(_myrd_m4_exe_names GLOBAL PROPERTY MYRD_M4_EXECUTABLE_OUTPUT_NAMES)
+if(NOT _myrd_m4_exe_names)
+    message(FATAL_ERROR "M4 executable output-name contract is empty or missing")
+endif()
+add_test(
+    NAME unit.m4.build_boundary
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/m4_build_boundary_tests.ps1"
+            -SourceDirectory "${CMAKE_SOURCE_DIR}"
+            -ProbeBaseDirectory "${CMAKE_SOURCE_DIR}/out/build/m4b"
+            -Generator "${CMAKE_GENERATOR}"
+            -Compiler "${CMAKE_CXX_COMPILER}"
+            -ExpectedExecutableNames "${_myrd_m4_exe_names}")
+set_tests_properties(unit.m4.build_boundary PROPERTIES
+    LABELS "m4-v0"
+    RUN_SERIAL TRUE
+    TIMEOUT 120)

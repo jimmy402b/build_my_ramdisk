@@ -24,6 +24,16 @@ TEST_CASE(aim_control_codes_match_audited_contract) {
         myrd::aim::kDeviceTypeHd | myrd::aim::kTypeProxy | myrd::aim::kProxyTypeShm);
 }
 
+TEST_CASE(aim_m1_query_identity_allows_only_the_modified_status_bit) {
+    REQUIRE_EQ(myrd::aim::kImageModifiedStatus, 0x00010000u);
+    REQUIRE(myrd::aim::has_m1_product_proxy_flags(
+        myrd::aim::kM1QueryFlags));
+    REQUIRE(myrd::aim::has_m1_product_proxy_flags(
+        myrd::aim::kM1QueryFlags | myrd::aim::kImageModifiedStatus));
+    REQUIRE(!myrd::aim::has_m1_product_proxy_flags(
+        myrd::aim::kM1QueryFlags | 0x00040000u));
+}
+
 // ── AIM structure layouts ──────────────────────────────────────
 
 TEST_CASE(aim_create_layout_matches_audited_contract) {

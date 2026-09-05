@@ -24,7 +24,7 @@ using namespace myrd::m3;
 using namespace myrd::persistence;
 
 constexpr std::uint64_t kDefaultVirtualBytes = 64ull << 30;
-constexpr std::uint64_t kMiB = 1024ull * 1024ull;
+
 void print_error(const Error& error) {
     std::fwprintf(stderr, L"M3 AIM server error (%u): %ls: %ls\n",
         error.code, error.operation.c_str(), error.message.c_str());
@@ -103,14 +103,6 @@ bool take_option(
     if (args[index] != name || index + 1 >= args.size()) return false;
     value = std::wstring(args[++index]);
     return true;
-}
-
-PersistenceLimits default_limits(std::uint64_t virtual_bytes) {
-    return production_persistence_limits(virtual_bytes);
-}
-
-DynamicBlockStoreOptions default_store_options() {
-    return production_store_options(1ull * 1024ull * kMiB);
 }
 
 void print_ready(const M3AimRuntime& runtime) {
@@ -300,8 +292,9 @@ int wmain(int argc, wchar_t* argv[]) {
             std::chrono::minutes(5);
         config.provider.bundle_root = std::move(bundle_root);
         config.provider.manifest_name = std::move(manifest);
-        config.provider.recovery.limits = default_limits(virtual_bytes);
-        config.provider.store = default_store_options();
+        config.provider.recovery.limits =
+            persistence::production_persistence_limits(virtual_bytes);
+        config.provider.store = production_store_options();
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
         const bool any_crash_option = !crash_phase_name.empty() ||

@@ -42,6 +42,7 @@ Result<LocatedDisk> match_created_disk(
     std::uint64_t expected_size_bytes);
 
 Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers();
+Result<std::vector<LocatedDisk>> enumerate_present_physical_drives();
 
 Result<LocatedDisk> wait_for_created_physical_drive(
     DeviceId created, std::span<const std::uint32_t> baseline,

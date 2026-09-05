@@ -10,8 +10,8 @@ are neither vendored nor redistributed by this repository. The repository's
 `LICENSE` contains the GNU Affero General Public License version 3 text. The
 M0 project plan freezes the project license as `AGPL-3.0-only`; this inventory
 therefore uses that SPDX expression and does not add an `or later` grant. The
-project copyright holder has not yet been recorded and must be supplied before
-a public source or binary release is packaged.
+project copyright notice is recorded in `NOTICE` as:
+`Copyright (C) 2026 jimmy402b and contributors`.
 
 ## Arsenal Image Mounter and ImDisk declaration provenance
 
@@ -230,8 +230,8 @@ binary code:
 Only the input and expected numeric digest values appear in tests. No RFC or
 NIST prose, reference implementation, or test file is copied into the project.
 
-## Explicitly unresolved notice items
+## Release notice status
 
-- Project copyright holder is unspecified.
+- The project copyright holder is recorded in `NOTICE`.
 - This engineering inventory does not replace a legal review of distributing a
   future installer or binary bundle.

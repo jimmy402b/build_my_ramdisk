@@ -402,7 +402,6 @@ enum class PersistenceErrorCode : std::uint32_t {
     DeadlineExceeded           = 17,
     VerificationFailed         = 18,
     FatalInternalInvariant     = 19,
-    JournalCapacityExhausted   = 20,
 };
 
 constexpr std::string_view to_string(PersistenceErrorCode code) noexcept {
@@ -426,7 +425,6 @@ constexpr std::string_view to_string(PersistenceErrorCode code) noexcept {
     case PersistenceErrorCode::DeadlineExceeded:           return "DeadlineExceeded";
     case PersistenceErrorCode::VerificationFailed:         return "VerificationFailed";
     case PersistenceErrorCode::FatalInternalInvariant:     return "FatalInternalInvariant";
-    case PersistenceErrorCode::JournalCapacityExhausted:   return "JournalCapacityExhausted";
     }
     return "UnknownPersistenceErrorCode";
 }
@@ -453,7 +451,6 @@ constexpr std::optional<std::uint32_t> encode_wire(
     case PersistenceErrorCode::DeadlineExceeded:          return 17U;
     case PersistenceErrorCode::VerificationFailed:        return 18U;
     case PersistenceErrorCode::FatalInternalInvariant:    return 19U;
-    case PersistenceErrorCode::JournalCapacityExhausted:  return 20U;
     }
     return std::nullopt;
 }
@@ -480,7 +477,6 @@ decode_persistence_error_code(std::uint32_t wire) noexcept {
     case 17: return PersistenceErrorCode::DeadlineExceeded;
     case 18: return PersistenceErrorCode::VerificationFailed;
     case 19: return PersistenceErrorCode::FatalInternalInvariant;
-    case 20: return PersistenceErrorCode::JournalCapacityExhausted;
     default: return std::nullopt;
     }
 }

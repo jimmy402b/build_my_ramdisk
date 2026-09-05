@@ -275,7 +275,8 @@ private:
         const OperationContext& context,
         const CheckpointPrepareRequest& request,
         PublishOperationLease lease,
-        std::function<Result<void>()> after_snapshot_begin,
+        std::function<Result<void>(const ConsistentSnapshotToken&)>
+            after_snapshot_begin,
         std::function<Result<void>()> after_journal_prepare,
         CheckpointTransactionObservers observers,
         std::optional<ManifestArtifactReplacement> artifact_replacement);
@@ -283,7 +284,8 @@ private:
         const OperationContext& context,
         const CheckpointPrepareRequest& request,
         std::optional<PublishOperationLease> existing_lease,
-        std::function<Result<void>()> after_snapshot_begin,
+        std::function<Result<void>(const ConsistentSnapshotToken&)>
+            after_snapshot_begin,
         std::function<Result<void>()> after_journal_prepare,
         CheckpointTransactionObservers observers,
         std::optional<ManifestArtifactReplacement> artifact_replacement);

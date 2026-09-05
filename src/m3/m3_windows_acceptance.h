@@ -5,6 +5,7 @@
 #include "src/driver/adapter_discovery.h"
 #include "src/driver/direct_aim_adapter.h"
 #include "src/driver/windows_srb_transport.h"
+#include "src/persistence/production_policy.h"
 
 #include <chrono>
 #include <cstdint>
@@ -15,6 +16,11 @@
 #include <vector>
 
 namespace myrd::m3 {
+
+// One bounded production resource policy shared by the standalone acceptance
+// server and the product worker. Callers may replace only profile-owned memory
+// limits after obtaining these finite defaults.
+DynamicBlockStoreOptions production_store_options() noexcept;
 
 struct M3AimProviderFactoryConfig final {
     OperationContext context{};
@@ -42,6 +48,7 @@ struct M3AimRuntimeInfo final {
     aim::LocatedDisk disk{};
     std::uint64_t virtual_bytes{};
     std::uint32_t sector_size{};
+    std::wstring native_object_path;
 };
 
 // Owns the complete real-host composition while an AIM disk is visible:
@@ -65,7 +72,6 @@ public:
     Result<void> stop();
 
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
-    [[nodiscard]] Result<M3MaintenanceStats> maintenance_stats() const;
     [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
 
     [[nodiscard]] const M3AimRuntimeInfo& info() const noexcept {

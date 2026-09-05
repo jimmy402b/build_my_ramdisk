@@ -18,3 +18,4 @@
 # Generated report JSON (if any end up at root)
 *.json
 !CMakePresets.json
+!/tests/fixtures/**/*.json

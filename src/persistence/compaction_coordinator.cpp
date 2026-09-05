@@ -884,7 +884,8 @@ CheckpointPrepareOutcome CompactionCoordinator::prepare_delta(
     replacement.journal_epoch = operation.journal_header_.epoch;
 
     CheckpointTransactionObservers observers{};
-    std::function<Result<void>()> after_snapshot_begin;
+    std::function<Result<void>(const ConsistentSnapshotToken&)>
+        after_snapshot_begin;
     std::function<Result<void>()> after_journal_prepare;
     try {
 #if defined(MYRD_ENABLE_TEST_SEAMS)
@@ -921,10 +922,15 @@ CheckpointPrepareOutcome CompactionCoordinator::prepare_delta(
             return observe(CompactionPhase::Complete);
         };
 #endif
-        after_snapshot_begin = [&emit]() {
+        after_snapshot_begin = [&emit, &request](
+            const ConsistentSnapshotToken& token) {
             auto emitted = emit(CompactionPhase::SnapshotBeginAfter);
-            return emitted.ok()
-                ? emit(CompactionPhase::DeltaWriteBefore) : emitted;
+            if (!emitted.ok()) return emitted;
+            if (request.after_snapshot_begin) {
+                auto published = request.after_snapshot_begin(token);
+                if (!published.ok()) return published;
+            }
+            return emit(CompactionPhase::DeltaWriteBefore);
         };
         after_journal_prepare = [&emit]() {
             return emit(CompactionPhase::DeltaWriteAfter);

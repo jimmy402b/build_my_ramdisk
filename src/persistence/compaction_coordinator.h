@@ -165,6 +165,8 @@ struct CompactionDeltaPrepareRequest final {
     CompletePersistenceErrorContext correlation_context;
     std::optional<VolumeBarrierKind> volume_barrier{};
     std::size_t snapshot_batch_bytes{};
+    std::function<Result<void>(const ConsistentSnapshotToken&)>
+        after_snapshot_begin;
 };
 
 // Move-only ownership of the compaction gate and the immutable durable source

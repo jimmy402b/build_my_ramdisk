@@ -101,7 +101,6 @@ struct JournalWriterOptions final {
     // "unlimited" product default.
     std::uint64_t max_checkpoint_records{0};
     std::uint64_t max_checkpoint_bytes{0};
-    std::optional<std::uint64_t> committed_end_ceiling{};
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     std::function<Result<void>(const JournalWriterPhaseEvent&)> phase_hook{};
 #endif

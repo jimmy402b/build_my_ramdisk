@@ -1,164 +1,209 @@
-#include "test_framework.h"
-#include "src/run/windows_volume.h"
-#include "src/driver/aim_protocol.h"
-#include "src/run/windows_volume.cpp"
+#include "tests/support/test_framework.h"
 
+#include "src/run/windows_volume.h"
+
+#include <array>
 #include <type_traits>
 
-TEST_CASE(m4_volume_contract_is_concrete) {
-    static_assert(std::is_final_v<myrd::ProductVolume>);
-    myrd::ProductVolume volume{};
-    REQUIRE(volume.volume_guid_path.empty());
-    REQUIRE_EQ(volume.physical_drive_number, 0u);
-    REQUIRE_EQ(volume.drive_letter, L'\0');
+namespace {
+using namespace myrd;
+
+ProductVolume expected_volume() {
+    return {L"m4-owner", L"volume-a",
+            {{7, 1ull << 20, 32ull << 20}}, L'R', false, true};
 }
 
-TEST_CASE(m4_locked_volume_contract_is_move_only_and_busy_errors_are_narrow) {
-    static_assert(std::is_final_v<myrd::LockedVolume>);
-    static_assert(!std::is_copy_constructible_v<myrd::LockedVolume>);
-    static_assert(std::is_nothrow_move_constructible_v<myrd::LockedVolume>);
-    REQUIRE(myrd::volume_lock_busy_error(ERROR_SHARING_VIOLATION));
-    REQUIRE(myrd::volume_lock_busy_error(ERROR_LOCK_VIOLATION));
-    REQUIRE(!myrd::volume_lock_busy_error(ERROR_ACCESS_DENIED));
+VolumeObservation exact_observation() {
+    return {expected_volume(), false, false, true, false, false, true, true};
 }
 
-TEST_CASE(m4_volume_rejects_runtime_sentinels_before_native_open) {
-    myrd::m3::M3AimRuntimeInfo info{};
-    info.device_id.value = myrd::aim::kAllDevices;
-    info.disk.physical_drive_number = 7;
-    info.disk.path = L"\\\\.\\PhysicalDrive7";
-    info.disk.length_bytes = 64ull * 1024 * 1024;
-    info.virtual_bytes = info.disk.length_bytes;
-    info.sector_size = 512;
-    auto result = myrd::provision_new_volume(info, L'R', std::chrono::seconds(1));
+void require_error(const Error& error, VolumeError expected) {
+    REQUIRE_EQ(error.code, static_cast<std::uint32_t>(expected));
+}
+} // namespace
+
+TEST_CASE(m4_volume_provision_requires_exact_extents_and_owner) {
+    auto expected = expected_volume();
+    auto observed = exact_observation();
+    observed.volume.extents.front().length_bytes++;
+    auto result = provision_new_volume(observed, expected);
     REQUIRE(!result.ok());
-    REQUIRE_EQ(result.error().operation, std::wstring(L"validate_exact_disk"));
+    require_error(result.error(), VolumeError::ownership_mismatch);
 }
 
-TEST_CASE(m4_volume_rejects_zero_runtime_geometry_before_native_open) {
-    myrd::m3::M3AimRuntimeInfo info{};
-    info.device_id.value = 1;
-    info.disk.physical_drive_number = 7;
-    info.disk.path = L"\\\\.\\PhysicalDrive7";
-    auto result = myrd::find_recovered_volume(info, L'R', std::chrono::seconds(1));
+TEST_CASE(m4_volume_recovery_refuses_foreign_mount_and_never_deletes_it) {
+    auto foreign = exact_observation();
+    foreign.foreign_mount = true;
+    const std::array candidates{foreign};
+    auto result = find_recovered_volume(candidates, expected_volume());
     REQUIRE(!result.ok());
-    REQUIRE_EQ(result.error().operation, std::wstring(L"validate_exact_disk"));
+    require_error(result.error(), VolumeError::foreign_mount);
+    // The seam has no delete operation: foreign resources are never owned.
 }
 
-TEST_CASE(m4_runtime_identity_predicate_rejects_all_forged_facts) {
-    myrd::m3::M3AimRuntimeInfo info{};
-    info.device_id.value = 0x00010203;
-    info.disk.path_id = 3; info.disk.target_id = 2; info.disk.lun = 1;
-    info.disk.physical_drive_number = 7; info.disk.path = L"\\\\.\\PhysicalDrive7";
-    info.virtual_bytes = info.disk.length_bytes = 64ull * 1024 * 1024; info.sector_size = 512;
-    REQUIRE(myrd::runtime_identity_ok(info));
-    info.device_id.value = myrd::aim::kAllDevices; REQUIRE(!myrd::runtime_identity_ok(info));
-    info.device_id.value = 0x00010203; info.disk.path = L"\\\\.\\PhysicalDrive8"; REQUIRE(!myrd::runtime_identity_ok(info));
-    info.disk.path = L"\\\\.\\PhysicalDrive7"; info.disk.target_id = 9; REQUIRE(!myrd::runtime_identity_ok(info));
-    info.device_id.value=0x00010000; info.disk.path_id=0; info.disk.target_id=0; info.disk.lun=1; REQUIRE(myrd::runtime_identity_ok(info));
+TEST_CASE(m4_volume_assign_refuses_occupied_drive_letter) {
+    auto observed = exact_observation();
+    observed.drive_letter_occupied = true;
+    auto result = assign_drive_letter(observed, expected_volume(), L'R');
+    REQUIRE(!result.ok());
+    require_error(result.error(), VolumeError::occupied_drive_letter);
 }
 
-TEST_CASE(m4_drive_mask_predicate_fails_closed_only_on_real_error) {
-    REQUIRE(myrd::drive_mask_ok(1,ERROR_SUCCESS)); REQUIRE(myrd::drive_mask_ok(0,ERROR_SUCCESS));
-    REQUIRE(!myrd::drive_mask_ok(0,ERROR_ACCESS_DENIED));
+TEST_CASE(m4_volume_lock_reports_busy_as_success_and_timeout_as_failure) {
+    auto observed = exact_observation();
+    observed.lock_available = false;
+    auto busy = lock_volume(observed, 0);
+    REQUIRE(busy.ok());
+    REQUIRE(busy.value().busy);
+    REQUIRE(!busy.value().acquired);
+
+    observed.lock_timed_out = true;
+    auto timeout = lock_volume(observed, 1000);
+    REQUIRE(!timeout.ok());
+    require_error(timeout.error(), VolumeError::timeout);
 }
 
-TEST_CASE(m4_volume_device_and_attribute_predicates_reject_malformed_inputs) {
-    std::wstring device;
-    REQUIRE(myrd::volume_device_path(L"\\\\?\\Volume{abc}\\",device)); REQUIRE_EQ(device,std::wstring(L"\\\\?\\Volume{abc}"));
-    REQUIRE(!myrd::volume_device_path(L"\\\\?\\Volume{abc}",device)); REQUIRE(!myrd::volume_device_path(L"R:\\",device));
-    REQUIRE(myrd::attribute_list_size_ok(FALSE,ERROR_INSUFFICIENT_BUFFER,1)); REQUIRE(!myrd::attribute_list_size_ok(TRUE,ERROR_SUCCESS,1)); REQUIRE(!myrd::attribute_list_size_ok(FALSE,ERROR_SUCCESS,1));
+TEST_CASE(m4_volume_lock_reports_non_busy_native_error_as_failure) {
+    auto observed = exact_observation();
+    observed.lock_api_error = true;
+    auto result = lock_volume(observed, 1000);
+    REQUIRE(!result.ok());
+    require_error(result.error(), VolumeError::platform_error);
 }
 
-TEST_CASE(m4_native_predicates_freeze_geometry_layout_and_timeout) {
-    myrd::m3::M3AimRuntimeInfo info{}; info.virtual_bytes = 4096; info.sector_size = 512;
-    REQUIRE(myrd::native_geometry_ok(4096,512,4096,info)); REQUIRE(myrd::native_geometry_ok(4096,512,512,info));
-    DRIVE_LAYOUT_INFORMATION_EX layout{}; layout.PartitionStyle=PARTITION_STYLE_RAW; layout.Mbr.Signature=1; layout.Mbr.CheckSum=1; REQUIRE(myrd::layout_ok(layout,true)); layout.PartitionCount=1; REQUIRE(!myrd::layout_ok(layout,true));
-    layout={}; layout.PartitionStyle=PARTITION_STYLE_MBR; layout.PartitionCount=0; layout.Mbr.Signature=0; layout.Mbr.CheckSum=0; REQUIRE(myrd::layout_ok(layout,true));
-    layout.Mbr.Signature=1; REQUIRE(!myrd::layout_ok(layout,true)); layout.Mbr.Signature=0; layout.Mbr.CheckSum=1; REQUIRE(!myrd::layout_ok(layout,true)); layout.Mbr.CheckSum=0; layout.PartitionCount=1; REQUIRE(!myrd::layout_ok(layout,true));
-    layout={}; layout.PartitionStyle=PARTITION_STYLE_GPT; REQUIRE(!myrd::layout_ok(layout,true)); layout.PartitionStyle=static_cast<PARTITION_STYLE>(99); REQUIRE(!myrd::layout_ok(layout,true));
-    layout={}; layout.PartitionStyle=PARTITION_STYLE_GPT; layout.PartitionCount=1; layout.PartitionEntry[0].Gpt.PartitionType=myrd::kBasicDataPartition; layout.PartitionEntry[0].PartitionLength.QuadPart=1; REQUIRE(myrd::layout_ok(layout,false)); layout.PartitionEntry[0].PartitionLength.QuadPart=0; REQUIRE(!myrd::layout_ok(layout,false));
-    REQUIRE(myrd::valid_timeout(std::chrono::milliseconds(1))); REQUIRE(!myrd::valid_timeout(std::chrono::milliseconds(0))); REQUIRE(!myrd::valid_timeout(std::chrono::seconds(121)));
+TEST_CASE(m4_volume_lock_result_retains_move_only_handle_ownership) {
+    static_assert(std::is_move_constructible_v<LockedVolume>);
+    static_assert(!std::is_copy_constructible_v<LockedVolume>);
+    static_assert(std::is_move_constructible_v<VolumeLockAttempt>);
+    static_assert(!std::is_copy_constructible_v<VolumeLockAttempt>);
+
+    // The policy seam models the native lock while the adapter owns the
+    // native handle.  A successful policy result is acquired (not busy), and
+    // callers must retain its move-only `locked` member until cleanup.
+    auto observed = exact_observation();
+    auto first = lock_volume(observed, 1000);
+    REQUIRE(first.ok());
+    REQUIRE(first.value().acquired);
+    REQUIRE(!first.value().busy);
+    REQUIRE(!first.value().locked.has_value());
+
+    // A second attempt against an unavailable volume is reported as busy;
+    // this is the retry-safe contract used by the shutdown path.
+    observed.lock_available = false;
+    auto second = lock_volume(observed, 1000);
+    REQUIRE(second.ok());
+    REQUIRE(!second.value().acquired);
+    REQUIRE(second.value().busy);
 }
 
-TEST_CASE(m4_native_geometry_accepts_windows_512_or_4096_physical_sectors_only) {
-    myrd::m3::M3AimRuntimeInfo info{}; info.virtual_bytes = 4096; info.sector_size = 512;
-    REQUIRE(myrd::native_geometry_ok(4096, 512, 512, info));
-    REQUIRE(myrd::native_geometry_ok(4096, 512, 4096, info));
-    REQUIRE(!myrd::native_geometry_ok(4096, 512, 0, info));
-    REQUIRE(!myrd::native_geometry_ok(4096, 512, 1024, info));
-    REQUIRE(!myrd::native_geometry_ok(4096, 512, 8192, info));
-    REQUIRE(!myrd::native_geometry_ok(4095, 512, 512, info));
-    REQUIRE(!myrd::native_geometry_ok(4096, 4096, 512, info));
+TEST_CASE(m4_volume_flush_failure_prevents_checkpoint_barrier) {
+    auto observed = exact_observation();
+    observed.flush_succeeds = false;
+    auto result = flush_volume(observed, expected_volume());
+    REQUIRE(!result.ok());
+    require_error(result.error(), VolumeError::flush_failed);
 }
 
-TEST_CASE(m4_extent_and_mount_predicates_reject_ambiguous_tables) {
-    alignas(VOLUME_DISK_EXTENTS) std::array<std::byte, sizeof(VOLUME_DISK_EXTENTS) + sizeof(DISK_EXTENT)> bytes{};
-    auto* extents = reinterpret_cast<VOLUME_DISK_EXTENTS*>(bytes.data());
-    REQUIRE_EQ(myrd::classify_extents(bytes.data(),0,7),myrd::ExtentClass::Invalid);
-    extents->NumberOfDiskExtents=1; extents->Extents[0].DiskNumber=7;
-    REQUIRE_EQ(myrd::classify_extents(bytes.data(),offsetof(VOLUME_DISK_EXTENTS,Extents)+sizeof(DISK_EXTENT),7),myrd::ExtentClass::Exact);
-    extents->Extents[0].DiskNumber=8; REQUIRE_EQ(myrd::classify_extents(bytes.data(),offsetof(VOLUME_DISK_EXTENTS,Extents)+sizeof(DISK_EXTENT),7),myrd::ExtentClass::Other);
-    extents->NumberOfDiskExtents=2; REQUIRE_EQ(myrd::classify_extents(bytes.data(),static_cast<DWORD>(bytes.size()),7),myrd::ExtentClass::Mixed);
-    const wchar_t absent[]={L'X',L':',L'\\',L'\0',L'\0'}; const wchar_t exact[]={L'R',L':',L'\\',L'\0',L'\0'}; const wchar_t malformed[]={L'R',L':',L'\\'};
-    REQUIRE_EQ(myrd::classify_mount(L'R',absent,5,L"x"),myrd::MountClass::Absent);
-    REQUIRE_EQ(myrd::classify_mount(L'R',exact,5,L"x"),myrd::MountClass::Exact);
-    REQUIRE_EQ(myrd::classify_mount(L'R',malformed,3,L"x"),myrd::MountClass::Malformed);
+TEST_CASE(m4_volume_cleanup_failure_is_reported) {
+    auto observed = exact_observation();
+    observed.cleanup_succeeds = false;
+    auto result = remove_drive_letter(observed, expected_volume());
+    REQUIRE(!result.ok());
+    require_error(result.error(), VolumeError::cleanup_failed);
 }
 
-TEST_CASE(m4_volume_match_count_accepts_exactly_one) {
-    REQUIRE_EQ(myrd::classify_volume_matches(0),
-               myrd::VolumeMatchClass::Missing);
-    REQUIRE_EQ(myrd::classify_volume_matches(1),
-               myrd::VolumeMatchClass::Exact);
-    REQUIRE_EQ(myrd::classify_volume_matches(2),
-               myrd::VolumeMatchClass::Ambiguous);
-    REQUIRE_EQ(myrd::classify_volume_matches(64),
-               myrd::VolumeMatchClass::Ambiguous);
+TEST_CASE(m4_volume_recovery_ignores_unrelated_candidates) {
+    auto foreign = exact_observation();
+    foreign.volume.owner_token = L"other-owner";
+    const std::array candidates{foreign, exact_observation()};
+    auto result = find_recovered_volume(candidates, expected_volume());
+    REQUIRE(result.ok());
+    REQUIRE_EQ(result.value().owner_token, L"m4-owner");
 }
 
-TEST_CASE(m4_enumerated_extent_query_skips_only_unsupported_unrelated_volumes) {
-    REQUIRE_EQ(myrd::classify_enumerated_extent_query(TRUE, ERROR_SUCCESS),
-               myrd::EnumeratedExtentQueryClass::Inspect);
-    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_INVALID_FUNCTION),
-               myrd::EnumeratedExtentQueryClass::SkipUnsupported);
-    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_MORE_DATA),
-               myrd::EnumeratedExtentQueryClass::TooLarge);
-    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_ACCESS_DENIED),
-               myrd::EnumeratedExtentQueryClass::Failed);
-    REQUIRE_EQ(myrd::classify_enumerated_extent_query(FALSE, ERROR_GEN_FAILURE),
-               myrd::EnumeratedExtentQueryClass::Failed);
+TEST_CASE(m4_volume_recovery_accepts_exact_unmounted_candidate_for_remount) {
+    auto candidate = exact_observation();
+    candidate.volume.mounted = false;
+    candidate.volume.drive_letter = L'R';
+    const auto selected = select_volume_for_disk(
+        std::array{candidate}, 7, L'R', L"runtime-owner", false);
+    REQUIRE(selected.ok());
+    REQUIRE(!selected.value().mounted);
+    REQUIRE(selected.value().operation_owned);
+    REQUIRE_EQ(selected.value().extents.front().disk_number, 7u);
 }
 
-TEST_CASE(m4_letter_target_selection_bypasses_enumeration_or_fails_closed) {
-    std::wstring device;
-    REQUIRE_EQ(myrd::classify_letter_target(TRUE, ERROR_SUCCESS, L"\\\\?\\Volume{target}\\", device), myrd::LetterTargetClass::Target);
-    REQUIRE_EQ(device, std::wstring(L"\\\\?\\Volume{target}"));
-    REQUIRE_EQ(myrd::classify_letter_target(FALSE, ERROR_FILE_NOT_FOUND, L"", device), myrd::LetterTargetClass::Absent);
-    REQUIRE_EQ(myrd::classify_letter_target(FALSE, ERROR_PATH_NOT_FOUND, L"", device), myrd::LetterTargetClass::Absent);
-    REQUIRE_EQ(myrd::classify_letter_target(FALSE, ERROR_ACCESS_DENIED, L"", device), myrd::LetterTargetClass::Failed);
-    REQUIRE_EQ(myrd::classify_letter_target(TRUE, ERROR_SUCCESS, L"R:\\", device), myrd::LetterTargetClass::Failed);
-    REQUIRE(!myrd::retry_volume_discovery(L"find_recovered_volume_target"));
-    REQUIRE(myrd::retry_volume_discovery(L"find_recovered_volume"));
-    myrd::Error original{myrd::ErrorDomain::win32, 5, L"verify_extent", L"volume extent query failed", 123};
-    const auto targeted = myrd::target_failure(original);
-    REQUIRE_EQ(targeted.operation, std::wstring(L"find_recovered_volume_target"));
-    REQUIRE_EQ(targeted.message, original.message);
-    REQUIRE_EQ(targeted.code, original.code);
-    REQUIRE_EQ(targeted.native_code, original.native_code);
+TEST_CASE(m4_volume_remove_never_accepts_foreign_identity) {
+    auto observed = exact_observation();
+    observed.volume.owner_token = L"other-owner";
+    auto result = remove_drive_letter(observed, expected_volume());
+    REQUIRE(!result.ok());
+    require_error(result.error(), VolumeError::ownership_mismatch);
 }
 
-TEST_CASE(m4_mount_ownership_predicate_is_case_insensitive_and_exact) {
-    REQUIRE(myrd::owned_mount(L"\\\\?\\Volume{abc}\\", L"\\\\?\\VOLUME{ABC}\\"));
-    REQUIRE(!myrd::owned_mount(L"\\\\?\\Volume{other}\\", L"\\\\?\\Volume{abc}\\"));
-    REQUIRE(!myrd::owned_mount(nullptr, L"x"));
+TEST_CASE(m4_volume_bridge_requires_exactly_one_disk_candidate) {
+    auto candidate = exact_observation();
+    candidate.volume.mounted = true;
+    auto selected = select_volume_for_disk(
+        std::array{candidate}, 7, L'R', L"runtime-owner", true);
+    REQUIRE(selected.ok());
+    REQUIRE_EQ(selected.value().owner_token, L"runtime-owner");
+    REQUIRE(selected.value().operation_owned);
+
+    auto mismatch = candidate;
+    mismatch.volume.extents.front().disk_number = 8;
+    REQUIRE(!select_volume_for_disk(std::array{mismatch}, 7, L'R', L"o", true).ok());
+
+    auto foreign_letter = candidate;
+    foreign_letter.volume.drive_letter = L'S';
+    REQUIRE(!select_volume_for_disk(std::array{foreign_letter}, 7, L'R', L"o", true).ok());
 }
 
-TEST_CASE(m4_fixed_ioctl_size_predicate_rejects_truncation_and_layout_overflow) {
-    constexpr DWORD header=offsetof(DRIVE_LAYOUT_INFORMATION_EX,PartitionEntry);
-    REQUIRE(myrd::fixed_ioctl_sizes_ok(sizeof(STORAGE_DEVICE_NUMBER),sizeof(DISK_GEOMETRY_EX),sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR),header+sizeof(PARTITION_INFORMATION_EX),1));
-    REQUIRE(!myrd::fixed_ioctl_sizes_ok(0,sizeof(DISK_GEOMETRY_EX),sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR),header,0));
-    REQUIRE(!myrd::fixed_ioctl_sizes_ok(sizeof(STORAGE_DEVICE_NUMBER),sizeof(DISK_GEOMETRY_EX)-1,sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR),header,0));
-    REQUIRE(!myrd::fixed_ioctl_sizes_ok(sizeof(STORAGE_DEVICE_NUMBER),sizeof(DISK_GEOMETRY_EX),sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR),header,1));
-    REQUIRE(!myrd::fixed_ioctl_sizes_ok(sizeof(STORAGE_DEVICE_NUMBER),sizeof(DISK_GEOMETRY_EX),sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR),header+sizeof(PARTITION_INFORMATION_EX),2));
+TEST_CASE(m4_volume_bridge_rejects_zero_and_multiple_candidates) {
+    auto candidate = exact_observation();
+    candidate.volume.mounted = true;
+    REQUIRE(!select_volume_for_disk(std::span<const VolumeObservation>{},
+                                    7, L'R', L"o", true).ok());
+    auto second = candidate;
+    second.volume.volume_guid = L"volume-b";
+    auto ambiguous = select_volume_for_disk(std::array{candidate, second},
+                                            7, L'R', L"o", true);
+    REQUIRE(!ambiguous.ok());
+    require_error(ambiguous.error(), VolumeError::ownership_mismatch);
+}
+
+TEST_CASE(m4_flush_refuses_identity_mismatch_before_barrier) {
+    int flush_calls = 0;
+    const auto result = flush_with_identity_checks(
+        [] { return Result<void>::failure({ErrorDomain::win32,
+            static_cast<std::uint32_t>(VolumeError::ownership_mismatch),
+            L"verify_before", L"identity mismatch", 0}); },
+        [&] { ++flush_calls; return Result<void>::success(); },
+        [] { return Result<void>::success(); });
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(result.error().operation, std::wstring(L"verify_before"));
+    REQUIRE_EQ(flush_calls, 0);
+}
+
+TEST_CASE(m4_flush_refuses_identity_mismatch_after_barrier) {
+    int flush_calls = 0;
+    const auto result = flush_with_identity_checks(
+        [] { return Result<void>::success(); },
+        [&] { ++flush_calls; return Result<void>::success(); },
+        [] { return Result<void>::failure({ErrorDomain::win32,
+            static_cast<std::uint32_t>(VolumeError::ownership_mismatch),
+            L"verify_after", L"identity mismatch", 0}); });
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(result.error().operation, std::wstring(L"verify_after"));
+    REQUIRE_EQ(flush_calls, 1);
+}
+
+TEST_CASE(m4_flush_commits_only_between_two_successful_identity_checks) {
+    std::string sequence;
+    const auto result = flush_with_identity_checks(
+        [&] { sequence += 'B'; return Result<void>::success(); },
+        [&] { sequence += 'F'; return Result<void>::success(); },
+        [&] { sequence += 'A'; return Result<void>::success(); });
+    REQUIRE(result.ok());
+    REQUIRE_EQ(sequence, std::string("BFA"));
 }

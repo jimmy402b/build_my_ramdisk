@@ -86,6 +86,14 @@ constexpr std::uint32_t kM0QueryFlags =
 constexpr std::uint32_t kM1QueryFlags =
     kM0QueryFlags | kOptionSparseFile;  // 0x00000314
 
+// AIM sets IMSCSI_IMAGE_MODIFIED after ordinary writes. It is mutable runtime
+// status, not a change to device type, proxy transport, or ownership.
+constexpr std::uint32_t kImageModifiedStatus = 0x00010000u;
+
+inline bool has_m1_product_proxy_flags(const std::uint32_t flags) noexcept {
+    return (flags & ~kImageModifiedStatus) == kM1QueryFlags;
+}
+
 // ── SRB signature ──────────────────────────────────────────────
 
 constexpr const char kSrbSignature[9] = "PhDskMnt";  // 8 chars + NUL

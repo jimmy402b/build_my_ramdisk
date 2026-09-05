@@ -1,4 +1,5 @@
 #include "src/m3/m3_windows_acceptance.h"
+#include "src/persistence/vhdx_reader.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -10,6 +11,20 @@
 #include <thread>
 
 namespace myrd::m3 {
+
+DynamicBlockStoreOptions production_store_options() noexcept {
+    constexpr std::uint64_t mib = 1024ULL * 1024ULL;
+    return {
+        512ULL * mib,
+        1ULL * 1024ULL * mib,
+        256ULL * mib,
+        8ULL * mib,
+        8192,
+        256,
+        64ULL * mib,
+        std::chrono::milliseconds(250)};
+}
+
 namespace {
 
 bool named_objects_absent(
@@ -218,6 +233,7 @@ Result<void> M3AimRuntime::start() {
     info_.disk = located.move_value();
     info_.virtual_bytes = geometry.virtual_bytes;
     info_.sector_size = geometry.logical_sector_size;
+    info_.native_object_path = queried.value().native_object_path;
     started_ = true;
     return Result<void>::success();
 }
@@ -239,14 +255,6 @@ M3CheckpointOutcome M3AimRuntime::checkpoint(
 DynamicBlockStoreStats M3AimRuntime::storage_stats() const {
     if (provider_) return provider_->storage_stats();
     return {};
-}
-
-Result<M3MaintenanceStats> M3AimRuntime::maintenance_stats() const {
-    if (!provider_) return Result<M3MaintenanceStats>::failure({
-        ErrorDomain::internal,
-        static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
-        L"M3AimRuntime::maintenance_stats", L"runtime has no provider"});
-    return provider_->maintenance_stats();
 }
 
 proxy::SessionSnapshot M3AimRuntime::transport_snapshot() const {
@@ -287,6 +295,13 @@ Result<void> M3AimRuntime::remove_owned_device() {
     }
 
     if (physical_baseline_ && !physical_drive_restored_) {
+        // REMOVE_DEVICE updates the AIM adapter's owned-device inventory, but
+        // Windows does not necessarily retire the corresponding disk devnode
+        // until the adapter is re-enumerated.  Keep this after
+        // device_removed_ becomes true so a failed rescan is safely retried
+        // without issuing REMOVE_DEVICE again for an already absent id.
+        auto rescanned = aim::rescan_aim_adapter(adapter_handle_->dev_inst);
+        if (!rescanned) return rescanned;
         for (;;) {
             auto numbers = aim::snapshot_physical_drive_numbers();
             if (numbers && std::is_permutation(

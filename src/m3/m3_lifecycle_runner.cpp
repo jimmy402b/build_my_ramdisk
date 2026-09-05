@@ -1,5 +1,4 @@
 #include "src/m3/m3_lifecycle_runner.h"
-#include "src/m3/m3_provider.h"
 
 #include "src/persistence/checkpoint_coordinator.h"
 #include "src/persistence/compaction_coordinator.h"
@@ -722,54 +721,6 @@ M3LifecycleOutcome run_m3_lifecycle(
         ErrorDomain::persistence,
         static_cast<std::uint32_t>(PersistenceErrorCode::OperationBusy),
         L"m3_lifecycle_runner", L"invalid lifecycle command"});
-}
-
-M3LifecycleOutcome run_product_offline_compaction(
-    const OperationContext& context,
-    const std::filesystem::path& bundle_root) {
-    constexpr std::uint64_t kTiB = 1024ull * 1024ull * 1024ull * 1024ull;
-    M3CliConfig discovery{};
-    discovery.command = M3CliCommand::Compact;
-    discovery.bundle_root = bundle_root;
-    discovery.manifest_name = "disk.rdm";
-    discovery.persistence_limits = production_persistence_limits(kTiB);
-    auto image = recover(context, discovery);
-    if (!image.ok()) return failure(discovery.command, image.error());
-    if (image.value().checkpoint_generation == 0) {
-        return failure(discovery.command, Error{
-            ErrorDomain::usage, 2, L"run_product_offline_compaction",
-            L"generation-zero bundle cannot be compacted"});
-    }
-    M3CliConfig config{};
-    config.command = M3CliCommand::Compact;
-    config.bundle_root = bundle_root;
-    config.manifest_name = "disk.rdm";
-    config.persistence_limits = production_persistence_limits(
-        image.value().geometry.virtual_bytes);
-    config.store_options = production_store_options(
-        2ull * 1024ull * 1024ull * 1024ull);
-    config.barrier = VolumeBarrierKind::RawBlockTestNoFilesystemCache;
-    auto outcome = run_m3_lifecycle(context, config);
-    if (outcome.error.has_value() &&
-        outcome.error->domain == ErrorDomain::storage &&
-        outcome.error->code == static_cast<std::uint32_t>(
-            ImagePathErrorCode::ImageInUse)) {
-        outcome.error->domain = ErrorDomain::persistence;
-        outcome.error->code = static_cast<std::uint32_t>(
-            PersistenceErrorCode::ImageInUse);
-    }
-    if (outcome.exit_code != 0 || !outcome.cleanup_succeeded ||
-        outcome.disposition != CommitDisposition::Committed) {
-        return outcome.exit_code == 0
-            ? failure(config.command, Error{
-                ErrorDomain::persistence,
-                static_cast<std::uint32_t>(PersistenceErrorCode::VerificationFailed),
-                L"run_product_offline_compaction",
-                L"compaction did not commit one reconciled successor"},
-                outcome.disposition, outcome.generation)
-            : outcome;
-    }
-    return outcome;
 }
 
 } // namespace myrd::m3

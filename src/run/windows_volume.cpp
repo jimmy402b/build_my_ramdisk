@@ -1,414 +1,914 @@
-#include "windows_volume.h"
+#include "src/run/windows_volume.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bcrypt.h>
+#include <cwctype>
+#include <filesystem>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#ifdef _WIN32
 #include <windows.h>
 #include <winioctl.h>
-#include <bcrypt.h>
-
-#include <array>
-#include <algorithm>
-#include <atomic>
-#include <filesystem>
-#include <thread>
-#include <vector>
+#endif
 
 namespace myrd {
 namespace {
-Error fail(const wchar_t* operation, const wchar_t* message, DWORD code = 0) {
-    return {ErrorDomain::win32, code, operation, message, code};
+Error failure(VolumeError code, const wchar_t* operation, const wchar_t* message,
+              std::uint32_t native_code = 0) {
+    return {ErrorDomain::win32, static_cast<std::uint32_t>(code), operation, message, native_code};
 }
 
-constexpr DWORD kQueryCap = 64 * 1024;
-constexpr DWORD kOutputCap = 64 * 1024;
-constexpr GUID kBasicDataPartition{0xEBD0A0A2, 0xB9E5, 0x4433,
-    {0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7}};
-
-std::wstring disk_path(std::uint32_t number);
+bool same_identity(const ProductVolume& actual, const ProductVolume& expected) noexcept {
+    return actual.owner_token == expected.owner_token &&
+           actual.volume_guid == expected.volume_guid &&
+           actual.extents == expected.extents &&
+           actual.drive_letter == expected.drive_letter &&
+           actual.mounted == expected.mounted &&
+           actual.operation_owned == expected.operation_owned;
+}
 
 bool valid_letter(wchar_t letter) noexcept {
-    return letter >= L'A' && letter <= L'Z';
+    return (letter >= L'A' && letter <= L'Z') ||
+           (letter >= L'a' && letter <= L'z');
 }
 
-bool valid_timeout(std::chrono::milliseconds timeout) noexcept {
-    return timeout > std::chrono::milliseconds::zero() && timeout <= std::chrono::seconds(120);
-}
+#ifdef _WIN32
+constexpr DWORD kProvisionOutputCap = 64u * 1024u;
 
-bool runtime_identity_ok(const m3::M3AimRuntimeInfo& info) {
-    const auto address = aim::decode_device_address(info.device_id);
-    return info.device_id.value != aim::kAllDevices && info.device_id.value != aim::kAutoDeviceNumber &&
-        address.path_id == info.disk.path_id && address.target_id == info.disk.target_id && address.lun == info.disk.lun &&
-        info.disk.path == disk_path(info.disk.physical_drive_number) && info.virtual_bytes != 0 && info.sector_size == 512 &&
-        info.virtual_bytes == info.disk.length_bytes;
-}
-bool drive_mask_ok(DWORD mask, DWORD error) noexcept { return mask != 0 || error == ERROR_SUCCESS; }
+Result<void> run_provisioning_helper(std::uint32_t disk_number,
+                                     wchar_t drive_letter,
+                                     std::uint32_t timeout_ms) {
+    if (!valid_letter(drive_letter) || timeout_ms == 0 || timeout_ms > 120000)
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"invalid provisioning helper arguments"));
 
-bool native_geometry_ok(std::uint64_t bytes, std::uint32_t logical, std::uint32_t physical,
-                        const m3::M3AimRuntimeInfo& info) noexcept {
-    return bytes == info.virtual_bytes && logical == info.sector_size &&
-        (physical == 512 || physical == 4096);
-}
-bool fixed_ioctl_sizes_ok(DWORD device_bytes, DWORD geometry_bytes, DWORD alignment_bytes,
-                          DWORD layout_bytes, DWORD partition_count) noexcept {
-    const auto header=offsetof(DRIVE_LAYOUT_INFORMATION_EX,PartitionEntry);
-    return device_bytes >= sizeof(STORAGE_DEVICE_NUMBER) && geometry_bytes >= sizeof(DISK_GEOMETRY_EX) &&
-        alignment_bytes >= sizeof(STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR) && layout_bytes >= header &&
-        partition_count <= (layout_bytes-header)/sizeof(PARTITION_INFORMATION_EX);
-}
+    // Resolve resources from the final executable explicitly.  This code is
+    // linked through a static library; passing a null module handle relies on
+    // the caller-module convention and can fail under some loader contexts.
+    HMODULE module = GetModuleHandleW(nullptr);
+    HRSRC resource = module ? FindResourceW(module, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(10)) : nullptr;
+    HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
+    const auto* data = loaded ? static_cast<const std::byte*>(LockResource(loaded)) : nullptr;
+    const DWORD size = resource ? SizeofResource(module, resource) : 0;
+    if (!data || size == 0)
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"embedded provisioning script unavailable", GetLastError()));
 
-bool layout_ok(const DRIVE_LAYOUT_INFORMATION_EX& layout, bool raw) noexcept {
-    if (raw) {
-        if (layout.PartitionStyle == PARTITION_STYLE_RAW)
-            return layout.PartitionCount == 0;
-        return layout.PartitionStyle == PARTITION_STYLE_MBR &&
-            layout.PartitionCount == 0 && layout.Mbr.Signature == 0 &&
-            layout.Mbr.CheckSum == 0;
-    }
-    return layout.PartitionStyle == PARTITION_STYLE_GPT && layout.PartitionCount == 1 &&
-        layout.PartitionEntry[0].Gpt.PartitionType == kBasicDataPartition &&
-        layout.PartitionEntry[0].PartitionLength.QuadPart > 0;
-}
+    wchar_t temp[MAX_PATH]{};
+    const DWORD temp_len = GetTempPathW(static_cast<DWORD>(std::size(temp)), temp);
+    if (temp_len == 0 || temp_len >= std::size(temp))
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"temporary script path failed", GetLastError()));
 
-enum class ExtentClass { Invalid, Exact, Other, Mixed };
-ExtentClass classify_extents(const std::byte* bytes, DWORD count, std::uint32_t target) noexcept {
-    const auto header=offsetof(VOLUME_DISK_EXTENTS,Extents);
-    if(!bytes || count<header+sizeof(DISK_EXTENT)) return ExtentClass::Invalid;
-    const auto* value=reinterpret_cast<const VOLUME_DISK_EXTENTS*>(bytes);
-    if(value->NumberOfDiskExtents==0 || value->NumberOfDiskExtents>(kQueryCap-header)/sizeof(DISK_EXTENT) || count<header+value->NumberOfDiskExtents*sizeof(DISK_EXTENT)) return ExtentClass::Invalid;
-    if(value->NumberOfDiskExtents!=1) return ExtentClass::Mixed;
-    return value->Extents[0].DiskNumber==target ? ExtentClass::Exact : ExtentClass::Other;
-}
-enum class EnumeratedExtentQueryClass { Inspect, SkipUnsupported, TooLarge, Failed };
-EnumeratedExtentQueryClass classify_enumerated_extent_query(BOOL ok, DWORD error) noexcept {
-    if (ok) return EnumeratedExtentQueryClass::Inspect;
-    if (error == ERROR_INVALID_FUNCTION) return EnumeratedExtentQueryClass::SkipUnsupported;
-    if (error == ERROR_MORE_DATA) return EnumeratedExtentQueryClass::TooLarge;
-    return EnumeratedExtentQueryClass::Failed;
-}
-enum class VolumeMatchClass { Missing, Exact, Ambiguous };
-VolumeMatchClass classify_volume_matches(std::size_t count) noexcept {
-    if (count == 0) return VolumeMatchClass::Missing;
-    if (count == 1) return VolumeMatchClass::Exact;
-    return VolumeMatchClass::Ambiguous;
-}
-enum class MountClass { Absent, Exact, Occupied, Malformed };
-MountClass classify_mount(wchar_t letter, const wchar_t* paths, std::size_t capacity, const std::wstring& volume) noexcept {
-    (void)volume;
-    if(!valid_letter(letter) || !paths || capacity<2) return MountClass::Malformed;
-    const std::wstring wanted{letter,L':',L'\\'}; bool ended=false;
-    for(std::size_t at=0; at<capacity;) { const wchar_t* p=paths+at; std::size_t n=0; while(at+n<capacity && p[n]) ++n; if(at+n==capacity) return MountClass::Malformed; if(n==0){ended=true;break;} if(_wcsicmp(p,wanted.c_str())==0) return MountClass::Exact; at+=n+1; }
-    return ended ? MountClass::Absent : MountClass::Malformed;
-}
-bool owned_mount(const wchar_t* actual, const std::wstring& expected) noexcept {
-    return actual && !expected.empty() && _wcsicmp(actual, expected.c_str()) == 0;
-}
-bool volume_device_path(const std::wstring& guid, std::wstring& device) {
-    constexpr std::wstring_view prefix=L"\\\\?\\Volume{";
-    if(!guid.starts_with(prefix) || guid.size()<=prefix.size()+2 || guid.back()!=L'\\' || guid.find(L'}')==std::wstring::npos) return false;
-    device=guid.substr(0,guid.size()-1); return true;
-}
-enum class LetterTargetClass { Absent, Target, Failed };
-LetterTargetClass classify_letter_target(BOOL found, DWORD error, const wchar_t* guid, std::wstring& device) noexcept {
-    if (!found) return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? LetterTargetClass::Absent : LetterTargetClass::Failed;
-    return volume_device_path(guid ? std::wstring(guid) : std::wstring{}, device) ? LetterTargetClass::Target : LetterTargetClass::Failed;
-}
-bool retry_volume_discovery(const std::wstring& operation) noexcept { return operation != L"find_recovered_volume_target"; }
-Error target_failure(Error error) {
-    error.operation = L"find_recovered_volume_target";
-    return error;
-}
-Result<void> verify_exact_volume(HANDLE volume, std::uint32_t disk) {
-    alignas(VOLUME_DISK_EXTENTS) std::array<std::byte, kQueryCap> bytes{}; DWORD got{};
-    if (!DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0,
-        bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr))
-        return Result<void>::failure(fail(L"verify_extent", L"volume extent query failed", GetLastError()));
-    if (classify_extents(bytes.data(), got, disk) != ExtentClass::Exact)
-        return Result<void>::failure(fail(L"verify_extent", L"volume is not the exact runtime disk"));
-    return Result<void>::success();
-}
-bool attribute_list_size_ok(BOOL first_result,DWORD error,SIZE_T size) noexcept { return !first_result && error==ERROR_INSUFFICIENT_BUFFER && size>0 && size<=64*1024; }
-
-std::wstring disk_path(std::uint32_t number) {
-    return L"\\\\.\\PhysicalDrive" + std::to_wstring(number);
-}
-
-Result<HANDLE> open_disk(std::uint32_t number) {
-    HANDLE handle = CreateFileW(disk_path(number).c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
-        return Result<HANDLE>::failure(fail(L"open_exact_physical_drive", L"CreateFileW failed", GetLastError()));
-    return Result<HANDLE>::success(handle);
-}
-
-Result<void> validate_disk(const m3::M3AimRuntimeInfo& info, bool raw) {
-    if (!runtime_identity_ok(info)) {
-        return Result<void>::failure(fail(L"validate_exact_disk", L"runtime identity or geometry is ambiguous"));
-    }
-    auto opened = open_disk(info.disk.physical_drive_number);
-    if (!opened.ok()) return Result<void>::failure(opened.error());
-    HANDLE handle = opened.value();
-    STORAGE_DEVICE_NUMBER device{}; DWORD device_returned{};
-    const BOOL device_ok = DeviceIoControl(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER,
-        nullptr, 0, &device, sizeof(device), &device_returned, nullptr);
-    const DWORD device_error = GetLastError();
-    DISK_GEOMETRY_EX geometry{}; DWORD geometry_returned{};
-    const BOOL geometry_ok = DeviceIoControl(handle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
-        nullptr, 0, &geometry, sizeof(geometry), &geometry_returned, nullptr);
-    const DWORD geometry_error = GetLastError();
-    STORAGE_PROPERTY_QUERY alignment_query{StorageAccessAlignmentProperty, PropertyStandardQuery, {}};
-    STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR alignment{}; DWORD alignment_returned{};
-    const BOOL alignment_ok = DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY,
-        &alignment_query, sizeof(alignment_query), &alignment, sizeof(alignment), &alignment_returned, nullptr);
-    const DWORD alignment_error = GetLastError();
-    alignas(DRIVE_LAYOUT_INFORMATION_EX) std::array<std::byte, kQueryCap> layout_bytes{}; DWORD layout_returned{};
-    const BOOL layout_query_ok = DeviceIoControl(handle, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
-        nullptr, 0, layout_bytes.data(), static_cast<DWORD>(layout_bytes.size()), &layout_returned, nullptr);
-    const DWORD layout_error = GetLastError();
-    CloseHandle(handle);
-    if (!layout_query_ok && layout_error == ERROR_MORE_DATA)
-        return Result<void>::failure(fail(L"validate_exact_disk", L"disk layout exceeds finite query cap", layout_error));
-    if (!device_ok || device_returned < sizeof(device) || device.DeviceType!=FILE_DEVICE_DISK || device.PartitionNumber!=0) return Result<void>::failure(fail(L"IOCTL_STORAGE_GET_DEVICE_NUMBER", L"exact disk device-number query failed or truncated", device_error));
-    if (!geometry_ok || geometry_returned < sizeof(geometry)) return Result<void>::failure(fail(L"IOCTL_DISK_GET_DRIVE_GEOMETRY_EX", L"exact disk geometry query failed or truncated", geometry_error));
-    if (!alignment_ok || alignment_returned < sizeof(alignment)) return Result<void>::failure(fail(L"IOCTL_STORAGE_QUERY_PROPERTY", L"exact disk alignment query failed or truncated", alignment_error));
-    const auto layout_header=offsetof(DRIVE_LAYOUT_INFORMATION_EX,PartitionEntry);
-    if (!layout_query_ok || layout_returned < layout_header ||
-        alignment.Version<sizeof(alignment) || alignment.Size<sizeof(alignment) || !native_geometry_ok(static_cast<std::uint64_t>(geometry.DiskSize.QuadPart), alignment.BytesPerLogicalSector, alignment.BytesPerPhysicalSector, info) ||
-        device.DeviceNumber != info.disk.physical_drive_number)
-        return Result<void>::failure(fail(L"validate_exact_disk", L"disk native facts did not match runtime identity", layout_error));
-    auto* layout = reinterpret_cast<DRIVE_LAYOUT_INFORMATION_EX*>(layout_bytes.data());
-    if (!fixed_ioctl_sizes_ok(device_returned,geometry_returned,alignment_returned,layout_returned,layout->PartitionCount) ||
-        layout->PartitionCount > (kQueryCap-layout_header)/sizeof(PARTITION_INFORMATION_EX))
-        return Result<void>::failure(fail(L"IOCTL_DISK_GET_DRIVE_LAYOUT_EX",L"disk layout count is truncated",layout_error));
-    if (geometry.DiskSize.QuadPart != static_cast<LONGLONG>(info.virtual_bytes) ||
-        geometry.Geometry.BytesPerSector != info.sector_size ||
-        !layout_ok(*layout, raw))
-        return Result<void>::failure(fail(L"validate_exact_disk", L"disk layout does not match required state"));
-    return Result<void>::success();
-}
-
-Result<ProductVolume> discover(const m3::M3AimRuntimeInfo& info, wchar_t letter) {
-    std::wstring mounted_mount{letter,L':',L'\\',L'\0'};
-    std::array<wchar_t, MAX_PATH> mounted_name{};
-    const BOOL mounted = GetVolumeNameForVolumeMountPointW(mounted_mount.c_str(), mounted_name.data(), static_cast<DWORD>(mounted_name.size()));
-    const DWORD mounted_error = GetLastError();
-    std::wstring mounted_device;
-    const auto mounted_target = classify_letter_target(mounted, mounted_error, mounted_name.data(), mounted_device);
-    if (mounted_target == LetterTargetClass::Failed)
-        return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"requested drive-letter target query failed", mounted_error));
-    if (mounted_target == LetterTargetClass::Target) {
-        HANDLE volume = CreateFileW(mounted_device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (volume == INVALID_HANDLE_VALUE) return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"opening requested drive-letter target failed", GetLastError()));
-        const auto exact = verify_exact_volume(volume, info.disk.physical_drive_number);
-        CloseHandle(volume);
-        if (!exact.ok()) return Result<ProductVolume>::failure(target_failure(exact.error()));
-        DWORD serial{}; std::array<wchar_t, 256> filesystem{};
-        if (!GetVolumeInformationW(mounted_name.data(), nullptr, 0, &serial, nullptr, nullptr, filesystem.data(), static_cast<DWORD>(filesystem.size())))
-            return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"GetVolumeInformationW failed", GetLastError()));
-        if (wcscmp(filesystem.data(), L"NTFS") != 0) return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"exact volume is not NTFS"));
-        std::array<wchar_t, kQueryCap / sizeof(wchar_t)> paths{}; DWORD needed{};
-        if (!GetVolumePathNamesForVolumeNameW(mounted_name.data(), paths.data(), static_cast<DWORD>(paths.size()), &needed))
-            return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"mount path query failed", GetLastError()));
-        if (needed > paths.size() || classify_mount(letter, paths.data(), paths.size(), mounted_name.data()) != MountClass::Exact)
-            return Result<ProductVolume>::failure(fail(L"find_recovered_volume_target", L"requested drive letter is not the exact target mount"));
-        return Result<ProductVolume>::success({mounted_name.data(), info.disk.physical_drive_number, letter});
-    }
-    std::array<wchar_t, MAX_PATH> name{};
-    HANDLE find = FindFirstVolumeW(name.data(), static_cast<DWORD>(name.size()));
-    if (find == INVALID_HANDLE_VALUE) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"FindFirstVolumeW failed", GetLastError()));
-    std::vector<std::wstring> matches;
-    do {
-        alignas(VOLUME_DISK_EXTENTS) std::array<std::byte, kQueryCap> bytes{}; DWORD got{};
-        std::wstring device_path; if(!volume_device_path(name.data(),device_path)){FindVolumeClose(find);return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"malformed volume GUID path"));}
-        HANDLE volume = CreateFileW(device_path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr, OPEN_EXISTING, 0, nullptr);
-        if (volume == INVALID_HANDLE_VALUE) {
-            const DWORD error = GetLastError(); FindVolumeClose(find);
-            return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"opening enumerated volume failed", error));
-        }
-        {
-            const BOOL ok = DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-                nullptr, 0, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr);
-            const DWORD extent_error = GetLastError();
-            CloseHandle(volume);
-            const auto query = classify_enumerated_extent_query(ok, extent_error);
-            if (query == EnumeratedExtentQueryClass::SkipUnsupported) continue;
-            if (query == EnumeratedExtentQueryClass::TooLarge) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume extents exceed finite query cap", extent_error)); }
-            if (query == EnumeratedExtentQueryClass::Failed) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume extent query failed", extent_error)); }
-            if (got < offsetof(VOLUME_DISK_EXTENTS, Extents) + sizeof(DWORD)) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"truncated volume extent query")); }
-            const auto kind=classify_extents(bytes.data(),got,info.disk.physical_drive_number);
-            if(kind==ExtentClass::Invalid) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"truncated or ambiguous volume extents")); }
-            if(kind==ExtentClass::Exact) matches.emplace_back(name.data());
-            else if(kind==ExtentClass::Mixed) { FindVolumeClose(find); return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"mixed volume extents are refused")); }
-        }
-    } while (FindNextVolumeW(find, name.data(), static_cast<DWORD>(name.size())));
-    const DWORD enumeration_error = GetLastError();
-    FindVolumeClose(find);
-    if (enumeration_error != ERROR_NO_MORE_FILES)
-        return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume enumeration changed or failed", enumeration_error));
-    if (classify_volume_matches(matches.size()) != VolumeMatchClass::Exact)
-        return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume identity is ambiguous"));
-    DWORD serial{}; std::array<wchar_t, 256> filesystem{};
-    if (!GetVolumeInformationW(matches[0].c_str(), nullptr, 0, &serial, nullptr, nullptr, filesystem.data(), static_cast<DWORD>(filesystem.size()))) {DWORD error=GetLastError();return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"GetVolumeInformationW failed", error));}
-    if (wcscmp(filesystem.data(), L"NTFS") != 0) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"exact volume is not NTFS"));
-    std::array<wchar_t, kQueryCap / sizeof(wchar_t)> paths{}; DWORD needed{};
-    if (!GetVolumePathNamesForVolumeNameW(matches[0].c_str(), paths.data(), static_cast<DWORD>(paths.size()), &needed)) {DWORD error=GetLastError();return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"mount path query failed",error));}
-    if(needed>paths.size())return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"mount path query exceeded cap",ERROR_MORE_DATA));
-    const auto mount=classify_mount(letter,paths.data(),paths.size(),matches[0]);
-    if (mount==MountClass::Malformed) return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"malformed mount-path response"));
-    SetLastError(ERROR_SUCCESS); const DWORD drive_mask=GetLogicalDrives(); const DWORD drive_error=GetLastError();
-    if(!drive_mask_ok(drive_mask,drive_error)) return Result<ProductVolume>::failure(fail(L"find_recovered_volume",L"GetLogicalDrives failed",drive_error));
-    if (mount!=MountClass::Exact && drive_mask & (1u << (letter - L'A')))
-        return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"requested drive letter is occupied"));
-    return Result<ProductVolume>::success({matches[0], info.disk.physical_drive_number, letter});
-}
-
-Result<void> rollback_exact_mount(std::uint32_t disk, wchar_t letter) {
-    std::wstring mount{letter,L':',L'\\',L'\0'}; std::array<wchar_t,MAX_PATH> name{};
-    if (!GetVolumeNameForVolumeMountPointW(mount.c_str(), name.data(), static_cast<DWORD>(name.size()))) {
-        const DWORD error=GetLastError(); if(error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND) return Result<void>::success();
-        return Result<void>::failure(fail(L"rollback_provision_mount",L"mount-point query failed",error));
-    }
-    std::wstring device; if(!volume_device_path(name.data(),device))return Result<void>::failure(fail(L"rollback_provision_mount",L"malformed volume GUID path")); HANDLE volume=CreateFileW(device.c_str(),0,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
-    if(volume==INVALID_HANDLE_VALUE) return Result<void>::failure(fail(L"rollback_provision_mount",L"opening mounted volume failed",GetLastError()));
-    alignas(VOLUME_DISK_EXTENTS) std::array<std::byte,kQueryCap> bytes{}; DWORD got{}; const BOOL ok=DeviceIoControl(volume,IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,nullptr,0,bytes.data(),static_cast<DWORD>(bytes.size()),&got,nullptr); const DWORD error=GetLastError(); CloseHandle(volume);
-    const auto header=offsetof(VOLUME_DISK_EXTENTS,Extents);
-    if(!ok || got<header+sizeof(DISK_EXTENT)) return Result<void>::failure(fail(L"rollback_provision_mount",L"mounted volume extents unavailable",error));
-    auto* extents=reinterpret_cast<VOLUME_DISK_EXTENTS*>(bytes.data());
-    if(extents->NumberOfDiskExtents!=1 || extents->Extents[0].DiskNumber!=disk) return Result<void>::failure(fail(L"rollback_provision_mount",L"mounted volume is not the exact provisioned disk"));
-    if(!DeleteVolumeMountPointW(mount.c_str())) return Result<void>::failure(fail(L"rollback_provision_mount",L"removing provisioned mount failed",GetLastError()));
-    return Result<void>::success();
-}
-
-Result<void> run_helper(std::uint32_t disk, wchar_t letter, std::chrono::milliseconds timeout) {
-    if (!valid_letter(letter) || !valid_timeout(timeout)) return Result<void>::failure(fail(L"provision_new_volume", L"invalid helper arguments"));
-    HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(10));
-    HGLOBAL loaded = resource ? LoadResource(nullptr, resource) : nullptr;
-    const void* data = loaded ? LockResource(loaded) : nullptr;
-    const DWORD size = resource ? SizeofResource(nullptr, resource) : 0;
-    if (!data || !size) return Result<void>::failure(fail(L"provision_new_volume", L"embedded provisioning resource unavailable", GetLastError()));
-    wchar_t temp[MAX_PATH]{}; if (!GetTempPathW(MAX_PATH, temp)) return Result<void>::failure(fail(L"provision_new_volume", L"temporary script path failed", GetLastError()));
-    std::wstring path; HANDLE file = INVALID_HANDLE_VALUE;
-    for (unsigned attempt = 0; attempt != 8 && file == INVALID_HANDLE_VALUE; ++attempt) {
+    std::wstring script_path;
+    HANDLE script = INVALID_HANDLE_VALUE;
+    for (unsigned attempt = 0; attempt != 8 && script == INVALID_HANDLE_VALUE; ++attempt) {
         std::array<std::byte, 16> random{};
-        if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(random.data()), static_cast<ULONG>(random.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) return Result<void>::failure(fail(L"provision_new_volume", L"temporary script random generation failed"));
-        static constexpr wchar_t hex[] = L"0123456789abcdef"; std::wstring suffix;
-        for (auto byte : random) { const auto value = static_cast<unsigned char>(byte); suffix += hex[value >> 4]; suffix += hex[value & 15]; }
-        path = std::wstring(temp) + L"myrd-" + suffix + L".ps1";
-        file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr);
-        if (file == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS) return Result<void>::failure(fail(L"provision_new_volume", L"temporary script creation failed", GetLastError()));
+        if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(random.data()),
+                            static_cast<ULONG>(random.size()),
+                            BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+            return Result<void>::failure(failure(VolumeError::platform_error,
+                L"provision_new_volume", L"temporary script random generation failed"));
+        static constexpr wchar_t hex[] = L"0123456789abcdef";
+        std::wstring suffix;
+        for (const auto byte : random) {
+            const auto value = static_cast<unsigned char>(byte);
+            suffix += hex[value >> 4]; suffix += hex[value & 15];
+        }
+        script_path = std::wstring(temp) + L"myrd-" + suffix + L".ps1";
+        script = CreateFileW(script_path.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (script == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS)
+            return Result<void>::failure(failure(VolumeError::platform_error,
+                L"provision_new_volume", L"temporary script creation failed", GetLastError()));
     }
-    if (file == INVALID_HANDLE_VALUE) return Result<void>::failure(fail(L"provision_new_volume", L"temporary script creation failed", GetLastError()));
-    DWORD written{}; const BOOL wrote = WriteFile(file, data, size, &written, nullptr); const DWORD write_error=GetLastError();
-    if(!wrote || written!=size) { CloseHandle(file); DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume",L"temporary script write failed",write_error)); }
-    const BOOL flushed = FlushFileBuffers(file); const DWORD flush_error=GetLastError();
-    const BOOL closed = CloseHandle(file); const DWORD close_error=GetLastError();
-    if(!flushed) { DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume",L"temporary script flush failed",flush_error)); }
-    if(!closed) { DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume",L"temporary script close failed",close_error)); }
-    std::wstring command = L"\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + path + L"\" -DiskNumber " + std::to_wstring(disk) + L" -DriveLetter " + letter;
+    if (script == INVALID_HANDLE_VALUE)
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"temporary script creation failed", GetLastError()));
+
+    DWORD written{};
+    const BOOL wrote = WriteFile(script, data, size, &written, nullptr);
+    const DWORD write_error = GetLastError();
+    const BOOL flushed = wrote && written == size && FlushFileBuffers(script);
+    const DWORD flush_error = GetLastError();
+    const BOOL closed = CloseHandle(script);
+    script = INVALID_HANDLE_VALUE;
+    if (!wrote || written != size || !flushed || !closed) {
+        const DWORD error = !wrote || written != size ? write_error :
+            (!flushed ? flush_error : GetLastError());
+        DeleteFileW(script_path.c_str());
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"temporary script write failed", error));
+    }
+
+    std::wstring command = L"\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\""
+        L" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+        script_path + L"\" -DiskNumber " + std::to_wstring(disk_number) +
+        L" -DriveLetter " + drive_letter;
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-    HANDLE stdout_read{}, stdout_write{}, stderr_read{}, stderr_write{};
-    if (!CreatePipe(&stdout_read, &stdout_write, &security, 0) || !CreatePipe(&stderr_read, &stderr_write, &security, 0) ||
-        !SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) || !SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) {
-        const DWORD error = GetLastError(); for (HANDLE h : {stdout_read,stdout_write,stderr_read,stderr_write}) if(h) CloseHandle(h); DeleteFileW(path.c_str());
-        return Result<void>::failure(fail(L"provision_new_volume", L"bounded output pipe creation failed", error));
+    HANDLE out_read{}, out_write{}, err_read{}, err_write{};
+    auto close_pipes = [&] {
+        for (HANDLE handle : {out_read, out_write, err_read, err_write})
+            if (handle) CloseHandle(handle);
+        out_read = out_write = err_read = err_write = nullptr;
+    };
+    if (!CreatePipe(&out_read, &out_write, &security, 0) ||
+        !CreatePipe(&err_read, &err_write, &security, 0) ||
+        !SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0)) {
+        const DWORD error = GetLastError(); close_pipes(); DeleteFileW(script_path.c_str());
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"bounded output pipe creation failed", error));
     }
-    STARTUPINFOEXW startup{}; startup.StartupInfo.cb=sizeof(startup); startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = nullptr; startup.StartupInfo.hStdOutput = stdout_write; startup.StartupInfo.hStdError = stderr_write;
-    SIZE_T attributes_size{}; SetLastError(ERROR_SUCCESS); const BOOL first_attributes=InitializeProcThreadAttributeList(nullptr,1,0,&attributes_size); const DWORD attribute_error=GetLastError();
-    if(!attribute_list_size_ok(first_attributes,attribute_error,attributes_size)){CloseHandle(stdout_read);CloseHandle(stdout_write);CloseHandle(stderr_read);CloseHandle(stderr_write);DeleteFileW(path.c_str());return Result<void>::failure(fail(L"provision_new_volume",L"attribute-list sizing failed",attribute_error));}
-    std::vector<std::byte> attributes(attributes_size);
-    auto* list=reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
-    HANDLE inherited[]{stdout_write,stderr_write};
-    bool attribute_initialized=false;
-    if(!InitializeProcThreadAttributeList(list,1,0,&attributes_size)) { DWORD error=GetLastError(); CloseHandle(stdout_read); CloseHandle(stdout_write); CloseHandle(stderr_read); CloseHandle(stderr_write); DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume",L"restricted child handle list initialization failed",error)); }
-    attribute_initialized=true;
-    if(!UpdateProcThreadAttribute(list,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),nullptr,nullptr)) { DWORD error=GetLastError(); if(attribute_initialized)DeleteProcThreadAttributeList(list); CloseHandle(stdout_read); CloseHandle(stdout_write); CloseHandle(stderr_read); CloseHandle(stderr_write); DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume",L"restricted child handle list failed",error)); }
-    startup.lpAttributeList=list;
+
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup); startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = nullptr;
+    startup.StartupInfo.hStdOutput = out_write; startup.StartupInfo.hStdError = err_write;
+    SIZE_T attributes_size{};
+    SetLastError(ERROR_SUCCESS);
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributes_size);
+    const DWORD attribute_query_error = GetLastError();
+    if (attribute_query_error != ERROR_INSUFFICIENT_BUFFER || attributes_size == 0 || attributes_size > 64 * 1024) {
+        close_pipes(); DeleteFileW(script_path.c_str());
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"restricted child handle list sizing failed", attribute_query_error));
+    }
+    std::vector<std::byte> attribute_storage(attributes_size);
+    startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_storage.data());
+    if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributes_size)) {
+        const DWORD error = GetLastError(); close_pipes(); DeleteFileW(script_path.c_str());
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"restricted child handle list initialization failed", error));
+    }
+    HANDLE inherited[] = {out_write, err_write};
+    if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                   inherited, sizeof(inherited), nullptr, nullptr)) {
+        const DWORD error = GetLastError(); DeleteProcThreadAttributeList(startup.lpAttributeList);
+        close_pipes(); DeleteFileW(script_path.c_str());
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"restricted child handle list update failed", error));
+    }
     PROCESS_INFORMATION process{};
-    const BOOL created = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT|CREATE_NO_WINDOW, nullptr, nullptr, &startup.StartupInfo, &process);
-    const DWORD create_error=GetLastError(); if(attribute_initialized) DeleteProcThreadAttributeList(list);
-    CloseHandle(stdout_write); CloseHandle(stderr_write);
-    if (!created) { CloseHandle(stdout_read); CloseHandle(stderr_read); DeleteFileW(path.c_str()); return Result<void>::failure(fail(L"provision_new_volume", L"CreateProcessW failed", create_error)); }
-    std::atomic<DWORD> stdout_bytes{}, stderr_bytes{}; std::atomic_bool pipe_error{}, producer_done{}, cancel_drains{};
-    auto drain = [&](HANDLE h, std::atomic<DWORD>& total) { std::array<std::byte,4096> buffer{}; for (;;) { if(cancel_drains) return; DWORD available{}; if(!PeekNamedPipe(h,nullptr,0,nullptr,&available,nullptr)) { if(GetLastError()!=ERROR_BROKEN_PIPE) pipe_error=true; return; } if(available) { const DWORD chunk=(std::min)(available,static_cast<DWORD>(buffer.size())); DWORD read{}; if(!ReadFile(h,buffer.data(),chunk,&read,nullptr) || read!=chunk) { pipe_error=true; return; } if(total.fetch_add(read)+read>kOutputCap) { pipe_error=true; cancel_drains=true; return; } continue; } if(producer_done) return; std::this_thread::sleep_for(std::chrono::milliseconds(10)); } };
-    std::thread stdout_thread(drain,stdout_read,std::ref(stdout_bytes)); std::thread stderr_thread(drain,stderr_read,std::ref(stderr_bytes));
-    const DWORD wait = WaitForSingleObject(process.hProcess, static_cast<DWORD>(timeout.count()));
-    bool termination_failed = false;
-    bool child_exited = wait == WAIT_OBJECT_0;
-    if (wait != WAIT_OBJECT_0) {
-        if (!TerminateProcess(process.hProcess, wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : ERROR_BUFFER_OVERFLOW) ||
-            (child_exited = WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0) == false) {
-            termination_failed = true;
+    const BOOL created = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+        &startup.StartupInfo, &process);
+    const DWORD create_error = GetLastError();
+    DeleteProcThreadAttributeList(startup.lpAttributeList);
+    CloseHandle(out_write); out_write = nullptr; CloseHandle(err_write); err_write = nullptr;
+    if (!created) {
+        close_pipes(); DeleteFileW(script_path.c_str());
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"CreateProcessW failed", create_error));
+    }
+
+    std::atomic<DWORD> out_bytes{}, err_bytes{};
+    std::atomic_bool producer_done{}, cancel_drains{}, output_overflow{}, pipe_error{};
+    auto drain = [&](HANDLE pipe, std::atomic<DWORD>& total) {
+        std::array<std::byte, 4096> buffer{};
+        for (;;) {
+            if (cancel_drains) return;
+            DWORD available{};
+            if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_BROKEN_PIPE && !producer_done) pipe_error = true;
+                return;
+            }
+            if (available) {
+                const DWORD chunk = (std::min)(available, static_cast<DWORD>(buffer.size()));
+                DWORD read{};
+                if (!ReadFile(pipe, buffer.data(), chunk, &read, nullptr) || read != chunk) {
+                    if (!producer_done) pipe_error = true;
+                    return;
+                }
+                const DWORD previous = total.fetch_add(read);
+                if (previous > kProvisionOutputCap || read > kProvisionOutputCap - previous) {
+                    output_overflow = true; cancel_drains = true; return;
+                }
+                continue;
+            }
+            if (producer_done) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
+    std::thread out_thread(drain, out_read, std::ref(out_bytes));
+    std::thread err_thread(drain, err_read, std::ref(err_bytes));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    DWORD wait = WAIT_TIMEOUT; bool exited = false; bool terminate_failed = false;
+    for (;;) {
+        wait = WaitForSingleObject(process.hProcess, 10);
+        if (wait == WAIT_OBJECT_0) { exited = true; break; }
+        if (wait == WAIT_FAILED || output_overflow || pipe_error ||
+            std::chrono::steady_clock::now() >= deadline) {
+            const DWORD reason = output_overflow ? ERROR_BUFFER_OVERFLOW :
+                (pipe_error ? ERROR_READ_FAULT : ERROR_TIMEOUT);
+            if (!TerminateProcess(process.hProcess, reason) ||
+                WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0) {
+                terminate_failed = true;
+            } else exited = true;
             cancel_drains = true;
+            break;
         }
     }
     producer_done = true;
-    stdout_thread.join(); stderr_thread.join();
-    CloseHandle(stdout_read); CloseHandle(stderr_read);
-    DWORD exit_code{}; const BOOL exit_ok=GetExitCodeProcess(process.hProcess, &exit_code); const DWORD exit_error=GetLastError(); CloseHandle(process.hThread); CloseHandle(process.hProcess);
-    if(!child_exited) return Result<void>::failure(fail(L"provision_new_volume",L"helper cleanup failed; temporary script retained",termination_failed ? ERROR_TIMEOUT : exit_error));
-    const BOOL deleted=DeleteFileW(path.c_str()); const DWORD delete_error=GetLastError();
-    if (!exit_ok || !deleted || pipe_error || termination_failed || wait != WAIT_OBJECT_0 || exit_code != 0) return Result<void>::failure(fail(L"provision_new_volume", L"provisioning helper failed", !deleted ? delete_error : exit_code));
+    out_thread.join(); err_thread.join();
+    CloseHandle(out_read); CloseHandle(err_read);
+    DWORD exit_code{}; const BOOL exit_ok = GetExitCodeProcess(process.hProcess, &exit_code);
+    const DWORD exit_error = GetLastError();
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    if (!exited) {
+        return Result<void>::failure(failure(VolumeError::cleanup_failed,
+            L"provision_new_volume", L"helper cleanup failed; temporary script retained",
+            terminate_failed ? ERROR_TIMEOUT : exit_error));
+    }
+    const BOOL deleted = DeleteFileW(script_path.c_str());
+    const DWORD delete_error = GetLastError();
+    if (!deleted || !exit_ok || output_overflow || pipe_error || terminate_failed ||
+        wait != WAIT_OBJECT_0 || exit_code != 0) {
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume",
+            output_overflow ? L"provisioning helper output exceeded 64 KiB" :
+                (!deleted ? L"provisioning temporary script cleanup failed" :
+                 L"provisioning helper failed"),
+            !deleted ? delete_error : (exit_ok ? exit_code : exit_error)));
+    }
     return Result<void>::success();
 }
+#endif
+
+#ifdef _WIN32
+Result<void> verify_native_volume_identity(HANDLE handle,
+                                           const ProductVolume& expected,
+                                           const wchar_t* operation = L"flush") {
+    if (!expected.operation_owned || expected.volume_guid.empty() || expected.extents.empty()) {
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch,
+            operation, L"volume ownership contract is incomplete"));
+    }
+    std::array<std::byte, 64 * 1024> bytes{};
+    std::wstring expected_guid = expected.volume_guid;
+    while (!expected_guid.empty() && expected_guid.back() == L'\\') expected_guid.pop_back();
+    DWORD returned = 0;
+    if (!DeviceIoControl(handle, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                         nullptr, 0, bytes.data(), static_cast<DWORD>(bytes.size()),
+                         &returned, nullptr)) {
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch,
+            operation, L"volume extent query failed", GetLastError()));
+    }
+    const auto* extents = reinterpret_cast<const VOLUME_DISK_EXTENTS*>(bytes.data());
+    const auto header = offsetof(VOLUME_DISK_EXTENTS, Extents);
+    if (returned < header + sizeof(DISK_EXTENT) || extents->NumberOfDiskExtents == 0 ||
+        extents->NumberOfDiskExtents > (bytes.size() - header) / sizeof(DISK_EXTENT) ||
+        returned < header + extents->NumberOfDiskExtents * sizeof(DISK_EXTENT)) {
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch,
+            operation, L"malformed volume extents"));
+    }
+    std::vector<VolumeExtent> actual;
+    actual.reserve(extents->NumberOfDiskExtents);
+    for (DWORD i = 0; i < extents->NumberOfDiskExtents; ++i) {
+        const auto& extent = extents->Extents[i];
+        actual.push_back({extent.DiskNumber,
+            static_cast<std::uint64_t>(extent.StartingOffset.QuadPart),
+            static_cast<std::uint64_t>(extent.ExtentLength.QuadPart)});
+    }
+    if (actual != expected.extents) {
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch,
+            operation, L"volume extents changed"));
+    }
+    std::array<wchar_t, MAX_PATH> final_path{};
+    DWORD path_length = GetFinalPathNameByHandleW(
+        handle, final_path.data(), static_cast<DWORD>(final_path.size()), FILE_NAME_OPENED);
+    const DWORD path_error = GetLastError();
+    std::wstring expected_path = expected.volume_guid;
+    while (!expected_path.empty() && expected_path.back() == L'\\') expected_path.pop_back();
+    if (path_length == 0 &&
+        (path_error == ERROR_INVALID_FUNCTION || path_error == ERROR_INVALID_PARAMETER)) {
+        path_length = static_cast<DWORD>(expected_path.size());
+        std::copy(expected_path.begin(), expected_path.end(), final_path.begin());
+    }
+    if (path_length == 0 || path_length >= final_path.size()) {
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch,
+            operation, L"volume handle identity query failed", path_error));
+    }
+    std::wstring actual_path(final_path.data(), path_length);
+    while (!actual_path.empty() && actual_path.back() == L'\\') actual_path.pop_back();
+    if (_wcsicmp(actual_path.c_str(), expected_path.c_str()) != 0) {
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch,
+            operation, L"volume handle is not owned by this operation"));
+    }
+    return Result<void>::success();
+}
+
+Result<std::vector<VolumeObservation>> enumerate_native_volumes(
+    wchar_t requested_letter) {
+    std::vector<VolumeObservation> result;
+    wchar_t name[MAX_PATH]{};
+    HANDLE finder = FindFirstVolumeW(name, static_cast<DWORD>(std::size(name)));
+    if (finder == INVALID_HANDLE_VALUE)
+        return Result<std::vector<VolumeObservation>>::failure(
+            failure(VolumeError::platform_error, L"enumerate_volumes",
+                    L"FindFirstVolumeW failed", GetLastError()));
+    auto finish = [&] { FindVolumeClose(finder); };
+    for (;;) {
+        std::wstring guid(name);
+        std::wstring device = guid;
+        if (!device.empty() && device.back() == L'\\') device.pop_back();
+        HANDLE handle = CreateFileW(device.c_str(), 0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) {
+            std::array<std::byte, 64 * 1024> bytes{}; DWORD returned{};
+            if (DeviceIoControl(handle, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                                nullptr, 0, bytes.data(), static_cast<DWORD>(bytes.size()),
+                                &returned, nullptr)) {
+                const auto* ext = reinterpret_cast<const VOLUME_DISK_EXTENTS*>(bytes.data());
+                const auto header = offsetof(VOLUME_DISK_EXTENTS, Extents);
+                if (returned >= header && ext->NumberOfDiskExtents > 0 &&
+                    ext->NumberOfDiskExtents <= (bytes.size() - header) / sizeof(DISK_EXTENT) &&
+                    returned >= header + ext->NumberOfDiskExtents * sizeof(DISK_EXTENT)) {
+                    ProductVolume volume{}; volume.volume_guid = guid;
+                    volume.extents.reserve(ext->NumberOfDiskExtents);
+                    for (DWORD i = 0; i < ext->NumberOfDiskExtents; ++i)
+                        volume.extents.push_back({ext->Extents[i].DiskNumber,
+                            static_cast<std::uint64_t>(ext->Extents[i].StartingOffset.QuadPart),
+                            static_cast<std::uint64_t>(ext->Extents[i].ExtentLength.QuadPart)});
+                    std::array<wchar_t, 4096> paths{}; DWORD needed{};
+                    bool mounted = false;
+                    if (GetVolumePathNamesForVolumeNameW(guid.c_str(), paths.data(),
+                                                         static_cast<DWORD>(paths.size()), &needed)) {
+                        for (std::size_t at = 0; at < paths.size() && paths[at]; ) {
+                            std::wstring_view path(paths.data() + at);
+                            if (path.size() >= 2 && towupper(path[0]) == towupper(requested_letter) && path[1] == L':') mounted = true;
+                            at += path.size() + 1;
+                        }
+                    }
+                    volume.drive_letter = requested_letter; volume.mounted = mounted;
+                    volume.operation_owned = false;
+                    result.push_back({std::move(volume), false,
+                                      false, true, false, false, true, true});
+                }
+            }
+            CloseHandle(handle);
+        }
+        if (!FindNextVolumeW(finder, name, static_cast<DWORD>(std::size(name)))) break;
+    }
+    finish();
+    return Result<std::vector<VolumeObservation>>::success(std::move(result));
+}
+#endif
 } // namespace
 
-LockedVolume::LockedVolume(HANDLE handle, std::wstring identity, std::uint32_t disk) noexcept
-    : handle_(handle), identity_(std::move(identity)), physical_drive_number_(disk) {}
-LockedVolume::LockedVolume(LockedVolume&& other) noexcept
-    : handle_(std::exchange(other.handle_, INVALID_HANDLE_VALUE)), identity_(std::move(other.identity_)),
-      physical_drive_number_(other.physical_drive_number_) {}
-LockedVolume& LockedVolume::operator=(LockedVolume&& other) noexcept {
-    if (this != &other) { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE); identity_ = std::move(other.identity_); physical_drive_number_ = other.physical_drive_number_; }
-    return *this;
-}
-LockedVolume::~LockedVolume() noexcept { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
-Result<void> LockedVolume::flush() {
-    if (!FlushFileBuffers(handle_)) return Result<void>::failure(fail(L"flush", L"FlushFileBuffers failed", GetLastError()));
-    return Result<void>::success();
-}
-Result<void> LockedVolume::dismount() {
-    DWORD ignored{};
-    if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr))
-        return Result<void>::failure(fail(L"dismount", L"FSCTL_DISMOUNT_VOLUME failed", GetLastError()));
-    return Result<void>::success();
-}
-bool volume_lock_busy_error(DWORD error) noexcept { return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY; }
-Result<VolumeLockAttempt> lock_volume(const ProductVolume& product) {
-    std::wstring path;
-    if (!volume_device_path(product.volume_guid_path, path)) return Result<VolumeLockAttempt>::failure(fail(L"lock", L"malformed volume GUID path"));
-    HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) { const DWORD error = GetLastError(); if (volume_lock_busy_error(error)) return Result<VolumeLockAttempt>::success({true, std::nullopt}); return Result<VolumeLockAttempt>::failure(fail(L"lock", L"opening exact volume failed", error)); }
-    DWORD ignored{};
-    if (!DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr)) { const DWORD error=GetLastError(); CloseHandle(handle); if (volume_lock_busy_error(error)) return Result<VolumeLockAttempt>::success({true, std::nullopt}); return Result<VolumeLockAttempt>::failure(fail(L"lock", L"FSCTL_LOCK_VOLUME failed", error)); }
-    const auto exact = verify_exact_volume(handle, product.physical_drive_number);
-    if (!exact.ok()) { CloseHandle(handle); return Result<VolumeLockAttempt>::failure(exact.error()); }
-    LockedVolume locked(handle, product.volume_guid_path, product.physical_drive_number);
-    return Result<VolumeLockAttempt>::success({false, std::optional<LockedVolume>(std::move(locked))});
+Result<void> flush_with_identity_checks(const FlushIdentityCheck& verify_before,
+                                        const FlushOperation& flush,
+                                        const FlushIdentityCheck& verify_after) {
+    auto before = verify_before();
+    if (!before.ok()) return before;
+    auto flushed = flush();
+    if (!flushed.ok()) return flushed;
+    return verify_after();
 }
 
-Result<ProductVolume> provision_new_volume(const m3::M3AimRuntimeInfo& info, wchar_t letter, std::chrono::milliseconds timeout) {
-    if (!valid_letter(letter)) return Result<ProductVolume>::failure(fail(L"provision_new_volume", L"invalid drive letter"));
-    auto checked = validate_disk(info, true); if (!checked.ok()) return Result<ProductVolume>::failure(checked.error());
-    SetLastError(ERROR_SUCCESS); const DWORD drive_mask=GetLogicalDrives(); const DWORD drive_error=GetLastError(); if(!drive_mask_ok(drive_mask,drive_error))return Result<ProductVolume>::failure(fail(L"provision_new_volume",L"GetLogicalDrives failed",drive_error));
-    if (drive_mask & (1u << (letter - L'A'))) return Result<ProductVolume>::failure(fail(L"provision_new_volume", L"requested drive letter is occupied"));
-    auto helper = run_helper(info.disk.physical_drive_number, letter, timeout); if (!helper.ok()) { auto rollback=rollback_exact_mount(info.disk.physical_drive_number,letter); if(!rollback.ok()) return Result<ProductVolume>::failure(rollback.error()); return Result<ProductVolume>::failure(helper.error()); }
-    auto found=find_recovered_volume(info, letter, timeout); if(!found.ok()) { auto rollback=rollback_exact_mount(info.disk.physical_drive_number,letter); if(!rollback.ok()) return Result<ProductVolume>::failure(rollback.error()); } return found;
+Result<void> Win32VolumeAdapter::provision_new_volume(
+    std::uint32_t disk_number, wchar_t drive_letter,
+    std::uint32_t timeout_ms) const {
+#ifdef _WIN32
+    if (!valid_letter(drive_letter)) {
+        return Result<void>::failure(failure(
+            VolumeError::occupied_drive_letter, L"provision_new_volume",
+            L"invalid drive letter"));
+    }
+    // Reject an occupied mount point before touching the requested disk.  The
+    // provisioning script repeats this check to cover races, but doing it here
+    // gives callers a stable classification instead of a generic helper error.
+    const auto bit = 1u << (towupper(drive_letter) - L'A');
+    const auto logical_drives = GetLogicalDrives();
+    if (logical_drives == 0 && GetLastError() != ERROR_SUCCESS) {
+        return Result<void>::failure(failure(
+            VolumeError::platform_error, L"provision_new_volume",
+            L"cannot determine drive-letter occupancy", GetLastError()));
+    }
+    if ((logical_drives & bit) != 0) {
+        return Result<void>::failure(failure(
+            VolumeError::occupied_drive_letter, L"provision_new_volume",
+            L"requested drive letter is occupied"));
+    }
+    return run_provisioning_helper(disk_number, drive_letter, timeout_ms);
+#else
+    (void)disk_number; (void)drive_letter; (void)timeout_ms;
+    return Result<void>::failure(failure(VolumeError::platform_error,
+        L"provision_new_volume", L"Win32 volume adapter unavailable"));
+#endif
 }
-Result<ProductVolume> find_recovered_volume(const m3::M3AimRuntimeInfo& info, wchar_t letter, std::chrono::milliseconds timeout) {
-    if (!valid_letter(letter)) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"invalid drive letter"));
-    if (timeout <= std::chrono::milliseconds::zero() || timeout > std::chrono::seconds(120)) return Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"invalid discovery timeout"));
-    auto checked = validate_disk(info, false); if (!checked.ok()) return Result<ProductVolume>::failure(checked.error());
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    Result<ProductVolume> last = Result<ProductVolume>::failure(fail(L"find_recovered_volume", L"volume discovery timed out"));
-    do {
-        last = discover(info, letter);
-        if (last.ok()) return last;
-        if (!retry_volume_discovery(last.error().operation)) return last;
-        if (std::chrono::steady_clock::now() >= deadline) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    } while (true);
-    return last;
+
+Result<ProductVolume> Win32VolumeAdapter::provision_and_adopt_volume(
+    std::uint32_t disk_number, wchar_t drive_letter,
+    std::wstring owner_token, std::uint32_t timeout_ms) const {
+    auto provisioned = provision_new_volume(disk_number, drive_letter, timeout_ms);
+    if (!provisioned.ok()) return Result<ProductVolume>::failure(provisioned.error());
+#ifdef _WIN32
+    // Provisioning is a transactional boundary: once the helper reports
+    // success, any later adoption/identity failure must undo the exact mount
+    // created by this invocation.  Otherwise DiskRuntime has no ProductVolume
+    // to own and cannot clean the newly formatted volume on its failure path.
+    auto rollback = [&](const std::vector<VolumeObservation>& candidates) {
+        for (const auto& candidate : candidates) {
+            const auto& value = candidate.volume;
+            if (candidate.foreign_mount || value.extents.size() != 1 ||
+                value.extents.front().disk_number != disk_number ||
+                !value.mounted || value.volume_guid.empty()) {
+                continue;
+            }
+            ProductVolume owned = value;
+            owned.owner_token = owner_token;
+            owned.drive_letter = drive_letter;
+            owned.operation_owned = true;
+            (void)remove_drive_letter(owned);
+            auto locked = lock(owned, timeout_ms);
+            if (locked.ok() && locked.value().locked.has_value())
+                (void)locked.value().locked->dismount();
+        }
+    };
+    auto volumes = enumerate_native_volumes(drive_letter);
+    for (unsigned attempt = 0; !volumes.ok() && attempt != 4; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        volumes = enumerate_native_volumes(drive_letter);
+    }
+    if (!volumes.ok()) {
+        // A transient enumeration failure must not skip rollback.  Retry the
+        // observer once more solely to discover the exact disk/letter mount;
+        // if it remains unavailable, the original error is preserved.
+        auto retry = enumerate_native_volumes(drive_letter);
+        if (retry.ok()) rollback(retry.value());
+        return Result<ProductVolume>::failure(volumes.error());
+    }
+    auto selected = select_volume_for_disk(volumes.value(), disk_number, drive_letter,
+                                          owner_token, true);
+    if (!selected.ok()) {
+        rollback(volumes.value());
+        return selected;
+    }
+    // Provisioning must have mounted the requested letter; adopting an
+    // unmounted or foreign volume is never considered success.
+    if (!selected.value().mounted) {
+        rollback(volumes.value());
+        return Result<ProductVolume>::failure(failure(VolumeError::ownership_mismatch,
+            L"provision_and_adopt_volume", L"provisioned volume is not mounted at requested letter"));
+    }
+    return selected;
+#else
+    (void)disk_number; (void)drive_letter; (void)owner_token;
+    return Result<ProductVolume>::failure(failure(VolumeError::platform_error,
+        L"provision_and_adopt_volume", L"Win32 volume adapter unavailable"));
+#endif
 }
-Result<void> flush_volume(const ProductVolume& volume) { std::wstring device;if(!volume_device_path(volume.volume_guid_path,device))return Result<void>::failure(fail(L"flush_volume",L"malformed volume GUID path")); HANDLE h=CreateFileW(device.c_str(), GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr); if(h==INVALID_HANDLE_VALUE)return Result<void>::failure(fail(L"flush_volume",L"open volume failed",GetLastError())); alignas(VOLUME_DISK_EXTENTS) std::array<std::byte,kQueryCap> bytes{}; DWORD got{}; BOOL queried=DeviceIoControl(h,IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,nullptr,0,bytes.data(),static_cast<DWORD>(bytes.size()),&got,nullptr); DWORD query_error=GetLastError(); auto kind=queried?classify_extents(bytes.data(),got,volume.physical_drive_number):ExtentClass::Invalid; if(kind!=ExtentClass::Exact){CloseHandle(h);return Result<void>::failure(fail(L"flush_volume",L"exact volume extent validation failed",query_error));} BOOL ok=FlushFileBuffers(h); DWORD e=GetLastError(); CloseHandle(h); return ok?Result<void>::success():Result<void>::failure(fail(L"flush_volume",L"FlushFileBuffers failed",e)); }
-Result<void> assign_drive_letter(ProductVolume& volume) { if (!valid_letter(volume.drive_letter)) return Result<void>::failure(fail(L"assign_drive_letter",L"invalid drive letter")); std::wstring mount{volume.drive_letter,L':',L'\\',L'\0'}; std::array<wchar_t, MAX_PATH> current{}; if (GetVolumeNameForVolumeMountPointW(mount.c_str(),current.data(),static_cast<DWORD>(current.size()))) { if (_wcsicmp(current.data(),volume.volume_guid_path.c_str())==0) return Result<void>::success(); return Result<void>::failure(fail(L"assign_drive_letter",L"requested drive letter is occupied")); } const DWORD query_error=GetLastError(); if (query_error!=ERROR_FILE_NOT_FOUND && query_error!=ERROR_PATH_NOT_FOUND) return Result<void>::failure(fail(L"assign_drive_letter",L"mount-point query failed",query_error)); if (SetVolumeMountPointW(mount.c_str(),volume.volume_guid_path.c_str())) return Result<void>::success(); return Result<void>::failure(fail(L"assign_drive_letter",L"SetVolumeMountPointW failed",GetLastError())); }
-Result<void> remove_drive_letter(const ProductVolume& volume) { if (!valid_letter(volume.drive_letter)) return Result<void>::failure(fail(L"remove_drive_letter",L"invalid drive letter")); std::wstring mount{volume.drive_letter,L':',L'\\',L'\0'}; std::array<wchar_t,MAX_PATH> actual{}; if(!GetVolumeNameForVolumeMountPointW(mount.c_str(),actual.data(),static_cast<DWORD>(actual.size()))){DWORD e=GetLastError();if(e==ERROR_FILE_NOT_FOUND||e==ERROR_PATH_NOT_FOUND)return Result<void>::success();return Result<void>::failure(fail(L"remove_drive_letter",L"mount ownership query failed",e));} if(!owned_mount(actual.data(),volume.volume_guid_path))return Result<void>::failure(fail(L"remove_drive_letter",L"refusing to remove foreign mount")); if(DeleteVolumeMountPointW(mount.c_str()))return Result<void>::success();DWORD e=GetLastError();if(e==ERROR_FILE_NOT_FOUND||e==ERROR_PATH_NOT_FOUND)return Result<void>::success();return Result<void>::failure(fail(L"remove_drive_letter",L"DeleteVolumeMountPointW failed",e)); }
+
+Result<ProductVolume> Win32VolumeAdapter::find_recovered_volume(
+    std::uint32_t disk_number, wchar_t drive_letter,
+    std::wstring owner_token) const {
+#ifdef _WIN32
+    auto volumes = enumerate_native_volumes(drive_letter);
+    if (!volumes.ok()) return Result<ProductVolume>::failure(volumes.error());
+    // Recovery may observe the volume unmounted after a crash or power loss.
+    // The caller owns the subsequent drive-letter assignment; requiring a
+    // pre-existing mount here would make valid recovery impossible.
+    return select_volume_for_disk(volumes.value(), disk_number, drive_letter,
+                                  std::move(owner_token), false);
+#else
+    (void)disk_number; (void)drive_letter; (void)owner_token;
+    return Result<ProductVolume>::failure(failure(VolumeError::platform_error,
+        L"find_recovered_volume", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+LockedVolume::LockedVolume(LockedVolume&& other) noexcept
+#ifdef _WIN32
+    : handle_(std::exchange(other.handle_, INVALID_HANDLE_VALUE)),
+      identity_(std::move(other.identity_)) {}
+#else
+    : handle_(std::exchange(other.handle_, nullptr)),
+      identity_(std::move(other.identity_)) {}
+#endif
+
+LockedVolume& LockedVolume::operator=(LockedVolume&& other) noexcept {
+    if (this == &other) return *this;
+#ifdef _WIN32
+    if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+    handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE);
+#else
+    handle_ = std::exchange(other.handle_, nullptr);
+#endif
+    identity_ = std::move(other.identity_);
+    return *this;
+}
+
+LockedVolume::~LockedVolume() noexcept {
+#ifdef _WIN32
+    if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+#endif
+}
+
+bool LockedVolume::valid() const noexcept {
+#ifdef _WIN32
+    return handle_ != INVALID_HANDLE_VALUE;
+#else
+    return handle_ != nullptr;
+#endif
+}
+
+Result<void> LockedVolume::flush() const {
+#ifdef _WIN32
+    if (!valid()) return Result<void>::failure(failure(VolumeError::platform_error, L"flush", L"invalid locked volume handle"));
+    auto verify = [&]() { return verify_native_volume_identity(handle_, identity_); };
+    return flush_with_identity_checks(verify,
+        [&]() -> Result<void> {
+            if (!FlushFileBuffers(handle_))
+                return Result<void>::failure(failure(VolumeError::flush_failed,
+                    L"flush", L"FlushFileBuffers failed", GetLastError()));
+            return Result<void>::success();
+        }, verify);
+#else
+    return Result<void>::failure(failure(VolumeError::platform_error, L"flush", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<void> LockedVolume::dismount() const {
+#ifdef _WIN32
+    if (!valid()) return Result<void>::failure(failure(VolumeError::platform_error, L"dismount", L"invalid locked volume handle"));
+    auto identity = verify_native_volume_identity(handle_, identity_, L"dismount");
+    if (!identity.ok()) return identity;
+    DWORD ignored{};
+    if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr))
+        return Result<void>::failure(failure(VolumeError::cleanup_failed, L"dismount", L"FSCTL_DISMOUNT_VOLUME failed", GetLastError()));
+    return Result<void>::success();
+#else
+    return Result<void>::failure(failure(VolumeError::platform_error, L"dismount", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<VolumeObservation> Win32VolumeAdapter::observe(const ProductVolume& expected) const {
+#ifdef _WIN32
+    if (expected.volume_guid.empty()) {
+        return Result<VolumeObservation>::failure(
+            failure(VolumeError::not_found, L"observe", L"volume GUID is empty"));
+    }
+    std::wstring device = expected.volume_guid;
+    if (!device.empty() && device.back() == L'\\') device.pop_back();
+    HANDLE handle = CreateFileW(device.c_str(), 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return Result<VolumeObservation>::failure(
+            failure(VolumeError::platform_error, L"observe", L"opening volume failed"));
+    }
+    std::array<std::byte, 64 * 1024> bytes{};
+    std::wstring expected_guid = expected.volume_guid;
+    while (!expected_guid.empty() && expected_guid.back() == L'\\') expected_guid.pop_back();
+    DWORD returned = 0;
+    const BOOL queried = DeviceIoControl(handle, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        nullptr, 0, bytes.data(), static_cast<DWORD>(bytes.size()), &returned, nullptr);
+    const DWORD query_error = GetLastError();
+    std::array<wchar_t, MAX_PATH> final_path{};
+    DWORD path_length = queried ? GetFinalPathNameByHandleW(
+        handle, final_path.data(), static_cast<DWORD>(final_path.size()), FILE_NAME_OPENED) : 0;
+    const DWORD path_error = GetLastError();
+    CloseHandle(handle);
+    if (!queried || returned < offsetof(VOLUME_DISK_EXTENTS, Extents) + sizeof(DISK_EXTENT)) {
+        return Result<VolumeObservation>::failure(
+            failure(VolumeError::platform_error, L"observe", L"volume extent query failed"));
+    }
+    const auto* extents = reinterpret_cast<const VOLUME_DISK_EXTENTS*>(bytes.data());
+    const auto header = offsetof(VOLUME_DISK_EXTENTS, Extents);
+    if (extents->NumberOfDiskExtents == 0 ||
+        extents->NumberOfDiskExtents > (bytes.size() - header) / sizeof(DISK_EXTENT) ||
+        returned < header + extents->NumberOfDiskExtents * sizeof(DISK_EXTENT)) {
+        return Result<VolumeObservation>::failure(
+            failure(VolumeError::platform_error, L"observe", L"malformed volume extents", query_error));
+    }
+    // Some Windows storage stacks (including the AIM-backed volume in the
+    // qualification VM) do not implement GetFinalPathNameByHandleW for a
+    // volume GUID handle and return ERROR_INVALID_FUNCTION.  The handle was
+    // opened from the already validated expected GUID, and its extents were
+    // queried successfully, so retain that authoritative identity in this
+    // specific case.  Any other path failure remains fail-closed.
+    if (path_length == 0 && path_error == ERROR_INVALID_FUNCTION) {
+        path_length = static_cast<DWORD>(expected_guid.size());
+        std::copy(expected_guid.begin(), expected_guid.end(), final_path.begin());
+    }
+    if (path_length == 0 || path_length >= final_path.size()) {
+        return Result<VolumeObservation>::failure(
+            failure(VolumeError::platform_error, L"observe", L"volume handle identity query failed", path_error));
+    }
+    std::wstring actual_guid(final_path.data(), path_length);
+    while (!actual_guid.empty() && actual_guid.back() == L'\\') actual_guid.pop_back();
+    if (_wcsicmp(actual_guid.c_str(), expected_guid.c_str()) != 0) {
+        return Result<VolumeObservation>::failure(
+            failure(VolumeError::ownership_mismatch, L"observe", L"volume handle identity mismatch"));
+    }
+    ProductVolume actual{};
+    actual.volume_guid = std::move(actual_guid);
+    actual.drive_letter = expected.drive_letter;
+    actual.owner_token = expected.owner_token;
+    actual.extents.clear();
+    for (DWORD i = 0; i < extents->NumberOfDiskExtents; ++i) {
+        const auto& extent = extents->Extents[i];
+        actual.extents.push_back({extent.DiskNumber,
+            static_cast<std::uint64_t>(extent.StartingOffset.QuadPart),
+            static_cast<std::uint64_t>(extent.ExtentLength.QuadPart)});
+    }
+    std::array<wchar_t, 64 * 1024 / sizeof(wchar_t)> paths{};
+    DWORD needed = 0;
+    bool mounted = false;
+    const BOOL paths_ok = GetVolumePathNamesForVolumeNameW(expected.volume_guid.c_str(), paths.data(),
+                                         static_cast<DWORD>(paths.size()), &needed);
+    if (paths_ok) {
+        for (std::size_t at = 0; at < paths.size() && paths[at] != L'\0'; ) {
+            const std::wstring_view path(paths.data() + at);
+            if (path.size() >= 2 && towupper(path[0]) == towupper(expected.drive_letter) &&
+                path[1] == L':') mounted = true;
+            at += path.size() + 1;
+        }
+    } else {
+        const DWORD mount_path_error = GetLastError();
+        if (mount_path_error != ERROR_FILE_NOT_FOUND && mount_path_error != ERROR_PATH_NOT_FOUND) {
+            return Result<VolumeObservation>::failure(
+                failure(VolumeError::platform_error, L"observe", L"volume mount query failed", mount_path_error));
+        }
+    }
+    actual.mounted = mounted;
+    actual.operation_owned = expected.operation_owned &&
+        actual.extents == expected.extents &&
+        _wcsicmp(actual.volume_guid.c_str(), expected_guid.c_str()) == 0;
+    VolumeObservation result{};
+    result.volume = std::move(actual);
+    result.drive_letter_occupied = expected.drive_letter >= L'A' && expected.drive_letter <= L'Z' &&
+        (GetLogicalDrives() & (1u << (expected.drive_letter - L'A'))) != 0 && !mounted;
+    return Result<VolumeObservation>::success(std::move(result));
+#else
+    (void)expected;
+    return Result<VolumeObservation>::failure(
+        failure(VolumeError::platform_error, L"observe", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<void> Win32VolumeAdapter::flush(const ProductVolume& owned) const {
+#ifdef _WIN32
+    std::wstring device = owned.volume_guid;
+    if (!device.empty() && device.back() == L'\\') device.pop_back();
+    HANDLE handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return Result<void>::failure(failure(VolumeError::platform_error, L"flush", L"opening volume failed"));
+    auto verify = [&]() { return verify_native_volume_identity(handle, owned); };
+    const auto result = flush_with_identity_checks(verify,
+        [&]() -> Result<void> {
+            if (!FlushFileBuffers(handle))
+                return Result<void>::failure(failure(VolumeError::flush_failed,
+                    L"flush", L"FlushFileBuffers failed", GetLastError()));
+            return Result<void>::success();
+        }, verify);
+    CloseHandle(handle);
+    return result;
+#else
+    (void)owned;
+    return Result<void>::failure(failure(VolumeError::platform_error, L"flush", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
+    const ProductVolume& owned, std::uint32_t timeout_ms) const {
+#ifdef _WIN32
+    if (timeout_ms == 0)
+        return Result<VolumeLockAttempt>::failure(failure(VolumeError::timeout, L"lock", L"lock timeout expired"));
+    if (!owned.operation_owned || owned.volume_guid.empty() || owned.extents.empty())
+        return Result<VolumeLockAttempt>::failure(failure(VolumeError::ownership_mismatch,
+            L"lock", L"volume ownership contract is incomplete"));
+    std::wstring device = owned.volume_guid;
+    if (!device.empty() && device.back() == L'\\') device.pop_back();
+    HANDLE handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY)
+            return Result<VolumeLockAttempt>::success({false, true});
+        return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock", L"opening volume failed", error));
+    }
+    DWORD ignored = 0;
+    const BOOL ok = DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr);
+    const DWORD error = GetLastError();
+    if (ok) {
+        auto identity = verify_native_volume_identity(handle, owned, L"lock");
+        if (!identity.ok()) {
+            CloseHandle(handle);
+            return Result<VolumeLockAttempt>::failure(identity.error());
+        }
+        return Result<VolumeLockAttempt>::success({true, false,
+            std::optional<LockedVolume>(LockedVolume(handle, owned))});
+    }
+    CloseHandle(handle);
+    if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY)
+        return Result<VolumeLockAttempt>::success({false, true});
+    return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock", L"FSCTL_LOCK_VOLUME failed", error));
+#else
+    (void)owned; (void)timeout_ms;
+    return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned, wchar_t drive_letter) const {
+#ifdef _WIN32
+    if (!valid_letter(drive_letter)) return Result<void>::failure(failure(VolumeError::occupied_drive_letter, L"assign_drive_letter", L"invalid drive letter"));
+    std::wstring mount{drive_letter, L':', L'\\', L'\0'};
+    std::array<wchar_t, MAX_PATH> current{};
+    if (GetVolumeNameForVolumeMountPointW(mount.c_str(), current.data(), static_cast<DWORD>(current.size()))) {
+        std::wstring expected_guid = owned.volume_guid;
+        while (!expected_guid.empty() && expected_guid.back() == L'\\') expected_guid.pop_back();
+        std::wstring actual_guid(current.data());
+        while (!actual_guid.empty() && actual_guid.back() == L'\\') actual_guid.pop_back();
+        return _wcsicmp(actual_guid.c_str(), expected_guid.c_str()) == 0 ? Result<void>::success() :
+            Result<void>::failure(failure(VolumeError::occupied_drive_letter, L"assign_drive_letter", L"requested drive letter is occupied"));
+    }
+    const DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+        return Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"mount query failed", error));
+    return SetVolumeMountPointW(mount.c_str(), owned.volume_guid.c_str()) ? Result<void>::success() :
+        Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"SetVolumeMountPointW failed", GetLastError()));
+#else
+    (void)owned; (void)drive_letter;
+    return Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<void> Win32VolumeAdapter::remove_drive_letter(const ProductVolume& owned) const {
+#ifdef _WIN32
+    if (!valid_letter(owned.drive_letter)) return Result<void>::failure(failure(VolumeError::ownership_mismatch, L"remove_drive_letter", L"invalid drive letter"));
+    std::wstring mount{owned.drive_letter, L':', L'\\', L'\0'};
+    std::array<wchar_t, MAX_PATH> current{};
+    if (!GetVolumeNameForVolumeMountPointW(mount.c_str(), current.data(), static_cast<DWORD>(current.size()))) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return Result<void>::success();
+        return Result<void>::failure(failure(VolumeError::platform_error, L"remove_drive_letter", L"mount query failed", error));
+    }
+    if (_wcsicmp(current.data(), owned.volume_guid.c_str()) != 0)
+        return Result<void>::failure(failure(VolumeError::ownership_mismatch, L"remove_drive_letter", L"refusing foreign mount"));
+    return DeleteVolumeMountPointW(mount.c_str()) ? Result<void>::success() :
+        Result<void>::failure(failure(VolumeError::cleanup_failed, L"remove_drive_letter", L"DeleteVolumeMountPointW failed", GetLastError()));
+#else
+    (void)owned;
+    return Result<void>::failure(failure(VolumeError::platform_error, L"remove_drive_letter", L"Win32 volume adapter unavailable"));
+#endif
+}
+
+Result<ProductVolume> provision_new_volume(
+    const VolumeObservation& observation,
+    const ProductVolume& expected) {
+    if (observation.foreign_mount) {
+        return Result<ProductVolume>::failure(
+            failure(VolumeError::foreign_mount, L"provision_new_volume",
+                    L"refusing a foreign mount"));
+    }
+    if (observation.drive_letter_occupied) {
+        return Result<ProductVolume>::failure(
+            failure(VolumeError::occupied_drive_letter, L"provision_new_volume",
+                    L"requested drive letter is occupied"));
+    }
+    if (!same_identity(observation.volume, expected) ||
+        observation.volume.mounted || !observation.volume.operation_owned) {
+        return Result<ProductVolume>::failure(
+            failure(VolumeError::ownership_mismatch, L"provision_new_volume",
+                    L"provisioned volume identity does not match ownership contract"));
+    }
+    return Result<ProductVolume>::success(observation.volume);
+}
+
+Result<ProductVolume> find_recovered_volume(
+    std::span<const VolumeObservation> observations,
+    const ProductVolume& expected) {
+    for (const auto& observation : observations) {
+        if (observation.foreign_mount) {
+            return Result<ProductVolume>::failure(
+                failure(VolumeError::foreign_mount, L"find_recovered_volume",
+                        L"foreign mount was observed for the requested volume"));
+        }
+        if (same_identity(observation.volume, expected)) {
+            return Result<ProductVolume>::success(observation.volume);
+        }
+    }
+    return Result<ProductVolume>::failure(
+        failure(VolumeError::not_found, L"find_recovered_volume",
+                L"owned volume was not found"));
+}
+
+Result<ProductVolume> select_volume_for_disk(
+    std::span<const VolumeObservation> observations,
+    std::uint32_t disk_number, wchar_t drive_letter,
+    std::wstring owner_token, bool require_mounted) {
+    if (!valid_letter(drive_letter)) {
+        return Result<ProductVolume>::failure(
+            failure(VolumeError::platform_error, L"select_volume_for_disk",
+                    L"invalid drive letter"));
+    }
+    std::optional<ProductVolume> selected;
+    for (const auto& observation : observations) {
+        const auto& candidate = observation.volume;
+        if (observation.foreign_mount || observation.drive_letter_occupied)
+            continue;
+        if (candidate.drive_letter != drive_letter ||
+            (require_mounted && !candidate.mounted) || candidate.volume_guid.empty() ||
+            candidate.extents.size() != 1 ||
+            candidate.extents.front().disk_number != disk_number)
+            continue;
+        if (selected.has_value()) {
+            return Result<ProductVolume>::failure(
+                failure(VolumeError::ownership_mismatch, L"select_volume_for_disk",
+                        L"multiple volumes match the requested physical disk"));
+        }
+        ProductVolume adopted = candidate;
+        adopted.owner_token = owner_token;
+        adopted.drive_letter = drive_letter;
+        adopted.operation_owned = true;
+        selected = std::move(adopted);
+    }
+    if (!selected.has_value()) {
+        return Result<ProductVolume>::failure(
+            failure(VolumeError::not_found, L"select_volume_for_disk",
+                    L"no volume matches the requested physical disk and drive letter"));
+    }
+    return Result<ProductVolume>::success(std::move(*selected));
+}
+
+Result<void> flush_volume(
+    const VolumeObservation& observation,
+    const ProductVolume& owned) {
+    if (!same_identity(observation.volume, owned) ||
+        !observation.volume.operation_owned) {
+        return Result<void>::failure(
+            failure(VolumeError::ownership_mismatch, L"flush_volume",
+                    L"refusing to flush a volume not owned by this operation"));
+    }
+    if (!observation.flush_succeeds) {
+        return Result<void>::failure(
+            failure(VolumeError::flush_failed, L"flush_volume",
+                    L"volume flush failed"));
+    }
+    return Result<void>::success();
+}
+
+Result<VolumeLockAttempt> lock_volume(
+    const VolumeObservation& observation,
+    std::uint32_t timeout_ms) {
+    if (observation.lock_api_error) {
+        return Result<VolumeLockAttempt>::failure(
+            failure(VolumeError::platform_error, L"lock_volume",
+                    L"volume lock API failed"));
+    }
+    if (observation.lock_timed_out || timeout_ms == 0) {
+        if (observation.lock_timed_out) {
+            return Result<VolumeLockAttempt>::failure(
+                failure(VolumeError::timeout, L"lock_volume",
+                        L"volume lock timed out"));
+        }
+    }
+    if (!observation.lock_available) {
+        return Result<VolumeLockAttempt>::success({false, true});
+    }
+    return Result<VolumeLockAttempt>::success({true, false});
+}
+
+Result<void> assign_drive_letter(
+    const VolumeObservation& observation,
+    const ProductVolume& owned,
+    wchar_t drive_letter) {
+    if (!valid_letter(drive_letter) ||
+        !same_identity(observation.volume, owned) ||
+        !observation.volume.operation_owned) {
+        return Result<void>::failure(
+            failure(VolumeError::ownership_mismatch, L"assign_drive_letter",
+                    L"volume identity or ownership mismatch"));
+    }
+    if (observation.drive_letter_occupied) {
+        return Result<void>::failure(
+            failure(VolumeError::occupied_drive_letter, L"assign_drive_letter",
+                    L"requested drive letter is occupied"));
+    }
+    return Result<void>::success();
+}
+
+Result<void> remove_drive_letter(
+    const VolumeObservation& observation,
+    const ProductVolume& owned) {
+    if (!same_identity(observation.volume, owned) ||
+        !observation.volume.operation_owned) {
+        return Result<void>::failure(
+            failure(VolumeError::ownership_mismatch, L"remove_drive_letter",
+                    L"refusing to remove a foreign mount"));
+    }
+    if (!observation.cleanup_succeeds) {
+        return Result<void>::failure(
+            failure(VolumeError::cleanup_failed, L"remove_drive_letter",
+                    L"drive-letter cleanup failed"));
+    }
+    return Result<void>::success();
+}
 } // namespace myrd

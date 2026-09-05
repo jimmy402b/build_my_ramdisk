@@ -239,11 +239,11 @@ TEST_CASE(m3_report_schema_is_deterministic_and_ordered) {
 
 TEST_CASE(m3_report_redacts_paths_and_never_serializes_block_contents) {
     auto report = complete_report();
-    report.bundle_path = "C:\\Users\\JimmyLin\\secret\\disk.myrd";
+    report.bundle_path = "C:\\Users\\ExampleUser\\secret\\disk.myrd";
     report.include_absolute_path = false;
     const auto redacted = myrd::m3::serialize_m3_report(report);
     REQUIRE(redacted.ok());
-    REQUIRE(redacted.value().find("JimmyLin") == std::string::npos);
+    REQUIRE(redacted.value().find("ExampleUser") == std::string::npos);
     REQUIRE(redacted.value().find("disk.myrd") == std::string::npos);
     REQUIRE(redacted.value().find("\"bundle_path\": null") !=
             std::string::npos);
@@ -251,7 +251,7 @@ TEST_CASE(m3_report_redacts_paths_and_never_serializes_block_contents) {
     report.include_absolute_path = true;
     const auto diagnostic = myrd::m3::serialize_m3_report(report);
     REQUIRE(diagnostic.ok());
-    REQUIRE(diagnostic.value().find("JimmyLin") != std::string::npos);
+    REQUIRE(diagnostic.value().find("ExampleUser") != std::string::npos);
     REQUIRE(diagnostic.value().find("block_contents") == std::string::npos);
 }
 

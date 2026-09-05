@@ -9,6 +9,21 @@ namespace {
 using namespace myrd;
 using namespace myrd::m3;
 
+TEST_CASE(m3_production_store_policy_preserves_named_resource_limits) {
+    constexpr std::uint64_t mib = 1024ULL * 1024ULL;
+    const auto options = production_store_options();
+    REQUIRE_EQ(options.soft_limit_bytes, 512ULL * mib);
+    REQUIRE_EQ(options.hard_limit_bytes, 1'024ULL * mib);
+    REQUIRE_EQ(options.eviction_low_watermark_bytes, 256ULL * mib);
+    REQUIRE_EQ(options.max_snapshot_batch_bytes, 8ULL * mib);
+    REQUIRE_EQ(options.max_snapshot_batch_records, 8'192U);
+    REQUIRE_EQ(options.lock_stripe_count, 256U);
+    REQUIRE_EQ(options.snapshot_cow_max_bytes, 64ULL * mib);
+    REQUIRE_EQ(
+        options.snapshot_writer_stall_limit,
+        std::chrono::milliseconds(250));
+}
+
 TEST_CASE(m3_aim_factory_checks_operation_context_before_open) {
     M3AimProviderFactoryConfig config;
     config.context.deadline = std::chrono::steady_clock::now() -

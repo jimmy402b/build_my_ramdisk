@@ -1114,7 +1114,8 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare_with_lease(
     const OperationContext& context,
     const CheckpointPrepareRequest& request,
     PublishOperationLease lease,
-    std::function<Result<void>()> after_snapshot_begin,
+    std::function<Result<void>(const ConsistentSnapshotToken&)>
+        after_snapshot_begin,
     std::function<Result<void>()> after_journal_prepare,
     CheckpointTransactionObservers observers,
     std::optional<ManifestArtifactReplacement> artifact_replacement) {
@@ -1131,7 +1132,8 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare_impl(
     const OperationContext& context,
     const CheckpointPrepareRequest& request,
     std::optional<PublishOperationLease> existing_lease,
-    std::function<Result<void>()> after_snapshot_begin,
+    std::function<Result<void>(const ConsistentSnapshotToken&)>
+        after_snapshot_begin,
     std::function<Result<void>()> after_journal_prepare,
     CheckpointTransactionObservers observers,
     std::optional<ManifestArtifactReplacement> artifact_replacement) {
@@ -1228,7 +1230,7 @@ CheckpointPrepareOutcome CheckpointCoordinator::prepare_impl(
     if (after_snapshot_begin) {
         Result<void> observed = Result<void>::success();
         try {
-            observed = after_snapshot_begin();
+            observed = after_snapshot_begin(token);
         } catch (...) {
             observed = checkpoint_failure<void>(
                 L"snapshot-begin observer threw",

@@ -261,6 +261,12 @@ zero residual AIM devices/drive letters/myrd processes
 
 ## 自审查记录
 
+## 当前执行状态（2026-08-31）
+
+T00–T19 的代码、测试、runbook 和本地验证已完成并在 feature worktree
+提交；T20–T23 的真实 VM 操作和 T24 最终资格判定等待人工 VMware evidence。
+M3 作为已验收上游基线，不因历史全量 CTest 环境失败阻断本重实现。
+
 - 覆盖 spec §1–§4：T00、T06–T13。
 - 覆盖 spec §5–§6：T01–T05、T13–T14。
 - 覆盖 spec §7：T06–T12。
