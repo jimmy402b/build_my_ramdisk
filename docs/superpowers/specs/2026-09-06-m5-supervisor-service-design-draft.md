@@ -538,3 +538,6 @@ M5 资格通过必须同时满足：
 
 这些实现选择不会改变 M4 的 checkpoint/recovery 语义，也不会增加 GUI、远程管理、
 驱动替换或应用一致性功能。
+
+
+> Superseded by 2026-09-06-m5-unified-integration-design.md; do not implement this draft.

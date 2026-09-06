@@ -111,3 +111,6 @@ class DiskSupervisor { public: Result<void> load_profiles(); Result<std::vector<
 - Fault matrix, evidence and VM M5-1…M5-9: Tasks 8 and 9.
 - Release packaging and version/hash handoff: Task 9.
 - No TODO/TBD placeholders; every task has files, tests, commands/outcomes and commit boundary.
+
+
+> Superseded by 2026-09-06-m5-unified-integration.md; do not implement this plan.
