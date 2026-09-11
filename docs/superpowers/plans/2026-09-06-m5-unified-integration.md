@@ -50,13 +50,19 @@
 
 ### Task 5: Complete Windows service auto-start and shutdown integration
 
+> **Architecture gate:** This task is blocked until the prerequisites in `docs/superpowers/specs/2026-09-11-m5-task5-architecture-resolution.md` are completed. Do not directly attach `PublicPipeServer` to the current `ProductServiceActions` until persistence authority, a production execution backend, and a real checkpoint commit boundary are unified.
+
 **Files:** `src/management/windows_service.*`, `src/management/service_main.cpp`, `src/management/windows_worker_recovery.*`; tests `tests/integration/m5_windows_service_tests.cpp`.
 
-- [ ] Wire real profile discovery and `auto_start` launch through existing startup actions and host worker launch/reattach.
+- [ ] Complete prerequisite 5-A: unify `ProfileStore`/`ProfileRegistrationStore`/`OperationStore`/runtime lease truth for real M4 profiles; no empty `service_state.myrs` projection.
+- [ ] Complete prerequisite 5-B: implement a production `IWorkerControl`/execution adapter that delegates the complete start/checkpoint/stop/reconciliation sequence to existing `ProductServiceActions`/`MyRamDiskHost`.
+- [ ] Complete prerequisite 5-C: extend existing private Host IPC with prepare/commit/abort checkpoint control backed by real M4 commit-boundary evidence; never synthesize pre-commit evidence from post-commit replies.
+- [ ] Only after 5-A--5-C pass, wire real profile discovery and `auto_start` launch through existing startup actions and host worker launch/reattach.
 - [ ] Preserve driver preflight, service ordering, per-profile failure isolation, and bounded SCM restart behavior.
 - [ ] Wire preshutdown/normal stop to existing best-effort checkpoint, reconciliation, and resource cleanup budgets.
-- [ ] Test LocalSystem registration, startup ordering, one-profile failure, timeout/degraded state, and no auto-format/driver mutation.
-- [ ] Commit `feat(m5): complete windows service auto-start lifecycle`.
+- [ ] Start `PublicPipeServer` with the same production `ServiceCore` after startup gates pass; stop it before controlled service cleanup.
+- [ ] Test LocalSystem registration, startup ordering, one-profile failure, timeout/degraded state, public-pipe query/mutation authorization, and no auto-format/driver mutation.
+- [ ] Commit `feat(m5): complete windows service auto-start lifecycle` only after prerequisites and pipe integration pass.
 
 ### Task 6: Diagnostics and migration boundary
 
