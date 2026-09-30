@@ -14,6 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 include(cmake/Warnings.cmake)
+include(cmake/ExecutionBoundary.cmake)
 add_subdirectory(src)
 if(BUILD_TESTING)
     add_subdirectory(tests)

@@ -484,6 +484,20 @@ set_tests_properties(structural.m2.storage_independent_build PROPERTIES
     LABELS "m2-v1;m2-v2;m2-v3;m2-v4"
     RUN_SERIAL TRUE)
 
+# ---- M5 execution boundary (Task 0) ---------------------------------------
+# The gate is only worth having if it rejects a real violation, so this test
+# configures throwaway projects against the real cmake/ExecutionBoundary.cmake
+# and asserts both the rejections and the accepted contract-only target.
+add_test(
+    NAME structural.m5.execution_boundary
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m5-execution-boundary.ps1"
+            -SourceDirectory "${CMAKE_SOURCE_DIR}"
+            -ProbeBaseDirectory "${CMAKE_SOURCE_DIR}/out/build/execution-boundary-probes")
+set_tests_properties(structural.m5.execution_boundary PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 120)
+
 add_executable(myrd_m2_block_math_tests
     unit/block_math_tests.cpp
 )
