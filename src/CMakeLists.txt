@@ -291,3 +291,46 @@ add_executable(myrd-m3-aim-server
 target_include_directories(myrd-m3-aim-server PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-m3-aim-server PRIVATE myrd_m3_windows)
 myrd_enable_warnings(myrd-m3-aim-server)
+
+# ---- M5 product contracts (Task 1) ------------------------------------------
+# Uuid / error / state / quantity / json value types shared by the service, the
+# CLI and the IPC layer. Contract-only: no execution, no driver, no persistence.
+add_library(myrd_product_contracts STATIC
+    product/json_writer.cpp product/json_writer.h
+    product/product_error.cpp product/product_error.h
+    product/product_state.cpp product/product_state.h
+    product/product_version.h
+    product/quantity_parser.cpp product/quantity_parser.h
+    product/uuid.cpp product/uuid.h
+)
+target_include_directories(myrd_product_contracts PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_product_contracts PUBLIC myrd_common)
+myrd_enable_warnings(myrd_product_contracts)
+
+# Typed command, IPC framing, pipe transport and authorization. Reaches the
+# runtime only over the pipe, so it must never link an execution target.
+add_library(myrd_product_ipc STATIC
+    control/authorization.cpp control/authorization.h
+    control/command.cpp control/command.h
+    control/ipc_codec.cpp control/ipc_codec.h
+    control/ipc_frame.cpp control/ipc_frame.h
+    control/pipe_transport.cpp control/pipe_transport.h
+    control/public_pipe_client.cpp control/public_pipe_client.h
+    control/public_pipe_server.cpp control/public_pipe_server.h
+)
+target_include_directories(myrd_product_ipc PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_product_ipc PUBLIC myrd_product_contracts myrd_common)
+myrd_enable_warnings(myrd_product_ipc)
+myrd_assert_execution_boundary(myrd_product_ipc)
+
+# Binary MYRDPRF profile: codec, strict validation, atomic durable store.
+add_library(myrd_profile STATIC
+    profile/profile_codec.cpp profile/profile_codec.h
+    profile/profile_store.cpp profile/profile_store.h
+    profile/profile_types.cpp profile/profile_types.h
+    profile/profile_validation.cpp profile/profile_validation.h
+)
+target_include_directories(myrd_profile PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_profile PUBLIC myrd_product_contracts myrd_common)
+myrd_enable_warnings(myrd_profile)
+myrd_assert_execution_boundary(myrd_profile)

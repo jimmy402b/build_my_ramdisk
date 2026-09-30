@@ -484,6 +484,32 @@ set_tests_properties(structural.m2.storage_independent_build PROPERTIES
     LABELS "m2-v1;m2-v2;m2-v3;m2-v4"
     RUN_SERIAL TRUE)
 
+# ---- M5 durable profile storage (Task 1) ----------------------------------
+# The MYRDPRF binary profile format and its atomic store are transferred
+# contracts: the codec round-trips byte-exact and malformed or unsupported
+# input is refused without mutating the stored profile.
+add_executable(myrd_m4_profile_codec_tests
+    unit/m4_profile_codec_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_codec_tests PRIVATE
+    myrd_test_support myrd_profile)
+target_include_directories(myrd_m4_profile_codec_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_profile_codec_tests)
+add_test(NAME unit.m4.profile_codec COMMAND myrd_m4_profile_codec_tests)
+set_tests_properties(unit.m4.profile_codec PROPERTIES TIMEOUT 60)
+
+add_executable(myrd_m4_profile_store_tests
+    unit/m4_profile_store_tests.cpp
+)
+target_link_libraries(myrd_m4_profile_store_tests PRIVATE
+    myrd_test_support myrd_profile)
+target_include_directories(myrd_m4_profile_store_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_profile_store_tests)
+add_test(NAME unit.m4.profile_store COMMAND myrd_m4_profile_store_tests)
+set_tests_properties(unit.m4.profile_store PROPERTIES TIMEOUT 120)
+
 # ---- M5 execution boundary (Task 0) ---------------------------------------
 # The gate is only worth having if it rejects a real violation, so this test
 # configures throwaway projects against the real cmake/ExecutionBoundary.cmake
