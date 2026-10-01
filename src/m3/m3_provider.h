@@ -2,6 +2,7 @@
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
+#include "src/common/sha256.h"
 #include "src/persistence/checkpoint_coordinator.h"
 #include "src/persistence/compaction_coordinator.h"
 #include "src/persistence/image_session.h"
@@ -84,6 +85,41 @@ struct M3CheckpointOutcome final {
         return disposition == persistence::CommitDisposition::Committed &&
                !error.has_value() && !error_context.has_value();
     }
+};
+
+// M5 two-phase checkpoint boundary.
+//
+// The M4 one-shot checkpoint() keeps its single-call shape and its native id
+// (checkpoint_generation + 3902).  These three calls expose the same
+// prepare/publish machinery as explicit steps so the M5 service can publish its
+// own durable commit boundary between prepare and commit, which is what makes
+// the boundary evidence meaningful across a worker restart.
+//
+// The candidate is frozen during prepare: the manifest slot and the SHA-256 of
+// the exact candidate-slot bytes are returned, and commit refuses a request that
+// does not match them.  A zero native id is refused before any state changes,
+// because zero is the "no operation" encoding and cannot identify a prepare.
+struct M3CheckpointPrepareRequest final {
+    OperationContext context;
+    persistence::VolumeBarrierKind barrier{
+        static_cast<persistence::VolumeBarrierKind>(0xff)};
+    std::uint64_t native_operation_id{};
+};
+
+struct M3CheckpointPrepared final {
+    std::uint64_t prior_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint8_t manifest_slot{};
+    Sha256Digest candidate_bytes_digest{};
+};
+
+struct M3CheckpointCommitRequest final {
+    // The commit is the same operation as the prepare, so it carries the
+    // caller's live operation context as well as the frozen candidate identity.
+    OperationContext context;
+    std::uint64_t native_operation_id{};
+    std::uint8_t manifest_slot{};
+    Sha256Digest candidate_bytes_digest{};
 };
 
 struct M3CompactionRequest final {
@@ -204,6 +240,15 @@ public:
     M3CheckpointOutcome checkpoint(
         const OperationContext& context,
         persistence::VolumeBarrierKind barrier);
+    // M5 two-phase boundary. prepare holds an unpublished transaction and
+    // returns the frozen candidate; abort discards it; commit publishes exactly
+    // that candidate and then reconciles it. Only one two-phase checkpoint may
+    // be outstanding, and it must be resolved before the provider stops.
+    Result<M3CheckpointPrepared> prepare_checkpoint(
+        const M3CheckpointPrepareRequest& request);
+    M3CheckpointOutcome commit_checkpoint(
+        const M3CheckpointCommitRequest& request);
+    Result<void> abort_checkpoint(std::uint64_t native_operation_id);
     M3CompactionOutcome compact(
         const OperationContext& context,
         M3CompactionRequest request,
@@ -254,6 +299,32 @@ private:
         const OperationContext& context);
     void set_state(M3ProviderState state) noexcept;
 
+    // Correlation frozen at prepare and required again at commit. It never
+    // holds the transaction itself: that stays in pending_checkpoint_ so the
+    // existing stop/resume path is untouched.
+    struct PreparedTwoPhaseCorrelation final {
+        std::uint64_t native_operation_id{};
+        std::uint64_t prior_generation{};
+        std::uint64_t candidate_generation{};
+        std::uint8_t manifest_slot{};
+        Sha256Digest candidate_bytes_digest{};
+        persistence::CheckpointManifestPublishRequest publish{};
+    };
+
+    // Runs prepare with an explicit native operation id and leaves the
+    // transaction plus its frozen candidate pending.
+    //
+    // Contract: on failure the returned outcome carries an error and nothing is
+    // left pending; on success the returned outcome has no error and
+    // `pending_two_phase_` is engaged. No manifest slot is touched either way.
+    M3CheckpointOutcome checkpoint_prepare_impl(
+        const OperationContext& context,
+        persistence::VolumeBarrierKind barrier,
+        std::uint64_t operation_id);
+    // Publishes the candidate frozen by prepare and then reconciles it.
+    M3CheckpointOutcome publish_prepared_checkpoint(
+        const OperationContext& context);
+
     mutable std::mutex operation_mutex_;
     std::atomic<M3ProviderState> state_{M3ProviderState::Constructed};
     M3ProviderConfig config_;
@@ -275,6 +346,10 @@ private:
 #endif
     std::optional<persistence::PreparedCheckpointTransaction>
         pending_checkpoint_{};
+    // Engaged exactly while a two-phase prepare is outstanding and unpublished.
+    // Cleared by abort, by commit, and by any prepare that fails after the point
+    // where the previous correlation was replaced.
+    std::optional<PreparedTwoPhaseCorrelation> pending_two_phase_{};
     persistence::CommitDisposition last_checkpoint_disposition_{
         persistence::CommitDisposition::NotCommitted};
     std::optional<Error> last_checkpoint_error_{};

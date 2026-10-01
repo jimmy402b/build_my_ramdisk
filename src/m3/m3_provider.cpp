@@ -1317,11 +1317,21 @@ M3CompactionOutcome M3Provider::reconcile_compaction(
         std::nullopt};
 }
 
-M3CheckpointOutcome M3Provider::checkpoint_impl(
+M3CheckpointOutcome M3Provider::checkpoint_prepare_impl(
     const OperationContext& context,
-    const VolumeBarrierKind barrier) {
-    const auto operation_id = image_.checkpoint_generation + 3902;
+    const VolumeBarrierKind barrier,
+    const std::uint64_t operation_id) {
     const auto target_generation = image_.checkpoint_generation + 1;
+    if (operation_id == 0) {
+        // Zero is the "no operation" encoding and cannot identify a prepare.
+        return provider_checkpoint_failure(
+            image_, operation_id,
+            provider_error(L"M3Provider::checkpoint",
+                           L"a zero native operation id cannot prepare"),
+            CommitDisposition::NotCommitted, target_generation,
+            "checkpoint.prepare", SessionPhase::Ready,
+            "checkpoint native operation id must not be zero");
+    }
     auto live = check_operation_context(context);
     if (!live.ok()) {
         return provider_checkpoint_failure(
@@ -1436,12 +1446,72 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     publish.test_phase_hook = manifest_phase_hook_;
 #endif
+    // Freeze the candidate here, not at commit: the slot and the digest of the
+    // exact candidate bytes are handed back to the caller and required again at
+    // commit, so a commit cannot publish an object other than the one the
+    // caller durably recorded.
+    auto candidate = persistence::prepare_manifest_candidate(
+        image_.selected_manifest, transaction.checkpoint(),
+        publish.committed_time_100ns);
+    if (!candidate.ok()) {
+        const auto error = candidate.error();
+        (void)transaction.abort();
+        return provider_checkpoint_failure(
+            image_, operation_id, error, CommitDisposition::NotCommitted,
+            target_generation, "checkpoint.prepare",
+            SessionPhase::Checkpointing,
+            "checkpoint candidate could not be frozen");
+    }
+    auto digest = sha256_digest(candidate.value().bytes);
+    if (!digest.ok()) {
+        const auto error = digest.error();
+        (void)transaction.abort();
+        return provider_checkpoint_failure(
+            image_, operation_id, error, CommitDisposition::NotCommitted,
+            target_generation, "checkpoint.prepare",
+            SessionPhase::Checkpointing,
+            "checkpoint candidate digest could not be computed");
+    }
+    PreparedTwoPhaseCorrelation frozen{};
+    frozen.native_operation_id = operation_id;
+    frozen.prior_generation = image_.checkpoint_generation;
+    frozen.candidate_generation = target_generation;
+    frozen.manifest_slot = candidate.value().slot.slot_index;
+    frozen.candidate_bytes_digest = digest.value();
+    frozen.publish = std::move(publish);
+    pending_checkpoint_.emplace(std::move(transaction));
+    pending_two_phase_ = std::move(frozen);
+    // No error: a prepared checkpoint is pending and nothing has been published.
+    return M3CheckpointOutcome{
+        CommitDisposition::NotCommitted, target_generation, std::nullopt,
+        std::nullopt};
+}
+
+M3CheckpointOutcome M3Provider::publish_prepared_checkpoint(
+    const OperationContext& context) {
+    if (!pending_checkpoint_.has_value() || !pending_two_phase_.has_value()) {
+        const auto operation_id = pending_two_phase_.has_value()
+            ? pending_two_phase_->native_operation_id
+            : image_.checkpoint_generation + 3902;
+        return provider_checkpoint_failure(
+            image_, operation_id,
+            provider_error(L"M3Provider::checkpoint",
+                           L"no prepared checkpoint is pending"),
+            CommitDisposition::NotCommitted,
+            image_.checkpoint_generation + 1,
+            "checkpoint.publish", SessionPhase::Ready,
+            "no prepared checkpoint is pending");
+    }
+    auto& transaction = *pending_checkpoint_;
+    const auto operation_id = pending_two_phase_->native_operation_id;
+    auto publish = std::move(pending_two_phase_->publish);
     auto published = transaction.publish_manifest(context, std::move(publish));
     if (published.disposition != CommitDisposition::Committed &&
         published.disposition != CommitDisposition::CommitIndeterminate &&
         published.disposition !=
             CommitDisposition::CommittedNeedsReconciliation) {
         (void)transaction.abort();
+        pending_two_phase_.reset();
         return preserve_or_normalize_checkpoint_failure(
             image_, operation_id,
             published.error.value_or(provider_error(
@@ -1451,8 +1521,98 @@ M3CheckpointOutcome M3Provider::checkpoint_impl(
             SessionPhase::Checkpointing,
             "checkpoint publication failed without complete context");
     }
-    pending_checkpoint_.emplace(std::move(transaction));
+    // The manifest is on disk. The prepared correlation has served its purpose:
+    // from here the transaction is reconciled or retried, never re-prepared,
+    // and stop must resume it rather than abort it.
+    pending_two_phase_.reset();
     return resume_pending_checkpoint(context);
+}
+
+M3CheckpointOutcome M3Provider::checkpoint_impl(
+    const OperationContext& context,
+    const VolumeBarrierKind barrier) {
+    // M4 one-shot: prepare and publish in one call, keeping the M4 native id.
+    const auto prepared = checkpoint_prepare_impl(
+        context, barrier, image_.checkpoint_generation + 3902);
+    if (prepared.error.has_value()) return prepared;
+    return publish_prepared_checkpoint(context);
+}
+
+Result<M3CheckpointPrepared> M3Provider::prepare_checkpoint(
+    const M3CheckpointPrepareRequest& request) {
+    std::scoped_lock lock(operation_mutex_);
+    if (state() != M3ProviderState::Ready) {
+        return Result<M3CheckpointPrepared>::failure(provider_error(
+            L"M3Provider::prepare_checkpoint", L"provider is not ready"));
+    }
+    if (pending_checkpoint_.has_value() || pending_two_phase_.has_value()) {
+        return Result<M3CheckpointPrepared>::failure(provider_error(
+            L"M3Provider::prepare_checkpoint",
+            L"a checkpoint is already pending"));
+    }
+    const auto prepared = checkpoint_prepare_impl(
+        request.context, request.barrier, request.native_operation_id);
+    if (prepared.error.has_value()) {
+        return Result<M3CheckpointPrepared>::failure(*prepared.error);
+    }
+    const auto& frozen = *pending_two_phase_;
+    return Result<M3CheckpointPrepared>::success(M3CheckpointPrepared{
+        frozen.prior_generation,
+        frozen.candidate_generation,
+        frozen.manifest_slot,
+        frozen.candidate_bytes_digest});
+}
+
+M3CheckpointOutcome M3Provider::commit_checkpoint(
+    const M3CheckpointCommitRequest& request) {
+    std::scoped_lock lock(operation_mutex_);
+    if (!pending_checkpoint_.has_value() || !pending_two_phase_.has_value()) {
+        return provider_checkpoint_failure(
+            image_, request.native_operation_id,
+            provider_error(L"M3Provider::commit_checkpoint",
+                           L"no prepared checkpoint is pending"),
+            CommitDisposition::NotCommitted,
+            image_.checkpoint_generation + 1,
+            "checkpoint.publish", SessionPhase::Ready,
+            "no prepared checkpoint is pending");
+    }
+    const auto& frozen = *pending_two_phase_;
+    if (request.native_operation_id != frozen.native_operation_id ||
+        request.manifest_slot != frozen.manifest_slot ||
+        request.candidate_bytes_digest != frozen.candidate_bytes_digest) {
+        // The request does not describe the candidate that was frozen, so
+        // publishing would commit an object the caller never recorded. Fail
+        // closed and leave the prepared transaction untouched for the caller to
+        // abort deliberately.
+        return provider_checkpoint_failure(
+            image_, frozen.native_operation_id,
+            provider_error(L"M3Provider::commit_checkpoint",
+                           L"commit does not match the prepared candidate"),
+            CommitDisposition::NotCommitted, frozen.candidate_generation,
+            "checkpoint.publish", SessionPhase::Checkpointing,
+            "commit request does not match the prepared checkpoint candidate");
+    }
+    return publish_prepared_checkpoint(request.context);
+}
+
+Result<void> M3Provider::abort_checkpoint(
+    const std::uint64_t native_operation_id) {
+    std::scoped_lock lock(operation_mutex_);
+    if (!pending_checkpoint_.has_value() || !pending_two_phase_.has_value()) {
+        return Result<void>::failure(provider_error(
+            L"M3Provider::abort_checkpoint",
+            L"no prepared checkpoint is pending"));
+    }
+    if (pending_two_phase_->native_operation_id != native_operation_id) {
+        return Result<void>::failure(provider_error(
+            L"M3Provider::abort_checkpoint",
+            L"abort does not match the prepared checkpoint"));
+    }
+    auto& transaction = *pending_checkpoint_;
+    auto aborted = transaction.abort();
+    pending_checkpoint_.reset();
+    pending_two_phase_.reset();
+    return aborted;
 }
 
 M3CheckpointOutcome M3Provider::resume_pending_checkpoint(
@@ -1627,7 +1787,24 @@ M3StopOutcome M3Provider::stop(
         result.transport_stopped = true;
     }
     bool persistence_ready = true;
-    if (pending_checkpoint_.has_value()) {
+    if (pending_two_phase_.has_value()) {
+        // A two-phase prepare is outstanding and its manifest was never
+        // published. Resuming it would commit a candidate the caller never
+        // authorised, so discard it instead: that releases the snapshot and the
+        // publish lease without touching any manifest slot. `pending_two_phase_`
+        // is cleared by commit precisely so this test distinguishes
+        // "prepared, unpublished" from "published, awaiting reconcile".
+        auto& transaction = *pending_checkpoint_;
+        const auto discarded = transaction.abort();
+        pending_checkpoint_.reset();
+        pending_two_phase_.reset();
+        if (!discarded.ok()) {
+            persistence_ready = false;
+            remember(discarded.error(), std::nullopt, "stop.prepare",
+                     SessionPhase::Checkpointing,
+                     "unpublished prepared checkpoint could not be discarded");
+        }
+    } else if (pending_checkpoint_.has_value()) {
         if (!result.transport_stopped) {
             persistence_ready = false;
         } else {

@@ -1145,3 +1145,188 @@ TEST_CASE(m3_provider_second_compaction_deletes_only_unreferenced_retired_pair) 
     REQUIRE(std::filesystem::exists(bundle.root / L"journal-e0002-c2.rdj"));
     REQUIRE(provider.value()->stop(context(), {}).ok());
 }
+
+// ---- M5 two-phase checkpoint boundary (Task 3) ------------------------------
+// The M4 one-shot checkpoint() stays a single call. These cover the explicit
+// prepare/commit/abort split the M5 service needs so it can publish its own
+// durable commit boundary between prepare and commit.
+
+namespace {
+
+// The M5 native-id rule: candidate_generation + kM5CheckpointOperationOffset,
+// which differs from the M4 rule of checkpoint_generation + 3902 for the same
+// candidate generation.
+constexpr std::uint64_t kM5CheckpointOperationOffset = 3902;
+
+M3CheckpointPrepareRequest prepare_request(const std::uint64_t native_id) {
+    M3CheckpointPrepareRequest request{};
+    request.context = context();
+    request.barrier = VolumeBarrierKind::RawBlockTestNoFilesystemCache;
+    request.native_operation_id = native_id;
+    return request;
+}
+
+M3CheckpointCommitRequest commit_request(
+    const M3CheckpointPrepared& prepared, const std::uint64_t native_id) {
+    M3CheckpointCommitRequest request{};
+    request.context = context();
+    request.native_operation_id = native_id;
+    request.manifest_slot = prepared.manifest_slot;
+    request.candidate_bytes_digest = prepared.candidate_bytes_digest;
+    return request;
+}
+
+} // namespace
+
+TEST_CASE(m3_two_phase_prepare_freezes_a_candidate_and_publishes_nothing) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> data(kM2BlockSize, std::byte{0x5a});
+    REQUIRE(probe->device->write(context(), 0, data).ok());
+
+    const std::uint64_t native_id = 1 + kM5CheckpointOperationOffset;
+    const auto prepared = provider.value()->prepare_checkpoint(
+        prepare_request(native_id));
+    REQUIRE(prepared.ok());
+    REQUIRE_EQ(prepared.value().prior_generation, 0ull);
+    REQUIRE_EQ(prepared.value().candidate_generation, 1ull);
+    // The candidate is a real manifest slot, and prepare alone committed nothing.
+    REQUIRE(prepared.value().manifest_slot <= 1);
+    REQUIRE_EQ(provider.value()->generation(), 0ull);
+
+    const auto committed = provider.value()->commit_checkpoint(
+        commit_request(prepared.value(), native_id));
+    REQUIRE(committed.ok());
+    REQUIRE_EQ(committed.disposition, CommitDisposition::Committed);
+    REQUIRE_EQ(committed.generation, 1ull);
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_two_phase_abort_preserves_the_prior_generation) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> data(kM2BlockSize, std::byte{0x11});
+    REQUIRE(probe->device->write(context(), 0, data).ok());
+
+    const std::uint64_t native_id = 1 + kM5CheckpointOperationOffset;
+    const auto prepared = provider.value()->prepare_checkpoint(
+        prepare_request(native_id));
+    REQUIRE(prepared.ok());
+
+    REQUIRE(provider.value()->abort_checkpoint(native_id).ok());
+    REQUIRE_EQ(provider.value()->generation(), 0ull);
+    // Aborting released the prepared transaction, so a later commit carrying
+    // its identity has nothing to commit.
+    M3CheckpointCommitRequest stale{};
+    stale.context = context();
+    stale.native_operation_id = native_id;
+    stale.manifest_slot = prepared.value().manifest_slot;
+    stale.candidate_bytes_digest = prepared.value().candidate_bytes_digest;
+    REQUIRE(!provider.value()->commit_checkpoint(stale).ok());
+    REQUIRE_EQ(provider.value()->generation(), 0ull);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_two_phase_prepare_rejects_a_zero_native_operation_id) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+
+    // Zero is the "no operation" encoding, so it can never identify a prepare.
+    REQUIRE(!provider.value()->prepare_checkpoint(prepare_request(0)).ok());
+    REQUIRE_EQ(provider.value()->generation(), 0ull);
+    // Nothing was left pending, so a legitimate prepare still succeeds.
+    const std::uint64_t native_id = 1 + kM5CheckpointOperationOffset;
+    REQUIRE(
+        provider.value()->prepare_checkpoint(prepare_request(native_id)).ok());
+    REQUIRE(provider.value()->abort_checkpoint(native_id).ok());
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_two_phase_commit_refuses_a_candidate_it_did_not_freeze) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> data(kM2BlockSize, std::byte{0x22});
+    REQUIRE(probe->device->write(context(), 0, data).ok());
+
+    const std::uint64_t native_id = 1 + kM5CheckpointOperationOffset;
+    const auto prepared = provider.value()->prepare_checkpoint(
+        prepare_request(native_id));
+    REQUIRE(prepared.ok());
+
+    // A digest that is not the frozen candidate must fail closed.
+    auto forged = commit_request(prepared.value(), native_id);
+    forged.candidate_bytes_digest[0] ^= std::byte{0xff};
+    const auto refused = provider.value()->commit_checkpoint(forged);
+    REQUIRE(!refused.ok());
+    REQUIRE_EQ(refused.disposition, CommitDisposition::NotCommitted);
+    REQUIRE_EQ(provider.value()->generation(), 0ull);
+
+    // A mismatched native id must also fail closed.
+    auto wrong_id = commit_request(prepared.value(), native_id + 1);
+    REQUIRE(!provider.value()->commit_checkpoint(wrong_id).ok());
+    REQUIRE_EQ(provider.value()->generation(), 0ull);
+
+    // The refusals left the prepared transaction intact, so the genuine commit
+    // still publishes exactly the frozen candidate.
+    const auto committed = provider.value()->commit_checkpoint(
+        commit_request(prepared.value(), native_id));
+    REQUIRE(committed.ok());
+    REQUIRE_EQ(committed.generation, 1ull);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+}
+
+TEST_CASE(m3_two_phase_stop_discards_an_unpublished_prepare) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+    std::vector<std::byte> data(kM2BlockSize, std::byte{0x33});
+    REQUIRE(probe->device->write(context(), 0, data).ok());
+
+    const std::uint64_t native_id = 1 + kM5CheckpointOperationOffset;
+    REQUIRE(
+        provider.value()->prepare_checkpoint(prepare_request(native_id)).ok());
+
+    // A prepared-but-unpublished transaction must be discarded, never resumed:
+    // resuming would commit a candidate no caller ever authorised.
+    const auto stopped = provider.value()->stop(context(), {});
+    REQUIRE(stopped.ok());
+    REQUIRE(!stopped.checkpoint_completed);
+
+    auto reopened_probe = std::make_shared<TransportProbe>();
+    auto reopened = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(reopened_probe));
+    REQUIRE(reopened.ok());
+    REQUIRE_EQ(reopened.value()->generation(), 0ull);
+    REQUIRE(reopened.value()->start(context()).ok());
+    REQUIRE(reopened.value()->stop(context(), {}).ok());
+}

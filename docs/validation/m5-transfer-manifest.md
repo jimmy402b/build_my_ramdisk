@@ -99,6 +99,55 @@ the measurement in the plan's ownership table that this layer links no execution
 target.
 
 
+### 1.4 Task 3 verification
+
+`M3Provider` gained the explicit two-phase boundary:
+`prepare_checkpoint` / `commit_checkpoint` / `abort_checkpoint`, plus
+`M3CheckpointPrepareRequest`, `M3CheckpointPrepared` and
+`M3CheckpointCommitRequest`.
+
+What was done, and what was deliberately not done:
+
+- `checkpoint_impl` was split into `checkpoint_prepare_impl` (an explicit native
+  operation id) and `publish_prepared_checkpoint`. The M4 one-shot
+  `checkpoint()` is now those two calls in sequence with its native id unchanged
+  at `checkpoint_generation + 3902`, so M4 behaviour is byte-for-byte the same
+  path rather than a parallel one.
+- The candidate is frozen during prepare: `prepare_manifest_candidate` is called
+  there, and the slot plus SHA-256 of the exact candidate bytes are returned and
+  required again at commit.
+- `pending_two_phase_` is engaged exactly between prepare and publish. That
+  invariant is what lets `stop` tell "prepared, unpublished" from "published,
+  awaiting reconcile".
+- §3.5's stop rule is implemented at the `stop()` pending-checkpoint branch: an
+  unpublished prepare is **aborted** (releasing the snapshot and publish lease)
+  instead of the previous unconditional `resume_pending_checkpoint`, which would
+  have committed a candidate no caller authorised. A published transaction still
+  resumes.
+- A zero native operation id is refused at prepare, before any state changes.
+
+Evidence: the Release build is clean, and the full elevated suite reports
+
+```
+100% tests passed, 0 tests failed out of 135
+```
+
+with `integration.m3.provider` passing. That run was executed **after** rebuilding
+the provider test target with the five new cases, and all five case names plus the
+three new API symbols are present in the test binary, so the cases ran rather than
+being absent.
+
+**Caveat, recorded honestly:** a follow-up attempt to print the per-case PASS list
+was blocked because the elevation prompt was declined, so I have the suite-level
+result and the compiled-in case names, not a fresh per-case listing. Re-run
+`myrd_m3_provider_integration_tests.exe` from an elevated shell to print the five
+`m3_two_phase_*` cases individually.
+
+**Observability limit:** the M5 native-id rule
+(`candidate_generation + kM5CheckpointOperationOffset`) is exercised by these
+tests, but the constant itself is not yet shared with the service — Task 5/6 must
+define it in one place so the worker and M3 cannot drift.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
