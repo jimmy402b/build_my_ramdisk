@@ -354,3 +354,18 @@ target_link_libraries(myrd_management PUBLIC
     myrd_profile myrd_product_ipc myrd_product_contracts myrd_common)
 myrd_enable_warnings(myrd_management)
 myrd_assert_execution_boundary(myrd_management)
+
+# ---- M5 private worker protocol (Task 5) -------------------------------------
+# The typed service <-> per-profile worker messages, their strict codec, and the
+# single definition of the M5 native checkpoint operation id rule
+# (`src/common/m5_native_operation_id.h`).  Pure contract: it carries no
+# execution, driver, persistence or management dependency, so both the worker
+# and the service-side adapter can link it.
+add_library(myrd_m5_worker_protocol STATIC
+    host/m5_worker_protocol.cpp host/m5_worker_protocol.h
+)
+target_include_directories(myrd_m5_worker_protocol PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_m5_worker_protocol PUBLIC
+    myrd_product_contracts myrd_common)
+myrd_enable_warnings(myrd_m5_worker_protocol)
+myrd_assert_execution_boundary(myrd_m5_worker_protocol)

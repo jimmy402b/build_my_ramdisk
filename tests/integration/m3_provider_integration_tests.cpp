@@ -3,6 +3,7 @@
 #include "src/m3/m3_provider.h"
 #include "src/persistence/image_creator.h"
 #include "src/persistence/vhdx_reader.h"
+#include "src/common/m5_native_operation_id.h"
 #include "src/common/unique_handle.h"
 #include "src/common/unique_view.h"
 #include "src/proxy/imdproxy_protocol.h"
@@ -1155,8 +1156,9 @@ namespace {
 
 // The M5 native-id rule: candidate_generation + kM5CheckpointOperationOffset,
 // which differs from the M4 rule of checkpoint_generation + 3902 for the same
-// candidate generation.
-constexpr std::uint64_t kM5CheckpointOperationOffset = 3902;
+// candidate generation.  The constant itself is defined once in
+// `src/common/m5_native_operation_id.h` and shared with the worker and the
+// service so the three cannot drift.
 
 M3CheckpointPrepareRequest prepare_request(const std::uint64_t native_id) {
     M3CheckpointPrepareRequest request{};

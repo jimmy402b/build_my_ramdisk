@@ -183,6 +183,43 @@ seven §1.1/§7.5 gates plus `m5.service_operation_store`, which fails at its ow
 unelevated failure set is complete rather than looking like a Task 4 regression.
 Task 4 touched no `src/management/` file.
 
+### 1.6 Task 5 increment 1 — the private protocol (Steps 1–2)
+
+Task 5 is in progress. This increment delivers the typed private service <->
+worker protocol and its strict codec, plus the single definition of the M5
+native operation id rule; the worker session, the worker executable and the
+service-side `service_worker_control` rebuild are the remainder.
+
+- `src/common/m5_native_operation_id.h` — `kM5CheckpointOperationOffset = 3902`
+  and `m5_native_operation_id()`. Before this it existed **only** inside
+  `tests/integration/m3_provider_integration_tests.cpp`; that test now includes
+  the shared header instead of repeating the literal, so the M3 journal rule,
+  the worker and the service's P4 record cannot drift (see §7 item 13).
+- `src/host/m5_worker_protocol.{h,cpp}` — `WorkerBinding`, the handshake, the
+  frozen `WorkerPreparedCandidate`, `WorkerCheckpointCommit`,
+  `WorkerRuntimeStatus`, `WorkerRecoveryProof`, and the nine-command set; a
+  strict binary codec that refuses a message without a binding, a stray payload
+  for its command, a version or magic mismatch, a truncated body and trailing
+  bytes; and the two gates — `authenticate_worker_message` (binding equality,
+  strictly-increasing sequence, required product operation id) and
+  `require_matching_candidate` (native id, slot, digest).
+- `tests/unit/m5_worker_protocol_tests.cpp` (`unit.m5.worker_protocol`, 12
+  cases) covers Step 1's list: handshake authentication, replay rejection,
+  binding mismatch, candidate-digest mismatch, strict runtime observation, and
+  every recovery-proof outcome, plus the fail-closed decoder negatives.
+
+Nothing in this increment is copied from `host_ipc`/`host_protocol` (§3): the
+message set, the framing and the gates are written against the frozen
+`IWorkerControl` contract in `service_core.h`.
+
+Evidence: Release build clean, full elevated suite
+
+```
+100% tests passed, 0 tests failed out of 137
+```
+
+137 = the previous 136 + `unit.m5.worker_protocol`.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
@@ -374,3 +411,18 @@ Recorded so the plan and the tree do not silently diverge.
     `main.cpp`'s early preflight/classify (needed for the `MYRD_M4_TEST_*` seams
     and for failing before any bundle access) still runs, so the driver gate is
     evaluated twice on the foreground path — exactly as it was before.
+13. **Task 5: the native-id constant lives in `src/common/`, not the worker.**
+    `kM5CheckpointOperationOffset` is read by the M3 journal rule, the worker and
+    the service's P4 record, and `myrd_management` may not link `src/host`.
+    Putting it in `src/host/m5_worker_protocol.h` would have forced either a
+    layering violation or a second copy, so it is
+    `src/common/m5_native_operation_id.h`. The M3 integration test's local copy
+    is deleted in favour of the shared header.
+14. **Task 5: the private protocol is a new type set, not a reuse of
+    `ipc_frame`.** The public frame carries a schema-driven command payload and
+    is deliberately reachable by an unprivileged client; the private protocol
+    carries an authenticated `WorkerBinding` on every message and a
+    strictly-increasing sequence. Folding them together would have meant the
+    public codec learning worker binding semantics, so the private messages reuse
+    only the canonical-text UUID convention (and the byte-identical formatter
+    from `ipc_frame.cpp`).
