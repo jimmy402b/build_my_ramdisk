@@ -12,7 +12,7 @@
 | M5-02 | NOT_STARTED | M5-01 | Ported operation/profile CAS authority and the ServiceCore contract; import lease covers registration. |
 | M5-03 | PASSED | M5-01 | M3 prepare/commit/abort; M4 one-shot checkpoint unchanged. |
 | M5-04 | PASSED | M5-03 | Foreground and worker share one DiskRuntime production adapter. |
-| M5-05 | NOT_STARTED | M5-02, M5-04 | Authenticated per-profile worker and recovery proof. |
+| M5-05 | IN_PROGRESS | M5-02, M5-04 | Authenticated per-profile worker and recovery proof. |
 | M5-06 | NOT_STARTED | M5-02, M5-05 | P4/P5 core, reconciliation, dirty-truth stop policies. |
 | M5-07 | NOT_STARTED | M5-06 | Scheduler, public pipe, CLI, service lifecycle, auto-start. |
 | M5-08 | NOT_STARTED | M5-07 | Two-profile isolation and service/worker restart suites pass. |
