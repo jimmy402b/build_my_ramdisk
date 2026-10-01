@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/common/result.h"
+#include "src/common/sha256.h"
 #include "src/run/windows_volume.h"
 
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -38,6 +40,32 @@ struct DiskMaintenanceStats final {
     std::uint64_t dirty_bytes{};
     std::uint64_t journal_bytes{};
     std::uint64_t generation{};
+};
+
+// M5 two-phase checkpoint boundary (design spec 3.3/3.4).
+//
+// These mirror the M3 types on purpose, exactly as DiskCheckpointResult already
+// mirrors persistence::CommitDisposition: DiskRuntime is the engine boundary and
+// stays free of M3 headers.  The shared adapter performs the translation.
+//
+// The candidate is frozen during prepare.  Commit must repeat the identical
+// native id, manifest slot and digest or the prepare stays unpublished, so a
+// caller can never publish bytes it did not first observe.
+struct DiskCheckpointPrepareRequest final {
+    std::uint64_t native_operation_id{};
+};
+
+struct DiskCheckpointPrepared final {
+    std::uint64_t prior_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint8_t manifest_slot{};
+    Sha256Digest candidate_bytes_digest{};
+};
+
+struct DiskCheckpointCommitRequest final {
+    std::uint64_t native_operation_id{};
+    std::uint8_t manifest_slot{};
+    Sha256Digest candidate_bytes_digest{};
 };
 
 struct DiskRuntimeOptions final {
@@ -75,6 +103,18 @@ struct DiskRuntimeOperations final {
 
     std::function<Result<DiskCheckpointResult>()> checkpoint;
     std::function<DiskMaintenanceStats()> maintenance_stats;
+
+    // M5-only two-phase boundary.  A foreground M4 run leaves these unset and
+    // keeps using the one-shot checkpoint() above; the per-profile worker
+    // supplies them through the shared production adapter.
+    std::function<Result<DiskCheckpointPrepared>(
+        const DiskCheckpointPrepareRequest&)>
+        prepare_checkpoint;
+    std::function<Result<DiskCheckpointResult>(
+        const DiskCheckpointCommitRequest&)>
+        commit_checkpoint;
+    std::function<Result<void>(std::uint64_t native_operation_id)>
+        abort_checkpoint;
 };
 
 class DiskRuntime final {
@@ -108,6 +148,25 @@ public:
     // returned verbatim, including not_committed and commit_indeterminate;
     // callers must not infer commitment from a successful API call alone.
     Result<DiskCheckpointResult> checkpoint();
+
+    // M5 two-phase checkpoint.  All four calls, the one-shot checkpoint() above
+    // and the shutdown path below share one runtime mutex, so a service commit
+    // can never advance the same transaction as a timeout-driven abort.
+    //
+    // prepare_checkpoint freezes the candidate and returns its slot and digest.
+    // commit_checkpoint publishes only that exact candidate: a request whose
+    // native id, slot or digest differs is refused and leaves the prepare
+    // pending.  abort_checkpoint releases an unpublished prepare.
+    Result<DiskCheckpointPrepared> prepare_checkpoint(
+        const DiskCheckpointPrepareRequest& request);
+    Result<DiskCheckpointResult> commit_checkpoint(
+        const DiskCheckpointCommitRequest& request);
+    Result<void> abort_checkpoint(std::uint64_t native_operation_id);
+    // True while a prepare has been accepted and not yet resolved by
+    // commit/abort.  A worker uses this to decide whether shutdown must abort
+    // rather than stop M3 blindly (design spec 3.5).
+    [[nodiscard]] bool checkpoint_prepared() const;
+
     // May only be called after a successful start (or after a failed start has
     // completed its owned-resource cleanup). Repeated calls are harmless.
     Result<void> shutdown_clean();
@@ -115,6 +174,12 @@ public:
 private:
     DiskRuntime(DiskRuntimeMode mode, DiskRuntimeOptions options,
                 DiskRuntimeOperations operations);
+
+    // Releases an unpublished prepare before M3 is stopped.  Returns the abort
+    // failure when the transaction could not be resolved, in which case the
+    // caller must retain the runtime rather than stop it.
+    Result<void> abort_pending_checkpoint_locked();
+    Result<void> shutdown_clean_locked();
 
     DiskRuntimeMode mode_;
     DiskRuntimeOptions options_;
@@ -126,6 +191,12 @@ private:
     bool volume_dismounted_{};
     bool started_{};
     bool cleanup_attempted_{};
+
+    mutable std::mutex mutex_;
+    // Valid together: the prepared candidate and the native operation id that
+    // commit/abort must repeat to publish or release it.
+    std::optional<DiskCheckpointPrepared> pending_checkpoint_;
+    std::uint64_t pending_native_operation_id_{};
 };
 
 } // namespace myrd

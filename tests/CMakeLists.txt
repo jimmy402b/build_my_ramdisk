@@ -148,6 +148,19 @@ myrd_enable_warnings(myrd_m4_disk_runtime_tests)
 add_test(NAME unit.m4.disk_runtime COMMAND myrd_m4_disk_runtime_tests)
 set_tests_properties(unit.m4.disk_runtime PROPERTIES TIMEOUT 30)
 
+# The shared production adapter (M5 Task 4 Step 1).  Both the foreground CLI
+# and the per-profile worker compose through this one factory.
+add_executable(myrd_m4_runtime_adapter_tests
+    unit/m4_runtime_adapter_tests.cpp
+)
+target_link_libraries(myrd_m4_runtime_adapter_tests PRIVATE
+    myrd_test_support myrd_m4_run)
+target_include_directories(myrd_m4_runtime_adapter_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_runtime_adapter_tests)
+add_test(NAME unit.m4.runtime_adapter COMMAND myrd_m4_runtime_adapter_tests)
+set_tests_properties(unit.m4.runtime_adapter PROPERTIES TIMEOUT 30)
+
 # ---- M4 checkpoint and shutdown policy (T10; RED until implementation) ----
 add_executable(myrd_m4_run_policy_tests
     unit/m4_run_policy_tests.cpp

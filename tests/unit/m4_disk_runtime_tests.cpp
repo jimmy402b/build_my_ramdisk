@@ -3,6 +3,8 @@
 #include "src/run/disk_runtime.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,17 @@ using namespace myrd;
 Error runtime_error(const wchar_t* operation = L"fake") {
     return {ErrorDomain::internal, 1, operation, L"fake failure", 0};
 }
+
+// A deterministic stand-in for the SHA-256 of the frozen candidate bytes.  The
+// point of these cases is the identity check, not the hash itself.
+Sha256Digest digest(const std::uint8_t fill) {
+    Sha256Digest value{};
+    value.fill(std::byte{fill});
+    return value;
+}
+
+constexpr std::uint8_t kPreparedManifestSlot = 2;
+constexpr std::uint8_t kPreparedDigestFill = 0xAB;
 
 struct FakeRuntime final {
     std::vector<std::string> events;
@@ -48,6 +61,12 @@ struct FakeRuntime final {
     bool flushed{};
     bool drive_assigned{};
     bool provision_called{};
+    bool fail_prepare{};
+    bool fail_commit{};
+    bool fail_abort{};
+    std::uint64_t observed_prepare_native_id{};
+    DiskCheckpointCommitRequest observed_commit{};
+    std::optional<std::uint64_t> observed_abort_native_id{};
 
     DiskRuntimeOperations operations() {
         DiskRuntimeOperations ops;
@@ -165,9 +184,44 @@ struct FakeRuntime final {
                 {checkpoint_disposition, checkpoint_generation});
         };
         ops.maintenance_stats = [] { return DiskMaintenanceStats{1, 2, 3}; };
+        ops.prepare_checkpoint =
+            [this](const DiskCheckpointPrepareRequest& request) {
+                events.push_back("prepare");
+                observed_prepare_native_id = request.native_operation_id;
+                if (fail_prepare) {
+                    return Result<DiskCheckpointPrepared>::failure(
+                        runtime_error(L"prepare_checkpoint"));
+                }
+                return Result<DiskCheckpointPrepared>::success(
+                    {5, 6, kPreparedManifestSlot,
+                     digest(kPreparedDigestFill)});
+            };
+        ops.commit_checkpoint =
+            [this](const DiskCheckpointCommitRequest& request) {
+                events.push_back("commit");
+                observed_commit = request;
+                if (fail_commit) {
+                    return Result<DiskCheckpointResult>::failure(
+                        runtime_error(L"commit_checkpoint"));
+                }
+                return Result<DiskCheckpointResult>::success(
+                    {DiskCheckpointDisposition::committed,
+                     request.native_operation_id});
+            };
+        ops.abort_checkpoint = [this](const std::uint64_t native_operation_id) {
+            events.push_back("abort");
+            observed_abort_native_id = native_operation_id;
+            return fail_abort ? Result<void>::failure(runtime_error(L"abort_checkpoint"))
+                              : Result<void>::success();
+        };
         return ops;
     }
 };
+
+// A candidate that matches what FakeRuntime::prepare_checkpoint returns.
+DiskCheckpointCommitRequest matching_commit(const std::uint64_t native_operation_id) {
+    return {native_operation_id, kPreparedManifestSlot, digest(kPreparedDigestFill)};
+}
 
 DiskRuntimeOptions options() {
     return {L"bundle-a", 64ull * 1024 * 1024, L'R', std::chrono::seconds(1)};
@@ -473,4 +527,137 @@ TEST_CASE(m4_disk_runtime_rejects_shutdown_before_start) {
     REQUIRE(runtime.ok());
     REQUIRE(!runtime.value()->shutdown_clean().ok());
     REQUIRE(fake.events.empty());
+}
+
+// ---- M5 two-phase checkpoint (design spec 3.3-3.5) ----
+//
+// The M4 one-shot checkpoint() path above must stay exactly as it was.  These
+// cases pin the M5-only boundary: a candidate frozen at prepare, published only
+// by an identical commit, and never left to be resumed by a blind M3 stop.
+
+TEST_CASE(m4_disk_runtime_two_phase_prepare_then_commit_publishes_the_frozen_candidate) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+
+    const auto prepared = runtime.value()->prepare_checkpoint({42});
+    REQUIRE(prepared.ok());
+    REQUIRE_EQ(prepared.value().prior_generation, 5ull);
+    REQUIRE_EQ(prepared.value().candidate_generation, 6ull);
+    REQUIRE(runtime.value()->checkpoint_prepared());
+
+    const auto committed =
+        runtime.value()->commit_checkpoint(matching_commit(42));
+    REQUIRE(committed.ok());
+    REQUIRE_EQ(committed.value().disposition,
+               DiskCheckpointDisposition::committed);
+    REQUIRE(!runtime.value()->checkpoint_prepared());
+    REQUIRE_EQ(fake.observed_prepare_native_id, 42ull);
+    REQUIRE_EQ(fake.observed_commit.native_operation_id, 42ull);
+    REQUIRE_EQ(fake.observed_commit.manifest_slot, kPreparedManifestSlot);
+}
+
+TEST_CASE(m4_disk_runtime_two_phase_commit_requires_a_prepared_candidate) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+
+    REQUIRE(!runtime.value()->commit_checkpoint(matching_commit(42)).ok());
+    // M3 was never asked to publish anything.
+    REQUIRE_EQ(fake.observed_commit.native_operation_id, 0ull);
+}
+
+TEST_CASE(m4_disk_runtime_two_phase_commit_rejects_a_mismatched_candidate) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE(runtime.value()->prepare_checkpoint({42}).ok());
+
+    // Wrong native id, wrong manifest slot, wrong digest: each is refused and
+    // none of them may reach M3.
+    REQUIRE(!runtime.value()->commit_checkpoint(
+                 {43, kPreparedManifestSlot, digest(kPreparedDigestFill)}).ok());
+    REQUIRE(!runtime.value()->commit_checkpoint({42, 1, digest(kPreparedDigestFill)}).ok());
+    REQUIRE(!runtime.value()->commit_checkpoint(
+                 {42, kPreparedManifestSlot, digest(0x01)}).ok());
+    REQUIRE_EQ(fake.observed_commit.native_operation_id, 0ull);
+    // The candidate is still prepared, so a correct retry still succeeds.
+    REQUIRE(runtime.value()->checkpoint_prepared());
+    REQUIRE(runtime.value()->commit_checkpoint(matching_commit(42)).ok());
+}
+
+TEST_CASE(m4_disk_runtime_two_phase_abort_releases_only_the_matching_candidate) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE(runtime.value()->prepare_checkpoint({42}).ok());
+
+    REQUIRE(!runtime.value()->abort_checkpoint(43).ok());
+    REQUIRE(runtime.value()->checkpoint_prepared());
+    REQUIRE(!fake.observed_abort_native_id.has_value());
+
+    REQUIRE(runtime.value()->abort_checkpoint(42).ok());
+    REQUIRE(!runtime.value()->checkpoint_prepared());
+    REQUIRE_EQ(*fake.observed_abort_native_id, 42ull);
+    // Once released, the candidate can no longer be committed.
+    REQUIRE(!runtime.value()->commit_checkpoint(matching_commit(42)).ok());
+}
+
+TEST_CASE(m4_disk_runtime_two_phase_prepare_refuses_zero_and_a_second_candidate) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+
+    // Zero is the "no operation" encoding and cannot identify a prepare.
+    REQUIRE(!runtime.value()->prepare_checkpoint({0}).ok());
+    REQUIRE(runtime.value()->prepare_checkpoint({42}).ok());
+    REQUIRE(!runtime.value()->prepare_checkpoint({43}).ok());
+    // The one-shot M4 path must not run on top of a prepared candidate.
+    REQUIRE(!runtime.value()->checkpoint().ok());
+    REQUIRE_EQ(fake.observed_prepare_native_id, 42ull);
+}
+
+TEST_CASE(m4_disk_runtime_shutdown_aborts_an_unpublished_candidate_before_stopping_aim) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE(runtime.value()->prepare_checkpoint({42}).ok());
+
+    REQUIRE(runtime.value()->shutdown_clean().ok());
+
+    const auto aborted =
+        std::find(fake.events.begin(), fake.events.end(), "abort");
+    const auto stopped =
+        std::find(fake.events.begin(), fake.events.end(), "aim-stop");
+    REQUIRE(aborted != fake.events.end());
+    REQUIRE(stopped != fake.events.end());
+    // Stopping M3 while a transaction is pending would let the provider resume
+    // and publish a candidate no caller authorised.
+    REQUIRE(aborted < stopped);
+}
+
+TEST_CASE(m4_disk_runtime_shutdown_retains_the_runtime_when_the_abort_is_unproven) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE(runtime.value()->prepare_checkpoint({42}).ok());
+
+    fake.fail_abort = true;
+    REQUIRE(!runtime.value()->shutdown_clean().ok());
+    // An unproven abort means the transaction is still live: AIM must still be
+    // running and the candidate must still be the one this runtime holds.
+    REQUIRE(runtime.value()->checkpoint_prepared());
+    REQUIRE(std::find(fake.events.begin(), fake.events.end(), "aim-stop") ==
+            fake.events.end());
+
+    fake.fail_abort = false;
+    REQUIRE(runtime.value()->shutdown_clean().ok());
+    REQUIRE(!runtime.value()->checkpoint_prepared());
 }

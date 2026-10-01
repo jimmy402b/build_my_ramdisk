@@ -69,6 +69,16 @@ public:
     M3CheckpointOutcome checkpoint(
         const OperationContext& context,
         persistence::VolumeBarrierKind barrier);
+
+    // M5 two-phase checkpoint.  These expose the provider's explicit
+    // prepare/publish boundary to the per-profile worker; the foreground run
+    // loop keeps the one-shot checkpoint() above and never calls these.
+    Result<M3CheckpointPrepared> prepare_checkpoint(
+        const M3CheckpointPrepareRequest& request);
+    M3CheckpointOutcome commit_checkpoint(
+        const M3CheckpointCommitRequest& request);
+    Result<void> abort_checkpoint(std::uint64_t native_operation_id);
+
     Result<void> stop();
 
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;

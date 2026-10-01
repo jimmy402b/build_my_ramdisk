@@ -252,6 +252,43 @@ M3CheckpointOutcome M3AimRuntime::checkpoint(
     return provider_->checkpoint(context, barrier);
 }
 
+Result<M3CheckpointPrepared> M3AimRuntime::prepare_checkpoint(
+    const M3CheckpointPrepareRequest& request) {
+    if (!started_ || !provider_) {
+        return Result<M3CheckpointPrepared>::failure(Error{
+            ErrorDomain::internal,
+            static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
+            L"M3AimRuntime::prepare_checkpoint",
+            L"runtime is not started"});
+    }
+    return provider_->prepare_checkpoint(request);
+}
+
+M3CheckpointOutcome M3AimRuntime::commit_checkpoint(
+    const M3CheckpointCommitRequest& request) {
+    if (!started_ || !provider_) {
+        return {persistence::CommitDisposition::NotCommitted, 0,
+                Error{ErrorDomain::internal,
+                      static_cast<std::uint32_t>(
+                          OperationErrorCode::internal_invariant),
+                      L"M3AimRuntime::commit_checkpoint",
+                      L"runtime is not started"}};
+    }
+    return provider_->commit_checkpoint(request);
+}
+
+Result<void> M3AimRuntime::abort_checkpoint(
+    const std::uint64_t native_operation_id) {
+    if (!started_ || !provider_) {
+        return Result<void>::failure(Error{
+            ErrorDomain::internal,
+            static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
+            L"M3AimRuntime::abort_checkpoint",
+            L"runtime is not started"});
+    }
+    return provider_->abort_checkpoint(native_operation_id);
+}
+
 DynamicBlockStoreStats M3AimRuntime::storage_stats() const {
     if (provider_) return provider_->storage_stats();
     return {};

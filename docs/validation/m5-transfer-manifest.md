@@ -148,6 +148,41 @@ result and the compiled-in case names, not a fresh per-case listing. Re-run
 tests, but the constant itself is not yet shared with the service — Task 5/6 must
 define it in one place so the worker and M3 cannot drift.
 
+### 1.5 Task 4 verification
+
+The production composition was extracted from `run/main.cpp` into
+`src/run/runtime_adapter.{h,cpp}`: a `WindowsVolumeOperations` boundary, an
+`M3RuntimeOperations` boundary, the four environment gates (`preflight`,
+`classify_bundle`, `acquire/release_bundle_lock`), and
+`make_runtime_operations()` which turns them into the single
+`DiskRuntimeOperations` both the foreground CLI and the per-profile worker
+compose through. `main.cpp` now keeps only CLI parsing, the test seams, signal
+handling and this composition.
+
+`DiskRuntime` gained the M5-only two-phase boundary — `prepare_checkpoint`,
+`commit_checkpoint`, `abort_checkpoint`, `checkpoint_prepared()` — behind one
+runtime mutex shared with the M4 one-shot `checkpoint()` and with
+`shutdown_clean()`. `M3AimRuntime` gained matching pass-throughs to the Task 3
+provider API.
+
+Evidence: the Release build is clean and the full elevated suite reports
+
+```
+100% tests passed, 0 tests failed out of 136
+```
+
+136 = the previous 135 + `unit.m4.runtime_adapter`. The new `unit.m4.disk_runtime`
+cases (7) and `unit.m4.runtime_adapter` cases (5) are the ones added here; the
+other 124 are the pre-existing suites, unchanged, which is the evidence that the
+extraction did not alter M4 behaviour.
+
+**Unelevated comparison.** The same tree run unelevated fails 8, not 7: the
+seven §1.1/§7.5 gates plus `m5.service_operation_store`, which fails at its own
+`create_secure_directory` (`tests/integration/m5_service_operation_store_tests.cpp:92`)
+— the identical SYSTEM+Administrators-DACL class. It is recorded in §7.5 so the
+unelevated failure set is complete rather than looking like a Task 4 regression.
+Task 4 touched no `src/management/` file.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
@@ -285,3 +320,57 @@ Recorded so the plan and the tree do not silently diverge.
    `FILE_ADD_SUBDIRECTORY`, which directory ownership does not confer. It passes
    from an elevated shell and fails with `ERROR_ACCESS_DENIED` otherwise — the same
    class as the §1.1 baseline set, and not a defect in the transmitted code.
+   `m5.service_operation_store` is the same case, at
+   `create_secure_directory` in `m5_service_operation_store_tests.cpp`; it is
+   listed here so the **unelevated** failure set is exactly
+   {integration.shm, integration.m2.shm, integration.m3.provider,
+   integration.m3.windows_vhdx, unit.lifecycle_runner, unit.m2.windows_acceptance,
+   unit.m4.profile_store, m5.service_operation_store} = 8 tests. Any other
+   unelevated failure is a real regression.
+6. **Task 4: `m5_production_execution_backend_tests.cpp` deferred to Task 5.**
+   Task 4's test list names it and Task 5's names it again. At `cb3df08` it does
+   not exist, and on `feature/m5-unified-integration` it includes
+   `src/host/host_ipc.h` and `src/host/host_protocol.h` (HostCore — a §3
+   prohibited import) as well as `src/management/service_composition.h` (Task 7)
+   and `src/management/service_worker_session.h` (Task 5). It therefore cannot
+   compile, let alone run, before Tasks 5 and 7 create those. Deferring follows
+   the general rule in item 3 above; the test is rewritten there against
+   `DiskRuntime`, not copied.
+7. **Task 4 Step 1's parity tests live in a new file.** The plan asks for
+   "adapter-parity tests" but names no file for them; Task 4's list names only the
+   M4 suites. They are `tests/unit/m4_runtime_adapter_tests.cpp`
+   (`unit.m4.runtime_adapter`), which drives foreground and worker compositions
+   with identical fake dependencies and asserts byte-identical call sequences,
+   including the M5 two-phase boundary and the shutdown cleanup order.
+8. **Task 4 Step 3 split: prepare/commit/abort here, recovery in Task 5.** Step 3
+   says "Add prepare, commit, abort, and recovery methods to DiskRuntime". The
+   first three are implemented and covered in `unit.m4.disk_runtime` in Task 4.
+   The **recovery** method (the §3.5 read-only reconciliation command that returns
+   prior-generation-proved / candidate-proved / ownership-unprovable) is deferred
+   to Task 5: its input is the P4 durable correlation that Task 2's stores carry
+   and the worker exchanges, and its only test is the deferred backend suite from
+   item 6. Implementing it here would be an untested guess at Task 5's protocol.
+9. **`RuntimeAdapterDependencies::owner_token` is `std::wstring`, not `HANDLE`.**
+   The plan's struct sketch shows `HANDLE owner_token`. `Win32VolumeAdapter`
+   consumes a `std::wstring` token, and the foreground value is
+   `L"myrd:" + pid`, so keeping the string type is what makes the extraction
+   behaviour-preserving. The sketch's `HANDLE` would have required inventing a
+   conversion with no consumer.
+10. **`M3RuntimeOperations` also carries prepare/commit/abort.** The plan's Step 2
+    sketch lists only create/recover/start/stop/checkpoint/maintenance_stats, but
+    design spec §4 states two-phase is the addition *above* the adapter and that
+    the worker reuses the adapter. Task 5 must therefore reach the two-phase
+    boundary through the same shared adapter; a second private path would
+    reintroduce the duplication the extraction exists to remove.
+11. **DiskRuntime mirrors the M3 two-phase types instead of including them.**
+    `DiskCheckpointPrepareRequest/Prepared/CommitRequest` are declared in
+    `disk_runtime.h` in terms of `src/common/sha256.h`, exactly as the existing
+    `DiskCheckpointResult` mirrors `persistence::CommitDisposition`. This keeps
+    the engine header free of M3 headers; `ProductionRuntimeAdapter` performs the
+    translation.
+12. **Shared environment helpers moved out of `main.cpp`.** `classify_bundle` and
+    `require_elevated_administrator` moved into `runtime_adapter.{h,cpp}`, and
+    `make_production_environment()` supplies the four gates for both callers.
+    `main.cpp`'s early preflight/classify (needed for the `MYRD_M4_TEST_*` seams
+    and for failing before any bundle access) still runs, so the driver gate is
+    evaluated twice on the foreground path — exactly as it was before.

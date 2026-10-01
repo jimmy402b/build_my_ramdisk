@@ -4,6 +4,7 @@ add_library(myrd_m4_run STATIC
     run/cli.cpp run/cli.h
     run/windows_volume.cpp run/windows_volume.h
     run/disk_runtime.cpp run/disk_runtime.h
+    run/runtime_adapter.cpp run/runtime_adapter.h
     run/m4_persistence_adapter.cpp run/m4_persistence_adapter.h
     run/run_loop.cpp run/run_loop.h
     run/driver_preflight.cpp run/driver_preflight.h

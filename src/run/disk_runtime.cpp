@@ -49,11 +49,12 @@ DiskRuntime::~DiskRuntime() noexcept {
 }
 
 Result<void> DiskRuntime::start() {
+    std::lock_guard<std::mutex> guard(mutex_);
     if (started_) return Result<void>::success();
 
     auto fail = [this](Result<void> result) -> Result<void> {
         if (result.ok()) return result;
-        (void)shutdown_clean();
+        (void)shutdown_clean_locked();
         return result;
     };
 
@@ -64,7 +65,7 @@ Result<void> DiskRuntime::start() {
     if (!operations_.classify_bundle) return fail(missing_void(L"classify_bundle"));
     auto classified = operations_.classify_bundle(options_.bundle);
     if (!classified.ok()) {
-        (void)shutdown_clean();
+        (void)shutdown_clean_locked();
         return Result<void>::failure(classified.error());
     }
     const auto kind = classified.value();
@@ -82,7 +83,7 @@ Result<void> DiskRuntime::start() {
         (mode_ == DiskRuntimeMode::recover && kind != DiskBundleKind::manifest)) {
         auto invalid = Result<void>::failure(
             runtime_error(L"classify_bundle", L"bundle kind does not match runtime mode"));
-        (void)shutdown_clean();
+        (void)shutdown_clean_locked();
         return invalid;
     }
 
@@ -108,7 +109,7 @@ Result<void> DiskRuntime::start() {
         auto provisioned = operations_.provision_new_volume(
             options_.virtual_bytes, options_.drive_letter);
         if (!provisioned.ok()) {
-            (void)shutdown_clean();
+            (void)shutdown_clean_locked();
             return Result<void>::failure(provisioned.error());
         }
         volume_ = provisioned.move_value();
@@ -125,7 +126,7 @@ Result<void> DiskRuntime::start() {
             return fail(missing_void(L"find_recovered_volume"));
         auto found = operations_.find_recovered_volume(options_.drive_letter);
         if (!found.ok()) {
-            (void)shutdown_clean();
+            (void)shutdown_clean_locked();
             return Result<void>::failure(found.error());
         }
         volume_ = found.move_value();
@@ -149,7 +150,7 @@ Result<void> DiskRuntime::start() {
         if (committed.value().disposition != DiskCheckpointDisposition::committed) {
             auto not_committed = Result<void>::failure(
                 runtime_error(L"checkpoint", L"generation-zero checkpoint was not committed"));
-            (void)shutdown_clean();
+            (void)shutdown_clean_locked();
             return not_committed;
         }
     } else {
@@ -165,23 +166,121 @@ Result<void> DiskRuntime::start() {
 }
 
 DiskMaintenanceStats DiskRuntime::maintenance_stats() const {
+    std::lock_guard<std::mutex> guard(mutex_);
     if (!operations_.maintenance_stats) return {};
     return operations_.maintenance_stats();
 }
 
 Result<void> DiskRuntime::flush_volume() {
+    std::lock_guard<std::mutex> guard(mutex_);
     if (!started_ || !volume_ || !operations_.flush_volume)
         return missing_void(L"flush_volume");
     return operations_.flush_volume(*volume_);
 }
 
 Result<DiskCheckpointResult> DiskRuntime::checkpoint() {
+    std::lock_guard<std::mutex> guard(mutex_);
     if (!started_ || !operations_.checkpoint)
         return missing<DiskCheckpointResult>(L"checkpoint");
+    // The M4 one-shot path and the M5 two-phase path share one candidate slot.
+    // Letting the one-shot call run while a candidate is prepared would publish
+    // a generation the prepared transaction never observed.
+    if (pending_checkpoint_)
+        return Result<DiskCheckpointResult>::failure(runtime_error(
+            L"checkpoint",
+            L"a two-phase checkpoint is prepared; commit or abort it first"));
     return operations_.checkpoint();
 }
 
+Result<DiskCheckpointPrepared> DiskRuntime::prepare_checkpoint(
+    const DiskCheckpointPrepareRequest& request) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!started_ || !operations_.prepare_checkpoint)
+        return missing<DiskCheckpointPrepared>(L"prepare_checkpoint");
+    if (pending_checkpoint_)
+        return Result<DiskCheckpointPrepared>::failure(runtime_error(
+            L"prepare_checkpoint",
+            L"a checkpoint candidate is already prepared"));
+    // Zero is the "no operation" encoding and cannot identify a prepare, so it
+    // is refused before any state changes (design spec 3.3).
+    if (request.native_operation_id == 0)
+        return Result<DiskCheckpointPrepared>::failure(runtime_error(
+            L"prepare_checkpoint",
+            L"zero native operation id cannot identify an M5 checkpoint"));
+
+    auto prepared = operations_.prepare_checkpoint(request);
+    if (!prepared.ok()) return prepared;
+    pending_native_operation_id_ = request.native_operation_id;
+    pending_checkpoint_ = prepared.value();
+    return prepared;
+}
+
+Result<DiskCheckpointResult> DiskRuntime::commit_checkpoint(
+    const DiskCheckpointCommitRequest& request) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!started_ || !operations_.commit_checkpoint)
+        return missing<DiskCheckpointResult>(L"commit_checkpoint");
+    if (!pending_checkpoint_)
+        return Result<DiskCheckpointResult>::failure(runtime_error(
+            L"commit_checkpoint", L"no checkpoint candidate is prepared"));
+    if (request.native_operation_id != pending_native_operation_id_ ||
+        request.manifest_slot != pending_checkpoint_->manifest_slot ||
+        request.candidate_bytes_digest !=
+            pending_checkpoint_->candidate_bytes_digest) {
+        // The candidate stays prepared: a caller that repeats the wrong
+        // identity must not be able to publish it, and must still be able to
+        // retry with the recorded identity or abort.
+        return Result<DiskCheckpointResult>::failure(runtime_error(
+            L"commit_checkpoint",
+            L"commit does not match the prepared candidate"));
+    }
+
+    auto committed = operations_.commit_checkpoint(request);
+    // Once M3 has been asked to publish, the transaction belongs to M3.  An
+    // indeterminate outcome is M3's to reconcile, so this runtime must never
+    // attempt a later abort of it (design spec 3.5).
+    pending_checkpoint_.reset();
+    return committed;
+}
+
+Result<void> DiskRuntime::abort_checkpoint(
+    const std::uint64_t native_operation_id) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!started_ || !operations_.abort_checkpoint)
+        return missing_void(L"abort_checkpoint");
+    if (!pending_checkpoint_)
+        return Result<void>::failure(runtime_error(
+            L"abort_checkpoint", L"no checkpoint candidate is prepared"));
+    if (native_operation_id != pending_native_operation_id_)
+        return Result<void>::failure(runtime_error(
+            L"abort_checkpoint",
+            L"abort does not match the prepared candidate"));
+    return abort_pending_checkpoint_locked();
+}
+
+bool DiskRuntime::checkpoint_prepared() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return pending_checkpoint_.has_value();
+}
+
+Result<void> DiskRuntime::abort_pending_checkpoint_locked() {
+    if (!pending_checkpoint_) return Result<void>::success();
+    if (!operations_.abort_checkpoint)
+        return missing_void(L"abort_checkpoint");
+    auto aborted = operations_.abort_checkpoint(pending_native_operation_id_);
+    if (aborted.ok()) {
+        pending_checkpoint_.reset();
+        pending_native_operation_id_ = 0;
+    }
+    return aborted;
+}
+
 Result<void> DiskRuntime::shutdown_clean() {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return shutdown_clean_locked();
+}
+
+Result<void> DiskRuntime::shutdown_clean_locked() {
     if (!started_) {
         // A failed start has already performed cleanup.  Calls before any
         // successful start are rejected and intentionally have no side effects.
@@ -197,6 +296,19 @@ Result<void> DiskRuntime::shutdown_clean() {
     auto record = [&first_error](Result<void> result) {
         if (!result.ok() && first_error.ok()) first_error = result;
     };
+
+    // An unpublished prepare must be released before M3 is stopped.  Stopping
+    // M3 while a transaction is pending would let the provider resume and
+    // publish a candidate no caller authorised (design spec 3.5, rule 1).
+    if (pending_checkpoint_) {
+        record(abort_pending_checkpoint_locked());
+        if (pending_checkpoint_) {
+            // The abort is unproven, so the transaction is still live: retain
+            // everything, including AIM and the writer lock, for a later retry.
+            started_ = true;
+            return first_error;
+        }
+    }
 
     if (volume_) {
         if (started_) {
