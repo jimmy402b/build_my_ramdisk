@@ -194,7 +194,15 @@ Recorded so the plan and the tree do not silently diverge.
    (`unit.m4.profile_codec`, `unit.m4.profile_store`). This follows Step 3's own
    instruction not to add management or worker execution code. The deferred header
    and tests move to Task 7, which creates their dependencies.
-4. **`unit.m4.profile_store` is elevation-gated.** It builds a protected
+4. **Management-layer ownership re-cut (2026-10-01).** Tasks 2/5/6/7 previously
+   said "Modify" files that do not exist at `cb3df08`; the layer is 30 files /
+   26,310 lines and had no owning task. The plan now carries an explicit ownership
+   table. The port/rebuild split was measured, not assumed: the layer's entire
+   execution coupling is 9 files (306 host references), and `service_core.cpp`
+   has none. See the plan's "Management layer file ownership" section, including
+   the recorded departure from `docs/m4-m5-scope.md` §4 over porting ServiceCore.
+
+5. **`unit.m4.profile_store` is elevation-gated.** It builds a protected
    ProgramData layout whose intermediate directories carry a SYSTEM +
    Administrators-only DACL; creating a child inside such a directory needs
    `FILE_ADD_SUBDIRECTORY`, which directory ownership does not confer. It passes

@@ -7,9 +7,9 @@
 
 | ID | Status | Depends on | Exit criterion |
 | --- | --- | --- | --- |
-| M5-00 | NOT_STARTED | — | Isolated worktree and clean M4 baseline recorded. |
-| M5-01 | NOT_STARTED | M5-00 | Audited product/control/profile modules compile; malformed input fails closed. |
-| M5-02 | NOT_STARTED | M5-01 | Operation/profile CAS authority; import lease covers registration. |
+| M5-00 | PASSED | — | Isolated worktree and clean M4 baseline recorded. |
+| M5-01 | PASSED | M5-00 | Audited product/control/profile modules compile; malformed input fails closed. |
+| M5-02 | NOT_STARTED | M5-01 | Ported operation/profile CAS authority and the ServiceCore contract; import lease covers registration. |
 | M5-03 | NOT_STARTED | M5-01 | M3 prepare/commit/abort; M4 one-shot checkpoint unchanged. |
 | M5-04 | NOT_STARTED | M5-03 | Foreground and worker share one DiskRuntime production adapter. |
 | M5-05 | NOT_STARTED | M5-02, M5-04 | Authenticated per-profile worker and recovery proof. |
@@ -22,6 +22,11 @@
 
 ## Mandatory gates
 
+- [ ] Every file under `src/management/` and `src/cli/` is created by the task the
+      plan's ownership table names, as a port or a rebuild; no file is "modified
+      into existence".
+- [ ] `service_worker_control` remains the only `IWorkerControl` implementation,
+      and it drives DiskRuntime over `m5_worker_protocol` — no HostCore path.
 - [ ] No task changes M3 bundle, journal, manifest, or profile on-disk formats.
 - [ ] `feature/m5-supervisor-service` is read-only historical reference; no JSON profile, DiskSupervisor, HostCore, or old service composition is copied from it.
 - [ ] No task installs, replaces, upgrades, or uninstalls phdskmnt; it remains an externally supplied prerequisite only.

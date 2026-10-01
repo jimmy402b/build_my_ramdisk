@@ -39,6 +39,80 @@ changes. Nothing from that branch may be copied without an explicit contract tes
 | CLI/pipe | src/cli/*, src/control/public_pipe_*, src/management/service_response_wire.* |
 | Tests | tests/unit/m5_*, tests/model/m5_*, tests/integration/m5_*, tests/e2e/m5_* |
 
+## Management layer file ownership
+
+`src/management/` and `src/cli/` do not exist at `cb3df08`. Every file below is
+**created** by the task named — ported from `feature/m5-unified-integration` or
+rebuilt. No file is "modified into existence".
+
+The split is measured, not assumed. The layer is 30 files / 26,310 lines. Its
+entire execution coupling is **9 files** that `#include "src/host/*"` or
+`"src/run/*"` (306 symbol references). Every other file has zero M3/driver/host
+includes, and `service_core.cpp` contains no `host::`, `HostCore`, `host_main` or
+`M3HostProvider` reference at all. ServiceCore already drives execution through
+the `IWorkerControl` interface, whose **only** implementer is
+`service_worker_control.h`. Decision A is therefore already this code's shape:
+the duplicate HostCore engine is confined behind a single seam, and replacing
+that seam removes it.
+
+### Ported verbatim (19,228 lines) — execution-agnostic
+
+| File | Lines | Owning task |
+| --- | --- | --- |
+| `operation_store.{h,cpp}` | 1,846 | Task 2 |
+| `service_operation_store.{h,cpp}` | 212 | Task 2 |
+| `profile_registration_codec.{h,cpp}` | 1,094 | Task 2 |
+| `profile_registration_store.{h,cpp}` | 2,121 | Task 2 |
+| `state_machine.{h,cpp}` | 1,276 | Task 2 |
+| `service_core.{h,cpp}` | 8,806 | Task 2 port, Task 6 P4/P5 + dirty-truth edits |
+| `worker_supervisor.{h,cpp}` | 1,318 | Task 7 |
+| `service_response_wire.{h,cpp}` | 944 | Task 7 |
+| `service_composition.{h,cpp}` | 466 | Task 7 |
+| `execution_scheduler.{h,cpp}` | 315 | Task 7 |
+| `windows_service_adapters.{h,cpp}` | 152 | Task 7 |
+| `service_main.cpp` | 5 | Task 7 |
+| `src/cli/{cli_parser,cli_renderer,management_dispatch}.{h,cpp}` | 673 | Task 7 |
+
+`state_machine` is a pure allocation-free reducer contract (it includes only
+`product_state.h` and `profile_types.h`); porting it brings the Blocker A fix
+(`a45d5ce`) with it.
+
+### Rebuilt (7,755 lines) — host-coupled, re-seated on DiskRuntime
+
+These are the Decision A boundary. Each keeps its frozen contract (the
+`IWorkerControl` interface, the durable phase/disposition types in
+`service_core.h`, the private binding identity) and changes only its execution
+implementation.
+
+| File | Lines | HostCore refs | Owning task |
+| --- | --- | --- | --- |
+| `service_worker_control.{h,cpp}` | 1,532 | 10 | Task 5 |
+| `service_worker_session.{h,cpp}` | 648 | 116 | Task 5 |
+| `windows_worker_observation.h` | 46 | 3 | Task 5 |
+| `windows_worker_recovery.{h,cpp}` | 875 | 45 | Task 5 |
+| `windows_service.{h,cpp}` | 4,645 | 132 | Task 7 |
+
+`service_worker_control` is the load-bearing one: it is the sole `IWorkerControl`
+implementation, and it is where a DiskRuntime-backed worker replaces HostCore.
+`windows_service` is listed as rebuilt rather than ported only because it reaches
+`host_ipc.h` for worker launch; most of its 4,645 lines (SCM wiring, auto-start,
+preshutdown budget) are host-agnostic and are expected to port with the launch
+seam replaced — Task 7 confirms the final split and records it.
+
+### Departure from the scope document
+
+`docs/m4-m5-scope.md` §4 lists `ServiceCore` as "替换实现（冻结契约）". This plan
+**ports `service_core.{h,cpp}` verbatim** and edits it only where the design spec
+requires (Task 6: two-phase P4/P5, the §3.6 recovery table, dirty-truth stop).
+
+Reason: the scope line treats ServiceCore as part of the duplicate engine, but
+the measurement above shows it is not — it carries no execution coupling and
+already dispatches through `IWorkerControl`. Porting it keeps the frozen durable
+contract and inherits the F10/F11/F12 and Blocker A–D fixes that already landed
+in it (`65d0a0d`, `d926354`, `8feb030`, `36b9707`, `a45d5ce`, `f2ba838`), which a
+rewrite would have to re-derive. This is flagged here so the departure is visible
+rather than silent.
+
 ## Task 0: Establish the clean M5 integration boundary
 
 **Files:**
@@ -87,7 +161,8 @@ git commit -m "chore(m5): establish lifecycle implementation boundary"
 **Files:**
 - Create: audited src/product/*, src/control/*, src/profile/* from feature/m5-unified-integration
 - Modify: src/CMakeLists.txt, tests/CMakeLists.txt
-- Test: tests/unit/m4_profile_codec_tests.cpp, tests/unit/m4_profile_store_tests.cpp, tests/unit/m5_profile_command_tests.cpp, tests/unit/m5_service_response_codec_tests.cpp
+- Test: tests/unit/m4_profile_codec_tests.cpp, tests/unit/m4_profile_store_tests.cpp
+- Deferred to Task 7: tests/unit/m5_profile_command_tests.cpp (needs `src/cli/cli_parser.h`), tests/unit/m5_service_response_codec_tests.cpp (needs `src/management/service_response_wire.h`)
 
 - [ ] **Step 1: Add red compatibility tests**
 
@@ -133,9 +208,14 @@ git commit -m "feat(m5): import typed contracts and durable profile storage"
 ## Task 2: Implement durable operation and registration authority
 
 **Files:**
-- Create: src/management/service_operation_store.{h,cpp}, profile_registration_codec.{h,cpp}, profile_registration_store.{h,cpp}
-- Modify: src/management/state_machine.{h,cpp}, src/management/service_core.{h,cpp}, src/CMakeLists.txt
+- Create (port): src/management/operation_store.{h,cpp}, service_operation_store.{h,cpp}, profile_registration_codec.{h,cpp}, profile_registration_store.{h,cpp}, state_machine.{h,cpp}, service_core.{h,cpp}
+- Modify: src/CMakeLists.txt
 - Test: tests/integration/m5_service_operation_store_tests.cpp, tests/integration/m5_profile_registration_store_tests.cpp, tests/model/m5_service_orchestration_tests.cpp
+
+`service_core.{h,cpp}` ports here as the frozen durable contract, not as
+execution code: the sole `IWorkerControl` implementation does not exist until
+Task 5, so Task 2 tests ServiceCore's planning, gate and durable-state reducers
+against a fake worker control.
 
 - [ ] **Step 1: Write red store tests**
 
@@ -307,8 +387,18 @@ git commit -m "refactor(m4): share DiskRuntime production adapter with M5 worker
 
 **Files:**
 - Create: src/host/m5_worker_protocol.{h,cpp}, src/host/m5_worker_session.{h,cpp}, src/host/m5_worker_main.cpp
-- Modify: src/CMakeLists.txt, src/management/service_worker_session.{h,cpp}
+- Create (rebuild): src/management/service_worker_control.{h,cpp}, service_worker_session.{h,cpp}, windows_worker_observation.h, windows_worker_recovery.{h,cpp}
+- Modify: src/CMakeLists.txt
 - Test: tests/unit/m5_service_worker_session_tests.cpp, tests/integration/m5_production_execution_backend_tests.cpp
+
+This is the Decision A seam. `service_worker_control` stays the only
+`IWorkerControl` implementation and keeps that interface frozen; what changes is
+that it drives an `m5_worker_protocol` session over DiskRuntime instead of the
+HostCore private protocol. `service_worker_session` and
+`windows_worker_recovery` carry 161 HostCore references between them and are
+re-seated on the same protocol; the private binding identity (profile id, image
+id, worker pid, process creation time, session generation, profile revision) is
+preserved exactly.
 
 - [ ] **Step 1: Write private-protocol red tests**
 
@@ -344,8 +434,13 @@ git commit -m "feat(m5): run authenticated workers through DiskRuntime"
 ## Task 6: Rebuild ServiceCore checkpoint and stop orchestration
 
 **Files:**
-- Modify: src/management/service_core.{h,cpp}, state_machine.{h,cpp}, service_worker_control.{h,cpp}
+- Modify: src/management/service_core.{h,cpp}, service_worker_control.{h,cpp} (both created in Tasks 2 and 5)
 - Test: tests/model/m5_service_orchestration_tests.cpp, tests/model/m4_checkpoint_operation_tests.cpp, tests/model/m4_recovery_commands_tests.cpp, tests/integration/m5_checkpoint_boundary_tests.cpp, tests/unit/m5_service_worker_control_tests.cpp
+
+This task edits the ported `service_core.cpp` rather than creating it: the
+two-phase boundaries, the §3.6 recovery table and the dirty-truth stop rules are
+deliberate changes to code that Task 2 brought in verbatim. `state_machine` is
+edited only if a phase/gate contract needs extending.
 
 - [ ] **Step 1: Write state-transition tests**
 
@@ -390,9 +485,17 @@ git commit -m "feat(m5): coordinate checkpoint and stop from durable evidence"
 ## Task 7: Compose service, scheduler, public pipe, and CLI
 
 **Files:**
-- Create: src/management/execution_scheduler.{h,cpp}, service_composition.{h,cpp}, service_response_wire.{h,cpp}
-- Modify: src/management/windows_service.{h,cpp}, service_main.cpp, src/cli/{cli_parser,cli_renderer,management_dispatch}.{h,cpp}, src/control/public_pipe_{client,server}.{h,cpp}, src/CMakeLists.txt
-- Test: tests/model/m5_execution_scheduler_tests.cpp, tests/integration/m5_{service_composition,public_pipe_round_trip,authorization_round_trip,mutation_round_trip,windows_service_production}_tests.cpp, tests/unit/m5_{cli,service_response_codec}_tests.cpp
+- Create (port): src/management/execution_scheduler.{h,cpp}, service_composition.{h,cpp}, service_response_wire.{h,cpp}, worker_supervisor.{h,cpp}, windows_service_adapters.{h,cpp}, service_main.cpp, src/cli/{cli_parser,cli_renderer,management_dispatch}.{h,cpp}
+- Create (rebuild): src/management/windows_service.{h,cpp}
+- Create (deferred from Task 1): src/control/service_response_codec.h
+- Modify: src/control/public_pipe_{client,server}.{h,cpp} (only if the wire seam changes), src/CMakeLists.txt
+- Test: tests/model/m5_execution_scheduler_tests.cpp, tests/integration/m5_{service_composition,public_pipe_round_trip,authorization_round_trip,mutation_round_trip,windows_service_production}_tests.cpp, tests/unit/m5_{cli,service_response_codec}_tests.cpp, tests/unit/m5_profile_command_tests.cpp
+
+This task also clears the two Task 1 deferrals: `src/control/service_response_codec.h`,
+`tests/unit/m5_profile_command_tests.cpp` and
+`tests/unit/m5_service_response_codec_tests.cpp` all needed artifacts created here.
+`windows_service` rebuilds only its worker-launch seam on `m5_worker_protocol`;
+the SCM, auto-start and preshutdown-budget logic ports.
 
 - [ ] **Step 1: Write scheduler/admission tests**
 
