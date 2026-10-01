@@ -81,6 +81,23 @@ After the contract transfer (Task 1), the full Release suite run elevated:
 + `structural.m5.execution_boundary`. The transferred contracts therefore break
 nothing in M0–M4, and the execution-boundary gate is live in the same run.
 
+### 1.3 Task 2 verification
+
+After porting the durable authority (15,355 lines: `operation_store`,
+`service_operation_store`, `profile_registration_codec`, `profile_registration_store`,
+`state_machine`, `service_core`), the full Release suite run elevated:
+
+```
+100% tests passed, 0 tests failed out of 135
+```
+
+135 = the previous 132 + `m5.service_operation_store` + `m5.service_orchestration`
++ `m4.checkpoint_operation`. The ported ServiceCore therefore satisfies the same
+19 orchestration cases and the checkpoint-operation model it did on the source
+branch, and `myrd_management` passes the execution-boundary assertion — confirming
+the measurement in the plan's ownership table that this layer links no execution
+target.
+
 
 ## 2. Direct-transfer sources
 
@@ -194,6 +211,17 @@ Recorded so the plan and the tree do not silently diverge.
    (`unit.m4.profile_codec`, `unit.m4.profile_store`). This follows Step 3's own
    instruction not to add management or worker execution code. The deferred header
    and tests move to Task 7, which creates their dependencies.
+
+   Task 2 has the same shape: `tests/integration/m5_profile_registration_store_tests.cpp`
+   includes `src/cli/cli_renderer.h` and `src/management/service_response_wire.h`,
+   both Task 7 artifacts, so it defers there too. Task 2 runs
+   `m5.service_operation_store`, `m5.service_orchestration` and
+   `m4.checkpoint_operation`.
+
+   The general rule this exposes: **a plan task's test list may name tests whose
+   dependencies a later task creates.** Each such test moves to the task that
+   creates its dependency, and the move is recorded here rather than silently
+   dropped.
 4. **Management-layer ownership re-cut (2026-10-01).** Tasks 2/5/6/7 previously
    said "Modify" files that do not exist at `cb3df08`; the layer is 30 files /
    26,310 lines and had no owning task. The plan now carries an explicit ownership

@@ -510,6 +510,46 @@ myrd_enable_warnings(myrd_m4_profile_store_tests)
 add_test(NAME unit.m4.profile_store COMMAND myrd_m4_profile_store_tests)
 set_tests_properties(unit.m4.profile_store PROPERTIES TIMEOUT 120)
 
+# ---- M5 durable operation and registration authority (Task 2) --------------
+add_executable(myrd_m5_service_operation_store_tests
+    integration/m5_service_operation_store_tests.cpp
+)
+target_link_libraries(myrd_m5_service_operation_store_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_service_operation_store_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_service_operation_store_tests)
+add_test(NAME m5.service_operation_store
+    COMMAND myrd_m5_service_operation_store_tests)
+set_tests_properties(m5.service_operation_store PROPERTIES TIMEOUT 120)
+
+# m5_service_orchestration_tests.cpp includes m4_checkpoint_operation_tests.cpp,
+# so that model is compiled once here and once as its own target below.
+add_executable(myrd_m5_service_orchestration_tests
+    model/m5_service_orchestration_tests.cpp
+)
+target_link_libraries(myrd_m5_service_orchestration_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_service_orchestration_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/model")
+myrd_enable_warnings(myrd_m5_service_orchestration_tests)
+add_test(NAME m5.service_orchestration
+    COMMAND myrd_m5_service_orchestration_tests)
+set_tests_properties(m5.service_orchestration PROPERTIES TIMEOUT 120)
+
+add_executable(myrd_m4_checkpoint_operation_tests
+    model/m4_checkpoint_operation_tests.cpp
+)
+target_link_libraries(myrd_m4_checkpoint_operation_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m4_checkpoint_operation_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m4_checkpoint_operation_tests)
+add_test(NAME m4.checkpoint_operation
+    COMMAND myrd_m4_checkpoint_operation_tests)
+set_tests_properties(m4.checkpoint_operation PROPERTIES TIMEOUT 120)
+
 # ---- M5 execution boundary (Task 0) ---------------------------------------
 # The gate is only worth having if it rejects a real violation, so this test
 # configures throwaway projects against the real cmake/ExecutionBoundary.cmake

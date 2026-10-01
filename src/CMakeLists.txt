@@ -334,3 +334,22 @@ target_include_directories(myrd_profile PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_profile PUBLIC myrd_product_contracts myrd_common)
 myrd_enable_warnings(myrd_profile)
 myrd_assert_execution_boundary(myrd_profile)
+
+# ---- M5 management authority (Task 2) ----------------------------------------
+# Durable operation records, profile registration, the transition contract and
+# the ServiceCore durable model. Execution-agnostic by construction: ServiceCore
+# drives execution through IWorkerControl, whose sole implementation is the
+# rebuilt worker control from Task 5. Nothing here may link an execution target.
+add_library(myrd_management STATIC
+    management/operation_store.cpp management/operation_store.h
+    management/profile_registration_codec.cpp management/profile_registration_codec.h
+    management/profile_registration_store.cpp management/profile_registration_store.h
+    management/service_core.cpp management/service_core.h
+    management/service_operation_store.cpp management/service_operation_store.h
+    management/state_machine.cpp management/state_machine.h
+)
+target_include_directories(myrd_management PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_management PUBLIC
+    myrd_profile myrd_product_ipc myrd_product_contracts myrd_common)
+myrd_enable_warnings(myrd_management)
+myrd_assert_execution_boundary(myrd_management)
