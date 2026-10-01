@@ -1,0 +1,88 @@
+#pragma once
+
+#include "src/common/result.h"
+#include "src/host/m5_worker_protocol.h"
+
+#include <cstdint>
+#include <optional>
+
+namespace myrd::m5 {
+
+// What the worker session drives.
+//
+// Production implements this over `DiskRuntime` built by the shared
+// `make_runtime_operations()` adapter, so the worker and the foreground CLI run
+// one execution implementation rather than two.  Keeping it an interface is
+// what lets the session's authentication, sequencing and two-phase state be
+// tested without a driver, a volume, or a bundle.
+class WorkerRuntime {
+public:
+    virtual ~WorkerRuntime() = default;
+
+    virtual Result<void> start() = 0;
+    virtual Result<WorkerRuntimeStatus> observe() = 0;
+    virtual Result<WorkerPreparedCandidate> prepare_checkpoint(
+        std::uint64_t native_operation_id) = 0;
+    virtual Result<WorkerRuntimeStatus> commit_checkpoint(
+        const WorkerCheckpointCommit& commit) = 0;
+    virtual Result<WorkerRuntimeStatus> abort_checkpoint(
+        std::uint64_t native_operation_id) = 0;
+    // Judges what actually reached the bundle against the P4 correlation.  The
+    // originating worker's in-process transaction is gone, so this may only
+    // report one of the three designed outcomes -- never a synthesized success.
+    virtual Result<WorkerRecoveryProof> prove_recovery(
+        const WorkerRecoveryCorrelation& correlation) = 0;
+    virtual Result<void> cleanup() = 0;
+};
+
+// The worker's command loop.
+//
+// It is deliberately transport-free: it takes a decoded message and returns the
+// reply, so the same code runs whether the bytes arrived over a named pipe or
+// from a test.  Three invariants live here rather than in the transport:
+//
+//   1. Every request is authenticated before anything is executed.  A refused
+//      request produces an error reply and no partial execution.
+//   2. A prepare is tracked so a commit that does not repeat the frozen
+//      candidate is refused and the candidate stays prepared.
+//   3. `cleanup` runs the runtime's reverse-order teardown exactly once, and a
+//      command arriving after it is refused rather than served against a
+//      dismantled runtime.
+class WorkerSession final {
+public:
+    WorkerSession(WorkerBinding binding, std::uint64_t session_nonce,
+                  WorkerRuntime& runtime) noexcept;
+
+    [[nodiscard]] Result<WorkerMessage> handle(const WorkerMessage& request);
+
+    [[nodiscard]] const WorkerBinding& binding() const noexcept {
+        return binding_;
+    }
+    [[nodiscard]] std::uint64_t last_accepted_sequence() const noexcept {
+        return last_accepted_sequence_;
+    }
+    [[nodiscard]] bool started() const noexcept { return started_; }
+    [[nodiscard]] bool checkpoint_prepared() const noexcept {
+        return prepared_.has_value();
+    }
+    [[nodiscard]] bool cleaned_up() const noexcept { return cleaned_up_; }
+
+private:
+    Result<WorkerMessage> dispatch(const WorkerMessage& request);
+    // Builds the reply envelope: same command, same binding, the request's
+    // operation id, and the next sequence.
+    [[nodiscard]] WorkerMessage make_reply(const WorkerMessage& request);
+    [[nodiscard]] Error refusal(const wchar_t* operation,
+                                const wchar_t* message) const;
+
+    WorkerBinding binding_;
+    std::uint64_t session_nonce_{};
+    WorkerRuntime& runtime_;
+    std::uint64_t last_accepted_sequence_{};
+    std::uint64_t next_reply_sequence_{1};
+    bool started_{};
+    bool cleaned_up_{};
+    std::optional<WorkerPreparedCandidate> prepared_;
+};
+
+} // namespace myrd::m5

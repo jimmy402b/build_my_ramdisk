@@ -114,6 +114,25 @@ struct WorkerRuntimeStatus final {
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };
 
+// The P4 durable correlation, as the service persists it, handed to a fresh
+// worker so it can decide what actually reached the bundle (design spec 3.5).
+//
+// The originating worker's in-process transaction died with it, so nothing can
+// be aborted or resumed.  The only honest answers are the three below, and they
+// are derived from what is on disk rather than from what the dead worker
+// claimed: the journal native id plus the image and generation identities.
+struct WorkerRecoveryCorrelation final {
+    product::Uuid product_operation_id;
+    product::Uuid image_id;
+    std::uint64_t prior_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint64_t native_operation_id{};
+    std::uint8_t manifest_slot{};
+    Sha256Digest candidate_bytes_digest{};
+
+    bool operator==(const WorkerRecoveryCorrelation&) const noexcept = default;
+};
+
 // Exactly three answers, and the third is not a failure to be retried: a
 // generation that changed but cannot be attributed to this operation must never
 // be promoted to a success or rolled back to a "not committed".
@@ -150,6 +169,9 @@ struct WorkerMessage final {
     std::optional<WorkerCheckpointCommit> commit;
     std::optional<WorkerRuntimeStatus> status;
     std::optional<WorkerRecoveryProof> recovery;
+    // Carried by a recovery-proof request: what the service durably recorded at
+    // P4, which is the only thing a fresh worker may judge ownership against.
+    std::optional<WorkerRecoveryCorrelation> correlation;
     // Set only on a reply that reports failure.  A reply is either a payload or
     // an error, never both.
     std::optional<Error> error;

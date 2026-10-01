@@ -220,6 +220,47 @@ Evidence: Release build clean, full elevated suite
 
 137 = the previous 136 + `unit.m5.worker_protocol`.
 
+### 1.7 Task 5 increment 2 — the worker command loop (Step 3)
+
+`src/host/m5_worker_session.{h,cpp}` is the worker's command loop. It is
+transport-free: it takes one decoded `WorkerMessage` and returns the reply, so
+`m5_worker_main` later owns the pipe and this code stays testable. It drives
+`WorkerRuntime`, an interface the production side implements over `DiskRuntime`
+built by the shared adapter — the router the plan's Step 3 asks for.
+
+What it enforces:
+
+- **Authenticate before execute.** `authenticate_worker_message` runs first; a
+  refused request is answered with an error and reaches the runtime not at all.
+  The sequence high-water mark is consumed only on acceptance, so a replay of an
+  accepted request stays refused.
+- **The handshake nonce.** A handshake carrying any nonce but this session's is
+  refused, so an echo from a previous session cannot re-establish the channel.
+- **The candidate gate.** `checkpoint_prepare` derives
+  `native_id = candidate_generation + kM5CheckpointOperationOffset` from the
+  observed generation, then **re-derives it from M3's reply** and aborts if the
+  two disagree. A candidate the service could not re-derive is never reported as
+  P4 evidence. Commit repeats the frozen identity; a mismatch leaves the
+  candidate prepared; a successful abort releases it; a *failed* abort keeps it
+  prepared so the service can retry rather than assume release.
+- **Worker-owned cleanup** runs once, and any later command is refused rather
+  than served against a dismantled runtime.
+
+`WorkerRecoveryCorrelation` was added to the protocol: a recovery-proof request
+must carry the P4 correlation the service durably recorded, because that is the
+only thing a fresh worker may judge ownership against.
+
+`tests/unit/m5_worker_session_tests.cpp` (`unit.m5.worker_session`, 13 cases)
+covers all of the above.
+
+Evidence: Release build clean, full elevated suite
+
+```
+100% tests passed, 0 tests failed out of 138
+```
+
+138 = the previous 137 + `unit.m5.worker_session`.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:

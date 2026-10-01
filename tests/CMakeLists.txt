@@ -175,6 +175,19 @@ myrd_enable_warnings(myrd_m5_worker_protocol_tests)
 add_test(NAME unit.m5.worker_protocol COMMAND myrd_m5_worker_protocol_tests)
 set_tests_properties(unit.m5.worker_protocol PROPERTIES TIMEOUT 30)
 
+# The worker's command loop (Task 5 Step 3): authentication before execution,
+# the two-phase candidate gate, recovery-proof plumbing and worker-owned cleanup.
+add_executable(myrd_m5_worker_session_tests
+    unit/m5_worker_session_tests.cpp
+)
+target_link_libraries(myrd_m5_worker_session_tests PRIVATE
+    myrd_test_support myrd_m5_worker_protocol)
+target_include_directories(myrd_m5_worker_session_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_worker_session_tests)
+add_test(NAME unit.m5.worker_session COMMAND myrd_m5_worker_session_tests)
+set_tests_properties(unit.m5.worker_session PROPERTIES TIMEOUT 30)
+
 # ---- M4 checkpoint and shutdown policy (T10; RED until implementation) ----
 add_executable(myrd_m4_run_policy_tests
     unit/m4_run_policy_tests.cpp

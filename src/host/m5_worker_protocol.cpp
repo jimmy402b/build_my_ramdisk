@@ -21,6 +21,7 @@ constexpr std::uint32_t kHasCommit = 1U << 4;
 constexpr std::uint32_t kHasStatus = 1U << 5;
 constexpr std::uint32_t kHasRecovery = 1U << 6;
 constexpr std::uint32_t kHasError = 1U << 7;
+constexpr std::uint32_t kHasCorrelation = 1U << 8;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -178,6 +179,7 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.status.has_value()) mask |= kHasStatus;
     if (message.recovery.has_value()) mask |= kHasRecovery;
     if (message.error.has_value()) mask |= kHasError;
+    if (message.correlation.has_value()) mask |= kHasCorrelation;
     return mask;
 }
 
@@ -209,7 +211,10 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
                                                             : kHasStatus),
                 kHasOperationId | kHasError};
     case WorkerCommand::recovery_proof:
-        return {kBase | (kind == WorkerMessageKind::reply ? kHasRecovery : 0U),
+        // A recovery proof request must carry the P4 correlation to judge
+        // against; without it there is nothing to prove ownership of.
+        return {kBase | (kind == WorkerMessageKind::reply ? kHasRecovery
+                                                          : kHasCorrelation),
                 kHasOperationId | kHasError};
     }
     return {};
@@ -329,6 +334,28 @@ Result<void> parse_body(Reader& reader, const std::uint32_t mask,
         recovery.candidate_bytes_digest = reader.digest();
         message.recovery = recovery;
     }
+    if ((mask & kHasCorrelation) != 0) {
+        // Read in wire order; the two ids have no default constructor, so they
+        // are parsed before the aggregate is built.
+        auto product_operation_id = reader.uuid();
+        auto image_id = reader.uuid();
+        const std::uint64_t prior_generation = reader.u64();
+        const std::uint64_t candidate_generation = reader.u64();
+        const std::uint64_t native_operation_id = reader.u64();
+        const std::uint8_t manifest_slot = reader.u8();
+        const Sha256Digest candidate_bytes_digest = reader.digest();
+        if (!product_operation_id.has_value() || !image_id.has_value()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"recovery correlation ids are not valid uuids"));
+        }
+        message.correlation = WorkerRecoveryCorrelation{
+            *product_operation_id, *image_id, prior_generation,
+            candidate_generation, native_operation_id, manifest_slot,
+            candidate_bytes_digest};
+    }
     if ((mask & kHasError) != 0) {
         Error error{};
         error.domain = static_cast<ErrorDomain>(reader.u8());
@@ -389,6 +416,15 @@ void write_body(Writer& writer, const WorkerMessage& message) {
         writer.u64(message.recovery->native_operation_id);
         writer.u8(message.recovery->manifest_slot);
         writer.digest(message.recovery->candidate_bytes_digest);
+    }
+    if (message.correlation.has_value()) {
+        writer.uuid(message.correlation->product_operation_id);
+        writer.uuid(message.correlation->image_id);
+        writer.u64(message.correlation->prior_generation);
+        writer.u64(message.correlation->candidate_generation);
+        writer.u64(message.correlation->native_operation_id);
+        writer.u8(message.correlation->manifest_slot);
+        writer.digest(message.correlation->candidate_bytes_digest);
     }
     if (message.error.has_value()) {
         writer.u8(static_cast<std::uint8_t>(message.error->domain));
@@ -503,12 +539,21 @@ Result<void> authenticate_worker_message(
             L"authenticate_worker_message",
             L"message does not carry a product operation id"));
     }
-    if (message.command == WorkerCommand::handshake &&
-        message.handshake->protocol_major != kWorkerProtocolMajor) {
-        return Result<void>::failure(protocol_error(
-            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
-            L"authenticate_worker_message",
-            L"handshake protocol major does not match"));
+    if (message.command == WorkerCommand::handshake) {
+        // Guarded rather than assumed: a message may reach here undecoded (a
+        // test or an in-process caller), so the payload is checked, not trusted.
+        if (!message.handshake.has_value()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+                L"authenticate_worker_message",
+                L"handshake carries no handshake payload"));
+        }
+        if (message.handshake->protocol_major != kWorkerProtocolMajor) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+                L"authenticate_worker_message",
+                L"handshake protocol major does not match"));
+        }
     }
     return Result<void>::success();
 }
