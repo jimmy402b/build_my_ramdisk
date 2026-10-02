@@ -15,6 +15,17 @@ Error runtime_error(const wchar_t* operation = L"fake") {
     return {ErrorDomain::internal, 1, operation, L"fake failure", 0};
 }
 
+// The three persistent identities the M5 service writes into the durable
+// profile.  The runtime has to hand them back rather than only compare them,
+// because the service has no other honest source for them.
+constexpr const char* kFakeDiskGuid = "11111111-2222-3333-4444-555555555555";
+constexpr const char* kFakePartitionGuid = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+constexpr const char* kFakeVolumeGuid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+
+VolumePersistentIdentity fake_identity() {
+    return {kFakeDiskGuid, kFakePartitionGuid, kFakeVolumeGuid};
+}
+
 // A deterministic stand-in for the SHA-256 of the frozen candidate bytes.  The
 // point of these cases is the identity check, not the hash itself.
 Sha256Digest digest(const std::uint8_t fill) {
@@ -125,7 +136,8 @@ struct FakeRuntime final {
             observed_provision_letter = letter;
             volume_observed = true;
             return Result<ProductVolume>::success(
-                ProductVolume{L"owner", L"\\\\?\\Volume{a}", {}, letter, true, true});
+                ProductVolume{L"owner", L"\\\\?\\Volume{a}", {}, letter, true,
+                              true, fake_identity()});
         };
         ops.find_recovered_volume = [this](wchar_t letter) {
             events.push_back("find-volume");
@@ -135,7 +147,8 @@ struct FakeRuntime final {
             volume_observed = true;
             if (fail_find) return Result<ProductVolume>::failure(runtime_error());
             return Result<ProductVolume>::success(
-                ProductVolume{L"owner", L"\\\\?\\Volume{a}", {}, L'R', true, false});
+                ProductVolume{L"owner", L"\\\\?\\Volume{a}", {}, L'R', true,
+                              false, fake_identity()});
         };
         ops.verify_volume = [this](const ProductVolume&, std::uint64_t bytes) {
             events.push_back("verify");
@@ -246,6 +259,38 @@ TEST_CASE(m4_disk_runtime_create_orders_generation_zero_provision_verify_flush_c
     require_events(fake, {"preflight", "classify", "lock", "generation-zero",
                            "aim-start", "provision", "verify", "flush",
                            "checkpoint"});
+}
+
+TEST_CASE(m4_disk_runtime_exposes_the_adopted_volume_identity) {
+    // The service records this triple into the durable profile, so the runtime
+    // that adopted the volume is the only honest source for it.  Before the
+    // start there is nothing to report: an empty identity and an absent one must
+    // not be interchangeable here, because once the service has parsed an empty
+    // one into three zero uuids it can no longer tell which it was given.
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(!runtime.value()->adopted_volume().has_value());
+
+    REQUIRE(runtime.value()->start().ok());
+    const auto adopted = runtime.value()->adopted_volume();
+    REQUIRE(adopted.has_value());
+    REQUIRE(adopted->identity.complete());
+    REQUIRE_EQ(adopted->identity.disk_guid, std::string(kFakeDiskGuid));
+    REQUIRE_EQ(adopted->identity.partition_guid,
+               std::string(kFakePartitionGuid));
+    REQUIRE_EQ(adopted->identity.volume_guid, std::string(kFakeVolumeGuid));
+}
+
+TEST_CASE(m4_disk_runtime_reports_no_adopted_volume_after_teardown) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE(runtime.value()->shutdown_clean().ok());
+    // The removal barrier took the volume with it, so there is no longer an
+    // identity a durable profile could honestly be written from.
+    REQUIRE(!runtime.value()->adopted_volume().has_value());
 }
 
 TEST_CASE(m4_disk_runtime_create_shutdown_removes_created_drive_letter) {

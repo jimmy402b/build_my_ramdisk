@@ -64,6 +64,15 @@ public:
     // word, so a decoder that dropped a bit cannot turn an absent proof into a
     // present one.
     void boolean(const bool value) { u8(value ? 1 : 0); }
+    // Canonical GUID text: ASCII, one byte per character, length-prefixed like
+    // `text` above.  Kept separate from `text` rather than folded into it so a
+    // reader on the far side gets a `std::string` it can hand straight to
+    // `product::Uuid::parse` without a widening step that could lose a character.
+    void text_ascii(const std::string& value) {
+        u16(static_cast<std::uint16_t>(value.size()));
+        for (const char character : value)
+            u8(static_cast<std::uint8_t>(character));
+    }
     // Stored as UTF-16LE code units with a code-unit count, so the decoder never
     // has to trust a byte length to describe a character count.
     void text(const std::wstring& value) {
@@ -160,6 +169,14 @@ public:
         const auto slice = raw(value.size());
         if (!ok_) return value;
         std::memcpy(value.data(), slice.data(), value.size());
+        return value;
+    }
+    std::string text_ascii() {
+        const auto count = u16();
+        std::string value;
+        value.reserve(count);
+        for (std::uint16_t index = 0; index < count && ok_; ++index)
+            value.push_back(static_cast<char>(u8()));
         return value;
     }
     std::wstring text() {

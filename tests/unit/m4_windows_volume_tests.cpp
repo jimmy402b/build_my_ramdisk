@@ -3,6 +3,8 @@
 #include "src/run/windows_volume.h"
 
 #include <array>
+#include <cstddef>
+#include <string>
 #include <type_traits>
 
 namespace {
@@ -21,6 +23,53 @@ void require_error(const Error& error, VolumeError expected) {
     REQUIRE_EQ(error.code, static_cast<std::uint32_t>(expected));
 }
 } // namespace
+
+TEST_CASE(m4_volume_canonical_guid_text_reads_win32_field_order) {
+    // A Win32 GUID keeps Data1, Data2 and Data3 little-endian in memory while
+    // Data4 is already in text order.  A plain byte-wise hex dump would produce
+    // "44332211-6655-8877-..." -- a string that looks like a GUID, parses like a
+    // GUID, and never matches the one Windows reports for the same volume.  This
+    // is the whole reason the conversion is a named function with a test rather
+    // than an inline loop at each call site.
+    const std::array<std::byte, 16> guid{
+        std::byte{0x44}, std::byte{0x33}, std::byte{0x22}, std::byte{0x11},
+        std::byte{0x66}, std::byte{0x55},
+        std::byte{0x88}, std::byte{0x77},
+        std::byte{0x99}, std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC},
+        std::byte{0xDD}, std::byte{0xEE}, std::byte{0xFF}, std::byte{0x00}};
+    REQUIRE_EQ(canonical_guid_text(guid),
+               std::string("11223344-5566-7788-99aa-bbccddeeff00"));
+}
+
+TEST_CASE(m4_volume_canonical_guid_text_is_lowercase_canonical_and_padded) {
+    // Leading zeroes are significant and hex is lowercase: product::Uuid::parse
+    // accepts only the 36-character canonical lowercase form, so a conversion
+    // that dropped a zero or upper-cased a digit would produce an identity the
+    // service cannot parse back.
+    const std::array<std::byte, 16> guid{
+        std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01},
+        std::byte{0x0A}, std::byte{0x00},
+        std::byte{0x0B}, std::byte{0x00},
+        std::byte{0x0C}, std::byte{0x0D}, std::byte{0x0E}, std::byte{0x0F},
+        std::byte{0xA0}, std::byte{0xB0}, std::byte{0xC0}, std::byte{0xD0}};
+    REQUIRE_EQ(canonical_guid_text(guid),
+               std::string("01000000-000a-000b-0c0d-0e0fa0b0c0d0"));
+}
+
+TEST_CASE(m4_volume_persistent_identity_completes_only_with_all_three) {
+    // The service records this triple into the durable profile and re-checks it
+    // on every later start, so a partial identity is not a weaker proof -- it is
+    // a proof that cannot be compared, and `complete()` is the single gate that
+    // says so.  Two of three is incomplete, exactly like none of three.
+    VolumePersistentIdentity identity{};
+    REQUIRE(!identity.complete());
+    identity.disk_guid = "11111111-2222-3333-4444-555555555555";
+    REQUIRE(!identity.complete());
+    identity.partition_guid = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    REQUIRE(!identity.complete());
+    identity.volume_guid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+    REQUIRE(identity.complete());
+}
 
 TEST_CASE(m4_volume_provision_requires_exact_extents_and_owner) {
     auto expected = expected_volume();

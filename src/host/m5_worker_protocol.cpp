@@ -155,6 +155,19 @@ Result<void> validate_shape(const WorkerMessage& message) {
             L"decode_worker_message",
             L"message is missing a payload its command requires"));
     }
+    // A status carrying part of a volume identity is self-inconsistent in the
+    // same way a truncated body is, so it is refused here, where both the
+    // encoder and the decoder pass, rather than at either end separately.  A
+    // partial identity is not a weaker proof: it is one the service cannot
+    // compare against a durable profile at all, and letting it through would let
+    // a profile be recorded that no later start could ever verify.
+    if (message.status.has_value() && message.status->volume.has_value()
+        && !message.status->volume->complete()) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+            L"validate_shape",
+            L"The status carries an incomplete volume identity"));
+    }
     return Result<void>::success();
 }
 
@@ -239,6 +252,23 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
             status.active_operation_id = *active;
         }
         status.active_operation_phase = reader.u32();
+        // Presence, then the three texts.  Truncation is caught here; a complete
+        // but partial triple is caught by `validate_shape`, which both the
+        // encoder and the decoder pass through.
+        if (reader.boolean()) {
+            WorkerVolumeIdentity volume{};
+            volume.disk_guid = reader.text_ascii();
+            volume.partition_guid = reader.text_ascii();
+            volume.volume_guid = reader.text_ascii();
+            if (!reader.ok()) {
+                return Result<void>::failure(protocol_error(
+                    static_cast<std::uint32_t>(
+                        OperationErrorCode::protocol_malformed),
+                    L"decode_worker_message",
+                    L"status volume identity is truncated"));
+            }
+            status.volume = std::move(volume);
+        }
         message.status = status;
     }
     if ((mask & kHasRecovery) != 0) {
@@ -362,6 +392,15 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         if (message.status->active_operation_id.has_value())
             writer.uuid(*message.status->active_operation_id);
         writer.u32(message.status->active_operation_phase);
+        // Present only when all three identities were read; `validate_shape`
+        // refuses a partial triple before this is reached, so what is written
+        // here is either a complete identity or none.
+        writer.boolean(message.status->volume.has_value());
+        if (message.status->volume.has_value()) {
+            writer.text_ascii(message.status->volume->disk_guid);
+            writer.text_ascii(message.status->volume->partition_guid);
+            writer.text_ascii(message.status->volume->volume_guid);
+        }
     }
     if (message.recovery.has_value()) {
         writer.u8(static_cast<std::uint8_t>(message.recovery->outcome));

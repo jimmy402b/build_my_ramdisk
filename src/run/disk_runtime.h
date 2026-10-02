@@ -140,6 +140,13 @@ public:
     // AIM started, and release the bundle lock only after lock acquisition.
     Result<void> start();
     [[nodiscard]] DiskMaintenanceStats maintenance_stats() const;
+    // The volume this runtime actually adopted, so the service can record its
+    // persistent identities into the durable profile.  Absent before a
+    // successful start, and absent again once teardown has released it: the
+    // identity of a volume the runtime no longer holds is not a fact it still
+    // has, and reporting a stale one would let a durable profile name a volume
+    // nobody owns.
+    [[nodiscard]] std::optional<ProductVolume> adopted_volume() const;
     // Flushes the mounted Windows volume before a persistence checkpoint.
     // This is intentionally separate from checkpoint() so the M4 run loop
     // can enforce the filesystem durability ordering.

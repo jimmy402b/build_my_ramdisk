@@ -171,6 +171,11 @@ DiskMaintenanceStats DiskRuntime::maintenance_stats() const {
     return operations_.maintenance_stats();
 }
 
+std::optional<ProductVolume> DiskRuntime::adopted_volume() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return volume_;
+}
+
 Result<void> DiskRuntime::flush_volume() {
     std::lock_guard<std::mutex> guard(mutex_);
     if (!started_ || !volume_ || !operations_.flush_volume)

@@ -28,6 +28,38 @@ struct VolumeExtent final {
     bool operator==(const VolumeExtent&) const noexcept = default;
 };
 
+// The persistent GPT identities of the volume an observation adopted.
+//
+// These are the identities the M5 service records into the durable profile and
+// re-checks on every later start, so they have to come from the volume itself
+// and never from a caller-supplied value.  They are canonical lowercase GUID
+// text with no braces because `src/run` deliberately has no dependency on
+// `src/product`, and `product::Uuid` exposes no byte-level factory -- the one
+// canonical parser is `product::Uuid::parse`, so the layer that needs a `Uuid`
+// parses this text there rather than a second conversion living here.
+//
+// `complete()` is the single gate.  Two of three is not a weaker identity: it is
+// one that cannot be compared against a durable profile at all, so every caller
+// treats an incomplete triple exactly like an absent one.
+struct VolumePersistentIdentity final {
+    std::string disk_guid;
+    std::string partition_guid;
+    std::string volume_guid;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return !disk_guid.empty() && !partition_guid.empty()
+            && !volume_guid.empty();
+    }
+    bool operator==(const VolumePersistentIdentity&) const noexcept = default;
+};
+
+// Formats the sixteen bytes of a Win32 GUID, in their in-memory layout, as
+// canonical lowercase registry text.  Data1, Data2 and Data3 are little-endian
+// in memory while Data4 is already in text order, so this is a field-wise read:
+// a plain byte-wise hex dump yields a GUID that looks plausible, parses fine,
+// and never matches the one Windows reports for the same object.
+std::string canonical_guid_text(std::span<const std::byte, 16> guid_bytes);
+
 struct ProductVolume final {
     std::wstring owner_token;
     std::wstring volume_guid;
@@ -35,6 +67,10 @@ struct ProductVolume final {
     wchar_t drive_letter{};
     bool mounted{};
     bool operation_owned{};
+    // Declared last so every existing aggregate initializer keeps meaning what
+    // it meant: a fixture that does not name it gets an empty identity, which
+    // `complete()` reports as "not established" rather than as a real one.
+    VolumePersistentIdentity identity;
     bool operator==(const ProductVolume&) const noexcept = default;
 };
 

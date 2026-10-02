@@ -667,6 +667,88 @@ driven against the worker's own session over a real named pipe and two threads;
 standalone, `unit.m5.worker_protocol` is 20/20, `unit.m5.worker_session` 19/19
 and `unit.m5.worker_private_pipe` 8/8.
 
+### 1.14 Task 5 increment 7 — the volume identity producer
+
+This increment is not in the plan's Task 5 file list. It exists because
+`service_worker_control` cannot be written honestly without it, and the reason
+is worth stating plainly as §7 item 18.
+
+**What was missing.** The action plan's `record_volume_identity` step must
+*return* `VolumeRegistrationEvidence{gpt_disk_id, partition_id, volume_id}` — three
+`product::Uuid`s — for ServiceCore to persist into the durable profile
+(`service_core.cpp:6120`). The historical adapter read them from
+`host::WorkerRuntimeStatus.device`. Tracing the new stack, nothing produces that
+triple at all: `ProductVolume` carried a `volume_guid` **wstring** plus
+`VolumeExtent{disk_number, starting_offset, length_bytes}`, and
+`VolumeRegistrationEvidence` appeared in the tree only as a stored, coded and
+validated management type. The producer was part of the HostCore device identity
+that M5 replaces, so re-seating the adapter on the private protocol would have
+left `record_volume_identity` with no honest source — and inventing one would be
+exactly the fabrication the adapter exists to prevent.
+
+**What was added.** `src/run/windows_volume.{h,cpp}`:
+
+- `VolumePersistentIdentity` (canonical lowercase GUID text) plus
+  `ProductVolume::identity`, declared **last** so every existing aggregate
+  initializer keeps its meaning — a fixture that does not name it gets an empty
+  identity, which `complete()` reports as "not established" rather than as a real
+  one.
+- `canonical_guid_text()`, a pure function over the sixteen bytes of a Win32
+  GUID. Data1/Data2/Data3 are little-endian in memory and Data4 is not, so a
+  byte-wise hex dump would produce a GUID that looks right, parses right, and
+  never matches the one Windows reports. That is why it is a named function with
+  its own tests.
+- `fill_persistent_identity()`, reading the partition GUID
+  (`IOCTL_DISK_GET_PARTITION_INFO_EX`) and the GPT disk GUID
+  (`IOCTL_DISK_GET_DRIVE_LAYOUT_EX` on the physical drive the validated extent
+  names). **Best effort by design**: an unreadable identity leaves the triple
+  empty rather than substituting a zero GUID, because a zero GUID is a value that
+  compares equal to something rather than to nothing.
+
+`DiskRuntime::adopted_volume()` exposes the volume the runtime actually adopted;
+`m5::WorkerRuntimeStatus` gained `std::optional<WorkerVolumeIdentity> volume`;
+`DiskWorkerRuntime::observe()` fills it only when all three were read. Canonical
+text is the wire form deliberately — `product::Uuid` has no byte-level factory,
+so the one canonical parser is `Uuid::parse`, and the adapter parses there.
+
+**The completeness gate is in `validate_shape`.** Both the encoder and the
+decoder pass through it, so a present-but-incomplete triple is refused once
+rather than checked twice. A partial identity is not a weaker proof: it is one the
+service cannot compare against a durable profile at all, and admitting it would
+let a profile be recorded that no later start could ever verify.
+
+**The paired decision, recorded because it narrows a check.** The six startup
+steps (`start_proxy`, `create_exact_device`, `locate_exact_physical_drive`,
+`provision_gpt_ntfs`, `assign_exact_mount`, `readiness_io`) were historically each
+checked against `status.device.length_bytes`. The new `WorkerRuntimeStatus`
+carries no device geometry, so they are proven by the authenticated, verified
+`start()` that produced the status — the worker genuinely ran them inside
+`DiskWorkerRuntime::start()` before answering, and the reply is authenticated and
+image-verified, so this is a coarser proof boundary rather than a fabricated one.
+Both this and the identity producer were put to the user as architecture/scope
+decisions before any code was written; both were confirmed as described here.
+
+**Evidence.** Release build clean after a full object rebuild (the `.obj` tree was
+already empty, so this run was a from-scratch compile — §7 item 17 is satisfied by
+construction), and the full elevated suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 141
+CTEST_EXIT=0
+```
+
+141 is unchanged because the increment adds no new *executable*: the seven new
+cases live inside three existing suites. Standalone counts moved
+`unit.m5.worker_protocol` 20/20 → **22/22**, `unit.m4.disk_runtime` 27/27 →
+**29/29**, `unit.m4.windows_volume` 16/16 → **19/19**.
+
+**A compile error worth keeping.** The encode-side completeness check was first
+written as an early `return` inside `write_body`, which returns `void`. Moving the
+gate to `validate_shape` was not only the fix but the better design: the
+invariant is now stated once, where both directions of the codec already
+converge.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
@@ -919,3 +1001,38 @@ Recorded so the plan and the tree do not silently diverge.
     before this was understood: they were real runs of a built tree, but the tree
     may have mixed objects from before and after a header change. Re-running them
     from a full rebuild is a Task 9 obligation.
+
+18. **Task 5 gained a volume-identity producer, which reaches into Task 4's
+    `src/run`.** The plan's Task 5 file list does not include `src/run/*`, but
+    `service_worker_control` cannot realize `record_volume_identity` without a
+    source for `VolumeRegistrationEvidence`, and the new stack had none (§1.14).
+    The change is additive and behavior-preserving for existing callers: the new
+    `ProductVolume::identity` is declared last so every aggregate initializer
+    keeps its meaning, `same_identity()` is hand-written and still compares the
+    same six fields, and no existing test changed. It also deliberately leaves
+    `Win32VolumeAdapter::observe()` not re-reading the identity — nothing consumes
+    it on that path yet, and filling it there without a consumer would be
+    untested code. Recorded rather than done silently, and confirmed with the
+    user as an architecture decision before implementation.
+
+19. **The M5 `IWorkerControl` realization table, decided before implementation.**
+    Recorded here so the adapter's fail-closed set is a decision rather than an
+    accident of what happened to get written. Realized over the private protocol:
+    `create_runtime_and_worker`, `recover_bundle`, `quiesce_mutations`,
+    `flush_exact_volume`, `checkpoint`/`checkpoint_if_required`,
+    `resume_mutations`, `remove_mount`,
+    `remove_exact_device`/`stop_runtime_and_release_lock` (proven-by-removal
+    no-ops), and the dirty-epoch/observation trio. Realized service-side with no
+    worker: `create_and_verify_bundle`, `prove_new_uninitialized`. Fail closed
+    with `unrealized_action`: the compaction family, `publish_live_config`,
+    `publish_stopped_config`, `verify_rebind_bundle`, `publish_rebind`,
+    `forget_metadata`. Two actions the historical adapter could *not* realize
+    become realizable here and are noted as improvements rather than carried
+    over as gaps: `inspect_bundle_read_only` (the old status carried no bundle
+    identity; `WorkerRuntimeStatus::image_id` is now a verified value) and
+    `reconcile_checkpoint` (the old comment cites "no worker command exposes the
+    persistence failure context"; `recovery_proof` now does). `prove_forget_safe`
+    and the compaction boundary methods stay on their inherited fail-closed
+    defaults, which is the honest answer — the private protocol cannot prove a
+    writer lock, a matching device or a bundle identity is absent, and a forget
+    reported safe without that proof is what forget exists to prevent.

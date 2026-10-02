@@ -154,6 +154,31 @@ struct WorkerRemovalAuthorization final {
     bool operator==(const WorkerRemovalAuthorization&) const noexcept = default;
 };
 
+// The persistent GPT identities of the volume the worker's own runtime
+// adopted, in canonical lowercase GUID text.
+//
+// Text rather than raw bytes on purpose.  These are compared against the
+// durable profile's identities and re-parsed by the service into
+// `product::Uuid`, and canonical text is the one form both ends can produce and
+// check with the shared parser -- sixteen raw bytes would be a second encoding
+// that has to be kept in step with it by hand.
+//
+// `complete()` is the gate, not a formatting convenience.  A worker that read
+// two of three identities has an identity that cannot be compared against
+// anything, so the service must treat it exactly like no identity at all rather
+// than record a profile that no later start could verify.
+struct WorkerVolumeIdentity final {
+    std::string disk_guid;
+    std::string partition_guid;
+    std::string volume_guid;
+
+    [[nodiscard]] bool complete() const noexcept {
+        return !disk_guid.empty() && !partition_guid.empty()
+            && !volume_guid.empty();
+    }
+    bool operator==(const WorkerVolumeIdentity&) const noexcept = default;
+};
+
 // The worker's own view of what it is running.  Mirrors the service-side
 // WorkerRuntimeObservation, but is defined here so `src/host` never has to
 // include `src/management`: the service adapter maps one onto the other.
@@ -169,6 +194,14 @@ struct WorkerRuntimeStatus final {
     std::uint64_t dirty_epoch{};
     std::optional<product::Uuid> active_operation_id;
     std::uint32_t active_operation_phase{};
+    // The volume the worker adopted, which is what the service records into the
+    // durable profile and what every later start checks the runtime against.
+    // Absent when the worker holds no volume, or holds one whose GPT identities
+    // it could not read in full -- the two are the same answer to the service,
+    // and neither may be recorded as an identity.
+    //
+    // Declared last so every existing aggregate initializer keeps its meaning.
+    std::optional<WorkerVolumeIdentity> volume;
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };

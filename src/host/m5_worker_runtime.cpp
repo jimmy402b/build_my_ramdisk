@@ -148,6 +148,17 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
         const auto stats = impl.runtime->maintenance_stats();
         status.committed_generation = stats.generation;
         status.dirty = stats.dirty_bytes != 0;
+        // The identities the service records into the durable profile come from
+        // the volume this runtime actually adopted -- and only when all three
+        // were read.  An incomplete triple is not a weaker identity: it is one
+        // no later start could verify against, so it is reported as no identity
+        // at all rather than as a profile the service would happily write.
+        if (const auto adopted = impl.runtime->adopted_volume();
+            adopted.has_value() && adopted->identity.complete()) {
+            status.volume = WorkerVolumeIdentity{adopted->identity.disk_guid,
+                                                 adopted->identity.partition_guid,
+                                                 adopted->identity.volume_guid};
+        }
     }
     return Result<WorkerRuntimeStatus>::success(status);
 }

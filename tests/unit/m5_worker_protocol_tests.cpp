@@ -175,6 +175,54 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     REQUIRE(decoded.value().status->image_id == image_uuid(0x11));
 }
 
+TEST_CASE(m5_worker_protocol_status_carries_the_adopted_volume_identity) {
+    // The service writes this triple into the durable profile, which is what
+    // every later start verifies the runtime against -- so it has to arrive over
+    // the authenticated channel from the worker that actually adopted the
+    // volume, and it has to survive the wire intact.
+    WorkerRuntimeStatus observed = status();
+    observed.volume = WorkerVolumeIdentity{
+        "11111111-2222-3333-4444-555555555555",
+        "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"};
+
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::require_runtime_observation;
+    message.sequence = 4;
+    message.binding = session_binding();
+    message.status = observed;
+
+    const auto bytes = encode(message);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().status.has_value());
+    REQUIRE(*decoded.value().status == observed);
+    REQUIRE(decoded.value().status->volume.has_value());
+    REQUIRE(decoded.value().status->volume->complete());
+}
+
+TEST_CASE(m5_worker_protocol_refuses_a_partial_volume_identity) {
+    // A runtime that adopted a volume but could not read one of its three
+    // identities is not a runtime with a weaker identity: it is one whose
+    // identity cannot be compared against the durable profile at all.  Reporting
+    // two of three would let the service record a profile that no later start
+    // could verify, so the message is refused rather than carried.
+    WorkerRuntimeStatus observed = status();
+    observed.volume = WorkerVolumeIdentity{
+        "11111111-2222-3333-4444-555555555555", "", ""};
+
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::require_runtime_observation;
+    message.sequence = 4;
+    message.binding = session_binding();
+    message.status = observed;
+
+    REQUIRE(!encode(message).ok());
+}
+
 TEST_CASE(m5_worker_protocol_correlation_carries_the_persistence_type) {
     WorkerMessage message{};
     message.kind = WorkerMessageKind::request;

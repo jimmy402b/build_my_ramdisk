@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <bcrypt.h>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <string_view>
@@ -303,6 +304,77 @@ Result<void> verify_native_volume_identity(HANDLE handle,
     return Result<void>::success();
 }
 
+std::string guid_text_of(const GUID& guid) {
+    std::array<std::byte, 16> bytes{};
+    std::memcpy(bytes.data(), &guid, bytes.size());
+    return canonical_guid_text(bytes);
+}
+
+// Reads the persistent GPT identities of one enumerated volume.
+//
+// Best effort by design, and deliberately not an error path: a volume whose GPT
+// identities cannot be read -- a non-GPT layout, an unprivileged caller, or the
+// ERROR_INVALID_FUNCTION that some volume handles answer to a partition query --
+// simply leaves the triple empty, and `complete()` then makes every caller treat
+// it as absent.  Substituting a zero GUID would be strictly worse than writing
+// nothing, because a zero GUID is a value that compares equal to something
+// rather than to nothing.
+void fill_persistent_identity(ProductVolume& volume, HANDLE volume_handle,
+                              const std::wstring& volume_name) {
+    // The volume's own GUID is already in the name it was opened by, so it needs
+    // no IOCTL: "\\?\Volume{xxxxxxxx-....}\" -> "xxxxxxxx-....".
+    const auto open = volume_name.find(L"Volume{");
+    const auto close = volume_name.rfind(L'}');
+    if (open != std::wstring::npos && close != std::wstring::npos
+        && close > open + 7) {
+        const auto inner = volume_name.substr(open + 7, close - (open + 7));
+        std::string text;
+        text.reserve(inner.size());
+        for (const wchar_t unit : inner)
+            text.push_back(static_cast<char>(towlower(unit)));
+        volume.identity.volume_guid = std::move(text);
+    }
+
+    // The partition GUID lives on the volume handle.
+    std::array<std::byte, 1024> partition{};
+    DWORD partition_returned = 0;
+    if (DeviceIoControl(volume_handle, IOCTL_DISK_GET_PARTITION_INFO_EX, nullptr,
+                        0, partition.data(),
+                        static_cast<DWORD>(partition.size()),
+                        &partition_returned, nullptr)) {
+        const auto* info = reinterpret_cast<const PARTITION_INFORMATION_EX*>(
+            partition.data());
+        if (partition_returned >= sizeof(PARTITION_INFORMATION_EX)
+            && info->PartitionStyle == PARTITION_STYLE_GPT) {
+            volume.identity.partition_guid = guid_text_of(info->Gpt.PartitionId);
+        }
+    }
+
+    // The GPT disk GUID lives on the physical drive backing the volume.  The
+    // disk number comes from the extent this enumeration already validated, so
+    // this cannot be made to name a different disk than the volume sits on.
+    if (volume.extents.empty()) return;
+    const std::wstring physical = L"\\\\.\\PhysicalDrive"
+        + std::to_wstring(volume.extents.front().disk_number);
+    HANDLE disk = CreateFileW(physical.c_str(), 0,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                              OPEN_EXISTING, 0, nullptr);
+    if (disk == INVALID_HANDLE_VALUE) return;
+    std::array<std::byte, 64 * 1024> layout{};
+    DWORD layout_returned = 0;
+    if (DeviceIoControl(disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, nullptr, 0,
+                        layout.data(), static_cast<DWORD>(layout.size()),
+                        &layout_returned, nullptr)) {
+        const auto* info = reinterpret_cast<const DRIVE_LAYOUT_INFORMATION_EX*>(
+            layout.data());
+        if (layout_returned >= sizeof(DRIVE_LAYOUT_INFORMATION_EX)
+            && info->PartitionStyle == PARTITION_STYLE_GPT) {
+            volume.identity.disk_guid = guid_text_of(info->Gpt.DiskId);
+        }
+    }
+    CloseHandle(disk);
+}
+
 Result<std::vector<VolumeObservation>> enumerate_native_volumes(
     wchar_t requested_letter) {
     std::vector<VolumeObservation> result;
@@ -347,6 +419,7 @@ Result<std::vector<VolumeObservation>> enumerate_native_volumes(
                     }
                     volume.drive_letter = requested_letter; volume.mounted = mounted;
                     volume.operation_owned = false;
+                    fill_persistent_identity(volume, handle, guid);
                     result.push_back({std::move(volume), false,
                                       false, true, false, false, true, true});
                 }
@@ -360,6 +433,30 @@ Result<std::vector<VolumeObservation>> enumerate_native_volumes(
 }
 #endif
 } // namespace
+
+std::string canonical_guid_text(const std::span<const std::byte, 16> guid_bytes) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    // The Win32 GUID layout, spelled out: Data1 is four little-endian bytes,
+    // Data2 and Data3 are two each, and Data4 is already in text order.  Naming
+    // the order once here is what keeps the byte order from being re-derived --
+    // and re-derived wrongly -- at each call site.
+    static constexpr std::size_t kOrder[16] = {
+        3, 2, 1, 0,   // Data1
+        5, 4,         // Data2
+        7, 6,         // Data3
+        8, 9, 10, 11, 12, 13, 14, 15};
+    std::string text;
+    text.reserve(36);
+    for (std::size_t index = 0; index < 16; ++index) {
+        if (index == 4 || index == 6 || index == 8 || index == 10)
+            text.push_back('-');
+        const auto byte =
+            std::to_integer<std::uint8_t>(guid_bytes[kOrder[index]]);
+        text.push_back(kHex[byte >> 4]);
+        text.push_back(kHex[byte & 0x0FU]);
+    }
+    return text;
+}
 
 Result<void> flush_with_identity_checks(const FlushIdentityCheck& verify_before,
                                         const FlushOperation& flush,
