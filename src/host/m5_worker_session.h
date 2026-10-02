@@ -50,7 +50,13 @@ public:
     // implementation is expected to re-check the authorization against what it
     // actually holds; the session's gate refuses first, so a runtime is never
     // asked to remove something a partial proof was presented for.
-    virtual Result<WorkerRuntimeStatus> remove_and_stop(
+    // The removal answer, reporting the generation the removal happened at and,
+    // when it did not happen, the reason as a first-class refusal rather than a
+    // generic failure.  A refusal is a decision this runtime reached about its
+    // own state and the caller has to act on the reason; a bare status could
+    // express neither the generation nor the reason, and an error could not be
+    // told apart from a broken channel.
+    virtual Result<WorkerRemoveAndStopReply> remove_and_stop(
         const WorkerRemovalAuthorization& authorization) = 0;
     // The service's instruction to terminate.  It deliberately dismantles
     // nothing: the ordered teardown stays `cleanup`'s job, so a caller can tell

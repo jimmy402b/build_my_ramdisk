@@ -749,6 +749,58 @@ gate to `validate_shape` was not only the fix but the better design: the
 invariant is now stated once, where both directions of the codec already
 converge.
 
+### 1.16 Task 5 increment 9 (unit B) — the removal reply can express its own outcome
+
+Closes the second of the two defects §1.15a found. The abort reply (§1.15a's
+other finding) is deliberately **not** in this increment: tracing it showed
+`DiskRuntime::abort_checkpoint` returns `Result<void>`, so there is no failure
+context anywhere upstream to carry. Fixing it needs the same data-plane work
+increment 8 did for commit, and inventing a context from the bare `Error` would
+name a persistence failure that never happened. Split out as unit A rather than
+half-done here.
+
+**What changed.** `WorkerRemoveAndStopReply` carries `removed`, `stopped`,
+`generation` and a `WorkerRemovalRefusal`; `remove_and_stop` replies with it
+instead of a bare status, in `WorkerRuntime` and `ServiceWorkerSession` alike.
+`validate_shape` refuses a reply whose two halves disagree — a claimed removal
+that is only half done, or a refusal alongside a completed removal — because the
+barrier takes the mount, the device and the runtime in one authenticated call,
+and the caller records a removal either way.
+
+**The refusal is now a first-class answer, not an error.** This corrects
+increment 8's own fix: the dirty check added there was right in effect and wrong
+in reporting, returning a generic `runtime_error` where the historical protocol
+had `RemoveAndStopAuthorization::runtime_dirty` as a value of its own. The
+distinction it lost is the one that matters most for a caller — "the worker
+refused, resolve the dirty runtime against durable truth" versus "the worker did
+not answer, retry" — and a caller that cannot tell them apart retries the one
+call it must never retry. The service-session test's own comment said this
+before the code did: *"A removal the worker refuses is the worker's reason, not a
+generic protocol failure: the caller has to act on why."* The test asserted the
+wrong thing and passed, which is how the defect survived; it now asserts the
+refusal arrives as an answer.
+
+**Evidence.** Release build clean after a full object rebuild; full elevated
+suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 141
+CTEST_EXIT=0
+```
+
+141 unchanged — cases, not executables. Standalone: `unit.m5.worker_protocol`
+25/25 → **27/27** (a refusal round-trips and is distinguishable from a completed
+removal; a half-removed reply is refused in both directions),
+`unit.m5.worker_session` 20/20 → **21/21** (the session relays a refusal as an
+answer), `unit.m5.service_worker_session` 6/6.
+
+**A logic error caught by its own test, recorded because the test was right and
+the code was not.** The disagreement check was first written as
+`refused() == (!removed || !stopped)` — refusing exactly the replies that *agree*
+with themselves and accepting the contradictory ones. Two suites failed on it at
+once, which is what a rule stated in one place buys.
+
 ### 1.15a The reconciliation pass — every host fact the rebuilt files consume
 
 Written because increments 7 and 8 both discovered a gap that a single upfront

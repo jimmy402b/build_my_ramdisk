@@ -120,15 +120,18 @@ struct FakeWorkerRuntime final : WorkerRuntime {
             correlation.checkpoint.candidate_bytes_digest;
         return Result<WorkerRecoveryProof>::success(proof);
     }
-    Result<WorkerRuntimeStatus> remove_and_stop(
+    Result<WorkerRemoveAndStopReply> remove_and_stop(
         const WorkerRemovalAuthorization& authorization) override {
         (void)authorization;
+        WorkerRemoveAndStopReply reply{};
+        reply.generation = committed_generation;
         if (refuse_removal) {
-            return Result<WorkerRuntimeStatus>::failure(
-                Error{ErrorDomain::internal, 1, L"remove_and_stop",
-                      L"the runtime stands dirty", 0});
+            reply.refusal = WorkerRemovalRefusal::runtime_dirty;
+            return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
         }
-        return observe();
+        reply.removed = true;
+        reply.stopped = true;
+        return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
     }
     Result<void> shutdown() override { return Result<void>::success(); }
     Result<void> cleanup() override {
@@ -301,8 +304,15 @@ TEST_CASE(m5_service_worker_session_propagates_a_worker_refusal) {
     authorization.bundle_identity_proved = true;
     auto refused = session.value()->remove_and_stop(context(), operation_id(),
                                                     authorization);
-    REQUIRE(!refused.ok());
-    REQUIRE(refused.error().operation == L"remove_and_stop");
+    // The refusal arrives as an *answer*, not as a failure: it is the worker's
+    // decision about its own runtime and the reason is what the caller acts on.
+    // Framed as an error it would be indistinguishable from a worker that never
+    // replied, and those two want opposite handling.
+    REQUIRE(refused.ok());
+    REQUIRE(refused.value().refused());
+    REQUIRE(refused.value().refusal == WorkerRemovalRefusal::runtime_dirty);
+    REQUIRE(!refused.value().removed);
+    REQUIRE(!refused.value().stopped);
 
     REQUIRE(session.value()->shutdown(context(), operation_id()).ok());
     peer.join();

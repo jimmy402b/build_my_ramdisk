@@ -85,7 +85,10 @@ public:
         const OperationContext& context,
         const m5::WorkerRecoveryCorrelation& correlation);
 
-    [[nodiscard]] Result<m5::WorkerRuntimeStatus> remove_and_stop(
+    // Returns the removal answer rather than an observation: the generation the
+    // removal happened at, and on a refusal the reason, are what the caller
+    // decides on -- a status carries neither.
+    [[nodiscard]] Result<m5::WorkerRemoveAndStopReply> remove_and_stop(
         const OperationContext& context, const product::Uuid& operation_id,
         const m5::WorkerRemovalAuthorization& authorization);
 

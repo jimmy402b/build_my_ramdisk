@@ -61,6 +61,7 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     bool fail_start{};
     bool fail_commit{};
     bool fail_abort{};
+    bool refuse_removal{};
     // What the fake publish reports.  `committed` by default so every existing
     // case keeps meaning what it meant; a case that wants one of the three
     // unsuccessful dispositions sets it and gets the matching failure evidence,
@@ -151,11 +152,23 @@ struct FakeWorkerRuntime final : WorkerRuntime {
             correlation.checkpoint.candidate_bytes_digest;
         return Result<WorkerRecoveryProof>::success(proof);
     }
-    Result<WorkerRuntimeStatus> remove_and_stop(
+    Result<WorkerRemoveAndStopReply> remove_and_stop(
         const WorkerRemovalAuthorization& authorization) override {
         events.push_back("remove_and_stop");
         last_removal = authorization;
-        return observe();
+        WorkerRemoveAndStopReply reply{};
+        // A refused removal is a reply, not an error.  `refuse_removal` drives
+        // that branch so a case can assert the session relays the reason rather
+        // than turning it into a failure the caller cannot act on.
+        if (refuse_removal) {
+            reply.refusal = WorkerRemovalRefusal::runtime_dirty;
+            reply.generation = committed_generation;
+            return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
+        }
+        reply.removed = true;
+        reply.stopped = true;
+        reply.generation = committed_generation;
+        return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
     }
     Result<void> shutdown() override {
         events.push_back("shutdown");
@@ -579,9 +592,37 @@ TEST_CASE(m5_worker_session_remove_and_stop_requires_the_full_ownership_proof) {
     const auto removed = session.handle(authorized);
     REQUIRE(removed.ok());
     REQUIRE(!removed.value().error.has_value());
-    REQUIRE(removed.value().status.has_value());
+    REQUIRE(removed.value().removal_reply.has_value());
+    REQUIRE(removed.value().removal_reply->removed);
+    REQUIRE(removed.value().removal_reply->stopped);
+    REQUIRE(!removed.value().removal_reply->refused());
     REQUIRE(has_event(runtime, "remove_and_stop"));
     REQUIRE(runtime.last_removal.has_value());
+}
+
+TEST_CASE(m5_worker_session_relays_a_removal_refusal_as_an_answer) {
+    // A dirty refusal is the worker's own decision about its own runtime, and
+    // the reason is the only part the caller can act on.  Delivered as an error
+    // it would be indistinguishable from an unresponsive worker -- and a caller
+    // that cannot tell "it refused" from "it did not answer" retries the one
+    // call it must not retry.
+    FakeWorkerRuntime runtime;
+    runtime.refuse_removal = true;
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
+    REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+
+    auto remove = request(WorkerCommand::remove_and_stop, 2);
+    remove.removal = removal_authorization(runtime.image_id);
+    const auto refused = session.handle(remove);
+    REQUIRE(refused.ok());
+    REQUIRE(!refused.value().error.has_value());
+    REQUIRE(refused.value().removal_reply.has_value());
+    REQUIRE(refused.value().removal_reply->refused());
+    REQUIRE(refused.value().removal_reply->refusal
+            == WorkerRemovalRefusal::runtime_dirty);
+    REQUIRE(!refused.value().removal_reply->removed);
+    REQUIRE(!refused.value().removal_reply->stopped);
 }
 
 TEST_CASE(m5_worker_session_remove_and_stop_refuses_an_open_two_phase_boundary) {

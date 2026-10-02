@@ -318,7 +318,10 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
             reply.error = removed.error();
             return Result<WorkerMessage>::success(std::move(reply));
         }
-        reply.status = removed.value();
+        // The removal answer carries the generation the removal happened at and,
+        // on a refusal, why -- neither of which a status can express, and the
+        // reason is the only part the caller can act on.
+        reply.removal_reply = removed.value();
         return Result<WorkerMessage>::success(std::move(reply));
     }
 

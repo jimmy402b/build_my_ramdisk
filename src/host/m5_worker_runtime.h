@@ -54,7 +54,7 @@ public:
         std::uint64_t native_operation_id) override;
     Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) override;
-    Result<WorkerRuntimeStatus> remove_and_stop(
+    Result<WorkerRemoveAndStopReply> remove_and_stop(
         const WorkerRemovalAuthorization& authorization) override;
     Result<void> shutdown() override;
     Result<void> cleanup() override;

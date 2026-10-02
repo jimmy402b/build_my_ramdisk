@@ -226,7 +226,7 @@ Result<m5::WorkerRecoveryProof> ServiceWorkerSession::recovery_proof(
     return Result<m5::WorkerRecoveryProof>::success(*reply.value().recovery);
 }
 
-Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::remove_and_stop(
+Result<m5::WorkerRemoveAndStopReply> ServiceWorkerSession::remove_and_stop(
     const OperationContext& context, const product::Uuid& operation_id,
     const m5::WorkerRemovalAuthorization& authorization) {
     m5::WorkerMessage request{};
@@ -234,13 +234,20 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::remove_and_stop(
     request.product_operation_id = operation_id;
     request.removal = authorization;
     auto reply = exchange(context, std::move(request));
-    if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
-    if (!reply.value().status.has_value()) {
-        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
-            L"ServiceWorkerSession::remove_and_stop",
-            L"the removal reply carries no status").error());
+    if (!reply.ok()) {
+        return Result<m5::WorkerRemoveAndStopReply>::failure(reply.error());
     }
-    return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
+    // The removal answer, not an observation: the caller has to learn the
+    // generation the removal happened at, and on a refusal the reason -- which
+    // is what tells it whether to resolve the dirty runtime against durable
+    // truth or to treat the worker as unresponsive.
+    if (!reply.value().removal_reply.has_value()) {
+        return Result<m5::WorkerRemoveAndStopReply>::failure(unexpected(
+            L"ServiceWorkerSession::remove_and_stop",
+            L"the removal reply carries no answer").error());
+    }
+    return Result<m5::WorkerRemoveAndStopReply>::success(
+        *reply.value().removal_reply);
 }
 
 Result<void> ServiceWorkerSession::shutdown(const OperationContext& context,

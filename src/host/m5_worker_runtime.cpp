@@ -306,7 +306,7 @@ Result<WorkerRecoveryProof> DiskWorkerRuntime::prove_recovery(
     return Result<WorkerRecoveryProof>::success(proof);
 }
 
-Result<WorkerRuntimeStatus> DiskWorkerRuntime::remove_and_stop(
+Result<WorkerRemoveAndStopReply> DiskWorkerRuntime::remove_and_stop(
     const WorkerRemovalAuthorization& authorization) {
     auto& impl = *impl_;
     // Re-check ownership here rather than trusting the session's gate: this is
@@ -315,34 +315,44 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::remove_and_stop(
     if (!authorization.writer_lock_proved || !authorization.device_match_proved ||
         !authorization.bundle_identity_proved ||
         !(authorization.image_id == impl.config.image_id)) {
-        return Result<WorkerRuntimeStatus>::failure(runtime_error(
+        return Result<WorkerRemoveAndStopReply>::failure(runtime_error(
             L"DiskWorkerRuntime::remove_and_stop",
             L"the removal authorization does not cover this worker's own image"));
     }
+
     // Refuse a dirty removal, and refuse it *here*.
     //
     // The removal barrier drops every uncommitted write with the mount, so a
     // removal performed over a dirty runtime is indistinguishable from data
-    // loss.  This is the check that a stop depends on, and it belongs in the
-    // authority that actually dismantles rather than in the caller that asks:
-    // a guard in the caller protects only that caller, and every other path to
+    // loss.  This is the check a stop depends on, and it belongs in the
+    // authority that actually dismantles rather than in the caller that asks: a
+    // guard in the caller protects only that caller, and every other path to
     // this call -- the service composition, a retry, a future executor -- would
-    // silently bypass it.
+    // silently bypass it.  Checked before `cleanup()`, because teardown is what
+    // would flush the very writes this is refusing to drop.
     //
-    // Checked before `cleanup()`, because teardown is what would flush the very
-    // writes this is refusing to drop.
+    // The refusal is returned as a *reply*, not as an error.  It is a decision
+    // this runtime reached about its own state, the caller has to act on the
+    // reason, and an error would be indistinguishable from a broken channel --
+    // which is exactly the answer a caller must not retry.
+    WorkerRemoveAndStopReply reply{};
     auto before = observe();
-    if (!before.ok()) return Result<WorkerRuntimeStatus>::failure(before.error());
-    if (before.value().dirty) {
-        return Result<WorkerRuntimeStatus>::failure(runtime_error(
-            L"DiskWorkerRuntime::remove_and_stop",
-            L"the runtime holds uncommitted writes and must not be removed from"));
+    if (!before.ok()) {
+        return Result<WorkerRemoveAndStopReply>::failure(before.error());
     }
+    reply.generation = before.value().committed_generation;
+    if (before.value().dirty) {
+        reply.refusal = WorkerRemovalRefusal::runtime_dirty;
+        return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
+    }
+
     auto cleaned = cleanup();
-    if (!cleaned.ok()) return Result<WorkerRuntimeStatus>::failure(cleaned.error());
-    auto status = observe();
-    if (!status.ok()) return status;
-    return status;
+    if (!cleaned.ok()) {
+        return Result<WorkerRemoveAndStopReply>::failure(cleaned.error());
+    }
+    reply.removed = true;
+    reply.stopped = true;
+    return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
 }
 
 Result<void> DiskWorkerRuntime::shutdown() {

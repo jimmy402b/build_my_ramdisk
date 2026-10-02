@@ -275,6 +275,68 @@ TEST_CASE(m5_worker_protocol_refuses_a_disposition_it_does_not_define) {
     REQUIRE(!decode_worker_message(corrupted).ok());
 }
 
+WorkerMessage removal_reply_message(const WorkerRemoveAndStopReply& reply) {
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::remove_and_stop;
+    message.sequence = 6;
+    message.binding = session_binding();
+    // Operation-scoped, so the shape requires the operation id.
+    message.product_operation_id = uuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    message.removal_reply = reply;
+    return message;
+}
+
+TEST_CASE(m5_worker_protocol_removal_reply_distinguishes_a_refusal) {
+    // `removed == false` alone is not enough: a caller has to learn the
+    // generation the removal would have happened at *and* why it did not.  The
+    // reason is what separates "the worker refused, resolve the dirty runtime
+    // against durable truth" from "the worker never answered, retry" -- and
+    // retrying a dirty removal is the one thing that must not happen.
+    const WorkerRemoveAndStopReply completed{true, true, 6,
+                                             WorkerRemovalRefusal::none};
+    const auto completed_bytes = encode(removal_reply_message(completed));
+    REQUIRE(completed_bytes.ok());
+    const auto decoded_completed = decode_worker_message(completed_bytes.value());
+    REQUIRE(decoded_completed.ok());
+    REQUIRE(decoded_completed.value().removal_reply.has_value());
+    REQUIRE(*decoded_completed.value().removal_reply == completed);
+    REQUIRE(!decoded_completed.value().removal_reply->refused());
+
+    const WorkerRemoveAndStopReply refused{false, false, 6,
+                                           WorkerRemovalRefusal::runtime_dirty};
+    const auto refused_bytes = encode(removal_reply_message(refused));
+    REQUIRE(refused_bytes.ok());
+    const auto decoded_refused = decode_worker_message(refused_bytes.value());
+    REQUIRE(decoded_refused.ok());
+    REQUIRE(*decoded_refused.value().removal_reply == refused);
+    REQUIRE(decoded_refused.value().removal_reply->refused());
+    REQUIRE(decoded_refused.value().removal_reply->refusal
+            == WorkerRemovalRefusal::runtime_dirty);
+    // The generation survives a refusal, so a caller can tell which generation
+    // the worker was standing at when it declined.
+    REQUIRE_EQ(decoded_refused.value().removal_reply->generation, 6ull);
+}
+
+TEST_CASE(m5_worker_protocol_refuses_a_half_removed_reply) {
+    // The barrier takes the mount, the device and the runtime in one
+    // authenticated call, so a reply claiming one without the other describes a
+    // partial teardown as a complete one -- and the caller records a removal
+    // either way.  Refused in both directions: claiming removal without the
+    // stop, and claiming a refusal while reporting success.
+    const WorkerRemoveAndStopReply half_removed{true, false, 6,
+                                                WorkerRemovalRefusal::none};
+    REQUIRE(!encode(removal_reply_message(half_removed)).ok());
+
+    const WorkerRemoveAndStopReply contradictory{true, true, 6,
+                                                 WorkerRemovalRefusal::runtime_dirty};
+    REQUIRE(!encode(removal_reply_message(contradictory)).ok());
+
+    const WorkerRemoveAndStopReply refused_without_removing{
+        false, false, 6, WorkerRemovalRefusal::runtime_dirty};
+    REQUIRE(encode(removal_reply_message(refused_without_removing)).ok());
+}
+
 TEST_CASE(m5_worker_protocol_status_carries_the_adopted_volume_identity) {
     // The service writes this triple into the durable profile, which is what
     // every later start verifies the runtime against -- so it has to arrive over

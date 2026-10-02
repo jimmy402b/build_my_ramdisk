@@ -26,6 +26,7 @@ constexpr std::uint32_t kHasError = 1U << 7;
 constexpr std::uint32_t kHasCorrelation = 1U << 8;
 constexpr std::uint32_t kHasRemoval = 1U << 9;
 constexpr std::uint32_t kHasCommitReply = 1U << 10;
+constexpr std::uint32_t kHasRemovalReply = 1U << 11;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -48,6 +49,7 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.commit.has_value()) mask |= kHasCommit;
     if (message.status.has_value()) mask |= kHasStatus;
     if (message.commit_reply.has_value()) mask |= kHasCommitReply;
+    if (message.removal_reply.has_value()) mask |= kHasRemovalReply;
     if (message.recovery.has_value()) mask |= kHasRecovery;
     if (message.error.has_value()) mask |= kHasError;
     if (message.correlation.has_value()) mask |= kHasCorrelation;
@@ -114,10 +116,12 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
     case WorkerCommand::remove_and_stop:
         // The request must carry the ownership authorization; there is no shape
         // in which a worker is asked to remove something without being told
-        // what it has proved it owns.
+        // what it has proved it owns.  The reply is its own payload: it has to
+        // name the generation the removal happened at, and say why when it did
+        // not happen, neither of which an observation can express.
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::request ? kHasRemoval
-                                                        : kHasStatus),
+                                                        : kHasRemovalReply),
                 kHasError};
     }
     return {};
@@ -195,6 +199,24 @@ Result<void> validate_shape(const WorkerMessage& message) {
                 L"validate_shape",
                 L"A commit that did not land must carry the failure that "
                 L"decided it"));
+        }
+    }
+    // A removal reply reports either a completed removal or a refusal, never a
+    // mix and never neither.  The barrier takes the mount, the device and the
+    // runtime together, so `removed` without `stopped` describes a partial
+    // teardown -- and the caller records a removal either way, which is how a
+    // half-removed profile becomes a durable claim that it was removed.
+    if (message.removal_reply.has_value()) {
+        const auto& removal = *message.removal_reply;
+        // Refused when the two halves *disagree*: a refusal alongside a
+        // completed removal, or a claimed removal that is only half done.
+        if (removal.refused() != (!removal.removed || !removal.stopped)) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"validate_shape",
+                L"A removal reply must report either a refusal or a completed "
+                L"removal, not both and not neither"));
         }
     }
     return Result<void>::success();
@@ -345,6 +367,30 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
                 L"commit reply is truncated"));
         }
         message.commit_reply = std::move(reply);
+    }
+    if ((mask & kHasRemovalReply) != 0) {
+        WorkerRemoveAndStopReply reply{};
+        reply.removed = reader.boolean();
+        reply.stopped = reader.boolean();
+        reply.generation = reader.u64();
+        const auto refusal = reader.u8();
+        if (refusal
+            > static_cast<std::uint8_t>(WorkerRemovalRefusal::runtime_dirty)) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"removal refusal is not a value this protocol defines"));
+        }
+        reply.refusal = static_cast<WorkerRemovalRefusal>(refusal);
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"removal reply is truncated"));
+        }
+        message.removal_reply = std::move(reply);
     }
     if ((mask & kHasStatus) != 0) {
         auto status = read_status(reader);
@@ -508,6 +554,12 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
             writer.u64(failure.generation);
             writer.text_ascii(failure.safe_context);
         }
+    }
+    if (message.removal_reply.has_value()) {
+        writer.boolean(message.removal_reply->removed);
+        writer.boolean(message.removal_reply->stopped);
+        writer.u64(message.removal_reply->generation);
+        writer.u8(static_cast<std::uint8_t>(message.removal_reply->refusal));
     }
     if (message.status.has_value()) write_status(writer, *message.status);
     if (message.recovery.has_value()) {

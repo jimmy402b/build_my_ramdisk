@@ -274,6 +274,43 @@ struct WorkerCheckpointCommitReply final {
     bool operator==(const WorkerCheckpointCommitReply&) const noexcept = default;
 };
 
+// Why a removal did not happen.  `none` means it was not refused, and the
+// protocol requires that to agree with `removed`/`stopped` in both directions.
+//
+// A refusal is a first-class answer rather than an error, because it is a
+// decision the worker reached about its *own* runtime and the reason is the only
+// part the caller can act on.  `runtime_dirty` says the worker holds uncommitted
+// writes and that removal would drop them -- which the caller resolves against
+// durable truth rather than overriding.  Reported as a generic failure it would
+// be indistinguishable from a broken channel, and a caller that cannot tell
+// "the worker refused" from "the worker did not answer" will retry the one thing
+// it must not retry.
+enum class WorkerRemovalRefusal : std::uint8_t {
+    none = 0,
+    runtime_dirty,
+};
+
+// The removal answer.
+//
+// `generation` is the generation the worker stood at when it removed, and the
+// caller compares it against the one its durable compare-and-swap authorized: a
+// removal proven at any other generation is not a removal the caller may record.
+// `removed` and `stopped` are separate because the barrier is supposed to do
+// both in one authenticated call, so a reply claiming one without the other
+// describes a partial teardown as a complete one -- and the caller records a
+// removal either way.
+struct WorkerRemoveAndStopReply final {
+    bool removed{};
+    bool stopped{};
+    std::uint64_t generation{};
+    WorkerRemovalRefusal refusal{WorkerRemovalRefusal::none};
+
+    [[nodiscard]] bool refused() const noexcept {
+        return refusal != WorkerRemovalRefusal::none;
+    }
+    bool operator==(const WorkerRemoveAndStopReply&) const noexcept = default;
+};
+
 // The P4 durable correlation, as the service persists it, handed to a fresh
 // worker so it can decide what actually reached the bundle (design spec 3.5).
 //
@@ -338,6 +375,10 @@ struct WorkerMessage final {
     // its disposition *and* an observation, and folding them into `status` is
     // what lost the disposition in the first place.
     std::optional<WorkerCheckpointCommitReply> commit_reply;
+    // The removal answer, its own type for the same reason: a caller has to
+    // learn which generation the removal happened at, and why it did not happen
+    // when it did not.  An observation carries neither.
+    std::optional<WorkerRemoveAndStopReply> removal_reply;
     std::optional<WorkerRuntimeStatus> status;
     std::optional<WorkerRecoveryProof> recovery;
     // Carried by a recovery-proof request: what the service durably recorded at
