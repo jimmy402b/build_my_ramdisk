@@ -87,12 +87,20 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         prepared = candidate;
         return Result<WorkerPreparedCandidate>::success(candidate);
     }
-    Result<WorkerRuntimeStatus> commit_checkpoint(
+    Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) override {
         committed_generation = commit.native_operation_id -
                                kM5CheckpointOperationOffset;
         prepared.reset();
-        return observe();
+        WorkerCheckpointCommitReply reply{};
+        reply.disposition = WorkerCommitDisposition::committed;
+        reply.generation = committed_generation;
+        auto status = observe();
+        if (!status.ok()) {
+            return Result<WorkerCheckpointCommitReply>::failure(status.error());
+        }
+        reply.status = status.move_value();
+        return Result<WorkerCheckpointCommitReply>::success(std::move(reply));
     }
     Result<WorkerRuntimeStatus> abort_checkpoint(
         const std::uint64_t native_operation_id) override {
@@ -238,7 +246,9 @@ TEST_CASE(m5_service_worker_session_prepare_and_commit_the_same_candidate) {
     auto committed = session.value()->commit_checkpoint(context(),
                                                         operation_id(), commit);
     REQUIRE(committed.ok());
-    REQUIRE_EQ(committed.value().committed_generation, 6ull);
+    // The disposition is what the caller acts on; the observation rides along.
+    REQUIRE(committed.value().disposition == WorkerCommitDisposition::committed);
+    REQUIRE(committed.value().status.committed_generation == 6ull);
 
     REQUIRE(session.value()->shutdown(context(), operation_id()).ok());
     peer.join();

@@ -48,7 +48,7 @@ public:
     Result<WorkerRuntimeStatus> observe() override;
     Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) override;
-    Result<WorkerRuntimeStatus> commit_checkpoint(
+    Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) override;
     Result<WorkerRuntimeStatus> abort_checkpoint(
         std::uint64_t native_operation_id) override;

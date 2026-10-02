@@ -2,6 +2,7 @@
 
 #include "src/host/m5_worker_protocol.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -173,6 +174,105 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     // has to check an authorization against the bundle the worker actually
     // holds rather than against the authorization's own claim.
     REQUIRE(decoded.value().status->image_id == image_uuid(0x11));
+}
+
+WorkerCheckpointCommitReply commit_reply(
+    const WorkerCommitDisposition disposition) {
+    WorkerCheckpointCommitReply reply{};
+    reply.status = status();
+    reply.disposition = disposition;
+    reply.generation = 6;
+    // A commit that did not cleanly land has to carry the failure that decided
+    // it, or the shape gate refuses the reply -- so the fixture only omits it
+    // for the landed dispositions, which are the ones that must not carry it.
+    if (!reply.landed()) {
+        reply.failure = WorkerCommitFailure{
+            "checkpoint_commit", 7, 2, 0, 42, image_uuid(0x11), 5, "fake"};
+    }
+    return reply;
+}
+
+WorkerMessage commit_reply_message(const WorkerCommitDisposition disposition) {
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::checkpoint_commit;
+    message.sequence = 5;
+    message.binding = session_binding();
+    // Operation-scoped, so the shape requires the operation id.
+    message.product_operation_id = uuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    message.commit_reply = commit_reply(disposition);
+    return message;
+}
+
+TEST_CASE(m5_worker_protocol_commit_reply_preserves_every_disposition) {
+    // The four dispositions are four different answers, and the service promotes,
+    // rolls back or parks on which one it was given.  This is the round trip that
+    // the earlier "commit reply is just a status" shape could not express at all:
+    // `not_committed` and `commit_indeterminate` both carry a status whose
+    // generation reads the same, so a caller holding only the status has to guess.
+    // The guess is wrong in one direction or the other whichever it picks.
+    const std::array<WorkerCommitDisposition, 4> dispositions{
+        WorkerCommitDisposition::not_committed,
+        WorkerCommitDisposition::commit_indeterminate,
+        WorkerCommitDisposition::committed,
+        WorkerCommitDisposition::committed_needs_reconciliation};
+
+    for (const auto disposition : dispositions) {
+        const auto bytes = encode(commit_reply_message(disposition));
+        REQUIRE(bytes.ok());
+        const auto decoded = decode_worker_message(bytes.value());
+        REQUIRE(decoded.ok());
+        REQUIRE(decoded.value().commit_reply.has_value());
+        REQUIRE(*decoded.value().commit_reply == commit_reply(disposition));
+        REQUIRE(decoded.value().commit_reply->disposition == disposition);
+        // `committed_needs_reconciliation` landed and `commit_indeterminate` did
+        // not, even though both leave the runtime looking the same afterwards.
+        REQUIRE(decoded.value().commit_reply->landed()
+                == (disposition == WorkerCommitDisposition::committed
+                    || disposition
+                        == WorkerCommitDisposition::committed_needs_reconciliation));
+    }
+}
+
+TEST_CASE(m5_worker_protocol_refuses_a_self_contradictory_commit_reply) {
+    // A reply says either "it landed" or "here is why it did not".  Carrying
+    // both would let a caller read a landed commit past the failure that
+    // actually happened, and carrying neither leaves a caller with no evidence
+    // to validate its own durable record against.
+    auto landed_with_failure = commit_reply_message(
+        WorkerCommitDisposition::committed);
+    landed_with_failure.commit_reply->failure = WorkerCommitFailure{
+        "checkpoint_commit", 7, 2, 0, 42, image_uuid(0x11), 5, "fake"};
+    REQUIRE(!encode(landed_with_failure).ok());
+
+    auto failed_without_evidence = commit_reply_message(
+        WorkerCommitDisposition::not_committed);
+    failed_without_evidence.commit_reply->failure.reset();
+    REQUIRE(!encode(failed_without_evidence).ok());
+}
+
+TEST_CASE(m5_worker_protocol_refuses_a_disposition_it_does_not_define) {
+    const auto low = encode(
+        commit_reply_message(WorkerCommitDisposition::not_committed));
+    const auto high = encode(
+        commit_reply_message(WorkerCommitDisposition::commit_indeterminate));
+    REQUIRE(low.ok());
+    REQUIRE(high.ok());
+
+    // Locate the disposition byte by diffing two replies that differ only in it,
+    // rather than hard-coding an offset into the status that would silently point
+    // somewhere else the moment the status gains a field.  Both are non-landed,
+    // so the failure block is present in both and only this byte moves.
+    std::size_t at = 0;
+    while (at < low.value().size() && low.value()[at] == high.value()[at]) ++at;
+    REQUIRE(at < low.value().size());
+
+    auto corrupted = low.value();
+    corrupted[at] = std::byte{200};
+    // An undefined disposition must not decode, because the alternative is an
+    // out-of-range enum that `landed()` answers "false" for by accident rather
+    // than by decision.
+    REQUIRE(!decode_worker_message(corrupted).ok());
 }
 
 TEST_CASE(m5_worker_protocol_status_carries_the_adopted_volume_identity) {

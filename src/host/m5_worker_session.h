@@ -23,7 +23,17 @@ public:
     virtual Result<WorkerRuntimeStatus> observe() = 0;
     virtual Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) = 0;
-    virtual Result<WorkerRuntimeStatus> commit_checkpoint(
+    // The commit answer: the disposition the persistence layer actually
+    // returned, the post-commit observation, and -- when the commit did not
+    // cleanly land -- the failure that decided it.
+    //
+    // Returning a bare status here was a defect, not a simplification: a status
+    // carries a generation, and the three unsuccessful dispositions cannot be
+    // derived from one.  "Nothing was published, restore the prior record" and
+    // "the outcome is unknown, park the operation" want opposite handling, and a
+    // reply that cannot tell them apart forces the caller to guess at the one
+    // moment guessing is most expensive.
+    virtual Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) = 0;
     virtual Result<WorkerRuntimeStatus> abort_checkpoint(
         std::uint64_t native_operation_id) = 0;

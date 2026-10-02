@@ -69,7 +69,10 @@ public:
     // which is exactly what the one shared rule exists to prevent.
     [[nodiscard]] Result<m5::WorkerPreparedCandidate> prepare_checkpoint(
         const OperationContext& context, const product::Uuid& operation_id);
-    [[nodiscard]] Result<m5::WorkerRuntimeStatus> commit_checkpoint(
+    // Returns the whole commit reply, not a bare status: the disposition and the
+    // failure evidence are what the caller acts on, and a status cannot carry
+    // either.
+    [[nodiscard]] Result<m5::WorkerCheckpointCommitReply> commit_checkpoint(
         const OperationContext& context, const product::Uuid& operation_id,
         const m5::WorkerCheckpointCommit& commit);
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> abort_checkpoint(

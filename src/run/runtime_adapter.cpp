@@ -50,12 +50,47 @@ DiskCheckpointDisposition map_disposition(
     case persistence::CommitDisposition::Committed:
         return DiskCheckpointDisposition::committed;
     case persistence::CommitDisposition::CommitIndeterminate:
-    case persistence::CommitDisposition::CommittedNeedsReconciliation:
         return DiskCheckpointDisposition::commit_indeterminate;
+    // Kept apart from the indeterminate case above.  Collapsing them told the
+    // service "the outcome is unknown" when the truth was "the bytes landed and
+    // only the epoch publication did not" -- a known state with its own recovery
+    // path, and one where the safe answer is the opposite of parking.
+    case persistence::CommitDisposition::CommittedNeedsReconciliation:
+        return DiskCheckpointDisposition::committed_needs_reconciliation;
     case persistence::CommitDisposition::NotCommitted:
         return DiskCheckpointDisposition::not_committed;
     }
     return DiskCheckpointDisposition::commit_indeterminate;
+}
+
+// Whether the candidate's bytes actually reached the bundle.  Both landed
+// dispositions count: a commit that landed but could not confirm its epoch is
+// still a commit, and treating it as un-landed would let a caller restore a
+// prior record over bytes that are really there.
+bool checkpoint_landed(const DiskCheckpointDisposition disposition) noexcept {
+    return disposition == DiskCheckpointDisposition::committed
+        || disposition
+            == DiskCheckpointDisposition::committed_needs_reconciliation;
+}
+
+// Mirrors the persistence context across the engine boundary.  Nothing here is
+// defaulted or derived: every field is relayed, including the safe_context the
+// service quotes back, because a context reconstructed from its parts would be a
+// record of a failure that did not happen.
+DiskCheckpointErrorContext map_error_context(
+    const persistence::PersistenceErrorContext& context,
+    const DiskCheckpointDisposition disposition) {
+    DiskCheckpointErrorContext mirrored{};
+    mirrored.operation = context.operation;
+    mirrored.code = static_cast<std::uint32_t>(context.code);
+    mirrored.phase = static_cast<std::uint8_t>(context.phase);
+    mirrored.native_code = context.native_code;
+    mirrored.native_operation_id = context.operation_id;
+    mirrored.image_uuid = context.image_uuid.bytes;
+    mirrored.generation = context.generation;
+    mirrored.disposition = disposition;
+    mirrored.safe_context = context.safe_context;
+    return mirrored;
 }
 
 } // namespace
@@ -471,8 +506,19 @@ Result<DiskCheckpointResult> ProductionRuntimeAdapter::commit_checkpoint(
     if (outcome.error.has_value()) {
         return Result<DiskCheckpointResult>::failure(*outcome.error);
     }
-    return Result<DiskCheckpointResult>::success(
-        {map_disposition(outcome.disposition), outcome.generation});
+    const auto disposition = map_disposition(outcome.disposition);
+    DiskCheckpointResult result{};
+    result.disposition = disposition;
+    result.generation = outcome.generation;
+    // A commit that did not cleanly land has to carry the failure that decided
+    // it; the worker relays it and ServiceCore validates its own evidence
+    // against it, so dropping it here would leave the service with a disposition
+    // it cannot justify.
+    if (!checkpoint_landed(disposition) && outcome.error_context.has_value()) {
+        result.error_context =
+            map_error_context(*outcome.error_context, disposition);
+    }
+    return Result<DiskCheckpointResult>::success(std::move(result));
 }
 
 Result<void> ProductionRuntimeAdapter::abort_checkpoint(

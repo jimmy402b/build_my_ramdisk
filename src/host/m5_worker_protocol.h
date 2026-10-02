@@ -120,6 +120,48 @@ struct WorkerCheckpointCommit final {
     bool operator==(const WorkerCheckpointCommit&) const noexcept = default;
 };
 
+// What a commit actually did.  The persistence layer's `CommitDisposition`
+// restated in the protocol's own enum, for the same reason
+// `WorkerRecoveryOutcome` restates its verdict: a wire enum must not silently
+// change meaning when the persistence enum grows a case.  The two are related by
+// exactly one function, `worker_commit_disposition()`, so they cannot drift in
+// more than one place.
+//
+// The four cases are four *different* answers and must not be folded.  In
+// particular `committed_needs_reconciliation` is not `commit_indeterminate`: the
+// first says the bytes landed and the epoch publication did not, the second says
+// the outcome is unknown.  Folding them told the service to park an operation
+// whose recovery path was known, and the safe answer for one is the unsafe
+// answer for the other.
+enum class WorkerCommitDisposition : std::uint8_t {
+    // Zero is the fail-closed default: a disposition that was never set reads as
+    // "nothing was published", which is the answer that authorizes no promotion.
+    not_committed = 0,
+    commit_indeterminate,
+    committed,
+    committed_needs_reconciliation,
+};
+
+// The persistence failure that decided a commit which did not cleanly land,
+// relayed field for field.  ServiceCore validates its own evidence against this
+// record, so a summary -- or a context recomposed from parts -- would name a
+// persistence failure that never happened.
+struct WorkerCommitFailure final {
+    std::string operation;
+    std::uint32_t code{};
+    std::uint8_t phase{};
+    std::uint32_t native_code{};
+    std::uint64_t native_operation_id{};
+    persistence::ImageUuid image_uuid{};
+    std::uint64_t generation{};
+    std::string safe_context;
+
+    bool operator==(const WorkerCommitFailure&) const noexcept = default;
+};
+
+// `WorkerCheckpointCommitReply` is declared below `WorkerRuntimeStatus`: its
+// answer carries an observation, so it cannot precede the type it observes.
+
 // The service's authorization to remove one profile's resources.
 //
 // Design spec §5 permits a worker to clean only what it has *verified it owns*,
@@ -206,6 +248,32 @@ struct WorkerRuntimeStatus final {
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };
 
+// The commit reply.
+//
+// It carries the post-commit observation *and* the disposition, because they are
+// different facts: the status says where the runtime now stands, and the
+// disposition says what the publish actually did.  Deriving the disposition from
+// the observed generation would be guesswork at exactly the moment guessing is
+// most expensive -- `committed_needs_reconciliation` and `commit_indeterminate`
+// leave the runtime looking identical afterwards.
+struct WorkerCheckpointCommitReply final {
+    WorkerRuntimeStatus status;
+    WorkerCommitDisposition disposition{
+        WorkerCommitDisposition::not_committed};
+    std::uint64_t generation{};
+    // Present exactly when the commit did not cleanly land.  A landed commit
+    // that also reported failure evidence would be self-contradictory and is
+    // refused by `validate_shape`.
+    std::optional<WorkerCommitFailure> failure;
+
+    [[nodiscard]] bool landed() const noexcept {
+        return disposition == WorkerCommitDisposition::committed
+            || disposition
+                == WorkerCommitDisposition::committed_needs_reconciliation;
+    }
+    bool operator==(const WorkerCheckpointCommitReply&) const noexcept = default;
+};
+
 // The P4 durable correlation, as the service persists it, handed to a fresh
 // worker so it can decide what actually reached the bundle (design spec 3.5).
 //
@@ -266,6 +334,10 @@ struct WorkerMessage final {
     std::optional<WorkerHandshake> handshake;
     std::optional<WorkerPreparedCandidate> prepared;
     std::optional<WorkerCheckpointCommit> commit;
+    // The commit reply.  Distinct from `status` on purpose: a commit answers with
+    // its disposition *and* an observation, and folding them into `status` is
+    // what lost the disposition in the first place.
+    std::optional<WorkerCheckpointCommitReply> commit_reply;
     std::optional<WorkerRuntimeStatus> status;
     std::optional<WorkerRecoveryProof> recovery;
     // Carried by a recovery-proof request: what the service durably recorded at

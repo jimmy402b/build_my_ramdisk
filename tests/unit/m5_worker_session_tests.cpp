@@ -61,6 +61,12 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     bool fail_start{};
     bool fail_commit{};
     bool fail_abort{};
+    // What the fake publish reports.  `committed` by default so every existing
+    // case keeps meaning what it meant; a case that wants one of the three
+    // unsuccessful dispositions sets it and gets the matching failure evidence,
+    // which the shape gate requires.
+    WorkerCommitDisposition commit_disposition{WorkerCommitDisposition::committed};
+    WorkerCommitFailure commit_failure{"commit", 7, 2, 0, 42, {}, 6, "fake"};
     // Drives the strict-observation gate: an observation that cannot assert a
     // live runtime must be refused, not returned.
     bool worker_alive{true};
@@ -104,16 +110,24 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         last_prepared = candidate;
         return Result<WorkerPreparedCandidate>::success(candidate);
     }
-    Result<WorkerRuntimeStatus> commit_checkpoint(
+    Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) override {
         events.push_back("commit");
         last_commit = commit;
-        if (fail_commit) return Result<WorkerRuntimeStatus>::failure(fake_error(L"commit"));
-        committed_generation = kCandidateGeneration;
-        WorkerRuntimeStatus status{};
-        status.worker_alive = true;
-        status.committed_generation = committed_generation;
-        return Result<WorkerRuntimeStatus>::success(status);
+        if (fail_commit) {
+            return Result<WorkerCheckpointCommitReply>::failure(
+                fake_error(L"commit"));
+        }
+        WorkerCheckpointCommitReply reply{};
+        reply.disposition = commit_disposition;
+        reply.status.worker_alive = true;
+        if (reply.landed()) committed_generation = kCandidateGeneration;
+        reply.status.committed_generation = committed_generation;
+        reply.generation = committed_generation;
+        // A non-landed commit must carry the failure that decided it, or the
+        // protocol's own shape gate refuses the reply before it is written.
+        if (!reply.landed()) reply.failure = commit_failure;
+        return Result<WorkerCheckpointCommitReply>::success(std::move(reply));
     }
     Result<WorkerRuntimeStatus> abort_checkpoint(
         const std::uint64_t native_operation_id) override {
@@ -343,8 +357,57 @@ TEST_CASE(m5_worker_session_commit_must_repeat_the_prepared_candidate) {
     const auto committed = session.handle(exact);
     REQUIRE(committed.ok());
     REQUIRE(!committed.value().error.has_value());
-    REQUIRE(committed.value().status.has_value());
+    REQUIRE(committed.value().commit_reply.has_value());
+    REQUIRE(committed.value().commit_reply->disposition
+            == WorkerCommitDisposition::committed);
+    REQUIRE(committed.value().commit_reply->landed());
+    REQUIRE(!committed.value().commit_reply->failure.has_value());
     REQUIRE(!session.checkpoint_prepared());
+}
+
+TEST_CASE(m5_worker_session_commit_reply_preserves_each_disposition) {
+    // The three unsuccessful dispositions are three different answers with
+    // opposite safe handling, so the session must relay whichever one the
+    // runtime reported rather than a collapsed summary.  This is the case that
+    // would have caught the defect where every non-committed outcome became one
+    // generic error.
+    const std::array<WorkerCommitDisposition, 3> dispositions{
+        WorkerCommitDisposition::not_committed,
+        WorkerCommitDisposition::commit_indeterminate,
+        WorkerCommitDisposition::committed_needs_reconciliation};
+
+    for (const auto disposition : dispositions) {
+        FakeWorkerRuntime runtime;
+        WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                             runtime);
+        REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+
+        auto prepare = request(WorkerCommand::checkpoint_prepare, 2);
+        prepare.product_operation_id = operation_id();
+        REQUIRE(session.handle(prepare).ok());
+        const auto frozen = *runtime.last_prepared;
+
+        runtime.commit_disposition = disposition;
+        auto commit = request(WorkerCommand::checkpoint_commit, 3);
+        commit.product_operation_id = operation_id();
+        commit.commit = WorkerCheckpointCommit{frozen.native_operation_id,
+                                              frozen.manifest_slot,
+                                              frozen.candidate_bytes_digest};
+        const auto reply = session.handle(commit);
+        REQUIRE(reply.ok());
+        // A refusal here would mean the disposition was reported as an error,
+        // which is exactly the collapse this case exists to prevent.
+        REQUIRE(!reply.value().error.has_value());
+        REQUIRE(reply.value().commit_reply.has_value());
+        REQUIRE(reply.value().commit_reply->disposition == disposition);
+        // `committed_needs_reconciliation` landed, so it carries no failure;
+        // the other two did not, so they must.  The distinction is the whole
+        // point of keeping four cases rather than three.
+        const bool landed =
+            disposition == WorkerCommitDisposition::committed_needs_reconciliation;
+        REQUIRE(reply.value().commit_reply->landed() == landed);
+        REQUIRE(reply.value().commit_reply->failure.has_value() == !landed);
+    }
 }
 
 TEST_CASE(m5_worker_session_commit_without_a_prepared_candidate_is_refused) {

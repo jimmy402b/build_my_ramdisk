@@ -21,11 +21,30 @@ Error runtime_error(const wchar_t* operation, const wchar_t* message) {
             operation, message, 0};
 }
 
-// What both checkpoints and status need to know about a carried disposition.
-// `commit_indeterminate` is preserved rather than folded: a caller must not read
-// a failed API call as "did not commit" any more than as "committed".
-bool checkpoint_ok(const DiskCheckpointResult& result) {
-    return result.disposition == DiskCheckpointDisposition::committed;
+// The one place the run layer's commit disposition becomes the protocol's.
+//
+// One function, because there is one producer: this worker is the only thing
+// that turns a committed-or-not fact into a commit reply, and a second mapping
+// anywhere would be a second place for the four cases to be folded back
+// together.
+WorkerCommitDisposition protocol_disposition(
+    const DiskCheckpointDisposition disposition) noexcept {
+    switch (disposition) {
+    case DiskCheckpointDisposition::committed:
+        return WorkerCommitDisposition::committed;
+    case DiskCheckpointDisposition::committed_needs_reconciliation:
+        return WorkerCommitDisposition::committed_needs_reconciliation;
+    case DiskCheckpointDisposition::commit_indeterminate:
+        return WorkerCommitDisposition::commit_indeterminate;
+    case DiskCheckpointDisposition::not_committed:
+        return WorkerCommitDisposition::not_committed;
+    }
+    // Unreachable for the four declared cases; an added run-layer disposition
+    // falls here.  `commit_indeterminate` is the only safe answer: reading it as
+    // landed would promote a commit that may not have happened, and reading it
+    // as not-committed would license restoring a prior record over bytes that
+    // may really be on disk.
+    return WorkerCommitDisposition::commit_indeterminate;
 }
 
 persistence::RecoveryOptions default_recovery_options() {
@@ -193,11 +212,11 @@ Result<WorkerPreparedCandidate> DiskWorkerRuntime::prepare_checkpoint(
     return Result<WorkerPreparedCandidate>::success(candidate);
 }
 
-Result<WorkerRuntimeStatus> DiskWorkerRuntime::commit_checkpoint(
+Result<WorkerCheckpointCommitReply> DiskWorkerRuntime::commit_checkpoint(
     const WorkerCheckpointCommit& commit) {
     auto& impl = *impl_;
     if (!impl.runtime) {
-        return Result<WorkerRuntimeStatus>::failure(runtime_error(
+        return Result<WorkerCheckpointCommitReply>::failure(runtime_error(
             L"DiskWorkerRuntime::commit_checkpoint",
             L"the worker runtime is not running"));
     }
@@ -207,15 +226,44 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::commit_checkpoint(
     request.candidate_bytes_digest = commit.candidate_bytes_digest;
     auto committed = impl.runtime->commit_checkpoint(request);
     if (!committed.ok()) {
-        return Result<WorkerRuntimeStatus>::failure(committed.error());
+        return Result<WorkerCheckpointCommitReply>::failure(committed.error());
     }
-    if (!checkpoint_ok(committed.value())) {
-        // The disposition travels verbatim, including the indeterminate one.
-        return Result<WorkerRuntimeStatus>::failure(runtime_error(
-            L"DiskWorkerRuntime::commit_checkpoint",
-            L"the checkpoint did not commit and its disposition must be preserved"));
+    const auto& result = committed.value();
+    WorkerCheckpointCommitReply reply{};
+    // Relayed verbatim, including the three dispositions that are not
+    // `committed`.  They are *not* derived from the observed generation: the
+    // generation says where the runtime now stands and the disposition says what
+    // the publish did, and precisely when the two can disagree is the moment the
+    // difference is the whole question.  Folding them into one error was the
+    // defect this replaces.
+    reply.disposition = protocol_disposition(result.disposition);
+    reply.generation = result.generation;
+    if (!reply.landed()) {
+        // A commit that did not cleanly land must carry the failure that decided
+        // it; the service validates its own durable evidence against this
+        // record, and it refuses a non-landed commit with no failure evidence.
+        if (!result.error_context.has_value()) {
+            return Result<WorkerCheckpointCommitReply>::failure(runtime_error(
+                L"DiskWorkerRuntime::commit_checkpoint",
+                L"the checkpoint did not commit and reported no failure evidence"));
+        }
+        const auto& context = *result.error_context;
+        WorkerCommitFailure failure{};
+        failure.operation = context.operation;
+        failure.code = context.code;
+        failure.phase = context.phase;
+        failure.native_code = context.native_code;
+        failure.native_operation_id = context.native_operation_id;
+        failure.image_uuid.bytes = context.image_uuid;
+        failure.generation = context.generation;
+        failure.safe_context = context.safe_context;
+        reply.failure = std::move(failure);
     }
-    return observe();
+    auto status = observe();
+    if (!status.ok()) return Result<WorkerCheckpointCommitReply>::failure(
+        status.error());
+    reply.status = status.move_value();
+    return Result<WorkerCheckpointCommitReply>::success(std::move(reply));
 }
 
 Result<WorkerRuntimeStatus> DiskWorkerRuntime::abort_checkpoint(
@@ -270,6 +318,25 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::remove_and_stop(
         return Result<WorkerRuntimeStatus>::failure(runtime_error(
             L"DiskWorkerRuntime::remove_and_stop",
             L"the removal authorization does not cover this worker's own image"));
+    }
+    // Refuse a dirty removal, and refuse it *here*.
+    //
+    // The removal barrier drops every uncommitted write with the mount, so a
+    // removal performed over a dirty runtime is indistinguishable from data
+    // loss.  This is the check that a stop depends on, and it belongs in the
+    // authority that actually dismantles rather than in the caller that asks:
+    // a guard in the caller protects only that caller, and every other path to
+    // this call -- the service composition, a retry, a future executor -- would
+    // silently bypass it.
+    //
+    // Checked before `cleanup()`, because teardown is what would flush the very
+    // writes this is refusing to drop.
+    auto before = observe();
+    if (!before.ok()) return Result<WorkerRuntimeStatus>::failure(before.error());
+    if (before.value().dirty) {
+        return Result<WorkerRuntimeStatus>::failure(runtime_error(
+            L"DiskWorkerRuntime::remove_and_stop",
+            L"the runtime holds uncommitted writes and must not be removed from"));
     }
     auto cleaned = cleanup();
     if (!cleaned.ok()) return Result<WorkerRuntimeStatus>::failure(cleaned.error());

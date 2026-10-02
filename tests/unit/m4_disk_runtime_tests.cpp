@@ -557,6 +557,29 @@ TEST_CASE(m4_disk_runtime_propagates_noncommitted_checkpoint_disposition) {
                DiskCheckpointDisposition::not_committed);
 }
 
+TEST_CASE(m4_disk_runtime_keeps_needs_reconciliation_apart_from_indeterminate) {
+    // These two are not the same answer and must not collapse into one.  A commit
+    // whose bytes landed but whose epoch publication did not is a *known* state
+    // with its own recovery path; "the outcome is unknown" has to be parked for
+    // reconciliation.  The safe handling for one is the unsafe handling for the
+    // other, so the engine boundary has to carry the distinction.
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    fake.checkpoint_disposition =
+        DiskCheckpointDisposition::committed_needs_reconciliation;
+
+    const auto checkpoint = runtime.value()->checkpoint();
+    REQUIRE(checkpoint.ok());
+    REQUIRE_EQ(checkpoint.value().disposition,
+               DiskCheckpointDisposition::committed_needs_reconciliation);
+    REQUIRE(checkpoint.value().disposition
+            != DiskCheckpointDisposition::commit_indeterminate);
+    REQUIRE(checkpoint.value().disposition
+            != DiskCheckpointDisposition::not_committed);
+}
+
 TEST_CASE(m4_disk_runtime_rejects_checkpoint_before_start) {
     FakeRuntime fake;
     auto runtime = DiskRuntime::create(options(), fake.operations());

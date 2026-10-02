@@ -749,6 +749,86 @@ gate to `validate_shape` was not only the fix but the better design: the
 invariant is now stated once, where both directions of the codec already
 converge.
 
+### 1.15 Task 5 increment 8 — the commit reply can express its own outcome
+
+Closes §7 item 20, and carries the two decisions recorded in §7 item 21.
+
+**The defect, and the second loss point the fix uncovered.** §7 item 20 named
+`DiskWorkerRuntime::commit_checkpoint` as the place the disposition was lost.
+Writing the fix found a second, earlier one: `map_disposition` in
+`runtime_adapter.cpp` folded `CommittedNeedsReconciliation` into
+`commit_indeterminate`, because `DiskCheckpointDisposition` had no case for it.
+So the collapse happened twice, in two layers, and fixing only the worker's one
+would have left the distinction still destroyed upstream.
+
+**What changed.**
+
+- `DiskCheckpointDisposition` gained `committed_needs_reconciliation`, appended
+  rather than folded, and `map_disposition` now maps it faithfully.
+- `DiskCheckpointResult` gained `std::optional<DiskCheckpointErrorContext>`, a
+  mirror of `persistence::PersistenceErrorContext` built by the same
+  mirror-don't-include convention the disposition already used. The adapter had
+  been letting `M3CheckpointOutcome::error_context` fall off the floor, so a
+  non-landed commit arrived with no evidence for ServiceCore to validate its own
+  record against.
+- The private protocol gained `WorkerCommitDisposition`,
+  `WorkerCommitFailure` and `WorkerCheckpointCommitReply`, a new
+  `kHasCommitReply` presence bit, and a codec for all of it. `checkpoint_commit`
+  replies now carry the reply payload instead of a bare status.
+- `WorkerRuntime::commit_checkpoint` returns the reply rather than a status, so
+  the disposition cannot be dropped between the runtime and the session.
+- `ServiceWorkerSession::commit_checkpoint` returns the reply, for the same
+  reason on the service side.
+- `remove_and_stop` now observes before dismantling and refuses a dirty runtime
+  (see §7 item 21 for the decision and why the check lives in the worker).
+
+**Two design choices worth stating.**
+
+The status encoder and decoder were extracted into `write_status` / `read_status`
+so the bare `status` payload and the status inside a commit reply cannot drift
+into two field orders. A drifted field order does not fail to compile; it decodes
+as a plausible status with the wrong numbers in it, which is the worst available
+failure mode for a channel whose whole purpose is to be trustworthy. For the same
+reason the decoder reads the commit reply *before* the bare status, matching
+write order — the reader is a cursor, and a block read out of order would not
+fail, it would decode the wrong bytes into the right fields.
+
+The reply is refused when it is self-contradictory, in `validate_shape` where
+both directions already converge: a landed commit must not also carry failure
+evidence, and a commit that did not land must carry the failure that decided it.
+The second half is the load-bearing one — without it a caller is handed a
+disposition it cannot justify.
+
+**Evidence.** Release build clean after a full object rebuild. Full elevated
+suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 141
+CTEST_EXIT=0
+```
+
+141 is unchanged again — this increment adds cases, not executables. Standalone:
+`unit.m5.worker_protocol` 22/22 → **25/25** (four dispositions round-trip,
+self-contradictory reply refused, undefined disposition byte refused),
+`unit.m5.worker_session` 19/19 → **20/20** (the disposition-preservation case),
+`unit.m4.disk_runtime` 29/29 → **30/30** (needs-reconciliation stays distinct).
+`unit.m5.service_worker_session` is 6/6.
+
+**What is not covered here, stated rather than implied.** The two mappings that
+sit inside production objects — `ProductionRuntimeAdapter`'s
+`map_disposition`/`map_error_context` and `DiskWorkerRuntime`'s
+`protocol_disposition` and its dirty-refusal — have no unit test, because both
+need a real M3 runtime and a real bundle. They are exactly what the deferred
+`m5_production_execution_backend_tests.cpp` (Task 4 item 6) exercises, which is
+Task 5's next remaining item, so the gap closes there rather than being left
+open. Until that lands, those four functions are reviewed-but-unexecuted code.
+
+**The undefined-disposition-byte test locates its byte by diffing.** Two replies
+that differ only in their disposition are encoded and the first differing byte is
+taken as the disposition. A hard-coded offset into the status would silently
+point somewhere else the moment the status gains a field — which it just did.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
@@ -1037,7 +1117,14 @@ Recorded so the plan and the tree do not silently diverge.
     writer lock, a matching device or a bundle identity is absent, and a forget
     reported safe without that proof is what forget exists to prevent.
 
-20. **OPEN DEFECT — the commit reply drops the commit disposition.** Found while
+20. **CLOSED — the commit reply dropped the commit disposition.** Fixed by §1.15,
+    which also found a second loss point (§7 item 20a). Kept rather than deleted,
+    because the shape of the mistake is the useful part: the defect survived two
+    increments because both were written from one side of the channel, and it was
+    only visible to the first caller that had to *use* the reply. Originally
+    recorded as:
+
+    Found while
     writing `service_worker_control`, in the same way §1.13's four defects were
     found: the service side is the first caller that has to *use* what the worker
     sends. `DiskWorkerRuntime::commit_checkpoint` calls `checkpoint_ok()`, which
@@ -1077,3 +1164,40 @@ Recorded so the plan and the tree do not silently diverge.
     protocol round-trip tests to cover all four dispositions.
     `execute_checkpoint`'s boundary logic must not be written against a reply
     that cannot express its own outcome.
+
+20a. **The defect had a second loss point, upstream.** `map_disposition` in
+    `runtime_adapter.cpp` folded `persistence::CommitDisposition::
+    CommittedNeedsReconciliation` into `commit_indeterminate`, because
+    `DiskCheckpointDisposition` had no case for it. So the collapse happened in
+    two layers, and fixing only `DiskWorkerRuntime` — which is where the trail
+    originally led — would have left the distinction destroyed before it ever
+    reached the worker. Found by fixing item 20 and asking where the value came
+    from rather than only where it stopped. Fixed in §1.15.
+
+21. **Two removal-path decisions, put to the user before implementation.**
+    Recorded so the semantics are a decision rather than an accident.
+
+    **(a) The worker refuses a dirty removal.** The historical adapter's
+    `remove_mount` propagated a refusal from the worker, which declined to remove
+    a runtime holding uncommitted writes because "removed anyway" would be
+    indistinguishable from data loss. The M5 worker did not: `remove_and_stop`
+    re-checked the authorization and then ran `cleanup()` regardless. The check
+    was put back in `DiskWorkerRuntime::remove_and_stop`, before `cleanup()`
+    (teardown is what would flush the very writes being refused), and the user's
+    ruling was that it belongs there rather than in the adapter: a guard in the
+    caller protects only that caller, and every other path to the call — the
+    service composition, a retry, a future executor — would silently bypass it.
+
+    **(b) The three removal-authorization proofs come from the worker's own
+    verified start.** `require_removal_authorized` demands `writer_lock_proved`,
+    `device_match_proved` and `bundle_identity_proved` before a removal may be
+    requested. On the stop path those are facts the worker established when its
+    `start()` took the writer lock, matched the AIM device and re-read the
+    bundle's uuid against the image the service recorded — and the private
+    channel authenticates that this is that worker. `remove_and_stop`
+    independently re-checks that the authorization covers its own image. The
+    alternative — building separate service-side proofs for each — was rejected
+    as duplicating facts the worker already holds. `prove_forget_safe` stays
+    fail-closed for actual *forget*, which is the case the hard constraint is
+    about; the adapter must document per-flag what each boolean means on the stop
+    path so the two are never confused.

@@ -240,7 +240,10 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
             reply.error = committed.error();
             return Result<WorkerMessage>::success(std::move(reply));
         }
-        reply.status = committed.value();
+        // The whole reply travels, not just its observation: the disposition is
+        // what the service promotes or rolls back on, and the failure evidence
+        // is what it validates its own record against.
+        reply.commit_reply = committed.value();
         return Result<WorkerMessage>::success(std::move(reply));
     }
 

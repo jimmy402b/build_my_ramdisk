@@ -4,6 +4,7 @@
 #include "src/common/sha256.h"
 #include "src/run/windows_volume.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -28,12 +29,44 @@ enum class DiskCheckpointDisposition : std::uint8_t {
     committed,
     not_committed,
     commit_indeterminate,
+    // Appended rather than folded into `commit_indeterminate`.  The two are not
+    // the same fact: "the outcome is unknown" has to be parked for
+    // reconciliation, while "the bytes landed but the epoch publication did not"
+    // is a known state with its own recovery path.  Folding them was a real
+    // defect -- the service could not tell which it was being told.
+    committed_needs_reconciliation,
+};
+
+// The persistence failure that decided a commit which did not cleanly land,
+// mirrored from `persistence::PersistenceErrorContext` for the same reason the
+// disposition above is mirrored: this header is the engine boundary and stays
+// free of M3 and persistence headers.  The shared adapter performs the
+// translation, and ServiceCore's `CheckpointPersistenceErrorContext` is the
+// management-side mirror of the same record, so all three carry one field set.
+struct DiskCheckpointErrorContext final {
+    std::string operation;
+    std::uint32_t code{};
+    std::uint8_t phase{};
+    std::uint32_t native_code{};
+    std::uint64_t native_operation_id{};
+    std::array<std::byte, 16> image_uuid{};
+    std::uint64_t generation{};
+    DiskCheckpointDisposition disposition{
+        DiskCheckpointDisposition::not_committed};
+    std::string safe_context;
+
+    bool operator==(const DiskCheckpointErrorContext&) const noexcept = default;
 };
 
 struct DiskCheckpointResult final {
     DiskCheckpointDisposition disposition{
         DiskCheckpointDisposition::not_committed};
     std::uint64_t generation{};
+    // Present exactly when a commit did not cleanly land.  It is the evidence
+    // ServiceCore validates the failure against, so it travels rather than being
+    // summarized: a caller that had to re-derive a context would end up naming a
+    // persistence failure that never happened.
+    std::optional<DiskCheckpointErrorContext> error_context;
 };
 
 struct DiskMaintenanceStats final {

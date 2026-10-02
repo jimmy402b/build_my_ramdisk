@@ -25,6 +25,7 @@ constexpr std::uint32_t kHasRecovery = 1U << 6;
 constexpr std::uint32_t kHasError = 1U << 7;
 constexpr std::uint32_t kHasCorrelation = 1U << 8;
 constexpr std::uint32_t kHasRemoval = 1U << 9;
+constexpr std::uint32_t kHasCommitReply = 1U << 10;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -46,6 +47,7 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.prepared.has_value()) mask |= kHasPrepared;
     if (message.commit.has_value()) mask |= kHasCommit;
     if (message.status.has_value()) mask |= kHasStatus;
+    if (message.commit_reply.has_value()) mask |= kHasCommitReply;
     if (message.recovery.has_value()) mask |= kHasRecovery;
     if (message.error.has_value()) mask |= kHasError;
     if (message.correlation.has_value()) mask |= kHasCorrelation;
@@ -95,9 +97,12 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
                     (kind == WorkerMessageKind::reply ? kHasPrepared : 0U),
                 kHasError};
     case WorkerCommand::checkpoint_commit:
+        // The reply carries the commit reply payload, not a bare status: a
+        // commit has to report what the publish *did*, and an observation alone
+        // cannot say whether the bytes landed.
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::request ? kHasCommit
-                                                        : kHasStatus),
+                                                        : kHasCommitReply),
                 kHasError};
     case WorkerCommand::recovery_proof:
         // A recovery proof request must carry the P4 correlation to judge
@@ -168,7 +173,68 @@ Result<void> validate_shape(const WorkerMessage& message) {
             L"validate_shape",
             L"The status carries an incomplete volume identity"));
     }
+    // A commit reply says either "it landed" or "here is why it did not", never
+    // both.  The two halves are what ServiceCore validates its own evidence
+    // against, so a reply carrying both would let a caller read a failure past a
+    // landed commit -- or, worse, read a landed commit past the failure that
+    // actually happened.
+    if (message.commit_reply.has_value()) {
+        if (message.commit_reply->landed()
+            && message.commit_reply->failure.has_value()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"validate_shape",
+                L"A landed commit must not also carry failure evidence"));
+        }
+        if (!message.commit_reply->landed()
+            && !message.commit_reply->failure.has_value()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"validate_shape",
+                L"A commit that did not land must carry the failure that "
+                L"decided it"));
+        }
+    }
     return Result<void>::success();
+}
+
+// The one status decoder, mirroring `write_status` above.  Its truncation checks
+// stay here rather than being repeated at the two call sites.
+Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
+    WorkerRuntimeStatus status{};
+    status.worker_alive = reader.boolean();
+    status.image_id = reader.image_uuid();
+    status.committed_generation = reader.u64();
+    status.dirty = reader.boolean();
+    status.dirty_epoch = reader.u64();
+    if (reader.boolean()) {
+        auto active = reader.uuid();
+        if (!active.has_value()) {
+            return malformed<WorkerRuntimeStatus>(
+                L"decode_worker_message",
+                L"active operation id is not a valid uuid");
+        }
+        status.active_operation_id = *active;
+    }
+    status.active_operation_phase = reader.u32();
+    // Presence, then the three texts.  A truncated identity is caught here; a
+    // complete but partial triple is caught by `validate_shape`, which both the
+    // encoder and the decoder pass through.
+    if (reader.boolean()) {
+        WorkerVolumeIdentity volume{};
+        volume.disk_guid = reader.text_ascii();
+        volume.partition_guid = reader.text_ascii();
+        volume.volume_guid = reader.text_ascii();
+        if (!reader.ok()) {
+            return malformed<WorkerRuntimeStatus>(
+                L"decode_worker_message",
+                L"status volume identity is truncated");
+        }
+        status.volume = std::move(volume);
+    }
+    return Result<WorkerRuntimeStatus>::success(std::move(status));
 }
 
 Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t mask,
@@ -233,43 +299,57 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         commit.candidate_bytes_digest = reader.digest();
         message.commit = commit;
     }
-    if ((mask & kHasStatus) != 0) {
-        WorkerRuntimeStatus status{};
-        status.worker_alive = reader.boolean();
-        status.image_id = reader.image_uuid();
-        status.committed_generation = reader.u64();
-        status.dirty = reader.boolean();
-        status.dirty_epoch = reader.u64();
-        if (reader.boolean()) {
-            auto active = reader.uuid();
-            if (!active.has_value()) {
-                return Result<void>::failure(protocol_error(
-                    static_cast<std::uint32_t>(
-                        OperationErrorCode::protocol_malformed),
-                    L"decode_worker_message",
-                    L"active operation id is not a valid uuid"));
-            }
-            status.active_operation_id = *active;
+    // Read in wire order, which is the order `write_body` writes: the commit
+    // reply precedes the bare status.  The reader is a cursor, so a block read
+    // out of order would not fail -- it would decode the wrong bytes into the
+    // right fields.
+    if ((mask & kHasCommitReply) != 0) {
+        WorkerCheckpointCommitReply reply{};
+        auto status = read_status(reader);
+        if (!status.ok()) return Result<void>::failure(status.error());
+        reply.status = status.move_value();
+        const auto disposition = reader.u8();
+        if (disposition
+            > static_cast<std::uint8_t>(
+                WorkerCommitDisposition::committed_needs_reconciliation)) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"commit disposition is not a value this protocol defines"));
         }
-        status.active_operation_phase = reader.u32();
-        // Presence, then the three texts.  Truncation is caught here; a complete
-        // but partial triple is caught by `validate_shape`, which both the
-        // encoder and the decoder pass through.
+        reply.disposition = static_cast<WorkerCommitDisposition>(disposition);
+        reply.generation = reader.u64();
         if (reader.boolean()) {
-            WorkerVolumeIdentity volume{};
-            volume.disk_guid = reader.text_ascii();
-            volume.partition_guid = reader.text_ascii();
-            volume.volume_guid = reader.text_ascii();
+            WorkerCommitFailure failure{};
+            failure.operation = reader.text_ascii();
+            failure.code = reader.u32();
+            failure.phase = reader.u8();
+            failure.native_code = reader.u32();
+            failure.native_operation_id = reader.u64();
+            failure.image_uuid = reader.image_uuid();
+            failure.generation = reader.u64();
+            failure.safe_context = reader.text_ascii();
             if (!reader.ok()) {
                 return Result<void>::failure(protocol_error(
                     static_cast<std::uint32_t>(
                         OperationErrorCode::protocol_malformed),
                     L"decode_worker_message",
-                    L"status volume identity is truncated"));
+                    L"commit failure evidence is truncated"));
             }
-            status.volume = std::move(volume);
+            reply.failure = std::move(failure);
         }
-        message.status = status;
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"commit reply is truncated"));
+        }
+        message.commit_reply = std::move(reply);
+    }
+    if ((mask & kHasStatus) != 0) {
+        auto status = read_status(reader);
+        if (!status.ok()) return Result<void>::failure(status.error());
+        message.status = status.move_value();
     }
     if ((mask & kHasRecovery) != 0) {
         WorkerRecoveryProof recovery{};
@@ -354,6 +434,34 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
     return Result<void>::success();
 }
 
+// One status encoding, used by both the bare `status` payload and the commit
+// reply that carries a status alongside its disposition.  Two copies would be
+// two places for the field order to drift, and a drifted field order does not
+// fail to compile -- it decodes as a plausible status with the wrong numbers in
+// it, which is the worst available failure mode for a channel whose whole
+// purpose is to be trustworthy.
+void write_status(detail::WorkerBytesWriter& writer,
+                  const WorkerRuntimeStatus& status) {
+    writer.u8(status.worker_alive ? 1 : 0);
+    writer.image_uuid(status.image_id);
+    writer.u64(status.committed_generation);
+    writer.u8(status.dirty ? 1 : 0);
+    writer.u64(status.dirty_epoch);
+    writer.u8(status.active_operation_id.has_value() ? 1 : 0);
+    if (status.active_operation_id.has_value())
+        writer.uuid(*status.active_operation_id);
+    writer.u32(status.active_operation_phase);
+    // Present only when all three identities were read; `validate_shape`
+    // refuses a partial triple before this is reached, so what is written here
+    // is either a complete identity or none.
+    writer.boolean(status.volume.has_value());
+    if (status.volume.has_value()) {
+        writer.text_ascii(status.volume->disk_guid);
+        writer.text_ascii(status.volume->partition_guid);
+        writer.text_ascii(status.volume->volume_guid);
+    }
+}
+
 void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message) {
     if (message.binding.has_value()) {
         writer.u32(message.binding->process_id);
@@ -382,26 +490,26 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.u8(message.commit->manifest_slot);
         writer.digest(message.commit->candidate_bytes_digest);
     }
-    if (message.status.has_value()) {
-        writer.u8(message.status->worker_alive ? 1 : 0);
-        writer.image_uuid(message.status->image_id);
-        writer.u64(message.status->committed_generation);
-        writer.u8(message.status->dirty ? 1 : 0);
-        writer.u64(message.status->dirty_epoch);
-        writer.u8(message.status->active_operation_id.has_value() ? 1 : 0);
-        if (message.status->active_operation_id.has_value())
-            writer.uuid(*message.status->active_operation_id);
-        writer.u32(message.status->active_operation_phase);
-        // Present only when all three identities were read; `validate_shape`
-        // refuses a partial triple before this is reached, so what is written
-        // here is either a complete identity or none.
-        writer.boolean(message.status->volume.has_value());
-        if (message.status->volume.has_value()) {
-            writer.text_ascii(message.status->volume->disk_guid);
-            writer.text_ascii(message.status->volume->partition_guid);
-            writer.text_ascii(message.status->volume->volume_guid);
+    if (message.commit_reply.has_value()) {
+        write_status(writer, message.commit_reply->status);
+        writer.u8(static_cast<std::uint8_t>(message.commit_reply->disposition));
+        writer.u64(message.commit_reply->generation);
+        // Present exactly when the commit did not cleanly land; `validate_shape`
+        // refuses the contradictory combination before this is reached.
+        writer.boolean(message.commit_reply->failure.has_value());
+        if (message.commit_reply->failure.has_value()) {
+            const auto& failure = *message.commit_reply->failure;
+            writer.text_ascii(failure.operation);
+            writer.u32(failure.code);
+            writer.u8(failure.phase);
+            writer.u32(failure.native_code);
+            writer.u64(failure.native_operation_id);
+            writer.image_uuid(failure.image_uuid);
+            writer.u64(failure.generation);
+            writer.text_ascii(failure.safe_context);
         }
     }
+    if (message.status.has_value()) write_status(writer, *message.status);
     if (message.recovery.has_value()) {
         writer.u8(static_cast<std::uint8_t>(message.recovery->outcome));
         writer.u64(message.recovery->observed_generation);

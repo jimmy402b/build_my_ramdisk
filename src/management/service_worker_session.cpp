@@ -163,7 +163,7 @@ Result<m5::WorkerPreparedCandidate> ServiceWorkerSession::prepare_checkpoint(
     return Result<m5::WorkerPreparedCandidate>::success(*reply.value().prepared);
 }
 
-Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::commit_checkpoint(
+Result<m5::WorkerCheckpointCommitReply> ServiceWorkerSession::commit_checkpoint(
     const OperationContext& context, const product::Uuid& operation_id,
     const m5::WorkerCheckpointCommit& commit) {
     m5::WorkerMessage request{};
@@ -171,13 +171,20 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::commit_checkpoint(
     request.product_operation_id = operation_id;
     request.commit = commit;
     auto reply = exchange(context, std::move(request));
-    if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
-    if (!reply.value().status.has_value()) {
-        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
-            L"ServiceWorkerSession::commit_checkpoint",
-            L"the commit reply carries no status").error());
+    if (!reply.ok()) {
+        return Result<m5::WorkerCheckpointCommitReply>::failure(reply.error());
     }
-    return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
+    // The whole reply, not just its observation: the disposition is what the
+    // service promotes, rolls back or parks on, and the failure evidence is what
+    // it validates its own durable record against.  Returning the status alone
+    // discarded both, which is how every unsuccessful commit came to look alike.
+    if (!reply.value().commit_reply.has_value()) {
+        return Result<m5::WorkerCheckpointCommitReply>::failure(unexpected(
+            L"ServiceWorkerSession::commit_checkpoint",
+            L"the commit reply carries no disposition").error());
+    }
+    return Result<m5::WorkerCheckpointCommitReply>::success(
+        *reply.value().commit_reply);
 }
 
 Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::abort_checkpoint(
