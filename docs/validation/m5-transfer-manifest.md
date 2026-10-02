@@ -1201,3 +1201,42 @@ Recorded so the plan and the tree do not silently diverge.
     fail-closed for actual *forget*, which is the case the hard constraint is
     about; the adapter must document per-flag what each boolean means on the stop
     path so the two are never confused.
+
+22. **OPEN GAP — nothing in M5 can produce `BundleRegistrationEvidence`, so
+    `create` and `import` cannot complete.** Found while preparing the adapter,
+    and it corrects §7 item 19's realization table.
+
+    ServiceCore requires `worker_result.lifecycle.bundle` to hold a
+    `BundleRegistrationEvidence` for both `create_and_verify_bundle` and
+    `inspect_bundle_read_only`; when it is absent it fails the operation with
+    `needs_attention_failure` and terminal result `"bundle"`
+    (`service_core.cpp:5903`). That struct carries an image id, a manifest name,
+    the logical and sector geometry, the payload block size, and a
+    `BundleFileIdentity` — a volume serial plus a 16-byte file id, which is
+    `GetFileInformationByHandle` on the bundle file.
+
+    Neither layer can supply it. `myrd_management` links only `myrd_profile`,
+    `myrd_product_ipc`, `myrd_product_contracts`, `myrd_m5_worker_protocol` and
+    `myrd_common`, and `myrd_assert_execution_boundary` keeps it that way — so
+    the adapter cannot open a bundle, and `create_and_verify_bundle` must also
+    *create* the generation-zero image. And the private protocol has no
+    bundle-create or bundle-inspect command, so the worker cannot be asked
+    either. Item 19's claim that `inspect_bundle_read_only` is "realized from the
+    worker's own verified image identity" was wrong on two counts: the required
+    evidence is a full struct rather than an image id, and it is required from an
+    action that runs *before* the worker exists.
+
+    There is a related ordering fact. In M5 the worker's `start()` is what
+    creates the generation-zero bundle — `DiskRuntime::create` runs the
+    `generation-zero` step — but the action plan places `create_and_verify_bundle`
+    *before* `create_runtime_and_worker`. So the plan's ordering and the M5
+    execution model disagree about who creates the bundle and when.
+
+    Options, none yet chosen: (a) add a private protocol command pair so the
+    worker creates and inspects the bundle and returns the evidence; (b) re-cut
+    the action plan so bundle creation and inspection leave `IWorkerControl`
+    entirely and move to the composition layer, which is allowed to link
+    persistence — Task 6 owns `service_core.cpp` and is where the ordering lives;
+    (c) fail both actions closed and accept that `create` and `import` do not work
+    in M5. This is an architecture/scope decision and is being put to the user
+    rather than decided here.
