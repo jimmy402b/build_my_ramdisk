@@ -749,6 +749,81 @@ gate to `validate_shape` was not only the fix but the better design: the
 invariant is now stated once, where both directions of the codec already
 converge.
 
+### 1.15a The reconciliation pass — every host fact the rebuilt files consume
+
+Written because increments 7 and 8 both discovered a gap that a single upfront
+diff would have found, and because the plan never asked the question. The plan
+measured the *coupling* ("9 files, 306 host references") and derived its
+port/rebuild split correctly from it, but the historical adapter is also a
+**specification**: the host fields it reads are exactly the facts a worker must
+be able to supply. Nothing diffed that specification against what the new stack
+provides, so each gap surfaced one at a time, each costing a build and an
+elevated suite.
+
+This pass took the three rebuilt files (`service_worker_control.{h,cpp}`,
+`service_worker_session.{h,cpp}`, `windows_worker_recovery.{h,cpp}`, plus
+`windows_worker_observation.h`), extracted every `host::` symbol and every field
+access mechanically, and compared each against `m5::` equivalents. The result:
+
+**Realized, confirmed equivalent.** `prepared` / prior / candidate / native id /
+cut epoch (`m5::WorkerPreparedCandidate` adds manifest slot and candidate digest,
+which is strictly more); `commit_reply.disposition` / `generation` / `failure`
+(§1.15); `committed_generation`, `dirty`, `dirty_epoch`, `active_operation_id`,
+`active_operation_phase`; the binding's `worker_pid`,
+`process_creation_time`, `session_generation`; and `image_id`, which moved from
+the binding to the status and is now *verified* rather than asserted (§1.12).
+
+**Deliberately dropped by decision.** The device geometry family —
+`device.length_bytes`, `physical_drive_number`, `port_number`, `target_id`,
+`path_id`, `lun`, plus `aim_device_id` and `proxy_native_path`. These were
+per-field checks on the startup steps; §7 item 19 records the ruling that the
+authenticated, image-verified `start()` is the proof instead. The identity
+triple from the same struct is *not* dropped — §1.14 produces it.
+
+**Two new defects, both siblings of the one §1.15 fixed.** The commit reply was
+not the only reply that could not express its own outcome:
+
+- `abort` returns a bare `WorkerRuntimeStatus`. The historical
+  `WorkerCheckpointAbortReply` carried `aborted`, `generation` and a failure
+  context, and its comment says exactly why: "an abort that failed is not one
+  failure but two, and the caller has to be able to tell 'there was no candidate
+  to cancel' from 'the candidate existed and could not be cancelled'. The first
+  leaves the bundle untouched; the second leaves its state unknown and is what
+  forces a reconciliation." The M5 shape collapses them, so
+  `abort_held_candidate` cannot distinguish a benign no-op from a forced
+  reconciliation — the same class of error, in the path next door.
+- `remove_and_stop` returns a bare `WorkerRuntimeStatus`. The historical reply
+  carried `removed`, `stopped` and `generation`. Without them the adapter cannot
+  perform its own `removal_generation_mismatch` check, cannot enforce that a
+  reply claiming removal also claims the stop (the historical code refuses
+  `removed-without-stopped` on the wire), and cannot record the generation the
+  removal was proven at. Separately, the dirty refusal added in §1.15 reports a
+  generic `runtime_error`; the historical protocol had
+  `RemoveAndStopAuthorization::runtime_dirty` as a **first-class answer**. That
+  makes the refusal correct in effect but opaque in reporting — the very
+  collapsing this section is about, committed by this section's own fix.
+
+**One capability to re-home.** `host::IResidualDeviceControl`
+(`enumerate_devices`, `remove_if_still_exact`, with `ResidualDeviceIdentity` =
+ownership marker + physical disk identity, and a six-value
+`ResidualDeviceDisposition`) is a whole reconciliation subsystem inside
+`windows_worker_recovery`. The new stack has the primitive underneath —
+`src/driver/direct_aim_adapter.h` offers `list_devices`, `query_device` and
+`remove_device` — but `myrd_management` may not link `myrd_driver`, so as with
+bundle evidence this belongs to the worker side. Note the historical contract's
+own demand: "An ID-only implementation does not satisfy this contract", so
+whatever realizes it must revalidate owner *and* physical identity immediately
+before the single-device remove, not just match a device id.
+
+**Minor.** `host::kCheckpointSentinelGeneration` (`~0`) had no M5 equivalent;
+the historical adapter used it to reject a generation that cannot be advanced.
+Either a shared constant or the check goes; decided with the adapter.
+
+**Evidence.** This was a read-only pass; no build, no suite. Recorded so the
+list is complete before the adapter is written against it, which is the whole
+point — the previous two rounds each discovered one entry at the cost of a build
+and an elevated suite.
+
 ### 1.15 Task 5 increment 8 — the commit reply can express its own outcome
 
 Closes §7 item 20, and carries the two decisions recorded in §7 item 21.
