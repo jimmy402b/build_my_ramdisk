@@ -261,6 +261,51 @@ Evidence: Release build clean, full elevated suite
 
 138 = the previous 137 + `unit.m5.worker_session`.
 
+### 1.8 The 2026-10-02 solution: recovery inspection, private IPC, Task 5/6 cut
+
+`docs/superpowers/plans/2026-10-02-m5-inspection-private-ipc-solution.md` closes
+three gaps that Task 4/5 hit and that no earlier task owned. It is carried onto
+this branch for the same reason as the other design docs (§7 item 1).
+
+**What it decides:**
+
+1. **Recovery inspection belongs to Task 3, which reopens.** A new read-side
+   `CheckpointRecoveryInspection inspect_checkpoint(context, expected)` lives in
+   `src/persistence/image_inspector.{h,cpp}` + `recovery_engine.{h,cpp}`, with
+   `M3Provider` exposing only a thin wrapper so the worker never reads a bundle
+   directly. Test: `tests/integration/m5_checkpoint_inspection_tests.cpp`.
+   §1.3 forbids using the write-side `JournalIndexBuildPlan` as recovery
+   evidence — the inspection must read the committed manifest, the journal index
+   and `JournalRecordCommon::operation_id` from the recovery side, re-read the
+   selected manifest slot and hash its exact bytes.
+2. **Private IPC belongs wholly to Task 5**, including
+   `src/host/m5_worker_private_pipe.{h,cpp}`, `WorkerLaunchSpec`, process launch,
+   handshake and worker-owned cleanup. The startup secret must travel through an
+   inherited anonymous pipe or a protected inherited handle, never on the
+   command line.
+3. **Task 5/6 boundary.** Task 5 owns `service_worker_control.{h,cpp}`,
+   `service_worker_session.{h,cpp}`, `windows_worker_observation.h` and
+   `windows_worker_recovery.{h,cpp}`. Task 6 owns orchestration only and may not
+   launch processes, frame the private pipe, or read a bundle/journal.
+
+**Why Task 3 had to reopen (verified, not assumed).** The recovery proof needs
+the journal's native operation id. It is durably written
+(`JournalRecordCommon::operation_id`, `journal_format.h`), but nothing on the
+read side surfaces it: `M3Provider`'s public API has only
+`state/ready/generation/geometry/storage_stats/transport_snapshot/names`;
+`persistence::RecoveredImage` (`recovery_engine.h`) carries geometry, image_uuid,
+checkpoint_generation, base_generation, journal_epoch, selected_slot,
+selected_manifest — no operation id; `SelectedImageInspection`
+(`image_inspector.h`) likewise; and the read-side `JournalIndexView`
+(`journal_index.h`) carries epoch, root_generation, committed_length and root,
+but no operation id. The only accessor that returns one,
+`JournalIndexBuildPlan::checkpoint_operation_id()`, is the **write-side** plan
+that §1.3 explicitly excludes. So Task 5 Step 4 was not implementable on the
+existing surface; this is exactly the gap the solution fills.
+
+**Recorded conflict with already-committed code (§7 item 15).** Task 5
+increments 1–2 were written before this solution existed and do not match §2.5.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
@@ -467,3 +512,17 @@ Recorded so the plan and the tree do not silently diverge.
     public codec learning worker binding semantics, so the private messages reuse
     only the canonical-text UUID convention (and the byte-identical formatter
     from `ipc_frame.cpp`).
+15. **Task 5 increments 1–2 predate the 2026-10-02 solution and do not match its
+    §2.5 command set.** Recorded rather than silently fixed, so the delta is
+    visible. The committed protocol (`7c6a3e0`) has nine commands:
+    `handshake, start, status, checkpoint_prepare, checkpoint_commit,
+    checkpoint_abort, runtime_observation, recovery_proof, cleanup`. §2.5
+    requires a set that instead names `require_runtime_observation` and adds both
+    `remove_and_stop` and `shutdown` (distinct from the existing `cleanup`).
+    Reconciling means: renaming `runtime_observation`, and adding the two
+    commands with their payload shapes and gates — **not** adding synonyms
+    alongside the old names, which would leave two ways to ask for the same
+    thing. `WorkerRecoveryCorrelation` (protocol) also needs to reconcile with
+    the solution's persistence-level `CheckpointRecoveryCorrelation`; the
+    inspection API's parameter type should be the authority and the protocol
+    type should carry it rather than duplicate its fields.
