@@ -416,6 +416,67 @@ TEST_CASE(m5_worker_protocol_status_carries_the_adopted_volume_identity) {
     REQUIRE(decoded.value().status->volume->complete());
 }
 
+TEST_CASE(m5_worker_protocol_status_carries_the_opened_bundle_evidence) {
+    // The service records this as its durable registration, and it can come from
+    // nowhere else: the management layer may not open a bundle, and the worker
+    // has already done so to verify the image.  The file identity is the part
+    // that makes the registration name a file object rather than a path.
+    WorkerRuntimeStatus observed = status();
+    WorkerBundleEvidence bundle{};
+    bundle.image_id = image_uuid(0x11);
+    bundle.virtual_bytes = 64ull * 1024 * 1024;
+    bundle.logical_sector_size = 512;
+    bundle.physical_sector_size = 4096;
+    bundle.volume_serial = 0x0123456789ABCDEFull;
+    bundle.file_id[0] = std::byte{0xAB};
+    bundle.file_id[15] = std::byte{0xCD};
+    REQUIRE(bundle.complete());
+    observed.bundle = bundle;
+
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::require_runtime_observation;
+    message.sequence = 4;
+    message.binding = session_binding();
+    message.status = observed;
+
+    const auto bytes = encode(message);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(*decoded.value().status == observed);
+    REQUIRE(decoded.value().status->bundle.has_value());
+    REQUIRE(decoded.value().status->bundle->complete());
+    // The file id is sixteen raw bytes, not a uuid: it survives byte for byte.
+    REQUIRE(decoded.value().status->bundle->file_id[0] == std::byte{0xAB});
+    REQUIRE(decoded.value().status->bundle->file_id[15] == std::byte{0xCD});
+    REQUIRE_EQ(decoded.value().status->bundle->volume_serial,
+               0x0123456789ABCDEFull);
+}
+
+TEST_CASE(m5_worker_protocol_refuses_incomplete_bundle_evidence) {
+    // A zero geometry or a zero volume serial is not a weaker registration: it
+    // is one no later start could re-verify against the same bundle.
+    WorkerRuntimeStatus observed = status();
+    WorkerBundleEvidence bundle{};
+    bundle.image_id = image_uuid(0x11);
+    bundle.virtual_bytes = 64ull * 1024 * 1024;
+    bundle.logical_sector_size = 512;
+    bundle.physical_sector_size = 4096;
+    // volume_serial deliberately left at zero.
+    REQUIRE(!bundle.complete());
+    observed.bundle = bundle;
+
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::require_runtime_observation;
+    message.sequence = 4;
+    message.binding = session_binding();
+    message.status = observed;
+
+    REQUIRE(!encode(message).ok());
+}
+
 TEST_CASE(m5_worker_protocol_refuses_a_partial_volume_identity) {
     // A runtime that adopted a volume but could not read one of its three
     // identities is not a runtime with a weaker identity: it is one whose

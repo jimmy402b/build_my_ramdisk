@@ -185,6 +185,16 @@ Result<void> validate_shape(const WorkerMessage& message) {
             L"validate_shape",
             L"The status carries an incomplete volume identity"));
     }
+    // Same rule for the bundle: a partial identity cannot be re-verified
+    // against the same bundle later, so recording it would create a profile
+    // that no start could check.
+    if (message.status.has_value() && message.status->bundle.has_value()
+        && !message.status->bundle->complete()) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+            L"validate_shape",
+            L"The status carries incomplete bundle evidence"));
+    }
     // A commit reply says either "it landed" or "here is why it did not", never
     // both.  The two halves are what ServiceCore validates its own evidence
     // against, so a reply carrying both would let a caller read a failure past a
@@ -273,6 +283,22 @@ Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
                 L"status volume identity is truncated");
         }
         status.volume = std::move(volume);
+    }
+    if (reader.boolean()) {
+        WorkerBundleEvidence bundle{};
+        bundle.image_id = reader.image_uuid();
+        bundle.virtual_bytes = reader.u64();
+        bundle.logical_sector_size = reader.u32();
+        bundle.physical_sector_size = reader.u32();
+        bundle.volume_serial = reader.u64();
+        const auto file_id = reader.raw(16);
+        if (!reader.ok()) {
+            return malformed<WorkerRuntimeStatus>(
+                L"decode_worker_message",
+                L"status bundle evidence is truncated");
+        }
+        std::memcpy(bundle.file_id.data(), file_id.data(), file_id.size());
+        status.bundle = std::move(bundle);
     }
     return Result<WorkerRuntimeStatus>::success(std::move(status));
 }
@@ -546,6 +572,15 @@ void write_status(detail::WorkerBytesWriter& writer,
         writer.text_ascii(status.volume->disk_guid);
         writer.text_ascii(status.volume->partition_guid);
         writer.text_ascii(status.volume->volume_guid);
+    }
+    writer.boolean(status.bundle.has_value());
+    if (status.bundle.has_value()) {
+        writer.image_uuid(status.bundle->image_id);
+        writer.u64(status.bundle->virtual_bytes);
+        writer.u32(status.bundle->logical_sector_size);
+        writer.u32(status.bundle->physical_sector_size);
+        writer.u64(status.bundle->volume_serial);
+        writer.raw(status.bundle->file_id);
     }
 }
 

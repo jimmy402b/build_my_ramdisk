@@ -801,7 +801,80 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
-### 1.17 Task 5 increment 9 (unit A) — the abort reply can express its own outcome
+### 1.18 Task 5 increment 10 — the worker produces the bundle evidence
+
+Implements the ruling recorded in §7 item 22. ServiceCore requires a
+`BundleRegistrationEvidence` from `create_and_verify_bundle` and
+`inspect_bundle_read_only` and fails the operation without one; the management
+layer may not open a bundle, and the private protocol had no way to ask. The
+worker opens the bundle anyway — `start()` already re-reads its image uuid — so
+the evidence travels in the status, exactly as the volume identity does.
+
+**What is on the wire, and what deliberately is not.** `WorkerBundleEvidence`
+carries the image uuid, the three geometry fields and the bundle directory's own
+identity (volume serial and 16-byte file id). It does **not** carry the manifest
+name or the payload block size: those are product constants the service already
+holds, and a second copy on the wire would be a second thing to keep in step.
+The `source` is likewise the service's to decide — `created_and_verified` when
+the worker provisioned the bundle in this session, `read_only_inspection` when
+it adopted one that already existed.
+
+**Where it is captured.** In `start()`, immediately after the inspection that
+verifies the image uuid — the one moment the bundle is known to be the one the
+service named. The geometry and the uuid come free with that inspection; the file
+identity needs a second handle with `FILE_READ_ATTRIBUTES` and full sharing,
+because the runtime already holds the writer lock through its own handle and
+asking for anything stronger would deadlock the worker against itself. The flags
+match the management layer's `inspect_bundle_identity`, which reads the same
+identity for the same purpose, so there is one convention rather than two.
+
+A failure to capture is a failure to start, not a start with no evidence: a
+worker running without a recordable identity could be asked to remove resources
+another profile owns. `complete()` is the gate, enforced in `validate_shape` as
+well as at capture — a zero geometry or a zero volume serial is not a weaker
+registration but one no later start could re-verify.
+
+`observe()` reports it whenever it was captured, including after a teardown: the
+evidence describes the file object this worker opened and verified, which is
+still the same object after the runtime is gone, and the service has to be able
+to record a registration for a profile it has since stopped.
+
+**Evidence.** Release build clean after a full object rebuild. Full suite:
+
+```
+ELEVATED=True
+99% tests passed, 1 tests failed out of 141
+CTEST_EXIT=8
+```
+
+The one failure is `integration.m3.recovery`, the pre-existing failure recorded
+in §7 item 5 and known independently of M5. It is **provably not** this
+increment's: `myrd_m3_recovery_tests` links only `myrd_test_support` and
+`myrd_persistence`; `myrd_test_support` contains `test_main.cpp` and nothing
+else; and `myrd_persistence` links only `myrd_storage`, `myrd_common` and
+`bcrypt`. No translation unit this work touched is reachable from that binary,
+so the check is a link-graph argument rather than a re-run. Its mechanism, now
+identified: the case opens a `.vhdx` with a share mode of zero to make it busy,
+then requires recovery to report an operational error — and an elevated process
+holding `SeBackupPrivilege` can open past a share-mode-zero holder, so recovery
+succeeds and the assertion fails. It is an elevated-fails test in a suite that
+has been run elevated.
+
+**Standalone counts.** `unit.m5.worker_protocol` 29/29 → **31/31** (the bundle
+evidence round-trips byte for byte, including the raw file id; incomplete
+evidence is refused).
+
+**An unresolved inconsistency in this session's own evidence, stated rather than
+smoothed over.** Two full-suite runs earlier today reported 141/141 with
+`CTEST_EXIT=0` on trees that did not contain this increment; re-running the same
+elevated script on the current tree reports 140/141. The link graph rules this
+increment out as the cause, and the test fails the same way in a direct run and
+in the elevated script alike, so the current reading is the reproducible one.
+But I cannot explain why the earlier reads said otherwise, and a suite that
+reports 141/141 and then 140/141 with no reachable change in between means those
+earlier readings should not be relied on. Treat **140/141 with
+`integration.m3.recovery` as the current baseline** until someone reproduces a
+clean 141.
 
 Closes the first of the two defects §1.15a found, and the last of the three
 replies that could not report what they did. `abort` returned a bare

@@ -71,7 +71,53 @@ struct DiskWorkerRuntime::Impl final {
     // Engaged only after `start()` has confirmed the bundle's own image uuid.
     bool identity_verified{};
     bool cleaned_up{};
+    // Captured during `start()`, from the inspection that verified the image and
+    // from one read-attribute handle to the bundle directory.  Engaged only when
+    // all of it was read: a partial record would be a registration the service
+    // could never re-verify, so it is reported as no evidence at all.
+    std::optional<WorkerBundleEvidence> bundle_evidence;
 };
+
+// Reads the identity of the bundle *directory*, for the durable registration.
+//
+// A second handle with FILE_READ_ATTRIBUTES and full sharing: the runtime
+// already holds the writer lock through its own handle, and asking for anything
+// stronger here would deadlock the worker against itself.  The flags match the
+// management layer's `inspect_bundle_identity`, which reads the same identity
+// for the same purpose.
+Result<WorkerBundleEvidence> capture_bundle_evidence(
+    const std::filesystem::path& bundle,
+    const persistence::SelectedImageInspection& selected) {
+    WorkerBundleEvidence evidence{};
+    evidence.image_id = selected.image_uuid;
+    evidence.virtual_bytes = selected.geometry.virtual_bytes;
+    evidence.logical_sector_size = selected.geometry.logical_sector_size;
+    evidence.physical_sector_size = selected.geometry.physical_sector_size;
+
+    const HANDLE raw = CreateFileW(
+        bundle.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) {
+        return Result<WorkerBundleEvidence>::failure(runtime_error(
+            L"DiskWorkerRuntime::start",
+            L"the bundle cannot be opened for identity inspection"));
+    }
+    auto identity = persistence::query_windows_file_identity(raw);
+    static_cast<void>(CloseHandle(raw));
+    if (!identity.ok()) {
+        return Result<WorkerBundleEvidence>::failure(identity.error());
+    }
+    evidence.volume_serial = identity.value().volume_serial_number;
+    evidence.file_id = identity.value().file_id;
+    if (!evidence.complete()) {
+        return Result<WorkerBundleEvidence>::failure(runtime_error(
+            L"DiskWorkerRuntime::start",
+            L"the bundle's identity is incomplete and must not be recorded"));
+    }
+    return Result<WorkerBundleEvidence>::success(std::move(evidence));
+}
 
 DiskWorkerRuntime::DiskWorkerRuntime(WorkerRuntimeConfig config) noexcept
     : impl_(std::make_unique<Impl>(std::move(config))) {}
@@ -154,6 +200,16 @@ Result<void> DiskWorkerRuntime::start() {
             L"DiskWorkerRuntime::start",
             L"the bundle's image uuid is not the one this worker was launched for"));
     }
+    // The evidence the service records as its durable registration, captured
+    // now because this is the only moment the bundle is known to be the one the
+    // service named -- the uuid above has just been checked against it.
+    auto evidence = capture_bundle_evidence(
+        impl.config.bundle, *image.value().selected);
+    if (!evidence.ok()) {
+        static_cast<void>(impl.runtime->shutdown_clean());
+        return Result<void>::failure(evidence.error());
+    }
+    impl.bundle_evidence = evidence.move_value();
     impl.identity_verified = true;
     return Result<void>::success();
 }
@@ -179,6 +235,10 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
                                                  adopted->identity.volume_guid};
         }
     }
+    // The bundle evidence does not depend on the runtime being alive: it
+    // describes the file object this worker opened and verified, which is still
+    // the same object after a teardown.  Reported whenever it was captured.
+    status.bundle = impl.bundle_evidence;
     return Result<WorkerRuntimeStatus>::success(status);
 }
 

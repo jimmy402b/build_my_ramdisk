@@ -221,6 +221,38 @@ struct WorkerVolumeIdentity final {
     bool operator==(const WorkerVolumeIdentity&) const noexcept = default;
 };
 
+// What the worker observed about the bundle it opened.
+//
+// The service records this as its `BundleRegistrationEvidence`, and it can come
+// from nowhere else: `myrd_management` is forbidden by the execution boundary
+// from opening a bundle, and the worker opens it anyway -- in `start()` it
+// already re-reads the image uuid to check the identity the service claimed.
+// The geometry and the uuid come free with that inspection; only the file
+// identity needs a second, read-attribute handle to the bundle directory.
+//
+// The manifest name and the payload block size are *not* here: they are product
+// constants the service already holds, and a second copy on the wire would be a
+// second thing to keep in step.
+struct WorkerBundleEvidence final {
+    persistence::ImageUuid image_id{};
+    std::uint64_t virtual_bytes{};
+    std::uint32_t logical_sector_size{};
+    std::uint32_t physical_sector_size{};
+    // The identity of the bundle directory itself, so the service can record
+    // which file object it registered rather than only which path.
+    std::uint64_t volume_serial{};
+    std::array<std::byte, 16> file_id{};
+
+    // A partial identity is not a weaker one: a profile recorded from it could
+    // never be re-verified against the same bundle, so every caller treats an
+    // incomplete triple exactly like an absent one.
+    [[nodiscard]] bool complete() const noexcept {
+        return virtual_bytes != 0 && logical_sector_size != 0
+            && physical_sector_size != 0 && volume_serial != 0;
+    }
+    bool operator==(const WorkerBundleEvidence&) const noexcept = default;
+};
+
 // The worker's own view of what it is running.  Mirrors the service-side
 // WorkerRuntimeObservation, but is defined here so `src/host` never has to
 // include `src/management`: the service adapter maps one onto the other.
@@ -244,6 +276,11 @@ struct WorkerRuntimeStatus final {
     //
     // Declared last so every existing aggregate initializer keeps its meaning.
     std::optional<WorkerVolumeIdentity> volume;
+    // The bundle this worker opened and verified, which is what the service
+    // records as its registration evidence.  Absent when the worker holds no
+    // bundle yet, or holds one whose identity it could not read in full -- the
+    // two are the same answer to the service, and neither may be recorded.
+    std::optional<WorkerBundleEvidence> bundle;
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };
