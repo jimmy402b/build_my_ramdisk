@@ -347,11 +347,18 @@ add_library(myrd_management STATIC
     management/profile_registration_store.cpp management/profile_registration_store.h
     management/service_core.cpp management/service_core.h
     management/service_operation_store.cpp management/service_operation_store.h
+    management/service_worker_session.cpp management/service_worker_session.h
     management/state_machine.cpp management/state_machine.h
 )
 target_include_directories(myrd_management PUBLIC "${CMAKE_SOURCE_DIR}")
+# `myrd_m5_worker_protocol` is the private channel and its codec.  It is not a
+# forbidden execution dependency: it reaches no runtime, no driver and no bundle
+# -- the worker does that, behind the pipe.  Linking it is what lets the service
+# speak to a worker at all without regaining the execution coupling the boundary
+# check exists to prevent.
 target_link_libraries(myrd_management PUBLIC
-    myrd_profile myrd_product_ipc myrd_product_contracts myrd_common)
+    myrd_profile myrd_product_ipc myrd_product_contracts
+    myrd_m5_worker_protocol myrd_common)
 myrd_enable_warnings(myrd_management)
 myrd_assert_execution_boundary(myrd_management)
 

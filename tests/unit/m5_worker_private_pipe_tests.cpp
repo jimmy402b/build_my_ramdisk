@@ -136,11 +136,8 @@ TEST_CASE(m5_private_pipe_completes_an_authenticated_handshake) {
         observe.command = WorkerCommand::status;
         observe.sequence = 2;
         observe.binding = binding();
-        observe.product_operation_id =
-            uuid("99999999-8888-7777-6666-555555555555");
-        observe.status = WorkerRuntimeStatus{};
-        observe.status->worker_alive = true;
-        observe.status->committed_generation = 4;
+        // A status query is not operation-scoped, so it carries no operation id
+        // and no payload: it asks for a status, it does not supply one.
         REQUIRE(client.value()->write(context(), observe).ok());
         auto reply = client.value()->read(context());
         REQUIRE(reply.ok());
@@ -159,8 +156,6 @@ TEST_CASE(m5_private_pipe_completes_an_authenticated_handshake) {
     reply.command = WorkerCommand::status;
     reply.sequence = 1;
     reply.binding = binding();
-    reply.product_operation_id =
-        uuid("99999999-8888-7777-6666-555555555555");
     reply.status = WorkerRuntimeStatus{};
     reply.status->worker_alive = true;
     reply.status->committed_generation = 4;

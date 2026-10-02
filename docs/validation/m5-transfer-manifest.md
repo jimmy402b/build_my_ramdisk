@@ -602,6 +602,71 @@ segmentation fault with no output. Deleting every `.obj` and rebuilding fixed it
 with no source change. This is §7 item 17 happening a second time; the rule there
 is not advisory.
 
+### 1.13 Task 5 increment 6 — the service's end of the private channel
+
+`src/management/service_worker_session.{h,cpp}`, in `myrd_management`. This is a
+rebuild: the historical file of this name drove `host::HostMessage` over
+HostCore, and both are prohibited imports. What it keeps is the *shape* — one
+method per private command, the request and the accepted reply stated in the same
+place so they cannot disagree — and the reason for it, which is that a reply can
+be wrong in three ways that have each been a real defect here: a different
+command, a different operation id, a mismatched binding. A reply carrying an
+error is returned as a failure, never as a payload, because reading a success
+payload past a reported failure is how a refusal becomes a recorded success.
+
+`myrd_management` now links `myrd_m5_worker_protocol`. That is not a forbidden
+execution dependency — the protocol reaches no runtime, no driver and no bundle —
+so `myrd_assert_execution_boundary` still passes, and the service speaks to a
+worker without regaining the execution coupling the check exists to prevent.
+
+**Four defects this increment found, all in code that was already committed.**
+
+1. **The shape table required a status payload on the *request*.** `status`,
+   `require_runtime_observation` and `checkpoint_abort` all had `kHasStatus` in
+   their *required* set, so every such request was unbuildable. It only surfaced
+   when the service side was written, because the worker side had always been
+   driven by hand-built messages. Payload now belongs on the reply; the request
+   carries none. `checkpoint_abort` is one of them: the worker aborts the
+   candidate it holds, so naming one in the request could only be a way to
+   release someone else's prepare.
+2. **The authentication gate required an operation id of every command but the
+   handshake.** A status query belongs to no operation, so it could not be
+   answered at all. The gate now requires the operation id exactly where the
+   command's own shape requires it, so "operation-scoped" is stated once.
+3. **`validate_shape` treated the operation id as a success payload** on error
+   replies, which made every error reply to an operation-scoped command
+   unbuildable. The binding and the operation id are *envelope*; only the rest is
+   payload.
+4. **The sequence number was consumed on reply-accept, not on send.**
+   `ServiceWorkerSession::exchange` advanced only after accepting a reply, so a
+   command that was *refused* left the next request on the same number — which
+   the worker, having taken its high-water mark the moment the request
+   authenticated, then refused as a replay. The sequence advances when the
+   request is written.
+
+**One claim of mine was wrong and is corrected here.** The previous increment
+said `cleanup` "is still available after shutdown". That is true inside the
+process and false on the wire: `m5_worker_main` breaks its loop as soon as
+`shutdown` is requested, so no later `cleanup` is ever read. The two commands are
+distinct in the other direction — `cleanup` is the explicit teardown the service
+can ask for *instead of* shutdown, and it dismantles while the worker stays alive
+to be asked for more. The test now asserts that, and that a dismantled worker
+refuses a later shutdown rather than serving it.
+
+**Evidence.** Release build clean after a full object rebuild, and the full
+elevated suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 141
+CTEST_EXIT=0
+```
+
+141 = the previous 140 + `unit.m5.service_worker_session`. That suite is 6/6,
+driven against the worker's own session over a real named pipe and two threads;
+standalone, `unit.m5.worker_protocol` is 20/20, `unit.m5.worker_session` 19/19
+and `unit.m5.worker_private_pipe` 8/8.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:

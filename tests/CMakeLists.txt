@@ -1583,6 +1583,18 @@ set_tests_properties(integration.m3.lifecycle_runner PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+add_executable(myrd_m5_service_worker_session_tests
+    unit/m5_service_worker_session_tests.cpp
+)
+target_link_libraries(myrd_m5_service_worker_session_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_service_worker_session_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_service_worker_session_tests)
+add_test(NAME unit.m5.service_worker_session
+    COMMAND myrd_m5_service_worker_session_tests)
+set_tests_properties(unit.m5.service_worker_session PROPERTIES TIMEOUT 120)
+
 add_executable(myrd_m5_worker_private_pipe_tests
     unit/m5_worker_private_pipe_tests.cpp
 )

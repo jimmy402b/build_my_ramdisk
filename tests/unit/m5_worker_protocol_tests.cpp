@@ -156,7 +156,8 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     message.command = WorkerCommand::require_runtime_observation;
     message.sequence = 4;
     message.binding = session_binding();
-    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    // Not operation-scoped: an operation id here would be a stray field, and
+    // the shape table refuses stray fields rather than ignoring them.
     message.status = status();
 
     const auto bytes = encode(message);
@@ -318,7 +319,6 @@ TEST_CASE(m5_worker_protocol_rejects_a_replayed_sequence) {
     message.command = WorkerCommand::status;
     message.sequence = 9;
     message.binding = session_binding();
-    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
     message.status = status();
 
     // The first delivery is accepted; the same sequence a second time is not,
@@ -334,7 +334,6 @@ TEST_CASE(m5_worker_protocol_rejects_a_mismatched_binding) {
     message.command = WorkerCommand::status;
     message.sequence = 2;
     message.binding = binding_for(4242, 7);
-    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
     message.status = status();
 
     REQUIRE(authenticate_worker_message(message, binding_for(4242, 7), 0).ok());
@@ -441,7 +440,6 @@ TEST_CASE(m5_worker_protocol_refuses_truncated_magic_and_trailing_bytes) {
     message.command = WorkerCommand::status;
     message.sequence = 2;
     message.binding = session_binding();
-    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
     message.status = status();
     const auto bytes = encode(message);
     REQUIRE(bytes.ok());

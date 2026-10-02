@@ -68,32 +68,52 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
     case WorkerCommand::handshake:
         return {kBase | kHasHandshake, kHasError};
     case WorkerCommand::start:
-    case WorkerCommand::status:
     case WorkerCommand::checkpoint_abort:
+        // Operation-scoped: the shape requires an operation id, so the gate can
+        // require one for exactly the commands that must be attributable.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
+    case WorkerCommand::status:
     case WorkerCommand::require_runtime_observation:
+        // *Not* operation-scoped.  These ask what a worker is doing on behalf of
+        // the service rather than of one operation, so an operation id is neither
+        // required nor defined -- a stray one is refused like any other stray
+        // field.  The payload belongs on the reply, because these *ask* for it.
+        return {kBase | (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
     case WorkerCommand::shutdown:
+        // Also not operation-scoped.  The reply carries a status only when there
+        // is one to report: a worker that was never started is still a worker
+        // that was told to shut down.
+        return {kBase, kHasStatus | kHasError};
     case WorkerCommand::cleanup:
-        return {kBase | kHasStatus, kHasOperationId | kHasError};
+        return {kBase | (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasOperationId | kHasError};
     case WorkerCommand::checkpoint_prepare:
-        return {kBase | (kind == WorkerMessageKind::reply ? kHasPrepared : 0U),
-                kHasOperationId | kHasError};
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasPrepared : 0U),
+                kHasError};
     case WorkerCommand::checkpoint_commit:
-        return {kBase | (kind == WorkerMessageKind::request ? kHasCommit
-                                                            : kHasStatus),
-                kHasOperationId | kHasError};
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::request ? kHasCommit
+                                                        : kHasStatus),
+                kHasError};
     case WorkerCommand::recovery_proof:
         // A recovery proof request must carry the P4 correlation to judge
         // against; without it there is nothing to prove ownership of.
-        return {kBase | (kind == WorkerMessageKind::reply ? kHasRecovery
-                                                          : kHasCorrelation),
-                kHasOperationId | kHasError};
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasRecovery
+                                                      : kHasCorrelation),
+                kHasError};
     case WorkerCommand::remove_and_stop:
         // The request must carry the ownership authorization; there is no shape
         // in which a worker is asked to remove something without being told
         // what it has proved it owns.
-        return {kBase | (kind == WorkerMessageKind::request ? kHasRemoval
-                                                            : kHasStatus),
-                kHasOperationId | kHasError};
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::request ? kHasRemoval
+                                                        : kHasStatus),
+                kHasError};
     }
     return {};
 }
@@ -112,8 +132,15 @@ Result<void> validate_shape(const WorkerMessage& message) {
     // error reply therefore satisfies the shape without its success payload --
     // but carrying both would let a caller read a stale payload past a reported
     // failure, so that combination is refused.
+    //
+    // The binding and the operation id are *envelope*, not payload: every
+    // message is addressed to a bound worker and, where the command is
+    // operation-scoped, to one operation.  An error reply carries both, and
+    // treating the operation id as a payload would make every error reply to an
+    // operation-scoped command unbuildable.
+    constexpr std::uint32_t kEnvelope = kHasBinding | kHasOperationId;
     if (message.error.has_value()) {
-        if ((mask & shape.required & ~kHasBinding) != 0) {
+        if ((mask & shape.required & ~kEnvelope) != 0) {
             return Result<void>::failure(protocol_error(
                 static_cast<std::uint32_t>(
                     OperationErrorCode::protocol_malformed),
@@ -467,12 +494,17 @@ Result<void> authenticate_worker_message(
             L"authenticate_worker_message",
             L"message sequence was already accepted"));
     }
-    if (message.command != WorkerCommand::handshake &&
+    // The operation id is required exactly where the command's own shape says
+    // it is required, so "operation-scoped" is stated once rather than twice.
+    // An earlier revision required it of every command but the handshake, which
+    // made a status query -- which belongs to no operation -- unanswerable.
+    if ((shape_for(message.kind, message.command).required & kHasOperationId) !=
+            0 &&
         !message.product_operation_id.has_value()) {
         return Result<void>::failure(protocol_error(
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"authenticate_worker_message",
-            L"message does not carry a product operation id"));
+            L"message does not carry the product operation id its command needs"));
     }
     if (message.command == WorkerCommand::handshake) {
         // Guarded rather than assumed: a message may reach here undecoded (a
