@@ -1036,3 +1036,30 @@ Recorded so the plan and the tree do not silently diverge.
     defaults, which is the honest answer — the private protocol cannot prove a
     writer lock, a matching device or a bundle identity is absent, and a forget
     reported safe without that proof is what forget exists to prevent.
+
+20. **OPEN DEFECT — the commit reply drops the commit disposition.** Found while
+    writing `service_worker_control`, in the same way §1.13's four defects were
+    found: the service side is the first caller that has to *use* what the worker
+    sends. `DiskWorkerRuntime::commit_checkpoint` calls `checkpoint_ok()`, which
+    is true only for `committed`, and turns every other outcome into one generic
+    `internal_invariant` error — while the comment on the line directly above
+    says "the disposition travels verbatim, including the indeterminate one". The
+    private protocol's commit reply carries only `WorkerRuntimeStatus`, so
+    `not_committed`, `committed_needs_reconciliation` and `commit_indeterminate`
+    are indistinguishable on the wire.
+
+    This is not cosmetic. `WorkerCheckpointEvidence::disposition` is what drives
+    Task 6's P5 table: `committed` → committed-pending-epoch-confirmation,
+    `not_committed` → restore prior durable truth, `indeterminate`/reconcile →
+    resolving. Collapsing the three into one error means the service cannot tell
+    "nothing was published, restore the prior record" from "the bundle's fate is
+    unknown, park the operation" — and the safe answer for one is the unsafe
+    answer for the other.
+
+    Fix shape, not yet implemented: give the commit reply a payload carrying the
+    disposition and the persistence failure context (the historical
+    `WorkerCheckpointCommitReply` carried `disposition`, `failure` and
+    `generation`), have the worker relay `DiskCheckpointDisposition` verbatim
+    instead of folding it, and extend the protocol round-trip tests to cover all
+    four dispositions. `execute_checkpoint`'s boundary logic must not be written
+    against a reply that cannot express its own outcome.
