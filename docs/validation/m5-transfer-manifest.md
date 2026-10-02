@@ -580,11 +580,20 @@ object rebuild; `myrd-m5-worker.exe` reports its usage and exits 1 when launched
 without a launch handle (fail-closed, checked by hand);
 `unit.m5.worker_private_pipe` 8/8.
 
-**The full elevated suite was *not* run for this increment.** The elevation
-prompt was declined, so there is no `ctest` result covering it. The last
-full-suite result is the 140/140 in §1.11, which predates this increment. The
-count should still be 140 — this increment adds an executable, not a test — but
-that is a prediction, not a measurement, and it is recorded as one.
+**The full elevated suite.** It was not run when this increment was first
+committed — the elevation prompt was declined — so the commit named the gap
+rather than papering over it, and predicted 140 because the increment adds an
+executable, not a test. The suite was re-run elevated afterwards:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 140
+CTEST_EXIT=0
+```
+
+140 is 140, so the prediction held. Recording the prediction *and* its
+confirmation separately is the point: a prediction that is written down as a
+prediction is checkable, and one recorded as a result is not.
 
 **A stale-object trap hit again, immediately.** Adding `image_id` to
 `WorkerLaunchSpec` changed a struct another translation unit already used, and
