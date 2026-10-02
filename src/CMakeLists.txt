@@ -361,9 +361,17 @@ myrd_assert_execution_boundary(myrd_management)
 # (`src/common/m5_native_operation_id.h`), and the worker's command loop.
 #
 # The session drives execution through the `WorkerRuntime` interface and never
-# names a concrete runtime, so this target stays free of execution, driver,
-# persistence and management dependencies -- both the worker executable and the
-# service-side adapter link it.
+# names a concrete runtime, so this target stays free of execution, driver and
+# management dependencies -- both the worker executable and the service-side
+# adapter link it.
+#
+# It does include `src/persistence/image_inspector.h`, because the P4 recovery
+# correlation it carries *is* the persistence layer's
+# `CheckpointRecoveryCorrelation`: one definition rather than two field sets to
+# keep in sync (see the transfer manifest, §7 item 15).  That is an include
+# dependency only -- no persistence symbol is called from here, so this target
+# does not link `myrd_persistence` and the management layer that links this
+# target does not gain a persistence link through it.
 add_library(myrd_m5_worker_protocol STATIC
     host/m5_worker_protocol.cpp host/m5_worker_protocol.h
     host/m5_worker_session.cpp host/m5_worker_session.h

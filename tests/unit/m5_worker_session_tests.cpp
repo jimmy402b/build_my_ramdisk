@@ -54,9 +54,15 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     bool fail_start{};
     bool fail_commit{};
     bool fail_abort{};
+    // Drives the strict-observation gate: an observation that cannot assert a
+    // live runtime must be refused, not returned.
+    bool worker_alive{true};
+    persistence::ImageUuid image_id{};
     std::optional<WorkerPreparedCandidate> last_prepared;
     std::optional<WorkerCheckpointCommit> last_commit;
     std::optional<std::uint64_t> last_abort;
+    std::optional<WorkerRemovalAuthorization> last_removal;
+    bool shutdown_called{};
     WorkerRecoveryOutcome recovery_outcome{
         WorkerRecoveryOutcome::ownership_unprovable};
 
@@ -68,7 +74,8 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     Result<WorkerRuntimeStatus> observe() override {
         events.push_back("observe");
         WorkerRuntimeStatus status{};
-        status.worker_alive = true;
+        status.worker_alive = worker_alive;
+        status.image_id = image_id;
         status.committed_generation = committed_generation;
         status.dirty = dirty;
         status.dirty_epoch = dirty_epoch;
@@ -113,11 +120,26 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         events.push_back("prove_recovery");
         WorkerRecoveryProof proof{};
         proof.outcome = recovery_outcome;
-        proof.observed_generation = correlation.candidate_generation;
-        proof.native_operation_id = correlation.native_operation_id;
-        proof.manifest_slot = correlation.manifest_slot;
-        proof.candidate_bytes_digest = correlation.candidate_bytes_digest;
+        // Read straight off the persistence correlation the service sent: there
+        // is no second field set to translate from.
+        proof.observed_generation =
+            correlation.checkpoint.candidate_generation;
+        proof.native_operation_id = correlation.checkpoint.native_operation_id;
+        proof.manifest_slot = correlation.checkpoint.manifest_slot;
+        proof.candidate_bytes_digest =
+            correlation.checkpoint.candidate_bytes_digest;
         return Result<WorkerRecoveryProof>::success(proof);
+    }
+    Result<WorkerRuntimeStatus> remove_and_stop(
+        const WorkerRemovalAuthorization& authorization) override {
+        events.push_back("remove_and_stop");
+        last_removal = authorization;
+        return observe();
+    }
+    Result<void> shutdown() override {
+        events.push_back("shutdown");
+        shutdown_called = true;
+        return Result<void>::success();
     }
     Result<void> cleanup() override {
         events.push_back("cleanup");
@@ -206,12 +228,36 @@ TEST_CASE(m5_worker_session_observation_before_start_is_refused) {
     FakeWorkerRuntime runtime;
     WorkerSession session(session_binding(), kSessionNonce, runtime);
 
-    auto observe = request(WorkerCommand::runtime_observation, 1);
+    auto observe = request(WorkerCommand::require_runtime_observation, 1);
     observe.product_operation_id = operation_id();
     const auto reply = session.handle(observe);
     REQUIRE(reply.ok());
     REQUIRE(reply.value().error.has_value());
     REQUIRE(!has_event(runtime, "observe"));
+}
+
+TEST_CASE(m5_worker_session_strict_observation_refuses_an_unproved_runtime) {
+    FakeWorkerRuntime runtime;
+    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+
+    // An observation that cannot assert a live runtime is refused rather than
+    // returned: a caller deciding whether a mutation is safe must never read
+    // "could not observe" as "the runtime is clean".
+    runtime.worker_alive = false;
+    const auto refused =
+        session.handle(request(WorkerCommand::require_runtime_observation, 2));
+    REQUIRE(refused.ok());
+    REQUIRE(refused.value().error.has_value());
+    REQUIRE(!refused.value().status.has_value());
+
+    // The informational command still reports what it saw, so the two are
+    // genuinely different questions.
+    const auto reported =
+        session.handle(request(WorkerCommand::status, 3));
+    REQUIRE(reported.ok());
+    REQUIRE(reported.value().status.has_value());
+    REQUIRE(!reported.value().status->worker_alive);
 }
 
 TEST_CASE(m5_worker_session_prepare_names_the_native_id_by_the_shared_rule) {
@@ -359,10 +405,15 @@ TEST_CASE(m5_worker_session_recovery_proof_needs_the_p4_correlation) {
 
     auto proof = request(WorkerCommand::recovery_proof, 2);
     proof.product_operation_id = operation_id();
-    proof.correlation = WorkerRecoveryCorrelation{
-        operation_id(), uuid("77777777-7777-7777-7777-777777777777"),
-        kConfirmedGeneration, kCandidateGeneration,
-        kCandidateGeneration + kM5CheckpointOperationOffset, 2, digest(0xAB)};
+    persistence::CheckpointRecoveryCorrelation checkpoint{};
+    checkpoint.prior_generation = kConfirmedGeneration;
+    checkpoint.candidate_generation = kCandidateGeneration;
+    checkpoint.native_operation_id =
+        kCandidateGeneration + kM5CheckpointOperationOffset;
+    checkpoint.manifest_slot = 2;
+    checkpoint.candidate_bytes_digest = digest(0xAB);
+    proof.correlation =
+        WorkerRecoveryCorrelation{operation_id(), checkpoint};
     runtime.recovery_outcome = WorkerRecoveryOutcome::candidate_generation_proved;
     const auto reply = session.handle(proof);
     REQUIRE(reply.ok());
@@ -390,4 +441,118 @@ TEST_CASE(m5_worker_session_cleanup_runs_once_and_locks_out_later_commands) {
     for (const auto& event : runtime.events)
         if (event == "start") ++starts;
     REQUIRE_EQ(starts, 1u);
+}
+
+// ---- remove_and_stop and shutdown ----
+
+namespace {
+
+WorkerRemovalAuthorization removal_authorization(
+    const persistence::ImageUuid& image_id) {
+    WorkerRemovalAuthorization value{operation_id(),
+                                     session_binding().profile_id};
+    value.image_id = image_id;
+    value.ownership_evidence_digest = digest(0xCD);
+    value.writer_lock_proved = true;
+    value.device_match_proved = true;
+    value.bundle_identity_proved = true;
+    return value;
+}
+
+} // namespace
+
+TEST_CASE(m5_worker_session_remove_and_stop_requires_the_full_ownership_proof) {
+    FakeWorkerRuntime runtime;
+    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    runtime.image_id.bytes[0] = std::byte{0x11};
+    REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+
+    // A partial proof is refused before the runtime is asked to remove
+    // anything: there is no partial removal to fall back to.
+    auto partial = request(WorkerCommand::remove_and_stop, 2);
+    partial.removal = removal_authorization(runtime.image_id);
+    partial.removal->device_match_proved = false;
+    const auto refused = session.handle(partial);
+    REQUIRE(refused.ok());
+    REQUIRE(refused.value().error.has_value());
+    REQUIRE(!has_event(runtime, "remove_and_stop"));
+
+    // A complete proof that names a different image is not a proof for this
+    // bundle either.
+    auto other_image = request(WorkerCommand::remove_and_stop, 3);
+    other_image.removal = removal_authorization(runtime.image_id);
+    other_image.removal->image_id.bytes[0] = std::byte{0x22};
+    const auto mismatched = session.handle(other_image);
+    REQUIRE(mismatched.ok());
+    REQUIRE(mismatched.value().error.has_value());
+    REQUIRE(!has_event(runtime, "remove_and_stop"));
+
+    auto authorized = request(WorkerCommand::remove_and_stop, 4);
+    authorized.removal = removal_authorization(runtime.image_id);
+    const auto removed = session.handle(authorized);
+    REQUIRE(removed.ok());
+    REQUIRE(!removed.value().error.has_value());
+    REQUIRE(removed.value().status.has_value());
+    REQUIRE(has_event(runtime, "remove_and_stop"));
+    REQUIRE(runtime.last_removal.has_value());
+}
+
+TEST_CASE(m5_worker_session_remove_and_stop_refuses_an_open_two_phase_boundary) {
+    FakeWorkerRuntime runtime;
+    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    runtime.image_id.bytes[0] = std::byte{0x11};
+    REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+    REQUIRE(session
+                .handle(request(WorkerCommand::checkpoint_prepare, 2))
+                .ok());
+
+    // Removing the bundle would destroy the evidence of an operation the
+    // service has not resolved yet.
+    auto remove = request(WorkerCommand::remove_and_stop, 3);
+    remove.removal = removal_authorization(runtime.image_id);
+    const auto refused = session.handle(remove);
+    REQUIRE(refused.ok());
+    REQUIRE(refused.value().error.has_value());
+    REQUIRE(!has_event(runtime, "remove_and_stop"));
+}
+
+TEST_CASE(m5_worker_session_shutdown_refuses_an_open_two_phase_boundary) {
+    FakeWorkerRuntime runtime;
+    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+    REQUIRE(session
+                .handle(request(WorkerCommand::checkpoint_prepare, 2))
+                .ok());
+
+    const auto refused = session.handle(request(WorkerCommand::shutdown, 3));
+    REQUIRE(refused.ok());
+    REQUIRE(refused.value().error.has_value());
+    REQUIRE(!runtime.shutdown_called);
+    REQUIRE(!session.shutdown_requested());
+}
+
+TEST_CASE(m5_worker_session_shutdown_stops_serving_without_dismantling) {
+    FakeWorkerRuntime runtime;
+    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
+
+    const auto stopped = session.handle(request(WorkerCommand::shutdown, 2));
+    REQUIRE(stopped.ok());
+    REQUIRE(!stopped.value().error.has_value());
+    REQUIRE(runtime.shutdown_called);
+    REQUIRE(session.shutdown_requested());
+    // Shutdown is not a synonym for cleanup: it asks the worker to go away and
+    // dismantles nothing, so the ordered teardown is still available after it.
+    REQUIRE(!has_event(runtime, "cleanup"));
+
+    const auto refused = session.handle(request(WorkerCommand::status, 3));
+    REQUIRE(refused.ok());
+    REQUIRE(refused.value().error.has_value());
+
+    // Cleanup is still served, which is the whole reason the two commands are
+    // not the same command.
+    const auto cleaned = session.handle(request(WorkerCommand::cleanup, 4));
+    REQUIRE(cleaned.ok());
+    REQUIRE(!cleaned.value().error.has_value());
+    REQUIRE(session.cleaned_up());
 }

@@ -387,6 +387,88 @@ because they catch different things: the slot field catches a P4 record that
 named a different slot, and the digest catches byte-level drift. The test asserts
 the single-bit mask so this cannot quietly change.
 
+### 1.10 Task 5 increment 3 — the private protocol reconciled with §2.5
+
+§7 item 15's conflict is closed. The solution's §2.5 command set is now the
+protocol's command set: eleven commands, no synonyms.
+
+**Renamed.** `runtime_observation` → `require_runtime_observation`. The rename is
+not cosmetic: the design spec §3.2 note makes the strict form a *mutation-safety*
+question ("read M3 block-level dirty"), not an informational one, and
+`IWorkerControl::require_runtime_observation` is documented as "no observation is
+a failure, not `nullopt`". The session now enforces exactly that: `status`
+reports whatever it saw, including `worker_alive == false`, while
+`require_runtime_observation` refuses rather than return an observation that
+cannot assert a live runtime. A caller deciding whether a checkpoint or a removal
+is safe can therefore never read "could not ask" as "the runtime is clean".
+
+**Added.** `remove_and_stop` and `shutdown`, both distinct from `cleanup`:
+
+- `cleanup` (unchanged) is the worker's own reverse-order teardown, run once, and
+  it locks out later commands.
+- `remove_and_stop` removes this profile's **verified own** resources and stops.
+  §5 permits a worker to clean only what it has proved it owns and the mandatory
+  gate forbids a removal without proof, so the request carries a
+  `WorkerRemovalAuthorization` with three separately-checked proofs (writer lock,
+  matching device, retained bundle identity) plus the profile, image and the
+  digest of the service's durable evidence. `require_removal_authorized` refuses
+  any partial proof, a proof naming another profile, and a proof naming another
+  image — the last one checked against the worker's **own** observation of the
+  image it holds, not against the authorization's claim about it. A refusal
+  leaves the registration and the bundle intact and reports no success. It also
+  refuses while a two-phase candidate is prepared: removing the bundle would
+  destroy the evidence of an operation the service has not resolved.
+- `shutdown` is the service telling the worker to terminate. It dismantles
+  nothing — the ordered teardown stays `cleanup`'s job, so the two are not
+  synonyms and a caller can tell the worker to go away and still get a truthful
+  teardown report afterwards. It refuses while a candidate is prepared (§3.5:
+  an unresolved session is resolved, never abandoned), and after it only
+  `shutdown` and `cleanup` are still served.
+
+**Carried, not duplicated.** `WorkerRecoveryCorrelation` is now
+`{product_operation_id, persistence::CheckpointRecoveryCorrelation}`. The
+persistence type is the authority; the protocol carries it and the read-side
+inspection consumes it unchanged, so the wire format and the inspection API
+cannot drift into two field sets. Consequences recorded here because they are
+visible:
+
+- `src/host/m5_worker_protocol.h` now *includes* a persistence header. That is an
+  include dependency only — no persistence symbol is called from the protocol or
+  the session — so `myrd_m5_worker_protocol` still does not link
+  `myrd_persistence`, and `myrd_management` (which links the protocol) does not
+  gain a persistence link or trip `myrd_assert_execution_boundary`. The CMake
+  comment was updated rather than left claiming an independence the target no
+  longer has.
+- `WorkerRuntimeStatus` gained `image_id`. The removal gate needs the image the
+  worker actually holds, and the worker's own observation is the only honest
+  source for it.
+- `WorkerRecoveryOutcome` stays a distinct protocol enum — a wire enum should not
+  change meaning when the persistence enum grows — but the two are now related by
+  exactly one function, `worker_recovery_outcome()`, so they cannot drift in more
+  than one place. A verdict the protocol has no case for maps to
+  `ownership_unprovable`, which is the fail-closed direction.
+
+**Evidence.** Full object rebuild (the protocol header changed), Release clean,
+and the full elevated suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 139
+CTEST_EXIT=0
+```
+
+139 is unchanged as a *test* count because both suites already existed; what grew
+is the case count inside them: `unit.m5.worker_protocol` 20/20 (was 12) and
+`unit.m5.worker_session` 18/18 (was 13). The new
+protocol cases cover the correlation round-tripping field for field including the
+image uuid (which has no canonical-text form on this channel), the removal
+authorization round-tripping all three proofs, the removal gate refusing each
+partial proof plus the wrong profile and the wrong image, and the verdict
+mapping. The new session cases cover the strict-observation refusal, the removal
+gate reached before the runtime is asked to do anything, removal refused across
+an open two-phase boundary, shutdown refused across an open two-phase boundary,
+and shutdown stopping service while leaving `cleanup` available.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
@@ -606,7 +688,11 @@ Recorded so the plan and the tree do not silently diverge.
     thing. `WorkerRecoveryCorrelation` (protocol) also needs to reconcile with
     the solution's persistence-level `CheckpointRecoveryCorrelation`; the
     inspection API's parameter type should be the authority and the protocol
-    type should carry it rather than duplicate its fields.
+    type should carry it rather than duplicate its fields. **Reconciled by §1.10**
+    (Task 5 increment 3): the rename and the two new commands landed as written
+    above, the protocol carries `persistence::CheckpointRecoveryCorrelation`
+    instead of its own field set, and the three commands are verified distinct
+    rather than synonymous.
 16. **Task 3 addendum: `inspect_checkpoint` takes the bundle location and
     inspection options.** §1.2 writes the signature as
     `inspect_checkpoint(context, expected)`, which omits where the bundle is and

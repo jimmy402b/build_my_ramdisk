@@ -3,12 +3,14 @@
 #include "src/common/m5_native_operation_id.h"
 #include "src/common/result.h"
 #include "src/common/sha256.h"
+#include "src/persistence/image_inspector.h"
 #include "src/product/uuid.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace myrd::m5 {
@@ -49,9 +51,11 @@ enum class WorkerCommand : std::uint16_t {
     checkpoint_prepare = 4,
     checkpoint_commit = 5,
     checkpoint_abort = 6,
-    runtime_observation = 7,
+    require_runtime_observation = 7,
     recovery_proof = 8,
-    cleanup = 9,
+    remove_and_stop = 9,
+    shutdown = 10,
+    cleanup = 11,
 };
 
 // Identity of one worker process bound to one profile for one session.
@@ -100,11 +104,50 @@ struct WorkerCheckpointCommit final {
     bool operator==(const WorkerCheckpointCommit&) const noexcept = default;
 };
 
+// The service's authorization to remove one profile's resources.
+//
+// Design spec §5 permits a worker to clean only what it has *verified it owns*,
+// and the mandatory gate forbids reporting a removal without proof of the writer
+// lock, the matching device and the retained bundle identity.  So this carries
+// the proof rather than a permission flag, and the three proofs stay three
+// separate booleans: they are obtained separately, and folding them into one
+// "safe" bit is exactly how a partial proof starts reading as a complete one.
+struct WorkerRemovalAuthorization final {
+    // The two ids have no default constructor, so they are constructor
+    // parameters rather than fields a caller could leave unset: an
+    // authorization that names no operation or no profile is not something to
+    // build by accident.
+    WorkerRemovalAuthorization(product::Uuid removal_operation_id,
+                               product::Uuid profile_id) noexcept
+        : removal_operation_id(std::move(removal_operation_id)),
+          profile_id(std::move(profile_id)) {}
+
+    // The product operation that asked for the removal, so a refusal can name
+    // it in the durable record.
+    product::Uuid removal_operation_id;
+    product::Uuid profile_id;
+    persistence::ImageUuid image_id{};
+    // Digest of the durable safety evidence the service obtained.  The worker
+    // does not interpret it; carrying it means a refusal and the service's own
+    // record can be compared afterwards.
+    Sha256Digest ownership_evidence_digest{};
+    bool writer_lock_proved{};
+    bool device_match_proved{};
+    bool bundle_identity_proved{};
+
+    bool operator==(const WorkerRemovalAuthorization&) const noexcept = default;
+};
+
 // The worker's own view of what it is running.  Mirrors the service-side
 // WorkerRuntimeObservation, but is defined here so `src/host` never has to
 // include `src/management`: the service adapter maps one onto the other.
 struct WorkerRuntimeStatus final {
     bool worker_alive{};
+    // Which bundle this status is about.  It is here because a removal
+    // authorization has to be checked against the image the worker actually
+    // holds, and the only honest source for that is the worker's own
+    // observation rather than the authorization itself.
+    persistence::ImageUuid image_id{};
     std::uint64_t committed_generation{};
     bool dirty{};
     std::uint64_t dirty_epoch{};
@@ -122,13 +165,14 @@ struct WorkerRuntimeStatus final {
 // are derived from what is on disk rather than from what the dead worker
 // claimed: the journal native id plus the image and generation identities.
 struct WorkerRecoveryCorrelation final {
+    // The product operation the proof is about.  It is the service's own
+    // bookkeeping id and has no persistence-layer counterpart, so it lives here.
     product::Uuid product_operation_id;
-    product::Uuid image_id;
-    std::uint64_t prior_generation{};
-    std::uint64_t candidate_generation{};
-    std::uint64_t native_operation_id{};
-    std::uint8_t manifest_slot{};
-    Sha256Digest candidate_bytes_digest{};
+    // Everything the bundle itself must be matched against, in the persistence
+    // layer's own type.  The read-side inspection consumes this struct
+    // unchanged, so the wire format and the inspection API cannot drift into
+    // two field sets that have to be kept in sync by hand.
+    persistence::CheckpointRecoveryCorrelation checkpoint;
 
     bool operator==(const WorkerRecoveryCorrelation&) const noexcept = default;
 };
@@ -136,6 +180,12 @@ struct WorkerRecoveryCorrelation final {
 // Exactly three answers, and the third is not a failure to be retried: a
 // generation that changed but cannot be attributed to this operation must never
 // be promoted to a success or rolled back to a "not committed".
+//
+// This is the protocol's own spelling of the three states, kept separate from
+// `persistence::CheckpointRecoveryVerdict` so that a wire enum cannot silently
+// change meaning when the persistence enum grows a fourth case.  The two are
+// related by exactly one function, `worker_recovery_outcome()`, so they cannot
+// drift in more than one place.
 enum class WorkerRecoveryOutcome : std::uint8_t {
     ownership_unprovable = 0,
     prior_generation_proved,
@@ -172,6 +222,9 @@ struct WorkerMessage final {
     // Carried by a recovery-proof request: what the service durably recorded at
     // P4, which is the only thing a fresh worker may judge ownership against.
     std::optional<WorkerRecoveryCorrelation> correlation;
+    // Carried by a remove-and-stop request: the service's ownership proof.
+    // Without it the worker has nothing to remove *as its own* and must refuse.
+    std::optional<WorkerRemovalAuthorization> removal;
     // Set only on a reply that reports failure.  A reply is either a payload or
     // an error, never both.
     std::optional<Error> error;
@@ -200,5 +253,21 @@ struct WorkerMessage final {
 [[nodiscard]] Result<void> require_matching_candidate(
     const WorkerCheckpointCommit& commit,
     const WorkerPreparedCandidate& prepared);
+
+// The removal gate.  A removal is refused unless every part of the ownership
+// proof is present and the authorization names this worker's own profile and
+// image.  A refusal means the caller keeps the registration *and* the bundle and
+// must not report success -- there is no partial removal to fall back to.
+[[nodiscard]] Result<void> require_removal_authorized(
+    const WorkerRemovalAuthorization& authorization,
+    const WorkerBinding& binding,
+    const persistence::ImageUuid& observed_image_id);
+
+// The one mapping between the persistence verdict and this protocol's spelling
+// of it.  A verdict the protocol has no case for is `ownership_unprovable`,
+// which is the fail-closed direction: an unrecognised answer from the read side
+// must never be read as a proof.
+[[nodiscard]] WorkerRecoveryOutcome worker_recovery_outcome(
+    persistence::CheckpointRecoveryVerdict verdict) noexcept;
 
 } // namespace myrd::m5

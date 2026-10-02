@@ -36,14 +36,45 @@ WorkerPreparedCandidate candidate() {
                                    digest(0xAB)};
 }
 
+persistence::ImageUuid image_uuid(const std::uint8_t fill) {
+    persistence::ImageUuid value{};
+    value.bytes[0] = std::byte{fill};
+    return value;
+}
+
 WorkerRuntimeStatus status() {
     WorkerRuntimeStatus value{};
     value.worker_alive = true;
+    value.image_id = image_uuid(0x11);
     value.committed_generation = 6;
     value.dirty = true;
     value.dirty_epoch = 99;
     value.active_operation_id = uuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     value.active_operation_phase = 3;
+    return value;
+}
+
+WorkerRecoveryCorrelation correlation() {
+    persistence::CheckpointRecoveryCorrelation checkpoint{};
+    checkpoint.image_uuid = image_uuid(0x11);
+    checkpoint.prior_generation = 5;
+    checkpoint.candidate_generation = 6;
+    checkpoint.native_operation_id = 6 + kM5CheckpointOperationOffset;
+    checkpoint.manifest_slot = 2;
+    checkpoint.candidate_bytes_digest = digest(0xAB);
+    return WorkerRecoveryCorrelation{
+        uuid("99999999-8888-7777-6666-555555555555"), checkpoint};
+}
+
+WorkerRemovalAuthorization removal_authorization() {
+    WorkerRemovalAuthorization value{
+        uuid("77777777-6666-5555-4444-333333333333"),
+        uuid("11111111-2222-3333-4444-555555555555")};
+    value.image_id = image_uuid(0x11);
+    value.ownership_evidence_digest = digest(0xCD);
+    value.writer_lock_proved = true;
+    value.device_match_proved = true;
+    value.bundle_identity_proved = true;
     return value;
 }
 
@@ -122,7 +153,7 @@ TEST_CASE(m5_worker_protocol_prepare_reply_round_trips_the_frozen_candidate) {
 TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     WorkerMessage message{};
     message.kind = WorkerMessageKind::reply;
-    message.command = WorkerCommand::runtime_observation;
+    message.command = WorkerCommand::require_runtime_observation;
     message.sequence = 4;
     message.binding = session_binding();
     message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
@@ -137,6 +168,100 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     // The block-level dirty truth survives the wire, so a caller cannot read
     // "could not ask" as "the runtime is clean".
     REQUIRE(decoded.value().status->dirty);
+    // The image identity travels with the observation, because the removal gate
+    // has to check an authorization against the bundle the worker actually
+    // holds rather than against the authorization's own claim.
+    REQUIRE(decoded.value().status->image_id == image_uuid(0x11));
+}
+
+TEST_CASE(m5_worker_protocol_correlation_carries_the_persistence_type) {
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::request;
+    message.command = WorkerCommand::recovery_proof;
+    message.sequence = 9;
+    message.binding = session_binding();
+    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    message.correlation = correlation();
+
+    const auto bytes = encode(message);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().correlation.has_value());
+    // Field for field, including the image uuid that has no canonical-text form
+    // on this channel: the wire form and the read-side inspection's parameter
+    // type are the same struct, so they cannot drift into two field sets.
+    REQUIRE(decoded.value().correlation->checkpoint.image_uuid ==
+            image_uuid(0x11));
+    REQUIRE_EQ(decoded.value().correlation->checkpoint.prior_generation, 5ull);
+    REQUIRE_EQ(decoded.value().correlation->checkpoint.candidate_generation,
+               6ull);
+    REQUIRE_EQ(decoded.value().correlation->checkpoint.native_operation_id,
+               6 + kM5CheckpointOperationOffset);
+    REQUIRE_EQ(decoded.value().correlation->checkpoint.manifest_slot,
+               static_cast<std::uint8_t>(2));
+    REQUIRE(decoded.value().correlation->checkpoint.candidate_bytes_digest ==
+            digest(0xAB));
+}
+
+TEST_CASE(m5_worker_protocol_removal_authorization_round_trips_every_proof) {
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::request;
+    message.command = WorkerCommand::remove_and_stop;
+    message.sequence = 10;
+    message.binding = session_binding();
+    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    message.removal = removal_authorization();
+
+    const auto bytes = encode(message);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().removal.has_value());
+    REQUIRE(*decoded.value().removal == removal_authorization());
+    // Each proof is a separate wire byte, so none can be lost in packing.
+    REQUIRE(decoded.value().removal->writer_lock_proved);
+    REQUIRE(decoded.value().removal->device_match_proved);
+    REQUIRE(decoded.value().removal->bundle_identity_proved);
+}
+
+TEST_CASE(m5_require_removal_authorized_refuses_every_partial_proof) {
+    const auto binding = session_binding();
+    const auto observed = image_uuid(0x11);
+    REQUIRE(require_removal_authorized(removal_authorization(), binding, observed)
+                .ok());
+
+    // Each of the three proofs is separately sufficient to refuse: a removal is
+    // never allowed on a partial proof.
+    for (int missing = 0; missing < 3; ++missing) {
+        auto partial = removal_authorization();
+        if (missing == 0) partial.writer_lock_proved = false;
+        if (missing == 1) partial.device_match_proved = false;
+        if (missing == 2) partial.bundle_identity_proved = false;
+        REQUIRE(!require_removal_authorized(partial, binding, observed).ok());
+    }
+
+    // A complete proof for another profile, or for another image, is not a
+    // proof for this worker.
+    auto other_profile = removal_authorization();
+    other_profile.profile_id = uuid("22222222-3333-4444-5555-666666666666");
+    REQUIRE(!require_removal_authorized(other_profile, binding, observed).ok());
+
+    auto other_image = removal_authorization();
+    other_image.image_id = image_uuid(0x22);
+    REQUIRE(!require_removal_authorized(other_image, binding, observed).ok());
+}
+
+TEST_CASE(m5_worker_recovery_outcome_maps_every_persistence_verdict) {
+    REQUIRE(worker_recovery_outcome(
+                persistence::CheckpointRecoveryVerdict::CandidateGenerationProved) ==
+            WorkerRecoveryOutcome::candidate_generation_proved);
+    REQUIRE(worker_recovery_outcome(
+                persistence::CheckpointRecoveryVerdict::PriorGenerationProved) ==
+            WorkerRecoveryOutcome::prior_generation_proved);
+    REQUIRE(worker_recovery_outcome(
+                persistence::CheckpointRecoveryVerdict::OwnershipUnprovable) ==
+            WorkerRecoveryOutcome::ownership_unprovable);
 }
 
 TEST_CASE(m5_worker_protocol_recovery_proof_round_trips_every_outcome) {

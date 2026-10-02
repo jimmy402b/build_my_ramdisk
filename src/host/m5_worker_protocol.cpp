@@ -22,6 +22,7 @@ constexpr std::uint32_t kHasStatus = 1U << 5;
 constexpr std::uint32_t kHasRecovery = 1U << 6;
 constexpr std::uint32_t kHasError = 1U << 7;
 constexpr std::uint32_t kHasCorrelation = 1U << 8;
+constexpr std::uint32_t kHasRemoval = 1U << 9;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -56,6 +57,10 @@ public:
         bytes_.insert(bytes_.end(), value.begin(), value.end());
     }
     void uuid(const product::Uuid& value) { raw(value.bytes()); }
+    // Written as its sixteen bytes, like the product uuid above: an image uuid
+    // has no canonical-text form anywhere on this channel, so the decoder never
+    // has to parse one back.
+    void image_uuid(const persistence::ImageUuid& value) { raw(value.bytes); }
     void digest(const Sha256Digest& value) {
         raw(std::span<const std::byte>(value.data(), value.size()));
     }
@@ -146,6 +151,13 @@ public:
         std::memcpy(value.data(), slice.data(), value.size());
         return value;
     }
+    persistence::ImageUuid image_uuid() {
+        persistence::ImageUuid value{};
+        const auto slice = raw(value.bytes.size());
+        if (!ok_) return value;
+        std::memcpy(value.bytes.data(), slice.data(), value.bytes.size());
+        return value;
+    }
     std::wstring text() {
         const auto count = u16();
         std::wstring value;
@@ -180,6 +192,7 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.recovery.has_value()) mask |= kHasRecovery;
     if (message.error.has_value()) mask |= kHasError;
     if (message.correlation.has_value()) mask |= kHasCorrelation;
+    if (message.removal.has_value()) mask |= kHasRemoval;
     return mask;
 }
 
@@ -200,7 +213,8 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
     case WorkerCommand::start:
     case WorkerCommand::status:
     case WorkerCommand::checkpoint_abort:
-    case WorkerCommand::runtime_observation:
+    case WorkerCommand::require_runtime_observation:
+    case WorkerCommand::shutdown:
     case WorkerCommand::cleanup:
         return {kBase | kHasStatus, kHasOperationId | kHasError};
     case WorkerCommand::checkpoint_prepare:
@@ -215,6 +229,13 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
         // against; without it there is nothing to prove ownership of.
         return {kBase | (kind == WorkerMessageKind::reply ? kHasRecovery
                                                           : kHasCorrelation),
+                kHasOperationId | kHasError};
+    case WorkerCommand::remove_and_stop:
+        // The request must carry the ownership authorization; there is no shape
+        // in which a worker is asked to remove something without being told
+        // what it has proved it owns.
+        return {kBase | (kind == WorkerMessageKind::request ? kHasRemoval
+                                                            : kHasStatus),
                 kHasOperationId | kHasError};
     }
     return {};
@@ -308,6 +329,7 @@ Result<void> parse_body(Reader& reader, const std::uint32_t mask,
     if ((mask & kHasStatus) != 0) {
         WorkerRuntimeStatus status{};
         status.worker_alive = reader.boolean();
+        status.image_id = reader.image_uuid();
         status.committed_generation = reader.u64();
         status.dirty = reader.boolean();
         status.dirty_epoch = reader.u64();
@@ -335,26 +357,61 @@ Result<void> parse_body(Reader& reader, const std::uint32_t mask,
         message.recovery = recovery;
     }
     if ((mask & kHasCorrelation) != 0) {
-        // Read in wire order; the two ids have no default constructor, so they
-        // are parsed before the aggregate is built.
+        // Read in wire order; the product id has no default constructor, so it
+        // is parsed before the aggregate is built.
         auto product_operation_id = reader.uuid();
-        auto image_id = reader.uuid();
-        const std::uint64_t prior_generation = reader.u64();
-        const std::uint64_t candidate_generation = reader.u64();
-        const std::uint64_t native_operation_id = reader.u64();
-        const std::uint8_t manifest_slot = reader.u8();
-        const Sha256Digest candidate_bytes_digest = reader.digest();
-        if (!product_operation_id.has_value() || !image_id.has_value()) {
+        if (!product_operation_id.has_value()) {
             return Result<void>::failure(protocol_error(
                 static_cast<std::uint32_t>(
                     OperationErrorCode::protocol_malformed),
                 L"decode_worker_message",
-                L"recovery correlation ids are not valid uuids"));
+                L"recovery correlation product operation id is not a valid uuid"));
+        }
+        persistence::CheckpointRecoveryCorrelation checkpoint{};
+        checkpoint.image_uuid = reader.image_uuid();
+        checkpoint.prior_generation = reader.u64();
+        checkpoint.candidate_generation = reader.u64();
+        checkpoint.native_operation_id = reader.u64();
+        checkpoint.manifest_slot = reader.u8();
+        checkpoint.candidate_bytes_digest = reader.digest();
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"recovery correlation body is truncated"));
         }
         message.correlation = WorkerRecoveryCorrelation{
-            *product_operation_id, *image_id, prior_generation,
-            candidate_generation, native_operation_id, manifest_slot,
-            candidate_bytes_digest};
+            *product_operation_id, checkpoint};
+    }
+    if ((mask & kHasRemoval) != 0) {
+        auto removal_operation_id = reader.uuid();
+        auto profile_id = reader.uuid();
+        if (!removal_operation_id.has_value() || !profile_id.has_value()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"removal authorization ids are not valid uuids"));
+        }
+        WorkerRemovalAuthorization authorization{*removal_operation_id,
+                                                 *profile_id};
+        authorization.image_id = reader.image_uuid();
+        authorization.ownership_evidence_digest = reader.digest();
+        // Read as explicit booleans rather than a packed flag word: a decoder
+        // that dropped a bit would silently turn one missing proof into a
+        // present one.
+        authorization.writer_lock_proved = reader.boolean();
+        authorization.device_match_proved = reader.boolean();
+        authorization.bundle_identity_proved = reader.boolean();
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"removal authorization body is truncated"));
+        }
+        message.removal = authorization;
     }
     if ((mask & kHasError) != 0) {
         Error error{};
@@ -402,6 +459,7 @@ void write_body(Writer& writer, const WorkerMessage& message) {
     }
     if (message.status.has_value()) {
         writer.u8(message.status->worker_alive ? 1 : 0);
+        writer.image_uuid(message.status->image_id);
         writer.u64(message.status->committed_generation);
         writer.u8(message.status->dirty ? 1 : 0);
         writer.u64(message.status->dirty_epoch);
@@ -419,12 +477,21 @@ void write_body(Writer& writer, const WorkerMessage& message) {
     }
     if (message.correlation.has_value()) {
         writer.uuid(message.correlation->product_operation_id);
-        writer.uuid(message.correlation->image_id);
-        writer.u64(message.correlation->prior_generation);
-        writer.u64(message.correlation->candidate_generation);
-        writer.u64(message.correlation->native_operation_id);
-        writer.u8(message.correlation->manifest_slot);
-        writer.digest(message.correlation->candidate_bytes_digest);
+        writer.image_uuid(message.correlation->checkpoint.image_uuid);
+        writer.u64(message.correlation->checkpoint.prior_generation);
+        writer.u64(message.correlation->checkpoint.candidate_generation);
+        writer.u64(message.correlation->checkpoint.native_operation_id);
+        writer.u8(message.correlation->checkpoint.manifest_slot);
+        writer.digest(message.correlation->checkpoint.candidate_bytes_digest);
+    }
+    if (message.removal.has_value()) {
+        writer.uuid(message.removal->removal_operation_id);
+        writer.uuid(message.removal->profile_id);
+        writer.image_uuid(message.removal->image_id);
+        writer.digest(message.removal->ownership_evidence_digest);
+        writer.u8(message.removal->writer_lock_proved ? 1 : 0);
+        writer.u8(message.removal->device_match_proved ? 1 : 0);
+        writer.u8(message.removal->bundle_identity_proved ? 1 : 0);
     }
     if (message.error.has_value()) {
         writer.u8(static_cast<std::uint8_t>(message.error->domain));
@@ -580,6 +647,64 @@ Result<void> require_matching_candidate(
             L"commit digest is not the prepared candidate"));
     }
     return Result<void>::success();
+}
+
+Result<void> require_removal_authorized(
+    const WorkerRemovalAuthorization& authorization,
+    const WorkerBinding& binding,
+    const persistence::ImageUuid& observed_image_id) {
+    // Each proof is checked separately and named in the refusal, so a caller
+    // recording the failure records *which* proof was missing rather than a
+    // generic "unsafe".
+    if (!authorization.writer_lock_proved) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_removal_authorized",
+            L"removal is refused: the bundle writer lock was not proved"));
+    }
+    if (!authorization.device_match_proved) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_removal_authorized",
+            L"removal is refused: the matching device was not proved"));
+    }
+    if (!authorization.bundle_identity_proved) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_removal_authorized",
+            L"removal is refused: the retained bundle identity was not proved"));
+    }
+    if (authorization.profile_id != binding.profile_id) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_removal_authorized",
+            L"removal is refused: the authorization names another profile"));
+    }
+    // The proof is about a bundle, so it must name the bundle this worker is
+    // actually bound to.  A complete set of proofs for a *different* image is
+    // not a proof for this one.
+    if (!(authorization.image_id == observed_image_id)) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_removal_authorized",
+            L"removal is refused: the authorization names another image"));
+    }
+    return Result<void>::success();
+}
+
+WorkerRecoveryOutcome worker_recovery_outcome(
+    const persistence::CheckpointRecoveryVerdict verdict) noexcept {
+    switch (verdict) {
+    case persistence::CheckpointRecoveryVerdict::CandidateGenerationProved:
+        return WorkerRecoveryOutcome::candidate_generation_proved;
+    case persistence::CheckpointRecoveryVerdict::PriorGenerationProved:
+        return WorkerRecoveryOutcome::prior_generation_proved;
+    case persistence::CheckpointRecoveryVerdict::OwnershipUnprovable:
+        return WorkerRecoveryOutcome::ownership_unprovable;
+    }
+    // Unreachable for the three declared cases; an added persistence verdict
+    // falls here, and the fail-closed answer is that nothing was proved.
+    return WorkerRecoveryOutcome::ownership_unprovable;
 }
 
 } // namespace myrd::m5

@@ -64,6 +64,16 @@ Result<WorkerMessage> WorkerSession::handle(const WorkerMessage& request) {
             L"handle", L"the worker has already cleaned up and cannot serve commands");
         return Result<WorkerMessage>::success(std::move(reply));
     }
+    // Once the service has asked this worker to terminate, only the idempotent
+    // commands may still run.  Serving a mutation after a shutdown request would
+    // be work the service has already stopped waiting for.
+    if (shutdown_requested_ && request.command != WorkerCommand::cleanup &&
+        request.command != WorkerCommand::shutdown) {
+        auto reply = make_reply(request);
+        reply.error = refusal(
+            L"handle", L"the worker has been asked to shut down and cannot serve commands");
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
     return dispatch(request);
 }
 
@@ -104,8 +114,7 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
-    case WorkerCommand::status:
-    case WorkerCommand::runtime_observation: {
+    case WorkerCommand::status: {
         if (!started_) {
             reply.error = refusal(L"observe", L"the runtime has not been started");
             return Result<WorkerMessage>::success(std::move(reply));
@@ -113,6 +122,30 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         auto status = runtime_.observe();
         if (!status.ok()) {
             reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = status.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::require_runtime_observation: {
+        // Strict, unlike `status`.  The caller is deciding whether a mutation is
+        // safe, so "could not observe a live runtime" must be a failure rather
+        // than a status the caller could mistake for "the runtime is clean".
+        if (!started_) {
+            reply.error = refusal(L"require_runtime_observation",
+                                  L"the runtime has not been started");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        if (!status.value().worker_alive) {
+            reply.error = refusal(
+                L"require_runtime_observation",
+                L"the runtime cannot be observed alive, so nothing is proved clean");
             return Result<WorkerMessage>::success(std::move(reply));
         }
         reply.status = status.value();
@@ -229,6 +262,77 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
             return Result<WorkerMessage>::success(std::move(reply));
         }
         reply.recovery = proof.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::remove_and_stop: {
+        if (!started_) {
+            reply.error = refusal(L"remove_and_stop",
+                                  L"the runtime has not been started");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        if (prepared_.has_value()) {
+            // A prepared-but-unpublished candidate is an open two-phase
+            // boundary.  Removing the bundle underneath it would destroy the
+            // evidence of an operation the service has not resolved yet.
+            reply.error = refusal(
+                L"remove_and_stop",
+                L"a checkpoint candidate is prepared and must be resolved first");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        if (!request.removal.has_value()) {
+            reply.error = refusal(L"remove_and_stop",
+                                  L"removal request carries no authorization");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // Check the proof against the image this worker actually holds, not
+        // against the authorization's own claim about it.  A complete proof for
+        // a different bundle is not a proof for this one.
+        const auto authorized = require_removal_authorized(
+            *request.removal, binding_, status.value().image_id);
+        if (!authorized.ok()) {
+            reply.error = authorized.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto removed = runtime_.remove_and_stop(*request.removal);
+        if (!removed.ok()) {
+            reply.error = removed.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = removed.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::shutdown: {
+        if (prepared_.has_value()) {
+            // §3.5: an unresolved session is resolved before the worker goes
+            // away.  Terminating here would abandon a candidate whose P4 record
+            // the service still has to reconcile, which is exactly the state
+            // the recovery proof exists to avoid.
+            reply.error = refusal(
+                L"shutdown",
+                L"a checkpoint candidate is prepared and must be resolved first");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto stopped = runtime_.shutdown();
+        if (!stopped.ok()) {
+            reply.error = stopped.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        shutdown_requested_ = true;
+        if (started_) {
+            auto status = runtime_.observe();
+            if (!status.ok()) {
+                reply.error = status.error();
+                return Result<WorkerMessage>::success(std::move(reply));
+            }
+            reply.status = status.value();
+        }
         return Result<WorkerMessage>::success(std::move(reply));
     }
 

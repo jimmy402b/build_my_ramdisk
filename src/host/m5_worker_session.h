@@ -30,8 +30,22 @@ public:
     // Judges what actually reached the bundle against the P4 correlation.  The
     // originating worker's in-process transaction is gone, so this may only
     // report one of the three designed outcomes -- never a synthesized success.
+    //
+    // The correlation is the persistence layer's own type, so the implementation
+    // forwards it to the read-only M3 inspection unchanged rather than
+    // translating a parallel field set.
     virtual Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) = 0;
+    // Removes this profile's *verified own* resources and stops.  The
+    // implementation is expected to re-check the authorization against what it
+    // actually holds; the session's gate refuses first, so a runtime is never
+    // asked to remove something a partial proof was presented for.
+    virtual Result<WorkerRuntimeStatus> remove_and_stop(
+        const WorkerRemovalAuthorization& authorization) = 0;
+    // The service's instruction to terminate.  It deliberately dismantles
+    // nothing: the ordered teardown stays `cleanup`'s job, so a caller can tell
+    // the worker to go away and still get a truthful teardown report from it.
+    virtual Result<void> shutdown() = 0;
     virtual Result<void> cleanup() = 0;
 };
 
@@ -66,6 +80,13 @@ public:
         return prepared_.has_value();
     }
     [[nodiscard]] bool cleaned_up() const noexcept { return cleaned_up_; }
+    // The service asked this worker to terminate.  The transport's read loop
+    // owns the process, so the session reports the request rather than acting on
+    // it; `cleanup` may still run afterwards, which is why shutdown is not a
+    // synonym for it.
+    [[nodiscard]] bool shutdown_requested() const noexcept {
+        return shutdown_requested_;
+    }
 
 private:
     Result<WorkerMessage> dispatch(const WorkerMessage& request);
@@ -82,6 +103,7 @@ private:
     std::uint64_t next_reply_sequence_{1};
     bool started_{};
     bool cleaned_up_{};
+    bool shutdown_requested_{};
     std::optional<WorkerPreparedCandidate> prepared_;
 };
 
