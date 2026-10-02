@@ -509,20 +509,26 @@ connect to its own service. It grants the interactive user nothing in
 production, where the creator is the service account, and the public pipe's
 descriptor is still not reused anywhere.
 
-**Evidence, and what is missing from it.** Release build clean after a full
-object rebuild. The test binaries report:
+**Evidence.** Release build clean after a full object rebuild, and the full
+elevated suite:
 
 ```
-unit.m5.worker_private_pipe   8/8
-unit.m5.worker_protocol      20/20
-unit.m5.worker_session       19/19
+ELEVATED=True
+100% tests passed, 0 tests failed out of 140
+CTEST_EXIT=0
 ```
 
-**The full elevated suite was *not* re-run for this increment.** The elevation
-prompt was declined twice, so there is no `ctest` result for it. The 139/139 in
-§1.10 is the last full-suite run and predates the private pipe; it does not cover
-`unit.m5.worker_private_pipe`. Re-running `C:\tmp\m5-full-ctest.ps1` elevated is
-outstanding for this increment, and the number should be 140 once it runs.
+140 = the previous 139 + `unit.m5.worker_private_pipe`. Standalone, the three
+worker suites report 8/8, 20/20 and 19/19.
+
+**A verification gap that was closed, recorded because it happened.** The first
+attempt to run this suite had the elevation prompt declined twice, and the
+increment was committed with the gap stated explicitly rather than papered over:
+the 139/139 in §1.10 was then the newest full-suite result and did not cover
+`unit.m5.worker_private_pipe`. The suite was re-run elevated afterwards and
+reports 140/140 on the same tree, so the gap is closed — but the interim state is
+worth keeping visible, because "committed with an outstanding full-suite run" is
+a state that should be visible rather than remembered.
 
 The handshake cases run against a real named pipe and two real threads, because
 the properties under test are transport properties and a fake would assume away
