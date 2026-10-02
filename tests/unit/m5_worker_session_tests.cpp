@@ -12,6 +12,13 @@ using namespace myrd;
 using namespace myrd::m5;
 
 constexpr std::uint64_t kSessionNonce = 0x5E55107Aull;
+
+StartupSecret session_secret() {
+    StartupSecret secret{};
+    secret.bytes[0] = std::byte{0x7A};
+    secret.bytes[31] = std::byte{0x0F};
+    return secret;
+}
 constexpr std::uint64_t kConfirmedGeneration = 5;
 constexpr std::uint64_t kCandidateGeneration = kConfirmedGeneration + 1;
 
@@ -169,11 +176,13 @@ bool has_event(const FakeWorkerRuntime& runtime, const char* event) {
 
 TEST_CASE(m5_worker_session_handshake_echoes_the_session_nonce) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
 
     auto handshake = request(WorkerCommand::handshake, 1);
-    handshake.handshake = WorkerHandshake{kWorkerProtocolMajor, kWorkerProtocolMinor,
-                                          kSessionNonce};
+    handshake.handshake = WorkerHandshake{
+        kWorkerProtocolMajor, kWorkerProtocolMinor, kSessionNonce,
+        session_secret()};
     const auto reply = session.handle(handshake);
     REQUIRE(reply.ok());
     REQUIRE(reply.value().kind == WorkerMessageKind::reply);
@@ -185,11 +194,13 @@ TEST_CASE(m5_worker_session_handshake_echoes_the_session_nonce) {
 
 TEST_CASE(m5_worker_session_refuses_a_handshake_for_another_session) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
 
     auto handshake = request(WorkerCommand::handshake, 1);
-    handshake.handshake = WorkerHandshake{kWorkerProtocolMajor, kWorkerProtocolMinor,
-                                          kSessionNonce + 1};
+    handshake.handshake = WorkerHandshake{
+        kWorkerProtocolMajor, kWorkerProtocolMinor, kSessionNonce + 1,
+        session_secret()};
     const auto reply = session.handle(handshake);
     REQUIRE(reply.ok());
     REQUIRE(reply.value().error.has_value());
@@ -197,7 +208,8 @@ TEST_CASE(m5_worker_session_refuses_a_handshake_for_another_session) {
 
 TEST_CASE(m5_worker_session_refuses_a_replayed_request_without_executing_it) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
 
     const auto first = session.handle(request(WorkerCommand::start, 4));
     REQUIRE(first.ok());
@@ -213,7 +225,8 @@ TEST_CASE(m5_worker_session_refuses_a_replayed_request_without_executing_it) {
 
 TEST_CASE(m5_worker_session_refuses_a_request_bound_to_another_worker) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
 
     auto foreign = request(WorkerCommand::start, 1);
     foreign.binding = WorkerBinding{777, 0x0123456789ABCDEFull, 7,
@@ -226,7 +239,8 @@ TEST_CASE(m5_worker_session_refuses_a_request_bound_to_another_worker) {
 
 TEST_CASE(m5_worker_session_observation_before_start_is_refused) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
 
     auto observe = request(WorkerCommand::require_runtime_observation, 1);
     observe.product_operation_id = operation_id();
@@ -238,7 +252,8 @@ TEST_CASE(m5_worker_session_observation_before_start_is_refused) {
 
 TEST_CASE(m5_worker_session_strict_observation_refuses_an_unproved_runtime) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     // An observation that cannot assert a live runtime is refused rather than
@@ -262,7 +277,8 @@ TEST_CASE(m5_worker_session_strict_observation_refuses_an_unproved_runtime) {
 
 TEST_CASE(m5_worker_session_prepare_names_the_native_id_by_the_shared_rule) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     auto prepare = request(WorkerCommand::checkpoint_prepare, 2);
@@ -281,7 +297,8 @@ TEST_CASE(m5_worker_session_prepare_names_the_native_id_by_the_shared_rule) {
 TEST_CASE(m5_worker_session_refuses_and_releases_an_underivable_candidate) {
     FakeWorkerRuntime runtime;
     runtime.prepare_returns_unexpected_generation = true;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     auto prepare = request(WorkerCommand::checkpoint_prepare, 2);
@@ -295,7 +312,8 @@ TEST_CASE(m5_worker_session_refuses_and_releases_an_underivable_candidate) {
 
 TEST_CASE(m5_worker_session_commit_must_repeat_the_prepared_candidate) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     auto prepare = request(WorkerCommand::checkpoint_prepare, 2);
@@ -331,7 +349,8 @@ TEST_CASE(m5_worker_session_commit_must_repeat_the_prepared_candidate) {
 
 TEST_CASE(m5_worker_session_commit_without_a_prepared_candidate_is_refused) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     auto commit = request(WorkerCommand::checkpoint_commit, 2);
@@ -345,7 +364,8 @@ TEST_CASE(m5_worker_session_commit_without_a_prepared_candidate_is_refused) {
 
 TEST_CASE(m5_worker_session_abort_releases_the_prepared_candidate) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     auto prepare = request(WorkerCommand::checkpoint_prepare, 2);
@@ -376,7 +396,8 @@ TEST_CASE(m5_worker_session_abort_releases_the_prepared_candidate) {
 // still live and the service must be able to retry rather than assume release.
 TEST_CASE(m5_worker_session_failed_abort_keeps_the_candidate_prepared) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     auto prepare = request(WorkerCommand::checkpoint_prepare, 2);
@@ -394,7 +415,8 @@ TEST_CASE(m5_worker_session_failed_abort_keeps_the_candidate_prepared) {
 
 TEST_CASE(m5_worker_session_recovery_proof_needs_the_p4_correlation) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
 
     auto missing = request(WorkerCommand::recovery_proof, 1);
     missing.product_operation_id = operation_id();
@@ -424,7 +446,8 @@ TEST_CASE(m5_worker_session_recovery_proof_needs_the_p4_correlation) {
 
 TEST_CASE(m5_worker_session_cleanup_runs_once_and_locks_out_later_commands) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     const auto cleaned = session.handle(request(WorkerCommand::cleanup, 2));
@@ -463,7 +486,8 @@ WorkerRemovalAuthorization removal_authorization(
 
 TEST_CASE(m5_worker_session_remove_and_stop_requires_the_full_ownership_proof) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     runtime.image_id.bytes[0] = std::byte{0x11};
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
@@ -499,7 +523,8 @@ TEST_CASE(m5_worker_session_remove_and_stop_requires_the_full_ownership_proof) {
 
 TEST_CASE(m5_worker_session_remove_and_stop_refuses_an_open_two_phase_boundary) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     runtime.image_id.bytes[0] = std::byte{0x11};
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
     REQUIRE(session
@@ -518,7 +543,8 @@ TEST_CASE(m5_worker_session_remove_and_stop_refuses_an_open_two_phase_boundary) 
 
 TEST_CASE(m5_worker_session_shutdown_refuses_an_open_two_phase_boundary) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
     REQUIRE(session
                 .handle(request(WorkerCommand::checkpoint_prepare, 2))
@@ -533,7 +559,8 @@ TEST_CASE(m5_worker_session_shutdown_refuses_an_open_two_phase_boundary) {
 
 TEST_CASE(m5_worker_session_shutdown_stops_serving_without_dismantling) {
     FakeWorkerRuntime runtime;
-    WorkerSession session(session_binding(), kSessionNonce, runtime);
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
     REQUIRE(session.handle(request(WorkerCommand::start, 1)).ok());
 
     const auto stopped = session.handle(request(WorkerCommand::shutdown, 2));
@@ -555,4 +582,23 @@ TEST_CASE(m5_worker_session_shutdown_stops_serving_without_dismantling) {
     REQUIRE(cleaned.ok());
     REQUIRE(!cleaned.value().error.has_value());
     REQUIRE(session.cleaned_up());
+}
+
+TEST_CASE(m5_worker_session_refuses_a_handshake_without_the_startup_secret) {
+    FakeWorkerRuntime runtime;
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
+
+    // The right nonce and the wrong secret: the peer answered this session but
+    // never read the inherited startup channel, so it is not the worker the
+    // service launched.
+    auto handshake = request(WorkerCommand::handshake, 1);
+    StartupSecret forged{};
+    handshake.handshake = WorkerHandshake{kWorkerProtocolMajor,
+                                          kWorkerProtocolMinor, kSessionNonce,
+                                          forged};
+    const auto reply = session.handle(handshake);
+    REQUIRE(reply.ok());
+    REQUIRE(reply.value().error.has_value());
+    REQUIRE(!reply.value().handshake.has_value());
 }

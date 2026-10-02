@@ -6,6 +6,7 @@
 #include "src/persistence/image_inspector.h"
 #include "src/product/uuid.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -74,12 +75,27 @@ struct WorkerBinding final {
     bool operator==(const WorkerBinding&) const noexcept = default;
 };
 
+// A value the service generates once per worker session and delivers *only*
+// through the worker's inherited startup channel, never on a command line and
+// never in a file.  Presenting it proves the peer read that channel, which is
+// what distinguishes "the worker I launched" from "anyone who can reach the pipe
+// name" -- the pipe ACL is the other half, and neither half is sufficient alone.
+struct StartupSecret final {
+    std::array<std::byte, 32> bytes{};
+
+    static Result<StartupSecret> generate();
+    bool operator==(const StartupSecret&) const noexcept = default;
+};
+
 struct WorkerHandshake final {
     std::uint16_t protocol_major{kWorkerProtocolMajor};
     std::uint16_t protocol_minor{kWorkerProtocolMinor};
     // A value the service generates once per session.  Echoing it proves the
     // peer answered *this* session rather than replaying an earlier handshake.
     std::uint64_t session_nonce{};
+    // The startup secret from the inherited channel.  A handshake without it,
+    // or with another session's, is refused.
+    StartupSecret startup_secret{};
 };
 
 // What prepare freezes.  The service persists exactly this as its P4

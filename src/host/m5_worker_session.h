@@ -64,8 +64,11 @@ public:
 //      dismantled runtime.
 class WorkerSession final {
 public:
+    // `startup_secret` is the value this session delivered through the worker's
+    // inherited startup channel.  Requiring it in the handshake is what makes
+    // "the worker I launched" different from "anything that can open the pipe".
     WorkerSession(WorkerBinding binding, std::uint64_t session_nonce,
-                  WorkerRuntime& runtime) noexcept;
+                  StartupSecret startup_secret, WorkerRuntime& runtime) noexcept;
 
     [[nodiscard]] Result<WorkerMessage> handle(const WorkerMessage& request);
 
@@ -98,6 +101,7 @@ private:
 
     WorkerBinding binding_;
     std::uint64_t session_nonce_{};
+    StartupSecret startup_secret_;
     WorkerRuntime& runtime_;
     std::uint64_t last_accepted_sequence_{};
     std::uint64_t next_reply_sequence_{1};

@@ -373,11 +373,16 @@ myrd_assert_execution_boundary(myrd_management)
 # does not link `myrd_persistence` and the management layer that links this
 # target does not gain a persistence link through it.
 add_library(myrd_m5_worker_protocol STATIC
+    host/m5_worker_bytes.h
     host/m5_worker_protocol.cpp host/m5_worker_protocol.h
     host/m5_worker_session.cpp host/m5_worker_session.h
+    host/m5_worker_private_pipe.cpp host/m5_worker_private_pipe.h
 )
 target_include_directories(myrd_m5_worker_protocol PUBLIC "${CMAKE_SOURCE_DIR}")
+# Advapi32 is only for the private pipe's security descriptor
+# (`ConvertStringSecurityDescriptorToSecurityDescriptorW`); it is deliberately
+# not the public pipe's descriptor.
 target_link_libraries(myrd_m5_worker_protocol PUBLIC
-    myrd_product_contracts myrd_common)
+    myrd_product_contracts myrd_common Advapi32)
 myrd_enable_warnings(myrd_m5_worker_protocol)
 myrd_assert_execution_boundary(myrd_m5_worker_protocol)

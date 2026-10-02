@@ -1583,6 +1583,18 @@ set_tests_properties(integration.m3.lifecycle_runner PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+add_executable(myrd_m5_worker_private_pipe_tests
+    unit/m5_worker_private_pipe_tests.cpp
+)
+target_link_libraries(myrd_m5_worker_private_pipe_tests PRIVATE
+    myrd_test_support myrd_m5_worker_protocol)
+target_include_directories(myrd_m5_worker_private_pipe_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_worker_private_pipe_tests)
+add_test(NAME unit.m5.worker_private_pipe
+    COMMAND myrd_m5_worker_private_pipe_tests)
+set_tests_properties(unit.m5.worker_private_pipe PROPERTIES TIMEOUT 120)
+
 # ---- M5 Task 3 addendum: read-only checkpoint recovery inspection ----------
 # The 2026-10-02 solution re-opens Task 3 for `inspect_checkpoint`, the only
 # read-side source of a committed native operation id and therefore the only

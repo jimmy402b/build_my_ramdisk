@@ -14,9 +14,10 @@ Error session_error(const std::uint32_t code, const wchar_t* operation,
 
 WorkerSession::WorkerSession(WorkerBinding binding,
                              const std::uint64_t session_nonce,
+                             StartupSecret startup_secret,
                              WorkerRuntime& runtime) noexcept
     : binding_(std::move(binding)), session_nonce_(session_nonce),
-      runtime_(runtime) {}
+      startup_secret_(std::move(startup_secret)), runtime_(runtime) {}
 
 Error WorkerSession::refusal(const wchar_t* operation,
                              const wchar_t* message) const {
@@ -82,16 +83,26 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
 
     switch (request.command) {
     case WorkerCommand::handshake: {
-        // The nonce must be the one this session issued.  Echoing a different
-        // value proves the peer is answering a different session.
+        // The nonce and the startup secret must both be the values this session
+        // issued.  The nonce proves the peer is answering *this* session; the
+        // secret proves it read the inherited startup channel rather than
+        // merely being able to open the pipe name.  Neither is sufficient
+        // alone, so both are required.
         if (!request.handshake.has_value() ||
             request.handshake->session_nonce != session_nonce_) {
             reply.error = refusal(L"handshake",
                                   L"handshake nonce does not match this session");
             return Result<WorkerMessage>::success(std::move(reply));
         }
+        if (!(request.handshake->startup_secret == startup_secret_)) {
+            reply.error = refusal(
+                L"handshake",
+                L"handshake startup secret is not the one this session delivered");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
         reply.handshake = WorkerHandshake{kWorkerProtocolMajor,
-                                          kWorkerProtocolMinor, session_nonce_};
+                                          kWorkerProtocolMinor, session_nonce_,
+                                          startup_secret_};
         // A handshake carries no operation id, so it must satisfy the shape
         // without one.
         reply.product_operation_id.reset();

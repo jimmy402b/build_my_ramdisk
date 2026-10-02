@@ -469,6 +469,68 @@ gate reached before the runtime is asked to do anything, removal refused across
 an open two-phase boundary, shutdown refused across an open two-phase boundary,
 and shutdown stopping service while leaving `cleanup` available.
 
+### 1.11 Task 5 increment 4 — the private worker channel and its startup contract
+
+Solution §2.2–§2.4. `src/host/m5_worker_private_pipe.{h,cpp}` plus a new
+`src/host/m5_worker_bytes.h`.
+
+**Why a shared byte header.** The launch spec is a second thing that has to cross
+this boundary, and a second hand-written little-endian reader would be a second
+place for the field conventions to drift. The primitives that were private to
+`m5_worker_protocol.cpp` moved into `WorkerBytesWriter`/`WorkerBytesReader` in
+`myrd::m5::detail`, and both TUs use them. The protocol's wire format is
+unchanged by the move.
+
+**The startup contract (§2.3).** `StartupSecret` (32 bytes from
+`BCryptGenRandom`, failing closed rather than falling back to a weaker source)
+and `WorkerLaunchSpec` travel entirely through an inheritable anonymous pipe
+created by `create_startup_channel()`. The child's command line is to carry
+*only the inherited handle value*; nothing sensitive is in it. The handshake
+carries the secret, so reading the channel -- not merely being able to open the
+pipe name -- is what proves the peer is the launched worker.
+
+**The channel (§2.4).** `WorkerPrivatePipeServer` creates a per-profile,
+per-session instance (`private_pipe_name()`, both axes in the name) with
+`FILE_FLAG_FIRST_PIPE_INSTANCE`, so a stale or squatted name is an error rather
+than something this session silently connects to. Frames are a 4-byte length plus
+that many bytes, and the receiver refuses a length of zero or above
+`kMaxWorkerMessageBytes` *before* allocating. `WorkerPrivatePipeClient::connect()`
+and `handshake()` are deliberately separate, so a caller cannot reach a runtime
+on a channel that was never authenticated.
+
+**Deliberate departure: the pipe ACL names the service's own identity.** The
+first implementation used a fixed `SYSTEM` + `Administrators` DACL, which the
+tests could not exercise without elevation (`CreateFileW` returned
+`ERROR_ACCESS_DENIED`). The fix is not a test seam: the DACL is built at runtime
+from the creating process's token user SID, plus SYSTEM and Administrators.
+That is *more* correct than the constant, because a Windows service is not
+obliged to run as SYSTEM and a hardcoded DACL would leave the worker unable to
+connect to its own service. It grants the interactive user nothing in
+production, where the creator is the service account, and the public pipe's
+descriptor is still not reused anywhere.
+
+**Evidence, and what is missing from it.** Release build clean after a full
+object rebuild. The test binaries report:
+
+```
+unit.m5.worker_private_pipe   8/8
+unit.m5.worker_protocol      20/20
+unit.m5.worker_session       19/19
+```
+
+**The full elevated suite was *not* re-run for this increment.** The elevation
+prompt was declined twice, so there is no `ctest` result for it. The 139/139 in
+§1.10 is the last full-suite run and predates the private pipe; it does not cover
+`unit.m5.worker_private_pipe`. Re-running `C:\tmp\m5-full-ctest.ps1` elevated is
+outstanding for this increment, and the number should be 140 once it runs.
+
+The handshake cases run against a real named pipe and two real threads, because
+the properties under test are transport properties and a fake would assume away
+exactly what can go wrong: a completed authenticated handshake followed by a real
+command/reply; a peer with the right nonce and binding but the wrong startup
+secret refused; a worker bound to another profile refused; and a second instance
+for a live session name refused.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
