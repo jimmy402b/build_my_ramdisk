@@ -51,6 +51,10 @@ struct WorkerLaunchSpec final {
     product::Uuid profile_id;
     std::uint64_t profile_revision{};
     std::wstring bundle_path;
+    // What the service recorded for this profile.  The worker verifies it
+    // against the bundle's own uuid and refuses to run when they disagree, so
+    // this is a claim to check rather than an identity to take on trust.
+    persistence::ImageUuid image_id{};
     std::uint64_t logical_size_bytes{};
     std::wstring mount_target;
     std::uint64_t session_generation{};

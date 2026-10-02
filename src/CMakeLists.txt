@@ -386,3 +386,16 @@ target_link_libraries(myrd_m5_worker_protocol PUBLIC
     myrd_product_contracts myrd_common Advapi32)
 myrd_enable_warnings(myrd_m5_worker_protocol)
 myrd_assert_execution_boundary(myrd_m5_worker_protocol)
+
+# The per-profile worker.  This is the one target allowed to reach DiskRuntime
+# and M3 (Task 0 Step 3), so it deliberately does *not* call
+# myrd_assert_execution_boundary: `myrd_m4_run` and `myrd_m3_windows` are exactly
+# what it is here to link.  Task 7 launches it, service-side.
+add_executable(myrd-m5-worker
+    host/m5_worker_main.cpp
+    host/m5_worker_runtime.cpp host/m5_worker_runtime.h
+)
+target_include_directories(myrd-m5-worker PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd-m5-worker PRIVATE
+    myrd_m5_worker_protocol myrd_m4_run myrd_m3_management)
+myrd_enable_warnings(myrd-m5-worker)

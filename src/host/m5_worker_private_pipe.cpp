@@ -223,6 +223,7 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     }
     WorkerLaunchSpec spec{*profile_id, reader.u64()};
     spec.bundle_path = reader.text();
+    spec.image_id = reader.image_uuid();
     spec.logical_size_bytes = reader.u64();
     spec.mount_target = reader.text();
     spec.session_generation = reader.u64();
@@ -268,6 +269,7 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     writer.uuid(spec.profile_id);
     writer.u64(spec.profile_revision);
     writer.text(spec.bundle_path);
+    writer.image_uuid(spec.image_id);
     writer.u64(spec.logical_size_bytes);
     writer.text(spec.mount_target);
     writer.u64(spec.session_generation);

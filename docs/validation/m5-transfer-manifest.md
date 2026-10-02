@@ -537,6 +537,62 @@ command/reply; a peer with the right nonce and binding but the wrong startup
 secret refused; a worker bound to another profile refused; and a second instance
 for a live session name refused.
 
+### 1.12 Task 5 increment 5 — the worker executable and its runtime
+
+`src/host/m5_worker_runtime.{h,cpp}` (the production `WorkerRuntime`) and
+`src/host/m5_worker_main.cpp`, in a new `myrd-m5-worker` executable target.
+That target deliberately does **not** call `myrd_assert_execution_boundary`:
+`myrd_m4_run` and `myrd_m3_windows` are exactly what Task 0 Step 3 says the
+per-profile worker is the one target allowed to link.
+
+**The ordering is the security property, so it is the first thing `main` does.**
+
+1. Read the launch spec from the inherited startup handle, then close it
+   immediately — holding it open would keep the secret reachable.
+2. Connect to the private pipe the *spec* names and complete the authenticated
+   handshake. (`DiskWorkerRuntime::open()` deliberately does not build a runtime;
+   it only validates the config, so "construct the runtime" cannot happen before
+   the handshake by accident.)
+3. Only then construct the runtime and open the bundle.
+
+The command line carries one hex handle value and nothing else, so no secret can
+reach it. That value is unverified input, so it is parsed strictly (hex only, no
+sign, no prefix, every character consumed, non-zero) and the handle is
+type-checked as a pipe before use.
+
+**`prove_recovery` is callable before `start()`**, which is the point of it: a
+fresh worker must decide what the bundle proves *before* it takes the writer
+lock. It forwards the correlation's persistence struct straight to
+`M3Provider::inspect_checkpoint` (static, no lock, no store, no runtime) and maps
+the verdict through the one `worker_recovery_outcome()` function.
+
+**`start()` verifies rather than trusts.** `WorkerLaunchSpec` now carries the
+image uuid the service recorded, and `start()` re-reads the bundle's own uuid via
+`persistence::inspect_image` and refuses to run when they disagree. That is why
+`observe().image_id` — which the removal gate checks the authorization against —
+is a checked value rather than a restatement of what the service claimed.
+
+`remove_and_stop` re-checks the ownership proof itself before dismantling, then
+runs the same ordered teardown as `cleanup`. `shutdown` dismantles nothing.
+
+**Evidence, and what is missing from it.** Release build clean after a full
+object rebuild; `myrd-m5-worker.exe` reports its usage and exits 1 when launched
+without a launch handle (fail-closed, checked by hand);
+`unit.m5.worker_private_pipe` 8/8.
+
+**The full elevated suite was *not* run for this increment.** The elevation
+prompt was declined, so there is no `ctest` result covering it. The last
+full-suite result is the 140/140 in §1.11, which predates this increment. The
+count should still be 140 — this increment adds an executable, not a test — but
+that is a prediction, not a measurement, and it is recorded as one.
+
+**A stale-object trap hit again, immediately.** Adding `image_id` to
+`WorkerLaunchSpec` changed a struct another translation unit already used, and
+the incremental build left the pipe test binary reading the old layout: a
+segmentation fault with no output. Deleting every `.obj` and rebuilding fixed it
+with no source change. This is §7 item 17 happening a second time; the rule there
+is not advisory.
+
 ## 2. Direct-transfer sources
 
 **Only** these directories may be transferred from `feature/m5-unified-integration`:
