@@ -1232,11 +1232,42 @@ Recorded so the plan and the tree do not silently diverge.
     *before* `create_runtime_and_worker`. So the plan's ordering and the M5
     execution model disagree about who creates the bundle and when.
 
-    Options, none yet chosen: (a) add a private protocol command pair so the
-    worker creates and inspects the bundle and returns the evidence; (b) re-cut
-    the action plan so bundle creation and inspection leave `IWorkerControl`
-    entirely and move to the composition layer, which is allowed to link
-    persistence — Task 6 owns `service_core.cpp` and is where the ordering lives;
-    (c) fail both actions closed and accept that `create` and `import` do not work
-    in M5. This is an architecture/scope decision and is being put to the user
-    rather than decided here.
+    **Corrected before any code was written, by asking where the value comes
+    from rather than where it stops — the same check that found §7 item 20a.**
+    Two of the three claims above are wrong. `BundleFileIdentity` *does* have a
+    producer, and it is in the management layer already:
+    `inspect_bundle_identity(std::wstring_view path)` in
+    `profile_registration_store.cpp` reads it with
+    `GetFileInformationByHandleEx(..., FileIdInfo, ...)`. And
+    `BundleEvidenceSource` has two values, `created_and_verified` and
+    `read_only_inspection` — the enum was built for exactly the two paths.
+    So reading a bundle's *identity* is not what the execution boundary
+    forbids; the boundary forbids the execution coupling, and `ServiceCore`
+    parsing journal bytes. What is genuinely absent is only the **creation** of
+    the generation-zero image, which needs persistence.
+
+    **Chosen: the worker produces the evidence through its status.** Confirmed
+    with the user. It follows the volume-identity precedent (§1.14) exactly, and
+    it matches where bundle creation actually happens in M5 — the worker's
+    `start()` — rather than leaving `create_and_verify_bundle` as a plan step
+    ordered before the worker that performs it. Concretely:
+
+    - `DiskWorkerRuntime::observe()` fills the bundle evidence. Its sources are
+      already at hand or already exist: `image_id` is `impl.config.image_id`,
+      which `start()` re-read against the bundle; the manifest name and geometry
+      come from `impl.config` plus the product constants; and the file identity
+      has an existing producer in `persistence/file_identity.cpp` to reuse rather
+      than a second `GetFileInformationByHandleEx` written by hand.
+    - `WorkerRuntimeStatus` carries it, as canonical fields beside the volume
+      identity, and `ServiceWorkerControl` maps it into
+      `BundleRegistrationEvidence` with the source the evidence actually came
+      from — `created_and_verified` when the worker provisioned the bundle in
+      this session, `read_only_inspection` when it adopted one that already
+      existed.
+    - The ordering disagreement the plan carries — `create_and_verify_bundle`
+      before `create_runtime_and_worker`, while the worker's `start()` is what
+      creates the image — is Task 6's to settle, since Task 6 owns
+      `service_core.cpp` and the orchestration table.
+
+    Recorded as still open because the code does not exist yet; the shape is
+    settled and the remaining work is Task 5's adapter plus Task 6's ordering.
