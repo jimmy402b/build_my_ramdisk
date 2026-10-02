@@ -1583,6 +1583,22 @@ set_tests_properties(integration.m3.lifecycle_runner PROPERTIES
     LABELS "m3-v2;m3-v4"
     TIMEOUT 120)
 
+# ---- M5 Task 3 addendum: read-only checkpoint recovery inspection ----------
+# The 2026-10-02 solution re-opens Task 3 for `inspect_checkpoint`, the only
+# read-side source of a committed native operation id and therefore the only
+# thing the Task 5 recovery proof may judge ownership against.
+add_executable(myrd_m5_checkpoint_inspection_tests
+    integration/m5_checkpoint_inspection_tests.cpp)
+target_link_libraries(myrd_m5_checkpoint_inspection_tests PRIVATE
+    myrd_test_support myrd_m3_management)
+target_include_directories(myrd_m5_checkpoint_inspection_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_checkpoint_inspection_tests)
+add_test(NAME integration.m5.checkpoint_inspection
+    COMMAND myrd_m5_checkpoint_inspection_tests)
+set_tests_properties(integration.m5.checkpoint_inspection PROPERTIES
+    TIMEOUT 120)
+
 add_executable(myrd_m3_provider_integration_tests
     integration/m3_provider_integration_tests.cpp)
 target_link_libraries(myrd_m3_provider_integration_tests PRIVATE

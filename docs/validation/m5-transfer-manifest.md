@@ -303,8 +303,89 @@ but no operation id. The only accessor that returns one,
 that §1.3 explicitly excludes. So Task 5 Step 4 was not implementable on the
 existing surface; this is exactly the gap the solution fills.
 
+**Where the id actually is (the question this section left open, now answered).**
+The read side already decodes it; it was simply never returned. Recovery's
+per-candidate validation reads the manifest's own journal-commit descriptor and
+calls `decode_checkpoint_commit` on those bytes
+(`recovery_engine.cpp`, the `ManifestCandidateCheck::JournalCommit` check). The
+decoded `CheckpointCommitRecord` is kept in `CandidateResources::journal_commit`
+and carries `common.operation_id`. That is a read of the committed journal
+record — the same `JournalRecordCommon::operation_id` the section names — and it
+is **not** `JournalIndexBuildPlan`. It is the only read-side source, and it is
+sufficient: adding one field to `RecoveredImage` surfaces it without any new
+journal parsing. The alternative the section considered — hashing or parsing
+journal bytes a second time — was unnecessary.
+
 **Recorded conflict with already-committed code (§7 item 15).** Task 5
 increments 1–2 were written before this solution existed and do not match §2.5.
+
+### 1.9 Task 3 addendum — the read-only recovery inspection
+
+Reopening Task 3 as §1.8 decides. What landed:
+
+- `recovery_engine.h`: `RecoveredImage::journal_operation_id`, populated in
+  `recover_complete_image` from the already-decoded
+  `CandidateResources::journal_commit.common.operation_id`; and
+  `read_manifest_slot_bytes()`, which re-reads one committed manifest slot image
+  through the same inspection open path recovery uses.
+- `image_inspector.{h,cpp}`: `CheckpointRecoveryCorrelation` (image uuid, prior
+  and candidate generation, native operation id, manifest slot, candidate bytes
+  digest), `CheckpointRecoveryInspection` (the six observed fields plus a
+  `verdict` and a `candidate_mismatch_mask`), and
+  `inspect_checkpoint(context, bundle_root, options, expected)`.
+- `m3_provider.{h,cpp}`: a **static** `M3Provider::inspect_checkpoint`. Static
+  because the caller is a fresh worker that has not opened the bundle yet; the
+  inspection exists to decide what may be opened, so taking the writer lock to
+  answer it would invert the ordering it enforces. It adds no policy — it builds
+  `ImageInspectOptions` and forwards.
+
+Read-only, concretely: the inspection creates no `M3Provider`, no
+`VolumeRuntime`, no store, no transport and no writer lock. It calls
+`recover_complete_image`, which opens the bundle for inspection and builds a
+composite over existing bytes — the same path `inspect_image` has always used.
+
+**Verdicts and the fail-closed rules.** `CandidateGenerationProved` requires all
+six conditions (§2.6's five plus the prior generation) and is the *only* verdict
+that permits confirming the operation. `PriorGenerationProved` requires the
+committed generation to be the candidate's prior generation *and* the journal's
+native id to be someone else's. Everything else — including a bundle that is
+readable but not recoverable, and a candidate superseded by a later checkpoint —
+is `OwnershipUnprovable`. A readable bundle that disagrees with the correlation
+is a *successful* inspection with an unprovable verdict; only an operational or
+format failure is an outer `Result` failure. Either way nothing is confirmed.
+
+`candidate_mismatch_mask` carries one bit per failed condition, all six when the
+bundle could not be read far enough to check any. It exists so a refusal can say
+which conditions held; it is never zero unless the candidate is proved.
+
+**Evidence.** Release build clean after a **full object rebuild** (see §7 item
+17), `9/9 passed` from `myrd_m5_checkpoint_inspection_tests.exe`, and the full
+elevated suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 139
+CTEST_EXIT=0
+```
+
+139 = the previous 138 + `integration.m5.checkpoint_inspection`. Because the
+whole object tree was deleted and recompiled first (§7 item 17), this count — not
+the §1.4–§1.7 ones — is the first one measured on a tree that is guaranteed
+internally consistent.
+
+The nine cases are: a committed candidate proved (including that the reported id
+is the candidate's 3903, not generation zero's 3901); the prior generation proved
+after an abort; a forged manifest digest; a mismatched native operation id; a
+mismatched image uuid; a mismatched manifest slot; a superseded candidate; a
+bundle with no manifest; and that the inspection writes nothing, proved by
+fingerprinting every file in the bundle (names, sizes, SHA-256) before and after.
+
+**One deliberate non-obviousness in the mask.** The digest is taken over the slot
+the bundle *selected*, so a correlation naming the wrong slot fails only the slot
+condition (the bytes still hash to the prepared digest). Both conditions are kept
+because they catch different things: the slot field catches a P4 record that
+named a different slot, and the digest catches byte-level drift. The test asserts
+the single-bit mask so this cannot quietly change.
 
 ## 2. Direct-transfer sources
 
@@ -526,3 +607,31 @@ Recorded so the plan and the tree do not silently diverge.
     the solution's persistence-level `CheckpointRecoveryCorrelation`; the
     inspection API's parameter type should be the authority and the protocol
     type should carry it rather than duplicate its fields.
+16. **Task 3 addendum: `inspect_checkpoint` takes the bundle location and
+    inspection options.** §1.2 writes the signature as
+    `inspect_checkpoint(context, expected)`, which omits where the bundle is and
+    what the recovery limits are. The implementation is
+    `inspect_checkpoint(context, bundle_root, options, expected)`, mirroring the
+    existing `inspect_image`/`verify_image`: `ImageInspectOptions` already
+    carries the manifest name and the bounded recovery limits. `M3Provider`'s
+    static wrapper is the shorter shape §1.2 describes, because
+    `M3ProviderConfig` already holds both.
+17. **The build directory does not track header dependencies — so every earlier
+    "build clean" claim was made against a possibly stale tree.** `ninja -t deps`
+    reports **no recorded dependencies** for the object files in
+    `out/build/msvc` (checked on
+    `src/CMakeFiles/myrd_persistence.dir/Release/persistence/image_creator.cpp.obj`);
+    that object's mtime was a day older than a header it includes. A normal
+    `cmake --build` therefore recompiles a changed header's dependents only if
+    their `.cpp` also changed. This is not cosmetic: adding a field to
+    `RecoveredImage` left `image_creator.cpp.obj` stale, and because
+    `create_generation_zero_image` returns `Result<RecoveredImage>` **by value**,
+    the test binary read a return object laid out for the old size — a 0xC0000409
+    CRT abort with a garbage `ok()`. **Rule from here on: after any header edit,
+    delete the stale objects (`find out/build/msvc -name '*.obj' -delete`) and
+    rebuild, or the verification result is not trustworthy.** The §1.9 evidence
+    was produced that way, and the Task 3 addendum suite run re-establishes a
+    full-rebuild count for the current tree. The counts in §1.4–§1.7 were taken
+    before this was understood: they were real runs of a built tree, but the tree
+    may have mixed objects from before and after a header change. Re-running them
+    from a full rebuild is a Task 9 obligation.

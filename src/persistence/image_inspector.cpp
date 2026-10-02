@@ -105,6 +105,114 @@ Result<ImageInspection> inspect_image(
     return Result<ImageInspection>::success(make_inspection(outcome));
 }
 
+namespace {
+
+// One bit per condition that must hold for the candidate to be proved.  The
+// mask is built with |= rather than early-exit so a caller that has to explain
+// a refusal can say which conditions held and which did not.
+std::uint32_t candidate_mismatch_mask(
+    const CheckpointRecoveryInspection& observed,
+    const CheckpointRecoveryCorrelation& expected) noexcept {
+    std::uint32_t mask{};
+    if (!(observed.image_uuid == expected.image_uuid)) {
+        mask |= static_cast<std::uint32_t>(CheckpointRecoveryMismatch::ImageUuid);
+    }
+    if (observed.prior_generation != expected.prior_generation) {
+        mask |= static_cast<std::uint32_t>(
+            CheckpointRecoveryMismatch::PriorGeneration);
+    }
+    if (observed.candidate_generation != expected.candidate_generation) {
+        mask |= static_cast<std::uint32_t>(
+            CheckpointRecoveryMismatch::CandidateGeneration);
+    }
+    if (observed.journal_operation_id != expected.native_operation_id) {
+        mask |= static_cast<std::uint32_t>(
+            CheckpointRecoveryMismatch::NativeOperationId);
+    }
+    if (observed.selected_manifest_slot != expected.manifest_slot) {
+        mask |= static_cast<std::uint32_t>(
+            CheckpointRecoveryMismatch::ManifestSlot);
+    }
+    if (observed.selected_manifest_digest != expected.candidate_bytes_digest) {
+        mask |= static_cast<std::uint32_t>(
+            CheckpointRecoveryMismatch::ManifestDigest);
+    }
+    return mask;
+}
+
+} // namespace
+
+Result<CheckpointRecoveryInspection> inspect_checkpoint(
+    const OperationContext& context,
+    const std::filesystem::path& bundle_root,
+    const ImageInspectOptions& options,
+    const CheckpointRecoveryCorrelation& expected) {
+    auto valid = validate_options(options);
+    if (!valid.ok()) {
+        return Result<CheckpointRecoveryInspection>::failure(valid.error());
+    }
+    auto outcome = recover_complete_image(
+        context, bundle_root, options.manifest_relative_name,
+        options.recovery);
+    if (!outcome.ok() &&
+        (!outcome.error.has_value() ||
+         !is_expected_rejection(*outcome.error))) {
+        return Result<CheckpointRecoveryInspection>::failure(
+            outcome.error.value_or(inspection_error(
+                PersistenceErrorCode::FatalInternalInvariant,
+                L"recovery returned neither an image nor an error")));
+    }
+
+    CheckpointRecoveryInspection inspection{};
+    if (!outcome.image.has_value()) {
+        // The bundle is readable but nothing in it is recoverable.  No candidate
+        // condition can be verified against it, so the mask stays full and the
+        // verdict stays unprovable: a corrupt or absent image must never be
+        // read as "the checkpoint did not happen".
+        inspection.candidate_mismatch_mask = kCheckpointCandidateConditions;
+        inspection.verdict = CheckpointRecoveryVerdict::OwnershipUnprovable;
+        return Result<CheckpointRecoveryInspection>::success(
+            std::move(inspection));
+    }
+
+    const auto& image = *outcome.image;
+    inspection.image_uuid = image.image_uuid;
+    inspection.prior_generation = image.base_generation;
+    inspection.candidate_generation = image.checkpoint_generation;
+    inspection.journal_operation_id = image.journal_operation_id;
+    inspection.selected_manifest_slot = image.selected_slot;
+
+    auto slot_bytes = read_manifest_slot_bytes(
+        context, bundle_root, options.manifest_relative_name,
+        image.selected_slot);
+    if (!slot_bytes.ok()) {
+        return Result<CheckpointRecoveryInspection>::failure(
+            slot_bytes.error());
+    }
+    auto digest = sha256_digest(slot_bytes.value());
+    if (!digest.ok()) {
+        return Result<CheckpointRecoveryInspection>::failure(digest.error());
+    }
+    inspection.selected_manifest_digest = digest.value();
+
+    inspection.candidate_mismatch_mask =
+        candidate_mismatch_mask(inspection, expected);
+    if (inspection.candidate_mismatch_mask == 0) {
+        inspection.verdict = CheckpointRecoveryVerdict::CandidateGenerationProved;
+    } else if (inspection.candidate_generation == expected.prior_generation &&
+               inspection.journal_operation_id !=
+                   expected.native_operation_id) {
+        // The committed generation is the one the candidate was built on and
+        // the journal's native id is somebody else's, so this operation
+        // definitively did not commit.
+        inspection.verdict = CheckpointRecoveryVerdict::PriorGenerationProved;
+    } else {
+        inspection.verdict = CheckpointRecoveryVerdict::OwnershipUnprovable;
+    }
+    return Result<CheckpointRecoveryInspection>::success(
+        std::move(inspection));
+}
+
 Result<ImageVerificationReport> verify_image(
     const OperationContext& context,
     const std::filesystem::path& bundle_root,

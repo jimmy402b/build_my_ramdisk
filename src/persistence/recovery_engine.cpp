@@ -1095,8 +1095,50 @@ RecoveryOutcome recover_complete_image(
     image.backing_identity = identity;
     image.backing_view = BackingView{
         slot.generation.checkpoint_generation, std::move(store)};
+    // `journal_commit` is the commit record this candidate's own validation
+    // decoded from the journal at the descriptor the manifest points at, so the
+    // id is recovery's reading of the committed bytes rather than anything a
+    // writer reported.
+    image.journal_operation_id = resource.journal_commit.common.operation_id;
     outcome.image = std::move(image);
     return outcome;
+}
+
+Result<ManifestSlotBytes> read_manifest_slot_bytes(
+    const OperationContext& context,
+    const std::filesystem::path& bundle_root,
+    const std::string_view manifest_relative_name,
+    const std::uint8_t slot_index) {
+    if (slot_index > 1) {
+        return Result<ManifestSlotBytes>::failure(recovery_error(
+            PersistenceErrorCode::InvalidFormat,
+            L"manifest slot index is out of range"));
+    }
+    if (!validate_image_component(manifest_relative_name).ok()) {
+        return Result<ManifestSlotBytes>::failure(recovery_error(
+            PersistenceErrorCode::InvalidFormat,
+            L"manifest name is invalid"));
+    }
+    auto live = check_operation_context(context);
+    if (!live.ok()) return Result<ManifestSlotBytes>::failure(live.error());
+    auto capability =
+        open_bundle_file_for_inspection(bundle_root, manifest_relative_name);
+    if (!capability.ok()) {
+        return Result<ManifestSlotBytes>::failure(capability.error());
+    }
+    if (capability.value().identity().size != kManifestFileBytes) {
+        return Result<ManifestSlotBytes>::failure(recovery_error(
+            PersistenceErrorCode::ManifestCorrupt,
+            L"manifest file length is not exactly 8192 bytes"));
+    }
+    auto file = open_validated_persistence_file(capability.move_value());
+    if (!file.ok()) return Result<ManifestSlotBytes>::failure(file.error());
+    ManifestSlotBytes bytes{};
+    auto read = file.value()->read_exact(
+        context, static_cast<std::uint64_t>(slot_index) * kManifestSlotBytes,
+        bytes);
+    if (!read.ok()) return Result<ManifestSlotBytes>::failure(read.error());
+    return Result<ManifestSlotBytes>::success(bytes);
 }
 
 }  // namespace myrd::persistence

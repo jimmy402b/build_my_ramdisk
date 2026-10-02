@@ -1936,4 +1936,18 @@ void M3Provider::set_state(const M3ProviderState state) noexcept {
     state_.store(state, std::memory_order_release);
 }
 
+Result<persistence::CheckpointRecoveryInspection> M3Provider::inspect_checkpoint(
+    const OperationContext& context,
+    M3ProviderConfig config,
+    const persistence::CheckpointRecoveryCorrelation& expected) {
+    // Deliberately no writer lock, no store, no transport and no runtime: this
+    // is the decision that precedes opening the bundle, so taking the writer
+    // lock here would invert the ordering it exists to enforce.
+    persistence::ImageInspectOptions options{};
+    options.manifest_relative_name = config.manifest_name;
+    options.recovery = config.recovery;
+    return persistence::inspect_checkpoint(
+        context, config.bundle_root, options, expected);
+}
+
 } // namespace myrd::m3

@@ -2,6 +2,7 @@
 
 #include "src/common/operation_context.h"
 #include "src/persistence/composite_backing_store.h"
+#include "src/persistence/manifest_format.h"
 #include "src/persistence/manifest_selector.h"
 #include "src/persistence/persistence_types.h"
 #include "src/storage/dynamic_block_store.h"
@@ -53,6 +54,13 @@ struct RecoveredImage final {
     std::array<RecoveryCandidateDiagnostic, 2> diagnostics{};
     CompositeBackingIdentity backing_identity{};
     BackingView backing_view{};
+    // The native operation id that the committed checkpoint recorded for this
+    // generation.  It is decoded from the journal's own commit record
+    // (`JournalRecordCommon::operation_id`) on the read path, exactly like the
+    // rest of recovery, and never from the write-side JournalIndexBuildPlan.
+    // It is the only read-side source of that id, and the M5 recovery proof
+    // depends on it.
+    std::uint64_t journal_operation_id{};
 };
 
 // Unlike Result<RecoveredImage>, this preserves rejected-slot diagnostics when
@@ -73,5 +81,18 @@ struct RecoveryOutcome final {
     const std::filesystem::path& bundle_root,
     std::string_view manifest_relative_name,
     const RecoveryOptions& options);
+
+// Re-reads one manifest slot image, byte for byte, exactly as recovery read it.
+//
+// This exists so the M5 recovery inspection can hash the committed candidate's
+// exact on-disk bytes rather than a re-encoded copy: the digest it produces has
+// to be comparable with what the write side froze at prepare.  It is read-only
+// — it opens the bundle for inspection, takes no writer transaction, no delete
+// guard and no runtime, and it never writes.
+[[nodiscard]] Result<ManifestSlotBytes> read_manifest_slot_bytes(
+    const OperationContext& context,
+    const std::filesystem::path& bundle_root,
+    std::string_view manifest_relative_name,
+    std::uint8_t slot_index);
 
 }  // namespace myrd::persistence

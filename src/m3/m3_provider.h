@@ -5,6 +5,7 @@
 #include "src/common/sha256.h"
 #include "src/persistence/checkpoint_coordinator.h"
 #include "src/persistence/compaction_coordinator.h"
+#include "src/persistence/image_inspector.h"
 #include "src/persistence/image_session.h"
 #include "src/persistence/persistence_types.h"
 #include "src/persistence/recovery_engine.h"
@@ -231,6 +232,21 @@ public:
         const proxy::IProxyNamespacePolicy& namespace_policy,
         M3ProviderConfig config,
         M3ProviderFactories factories = {});
+
+    // The M5 recovery proof's read-only entry point, and the only way anything
+    // outside persistence may ask what a bundle proves.
+    //
+    // It is static by design: it is called by a fresh worker deciding whether
+    // it is allowed to open this bundle at all, so no provider is open yet and
+    // no writer lock is held.  It is a thin pass-through that adds no policy --
+    // the verdict and its fail-closed rules live in persistence -- but it does
+    // mean the worker, and therefore Task 5 and ServiceCore, never touch a
+    // bundle, a manifest or a journal directly.
+    [[nodiscard]] static Result<persistence::CheckpointRecoveryInspection>
+    inspect_checkpoint(
+        const OperationContext& context,
+        M3ProviderConfig config,
+        const persistence::CheckpointRecoveryCorrelation& expected);
 
     ~M3Provider() noexcept;
     M3Provider(const M3Provider&) = delete;
