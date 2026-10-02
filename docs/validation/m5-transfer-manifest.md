@@ -1056,10 +1056,24 @@ Recorded so the plan and the tree do not silently diverge.
     unknown, park the operation" — and the safe answer for one is the unsafe
     answer for the other.
 
-    Fix shape, not yet implemented: give the commit reply a payload carrying the
-    disposition and the persistence failure context (the historical
-    `WorkerCheckpointCommitReply` carried `disposition`, `failure` and
-    `generation`), have the worker relay `DiskCheckpointDisposition` verbatim
-    instead of folding it, and extend the protocol round-trip tests to cover all
-    four dispositions. `execute_checkpoint`'s boundary logic must not be written
-    against a reply that cannot express its own outcome.
+    **Traced to its source, and it is shallower than it first looked.** The
+    disposition survives all the way up: `M3CheckpointOutcome` carries
+    `disposition`, `generation`, `error` and `error_context`, and
+    `ProductionRuntimeAdapter::commit_checkpoint` maps the disposition into
+    `DiskCheckpointResult`. The loss is at exactly one place —
+    `DiskWorkerRuntime::commit_checkpoint`, which tests `checkpoint_ok()` and
+    discards the disposition it was just handed. `DiskCheckpointResult` does
+    carry `disposition` and `generation`, so that much needs no new plumbing at
+    all; the persistence failure context is the only genuinely absent piece,
+    because the adapter maps only those two fields into `DiskCheckpointResult`
+    and lets `M3CheckpointOutcome::error_context` fall off there.
+
+    Fix shape, not yet implemented: widen `DiskCheckpointResult` to carry the
+    error context (the upstream type is `persistence::PersistenceErrorContext`,
+    which `WorkerCheckpointEvidence::error_context` already mirrors), add a
+    commit-reply payload to the private protocol carrying the disposition, the
+    generation and that context, have the worker relay
+    `DiskCheckpointDisposition` verbatim instead of folding it, and extend the
+    protocol round-trip tests to cover all four dispositions.
+    `execute_checkpoint`'s boundary logic must not be written against a reply
+    that cannot express its own outcome.
