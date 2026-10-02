@@ -27,6 +27,7 @@ constexpr std::uint32_t kHasCorrelation = 1U << 8;
 constexpr std::uint32_t kHasRemoval = 1U << 9;
 constexpr std::uint32_t kHasCommitReply = 1U << 10;
 constexpr std::uint32_t kHasRemovalReply = 1U << 11;
+constexpr std::uint32_t kHasAbortReply = 1U << 12;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -50,6 +51,7 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.status.has_value()) mask |= kHasStatus;
     if (message.commit_reply.has_value()) mask |= kHasCommitReply;
     if (message.removal_reply.has_value()) mask |= kHasRemovalReply;
+    if (message.abort_reply.has_value()) mask |= kHasAbortReply;
     if (message.recovery.has_value()) mask |= kHasRecovery;
     if (message.error.has_value()) mask |= kHasError;
     if (message.correlation.has_value()) mask |= kHasCorrelation;
@@ -72,11 +74,17 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
     case WorkerCommand::handshake:
         return {kBase | kHasHandshake, kHasError};
     case WorkerCommand::start:
-    case WorkerCommand::checkpoint_abort:
         // Operation-scoped: the shape requires an operation id, so the gate can
         // require one for exactly the commands that must be attributable.
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
+    case WorkerCommand::checkpoint_abort:
+        // Operation-scoped.  The reply is its own type: `aborted == false`
+        // covers both "there was nothing to cancel" and "the candidate could
+        // not be cancelled", and only the refusal says which.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasAbortReply : 0U),
                 kHasError};
     case WorkerCommand::status:
     case WorkerCommand::require_runtime_observation:
@@ -218,6 +226,16 @@ Result<void> validate_shape(const WorkerMessage& message) {
                 L"A removal reply must report either a refusal or a completed "
                 L"removal, not both and not neither"));
         }
+    }
+    // Same rule for the abort reply: it reports an abort or a reason, and a
+    // reply that says both leaves the caller unable to tell which happened.
+    if (message.abort_reply.has_value()
+        && message.abort_reply->refused() == message.abort_reply->aborted) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+            L"validate_shape",
+            L"An abort reply must report either an abort or a refusal, not "
+            L"both and not neither"));
     }
     return Result<void>::success();
 }
@@ -392,6 +410,29 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         }
         message.removal_reply = std::move(reply);
     }
+    if ((mask & kHasAbortReply) != 0) {
+        WorkerCheckpointAbortReply reply{};
+        reply.aborted = reader.boolean();
+        reply.generation = reader.u64();
+        const auto refusal = reader.u8();
+        if (refusal
+            > static_cast<std::uint8_t>(WorkerAbortRefusal::abort_failed)) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"abort refusal is not a value this protocol defines"));
+        }
+        reply.refusal = static_cast<WorkerAbortRefusal>(refusal);
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"abort reply is truncated"));
+        }
+        message.abort_reply = std::move(reply);
+    }
     if ((mask & kHasStatus) != 0) {
         auto status = read_status(reader);
         if (!status.ok()) return Result<void>::failure(status.error());
@@ -560,6 +601,11 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.boolean(message.removal_reply->stopped);
         writer.u64(message.removal_reply->generation);
         writer.u8(static_cast<std::uint8_t>(message.removal_reply->refusal));
+    }
+    if (message.abort_reply.has_value()) {
+        writer.boolean(message.abort_reply->aborted);
+        writer.u64(message.abort_reply->generation);
+        writer.u8(static_cast<std::uint8_t>(message.abort_reply->refusal));
     }
     if (message.status.has_value()) write_status(writer, *message.status);
     if (message.recovery.has_value()) {

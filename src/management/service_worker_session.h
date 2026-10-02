@@ -75,7 +75,10 @@ public:
     [[nodiscard]] Result<m5::WorkerCheckpointCommitReply> commit_checkpoint(
         const OperationContext& context, const product::Uuid& operation_id,
         const m5::WorkerCheckpointCommit& commit);
-    [[nodiscard]] Result<m5::WorkerRuntimeStatus> abort_checkpoint(
+    // Returns the abort answer rather than an observation, so a caller can tell
+    // "there was nothing to cancel" from "the candidate could not be cancelled"
+    // and can check that a successful abort left the generation where it was.
+    [[nodiscard]] Result<m5::WorkerCheckpointAbortReply> abort_checkpoint(
         const OperationContext& context, const product::Uuid& operation_id,
         std::uint64_t native_operation_id);
 

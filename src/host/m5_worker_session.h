@@ -35,7 +35,12 @@ public:
     // moment guessing is most expensive.
     virtual Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) = 0;
-    virtual Result<WorkerRuntimeStatus> abort_checkpoint(
+    // The abort answer.  A bare status cannot express it: `aborted == false`
+    // covers both "there was nothing to cancel" and "the candidate could not be
+    // cancelled", and the first leaves the bundle untouched while the second
+    // forces a reconciliation.  The generation rides along because the caller
+    // checks that a successful abort did not move it.
+    virtual Result<WorkerCheckpointAbortReply> abort_checkpoint(
         std::uint64_t native_operation_id) = 0;
     // Judges what actually reached the bundle against the P4 correlation.  The
     // originating worker's in-process transaction is gone, so this may only

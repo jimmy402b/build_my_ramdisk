@@ -337,6 +337,57 @@ TEST_CASE(m5_worker_protocol_refuses_a_half_removed_reply) {
     REQUIRE(encode(removal_reply_message(refused_without_removing)).ok());
 }
 
+WorkerMessage abort_reply_message(const WorkerCheckpointAbortReply& reply) {
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::checkpoint_abort;
+    message.sequence = 7;
+    message.binding = session_binding();
+    // Operation-scoped, so the shape requires the operation id.
+    message.product_operation_id = uuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    message.abort_reply = reply;
+    return message;
+}
+
+TEST_CASE(m5_worker_protocol_abort_reply_distinguishes_its_two_failures) {
+    // `aborted == false` is two facts: there was no candidate to cancel, which
+    // leaves the bundle untouched, or the candidate existed and could not be
+    // cancelled, which leaves its state unknown and forces a reconciliation.
+    // The safe handling for the first is the unsafe handling for the second, so
+    // the reason has to survive the wire.
+    const WorkerCheckpointAbortReply aborted{true, 5, WorkerAbortRefusal::none};
+    const auto aborted_bytes = encode(abort_reply_message(aborted));
+    REQUIRE(aborted_bytes.ok());
+    const auto decoded_aborted = decode_worker_message(aborted_bytes.value());
+    REQUIRE(decoded_aborted.ok());
+    REQUIRE(*decoded_aborted.value().abort_reply == aborted);
+    REQUIRE(!decoded_aborted.value().abort_reply->refused());
+
+    for (const auto refusal : {WorkerAbortRefusal::no_candidate,
+                               WorkerAbortRefusal::abort_failed}) {
+        const WorkerCheckpointAbortReply refused{false, 5, refusal};
+        const auto bytes = encode(abort_reply_message(refused));
+        REQUIRE(bytes.ok());
+        const auto decoded = decode_worker_message(bytes.value());
+        REQUIRE(decoded.ok());
+        REQUIRE(*decoded.value().abort_reply == refused);
+        REQUIRE(decoded.value().abort_reply->refused());
+        // The generation travels on a refusal too, so the caller can record
+        // which generation the candidate was abandoned at.
+        REQUIRE_EQ(decoded.value().abort_reply->generation, 5ull);
+    }
+}
+
+TEST_CASE(m5_worker_protocol_refuses_a_self_contradictory_abort_reply) {
+    const WorkerCheckpointAbortReply both{true, 5,
+                                          WorkerAbortRefusal::abort_failed};
+    REQUIRE(!encode(abort_reply_message(both)).ok());
+
+    const WorkerCheckpointAbortReply neither{false, 5,
+                                             WorkerAbortRefusal::none};
+    REQUIRE(!encode(abort_reply_message(neither)).ok());
+}
+
 TEST_CASE(m5_worker_protocol_status_carries_the_adopted_volume_identity) {
     // The service writes this triple into the durable profile, which is what
     // every later start verifies the runtime against -- so it has to arrive over

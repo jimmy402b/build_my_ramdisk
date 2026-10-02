@@ -50,7 +50,7 @@ public:
         std::uint64_t native_operation_id) override;
     Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) override;
-    Result<WorkerRuntimeStatus> abort_checkpoint(
+    Result<WorkerCheckpointAbortReply> abort_checkpoint(
         std::uint64_t native_operation_id) override;
     Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) override;

@@ -274,6 +274,40 @@ struct WorkerCheckpointCommitReply final {
     bool operator==(const WorkerCheckpointCommitReply&) const noexcept = default;
 };
 
+// Why an abort did not succeed.
+//
+// The historical reply carried a persistence failure context here, and this one
+// deliberately does not -- because none exists to carry. `M3Provider::
+// abort_checkpoint` and the transaction abort beneath it both return
+// `Result<void>`, so there is no context to relay, and composing one from the
+// bare `Error` would name a persistence failure that never happened.
+//
+// What the caller actually needs is the distinction, not the detail: `aborted
+// == false` is two facts -- there was no candidate to cancel, which leaves the
+// bundle untouched, or the candidate existed and could not be cancelled, which
+// leaves its state unknown and forces a reconciliation.  The safe handling for
+// the first is the unsafe handling for the second, so the reason travels as a
+// value of its own until the layer below can supply a real context.
+enum class WorkerAbortRefusal : std::uint8_t {
+    none = 0,
+    no_candidate,
+    abort_failed,
+};
+
+struct WorkerCheckpointAbortReply final {
+    bool aborted{};
+    // The generation that remains committed.  A successful abort does not move
+    // it, which is what lets a caller record that the candidate was not
+    // published; a caller that could not read it could not make that check.
+    std::uint64_t generation{};
+    WorkerAbortRefusal refusal{WorkerAbortRefusal::none};
+
+    [[nodiscard]] bool refused() const noexcept {
+        return refusal != WorkerAbortRefusal::none;
+    }
+    bool operator==(const WorkerCheckpointAbortReply&) const noexcept = default;
+};
+
 // Why a removal did not happen.  `none` means it was not refused, and the
 // protocol requires that to agree with `removed`/`stopped` in both directions.
 //
@@ -379,6 +413,9 @@ struct WorkerMessage final {
     // learn which generation the removal happened at, and why it did not happen
     // when it did not.  An observation carries neither.
     std::optional<WorkerRemoveAndStopReply> removal_reply;
+    // The abort answer, its own type for the same reason: `aborted == false`
+    // alone does not say whether there was anything to cancel.
+    std::optional<WorkerCheckpointAbortReply> abort_reply;
     std::optional<WorkerRuntimeStatus> status;
     std::optional<WorkerRecoveryProof> recovery;
     // Carried by a recovery-proof request: what the service durably recorded at

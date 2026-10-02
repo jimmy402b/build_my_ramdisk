@@ -260,7 +260,7 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
             return Result<WorkerMessage>::success(std::move(reply));
         }
         prepared_.reset();
-        reply.status = aborted.value();
+        reply.abort_reply = aborted.value();
         return Result<WorkerMessage>::success(std::move(reply));
     }
 

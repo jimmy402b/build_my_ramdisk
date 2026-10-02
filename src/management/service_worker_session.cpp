@@ -187,7 +187,7 @@ Result<m5::WorkerCheckpointCommitReply> ServiceWorkerSession::commit_checkpoint(
         *reply.value().commit_reply);
 }
 
-Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::abort_checkpoint(
+Result<m5::WorkerCheckpointAbortReply> ServiceWorkerSession::abort_checkpoint(
     const OperationContext& context, const product::Uuid& operation_id,
     const std::uint64_t native_operation_id) {
     m5::WorkerMessage request{};
@@ -198,13 +198,20 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::abort_checkpoint(
     // releasing a prepare that belongs to another operation.
     (void)native_operation_id;
     auto reply = exchange(context, std::move(request));
-    if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
-    if (!reply.value().status.has_value()) {
-        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
-            L"ServiceWorkerSession::abort_checkpoint",
-            L"the abort reply carries no status").error());
+    if (!reply.ok()) {
+        return Result<m5::WorkerCheckpointAbortReply>::failure(reply.error());
     }
-    return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
+    // The abort answer, not an observation: whether there was anything to
+    // cancel, and the generation that must not have moved, are both lost in a
+    // status -- and the first of them decides between a no-op and a
+    // reconciliation.
+    if (!reply.value().abort_reply.has_value()) {
+        return Result<m5::WorkerCheckpointAbortReply>::failure(unexpected(
+            L"ServiceWorkerSession::abort_checkpoint",
+            L"the abort reply carries no answer").error());
+    }
+    return Result<m5::WorkerCheckpointAbortReply>::success(
+        *reply.value().abort_reply);
 }
 
 Result<m5::WorkerRecoveryProof> ServiceWorkerSession::recovery_proof(

@@ -102,11 +102,14 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         reply.status = status.move_value();
         return Result<WorkerCheckpointCommitReply>::success(std::move(reply));
     }
-    Result<WorkerRuntimeStatus> abort_checkpoint(
+    Result<WorkerCheckpointAbortReply> abort_checkpoint(
         const std::uint64_t native_operation_id) override {
         (void)native_operation_id;
         prepared.reset();
-        return observe();
+        WorkerCheckpointAbortReply reply{};
+        reply.aborted = true;
+        reply.generation = committed_generation;
+        return Result<WorkerCheckpointAbortReply>::success(std::move(reply));
     }
     Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) override {

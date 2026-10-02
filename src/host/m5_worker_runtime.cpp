@@ -266,17 +266,34 @@ Result<WorkerCheckpointCommitReply> DiskWorkerRuntime::commit_checkpoint(
     return Result<WorkerCheckpointCommitReply>::success(std::move(reply));
 }
 
-Result<WorkerRuntimeStatus> DiskWorkerRuntime::abort_checkpoint(
+Result<WorkerCheckpointAbortReply> DiskWorkerRuntime::abort_checkpoint(
     const std::uint64_t native_operation_id) {
     auto& impl = *impl_;
     if (!impl.runtime) {
-        return Result<WorkerRuntimeStatus>::failure(runtime_error(
+        return Result<WorkerCheckpointAbortReply>::failure(runtime_error(
             L"DiskWorkerRuntime::abort_checkpoint",
             L"the worker runtime is not running"));
     }
     auto aborted = impl.runtime->abort_checkpoint(native_operation_id);
-    if (!aborted.ok()) return Result<WorkerRuntimeStatus>::failure(aborted.error());
-    return observe();
+    WorkerCheckpointAbortReply reply{};
+    // The generation the runtime stands at either way.  A successful abort must
+    // leave it where it was, and the caller checks exactly that -- so the number
+    // is reported on both paths, not only the successful one.
+    reply.generation = impl.runtime->maintenance_stats().generation;
+    if (!aborted.ok()) {
+        // A failed abort is reported as a refusal with a reason rather than as
+        // a transport failure.  There is no persistence context to relay --
+        // M3Provider::abort_checkpoint and the transaction abort under it both
+        // return Result<void> -- so the reason travels as a value, and the
+        // caller gets the one thing it can act on.  See the protocol's comment
+        // on WorkerAbortRefusal for why that is the honest shape rather than a
+        // context composed from the bare error.
+        reply.aborted = false;
+        reply.refusal = WorkerAbortRefusal::abort_failed;
+        return Result<WorkerCheckpointAbortReply>::success(std::move(reply));
+    }
+    reply.aborted = true;
+    return Result<WorkerCheckpointAbortReply>::success(std::move(reply));
 }
 
 Result<WorkerRecoveryProof> DiskWorkerRuntime::prove_recovery(

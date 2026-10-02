@@ -130,12 +130,20 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         if (!reply.landed()) reply.failure = commit_failure;
         return Result<WorkerCheckpointCommitReply>::success(std::move(reply));
     }
-    Result<WorkerRuntimeStatus> abort_checkpoint(
+    Result<WorkerCheckpointAbortReply> abort_checkpoint(
         const std::uint64_t native_operation_id) override {
         events.push_back("abort");
         last_abort = native_operation_id;
-        if (fail_abort) return Result<WorkerRuntimeStatus>::failure(fake_error(L"abort"));
-        return observe();
+        WorkerCheckpointAbortReply reply{};
+        reply.generation = committed_generation;
+        if (fail_abort) {
+            // A failure to cancel is an answer, not a transport error: the
+            // caller has to tell it from "there was nothing to cancel".
+            reply.refusal = WorkerAbortRefusal::abort_failed;
+            return Result<WorkerCheckpointAbortReply>::success(std::move(reply));
+        }
+        reply.aborted = true;
+        return Result<WorkerCheckpointAbortReply>::success(std::move(reply));
     }
     Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) override {
@@ -485,8 +493,19 @@ TEST_CASE(m5_worker_session_failed_abort_keeps_the_candidate_prepared) {
     abort.product_operation_id = operation_id();
     const auto reply = session.handle(abort);
     REQUIRE(reply.ok());
-    REQUIRE(reply.value().error.has_value());
-    REQUIRE(session.checkpoint_prepared());
+    // A failure to cancel is an answer, not a transport error.  Framed as an
+    // error it would be indistinguishable from an unresponsive worker, and the
+    // caller has to tell "the candidate could not be cancelled" (reconcile)
+    // from "there was nothing to cancel" (carry on).
+    REQUIRE(!reply.value().error.has_value());
+    REQUIRE(reply.value().abort_reply.has_value());
+    REQUIRE(reply.value().abort_reply->refused());
+    REQUIRE(reply.value().abort_reply->refusal
+            == WorkerAbortRefusal::abort_failed);
+    REQUIRE(!reply.value().abort_reply->aborted);
+    // The runtime cleared its pending candidate even though the cancel failed,
+    // so the session must not go on believing it holds one.
+    REQUIRE(!session.checkpoint_prepared());
 }
 
 TEST_CASE(m5_worker_session_recovery_proof_needs_the_p4_correlation) {

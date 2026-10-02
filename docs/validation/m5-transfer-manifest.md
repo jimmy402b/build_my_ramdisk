@@ -801,6 +801,61 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.17 Task 5 increment 9 (unit A) — the abort reply can express its own outcome
+
+Closes the first of the two defects §1.15a found, and the last of the three
+replies that could not report what they did. `abort` returned a bare
+`WorkerRuntimeStatus`, so `aborted == false` covered both "there was no candidate
+to cancel" — which leaves the bundle untouched — and "the candidate existed and
+could not be cancelled", which leaves its state unknown and forces a
+reconciliation. The historical reply's own comment says why that matters: the
+safe handling for the first is the unsafe handling for the second.
+
+**The reply carries a reason, not a failure context — and that is a deliberate
+departure from the historical shape.** This was the unit that stopped an earlier
+attempt, and the reason is worth keeping. The historical
+`WorkerCheckpointAbortReply` carried a `WorkerCheckpointFailureContext`;
+`M3Provider::abort_checkpoint` and the transaction abort beneath it **both return
+`Result<void>`**, so there is no context to relay. The only way to fill the field
+would be to compose one from the bare `Error` — naming a persistence failure
+that never happened, which is the exact fabrication this whole seam exists to
+prevent. So the reply carries `WorkerAbortRefusal` (`no_candidate` /
+`abort_failed`) instead. What the caller needs is the *distinction*, not the
+detail, and the distinction is what it now gets. The detail becomes available
+when the layer below can supply a real context; until then its absence is
+recorded rather than papered over.
+
+`generation` travels on both paths, because the caller checks that a successful
+abort left the committed generation where it was — a caller that could not read
+it could not make that check at all.
+
+**Evidence.** Release build clean after a full object rebuild; full suite:
+
+```
+ELEVATED=True
+100% tests passed, 0 tests failed out of 141
+CTEST_EXIT=0
+```
+
+Standalone: `unit.m5.worker_protocol` 27/27 → **29/29** (both abort refusals
+round-trip and stay distinguishable; a self-contradictory abort reply is refused
+in both directions), `unit.m5.worker_session` **21/21** (a failed cancel is
+relayed as an answer, not as a transport error),
+`unit.m5.service_worker_session` **6/6**.
+
+**One assertion had to be inverted, and that is the point.** The existing case
+for a failed abort asserted `reply.error.has_value()` — it encoded the defect as
+the expectation. It now asserts the refusal arrives as a reply, with the
+distinction intact. A test that asserts the collapsed answer will keep passing
+after the collapse is fixed unless someone reads it.
+
+**The elevation gate is gone in this environment.** Three suites that
+§7 item 5 lists as unelevated failures — `m5.service_operation_store`,
+`unit.m4.profile_store`, `integration.m3.provider` — now pass when run directly,
+and the whole suite runs without the elevated launcher. The eight-test unelevated
+set is therefore historical, not a property of the tree; it described the shell,
+not the code.
+
 ### 1.15a The reconciliation pass — every host fact the rebuilt files consume
 
 Written because increments 7 and 8 both discovered a gap that a single upfront
