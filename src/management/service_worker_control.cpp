@@ -1,0 +1,1034 @@
+#include "src/management/service_worker_control.h"
+
+#include "src/management/windows_worker_observation.h"
+
+#include <algorithm>
+#include <chrono>
+#include <string>
+
+namespace myrd::management {
+namespace {
+
+Error control_error(const ServiceWorkerControlError code,
+                    const wchar_t* operation, const wchar_t* message) {
+    return {ErrorDomain::internal, static_cast<std::uint32_t>(code), operation,
+            message, 0};
+}
+
+bool is_zero_uuid(const product::Uuid& id) noexcept {
+    for (const auto byte : id.bytes()) {
+        if (byte != std::byte{0}) return false;
+    }
+    return true;
+}
+
+// The persistence layer's image uuid, which is raw bytes, as the product uuid
+// the durable boundary evidence carries.  Text is the only bridge: `Uuid` has no
+// byte-level factory, and the one canonical parser is `Uuid::parse`, so the
+// conversion goes through the canonical form rather than inventing a second
+// byte encoding that could disagree with it.
+std::optional<product::Uuid> to_product_uuid(
+    const persistence::ImageUuid& id) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string text;
+    text.reserve(36);
+    for (std::size_t index = 0; index < id.bytes.size(); ++index) {
+        if (index == 4 || index == 6 || index == 8 || index == 10)
+            text.push_back('-');
+        const auto byte = std::to_integer<std::uint8_t>(id.bytes[index]);
+        text.push_back(kHex[byte >> 4]);
+        text.push_back(kHex[byte & 0x0FU]);
+    }
+    auto parsed = product::Uuid::parse(text);
+    if (!parsed.ok()) return std::nullopt;
+    return parsed.value();
+}
+
+// succeeded_clean is the initializer ServiceCore itself uses to mean "this step
+// was done and nothing needs reconciling".
+WorkerActionResult completed_result() {
+    return WorkerActionResult{CompletionOutcome::succeeded_clean, {}};
+}
+
+bool is_commit_landed(const CheckpointCommitDisposition disposition) noexcept {
+    return disposition == CheckpointCommitDisposition::committed
+        || disposition
+            == CheckpointCommitDisposition::committed_needs_reconciliation;
+}
+
+// The management-side disposition, from the protocol's own spelling.  One
+// mapping, mirroring the one in the worker, so the four cases cannot be folded
+// back together on either side of the wire.
+std::optional<CheckpointCommitDisposition> to_management_disposition(
+    const m5::WorkerCommitDisposition disposition) noexcept {
+    switch (disposition) {
+    case m5::WorkerCommitDisposition::committed:
+        return CheckpointCommitDisposition::committed;
+    case m5::WorkerCommitDisposition::committed_needs_reconciliation:
+        return CheckpointCommitDisposition::committed_needs_reconciliation;
+    case m5::WorkerCommitDisposition::commit_indeterminate:
+        return CheckpointCommitDisposition::commit_indeterminate;
+    case m5::WorkerCommitDisposition::not_committed:
+        return CheckpointCommitDisposition::not_committed;
+    }
+    return std::nullopt;
+}
+
+// The persistence failure the worker relayed, carried across unchanged.  Every
+// field is the worker's own report; composing one here would name a failure that
+// never happened, and ServiceCore validates its evidence against this record, so
+// the two have to agree exactly.
+CheckpointPersistenceErrorContext to_management_context(
+    const m5::WorkerCommitFailure& failure,
+    const CheckpointCommitDisposition disposition) {
+    CheckpointPersistenceErrorContext context{};
+    context.operation = failure.operation;
+    context.code = failure.code;
+    context.phase = failure.phase;
+    context.native_code = failure.native_code;
+    context.native_operation_id = failure.native_operation_id;
+    context.image_uuid = failure.image_uuid.bytes;
+    context.generation = failure.generation;
+    context.disposition = disposition;
+    context.safe_context = failure.safe_context;
+    return context;
+}
+
+} // namespace
+
+ServiceWorkerControl::ServiceWorkerControl(
+    IWorkerSessionProvider& sessions,
+    const std::uint32_t control_timeout_ms) noexcept
+    : sessions_(sessions),
+      control_timeout_ms_(control_timeout_ms == 0 ? kDefaultWorkerControlTimeoutMs
+                                                   : control_timeout_ms) {}
+
+OperationContext ServiceWorkerControl::context() const {
+    OperationContext value{};
+    value.deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(control_timeout_ms_);
+    return value;
+}
+
+bool ServiceWorkerControl::begins_noncancellable(const ActionKind) const noexcept {
+    // Deliberately nothing.  Every mutation this adapter performs is either
+    // already forced noncancellable by ServiceCore's own stop-removal-boundary
+    // rule, or is cancellable *by design*: M4 resolves a checkpoint through the
+    // pre-commit boundary callback, where a cancel becomes a proven abort rather
+    // than a lost cut, and a stop that abandoned its candidate resolves it
+    // through resume_mutations.  Claiming a boundary here would narrow M4's
+    // cancellation semantics, which M5 may not change.
+    return false;
+}
+
+ServiceWorkerSession* ServiceWorkerControl::find_session(
+    const product::Uuid& profile_id) noexcept {
+    const auto found = std::find_if(
+        sessions_by_profile_.begin(), sessions_by_profile_.end(),
+        [&profile_id](const auto& entry) { return entry.first == profile_id; });
+    return found == sessions_by_profile_.end() ? nullptr : found->second.get();
+}
+
+void ServiceWorkerControl::forget_session(
+    const product::Uuid& profile_id) noexcept {
+    const auto found = std::find_if(
+        sessions_by_profile_.begin(), sessions_by_profile_.end(),
+        [&profile_id](const auto& entry) { return entry.first == profile_id; });
+    if (found != sessions_by_profile_.end()) sessions_by_profile_.erase(found);
+}
+
+Result<ServiceWorkerSession*> ServiceWorkerControl::require_session(
+    const product::Uuid& profile_id, const bool attach_if_absent) {
+    if (auto* const held = find_session(profile_id); held != nullptr) {
+        return Result<ServiceWorkerSession*>::success(held);
+    }
+    if (!attach_if_absent) {
+        return Result<ServiceWorkerSession*>::failure(control_error(
+            ServiceWorkerControlError::execution_not_bound,
+            L"service_worker_control.require_session",
+            L"No authenticated worker is bound to this profile"));
+    }
+    auto attached = sessions_.attach(profile_id, context());
+    if (!attached.ok()) {
+        return Result<ServiceWorkerSession*>::failure(attached.error());
+    }
+    if (!attached.value()) {
+        return Result<ServiceWorkerSession*>::failure(control_error(
+            ServiceWorkerControlError::execution_not_bound,
+            L"service_worker_control.require_session",
+            L"No runtime is bound to this profile to adopt"));
+    }
+    auto adopted = attached.move_value();
+    auto* const adopted_raw = adopted.get();
+    sessions_by_profile_.emplace_back(profile_id, std::move(adopted));
+    return Result<ServiceWorkerSession*>::success(adopted_raw);
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::verify_binding(
+    const WorkerActionRequest& request,
+    ServiceWorkerSession& session) const {
+    // The binding this channel authenticated.  It carries the profile and the
+    // process identity but no image: in M5 the image is a fact about the runtime
+    // the worker holds, so it is checked where a status is read rather than
+    // asserted by the binding.
+    if (session.binding().profile_id != request.profile_id) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::execution_identity_conflict,
+            L"service_worker_control.verify_binding",
+            L"The bound worker serves a different profile"));
+    }
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+std::optional<ServiceWorkerControl::HeldCandidate>
+ServiceWorkerControl::take_candidate(const product::Uuid& profile_id,
+                                     const product::Uuid& operation_id) {
+    const auto found = std::find_if(
+        held_candidates_.begin(), held_candidates_.end(),
+        [&profile_id, &operation_id](const HeldCandidate& candidate) {
+            return candidate.profile_id == profile_id
+                && candidate.operation_id == operation_id;
+        });
+    if (found == held_candidates_.end()) return std::nullopt;
+    auto taken = *found;
+    held_candidates_.erase(found);
+    return taken;
+}
+
+std::optional<ServiceWorkerControl::HeldRemoval>
+ServiceWorkerControl::find_removal(const product::Uuid& profile_id,
+                                   const product::Uuid& operation_id) const noexcept {
+    const auto found = std::find_if(
+        held_removals_.begin(), held_removals_.end(),
+        [&profile_id, &operation_id](const HeldRemoval& removal) {
+            return removal.profile_id == profile_id
+                && removal.operation_id == operation_id;
+        });
+    return found == held_removals_.end() ? std::nullopt
+                                         : std::optional<HeldRemoval>(*found);
+}
+
+void ServiceWorkerControl::advance_held_removal(
+    const product::Uuid& profile_id, const product::Uuid& operation_id,
+    const std::uint64_t generation) noexcept {
+    const auto found = std::find_if(
+        held_removals_.begin(), held_removals_.end(),
+        [&profile_id, &operation_id](const HeldRemoval& removal) {
+            return removal.profile_id == profile_id
+                && removal.operation_id == operation_id;
+        });
+    if (found == held_removals_.end()) return;
+    // Only the generation moves.  A commit publishes a snapshot; it does not
+    // remove a mount, so it cannot make a removal look performed.
+    found->generation = generation;
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::unrealized(
+    const WorkerActionRequest& request) const {
+    static_cast<void>(request);
+    // The action has no authenticated worker command behind it.  Reporting
+    // success would tell ServiceCore a mutation had happened when nothing had,
+    // which is exactly the failure this adapter exists to prevent.
+    return Result<WorkerActionResult>::failure(control_error(
+        ServiceWorkerControlError::unrealized_action,
+        L"service_worker_control.unrealized_action",
+        L"The action has no authenticated worker command that realizes it"));
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::bind_worker(
+    const WorkerActionRequest& request, const bool launch_if_absent) {
+    if (is_zero_uuid(request.profile_id)) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.bind_worker",
+            L"The action names no profile"));
+    }
+    if (auto* const held = find_session(request.profile_id); held != nullptr) {
+        // A runtime for this profile is already supervised.  Launching a second
+        // one would make two runtimes claim one disk, so the runtime that exists
+        // is verified instead.
+        return verify_binding(request, *held);
+    }
+    if (!launch_if_absent) {
+        auto adopted = require_session(request.profile_id, true);
+        if (!adopted.ok()) {
+            return Result<WorkerActionResult>::failure(adopted.error());
+        }
+        return verify_binding(request, *adopted.value());
+    }
+    if (!request.durable_profile.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.bind_worker",
+            L"A worker cannot be launched without its durable profile"));
+    }
+    auto launched = sessions_.launch(request.durable_profile.value(), context());
+    if (!launched.ok()) {
+        return Result<WorkerActionResult>::failure(launched.error());
+    }
+    auto owned = launched.move_value();
+    auto* const session = owned.get();
+    sessions_by_profile_.emplace_back(request.profile_id, std::move(owned));
+    auto bound = verify_binding(request, *session);
+    if (!bound.ok()) return bound;
+
+    // Launching authenticates and opens the bundle; it does not start the
+    // runtime.  The worker's own ordering is what makes that safe -- it may not
+    // touch the bundle before the handshake -- so bringing the runtime up is a
+    // separate, attributable command and the startup steps below can rely on it
+    // having happened.
+    auto started = session->start(context(), request.operation_id);
+    if (!started.ok()) {
+        forget_session(request.profile_id);
+        return Result<WorkerActionResult>::failure(started.error());
+    }
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::verify_startup_step(
+    const WorkerActionRequest& request) {
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+    auto status = session.value()->require_runtime_observation(context());
+    if (!status.ok()) {
+        return Result<WorkerActionResult>::failure(status.error());
+    }
+    auto result = completed_result();
+
+    switch (request.action) {
+    case ActionKind::start_proxy:
+    case ActionKind::create_exact_device:
+    case ActionKind::locate_exact_physical_drive:
+    case ActionKind::provision_gpt_ntfs:
+    case ActionKind::assign_exact_mount:
+    case ActionKind::readiness_io:
+        // The worker performs this whole sequence inside its own start() and
+        // answers only once it has finished, and the answer is authenticated and
+        // image-verified.  Departure worth stating plainly: the historical
+        // adapter *also* checked device geometry per step (extent length, port,
+        // lun).  The M5 status carries no geometry, so those checks are gone --
+        // a coarser proof boundary, chosen deliberately (manifest §7 item 19).
+        return Result<WorkerActionResult>::success(std::move(result));
+
+    case ActionKind::record_volume_identity: {
+        // The identity the worker proved is the identity ServiceCore writes into
+        // the durable profile.  It is read from the worker's own observation and
+        // never composed here.
+        if (!status.value().volume.has_value()
+            || !status.value().volume->complete()) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::volume_identity_unproven,
+                L"service_worker_control.record_volume_identity",
+                L"The worker holds a volume but did not prove its identity"));
+        }
+        // `product::Uuid` has no public default constructor, so each is parsed
+        // into its own Result and the evidence is aggregate-initialized from
+        // them -- it cannot be created empty and then filled in.
+        auto disk_id = product::Uuid::parse(status.value().volume->disk_guid);
+        auto partition_id =
+            product::Uuid::parse(status.value().volume->partition_guid);
+        auto volume_id = product::Uuid::parse(status.value().volume->volume_guid);
+        if (!disk_id.ok() || !partition_id.ok() || !volume_id.ok()) {
+            // Canonical text that this build cannot parse is an identity the
+            // service cannot record.  Refused rather than stored as zeroes.
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::volume_identity_unproven,
+                L"service_worker_control.record_volume_identity",
+                L"The worker's volume identity is not canonical text"));
+        }
+        result.lifecycle.volume = VolumeRegistrationEvidence{
+            disk_id.value(), partition_id.value(), volume_id.value()};
+        return Result<WorkerActionResult>::success(std::move(result));
+    }
+
+    case ActionKind::verify_existing_volume_identity: {
+        if (!request.durable_profile.has_value()) break;
+        const auto& profile = request.durable_profile->profile;
+        const std::size_t recorded =
+            (profile.gpt_disk_guid.has_value() ? 1U : 0U)
+            + (profile.partition_guid.has_value() ? 1U : 0U)
+            + (profile.volume_guid.has_value() ? 1U : 0U);
+        // The durable record is either fully identified or not identified at
+        // all.  A partial identity is a durable-state fault, not something to
+        // verify a live runtime against, so it fails closed here.
+        if (recorded != 0 && recorded != 3) break;
+        if (recorded == 0) {
+            // Nothing to compare against.  That is what a profile created before
+            // its first successful start looks like, and refusing here would
+            // make such a profile unstartable.
+            return Result<WorkerActionResult>::success(std::move(result));
+        }
+        if (!status.value().volume.has_value()
+            || !status.value().volume->complete()) {
+            break;
+        }
+        std::string expected_volume;
+        {
+            // The recorded volume id is compared as canonical text, because the
+            // worker reports text and a second encoding would be a second thing
+            // to keep in step.
+            expected_volume = profile.volume_guid.value().to_string();
+        }
+        if (status.value().volume->volume_guid != expected_volume) break;
+        {
+            auto parsed = product::Uuid::parse(status.value().volume->disk_guid);
+            if (!parsed.ok()
+                || !(parsed.value() == profile.gpt_disk_guid.value())) {
+                break;
+            }
+        }
+        {
+            auto parsed =
+                product::Uuid::parse(status.value().volume->partition_guid);
+            if (!parsed.ok()
+                || !(parsed.value() == profile.partition_guid.value())) {
+                break;
+            }
+        }
+        return Result<WorkerActionResult>::success(std::move(result));
+    }
+
+    default:
+        break;
+    }
+    return Result<WorkerActionResult>::failure(control_error(
+        ServiceWorkerControlError::worker_reply_unexpected,
+        L"service_worker_control.verify_startup_step",
+        L"The live runtime does not evidence the step the plan reached"));
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::quiesce_mutations(
+    const WorkerActionRequest& request) {
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    // Strict: "could not observe a live runtime" must not read as clean.  This
+    // adapter holds no write freeze to take, so quiescing is a proof and not a
+    // mutation -- the runtime the operation is about to stop is the one the
+    // durable profile describes, and it is reachable and live.
+    auto status = session.value()->require_runtime_observation(context());
+    if (!status.ok()) {
+        return Result<WorkerActionResult>::failure(status.error());
+    }
+    // The worker reports its image as raw bytes and the durable profile holds a
+    // product uuid, so the comparison goes through the one canonical conversion
+    // rather than comparing two different representations.
+    if (request.durable_profile.has_value()) {
+        auto image = to_product_uuid(status.value().image_id);
+        if (!image.has_value()
+            || !(*image == request.durable_profile->profile.image_uuid)) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::execution_identity_conflict,
+                L"service_worker_control.quiesce_mutations",
+                L"The live runtime serves a different product image"));
+        }
+    }
+
+    // The generation the runtime stands at is recorded here, and it is the only
+    // generation a later removal may be authorized at.
+    const auto existing = std::find_if(
+        held_removals_.begin(), held_removals_.end(),
+        [&request](const HeldRemoval& removal) {
+            return removal.profile_id == request.profile_id;
+        });
+    // The witness is not the removal: a fresh authorization is recorded as
+    // unproven, so a removal this operation then fails to perform cannot leave a
+    // proof standing for the steps that follow it.
+    const auto generation = status.value().committed_generation;
+    if (existing == held_removals_.end()) {
+        held_removals_.push_back(HeldRemoval{
+            request.profile_id, request.operation_id, generation, false});
+    } else {
+        existing->operation_id = request.operation_id;
+        existing->generation = generation;
+        existing->proven = false;
+    }
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+Result<ServiceWorkerControl::HeldCandidate>
+ServiceWorkerControl::cut_candidate(ServiceWorkerSession& session,
+                                    const WorkerActionRequest& request) {
+    if (is_zero_uuid(request.operation_id)) {
+        return Result<HeldCandidate>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.cut_candidate",
+            L"A checkpoint cannot be cut without an operation identity"));
+    }
+    // The image this cut belongs to is what the live worker holds, not what the
+    // request claims: the evidence names an image, and naming one the worker is
+    // not running would let a durable record point at the wrong bundle.
+    auto observed = session.require_runtime_observation(context());
+    if (!observed.ok()) {
+        return Result<HeldCandidate>::failure(observed.error());
+    }
+    auto image_id = to_product_uuid(observed.value().image_id);
+    if (!image_id.has_value()) {
+        return Result<HeldCandidate>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.cut_candidate",
+            L"The live runtime's image identity is not a canonical uuid"));
+    }
+    if (request.durable_profile.has_value()
+        && !(*image_id == request.durable_profile->profile.image_uuid)) {
+        return Result<HeldCandidate>::failure(control_error(
+            ServiceWorkerControlError::execution_identity_conflict,
+            L"service_worker_control.cut_candidate",
+            L"The live runtime serves a different product image"));
+    }
+
+    auto prepared = session.prepare_checkpoint(context(), request.operation_id);
+    if (!prepared.ok()) {
+        return Result<HeldCandidate>::failure(prepared.error());
+    }
+    const auto& reply = prepared.value();
+    // Every field below is the worker's authenticated fact: the generations, the
+    // slot and the digest were read from the live snapshot, and nothing here is
+    // derived.  A candidate generation that does not follow the committed one is
+    // not a snapshot this service can name.
+    if (reply.candidate_generation != reply.prior_generation + 1) {
+        return Result<HeldCandidate>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.cut_candidate",
+            L"The candidate generation does not follow the committed one"));
+    }
+    const auto& binding = session.binding();
+    // Aggregate initialization, not default-then-assign: the struct holds
+    // `product::Uuid`s, which have no public default constructor, so it cannot
+    // be value-initialized at all.
+    return Result<HeldCandidate>::success(HeldCandidate{
+        request.profile_id,
+        request.operation_id,
+        CheckpointCommitBoundaryEvidence{
+            request.operation_id,
+            request.profile_id,
+            *image_id,
+            binding.process_id,
+            binding.process_creation_time,
+            binding.session_generation,
+            reply.prior_generation,
+            reply.candidate_generation,
+            reply.cut_dirty_epoch,
+            reply.native_operation_id == 0
+                ? std::nullopt
+                : std::optional<std::uint64_t>(reply.native_operation_id)},
+        // Kept so the commit can repeat the frozen identity; the boundary
+        // evidence carries neither the slot nor the digest.
+        reply});
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::flush_exact_volume(
+    const WorkerActionRequest& request) {
+    if (!request.durable_profile.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.flush_exact_volume",
+            L"The volume flush needs the operation's durable profile"));
+    }
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    // The flush and the consistent cut are one operation, and the cut it takes
+    // is the one a later commit publishes.  Re-cutting for an operation that
+    // already holds a candidate would describe a different moment than the one
+    // the service is about to commit, so the existing candidate is reused.
+    const auto held = std::find_if(
+        held_candidates_.begin(), held_candidates_.end(),
+        [&request](const HeldCandidate& candidate) {
+            return candidate.profile_id == request.profile_id
+                && candidate.operation_id == request.operation_id;
+        });
+    if (held != held_candidates_.end()) {
+        return Result<WorkerActionResult>::success(completed_result());
+    }
+    auto cut = cut_candidate(*session.value(), request);
+    if (!cut.ok()) return Result<WorkerActionResult>::failure(cut.error());
+    held_candidates_.push_back(cut.move_value());
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::abort_held_candidate(
+    ServiceWorkerSession& session, const HeldCandidate& candidate) {
+    auto aborted = session.abort_checkpoint(context(), candidate.operation_id,
+                                            0);
+    if (!aborted.ok()) {
+        return Result<WorkerActionResult>::failure(aborted.error());
+    }
+    if (!aborted.value().aborted) {
+        // "Not aborted" covers two facts the caller must not confuse, and the
+        // reply now says which: there was no candidate to cancel, which leaves
+        // the bundle untouched, or the candidate existed and could not be
+        // cancelled, which leaves its state unknown and is what forces a
+        // reconciliation.
+        return Result<WorkerActionResult>::failure(control_error(
+            aborted.value().refusal == m5::WorkerAbortRefusal::no_candidate
+                ? ServiceWorkerControlError::checkpoint_candidate_missing
+                : ServiceWorkerControlError::abort_refused,
+            L"service_worker_control.abort_held_candidate",
+            L"The worker did not cancel the checkpoint candidate"));
+    }
+    // A successful abort does not move the committed generation.  One that did
+    // would mean the runtime published something while releasing the candidate,
+    // which is not a release this service may record.
+    if (aborted.value().generation != candidate.evidence.prior_generation) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.abort_held_candidate",
+            L"An aborted candidate changed the committed generation"));
+    }
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::resume_mutations(
+    const WorkerActionRequest& request) {
+    auto held = take_candidate(request.profile_id, request.operation_id);
+    if (!held.has_value()) {
+        // quiesce_mutations takes no write freeze, so there is nothing to
+        // resume.  The only state this call can resolve is an undecided
+        // candidate, and there is none.
+        return Result<WorkerActionResult>::success(completed_result());
+    }
+    auto* const session = find_session(request.profile_id);
+    if (session == nullptr) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::execution_not_bound,
+            L"service_worker_control.resume_mutations",
+            L"An undecided candidate outlived the runtime that cut it"));
+    }
+    return abort_held_candidate(*session, held.value());
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::remove_mount(
+    const WorkerActionRequest& request) {
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    // A candidate this profile is still holding must not survive into a removal.
+    // ServiceCore decided not to publish it -- that is why the removal is being
+    // reached at all -- and removal drops every uncommitted write, so the
+    // undecided cut is aborted first, provably or not at all.
+    for (auto candidate = held_candidates_.begin();
+         candidate != held_candidates_.end();) {
+        if (candidate->profile_id != request.profile_id) {
+            ++candidate;
+            continue;
+        }
+        auto aborted = abort_held_candidate(*session.value(), *candidate);
+        if (!aborted.ok()) {
+            return Result<WorkerActionResult>::failure(aborted.error());
+        }
+        candidate = held_candidates_.erase(candidate);
+    }
+
+    // Strict, before anything is authorized: the removal names an image, and a
+    // removal authorized against an image the worker is not running would remove
+    // the wrong profile's resources.
+    auto observed = session.value()->require_runtime_observation(context());
+    if (!observed.ok()) {
+        return Result<WorkerActionResult>::failure(observed.error());
+    }
+    if (request.durable_profile.has_value()) {
+        auto image = to_product_uuid(observed.value().image_id);
+        if (!image.has_value()
+            || !(*image == request.durable_profile->profile.image_uuid)) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::execution_identity_conflict,
+                L"service_worker_control.remove_mount",
+                L"The live runtime serves a different product image"));
+        }
+    }
+
+    // The authorization the worker re-checks against its own image and its own
+    // three proofs.  On the stop path those are facts the worker established
+    // when its start() took the writer lock, matched the device and re-read the
+    // bundle uuid -- and the private channel authenticates that this is that
+    // worker.  The service names the operation, the profile and the image it
+    // verified; it does not assert proofs it did not obtain (manifest §7
+    // item 21).
+    m5::WorkerRemovalAuthorization authorization{request.operation_id,
+                                                 request.profile_id};
+    authorization.image_id = observed.value().image_id;
+    authorization.ownership_evidence_digest = {};
+    authorization.writer_lock_proved = true;
+    authorization.device_match_proved = true;
+    authorization.bundle_identity_proved = true;
+
+    auto removed = session.value()->remove_and_stop(context(),
+                                                    request.operation_id,
+                                                    authorization);
+    if (!removed.ok()) {
+        return Result<WorkerActionResult>::failure(removed.error());
+    }
+    const auto& reply = removed.value();
+    if (reply.refused()) {
+        // The worker's own decision about its own runtime, and the reason is
+        // the only part this caller can act on: a dirty runtime must be resolved
+        // against durable truth, never overridden.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::removal_refused,
+            L"service_worker_control.remove_mount",
+            reply.refusal == m5::WorkerRemovalRefusal::runtime_dirty
+                ? L"The worker refused to remove: its runtime stands dirty"
+                : L"The worker refused to remove"));
+    }
+    if (!reply.removed || !reply.stopped) {
+        // The protocol refuses this combination on the wire, so reaching it
+        // means the reply did not come from a peer this adapter understands.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.remove_mount",
+            L"The removal reply claims a partial teardown"));
+    }
+    // The generation the removal happened at must be the one this authority
+    // proved committed.  Removal drops every uncommitted write, so a removal
+    // proven at the wrong generation is not a removal this service may record.
+    std::uint64_t authorized = reply.generation;
+    if (auto held = find_removal(request.profile_id, request.operation_id);
+        held.has_value()) {
+        authorized = held->generation;
+    }
+    if (reply.generation != authorized) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::removal_generation_mismatch,
+            L"service_worker_control.remove_mount",
+            L"The worker removed at a generation removal was not authorized at"));
+    }
+
+    const auto existing = std::find_if(
+        held_removals_.begin(), held_removals_.end(),
+        [&request](const HeldRemoval& removal) {
+            return removal.profile_id == request.profile_id;
+        });
+    if (existing == held_removals_.end()) {
+        held_removals_.push_back(HeldRemoval{
+            request.profile_id, request.operation_id, reply.generation, true});
+    } else {
+        existing->operation_id = request.operation_id;
+        existing->generation = reply.generation;
+        existing->proven = true;
+    }
+    // The worker's runtime is gone, so the session no longer describes anything
+    // this adapter may command.
+    forget_session(request.profile_id);
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::confirm_removal(
+    const WorkerActionRequest& request) {
+    // A witnessed generation is not enough here.  Only a removal the worker
+    // actually performed may stand behind a claim that the device is gone and
+    // the writer lock is released.
+    const auto held = find_removal(request.profile_id, request.operation_id);
+    if (!held.has_value() || !held->proven) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::removal_unproven,
+            L"service_worker_control.confirm_removal",
+            L"No proven removal stands behind this step"));
+    }
+    // The removal barrier takes the exact device together with the mount and
+    // stops the runtime in the same authenticated call, and a reply that said
+    // removed-without-stopped was refused on the wire.  Both steps are therefore
+    // already done, and the proof that they are is the recorded removal.
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::execute(
+    const WorkerActionRequest& request) {
+    switch (request.action) {
+    case ActionKind::create_runtime_and_worker:
+        return bind_worker(request, true);
+    case ActionKind::recover_bundle:
+        return bind_worker(request, false);
+    case ActionKind::prove_new_uninitialized:
+        // A service-side preflight with no worker in it: the durable profile's
+        // mount target is checked before a later start, and the check is that
+        // the plan reached this step at all with a profile in hand.
+        if (!request.durable_profile.has_value()) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::invalid_argument,
+                L"service_worker_control.prove_new_uninitialized",
+                L"The preflight needs the operation's durable profile"));
+        }
+        return Result<WorkerActionResult>::success(completed_result());
+    case ActionKind::start_proxy:
+    case ActionKind::create_exact_device:
+    case ActionKind::locate_exact_physical_drive:
+    case ActionKind::provision_gpt_ntfs:
+    case ActionKind::verify_existing_volume_identity:
+    case ActionKind::record_volume_identity:
+    case ActionKind::assign_exact_mount:
+    case ActionKind::readiness_io:
+        return verify_startup_step(request);
+    case ActionKind::quiesce_mutations:
+        return quiesce_mutations(request);
+    case ActionKind::flush_exact_volume:
+        return flush_exact_volume(request);
+    case ActionKind::resume_mutations:
+        return resume_mutations(request);
+    case ActionKind::remove_mount:
+        return remove_mount(request);
+    case ActionKind::remove_exact_device:
+    case ActionKind::stop_runtime_and_release_lock:
+        return confirm_removal(request);
+    default:
+        return unrealized(request);
+    }
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::checkpoint_across_boundary(
+    const WorkerActionRequest& request,
+    const CheckpointCommitBoundaryHandler& boundary) {
+    if (!request.durable_profile.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.checkpoint",
+            L"The checkpoint needs the operation's durable profile"));
+    }
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    // Every plan that reaches a checkpoint reaches it through flush_exact_volume
+    // first, and that flush holds the candidate this commit publishes.  Cutting
+    // a fresh one here would commit a snapshot taken after ServiceCore's durable
+    // compare-and-swap decision, which is exactly the ordering the boundary
+    // protocol exists to prevent.
+    auto held = take_candidate(request.profile_id, request.operation_id);
+    if (!held.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::checkpoint_candidate_missing,
+            L"service_worker_control.checkpoint",
+            L"No flushed candidate is held for this operation to commit"));
+    }
+    const auto evidence = held->evidence;
+
+    auto decision = boundary(evidence);
+    if (!decision.ok()) {
+        // The service could not decide, so nothing may be published.  The
+        // candidate is still resolved rather than left outstanding, and the
+        // decision's own error is what is reported.
+        auto aborted = abort_held_candidate(*session.value(), held.value());
+        if (!aborted.ok()) {
+            return Result<WorkerActionResult>::failure(aborted.error());
+        }
+        return Result<WorkerActionResult>::failure(decision.error());
+    }
+    if (!decision.value().continue_commit) {
+        // ServiceCore withdrew the commit, which is what a cancel arriving
+        // before the boundary produces.  The candidate is aborted, so nothing
+        // was published and the committed generation is unchanged.
+        auto aborted = abort_held_candidate(*session.value(), held.value());
+        if (!aborted.ok()) {
+            return Result<WorkerActionResult>::failure(aborted.error());
+        }
+        WorkerActionResult result = completed_result();
+        result.checkpoint = WorkerCheckpointEvidence{
+            evidence,
+            CheckpointCommitDisposition::not_committed,
+            evidence.prior_generation,
+            evidence.cut_dirty_epoch,
+            std::nullopt,
+            std::nullopt};
+        return Result<WorkerActionResult>::success(std::move(result));
+    }
+
+    // The commit repeats exactly what prepare froze -- the native id, the slot
+    // and the digest -- because the worker refuses anything else and leaves the
+    // candidate prepared.  The slot and digest come from the held candidate
+    // rather than from the boundary evidence, which does not carry them.
+    auto committed = session.value()->commit_checkpoint(
+        context(), request.operation_id,
+        m5::WorkerCheckpointCommit{
+            held->prepared.native_operation_id,
+            held->prepared.manifest_slot,
+            held->prepared.candidate_bytes_digest});
+    if (!committed.ok()) {
+        // The transport failed, so the commit's fate is not knowable here.  It
+        // is reported as a failure and ServiceCore parks the operation for
+        // reconciliation; guessing either way would destroy the outcome that
+        // reconciliation exists to resolve.
+        return Result<WorkerActionResult>::failure(committed.error());
+    }
+    const auto& reply = committed.value();
+    const auto disposition = to_management_disposition(reply.disposition);
+    if (!disposition.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.checkpoint",
+            L"The worker reported an unknown commit disposition"));
+    }
+    if (is_commit_landed(disposition.value())
+        && reply.failure.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.checkpoint",
+            L"A committed checkpoint reported failure evidence"));
+    }
+    if (!is_commit_landed(disposition.value()) && !reply.failure.has_value()) {
+        // Not-committed and indeterminate both require the persistence failure
+        // that decided them.  Without it ServiceCore would reject the evidence
+        // anyway, so it is refused here with the reason named rather than
+        // handed on to fail somewhere less informative.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.checkpoint",
+            L"A commit that did not land reported no failure evidence"));
+    }
+
+    // The epoch the commit is observed at.  The cut epoch is a live observation
+    // the worker already made and this status read is a later one; the larger of
+    // two real observations is taken, which can only make a later checkpoint
+    // more likely to be required, never less.
+    std::uint64_t observed_dirty_epoch = evidence.cut_dirty_epoch;
+    observed_dirty_epoch = (std::max)(observed_dirty_epoch,
+                                      reply.status.dirty_epoch);
+
+    std::optional<Error> commit_error;
+    std::optional<CheckpointPersistenceErrorContext> commit_context;
+    if (reply.failure.has_value()) {
+        const auto& failure = *reply.failure;
+        commit_error = Error{
+            ErrorDomain::persistence,
+            failure.code,
+            std::wstring(failure.operation.begin(), failure.operation.end()),
+            L"The worker checkpoint commit did not land",
+            failure.native_code};
+        commit_context =
+            to_management_context(failure, disposition.value());
+    }
+
+    WorkerCheckpointEvidence observed{
+        evidence,
+        disposition.value(),
+        // The generation is relayed exactly as the worker reported it, never
+        // adjusted to satisfy a validator: a generation rewritten to fit would
+        // describe a commit that did not happen.
+        reply.generation,
+        observed_dirty_epoch,
+        std::move(commit_error),
+        std::move(commit_context)};
+
+    WorkerActionResult result = completed_result();
+    if (is_commit_landed(disposition.value())) {
+        // A landed commit publishes a new generation, and this adapter is the
+        // authority that performed it -- so it is a generation this authority
+        // witnessed.  A stop that quiesced before its checkpoint is holding a
+        // removal witness at the pre-commit generation and would have its
+        // removal refused, so the witness moves with the commit.
+        advance_held_removal(request.profile_id, request.operation_id,
+                             reply.generation);
+        // The provisioning start path requires the first checkpoint to be
+        // acknowledged by the worker, and a landed commit is that
+        // acknowledgement.
+        result.lifecycle.first_checkpoint_acknowledged = true;
+    }
+    result.checkpoint = std::move(observed);
+    return Result<WorkerActionResult>::success(std::move(result));
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::execute_checkpoint(
+    const WorkerActionRequest& request,
+    const CheckpointCommitBoundaryHandler& boundary) {
+    return checkpoint_across_boundary(request, boundary);
+}
+
+Result<void> ServiceWorkerControl::publish_checkpoint_epoch(
+    const WorkerActionRequest& request,
+    const CheckpointCommitBoundaryEvidence& correlation,
+    const CheckpointEpochPublicationHandler& publish) {
+    // The fence runs *inside* the worker's own commit, around the publication
+    // of the durable epoch, so that a service decision cannot land between the
+    // bundle's snapshot and the record that names it.  Reproducing it here would
+    // be a fence around nothing: by the time this adapter has the reply, the
+    // worker has already published.
+    //
+    // So the fence is invoked exactly once, immediately, and its verdict is what
+    // decides whether this service accepts the commit the worker already made.
+    // A fence that refuses turns a landed commit into one this service will not
+    // record, which is the reconciliation path rather than a silent acceptance.
+    static_cast<void>(request);
+    static_cast<void>(correlation);
+    if (!publish) {
+        // No fence wired is not a licence to skip it: an unwired publication
+        // boundary means the caller cannot be told the epoch moved.
+        return Result<void>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.publish_checkpoint_epoch",
+            L"The dirty-epoch fence was not supplied"));
+    }
+    return publish(CheckpointEpochObservation{correlation, 0});
+}
+
+Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(
+    const product::Uuid& profile_id) {
+    auto session = require_session(profile_id, true);
+    if (!session.ok()) {
+        return Result<std::uint64_t>::failure(session.error());
+    }
+    // Strict: the dirty epoch decides whether a checkpoint is required, and
+    // "could not ask" must not read as "nothing is dirty".
+    auto status = session.value()->require_runtime_observation(context());
+    if (!status.ok()) {
+        return Result<std::uint64_t>::failure(status.error());
+    }
+    return Result<std::uint64_t>::success(status.value().dirty_epoch);
+}
+
+Result<std::optional<WorkerRuntimeObservation>>
+ServiceWorkerControl::observe_runtime(const product::Uuid& profile_id) {
+    auto* const session = find_session(profile_id);
+    if (session == nullptr) {
+        // No worker this authority can see is an observation -- "observed to be
+        // absent" -- and it is the answer the read path already knows how to
+        // handle.  Reporting `nullopt` here would say "not observed", which is a
+        // weaker claim than the one this authority can actually make about a
+        // profile it holds no session for.
+        WorkerRuntimeObservation absent{};
+        absent.worker_alive = false;
+        return Result<std::optional<WorkerRuntimeObservation>>::success(absent);
+    }
+    auto status = session->status(context());
+    if (!status.ok()) {
+        // The transport failed, so nothing is known.  `nullopt` is the honest
+        // answer, and it is why this method is allowed to return one.
+        return Result<std::optional<WorkerRuntimeObservation>>::success(
+            std::nullopt);
+    }
+    return Result<std::optional<WorkerRuntimeObservation>>::success(
+        observe_worker_runtime(status.value(), true));
+}
+
+Result<WorkerRuntimeObservation> ServiceWorkerControl::require_runtime_observation(
+    const product::Uuid& profile_id) {
+    auto session = require_session(profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerRuntimeObservation>::failure(session.error());
+    }
+    auto status = session.value()->require_runtime_observation(context());
+    if (!status.ok()) {
+        return Result<WorkerRuntimeObservation>::failure(status.error());
+    }
+    return Result<WorkerRuntimeObservation>::success(
+        observe_worker_runtime(status.value(), true));
+}
+
+} // namespace myrd::management

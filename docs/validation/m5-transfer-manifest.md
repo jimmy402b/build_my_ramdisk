@@ -801,6 +801,75 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.19 Task 5 increment 11 — ServiceWorkerControl, the Decision A seam
+
+`src/management/service_worker_control.{h,cpp}` and
+`src/management/windows_worker_observation.h`, in `myrd_management`. The sole
+`IWorkerControl` implementation, rebuilt on `ServiceWorkerSession` over the
+private protocol. `structural.m5.execution_boundary` passes, so the adapter
+reaches a worker without regaining the execution coupling the check exists to
+prevent.
+
+**Two things the durable boundary evidence does not carry, found while writing
+it.** `CheckpointCommitBoundaryEvidence` is what the durable layer persists as
+P4, and it has **no manifest slot and no bytes digest** -- but the worker refuses
+a commit that does not repeat exactly the candidate `prepare` froze. So the
+adapter keeps the whole `WorkerPreparedCandidate` alongside the evidence in its
+held candidate; without it the commit could never be issued at all. The same
+absence is why `reconcile_checkpoint` stays fail-closed (§7 item 19 is corrected
+below): building a recovery correlation needs the slot and the digest, and there
+is nothing to build one from.
+
+The other: the worker reports its image as `persistence::ImageUuid`, which is raw
+bytes, while the durable boundary evidence and the profile hold `product::Uuid`.
+The comparison goes through one conversion function, and it goes through
+*canonical text* -- `Uuid` has no byte-level factory, so text via `Uuid::parse`
+is the only bridge that cannot disagree with the one canonical form.
+
+**Two scope decisions, both stated in the header rather than left implicit.**
+`create_and_verify_bundle` and `inspect_bundle_read_only` are **fail-closed**
+here. The worker now produces the evidence they must return (§1.18), so the data
+exists; what is unsettled is *when*, because the plan places both before
+`create_runtime_and_worker` while in M5 the bundle is created by the worker's own
+`start()`. That is orchestration, and Task 6 owns the ordering table. Choosing
+one option here would settle a Task 6 question in a Task 5 file.
+`reconcile_checkpoint` is likewise not overridden.
+
+**§7 item 19 corrected.** It claimed `reconcile_checkpoint` becomes realizable
+through `recovery_proof`. It does not: the correlation needs the manifest slot
+and the bytes digest, and the evidence the method is handed carries neither. The
+claim was written from the protocol's capabilities without checking what the
+caller actually receives, which is the same mistake the reconciliation pass was
+written to stop making.
+
+**Evidence.** Release build clean after a full object rebuild. Full suite:
+
+```
+ELEVATED=True
+141 tests passed, 1 tests failed out of 142
+```
+
+142 = 141 + `unit.m5.service_worker_control`. The one failure remains
+`integration.m3.recovery` (§1.18).
+
+**What the new suite covers, and what it deliberately does not.**
+`unit.m5.service_worker_control` is 7/7: the whole fail-closed action set
+(`compact`, the config publishes, the rebind pair, `forget_metadata`, and the two
+bundle actions) is asserted to fail *without contacting a worker*;
+`reconcile_checkpoint` is asserted fail-closed; `prove_new_uninitialized` refuses
+without a durable profile; `observe_runtime` reports an unbound profile as
+*observed gone* rather than as "not observed"; strict observation refuses when
+unbound; and the observation mapping is pinned in all three liveness
+combinations.
+
+It does **not** cover the action mapping, the checkpoint boundary or the removal
+proof, because `ServiceWorkerSession` is a concrete type over an authenticated
+channel and cannot be faked -- and faking it would mean testing a different
+object than the one that runs. Those paths need a real worker and belong to
+`m5_production_execution_backend_tests`, which is increment 14. The suite's own
+header says so, so the gap is visible from the test rather than only from this
+document.
+
 ### 1.18 Task 5 increment 10 — the worker produces the bundle evidence
 
 Implements the ruling recorded in §7 item 22. ServiceCore requires a

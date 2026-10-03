@@ -126,6 +126,24 @@ target_include_directories(myrd_m4_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m4_cli_tests)
 add_test(NAME unit.m4.cli COMMAND myrd_m4_cli_tests)
 
+# ---- M5 IWorkerControl adapter (Task 5) -------------------------------------
+# Drives the adapter's fail-closed set and its observation mapping.  The paths
+# that need a real worker -- the action mapping, the checkpoint boundary, the
+# removal proof -- are covered by m5_production_execution_backend_tests against
+# an actual process; `ServiceWorkerSession` is concrete over an authenticated
+# channel and cannot be faked, so this suite deliberately does not reach for
+# them.
+add_executable(myrd_m5_service_worker_control_tests
+    unit/m5_service_worker_control_tests.cpp
+)
+target_link_libraries(myrd_m5_service_worker_control_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_service_worker_control_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_service_worker_control_tests)
+add_test(NAME unit.m5.service_worker_control
+         COMMAND myrd_m5_service_worker_control_tests)
+
 # ---- M4 exact volume ownership seams (T04; RED until implementation) -----
 add_executable(myrd_m4_windows_volume_tests
     unit/m4_windows_volume_tests.cpp

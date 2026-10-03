@@ -70,13 +70,20 @@
 //                                 performs, and a reply that claimed a removal
 //                                 the adapter had not proven is refused below.
 //
-// The service-side create and provisioning preflight are realized directly:
-// `create_and_verify_bundle` creates the generation-zero bundle through the M4
-// persistence adapter, and `prove_new_uninitialized` checks the durable mount
-// target before a later start.  `inspect_bundle_read_only` is realized from the
-// worker's own verified image identity -- an improvement over the historical
-// adapter, which failed it closed because the old status carried no bundle
-// identity at all.
+// `prove_new_uninitialized` checks the durable mount target before a later
+// start and needs no worker at all.
+//
+// `create_and_verify_bundle` and `inspect_bundle_read_only` are **fail-closed
+// here, and that is a scope decision rather than a gap in the protocol.** The
+// worker now produces the `BundleRegistrationEvidence` these two actions must
+// return (§1.18), so the data exists; what is unsettled is *when*. The action
+// plan places both **before** `create_runtime_and_worker`, while in M5 the
+// bundle is created by the worker's own `start()` -- so satisfying them means
+// either launching a worker at a point the plan treats as pre-worker, or
+// re-cutting the plan's ordering. That is orchestration, and Task 6 owns
+// `service_core.cpp` and the ordering table. Implementing one of the two
+// options here would silently decide a Task 6 question in a Task 5 file, so the
+// adapter refuses both actions with a reason and the seam stays visible.
 //
 // Everything else fails closed with `unrealized_action`:
 //   compact, and the compaction family
@@ -87,6 +94,19 @@
 //   verify_rebind_bundle,
 //   publish_rebind,
 //   forget_metadata            -> no worker command performs any of these.
+//   create_and_verify_bundle,
+//   inspect_bundle_read_only   -> see above: the evidence exists, the ordering
+//                                 does not, and the ordering is Task 6's.
+//   reconcile_checkpoint       -> deliberately not overridden, so it keeps the
+//                                 inherited fail-closed answer. `recovery_proof`
+//                                 would realize it, but the correlation it needs
+//                                 requires the prepared candidate's manifest slot
+//                                 and bytes digest, and
+//                                 `CheckpointCommitBoundaryEvidence` carries
+//                                 neither -- so the adapter cannot build one from
+//                                 what it is handed. §7 item 19 claimed this
+//                                 action became realizable; that claim was wrong
+//                                 and is corrected there.
 //
 // Reporting success for any of those would tell ServiceCore a mutation had
 // happened when nothing had.  They are reported as blockers rather than papered
@@ -160,6 +180,10 @@ enum class ServiceWorkerControlError : std::uint32_t {
     // The worker holds a volume but could not report its complete persistent
     // identity, so the service has nothing to record and must not invent one.
     volume_identity_unproven,
+    // The worker removed at a generation other than the one this authority
+    // proved committed.  Removal drops every uncommitted write, so a removal
+    // proven at the wrong generation is not a removal this service may record.
+    removal_generation_mismatch,
 };
 
 // The seam between this adapter and whoever can actually start or find a worker
@@ -176,8 +200,13 @@ public:
 
     // Launches a worker for this profile and returns its authenticated session.
     // Failure means no worker is running for it and nothing was changed.
+    //
+    // Takes the durable record rather than a snapshot: the launch spec is built
+    // from exactly the record's fields -- bundle path, image, size, mount target
+    // -- and a snapshot would carry the mutable service state a launch must not
+    // read.
     [[nodiscard]] virtual Result<std::unique_ptr<ServiceWorkerSession>> launch(
-        const ManagedProfileSnapshot& profile,
+        const profile::ProfileRecord& profile,
         const OperationContext& context) = 0;
     // Adopts the worker already running for this profile.  A successful
     // `nullopt` means none is running -- which is an answer, not a failure.
@@ -203,9 +232,11 @@ public:
     Result<WorkerActionResult> execute_checkpoint(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryHandler& boundary) override;
-    Result<WorkerActionResult> reconcile_checkpoint(
-        const WorkerActionRequest& request,
-        const CheckpointCommitBoundaryEvidence& correlation) override;
+    // `reconcile_checkpoint` is deliberately not overridden: the inherited
+    // fail-closed answer is the honest one.  `recovery_proof` would realize it,
+    // but building the correlation it needs requires the prepared candidate's
+    // manifest slot and bytes digest, and `CheckpointCommitBoundaryEvidence`
+    // carries neither -- so there is nothing here to build one from.
     Result<void> publish_checkpoint_epoch(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryEvidence& correlation,
@@ -221,10 +252,18 @@ private:
     // A candidate the volume flush cut and a checkpoint will publish.  It is
     // keyed by the operation that cut it so two profiles stopping at once can
     // never commit each other's snapshot.
+    //
+    // The prepared candidate is held alongside the boundary evidence because
+    // they carry different halves.  `CheckpointCommitBoundaryEvidence` is what
+    // the durable layer persists as P4, and it has no manifest slot and no bytes
+    // digest -- but the worker refuses a commit that does not repeat exactly the
+    // candidate prepare froze, so the adapter has to be the one that remembers
+    // them.  Without this the commit could never be issued at all.
     struct HeldCandidate final {
         product::Uuid profile_id;
         product::Uuid operation_id;
         CheckpointCommitBoundaryEvidence evidence;
+        m5::WorkerPreparedCandidate prepared;
     };
 
     // The generation a removal may be authorized at, and -- once the removal
@@ -252,8 +291,11 @@ private:
         const product::Uuid& profile_id) noexcept;
     // The session for this profile, adopting an existing worker when none is
     // held and `attach_if_absent` allows it.  Never launches.
+    // Takes the profile rather than the whole request: `WorkerActionRequest`
+    // holds three `product::Uuid`s and so cannot be value-initialized, which
+    // makes it useless as a carrier for a call that only needs an identity.
     Result<ServiceWorkerSession*> require_session(
-        const WorkerActionRequest& request, bool attach_if_absent);
+        const product::Uuid& profile_id, bool attach_if_absent);
     Result<WorkerActionResult> verify_binding(
         const WorkerActionRequest& request,
         ServiceWorkerSession& session) const;
@@ -280,12 +322,10 @@ private:
         const WorkerActionRequest& request);
     Result<WorkerActionResult> resume_mutations(
         const WorkerActionRequest& request);
-    Result<WorkerActionResult> inspect_bundle_read_only(
-        const WorkerActionRequest& request);
     Result<WorkerActionResult> unrealized(
         const WorkerActionRequest& request) const;
-    Result<CheckpointCommitBoundaryEvidence> cut_candidate(
-        ServiceWorkerSession& session, const WorkerActionRequest& request);
+    Result<HeldCandidate> cut_candidate(ServiceWorkerSession& session,
+                                        const WorkerActionRequest& request);
     // Resolve a candidate the service decided not to publish.  Only an abort the
     // worker confirmed leaves the committed generation untouched.
     Result<WorkerActionResult> abort_held_candidate(
