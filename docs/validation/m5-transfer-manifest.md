@@ -801,6 +801,72 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.20 Task 5 increment 12 — the worker launcher and its provider
+
+Two pieces, split by what each one knows.
+
+`launch_private_worker` lives in `src/host/m5_worker_private_pipe.{h,cpp}`
+because it is the thing that ties that file's three existing primitives together
+and nothing else: it creates the startup channel, creates the pipe server,
+starts the process, writes the spec, and does not return until the handshake has
+authenticated the peer.  It knows nothing about profiles or durable state, so the
+protocol target stays free of `src/management`.
+
+`WindowsWorkerSessionProvider` lives in
+`src/management/windows_worker_sessions.{h,cpp}` and is the translation the other
+piece deliberately omits: `profile::ProfileRecord` → `m5::WorkerLaunchSpec`.  It
+is the only part that knows about profiles, so it is the only part that has to be
+tested against them.
+
+**Three decisions inside the launcher, each with a reason.**
+
+Inheritance is restricted to the one handle the worker needs, via
+`STARTUPINFOEX` and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.  A plain
+`CreateProcessW(bInheritHandles = TRUE)` hands the child every inheritable handle
+the service holds, and each of those is a thing the child could then be made to
+act on.
+
+Every failure path terminates and waits for the child before returning, through a
+guard that owns it until the caller takes it.  A half-launched worker still holds
+the pipe name and, once it has read the spec, the bundle -- and a process nobody
+kept a handle to is a process nobody can stop.
+
+The budget is the context's deadline rather than a separate `timeout_ms`
+parameter.  That parameter existed in the first draft and the compiler was right
+to reject it as unused: two bounds on one wait can disagree, and only one of them
+was ever consulted.
+
+**One thing built and then removed, recorded because removing it was the point.**
+`wait_for_worker_exit` was written alongside the launcher, mirroring the
+historical adapter's use of it to prove a removal against a *dead process*.  The
+M5 adapter does not do that -- a removal is proven by the worker's own
+authenticated answer -- so nothing would have called it.  It was deleted rather
+than shipped unused, with the note that it returns with the live-worker registry
+that needs it.
+
+**`attach` returns `nullopt`, and that is a scope statement rather than a stub.**
+Adopting a worker this provider did not launch needs a registry of live workers,
+which belongs to the service composition: the adapter already holds its own
+sessions, and this provider owns none.  A successful `nullopt` means "none
+running", which the adapter turns into an explicit `execution_not_bound` refusal.
+`recover_bundle` therefore fails today, and will keep failing until Task 7
+supplies the registry.  Saying so is better than a provider that appears to
+adopt and does not.
+
+**Evidence.** Release build clean after a full object rebuild; full suite
+**141/142**, the one failure being `integration.m3.recovery` (§1.18).
+`structural.m5.execution_boundary` passes, so neither new piece reached a
+forbidden target.
+
+**Not covered, and the reason is structural rather than an omission.** Both
+pieces are unexecuted: the launcher needs a real worker process and a real
+bundle, and the provider needs a durable profile.  Neither can be exercised
+without the production backend suite, which is increment 14 -- the same suite
+that covers the adapter's action mapping.  Until then they are
+reviewed-but-unexecuted code, and this is the third increment in a row with that
+property; it is worth stating plainly rather than letting the pattern pass
+unnoticed.
+
 ### 1.19 Task 5 increment 11 — ServiceWorkerControl, the Decision A seam
 
 `src/management/service_worker_control.{h,cpp}` and

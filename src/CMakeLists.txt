@@ -351,6 +351,7 @@ add_library(myrd_management STATIC
     management/service_worker_session.cpp management/service_worker_session.h
     management/state_machine.cpp management/state_machine.h
     management/windows_worker_observation.h
+    management/windows_worker_sessions.cpp management/windows_worker_sessions.h
 )
 target_include_directories(myrd_management PUBLIC "${CMAKE_SOURCE_DIR}")
 # `myrd_m5_worker_protocol` is the private channel and its codec.  It is not a

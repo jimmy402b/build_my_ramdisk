@@ -673,4 +673,180 @@ Result<WorkerMessage> WorkerPrivatePipeClient::read(
     return channel_.read(context);
 }
 
+namespace {
+
+// The handle value is the only thing that goes on the child's command line.
+// Written as lowercase hex with no prefix and no leading zeroes, which is
+// exactly what the worker's parser accepts.
+std::wstring hex_handle_text(const void* handle) {
+    static constexpr wchar_t kDigits[] = L"0123456789abcdef";
+    const auto value = reinterpret_cast<std::uintptr_t>(handle);
+    std::wstring text;
+    text.reserve(16);
+    for (int shift = static_cast<int>(sizeof(value) * 8) - 4; shift >= 0;
+         shift -= 4) {
+        text.push_back(kDigits[(value >> shift) & 0xF]);
+    }
+    const auto first = text.find_first_not_of(L'0');
+    return first == std::wstring::npos ? std::wstring(L"0")
+                                       : text.substr(first);
+}
+
+// Owns the child process until the caller takes it.
+//
+// Every failure path in `launch_private_worker` has to end the process it just
+// created: a partially launched worker still holds the pipe name -- and, once it
+// has read the spec, the bundle -- and a process nobody kept a handle to is a
+// process nobody can stop.
+struct ChildGuard final {
+    PROCESS_INFORMATION info{};
+    bool owned{false};
+
+    ~ChildGuard() noexcept {
+        if (!owned) return;
+        static_cast<void>(TerminateProcess(info.hProcess, 1));
+        static_cast<void>(WaitForSingleObject(info.hProcess, 10'000));
+        static_cast<void>(CloseHandle(info.hThread));
+        static_cast<void>(CloseHandle(info.hProcess));
+    }
+    void release() noexcept { owned = false; }
+};
+
+Result<std::uint64_t> creation_time_of(void* process_handle) {
+    FILETIME creation{};
+    FILETIME exit{};
+    FILETIME kernel{};
+    FILETIME user{};
+    if (!GetProcessTimes(static_cast<HANDLE>(process_handle), &creation, &exit,
+                         &kernel, &user)) {
+        return Result<std::uint64_t>::failure(
+            pipe_error(0, L"launch_private_worker",
+                       L"the worker's creation time could not be read",
+                       GetLastError()));
+    }
+    ULARGE_INTEGER combined{};
+    combined.LowPart = creation.dwLowDateTime;
+    combined.HighPart = creation.dwHighDateTime;
+    return Result<std::uint64_t>::success(combined.QuadPart);
+}
+
+} // namespace
+
+Result<LaunchedWorker> launch_private_worker(
+    const OperationContext& context, const std::wstring& worker_executable,
+    const WorkerLaunchSpec& spec) {
+    auto startup = create_startup_channel();
+    if (!startup.ok()) return Result<LaunchedWorker>::failure(startup.error());
+    void* const child_read = startup.value().child_read_handle;
+    void* const parent_write = startup.value().parent_write_handle;
+
+    auto server = WorkerPrivatePipeServer::create(spec.private_pipe_name);
+    if (!server.ok()) {
+        close_startup_handle(child_read);
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(server.error());
+    }
+
+    // Restrict inheritance to the one handle the worker needs.  A plain
+    // `CreateProcessW(bInheritHandles = TRUE)` hands the child every inheritable
+    // handle this process holds, which for a service is a great deal more than a
+    // startup pipe -- and each of those is a thing the child could then be made
+    // to act on.
+    STARTUPINFOEXW startup_info{};
+    startup_info.StartupInfo.cb = sizeof(startup_info);
+    SIZE_T attribute_bytes = 0;
+    static_cast<void>(InitializeProcThreadAttributeList(nullptr, 1, 0,
+                                                        &attribute_bytes));
+    std::vector<std::byte> attribute_storage(attribute_bytes);
+    startup_info.lpAttributeList =
+        reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+            attribute_storage.data());
+    if (!InitializeProcThreadAttributeList(startup_info.lpAttributeList, 1, 0,
+                                           &attribute_bytes)) {
+        close_startup_handle(child_read);
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(pipe_error(
+            0, L"launch_private_worker",
+            L"the handle-inheritance list could not be created",
+            GetLastError()));
+    }
+    HANDLE inherited[1] = {static_cast<HANDLE>(child_read)};
+    const BOOL listed = UpdateProcThreadAttribute(
+        startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        inherited, sizeof(inherited), nullptr, nullptr);
+    if (!listed) {
+        const auto native = GetLastError();
+        DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+        close_startup_handle(child_read);
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(pipe_error(
+            0, L"launch_private_worker",
+            L"the inherited handle could not be added to the list", native));
+    }
+
+    std::wstring command = L"\"" + worker_executable + L"\" --launch-handle "
+        + hex_handle_text(child_read);
+    std::vector<wchar_t> command_line(command.begin(), command.end());
+    command_line.push_back(L'\0');
+
+    ChildGuard child{};
+    const BOOL started = CreateProcessW(
+        worker_executable.c_str(), command_line.data(), nullptr, nullptr, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, nullptr,
+        nullptr, &startup_info.StartupInfo, &child.info);
+    const auto start_error = GetLastError();
+    DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+    // Closed in the parent as soon as the child exists: holding the read end
+    // open would mean the child never sees end-of-file on the spec channel.
+    close_startup_handle(child_read);
+    if (!started) {
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(pipe_error(
+            0, L"launch_private_worker", L"the worker process could not be started",
+            start_error));
+    }
+    child.owned = true;
+
+    // The spec goes through the inherited channel and the writing end is closed
+    // by `write_launch_spec`, which is what lets the child's read return.
+    auto written = write_launch_spec(startup.value(), spec);
+    if (!written.ok()) {
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(written.error());
+    }
+
+    auto creation = creation_time_of(child.info.hProcess);
+    if (!creation.ok()) return Result<LaunchedWorker>::failure(creation.error());
+    const WorkerBinding expected{
+        static_cast<std::uint32_t>(child.info.dwProcessId), creation.value(),
+        spec.session_generation, spec.profile_id};
+
+    // The handshake is what proves the peer read the startup channel.  Until it
+    // succeeds the child is just a process that happens to have the pipe name.
+    auto handshaken = server.value()->accept_and_handshake(
+        context, expected, spec.session_nonce, spec.startup_secret);
+    if (!handshaken.ok()) {
+        return Result<LaunchedWorker>::failure(handshaken.error());
+    }
+
+    // The thread handle is not needed once the process has started, and holding
+    // it would keep the process object alive for no reason.
+    static_cast<void>(CloseHandle(child.info.hThread));
+    child.info.hThread = nullptr;
+    child.release();
+
+    // Aggregate initialization, not default-then-assign: the struct holds a
+    // `WorkerBinding`, which holds a `product::Uuid`, which has no public
+    // default constructor -- so it cannot be value-initialized at all.
+    return Result<LaunchedWorker>::success(LaunchedWorker{
+        child.info.hProcess, expected, handshaken.move_value()});
+}
+
+void close_launched_worker(LaunchedWorker& worker) noexcept {
+    if (worker.process_handle != nullptr) {
+        static_cast<void>(CloseHandle(static_cast<HANDLE>(worker.process_handle)));
+        worker.process_handle = nullptr;
+    }
+}
+
 } // namespace myrd::m5

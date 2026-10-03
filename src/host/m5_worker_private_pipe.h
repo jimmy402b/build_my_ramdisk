@@ -151,6 +151,50 @@ private:
     void* handle_{};
 };
 
+// ---------------------------------------------------------------------------
+// Worker process launch
+// ---------------------------------------------------------------------------
+//
+// The launcher lives here because it is the thing that ties the three pieces
+// above together and nothing else: it creates the startup channel, creates the
+// pipe server, starts the process, writes the spec and waits for the handshake.
+// It deliberately knows nothing about profiles or durable state -- the caller
+// builds the `WorkerLaunchSpec` -- so this file stays free of `src/management`.
+
+struct LaunchedWorker final {
+    // The caller owns this and must pass it to `close_launched_worker`.  It is
+    // the handle to observe the process with, not a licence to command it.
+    void* process_handle{};
+    // The identity the channel authenticated: the child's own pid and process
+    // creation time, which is what makes "the same worker" a question with an
+    // answer even after Windows recycles the pid.
+    WorkerBinding binding;
+    std::unique_ptr<WorkerPipeChannel> channel;
+};
+
+// Starts a worker and does not return until the handshake has authenticated it.
+//
+// The only thing on the child's command line is the inherited handle value, so
+// no secret can reach it.  Handle inheritance is restricted to that one handle:
+// a plain `CreateProcessW(bInheritHandles = TRUE)` would hand the child every
+// inheritable handle this process holds, which for a service is far more than a
+// startup pipe.
+//
+// On any failure the child is terminated and waited for before returning.  A
+// half-launched worker would hold the pipe name, and once started the bundle --
+// and a process nobody has a handle to is a process nobody can stop.
+// The budget is the context's own deadline: a separately passed timeout would be
+// a second bound on the same wait, and the two could disagree.
+[[nodiscard]] Result<LaunchedWorker> launch_private_worker(
+    const OperationContext& context, const std::wstring& worker_executable,
+    const WorkerLaunchSpec& spec);
+
+// Closes the process handle.  Nothing retains it yet: a removal is proven by the
+// worker's own authenticated answer rather than by waiting for it to die, so
+// there is no reader for a process-exit wait.  One will be added with the
+// live-worker registry that needs it rather than kept here unused.
+void close_launched_worker(LaunchedWorker& worker) noexcept;
+
 // The worker side: connects to the name it was told, then authenticates.
 class WorkerPrivatePipeClient final {
 public:
