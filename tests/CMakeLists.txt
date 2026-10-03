@@ -126,6 +126,31 @@ target_include_directories(myrd_m4_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m4_cli_tests)
 add_test(NAME unit.m4.cli COMMAND myrd_m4_cli_tests)
 
+# ---- M5 execution backend against a real worker (Task 5) --------------------
+# The suite that executes the launcher, the session provider and the adapter.
+# It starts a real `myrd-m5-worker` process, so the binary is passed in as a
+# compile definition and made a build dependency: a test that guessed the path
+# would find a stale worker or none, and both look like product defects.
+add_executable(myrd_m5_production_execution_backend_tests
+    integration/m5_production_execution_backend_tests.cpp
+)
+target_link_libraries(myrd_m5_production_execution_backend_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_production_execution_backend_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+# A *relative* path with forward slashes, resolved at run time against this test
+# module's own directory.  An absolute path cannot be pasted into a C++ literal:
+# its backslashes would be read as escape sequences, and `\U` in `C:\Users\...`
+# is not one of them.  Resolving relative to the module also keeps the build root
+# out of the binary.
+target_compile_definitions(myrd_m5_production_execution_backend_tests PRIVATE
+    "MYRD_M5_WORKER_RELPATH=\"../../src/$<CONFIG>/myrd-m5-worker.exe\"")
+add_dependencies(myrd_m5_production_execution_backend_tests myrd-m5-worker)
+myrd_enable_warnings(myrd_m5_production_execution_backend_tests)
+add_test(NAME m5.production_execution_backend
+         COMMAND myrd_m5_production_execution_backend_tests)
+set_tests_properties(m5.production_execution_backend PROPERTIES TIMEOUT 120)
+
 # ---- M5 IWorkerControl adapter (Task 5) -------------------------------------
 # Drives the adapter's fail-closed set and its observation mapping.  The paths
 # that need a real worker -- the action mapping, the checkpoint boundary, the

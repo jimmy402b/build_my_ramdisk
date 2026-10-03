@@ -801,6 +801,52 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.21 Task 5 increment 13 — the backend suite that executes increments 10-12
+
+`tests/integration/m5_production_execution_backend_tests.cpp`, the suite §1.20
+called out as owed. It starts a **real `myrd-m5-worker` process** and drives it
+over the private channel, so the launcher, the session provider and the adapter
+stop being reviewed-but-unexecuted code.
+
+**The scope boundary is the deliberate part.** The worker's `start` command runs
+`DiskRuntime::start()`, which needs an AIM proxy disk and a real volume -- the
+acceptance environment, not a unit harness. So the cases drive the worker up to
+and including the authenticated session and stop there. What did not exist before
+this file is the service-to-worker hop: process launch, inherited startup
+channel, pipe ACL, handshake, binding. That hop is now fully exercised.
+
+**The assertion that makes the evidence real rather than plausible.** The first
+draft asserted `!status.ok()` for a worker whose runtime was never started, and
+that is satisfied by *any* failure -- including one that never reached a worker.
+The case now asserts `status.error().operation == L"observe"`: `observe` is the
+operation name the worker's own command loop uses when it refuses a status for a
+runtime it has not started, so an error carrying it can only have come from that
+loop, over the authenticated channel. A launch that never happened, or a
+handshake that silently no-opped, fails on that line instead of passing on a
+bare `!ok()`. The initial run passed in 0.14 s, which is exactly the kind of
+result that deserves a second look rather than a commit.
+
+**Six cases, 6/6:** a real launch authenticates and reports the child's own pid
+and creation time; two profiles get two distinct processes and two distinct
+bindings; a launch with no executable is refused; a durable mount target that is
+not a drive letter is refused *before* a process exists; `attach` reports "none
+running" rather than pretending; and the adapter reaches the worker it launched
+-- asserted as "the failure is the runtime's, not `execution_not_bound`", which
+is the only thing that separates a wired-up adapter from an unwired one when both
+fail.
+
+**One build detail worth recording.** The worker's path cannot be baked into a
+C++ string literal: an absolute Windows path has backslashes, and `\U` in
+`C:\Users\...` is not an escape sequence -- C4129, promoted to an error by
+`myrd_enable_warnings`. `$<SHELL_PATH:...>` inside `target_compile_definitions`
+did not convert it either. The path is therefore passed *relative* with forward
+slashes via `$<CONFIG>`, resolved at run time against this module's own
+directory, and asserted to exist so a layout change fails with the path it tried.
+
+**Evidence.** Release build clean after a full object rebuild; full suite
+**142/143**, the one failure being `integration.m3.recovery` (§1.18).
+`m5.production_execution_backend` is 6/6.
+
 ### 1.20 Task 5 increment 12 — the worker launcher and its provider
 
 Two pieces, split by what each one knows.
