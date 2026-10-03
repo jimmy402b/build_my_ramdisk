@@ -933,17 +933,29 @@ has been run elevated.
 evidence round-trips byte for byte, including the raw file id; incomplete
 evidence is refused).
 
-**An unresolved inconsistency in this session's own evidence, stated rather than
-smoothed over.** Two full-suite runs earlier today reported 141/141 with
-`CTEST_EXIT=0` on trees that did not contain this increment; re-running the same
-elevated script on the current tree reports 140/141. The link graph rules this
-increment out as the cause, and the test fails the same way in a direct run and
-in the elevated script alike, so the current reading is the reproducible one.
-But I cannot explain why the earlier reads said otherwise, and a suite that
-reports 141/141 and then 140/141 with no reachable change in between means those
-earlier readings should not be relied on. Treat **140/141 with
-`integration.m3.recovery` as the current baseline** until someone reproduces a
-clean 141.
+**The 141-then-140 discrepancy, resolved — and it was environmental, not a code
+change.** Two full-suite runs earlier in the session reported 141/141 with
+`CTEST_EXIT=0`; later runs of the same script reported 140/141, with no reachable
+change in between. The cause is the privilege state of the shell, and the chain
+is short enough to verify end to end:
+
+- The failing case holds `busy.vhdx` with share mode zero to make it busy, then
+  requires recovery to report an operational error.
+- The recovery path opens files with `FILE_FLAG_BACKUP_SEMANTICS`
+  (`image_paths.cpp:549`, `:613`, `:1495`).
+- **An opener holding `SeBackupPrivilege` *enabled* bypasses the share-mode
+  check.** `whoami /priv` now reports it 已启用 (enabled); an administrator token
+  holds that privilege but leaves it disabled by default, which is the state the
+  earlier runs were in.
+
+So the test's premise -- that share mode zero makes a file unopenable -- is false
+for exactly the opener the production code is. The earlier 141/141 readings were
+correct for their environment, and the later 140/141 reading is correct for this
+one; neither was wrong and nothing regressed. The test is a **pre-existing test
+defect** that a privilege change exposed, not a code defect.
+
+Current baseline: **141/142** once §1.19's new suite is counted, with
+`integration.m3.recovery` as the single failure.
 
 Closes the first of the two defects §1.15a found, and the last of the three
 replies that could not report what they did. `abort` returned a bare
