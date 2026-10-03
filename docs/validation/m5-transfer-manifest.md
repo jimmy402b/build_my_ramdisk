@@ -801,6 +801,62 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.23 Task 5 increment 14 — the durable correlation can carry a recovery proof
+
+Lands the widening §1.22 decided, and with it the last fail-closed action in
+`IWorkerControl`.
+
+`CheckpointCommitBoundaryEvidence` gains a manifest slot and a bytes digest,
+appended so every existing aggregate initializer keeps its meaning.
+`recovery_recoverable()` is the gate: a zero digest is the *absence* of the fact
+a recovery proof is made of, not a digest that happens to be zero, and the
+adapter refuses on it rather than comparing it.
+
+**The migration, and why the version gate is not where the safety lives.**
+`profile_registration_codec.cpp` required an exact schema minor match, so the
+minor is bumped to 1 and the reader accepts `[0, 1]`. The payload is not
+self-describing, so `unwrap` now carries the minor out to the `Reader`, which
+`read_checkpoint_correlation` consults to decide whether the two fields are
+present. A record from the previous minor decodes with them absent. **That is the
+whole migration, and rejecting those records would have been data loss.**
+
+Where the safety actually lives is `recovery_recoverable()` plus the adapter's
+refusal, not the version gate. A version gate can only say "these bytes are not
+the shape I expect"; it cannot say "the fact you need is not in them". A legacy
+correlation loads, is usable for everything it does carry, and *cannot* be
+mistaken for a proved one.
+
+**`reconcile_checkpoint` is realized**, through `recovery_proof`. The worker
+judges the bundle; the adapter relays which of the three answers came back and
+does not decide what it implies -- promotion, rollback or parking is ServiceCore's
+table, and inventing one here would be deciding it in the wrong layer. A proof
+that could not be *taken* is a failure, not `ownership_unprovable`: "could not
+ask" must not become a finding about the bundle.
+
+**A process error of mine, caught by the suite.** After the header change the
+full run showed `m5.production_execution_backend` dying with `0xC0000409` -- the
+CRT abort that §7 item 17 names as the stale-object signature. I had edited
+`service_core.h` and rebuilt incrementally **without deleting the objects
+first**, which is the exact rule that item exists for and the third time it has
+been violated in this work. Deleting `out/build/msvc/**/*.obj` and rebuilding
+fixed it with no source change. The rule is not advisory and this is the
+recorded instance.
+
+**Evidence.** Release build clean **after a full object rebuild**; full suite
+**143/144**, the one failure being the pre-existing `integration.m3.recovery`
+(§1.18). `unit.m5.registration_codec` is 3/3 and
+`unit.m5.service_worker_control` is 8/8.
+
+**New coverage where there was none.** Nothing in the suite included the
+registration codec header before this increment -- the durable format had no
+direct test at all, and the migration would have been its first. It now has
+three cases: the new fields round-trip; a record rewritten as the *previous*
+minor decodes with the fields absent rather than invented (the assertion the
+migration turns on, and built by locating the appended bytes by value because the
+correlation is not last in the payload); and a minor from the future is refused,
+because a payload read as if it ended where this build expects would decode
+trailing bytes into whichever field came next.
+
 ### 1.22 Task 5 closes — and the three rulings that close it
 
 Task 5's file list in the plan names one file that is not built here and one it

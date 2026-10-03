@@ -19,7 +19,13 @@ namespace myrd::management {
 namespace {
 
 constexpr std::uint16_t kSchemaMajor = 1;
-constexpr std::uint16_t kSchemaMinor = 0;
+// Bumped when `CheckpointCommitBoundaryEvidence` gained the manifest slot and
+// the candidate digest.  `kMinimumReadableSchemaMinor` is what makes that a
+// migration rather than a break: a record written before the bump still decodes,
+// with the two fields left at their defaults, and the recovery path refuses on
+// them instead of comparing a zero digest as if it were a match.
+constexpr std::uint16_t kSchemaMinor = 1;
+constexpr std::uint16_t kMinimumReadableSchemaMinor = 0;
 constexpr std::size_t kHeaderBytes = 56;
 constexpr std::size_t kDigestOffset = 24;
 constexpr std::size_t kMaximumWideTextBytes = 32U * 1024U;
@@ -143,6 +149,13 @@ private:
 class Reader final {
 public:
     explicit Reader(std::span<const std::byte> bytes) : bytes_(bytes) {}
+
+    // The schema minor the record was written with.  Defaults to the current one
+    // so a reader built without a header -- a nested payload, a test fixture --
+    // behaves as the newest format; `unwrap` overwrites it from the record it
+    // validated.
+    std::uint16_t schema_minor{kSchemaMinor};
+
     bool u8(std::uint8_t& value) {
         if (remaining() < 1) return fail();
         value = std::to_integer<std::uint8_t>(bytes_[offset_++]);
@@ -365,11 +378,23 @@ void write_checkpoint_correlation(Writer& w, const CheckpointCommitBoundaryEvide
     w.uuid(v.product_operation_id); w.uuid(v.profile_id); w.uuid(v.image_id); w.u32(v.worker_pid);
     w.u64(v.worker_process_creation_time); w.u64(v.worker_session_generation); w.u64(v.prior_generation);
     w.u64(v.candidate_generation); w.u64(v.cut_dirty_epoch); w.optional_u64(v.native_m3_operation_id);
+    w.u8(v.manifest_slot); w.raw(v.candidate_bytes_digest);
 }
 bool read_checkpoint_correlation(Reader& r, CheckpointCommitBoundaryEvidence& v) {
-    return r.uuid(v.product_operation_id) && r.uuid(v.profile_id) && r.uuid(v.image_id) && r.u32(v.worker_pid)
+    if (!(r.uuid(v.product_operation_id) && r.uuid(v.profile_id) && r.uuid(v.image_id) && r.u32(v.worker_pid)
         && r.u64(v.worker_process_creation_time) && r.u64(v.worker_session_generation) && r.u64(v.prior_generation)
-        && r.u64(v.candidate_generation) && r.u64(v.cut_dirty_epoch) && r.optional_u64(v.native_m3_operation_id);
+        && r.u64(v.candidate_generation) && r.u64(v.cut_dirty_epoch) && r.optional_u64(v.native_m3_operation_id))) {
+        return false;
+    }
+    // Added in schema minor 1.  A record written before it simply does not carry
+    // these, and the defaults it is left with are the point: a zero digest means
+    // "this correlation cannot support a recovery proof", which the recovery
+    // path refuses on.  Reading past the end would be an error; inventing a
+    // digest that could compare equal would be worse.
+    if (r.schema_minor >= 1) {
+        if (!r.u8(v.manifest_slot) || !r.raw(v.candidate_bytes_digest)) return false;
+    }
+    return true;
 }
 void write_checkpoint(Writer& w, const CheckpointDurableState& v) {
     w.u64(v.confirmed_generation); w.u64(v.current_dirty_epoch); write_enum(w, v.phase);
@@ -620,10 +645,14 @@ Result<std::vector<std::byte>> wrap(const Magic& magic, Writer& payload,
     return Result<std::vector<std::byte>>::success(output.take());
 }
 
+// `minor_out` carries the minor the record was written with, because the payload
+// below it is not self-describing: a field added in a later minor is present or
+// absent depending on it, and the reader has no other way to know which.
 template <class Magic>
 Result<std::span<const std::byte>> unwrap(std::span<const std::byte> bytes,
                                          const Magic& magic,
-                                         const wchar_t* operation) {
+                                         const wchar_t* operation,
+                                         std::uint16_t& minor_out) {
     if (bytes.size() < kHeaderBytes || bytes.size() > kProfileRegistrationMaximumBytes) {
         return codec_error<std::span<const std::byte>>(ProfileRegistrationCodecError::invalid_size,
             operation, L"Record size is outside the format bound");
@@ -643,10 +672,15 @@ Result<std::span<const std::byte>> unwrap(std::span<const std::byte> bytes,
         return codec_error<std::span<const std::byte>>(ProfileRegistrationCodecError::unsupported_schema,
             operation, L"Record schema major is unsupported");
     }
-    if (minor != kSchemaMinor) {
+    // Older minors are readable on purpose: the only widening so far is the
+    // checkpoint correlation, and a record that predates it must decode rather
+    // than be rejected outright.  What it must *not* do is decode into something
+    // that looks recoverable, which is the payload's job, not this gate's.
+    if (minor > kSchemaMinor || minor < kMinimumReadableSchemaMinor) {
         return codec_error<std::span<const std::byte>>(ProfileRegistrationCodecError::unsupported_schema,
             operation, L"Record schema minor is unsupported");
     }
+    minor_out = minor;
     if (reserved != 0 || total != bytes.size()
         || payload_size != bytes.size() - kHeaderBytes) {
         return codec_error<std::span<const std::byte>>(ProfileRegistrationCodecError::invalid_header,
@@ -836,9 +870,10 @@ Result<std::vector<std::byte>> encode_profile_state_record(const DurableProfileS
 }
 
 Result<DurableProfileStateRecord> decode_profile_state_record(std::span<const std::byte> bytes) {
-    auto payload = unwrap(bytes, kStateMagic, L"profile-registration.state.decode");
+    std::uint16_t minor{};
+    auto payload = unwrap(bytes, kStateMagic, L"profile-registration.state.decode", minor);
     if (!payload.ok()) return Result<DurableProfileStateRecord>::failure(payload.error());
-    Reader reader(payload.value()); DurableProfileStateRecord v;
+    Reader reader(payload.value()); reader.schema_minor = minor; DurableProfileStateRecord v;
     if (!reader.u64(v.revision) || v.revision == 0 || !read_profile_state(reader, v.state)
         || !read_gate(reader, v.operation_gate) || !read_checkpoint(reader, v.checkpoint)
         || !read_compaction(reader, v.compaction) || !read_stop(reader, v.stop)
@@ -862,9 +897,10 @@ Result<std::vector<std::byte>> encode_recovery_command_reservation(const Recover
 }
 
 Result<RecoveryCommandReservation> decode_recovery_command_reservation(std::span<const std::byte> bytes) {
-    auto payload = unwrap(bytes, kReservationMagic, L"profile-registration.reservation.decode");
+    std::uint16_t minor{};
+    auto payload = unwrap(bytes, kReservationMagic, L"profile-registration.reservation.decode", minor);
     if (!payload.ok()) return Result<RecoveryCommandReservation>::failure(payload.error());
-    Reader reader(payload.value());
+    Reader reader(payload.value()); reader.schema_minor = minor;
     auto operation_id = placeholder_uuid();
     auto request_id = placeholder_uuid();
     RecoveryOperationIntent intent{RecoveryOperationKind::repair_profile,
@@ -926,10 +962,10 @@ Result<std::vector<std::byte>> encode_lifecycle_registration_reservation(
 
 Result<LifecycleRegistrationReservation>
 decode_lifecycle_registration_reservation(std::span<const std::byte> bytes) {
-    auto payload = unwrap(bytes, kReservationMagic,
-        L"profile-registration.lifecycle-reservation.decode");
+    std::uint16_t minor{};
+    auto payload = unwrap(bytes, kReservationMagic, L"profile-registration.lifecycle-reservation.decode", minor);
     if (!payload.ok()) return Result<LifecycleRegistrationReservation>::failure(payload.error());
-    Reader reader(payload.value());
+    Reader reader(payload.value()); reader.schema_minor = minor;
     LifecycleRegistrationReservation v{
         1, placeholder_uuid(), placeholder_uuid(), {},
         LifecycleOperationIntent{LifecycleOperationKind::create,
@@ -1007,9 +1043,10 @@ Result<std::vector<std::byte>> encode_forget_tombstone(const ForgetTombstone& v)
 }
 
 Result<ForgetTombstone> decode_forget_tombstone(std::span<const std::byte> bytes) {
-    auto payload = unwrap(bytes, kTombstoneMagic, L"profile-registration.tombstone.decode");
+    std::uint16_t minor{};
+    auto payload = unwrap(bytes, kTombstoneMagic, L"profile-registration.tombstone.decode", minor);
     if (!payload.ok()) return Result<ForgetTombstone>::failure(payload.error());
-    Reader reader(payload.value());
+    Reader reader(payload.value()); reader.schema_minor = minor;
     ForgetTombstone v{placeholder_uuid(), placeholder_uuid(), placeholder_uuid(),
         placeholder_uuid(), 0, 0, L"", L"", std::nullopt, ProfileState{},
         ForgetTombstonePhase::reserved};

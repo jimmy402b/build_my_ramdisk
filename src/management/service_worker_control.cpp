@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <string>
 
 namespace myrd::management {
@@ -42,6 +43,16 @@ std::optional<product::Uuid> to_product_uuid(
     auto parsed = product::Uuid::parse(text);
     if (!parsed.ok()) return std::nullopt;
     return parsed.value();
+}
+
+// The reverse of `to_product_uuid`, and a copy rather than a conversion for the
+// same reason: `Uuid` stores its canonical form's sixteen bytes in order, so
+// going through text here would be two parses that can only fail.
+persistence::ImageUuid to_image_uuid(const product::Uuid& id) noexcept {
+    persistence::ImageUuid value{};
+    const auto bytes = id.bytes();
+    std::memcpy(value.bytes.data(), bytes.data(), value.bytes.size());
+    return value;
 }
 
 // succeeded_clean is the initializer ServiceCore itself uses to mean "this step
@@ -519,7 +530,12 @@ ServiceWorkerControl::cut_candidate(ServiceWorkerSession& session,
             reply.cut_dirty_epoch,
             reply.native_operation_id == 0
                 ? std::nullopt
-                : std::optional<std::uint64_t>(reply.native_operation_id)},
+                : std::optional<std::uint64_t>(reply.native_operation_id),
+            // Persisted with the boundary so a later recovery can ask the
+            // bundle whether *this* candidate landed, which needs the slot it
+            // would occupy and the digest of the bytes it would contain.
+            reply.manifest_slot,
+            reply.candidate_bytes_digest},
         // Kept so the commit can repeat the frozen identity; the boundary
         // evidence carries neither the slot nor the digest.
         reply});
@@ -949,6 +965,113 @@ Result<WorkerActionResult> ServiceWorkerControl::execute_checkpoint(
     const WorkerActionRequest& request,
     const CheckpointCommitBoundaryHandler& boundary) {
     return checkpoint_across_boundary(request, boundary);
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::reconcile_checkpoint(
+    const WorkerActionRequest& request,
+    const CheckpointCommitBoundaryEvidence& correlation) {
+    // A correlation recorded before the manifest slot and the digest existed
+    // cannot support a proof, and this is where that has to be said rather than
+    // discovered.  It is not a match against zeroes: it is the absence of the
+    // two facts the question is made of.
+    if (!correlation.recovery_recoverable()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::recovery_not_provable,
+            L"service_worker_control.reconcile_checkpoint",
+            L"The durable correlation carries no manifest slot and digest, so "
+            L"ownership of this operation cannot be proven"));
+    }
+    if (!correlation.native_m3_operation_id.has_value()) {
+        // Without the native id the bundle has nothing to match its journal
+        // against, so a proof would be answering a different question.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::recovery_not_provable,
+            L"service_worker_control.reconcile_checkpoint",
+            L"The durable correlation carries no native operation id"));
+    }
+
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    // The correlation the worker judges against is the durable record, handed
+    // over unchanged.  The worker re-derives nothing from the service's claim
+    // and the service derives nothing from the worker's: the bundle decides.
+    // Aggregate initialization: the product operation id is a `product::Uuid`,
+    // which has no public default constructor, so the struct cannot be
+    // value-initialized and then filled in.
+    const m5::WorkerRecoveryCorrelation wire{
+        correlation.product_operation_id,
+        persistence::CheckpointRecoveryCorrelation{
+            to_image_uuid(correlation.image_id),
+            correlation.prior_generation,
+            correlation.candidate_generation,
+            *correlation.native_m3_operation_id,
+            correlation.manifest_slot,
+            correlation.candidate_bytes_digest}};
+
+    auto proof = session.value()->recovery_proof(context(), wire);
+    if (!proof.ok()) {
+        // The proof could not be taken at all -- an unreadable bundle, a
+        // transport failure.  That is not one of the three answers, and
+        // reporting it as `ownership_unprovable` would turn "could not ask" into
+        // a finding about the bundle.
+        return Result<WorkerActionResult>::failure(proof.error());
+    }
+
+    // What the bundle proved, relayed.  Which durable state that implies -- and
+    // whether the operation is promoted, rolled back or parked -- is ServiceCore's
+    // decision, not this adapter's; inventing one here would be deciding the
+    // recovery table in the wrong layer.
+    WorkerActionResult result = completed_result();
+    switch (proof.value().outcome) {
+    case m5::WorkerRecoveryOutcome::prior_generation_proved:
+        result.checkpoint = WorkerCheckpointEvidence{
+            correlation,
+            CheckpointCommitDisposition::not_committed,
+            proof.value().observed_generation,
+            correlation.cut_dirty_epoch,
+            std::nullopt,
+            std::nullopt};
+        return Result<WorkerActionResult>::success(std::move(result));
+
+    case m5::WorkerRecoveryOutcome::candidate_generation_proved:
+        // The bytes this operation cut are the ones on disk.  That is a landed
+        // commit and nothing weaker; whether its epoch was published is a
+        // separate question the proof does not answer, so it is not claimed.
+        result.checkpoint = WorkerCheckpointEvidence{
+            correlation,
+            CheckpointCommitDisposition::committed,
+            proof.value().observed_generation,
+            correlation.cut_dirty_epoch,
+            std::nullopt,
+            std::nullopt};
+        result.lifecycle.first_checkpoint_acknowledged = true;
+        return Result<WorkerActionResult>::success(std::move(result));
+
+    case m5::WorkerRecoveryOutcome::ownership_unprovable:
+        break;
+    }
+    // The bundle supports neither claim.  Reported as indeterminate rather than
+    // as a rollback: "not ours" is not the same as "did not happen", and the one
+    // answer that must never be given here is that nothing was published.
+    //
+    // The generation is the worker's own observation of what is on disk, not a
+    // value derived from what this service expected to find.  Relaying a number
+    // the adapter computed would make an unprovable bundle look like a measured
+    // one.
+    result.completion = CompletionOutcome::resolution_unresolved;
+    result.checkpoint = WorkerCheckpointEvidence{
+        correlation,
+        CheckpointCommitDisposition::commit_indeterminate,
+        proof.value().observed_generation,
+        correlation.cut_dirty_epoch,
+        std::nullopt,
+        std::nullopt};
+    return Result<WorkerActionResult>::success(std::move(result));
 }
 
 Result<void> ServiceWorkerControl::publish_checkpoint_epoch(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/common/result.h"
+#include "src/common/sha256.h"
 #include "src/control/authorization.h"
 #include "src/control/command.h"
 #include "src/management/operation_store.h"
@@ -70,6 +71,26 @@ struct CheckpointCommitBoundaryEvidence final {
     std::uint64_t candidate_generation{};
     std::uint64_t cut_dirty_epoch{};
     std::optional<std::uint64_t> native_m3_operation_id;
+    // Appended so every existing aggregate initializer keeps its meaning, and
+    // because the recovery correlation cannot be rebuilt without them.  A
+    // recovery proof has to judge whether *this* candidate reached the bundle,
+    // which means naming the manifest slot it would occupy and the digest of the
+    // bytes it would contain -- neither of which the fields above carry.
+    //
+    // They are also the reason the durable record's schema minor was bumped: a
+    // correlation written before that carries neither, and a zero digest must
+    // never compare as a match.  The reader leaves them at their defaults for
+    // those records and the recovery path refuses on them, so an old record
+    // loads and *cannot* be mistaken for a proved one.
+    std::uint8_t manifest_slot{};
+    Sha256Digest candidate_bytes_digest{};
+
+    // Whether this correlation can support a recovery proof at all.  A zero
+    // digest is the absent value, not a digest that happens to be zero: the
+    // caller must treat it as unprovable rather than compare it.
+    [[nodiscard]] bool recovery_recoverable() const noexcept {
+        return candidate_bytes_digest != Sha256Digest{};
+    }
 
     bool operator==(const CheckpointCommitBoundaryEvidence&) const noexcept =
         default;

@@ -112,20 +112,48 @@ TEST_CASE(m5_worker_control_fails_closed_on_actions_no_worker_realizes) {
     REQUIRE_EQ(provider.attaches, 0);
 }
 
-TEST_CASE(m5_worker_control_reconcile_checkpoint_stays_fail_closed) {
-    // Deliberately not overridden.  `recovery_proof` would realize it, but the
-    // correlation needs the prepared candidate's manifest slot and bytes digest
-    // and `CheckpointCommitBoundaryEvidence` carries neither -- so the adapter
-    // could not build one from what it is handed.  The inherited answer is the
-    // honest one.
+TEST_CASE(m5_worker_control_refuses_a_correlation_that_cannot_prove_ownership) {
+    // A correlation recorded before the schema minor that added the manifest
+    // slot and the digest carries neither, and the adapter must say so rather
+    // than answer.  The distinction that matters: a zero digest is the *absence*
+    // of the fact the question is made of, so comparing it would answer a
+    // different question -- and the answer it would give is "matches", which is
+    // the one answer that must never be given here.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    const CheckpointCommitBoundaryEvidence legacy{
+        operation_id(), profile_id(), uuid("12345678-1234-1234-1234-123456789012"),
+        1, 2, 3, 4, 5, 6, 3903};
+    REQUIRE(!legacy.recovery_recoverable());
+
+    const auto result =
+        control.reconcile_checkpoint(request(ActionKind::checkpoint), legacy);
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(error_code_of(result.error()),
+               ServiceWorkerControlError::recovery_not_provable);
+    // Refused before a worker was asked: the question was unanswerable, not
+    // unanswered.
+    REQUIRE_EQ(provider.attaches, 0);
+}
+
+TEST_CASE(m5_worker_control_refuses_a_correlation_without_a_native_id) {
+    // The slot and the digest are present but there is no native operation id,
+    // so the bundle has nothing to match its journal against.  A proof taken
+    // without it would be answering a different question with a confident
+    // answer, which is worse than no answer.
     NullSessionProvider provider;
     ServiceWorkerControl control(provider);
     CheckpointCommitBoundaryEvidence correlation{
         operation_id(), profile_id(), uuid("12345678-1234-1234-1234-123456789012"),
-        1, 2, 3, 4, 5, 6, std::nullopt};
-    const auto result = control.reconcile_checkpoint(request(ActionKind::checkpoint),
-                                                     correlation);
+        1, 2, 3, 4, 5, 6, std::nullopt, 2, {}};
+    correlation.candidate_bytes_digest.fill(std::byte{0xAB});
+    REQUIRE(correlation.recovery_recoverable());
+
+    const auto result =
+        control.reconcile_checkpoint(request(ActionKind::checkpoint), correlation);
     REQUIRE(!result.ok());
+    REQUIRE_EQ(error_code_of(result.error()),
+               ServiceWorkerControlError::recovery_not_provable);
 }
 
 TEST_CASE(m5_worker_control_prove_new_uninitialized_needs_the_durable_profile) {

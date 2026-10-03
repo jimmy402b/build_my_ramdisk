@@ -184,6 +184,12 @@ enum class ServiceWorkerControlError : std::uint32_t {
     // proved committed.  Removal drops every uncommitted write, so a removal
     // proven at the wrong generation is not a removal this service may record.
     removal_generation_mismatch,
+    // The durable correlation cannot support a recovery proof at all: it carries
+    // no manifest slot and no bytes digest, or no native operation id.  A
+    // correlation recorded before the schema minor that added them is the common
+    // case.  Refused rather than answered, because a proof taken against the
+    // wrong question is worse than none.
+    recovery_not_provable,
 };
 
 // The seam between this adapter and whoever can actually start or find a worker
@@ -232,11 +238,14 @@ public:
     Result<WorkerActionResult> execute_checkpoint(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryHandler& boundary) override;
-    // `reconcile_checkpoint` is deliberately not overridden: the inherited
-    // fail-closed answer is the honest one.  `recovery_proof` would realize it,
-    // but building the correlation it needs requires the prepared candidate's
-    // manifest slot and bytes digest, and `CheckpointCommitBoundaryEvidence`
-    // carries neither -- so there is nothing here to build one from.
+    // Realized through `recovery_proof`, now that the durable correlation carries
+    // the manifest slot and the bytes digest the proof needs.  Before that
+    // widening it stayed fail-closed, because there was nothing to build a
+    // correlation from -- not even from the durable record, which persists the
+    // same type.
+    Result<WorkerActionResult> reconcile_checkpoint(
+        const WorkerActionRequest& request,
+        const CheckpointCommitBoundaryEvidence& correlation) override;
     Result<void> publish_checkpoint_epoch(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryEvidence& correlation,

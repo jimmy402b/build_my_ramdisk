@@ -126,6 +126,18 @@ target_include_directories(myrd_m4_cli_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 myrd_enable_warnings(myrd_m4_cli_tests)
 add_test(NAME unit.m4.cli COMMAND myrd_m4_cli_tests)
 
+# ---- M5 durable profile-state codec (Task 5) --------------------------------
+add_executable(myrd_m5_registration_codec_tests
+    unit/m5_registration_codec_tests.cpp
+)
+target_link_libraries(myrd_m5_registration_codec_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_registration_codec_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_registration_codec_tests)
+add_test(NAME unit.m5.registration_codec
+         COMMAND myrd_m5_registration_codec_tests)
+
 # ---- M5 execution backend against a real worker (Task 5) --------------------
 # The suite that executes the launcher, the session provider and the adapter.
 # It starts a real `myrd-m5-worker` process, so the binary is passed in as a
