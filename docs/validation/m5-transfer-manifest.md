@@ -801,6 +801,52 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.22 Task 5 closes — and the three rulings that close it
+
+Task 5's file list in the plan names one file that is not built here and one it
+no longer needs. Both were put to the user with the caller evidence, and both
+were ruled on rather than assumed.
+
+**`windows_worker_recovery.{h,cpp}` moves to Task 7 whole.** The evidence is the
+caller set: every one of its five exports is called only by
+`windows_service.{h,cpp}`, `worker_supervisor.{h,cpp}` and
+`service_composition.h` -- and the plan's own ownership table assigns all three
+of those to Task 7. Task 5 has **no caller for any of it**. Building it here
+would have meant writing five functions nothing in this task uses, two of which
+(`SystemServiceClock`, `DurableWorkerRestartHistoryStore`) are Task 7 adapters --
+settling Task 7 questions inside Task 5 files.
+
+**`load_persisted_worker_status` is deleted, not ported.** It read a *persisted
+worker status file*, and the M5 stack has no such artifact: a search for
+`worker_status`, `WorkerStatus` and `runtime_snapshot` outside the worker's own
+files returns nothing. In M5 the worker's status is live over the authenticated
+channel. The function had no counterpart to rebuild against, so it is recorded as
+a HostCore artifact M5 does not have rather than translated into something that
+looks equivalent.
+
+**The durable correlation is widened.** `WorkerRecoveryCorrelation` needs a
+manifest slot and a bytes digest; `CheckpointCommitBoundaryEvidence` carries
+neither, and `CheckpointDurableState` persists that same type -- so the
+correlation cannot be reconstructed even from the durable record, which is
+precisely when recovery matters. `reconcile_checkpoint` therefore stays
+fail-closed until this lands, and §7 item 19's correction stands as the record of
+why.
+
+**That widening is a durable-format migration, and the shape matters.**
+`profile_registration_codec.cpp:646` requires an exact schema minor match
+(currently 1/0), so the two new fields cannot simply be appended: the minor is
+bumped and the reader accepts **both** the old minor (fields absent, left at
+their defaults) and the new one. The honest cost, stated rather than discovered
+later: a correlation recorded before the upgrade carries no slot and no digest,
+so an operation left in flight by the older build cannot have its ownership
+proven afterwards. For M5 that means test artifacts, but the decoder must not
+mis-read them silently, and a legacy correlation must fail closed rather than
+compare as a match against zeros.
+
+**Task 5 is now complete.** Its remaining file is Task 7's, its obsolete function
+is deleted, and the last fail-closed action has a decided path to realization.
+The increment that lands the widening also lands `reconcile_checkpoint`.
+
 ### 1.21 Task 5 increment 13 — the backend suite that executes increments 10-12
 
 `tests/integration/m5_production_execution_backend_tests.cpp`, the suite §1.20
