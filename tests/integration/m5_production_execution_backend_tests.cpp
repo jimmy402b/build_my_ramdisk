@@ -84,6 +84,18 @@ bool is_letter_assigned(const wchar_t letter) {
     return (GetLogicalDrives() & (1u << (letter - L'A'))) != 0;
 }
 
+// Waits for a letter to come free again.  The teardown is asynchronous once the
+// channel closes -- the worker notices, runs cleanup, and releases the mount --
+// so a bare check would be a race, and sleeping a fixed guess would be a test
+// that passes for the wrong reason.
+bool wait_for_letter_release(const wchar_t letter) {
+    for (int attempt = 0; attempt != 150; ++attempt) {
+        if (!is_letter_assigned(letter)) return true;
+        Sleep(100);
+    }
+    return !is_letter_assigned(letter);
+}
+
 // The worker binary the build just produced, found relative to this test's own
 // module.  The relative path comes from CMake so the build root is not baked
 // into the binary, and existence is asserted rather than assumed: a layout
@@ -423,4 +435,85 @@ TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
     REQUIRE(cleaned.ok());
     // Released, which is the half of the side effect that has to be stated.
     REQUIRE(!is_letter_assigned(letter));
+}
+
+TEST_CASE(m5_backend_adapter_registers_the_bundle_it_creates) {
+    // The adapter's own path to a registration, which nothing exercised until
+    // now: the case above drives `ServiceWorkerSession` directly, and the unit
+    // suite drives `ServiceWorkerControl` with a provider that can never launch.
+    // Between them, `register_bundle`'s success branch -- mapping the worker's
+    // evidence, deciding whether to hold the session, converting the image id --
+    // had never run.  It is the adapter the service actually calls.
+    TempBundle bundle(L"adapter-create");
+    const wchar_t letter = free_drive_letter();
+    REQUIRE(!is_letter_assigned(letter));
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto image_id = uuid("2e2e2e2e-3d3d-4c4c-5b5b-5b5b5b5b5b5b");
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+
+    {
+        WindowsWorkerSessionProvider provider(worker_executable());
+        ServiceWorkerControl control(provider);
+
+        WorkerActionRequest request{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        const auto result = control.execute(request);
+        REQUIRE(result.ok());
+        REQUIRE(result.value().lifecycle.bundle.has_value());
+        const auto& evidence = result.value().lifecycle.bundle.value();
+
+        // Every field is either the worker's authenticated reading or a product
+        // constant the service already holds.  The geometry and the uuid come
+        // from the inspection that verified the image; the file identity names
+        // the file object, not the path.
+        REQUIRE(evidence.source == BundleEvidenceSource::created_and_verified);
+        REQUIRE(evidence.image_id == image_id);
+        REQUIRE_EQ(evidence.logical_capacity_bytes, kCapacityBytes);
+        REQUIRE_EQ(evidence.logical_sector_bytes, kProductLogicalSectorBytes);
+        REQUIRE_EQ(evidence.physical_sector_bytes, kProductPhysicalSectorBytes);
+        REQUIRE_EQ(evidence.payload_block_bytes, kProductPayloadBlockBytes);
+        REQUIRE(evidence.manifest_name == kProductManifestName);
+        REQUIRE(evidence.file_identity.volume_serial != 0);
+
+        // The create's session is held, so the plan's later
+        // `create_runtime_and_worker` finds it instead of launching a second
+        // worker for one bundle -- and the steps after that read this runtime.
+        const auto observed = control.require_runtime_observation(profile);
+        REQUIRE(observed.ok());
+        REQUIRE(observed.value().worker_alive);
+        REQUIRE(observed.value().committed_generation >= 1);
+
+        // `record_volume_identity` is a second adapter path that had never run.
+        // It reads the volume's persistent GPT identities out of the live
+        // worker's status and turns them into the durable registration, so a
+        // complete identity here is proof the worker really provisioned and
+        // adopted a volume rather than merely answering a question.
+        WorkerActionRequest record{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::record_volume_identity,
+            std::nullopt,
+            std::nullopt,
+            std::nullopt};
+        const auto recorded = control.execute(record);
+        REQUIRE(recorded.ok());
+        REQUIRE(recorded.value().lifecycle.volume.has_value());
+
+        REQUIRE(is_letter_assigned(letter));
+    }
+    // Past this scope the adapter has dropped the session, which closes the
+    // channel.  That is the path a service crash takes, and it has to release
+    // the mount on its own: the worker notices the closed pipe, runs its ordered
+    // teardown, and removes the drive letter.
+    REQUIRE(wait_for_letter_release(letter));
 }

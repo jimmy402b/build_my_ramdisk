@@ -2353,3 +2353,60 @@ Recorded so the plan and the tree do not silently diverge.
     worker as a normal branch the service reconciles from durable state, and
     `myrd_assert_execution_boundary` would have to go -- and it is independent
     of disk count.
+
+### 1.31 Task 5 increment 15 (unit E) — the adapter's own registration path runs
+
+Unit D drove `ServiceWorkerSession` directly, and the unit suite drives
+`ServiceWorkerControl` with a provider that can never launch. Between them,
+`register_bundle`'s **success** branch had never executed: mapping the worker's
+evidence into `BundleRegistrationEvidence`, deciding whether to hold the
+session, converting the image id. That is this round's own code, and it was
+"reviewed but unexecuted" for exactly as long as it took to look.
+
+**`m5_backend_adapter_registers_the_bundle_it_creates`** closes it through the
+adapter the service actually calls, and closes a second item from §1.22's
+unexecuted list with it: `record_volume_identity`. Both run against a real
+worker, a real 64 MiB volume and a real drive letter.
+
+**What the new case proves beyond "it returns ok".** The evidence's fields are
+each traceable: the geometry and the uuid are the worker's authenticated reading
+of the bundle, the file identity names the file object, and the manifest name and
+payload block size are the product constants the service already holds -- so a
+field silently invented by the adapter would show up as a mismatch. The session
+is *held* (the plan's later `create_runtime_and_worker` finds it rather than
+launching a second worker for one bundle), and `record_volume_identity`'s success
+proves the worker really provisioned and adopted a volume rather than merely
+answering.
+
+**It also covers the branch nobody had run: a worker killed by a closed
+channel.** The case drops the adapter -- and with it the session -- without
+calling `cleanup`, which is what a service crash does. The worker notices, runs
+its ordered teardown, and releases the drive letter. The case waits for that
+(bounded, not a fixed sleep) instead of assuming it.
+
+**A worker that dies now says why.** `m5_worker_main`'s failure path printed only
+a fixed sentence, so "the worker's resources could not be released" named the
+consequence and threw the cause away -- which is the whole record when the
+channel closed rather than a command failed. It now prints the error's operation,
+message and codes.
+
+#### An observation that is recorded, not resolved
+
+On the first run of unit E's case, the worker printed that teardown failure.
+After a full object rebuild it did not reappear, and **five consecutive runs of
+the suite were clean**. So: observed once, not reproduced.
+
+It is written down rather than dismissed because it is on the path the design
+cares about most -- §3.5's "worker 退出（崩溃/被杀）" branch, where the only
+recoverable answer is the durable record. What is known: the failure was in
+`DiskWorkerRuntime::cleanup()` after a channel close, the drive letter *was*
+still released (the case's wait succeeded), so the failure is in a step after the
+mount removal. What is not known: which step, or whether it was a real teardown
+defect or a stale-object artifact -- the same signature §7 item 17 gives a
+different cause to. The next occurrence will name it, because the diagnostic is
+now there.
+
+**Evidence.** Release build clean after a full object rebuild; no compiler
+warnings. Full suite **143/144**, the one failure the pre-existing
+`integration.m3.recovery` (§1.18). `m5.production_execution_backend` 6/6 →
+**7/7**, five consecutive clean runs.

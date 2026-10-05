@@ -105,6 +105,18 @@ int fail(const wchar_t* message) {
     return 1;
 }
 
+// A worker that dies reports *why*.  This process's stderr goes to whoever
+// launched it, and "the worker's resources could not be released" names the
+// consequence rather than the cause -- which, when the channel simply closed,
+// is the only record of what the teardown actually hit.
+int fail_with(const wchar_t* message, const Error& error) {
+    std::fwprintf(stderr,
+                  L"myrd-m5-worker: %s (op=%ls msg=%ls native=%u code=%u)\n",
+                  message, error.operation.c_str(), error.message.c_str(),
+                  error.native_code, error.code);
+    return 1;
+}
+
 } // namespace
 
 int wmain(const int argc, wchar_t** argv) {
@@ -178,6 +190,9 @@ int wmain(const int argc, wchar_t** argv) {
     // reported: the service must not be told the worker stopped cleanly when it
     // did not.
     auto cleaned = runtime.value()->cleanup();
-    if (!cleaned.ok()) return fail(L"the worker's resources could not be released");
+    if (!cleaned.ok()) {
+        return fail_with(L"the worker's resources could not be released",
+                         cleaned.error());
+    }
     return 0;
 }
