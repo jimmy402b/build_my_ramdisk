@@ -125,6 +125,36 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
+    case WorkerCommand::create_bundle: {
+        const auto started = runtime_.start();
+        if (!started.ok()) {
+            reply.error = started.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // The runtime is running either way, so the session says so either way:
+        // reporting "not started" while a volume is mounted would be a lie about
+        // its own state, and the shutdown path depends on knowing which it is.
+        started_ = true;
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // What this command promises and `start` does not: the bundle the
+        // service is about to register has an identity.  A runtime that came up
+        // without one has not answered the question it was asked, and reporting
+        // success would let a registration be recorded that nothing proves.
+        if (!status.value().bundle.has_value() ||
+            !status.value().bundle->complete()) {
+            reply.error = refusal(
+                L"create_bundle",
+                L"the runtime started without recording the bundle's identity");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = status.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
     case WorkerCommand::status: {
         if (!started_) {
             reply.error = refusal(L"observe", L"the runtime has not been started");

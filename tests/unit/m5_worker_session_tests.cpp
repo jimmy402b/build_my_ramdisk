@@ -28,6 +28,20 @@ Sha256Digest digest(const std::uint8_t fill) {
     return value;
 }
 
+// The identity a worker records for the bundle it opened.  Every field is
+// non-zero: `complete()` is the gate, and a partial one is the same answer to
+// the service as no evidence at all.
+WorkerBundleEvidence complete_bundle() {
+    WorkerBundleEvidence value{};
+    value.image_id.bytes[0] = std::byte{0x11};
+    value.virtual_bytes = 64ull * 1024 * 1024;
+    value.logical_sector_size = 512;
+    value.physical_sector_size = 4096;
+    value.volume_serial = 0x0123456789ABCDEFull;
+    value.file_id[0] = std::byte{0xAB};
+    return value;
+}
+
 product::Uuid uuid(const char* text) {
     auto parsed = product::Uuid::parse(text);
     REQUIRE(parsed.ok());
@@ -72,6 +86,9 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     // live runtime must be refused, not returned.
     bool worker_alive{true};
     persistence::ImageUuid image_id{};
+    // What the runtime reports about the bundle it opened.  Absent by default,
+    // so the cases that predate `create_bundle` keep the status they had.
+    std::optional<WorkerBundleEvidence> bundle;
     std::optional<WorkerPreparedCandidate> last_prepared;
     std::optional<WorkerCheckpointCommit> last_commit;
     std::optional<std::uint64_t> last_abort;
@@ -93,6 +110,7 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         status.committed_generation = committed_generation;
         status.dirty = dirty;
         status.dirty_epoch = dirty_epoch;
+        status.bundle = bundle;
         return Result<WorkerRuntimeStatus>::success(status);
     }
     Result<WorkerPreparedCandidate> prepare_checkpoint(
@@ -308,6 +326,50 @@ TEST_CASE(m5_worker_session_strict_observation_refuses_an_unproved_runtime) {
     REQUIRE(reported.ok());
     REQUIRE(reported.value().status.has_value());
     REQUIRE(!reported.value().status->worker_alive);
+}
+
+TEST_CASE(m5_worker_session_create_bundle_starts_and_reports_the_evidence) {
+    // The command whose reply the service records as the bundle's durable
+    // registration.  It brings the runtime up -- the runtime offers one
+    // granularity, and a bundle with no volume checkpoint cannot be recovered --
+    // and it answers with the evidence that makes the registration possible.
+    FakeWorkerRuntime runtime;
+    runtime.bundle = complete_bundle();
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
+
+    const auto reply = session.handle(request(WorkerCommand::create_bundle, 1));
+    REQUIRE(reply.ok());
+    REQUIRE(!reply.value().error.has_value());
+    REQUIRE(reply.value().status.has_value());
+    REQUIRE(reply.value().status->bundle.has_value());
+    REQUIRE(reply.value().status->bundle->complete());
+    REQUIRE_EQ(reply.value().status->bundle->volume_serial,
+               0x0123456789ABCDEFull);
+    // Started, and observed to report it: a status read afterwards is no longer
+    // refused.
+    REQUIRE(session.started());
+    REQUIRE_EQ(runtime.events.size(), 2u); // start, observe
+}
+
+TEST_CASE(m5_worker_session_create_bundle_refuses_a_runtime_without_evidence) {
+    // What this command promises and `start` does not: that the bundle's
+    // identity was recorded.  A runtime that came up without one has not
+    // answered the question, and reporting success would let the service record
+    // a registration nothing proves.
+    FakeWorkerRuntime runtime; // no bundle evidence at all
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
+
+    const auto reply = session.handle(request(WorkerCommand::create_bundle, 1));
+    REQUIRE(reply.ok());
+    REQUIRE(reply.value().error.has_value());
+    REQUIRE(!reply.value().status.has_value());
+    // It did start, and the session says so rather than pretending otherwise:
+    // reporting "not started" while a volume is mounted would be a lie about its
+    // own state, and teardown depends on knowing which it is.
+    REQUIRE(session.started());
+    REQUIRE(runtime.events.size() >= 2u);
 }
 
 TEST_CASE(m5_worker_session_prepare_names_the_native_id_by_the_shared_rule) {

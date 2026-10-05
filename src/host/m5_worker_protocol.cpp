@@ -86,6 +86,16 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::reply ? kHasAbortReply : 0U),
                 kHasError};
+    case WorkerCommand::create_bundle:
+        // Operation-scoped, like `start`: a bundle is created for one profile's
+        // one operation.  Its reply is a bare status, because
+        // `WorkerRuntimeStatus` already carries the bundle evidence -- so this
+        // command adds no payload type of its own and the shape table gains one
+        // entry rather than a second evidence shape that could drift from the
+        // first.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
     case WorkerCommand::status:
     case WorkerCommand::require_runtime_observation:
         // *Not* operation-scoped.  These ask what a worker is doing on behalf of

@@ -103,6 +103,14 @@ public:
         const OperationContext& context, const product::Uuid& operation_id);
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> start(
         const OperationContext& context, const product::Uuid& operation_id);
+    // Brings the runtime up and requires the bundle evidence that makes a
+    // registration possible.  Separate from `start` even though the worker
+    // reaches the same runtime call for both: this is the one the service sends
+    // to a worker it launched from a lifecycle intent, and the one whose reply
+    // it records as the bundle's identity.  A reply without complete evidence is
+    // returned as a failure rather than as a status the caller could register.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> create_bundle(
+        const OperationContext& context, const product::Uuid& operation_id);
 
 private:
     ServiceWorkerSession(std::unique_ptr<m5::WorkerPipeChannel> channel,

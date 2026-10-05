@@ -477,6 +477,63 @@ TEST_CASE(m5_worker_protocol_refuses_incomplete_bundle_evidence) {
     REQUIRE(!encode(message).ok());
 }
 
+TEST_CASE(m5_worker_protocol_create_bundle_reply_carries_the_evidence) {
+    // `create_bundle` answers for a bundle the service is about to register, so
+    // its reply has to carry the evidence -- and it carries it as a bare status,
+    // which is the type that already had one.  The shape table gained a command,
+    // not a second evidence shape that could drift from the first.
+    WorkerRuntimeStatus observed = status();
+    WorkerBundleEvidence bundle{};
+    bundle.image_id = image_uuid(0x11);
+    bundle.virtual_bytes = 64ull * 1024 * 1024;
+    bundle.logical_sector_size = 512;
+    bundle.physical_sector_size = 4096;
+    bundle.volume_serial = 0x0123456789ABCDEFull;
+    bundle.file_id[0] = std::byte{0xAB};
+    REQUIRE(bundle.complete());
+    observed.bundle = bundle;
+
+    WorkerMessage reply{};
+    reply.kind = WorkerMessageKind::reply;
+    reply.command = WorkerCommand::create_bundle;
+    reply.sequence = 3;
+    reply.binding = session_binding();
+    reply.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    reply.status = observed;
+
+    const auto bytes = encode(reply);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().command == WorkerCommand::create_bundle);
+    REQUIRE(decoded.value().product_operation_id.has_value());
+    REQUIRE(*decoded.value().status == observed);
+}
+
+TEST_CASE(m5_worker_protocol_create_bundle_is_operation_scoped) {
+    // A bundle is created for one profile's one operation, so the command
+    // requires an operation id exactly as `start` does.  Without one the request
+    // is not attributable and the authentication gate refuses it before anything
+    // is executed.
+    WorkerMessage request_message{};
+    request_message.kind = WorkerMessageKind::request;
+    request_message.command = WorkerCommand::create_bundle;
+    request_message.sequence = 3;
+    request_message.binding = session_binding();
+    REQUIRE(!authenticate_worker_message(request_message, session_binding(), 2)
+                 .ok());
+
+    request_message.product_operation_id =
+        uuid("99999999-8888-7777-6666-555555555555");
+    REQUIRE(authenticate_worker_message(request_message, session_binding(), 2)
+                .ok());
+
+    // A request that carries a status is refused: an unexpected field is how a
+    // payload stops being checked.
+    request_message.status = status();
+    REQUIRE(!encode(request_message).ok());
+}
+
 TEST_CASE(m5_worker_protocol_refuses_a_partial_volume_identity) {
     // A runtime that adopted a volume but could not read one of its three
     // identities is not a runtime with a weaker identity: it is one whose

@@ -57,6 +57,18 @@ enum class WorkerCommand : std::uint16_t {
     remove_and_stop = 9,
     shutdown = 10,
     cleanup = 11,
+    // Brings up the runtime this worker was launched for and answers with a
+    // status whose bundle evidence is engaged.  It exists because the service
+    // has to register a bundle *before* it can publish the durable profile the
+    // worker would otherwise need to be launched from, so this is the one
+    // command that is sent to a worker launched from a lifecycle intent rather
+    // than from a durable record.
+    //
+    // It lands on the same runtime call `start` does -- the runtime offers one
+    // granularity, and a bundle with no volume checkpoint cannot be recovered --
+    // but it promises something `start` does not: that the bundle's identity was
+    // recorded, which is what makes a registration possible at all.
+    create_bundle = 12,
 };
 
 // Identity of one worker process bound to one profile for one session.

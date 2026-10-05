@@ -801,6 +801,52 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.27 Task 5 increment 15 (unit A) — the `create_bundle` command exists
+
+Lands the first of §1.26's five changes: the private command itself, its shape,
+the worker's answer to it, and the service's client for it. The launch-spec
+mode, the worker runtime's create/recover choice and the adapter's two bundle
+actions are units B and C; the end-to-end case is unit D.
+
+**A command whose reply is a status, so no payload type was added.**
+`WorkerRuntimeStatus` already carries `WorkerBundleEvidence` (§1.18), so
+`create_bundle` is operation-scoped with a bare status reply, exactly as `start`
+is — the shape table gained a command, not a second evidence shape that could
+drift from the first.
+
+**`create_bundle` and `start` reach the same runtime call, and that is stated
+rather than hidden.** The runtime offers one granularity: `DiskRuntime` decides
+create-or-recover from the bundle's own kind and the mode it was constructed
+with, and a bundle with no volume checkpoint cannot be recovered at all (§1.25).
+What makes this a distinct command rather than a synonym is the promise it
+carries and `start` does not: **that the bundle's identity was recorded.** The
+worker refuses to answer `create_bundle` with a status whose evidence is absent
+or incomplete, and the service's client refuses such a reply again on receipt.
+A success here means the service may record a registration; a success from
+`start` means only that a runtime came up.
+
+**A started-but-unrecorded runtime is reported as an error, not as a state that
+did not happen.** The session sets `started_` as soon as the runtime is up and
+*then* checks the evidence, so the refusal does not claim the worker is
+unstarted while a volume is mounted. The teardown path depends on knowing which
+it is, and a session that lied about its own state to make a reply tidier would
+be the worst kind of correctness.
+
+**Evidence.** Release build clean after a full object rebuild (every `.obj`
+deleted first, per §7 item 17). Full suite **143/144**, the one failure the
+pre-existing `integration.m3.recovery` (§1.18). Standalone: `unit.m5.worker_protocol`
+31/31 → **33/33**, `unit.m5.worker_session` 21/21 → **23/23**.
+
+**What the new cases pin, and one thing they deliberately cannot.** The protocol
+suite checks that the reply round-trips with its evidence and that the command is
+operation-scoped — a request without an operation id is refused by the
+authentication gate, and one carrying a status is refused as a stray field. The
+session suite checks that a runtime with evidence is answered with it, and that a
+runtime *without* evidence is refused while still being reported as started.
+What no case here covers is the command over a real channel: `ServiceWorkerSession`
+is concrete over an authenticated pipe and cannot be faked, so that arrives with
+unit D's end-to-end run.
+
 ### 1.26 The create path: a `create_bundle` private command, designed
 
 Ruled by the user: add a private protocol command so `create_and_verify_bundle`
