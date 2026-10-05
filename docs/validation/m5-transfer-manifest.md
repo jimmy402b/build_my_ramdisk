@@ -801,6 +801,36 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.24 The end-to-end run belongs on this host, not the VM
+
+Checked before planning the work, because it changes where it happens.
+`integration.m3.windows_acceptance` is **not** behind an environment gate, it
+runs in the normal suite, and it passes. Its `m3_aim_runtime_checks_context_before_driver_discovery`
+case calls `M3AimRuntime::start()` and asserts success -- and driver discovery
+happens before that point, not after. Independent confirmation:
+`sc query phdskmnt` reports `RUNNING` on this host.
+
+So the full lifecycle -- AIM proxy disk, real volume, mount, flush, checkpoint --
+can be driven **here**. The acceptance VM ([[m5-vm-access-method]]) is for
+driving the installed *service* through the public pipe, which is a different
+question: this is the execution path below it.
+
+**What does not exist yet, and is therefore the work.** No suite drives a full
+lifecycle: `m3_provider_integration_tests` uses a `CapturingTransport` fake,
+`m4_multi_instance_tests` and `m4_run_loop_runtime_tests` build `ProductVolume`
+values by hand, and `m3_windows_acceptance_tests` exercises the AIM runtime's
+validation and metrics rather than a volume. The closest thing to a bundle-
+creation harness is `m5_checkpoint_inspection_tests`' `TempBundle` +
+`create_generation_zero_image`, which is where the end-to-end case starts from.
+
+**Side effects that must be stated before running it, not discovered after.** A
+real lifecycle creates an AIM proxy disk backed by a temporary VHDX, provisions
+and formats a volume, and assigns it a drive letter. It is a virtual disk, not a
+physical one -- but it is a real volume with a real letter on this machine, and a
+failure part-way can leave a residual device (the failure mode §1.15a's
+`IResidualDeviceControl` exists to clean up). The case must therefore claim a
+letter it has verified is free and release it on every path.
+
 ### 1.23 Task 5 increment 14 — the durable correlation can carry a recovery proof
 
 Lands the widening §1.22 decided, and with it the last fail-closed action in
