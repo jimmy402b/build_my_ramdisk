@@ -56,6 +56,7 @@ public:
 
     Result<void> start() override;
     Result<WorkerRuntimeStatus> observe() override;
+    Result<WorkerRuntimeStatus> inspect_bundle() override;
     Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) override;
     Result<WorkerCheckpointCommitReply> commit_checkpoint(
@@ -71,6 +72,15 @@ public:
 
 private:
     explicit DiskWorkerRuntime(WorkerRuntimeConfig config) noexcept;
+
+    // Reads the image out of the bundle, checks it against the one the launch
+    // named when there is one, and records the evidence the service registers.
+    //
+    // One implementation for both callers on purpose: `start()` and the
+    // read-only inspection must verify the same things and report them the same
+    // way, and two copies would be two chances for an inspection to produce
+    // evidence a start would have refused.
+    Result<void> record_bundle_identity();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

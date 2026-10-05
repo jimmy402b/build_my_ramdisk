@@ -17,7 +17,7 @@ Error provider_error(const wchar_t* operation, const wchar_t* message,
             operation, message, native_code};
 }
 
-// The durable profile's image uuid is a product uuid and the launch spec carries
+// The launch request's image uuid is a product uuid and the launch spec carries
 // the persistence layer's sixteen raw bytes.  The bytes are the same sixteen in
 // the same order -- `Uuid` stores its canonical form's bytes directly -- so this
 // is a copy rather than a conversion, and going through text here would be a
@@ -29,23 +29,6 @@ persistence::ImageUuid to_image_uuid(const product::Uuid& id) noexcept {
     return value;
 }
 
-// The drive letter the worker mounts on.  `mount_target` is the durable record's
-// own text ("R:" for a drive-letter mount), and the worker takes the letter, so
-// a target that is not one is refused rather than silently truncated.
-Result<wchar_t> drive_letter_of(const profile::Profile& record) {
-    if (record.mount_kind != profile::MountKind::drive_letter) {
-        return Result<wchar_t>::failure(provider_error(
-            L"WindowsWorkerSessionProvider::launch",
-            L"only a drive-letter mount can be launched in M5"));
-    }
-    if (record.mount_target.size() < 2 || record.mount_target[1] != L':') {
-        return Result<wchar_t>::failure(provider_error(
-            L"WindowsWorkerSessionProvider::launch",
-            L"the durable mount target is not a drive letter"));
-    }
-    return Result<wchar_t>::success(record.mount_target[0]);
-}
-
 } // namespace
 
 WindowsWorkerSessionProvider::WindowsWorkerSessionProvider(
@@ -53,18 +36,12 @@ WindowsWorkerSessionProvider::WindowsWorkerSessionProvider(
     : worker_executable_(std::move(worker_executable)) {}
 
 Result<std::unique_ptr<ServiceWorkerSession>>
-WindowsWorkerSessionProvider::launch(const profile::ProfileRecord& profile,
+WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
                                      const OperationContext& context) {
     if (worker_executable_.empty()) {
         return Result<std::unique_ptr<ServiceWorkerSession>>::failure(
             provider_error(L"WindowsWorkerSessionProvider::launch",
                            L"the worker executable is not configured"));
-    }
-    const auto& record = profile.profile;
-    auto letter = drive_letter_of(record);
-    if (!letter.ok()) {
-        return Result<std::unique_ptr<ServiceWorkerSession>>::failure(
-            letter.error());
     }
 
     const auto session_generation = next_session_generation_++;
@@ -74,14 +51,20 @@ WindowsWorkerSessionProvider::launch(const profile::ProfileRecord& profile,
             secret.error());
     }
 
-    m5::WorkerLaunchSpec spec{record.profile_uuid, profile.revision};
-    spec.bundle_path = record.bundle_path;
-    spec.image_id = to_image_uuid(record.image_uuid);
-    spec.logical_size_bytes = record.logical_capacity_bytes;
-    spec.mount_target = record.mount_target;
+    m5::WorkerLaunchSpec spec{request.profile_id, request.profile_revision};
+    spec.bundle_path = request.bundle_path;
+    // Absent for an import, and absent is a different instruction from a zero
+    // uuid: the worker adopts whatever the bundle holds instead of refusing one
+    // that is not the image it was told to expect.
+    if (request.image_id.has_value()) {
+        spec.image_id = to_image_uuid(*request.image_id);
+    }
+    spec.volume_mode = request.volume_mode;
+    spec.logical_size_bytes = request.logical_capacity_bytes;
+    spec.mount_target = request.mount_target;
     spec.session_generation = session_generation;
     spec.private_pipe_name =
-        m5::private_pipe_name(record.profile_uuid, session_generation);
+        m5::private_pipe_name(request.profile_id, session_generation);
     // A value this session generates and the worker must echo.  Its only job is
     // to make "answered *this* session" different from "replayed an earlier
     // handshake"; the startup secret is what proves the peer read the channel.

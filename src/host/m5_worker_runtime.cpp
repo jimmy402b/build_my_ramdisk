@@ -210,6 +210,17 @@ Result<void> DiskWorkerRuntime::start() {
         return started;
     }
 
+    auto recorded = record_bundle_identity();
+    if (!recorded.ok()) {
+        static_cast<void>(impl.runtime->shutdown_clean());
+        return recorded;
+    }
+    impl.identity_verified = true;
+    return Result<void>::success();
+}
+
+Result<void> DiskWorkerRuntime::record_bundle_identity() {
+    auto& impl = *impl_;
     // The identity is taken from the bundle's own bytes, never from the claim.
     // A worker that took the service's word for which image it is running could
     // then be asked to remove resources belonging to a different one.
@@ -218,14 +229,10 @@ Result<void> DiskWorkerRuntime::start() {
     inspect.recovery = impl.config.recovery;
     auto image = persistence::inspect_image(context(), impl.config.bundle,
                                             inspect);
-    if (!image.ok()) {
-        static_cast<void>(impl.runtime->shutdown_clean());
-        return Result<void>::failure(image.error());
-    }
+    if (!image.ok()) return Result<void>::failure(image.error());
     if (!image.value().selected.has_value()) {
-        static_cast<void>(impl.runtime->shutdown_clean());
         return Result<void>::failure(runtime_error(
-            L"DiskWorkerRuntime::start",
+            L"DiskWorkerRuntime::record_bundle_identity",
             L"the bundle holds no image this worker can verify"));
     }
     // A claim is verified; an absent one is adopted.  The difference is the
@@ -234,24 +241,38 @@ Result<void> DiskWorkerRuntime::start() {
     // refused when the bundle is a different one.
     if (impl.config.image_id.has_value() &&
         !(image.value().selected->image_uuid == *impl.config.image_id)) {
-        static_cast<void>(impl.runtime->shutdown_clean());
         return Result<void>::failure(runtime_error(
-            L"DiskWorkerRuntime::start",
+            L"DiskWorkerRuntime::record_bundle_identity",
             L"the bundle's image uuid is not the one this worker was launched for"));
     }
-    impl.observed_image_id = image.value().selected->image_uuid;
-    // The evidence the service records as its durable registration, captured
-    // now because this is the only moment the bundle is known to be the one the
-    // service named -- the uuid above has just been checked against it.
+    // The evidence the service records as its durable registration.  Captured
+    // here because this is the one place the bundle is known to be the one the
+    // service named -- the uuid above has just been checked against it -- and
+    // both the start and the read-only inspection come through it.
     auto evidence = capture_bundle_evidence(
         impl.config.bundle, *image.value().selected);
-    if (!evidence.ok()) {
-        static_cast<void>(impl.runtime->shutdown_clean());
-        return Result<void>::failure(evidence.error());
-    }
+    if (!evidence.ok()) return Result<void>::failure(evidence.error());
+    impl.observed_image_id = image.value().selected->image_uuid;
     impl.bundle_evidence = evidence.move_value();
-    impl.identity_verified = true;
     return Result<void>::success();
+}
+
+Result<WorkerRuntimeStatus> DiskWorkerRuntime::inspect_bundle() {
+    auto& impl = *impl_;
+    // A runtime that is already up opened and verified the bundle in `start()`,
+    // so the evidence is in hand: re-inspecting would take a second handle on a
+    // file this worker holds the writer lock for, and would report a bundle the
+    // worker is running as one it merely looked at.
+    if (!impl.bundle_evidence.has_value()) {
+        auto recorded = record_bundle_identity();
+        if (!recorded.ok()) {
+            return Result<WorkerRuntimeStatus>::failure(recorded.error());
+        }
+    }
+    // `observe()` is what reports the evidence, and it reports it whether or not
+    // the runtime is alive -- here it is not, which is exactly the answer an
+    // inspection gives.  Nothing is started, so nothing is claimed.
+    return observe();
 }
 
 Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {

@@ -496,6 +496,13 @@ ProfileState reported_profile_state(const ManagedProfileSnapshot& snapshot);
 inline constexpr std::uint32_t kProductLogicalSectorBytes = 512;
 inline constexpr std::uint32_t kProductPhysicalSectorBytes = 4096;
 inline constexpr std::uint64_t kProductPayloadBlockBytes = 2ULL << 20;
+// The manifest name every product bundle is created with.  It is here rather
+// than on the wire for the same reason the two above are: it is a constant both
+// ends already hold, and a second copy travelling with every bundle evidence
+// message would be a second thing to keep in step.  (The worker's `start()` does
+// name it in the private protocol's own literal, because that layer may not
+// include this header.)
+inline constexpr std::string_view kProductManifestName = "disk.rdm";
 inline constexpr std::uint64_t kAutomaticSnapshotCowLimitBytes =
     65ULL * profile::kProfileMemoryAlignmentBytes;
 

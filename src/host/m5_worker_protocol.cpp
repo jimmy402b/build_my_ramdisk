@@ -96,6 +96,15 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
                 kHasError};
+    case WorkerCommand::inspect_bundle:
+        // Operation-scoped, and answered with the same bare status
+        // `create_bundle` answers with -- the worker is registering one bundle
+        // for one operation in both cases, and only the lifecycle behind it
+        // differs.  What the reply adds here is a status whose `worker_alive` is
+        // false: an inspection starts nothing.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
     case WorkerCommand::status:
     case WorkerCommand::require_runtime_observation:
         // *Not* operation-scoped.  These ask what a worker is doing on behalf of

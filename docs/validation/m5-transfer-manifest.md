@@ -801,6 +801,99 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.29 Task 5 increment 15 (unit C) — the two bundle actions are realized
+
+`create` and `import` can now complete. Both are answered by launching a worker
+*from the operation's lifecycle intent* and asking it for the bundle's evidence.
+
+**The launch had to stop taking a durable record.** Both actions run before their
+profile is published, so at that moment there is no record for `bind_worker` to
+launch from -- and §1.26's point is that the intent carries everything a launch
+needs anyway. `IWorkerSessionProvider::launch` therefore takes a
+`WorkerLaunchRequest`, and two translations produce one: from a durable record,
+and from an intent. The translation is where the product's rule about mount
+targets is enforced, once for both producers and before any process exists --
+the profile path additionally has to name a drive-letter *mount kind*, which the
+provider-side check never looked at.
+
+**The volume mode comes from the same criterion in both.** A profile whose
+lifecycle is still `provisioning` has a bundle and no volume, so the launch asks
+for `provision_new`; every other profile adopts the volume it has. That is
+`append_start_actions`' own branch restated, not a second rule invented here.
+
+**`create` holds the session and `import` does not.** After a create the plan
+continues: `create_runtime_and_worker` finds this session instead of launching a
+second worker for one bundle, and the provisioning-family steps read the runtime
+this command started. An inspection leaves nothing to command, so its session is
+dropped -- the channel closes, the worker exits, and no process is kept alive for
+a profile whose operation has nothing left to do.
+
+#### The departure from §1.26, and why it is a correction rather than a preference
+
+§1.26 says `inspect_bundle_read_only` "follows the same path for import, where
+there is no provisioning to do", and that the shape table "gains one bit rather
+than a second evidence shape". **The second half is right and the first half is
+not**, and the reason is one fact §1.26 did not have: in this runtime the only
+way to open a bundle and produce evidence is `DiskRuntime::recover` plus
+`start()`, and **recovery assigns a drive letter.** Following `create_bundle`'s
+path would therefore mount a volume and leave a worker running for an imported
+profile that the plan records as `ready` and never starts -- `service_core.cpp`
+clears every action after `publish_imported_ready_profile` for an import
+(`:3529`). The action is named *read-only*; mounting a disk is not.
+
+Put to the user, who ruled for a separate command. So `inspect_bundle` joins the
+protocol: operation-scoped, answered with the same bare status, and running no
+lifecycle at all. Its reply is distinguishable from a start's by the fact that
+matters -- `worker_alive` is false -- and the session deliberately does not set
+`started_`, so a later status read is refused, which is the truth about a worker
+that started nothing.
+
+The evidence import needs was always obtainable without a runtime: the image id
+and geometry come from the same `inspect_image` a start uses, and the file
+identity from one read-attribute handle. §1.18's capture is now the one function
+behind both -- `record_bundle_identity()` -- so an inspection cannot verify
+something a start would have refused, or report it differently.
+
+**The worker's status is now the *observed* image, not the claimed one.**
+`observe()` reported `config.image_id` and `remove_and_stop` compared a removal
+authorization against it. Both use the identity the worker read and verified out
+of the bundle now, which is the fact a removal authorization is supposed to be
+checked against. That moved in unit B and is restated here because this unit is
+where a launch can be asked for no image at all.
+
+**Evidence.** Release build clean after a full object rebuild; no compiler
+warnings. Full suite **143/144**, the one failure the pre-existing
+`integration.m3.recovery` (§1.18). `unit.m5.worker_protocol` 33/33 → **35/35**,
+`unit.m5.worker_session` 23/23 → **25/25**, `unit.m5.service_worker_control`
+8/8 → **13/13**, `m5.production_execution_backend` 5/5 (unchanged; its create
+case arrives with unit D).
+
+**A hazard this unit removed rather than introduced.**
+`m5_backend_adapter_reaches_the_worker_it_launched` used a `provisioning` profile,
+which was harmless while `start()` was hardcoded to recover -- it failed on the
+bundle kind and touched nothing. With the mode now following the lifecycle, the
+same case runs the **create** lifecycle: it would provision a real volume and
+claim a real drive letter as a side effect of a case whose only assertion is that
+the worker was reached. The fixture's lifecycle now defaults to `ready` so the
+case adopts and fails on the bundle kind exactly as before. Checked afterwards
+that the run left no drive letter and no AIM disk behind. The mount-target case
+moved out of this suite entirely: the rule lives in the translation now, and
+`unit.m5.service_worker_control` covers both producers plus the mount-kind case
+the old one never checked.
+
+#### What this unit does not settle, recorded so it is not discovered later
+
+**A resumed create would launch in `provision_new` and fail on its own bundle.**
+The mode follows the durable lifecycle, and a create interrupted between
+`publish_provisioning_profile` and `publish_ready_profile` leaves a profile that
+is still `provisioning` -- while the bundle it already created has generation
+zero, and `DiskRuntime::create` requires an *empty* bundle. It fails closed (the
+runtime refuses the mode/kind mismatch rather than provisioning over the
+existing generation), so nothing is destroyed, but the resume does not complete.
+Choosing the criterion that fixes it -- the durable lifecycle, or what the bundle
+actually holds -- is an ordering-table question, and §7 item 22 already assigns
+that to Task 6, which owns `service_core.cpp`.
+
 ### 1.28 Task 5 increment 15 (unit B) — the launch decides which lifecycle runs
 
 `DiskWorkerRuntime::start()` was hardcoded to `DiskRuntime::recover`, which can
@@ -932,6 +1025,14 @@ reply needs no new payload type: `WorkerRuntimeStatus` already carries
 `WorkerBundleEvidence` (§1.18), so the reply is a status with the bundle
 engaged, and the shape table gains one bit rather than a second evidence shape
 that could drift from the first.
+
+> **CORRECTED by §1.29.** The no-second-evidence-shape half holds. The claim
+> below that `inspect_bundle_read_only` "follows the same path for import, where
+> there is no provisioning to do" does not: opening a bundle in this runtime
+> means recovering it, and recovery **assigns a drive letter**. A read-only
+> action realized that way would mount a volume the import plan never asks to
+> mount. On the user's ruling the protocol gained a second command,
+> `inspect_bundle`, which runs no lifecycle at all. §1.29 has the reasoning.
 
 **What the worker does for it.** `DiskRuntime::create` plus `start()` performs
 the whole sequence -- generation-zero, AIM start, provision, verify, flush,
@@ -2108,3 +2209,14 @@ Recorded so the plan and the tree do not silently diverge.
     field verbatim, so the product type would only have added a conversion
     between two sixteen-byte encodings -- and the management layer already has
     the one conversion it needs, in `WindowsWorkerSessionProvider`.
+
+24. **§1.26's single command became two: `create_bundle` and `inspect_bundle`.**
+    Ruled by the user, and the reasoning is §1.29's. In short: §1.26 assumed
+    `inspect_bundle_read_only` could ride `create_bundle`'s path "for import,
+    where there is no provisioning to do", but the only way this runtime opens a
+    bundle is `DiskRuntime::recover` + `start()`, and recovery assigns a drive
+    letter. Taking that path would mount a volume for a profile the import plan
+    records as `ready` and never starts, in an action whose own name says
+    read-only. `inspect_bundle` therefore exists, is operation-scoped, answers
+    with the same bare status, and runs no lifecycle. The shape table gains two
+    entries rather than one; no payload type was added either way.

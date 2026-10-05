@@ -105,7 +105,71 @@ CheckpointPersistenceErrorContext to_management_context(
     return context;
 }
 
+// The worker takes a drive letter, so a launch target that is not one has to be
+// refused -- once, for every producer -- rather than silently truncated into a
+// plausible letter.  Refused before any process exists: a worker launched for
+// the wrong mount is a worker holding the wrong disk.
+bool is_drive_letter(const std::wstring& mount_target) noexcept {
+    return mount_target.size() >= 2 && mount_target[1] == L':';
+}
+
 } // namespace
+
+Result<WorkerLaunchRequest> make_launch_request(
+    const profile::ProfileRecord& profile) {
+    const auto& record = profile.profile;
+    if (record.mount_kind != profile::MountKind::drive_letter) {
+        return Result<WorkerLaunchRequest>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"make_launch_request",
+            L"only a drive-letter mount can be launched in M5"));
+    }
+    if (!is_drive_letter(record.mount_target)) {
+        return Result<WorkerLaunchRequest>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"make_launch_request",
+            L"the durable mount target is not a drive letter"));
+    }
+    // The line the profile's own lifecycle already draws: `provisioning` means
+    // this profile has a bundle and has never had a volume, which is exactly
+    // what `append_start_actions` branches on when it decides whether to emit
+    // the provisioning steps.
+    WorkerLaunchRequest request{
+        record.profile_uuid,
+        profile.revision,
+        record.bundle_path,
+        record.image_uuid,
+        record.logical_capacity_bytes,
+        record.mount_target,
+        record.lifecycle == profile::ProfileLifecycle::provisioning
+            ? m5::WorkerVolumeMode::provision_new
+            : m5::WorkerVolumeMode::adopt_existing};
+    return Result<WorkerLaunchRequest>::success(std::move(request));
+}
+
+Result<WorkerLaunchRequest> make_launch_request(
+    const LifecycleOperationIntent& intent) {
+    if (!is_drive_letter(intent.mount_target)) {
+        return Result<WorkerLaunchRequest>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"make_launch_request",
+            L"the operation's mount target is not a drive letter"));
+    }
+    // A create makes the volume; an import adopts the one the bundle already
+    // has.  There is no third case: the intent's kind *is* that distinction.
+    WorkerLaunchRequest request{
+        intent.profile_id,
+        // No durable record yet, so no revision to name.
+        0,
+        intent.bundle_path,
+        intent.expected_image_id,
+        intent.requested_capacity_bytes,
+        intent.mount_target,
+        intent.kind == LifecycleOperationKind::create
+            ? m5::WorkerVolumeMode::provision_new
+            : m5::WorkerVolumeMode::adopt_existing};
+    return Result<WorkerLaunchRequest>::success(std::move(request));
+}
 
 ServiceWorkerControl::ServiceWorkerControl(
     IWorkerSessionProvider& sessions,
@@ -273,7 +337,11 @@ Result<WorkerActionResult> ServiceWorkerControl::bind_worker(
             L"service_worker_control.bind_worker",
             L"A worker cannot be launched without its durable profile"));
     }
-    auto launched = sessions_.launch(request.durable_profile.value(), context());
+    auto launch_request = make_launch_request(request.durable_profile.value());
+    if (!launch_request.ok()) {
+        return Result<WorkerActionResult>::failure(launch_request.error());
+    }
+    auto launched = sessions_.launch(launch_request.value(), context());
     if (!launched.ok()) {
         return Result<WorkerActionResult>::failure(launched.error());
     }
@@ -764,9 +832,101 @@ Result<WorkerActionResult> ServiceWorkerControl::confirm_removal(
     return Result<WorkerActionResult>::success(completed_result());
 }
 
+Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
+    const WorkerActionRequest& request, const BundleEvidenceSource source) {
+    // The launch is built from the operation's intent, not from a durable
+    // record: both of these actions run before their profile is published, and
+    // this is the fact that made the ordering the plan already has workable.
+    if (!request.lifecycle_intent.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.register_bundle",
+            L"The bundle action needs the operation's lifecycle intent"));
+    }
+    const auto& intent = request.lifecycle_intent.value();
+    // Which action asked and which operation this is have to agree.  A create
+    // intent answered by an inspection would record a bundle it never created as
+    // read-only, and the source is what ServiceCore's own validation turns on.
+    const auto expected_kind = source == BundleEvidenceSource::created_and_verified
+        ? LifecycleOperationKind::create
+        : LifecycleOperationKind::import;
+    if (intent.kind != expected_kind) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.register_bundle",
+            L"The lifecycle intent is not the operation this action registers"));
+    }
+    auto launch_request = make_launch_request(intent);
+    if (!launch_request.ok()) {
+        return Result<WorkerActionResult>::failure(launch_request.error());
+    }
+    auto launched = sessions_.launch(launch_request.value(), context());
+    if (!launched.ok()) {
+        return Result<WorkerActionResult>::failure(launched.error());
+    }
+    auto owned = launched.move_value();
+    auto* const session = owned.get();
+
+    // The command follows the source, because they are one decision seen from
+    // two sides: a bundle that was created is brought up and provisioned, and a
+    // bundle that was found is opened and left alone.
+    const bool creating = source == BundleEvidenceSource::created_and_verified;
+    auto observed = creating
+        ? session->create_bundle(context(), request.operation_id)
+        : session->inspect_bundle(context(), request.operation_id);
+    if (!observed.ok()) {
+        // Nothing this adapter holds may be left behind on a failed
+        // registration.  The session is dropped either way, which closes the
+        // channel and lets the worker exit and release whatever it opened.
+        return Result<WorkerActionResult>::failure(observed.error());
+    }
+
+    if (creating) {
+        // Held, because the plan continues: `create_runtime_and_worker` finds
+        // this session rather than launching a second worker for one bundle, and
+        // the provisioning-family steps that follow read the runtime this
+        // command started.
+        sessions_by_profile_.emplace_back(request.profile_id, std::move(owned));
+    }
+    // An inspection is not held: nothing is running to command, and the worker
+    // exits when the channel closes.  Holding it would keep a process alive for
+    // a profile whose operation has nothing left to do.
+
+    const auto& evidence = observed.value().bundle.value();
+    auto image_id = to_product_uuid(evidence.image_id);
+    if (!image_id.has_value()) {
+        // Canonical text that this build cannot parse is an identity the service
+        // cannot record.  Refused rather than stored as zeroes.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.register_bundle",
+            L"The bundle's image identity is not a canonical uuid"));
+    }
+    WorkerActionResult result = completed_result();
+    // Every field below is the worker's own authenticated reading of the bundle
+    // -- the geometry and the uuid from the inspection that verified it, and the
+    // file identity from the handle it opened.  The manifest name and the
+    // payload block size are the product constants the service already holds,
+    // which is why they do not travel.
+    result.lifecycle.bundle = BundleRegistrationEvidence{
+        image_id.value(),
+        std::string(kProductManifestName),
+        evidence.virtual_bytes,
+        evidence.logical_sector_size,
+        evidence.physical_sector_size,
+        kProductPayloadBlockBytes,
+        BundleFileIdentity{evidence.volume_serial, evidence.file_id},
+        source};
+    return Result<WorkerActionResult>::success(std::move(result));
+}
+
 Result<WorkerActionResult> ServiceWorkerControl::execute(
     const WorkerActionRequest& request) {
     switch (request.action) {
+    case ActionKind::create_and_verify_bundle:
+        return register_bundle(request, BundleEvidenceSource::created_and_verified);
+    case ActionKind::inspect_bundle_read_only:
+        return register_bundle(request, BundleEvidenceSource::read_only_inspection);
     case ActionKind::create_runtime_and_worker:
         return bind_worker(request, true);
     case ActionKind::recover_bundle:

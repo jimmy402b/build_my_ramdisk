@@ -73,17 +73,27 @@
 // `prove_new_uninitialized` checks the durable mount target before a later
 // start and needs no worker at all.
 //
-// `create_and_verify_bundle` and `inspect_bundle_read_only` are **fail-closed
-// here, and that is a scope decision rather than a gap in the protocol.** The
-// worker now produces the `BundleRegistrationEvidence` these two actions must
-// return (§1.18), so the data exists; what is unsettled is *when*. The action
-// plan places both **before** `create_runtime_and_worker`, while in M5 the
-// bundle is created by the worker's own `start()` -- so satisfying them means
-// either launching a worker at a point the plan treats as pre-worker, or
-// re-cutting the plan's ordering. That is orchestration, and Task 6 owns
-// `service_core.cpp` and the ordering table. Implementing one of the two
-// options here would silently decide a Task 6 question in a Task 5 file, so the
-// adapter refuses both actions with a reason and the seam stays visible.
+// `create_and_verify_bundle` and `inspect_bundle_read_only` are realized by
+// launching a worker *from the operation's lifecycle intent* and asking it for
+// the bundle's evidence.
+//
+// They run before their profile is published -- `create_and_verify_bundle`
+// before `publish_provisioning_profile`, `inspect_bundle_read_only` before
+// `publish_imported_ready_profile` -- so at that moment there is no durable
+// record for `bind_worker` to launch from. `WorkerActionRequest::lifecycle_intent`
+// carries everything a launch needs anyway (profile, bundle, image, capacity,
+// mount), which is why the ordering the plan already has did not have to move.
+//
+// The two are *not* one path with a different label, and the difference is the
+// point. `create` runs the create lifecycle: the worker creates generation zero,
+// provisions the volume and starts the runtime, and this adapter holds the
+// session so the plan's later `create_runtime_and_worker` finds it and the
+// provisioning-family steps read its status. `import` registers a bundle that
+// already exists and is **not started**, so it is answered by `inspect_bundle`,
+// which opens the bundle and runs no lifecycle at all -- recovering it would
+// claim a drive letter and mount a volume the import never asked to mount. The
+// session is not held afterwards either: an inspection leaves nothing to
+// command, and the worker exits when the channel closes.
 //
 // Everything else fails closed with `unrealized_action`:
 //   compact, and the compaction family
@@ -94,9 +104,6 @@
 //   verify_rebind_bundle,
 //   publish_rebind,
 //   forget_metadata            -> no worker command performs any of these.
-//   create_and_verify_bundle,
-//   inspect_bundle_read_only   -> see above: the evidence exists, the ordering
-//                                 does not, and the ordering is Task 6's.
 //   reconcile_checkpoint       -> deliberately not overridden, so it keeps the
 //                                 inherited fail-closed answer. `recovery_proof`
 //                                 would realize it, but the correlation it needs
@@ -192,6 +199,45 @@ enum class ServiceWorkerControlError : std::uint32_t {
     recovery_not_provable,
 };
 
+// What one launch is for, and everything the worker has to be told.
+//
+// A launch no longer always starts from a durable record.  `create_and_verify_bundle`
+// and `inspect_bundle_read_only` both run before their profile is published, so
+// the seam cannot take a `ProfileRecord` -- and a `LifecycleOperationIntent`
+// carries the same fields the record's launch does.  Both producers therefore
+// translate into this, and the translation is where the product's own rule about
+// mount targets is enforced once instead of once per producer.
+struct WorkerLaunchRequest final {
+    product::Uuid profile_id;
+    // Zero when there is no durable record yet. That is the honest value: the
+    // profile is not published, so it has no revision.
+    std::uint64_t profile_revision{};
+    std::wstring bundle_path;
+    // The image the bundle must hold, or must be created to hold.  Absent for an
+    // import, which records what the bundle turns out to hold instead of naming
+    // it in advance.
+    std::optional<product::Uuid> image_id;
+    std::uint64_t logical_capacity_bytes{};
+    std::wstring mount_target;
+    // Which lifecycle the worker's `start()` runs.  `create_and_verify_bundle`
+    // asks for a new volume; every launch for an existing profile adopts the one
+    // it has.  `inspect_bundle` runs neither.
+    m5::WorkerVolumeMode volume_mode{m5::WorkerVolumeMode::adopt_existing};
+};
+
+// The two translations into a launch request.
+//
+// From a durable record: the lifecycle says whether this bundle has ever had a
+// volume -- the same criterion `append_start_actions` branches on, not a second
+// one invented here.
+[[nodiscard]] Result<WorkerLaunchRequest> make_launch_request(
+    const profile::ProfileRecord& profile);
+// From an operation's intent: `create` provisions, `import` adopts. The intent
+// carries no mount *kind* because both M5 registration commands take a drive
+// letter by construction, so only the target's shape is checked.
+[[nodiscard]] Result<WorkerLaunchRequest> make_launch_request(
+    const LifecycleOperationIntent& intent);
+
 // The seam between this adapter and whoever can actually start or find a worker
 // process.
 //
@@ -204,15 +250,15 @@ class IWorkerSessionProvider {
 public:
     virtual ~IWorkerSessionProvider() noexcept = default;
 
-    // Launches a worker for this profile and returns its authenticated session.
+    // Launches a worker for this request and returns its authenticated session.
     // Failure means no worker is running for it and nothing was changed.
     //
-    // Takes the durable record rather than a snapshot: the launch spec is built
-    // from exactly the record's fields -- bundle path, image, size, mount target
-    // -- and a snapshot would carry the mutable service state a launch must not
+    // Takes the translated request rather than a snapshot: the launch spec is
+    // built from exactly its fields -- bundle path, image, size, mount target --
+    // and a snapshot would carry the mutable service state a launch must not
     // read.
     [[nodiscard]] virtual Result<std::unique_ptr<ServiceWorkerSession>> launch(
-        const profile::ProfileRecord& profile,
+        const WorkerLaunchRequest& request,
         const OperationContext& context) = 0;
     // Adopts the worker already running for this profile.  A successful
     // `nullopt` means none is running -- which is an answer, not a failure.
@@ -320,6 +366,12 @@ private:
 
     Result<WorkerActionResult> bind_worker(
         const WorkerActionRequest& request, bool launch_if_absent);
+    // The two bundle actions.  One path, because everything except the command
+    // it sends and the source it records is the same: launch from the intent,
+    // require the evidence, refuse when the intent names the wrong operation
+    // kind.
+    Result<WorkerActionResult> register_bundle(const WorkerActionRequest& request,
+                                               BundleEvidenceSource source);
     Result<WorkerActionResult> verify_startup_step(
         const WorkerActionRequest& request);
     Result<WorkerActionResult> quiesce_mutations(

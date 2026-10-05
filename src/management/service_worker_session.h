@@ -111,6 +111,12 @@ public:
     // returned as a failure rather than as a status the caller could register.
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> create_bundle(
         const OperationContext& context, const product::Uuid& operation_id);
+    // Opens the bundle read-only and returns the evidence an import registers.
+    // Separate from `create_bundle` because it starts no runtime: recovering a
+    // bundle would claim a drive letter, and an import registers a bundle it is
+    // not starting.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> inspect_bundle(
+        const OperationContext& context, const product::Uuid& operation_id);
 
 private:
     ServiceWorkerSession(std::unique_ptr<m5::WorkerPipeChannel> channel,
@@ -123,6 +129,14 @@ private:
 
     [[nodiscard]] Result<void> require_bounded(
         const OperationContext& context) const;
+
+    // The one implementation behind `create_bundle` and `inspect_bundle`.  They
+    // differ only in which command they send -- one runs a lifecycle, the other
+    // opens the bundle and stops -- and both must be answered with the same
+    // evidence or neither may be recorded.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> bundle_registration(
+        const OperationContext& context, const product::Uuid& operation_id,
+        m5::WorkerCommand command);
 
     std::unique_ptr<m5::WorkerPipeChannel> channel_;
     m5::WorkerBinding binding_;

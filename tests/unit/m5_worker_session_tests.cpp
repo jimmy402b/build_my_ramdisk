@@ -73,6 +73,7 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     // re-derive, which must be refused rather than recorded.
     bool prepare_returns_unexpected_generation{};
     bool fail_start{};
+    bool fail_inspect{};
     bool fail_commit{};
     bool fail_abort{};
     bool refuse_removal{};
@@ -101,6 +102,20 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         events.push_back("start");
         if (fail_start) return Result<void>::failure(fake_error(L"start"));
         return Result<void>::success();
+    }
+    Result<WorkerRuntimeStatus> inspect_bundle() override {
+        events.push_back("inspect_bundle");
+        if (fail_inspect) {
+            return Result<WorkerRuntimeStatus>::failure(fake_error(L"inspect"));
+        }
+        auto status = observe();
+        if (!status.ok()) return status;
+        // No lifecycle ran, so there is no runtime to assert.  The real runtime
+        // reports this by construction -- `worker_alive` is derived from whether
+        // it holds one -- and the fake has to model the same contract or the
+        // session would be tested against a runtime that cannot exist.
+        status.value().worker_alive = false;
+        return status;
     }
     Result<WorkerRuntimeStatus> observe() override {
         events.push_back("observe");
@@ -370,6 +385,52 @@ TEST_CASE(m5_worker_session_create_bundle_refuses_a_runtime_without_evidence) {
     // own state, and teardown depends on knowing which it is.
     REQUIRE(session.started());
     REQUIRE(runtime.events.size() >= 2u);
+}
+
+TEST_CASE(m5_worker_session_inspect_bundle_reports_evidence_without_starting) {
+    // The import's command.  It opens the bundle and answers with the same
+    // evidence `create_bundle` does, but it runs no lifecycle -- which is what
+    // makes it usable for a profile that is being registered and not started.
+    FakeWorkerRuntime runtime;
+    runtime.bundle = complete_bundle();
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
+
+    const auto reply = session.handle(request(WorkerCommand::inspect_bundle, 1));
+    REQUIRE(reply.ok());
+    REQUIRE(!reply.value().error.has_value());
+    REQUIRE(reply.value().status.has_value());
+    REQUIRE(reply.value().status->bundle.has_value());
+    REQUIRE(reply.value().status->bundle->complete());
+    // Nothing was started, and both the session and the reply say so.  A caller
+    // that read a live runtime out of an inspection would go on to treat an
+    // unmounted, unprovisioned bundle as running.
+    REQUIRE(!session.started());
+    REQUIRE(!reply.value().status->worker_alive);
+    REQUIRE(!has_event(runtime, "start"));
+
+    // And a later status read is refused, which is the same fact stated by the
+    // session rather than by the payload.
+    const auto afterwards =
+        session.handle(request(WorkerCommand::status, 2));
+    REQUIRE(afterwards.ok());
+    REQUIRE(afterwards.value().error.has_value());
+}
+
+TEST_CASE(m5_worker_session_inspect_bundle_refuses_an_unreadable_bundle) {
+    // The inspection could not read the bundle at all.  That is not a
+    // registration with no evidence; it is no answer, and the service must not
+    // record one from it.
+    FakeWorkerRuntime runtime;
+    runtime.fail_inspect = true;
+    WorkerSession session(session_binding(), kSessionNonce, session_secret(),
+                         runtime);
+
+    const auto reply = session.handle(request(WorkerCommand::inspect_bundle, 1));
+    REQUIRE(reply.ok());
+    REQUIRE(reply.value().error.has_value());
+    REQUIRE(!reply.value().status.has_value());
+    REQUIRE(!has_event(runtime, "start"));
 }
 
 TEST_CASE(m5_worker_session_prepare_names_the_native_id_by_the_shared_rule) {

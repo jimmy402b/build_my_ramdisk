@@ -1,15 +1,16 @@
 #pragma once
 
-// The production `IWorkerSessionProvider`: it turns a durable profile into a
+// The production `IWorkerSessionProvider`: it turns a launch request into a
 // launch spec, starts a worker process, and hands back the authenticated
 // session.
 //
 // A rebuild, not a port.  The historical provider reached HostCore's own
-// launcher; this one is a thin mapping from `profile::ProfileRecord` to
+// launcher; this one is a thin mapping from `WorkerLaunchRequest` to
 // `m5::WorkerLaunchSpec` over `launch_private_worker`, which owns the pipe, the
-// startup channel and the handshake.  What is left here is the translation, and
-// that is deliberate: the translation is the only part that knows about profiles,
-// so it is the only part that has to be tested against them.
+// startup channel and the handshake.  What is left here is the translation to
+// the wire, and it is deliberately the only part that knows the wire: a launch
+// request is produced by `make_launch_request`, so the two producers and this
+// one agree about what a launch is without either of them knowing a profile.
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
@@ -30,7 +31,7 @@ public:
     explicit WindowsWorkerSessionProvider(std::wstring worker_executable) noexcept;
 
     [[nodiscard]] Result<std::unique_ptr<ServiceWorkerSession>> launch(
-        const profile::ProfileRecord& profile,
+        const WorkerLaunchRequest& request,
         const OperationContext& context) override;
     [[nodiscard]] Result<std::unique_ptr<ServiceWorkerSession>> attach(
         const product::Uuid& profile_id,

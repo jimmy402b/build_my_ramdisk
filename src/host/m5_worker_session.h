@@ -21,6 +21,14 @@ public:
 
     virtual Result<void> start() = 0;
     virtual Result<WorkerRuntimeStatus> observe() = 0;
+    // Opens the bundle and reports its identity without starting anything.
+    //
+    // An import registers a bundle that already exists and is not started, so it
+    // needs the bundle's evidence and nothing else.  `start()` cannot serve it:
+    // recovering the volume claims a drive letter and mounts an imported disk
+    // the operation never asked to mount.  The reply's `worker_alive` is false,
+    // which is the fact that distinguishes this from a start.
+    virtual Result<WorkerRuntimeStatus> inspect_bundle() = 0;
     virtual Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) = 0;
     // The commit answer: the disposition the persistence layer actually

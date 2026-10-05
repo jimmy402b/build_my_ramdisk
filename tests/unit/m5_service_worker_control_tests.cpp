@@ -51,9 +51,16 @@ struct NullSessionProvider final : IWorkerSessionProvider {
     int launches{};
     int attaches{};
 
+    // What the last launch asked for.  The adapter's bundle actions are judged
+    // partly on the request they build, and that request is the whole of what
+    // the launch is for.
+    std::optional<WorkerLaunchRequest> last_request;
+
     Result<std::unique_ptr<ServiceWorkerSession>> launch(
-        const profile::ProfileRecord&, const OperationContext&) override {
+        const WorkerLaunchRequest& request,
+        const OperationContext&) override {
         ++launches;
+        last_request = request;
         return Result<std::unique_ptr<ServiceWorkerSession>>::failure(
             Error{ErrorDomain::internal, 1, L"launch", L"no worker here", 0});
     }
@@ -63,6 +70,69 @@ struct NullSessionProvider final : IWorkerSessionProvider {
         return Result<std::unique_ptr<ServiceWorkerSession>>::success(nullptr);
     }
 };
+
+// `LifecycleOperationIntent` and `profile::Profile` both carry a `product::Uuid`
+// with no public default constructor, so neither can be value-initialized --
+// every case builds them through an aggregate, in the struct's own field order.
+LifecycleOperationIntent intent(const LifecycleOperationKind kind) {
+    return LifecycleOperationIntent{
+        kind,
+        profile_id(),
+        kind == LifecycleOperationKind::create
+            ? std::optional<product::Uuid>(
+                  uuid("12345678-1234-1234-1234-123456789012"))
+            : std::nullopt,
+        L"S-1-5-21-100-200-300-1001",
+        L"work",
+        L"C:\\bundles\\a",
+        L"R:",
+        kind == LifecycleOperationKind::create ? 64ull * 1024 * 1024 : 0,
+        false,
+        control::MemoryMode::automatic,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        PhysicalMemorySnapshot{},
+        0};
+}
+
+WorkerActionRequest bundle_request(const ActionKind action,
+                                   const LifecycleOperationKind kind) {
+    return WorkerActionRequest{
+        uuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        operation_id(),
+        profile_id(),
+        ManagementCommand::start,
+        action,
+        intent(kind),
+        std::nullopt,
+        std::nullopt};
+}
+
+profile::ProfileRecord profile_record(const profile::ProfileLifecycle lifecycle) {
+    profile::Profile value{
+        profile_id(),
+        L"S-1-5-21-100-200-300-1001",
+        L"work",
+        1'700'000'000'000ULL,
+        lifecycle,
+        L"C:\\bundles\\a",
+        "disk.rdm",
+        uuid("12345678-1234-1234-1234-123456789012"),
+        64ull * 1024 * 1024,
+        512,
+        4096,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        profile::MountKind::drive_letter,
+        L"R:",
+        false,
+        profile::MemoryPolicy{},
+        profile::CheckpointPolicy{},
+        profile::CompactionPolicy{}};
+    return profile::ProfileRecord{7, std::move(value)};
+}
 
 ServiceWorkerControlError error_code_of(const Error& error) {
     return static_cast<ServiceWorkerControlError>(error.code);
@@ -99,8 +169,6 @@ TEST_CASE(m5_worker_control_fails_closed_on_actions_no_worker_realizes) {
         ActionKind::verify_rebind_bundle,
         ActionKind::publish_rebind,
         ActionKind::forget_metadata,
-        ActionKind::create_and_verify_bundle,
-        ActionKind::inspect_bundle_read_only,
     };
     for (const auto action : unrealized) {
         const auto result = control.execute(request(action));
@@ -110,6 +178,107 @@ TEST_CASE(m5_worker_control_fails_closed_on_actions_no_worker_realizes) {
     }
     REQUIRE_EQ(provider.launches, 0);
     REQUIRE_EQ(provider.attaches, 0);
+}
+
+TEST_CASE(m5_worker_control_bundle_actions_launch_from_the_intent) {
+    // Neither action has a durable profile to launch from -- both run before
+    // their profile is published, which is what made the plan's ordering
+    // workable -- so the launch is built from the operation's intent.  The two
+    // differ in the mode they ask for, and that mode is what decides whether the
+    // worker creates a volume or adopts one.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+
+    const auto created = control.execute(bundle_request(
+        ActionKind::create_and_verify_bundle, LifecycleOperationKind::create));
+    REQUIRE(!created.ok()); // the null provider cannot launch
+    REQUIRE_EQ(provider.launches, 1);
+    REQUIRE(provider.last_request.has_value());
+    REQUIRE(provider.last_request->volume_mode
+            == m5::WorkerVolumeMode::provision_new);
+    REQUIRE(provider.last_request->image_id.has_value());
+    REQUIRE_EQ(provider.last_request->logical_capacity_bytes,
+               64ull * 1024 * 1024);
+    // No durable record exists yet, so there is no revision to name.
+    REQUIRE_EQ(provider.last_request->profile_revision, 0ull);
+
+    const auto inspected = control.execute(bundle_request(
+        ActionKind::inspect_bundle_read_only, LifecycleOperationKind::import));
+    REQUIRE(!inspected.ok());
+    REQUIRE_EQ(provider.launches, 2);
+    REQUIRE(provider.last_request->volume_mode
+            == m5::WorkerVolumeMode::adopt_existing);
+    // An import names no image: it records what the bundle holds rather than
+    // asserting one in advance.
+    REQUIRE(!provider.last_request->image_id.has_value());
+}
+
+TEST_CASE(m5_worker_control_bundle_actions_need_their_intent) {
+    // Without the intent there is nothing to launch from, and reporting success
+    // would tell ServiceCore a bundle had been registered when nothing had.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    for (const auto action : {ActionKind::create_and_verify_bundle,
+                              ActionKind::inspect_bundle_read_only}) {
+        const auto result = control.execute(request(action));
+        REQUIRE(!result.ok());
+        REQUIRE_EQ(error_code_of(result.error()),
+                   ServiceWorkerControlError::invalid_argument);
+    }
+    REQUIRE_EQ(provider.launches, 0);
+}
+
+TEST_CASE(m5_worker_control_bundle_actions_refuse_the_wrong_operation_kind) {
+    // The source these actions record is what ServiceCore validates against the
+    // operation's kind, so an action answering for the other kind must not even
+    // launch: a create intent answered by an inspection would record a bundle it
+    // never created as one it merely read.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    const auto result = control.execute(bundle_request(
+        ActionKind::create_and_verify_bundle, LifecycleOperationKind::import));
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(error_code_of(result.error()),
+               ServiceWorkerControlError::invalid_argument);
+    REQUIRE_EQ(provider.launches, 0);
+}
+
+TEST_CASE(m5_launch_request_takes_its_mode_from_the_profile_lifecycle) {
+    // The criterion is the one `append_start_actions` already branches on: a
+    // profile whose lifecycle is still `provisioning` has a bundle and no volume,
+    // so starting it must create one, and every other profile adopts the volume
+    // it already has.  A second criterion invented here is how the two would come
+    // to disagree.
+    auto provisional =
+        make_launch_request(profile_record(profile::ProfileLifecycle::provisioning));
+    REQUIRE(provisional.ok());
+    REQUIRE(provisional.value().volume_mode
+            == m5::WorkerVolumeMode::provision_new);
+    REQUIRE(provisional.value().image_id.has_value());
+    REQUIRE_EQ(provisional.value().profile_revision, 7ull);
+
+    auto ready = make_launch_request(profile_record(profile::ProfileLifecycle::ready));
+    REQUIRE(ready.ok());
+    REQUIRE(ready.value().volume_mode == m5::WorkerVolumeMode::adopt_existing);
+}
+
+TEST_CASE(m5_launch_request_refuses_a_mount_target_that_is_not_a_drive_letter) {
+    // The worker takes a drive letter, so a target that is not one is refused
+    // before a request exists -- and therefore before any process starts.  A
+    // worker launched for the wrong mount is a worker holding the wrong disk.
+    auto operation = intent(LifecycleOperationKind::create);
+    operation.mount_target = L"not-a-drive-letter";
+    REQUIRE(!make_launch_request(operation).ok());
+
+    // The same rule for a durable record, which also has to say it is a
+    // drive-letter mount at all.
+    auto profile = profile_record(profile::ProfileLifecycle::ready);
+    profile.profile.mount_target = L"not-a-drive-letter";
+    REQUIRE(!make_launch_request(profile).ok());
+
+    profile = profile_record(profile::ProfileLifecycle::ready);
+    profile.profile.mount_kind = profile::MountKind::directory;
+    REQUIRE(!make_launch_request(profile).ok());
 }
 
 TEST_CASE(m5_worker_control_refuses_a_correlation_that_cannot_prove_ownership) {

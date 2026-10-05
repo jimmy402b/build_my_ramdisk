@@ -155,6 +155,29 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
+    case WorkerCommand::inspect_bundle: {
+        const auto status = runtime_.inspect_bundle();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // The same promise `create_bundle` makes, for the same reason: the
+        // service is about to record this as a registration, so a reply without
+        // the bundle's identity has not answered the question.
+        if (!status.value().bundle.has_value() ||
+            !status.value().bundle->complete()) {
+            reply.error = refusal(
+                L"inspect_bundle",
+                L"the bundle could not be inspected for a recordable identity");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // Deliberately not `started_`: nothing was started.  A later `status`
+        // read is refused, which is the truth about this worker's state, and the
+        // reply says so in its own `worker_alive`.
+        reply.status = status.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
     case WorkerCommand::status: {
         if (!started_) {
             reply.error = refusal(L"observe", L"the runtime has not been started");

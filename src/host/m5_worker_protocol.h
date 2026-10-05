@@ -69,6 +69,17 @@ enum class WorkerCommand : std::uint16_t {
     // but it promises something `start` does not: that the bundle's identity was
     // recorded, which is what makes a registration possible at all.
     create_bundle = 12,
+    // Opens the bundle read-only and answers with a status whose bundle evidence
+    // is engaged, without starting a runtime at all.
+    //
+    // It is a separate command rather than a mode of `create_bundle` because the
+    // two are not the same operation wearing different hats: `create_bundle`
+    // runs the create lifecycle, and this one runs no lifecycle.  An import
+    // registers a bundle that already exists and is not started, and the only
+    // other way to open a bundle in this runtime -- `DiskRuntime::recover` --
+    // assigns a drive letter and mounts a volume the import never asked for.
+    // The action is named read-only, so the command is.
+    inspect_bundle = 13,
 };
 
 // Identity of one worker process bound to one profile for one session.

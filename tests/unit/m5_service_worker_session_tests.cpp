@@ -68,6 +68,15 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     std::optional<WorkerPreparedCandidate> prepared;
 
     Result<void> start() override { return Result<void>::success(); }
+    // This fake drives the service-side session's framing and sequencing rather
+    // than the bundle commands, so an inspection is the same answer as an
+    // observation with no runtime behind it -- which is what an inspection is.
+    Result<WorkerRuntimeStatus> inspect_bundle() override {
+        auto status = observe();
+        if (!status.ok()) return status;
+        status.value().worker_alive = false;
+        return status;
+    }
     Result<WorkerRuntimeStatus> observe() override {
         WorkerRuntimeStatus status{};
         status.worker_alive = worker_alive;

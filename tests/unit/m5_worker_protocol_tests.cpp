@@ -534,6 +534,59 @@ TEST_CASE(m5_worker_protocol_create_bundle_is_operation_scoped) {
     REQUIRE(!encode(request_message).ok());
 }
 
+TEST_CASE(m5_worker_protocol_inspect_bundle_answers_with_the_same_status) {
+    // The read-only command is a second way to ask for the same evidence, not a
+    // second evidence type: its reply is the bare status, and a status from an
+    // inspection is distinguishable from one from a start only by the fact it
+    // carries -- `worker_alive` -- which is exactly the fact that matters.
+    WorkerRuntimeStatus observed = status();
+    observed.worker_alive = false;
+    WorkerBundleEvidence bundle{};
+    bundle.image_id = image_uuid(0x11);
+    bundle.virtual_bytes = 64ull * 1024 * 1024;
+    bundle.logical_sector_size = 512;
+    bundle.physical_sector_size = 4096;
+    bundle.volume_serial = 0x0123456789ABCDEFull;
+    observed.bundle = bundle;
+
+    WorkerMessage reply{};
+    reply.kind = WorkerMessageKind::reply;
+    reply.command = WorkerCommand::inspect_bundle;
+    reply.sequence = 3;
+    reply.binding = session_binding();
+    reply.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    reply.status = observed;
+
+    const auto bytes = encode(reply);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().command == WorkerCommand::inspect_bundle);
+    REQUIRE(*decoded.value().status == observed);
+    REQUIRE(!decoded.value().status->worker_alive);
+}
+
+TEST_CASE(m5_worker_protocol_inspect_bundle_is_operation_scoped) {
+    // An inspection registers one bundle for one operation, so the operation id
+    // is required exactly as it is for `create_bundle`.
+    WorkerMessage request_message{};
+    request_message.kind = WorkerMessageKind::request;
+    request_message.command = WorkerCommand::inspect_bundle;
+    request_message.sequence = 3;
+    request_message.binding = session_binding();
+    REQUIRE(!authenticate_worker_message(request_message, session_binding(), 2)
+                 .ok());
+
+    request_message.product_operation_id =
+        uuid("99999999-8888-7777-6666-555555555555");
+    REQUIRE(authenticate_worker_message(request_message, session_binding(), 2)
+                .ok());
+    // A request carrying the evidence it is asking for is refused like any other
+    // stray field.
+    request_message.status = status();
+    REQUIRE(!encode(request_message).ok());
+}
+
 TEST_CASE(m5_worker_protocol_refuses_a_partial_volume_identity) {
     // A runtime that adopted a volume but could not read one of its three
     // identities is not a runtime with a weaker identity: it is one whose

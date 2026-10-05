@@ -304,26 +304,39 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::start(
 
 Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::create_bundle(
     const OperationContext& context, const product::Uuid& operation_id) {
+    return bundle_registration(context, operation_id,
+                               m5::WorkerCommand::create_bundle);
+}
+
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::inspect_bundle(
+    const OperationContext& context, const product::Uuid& operation_id) {
+    return bundle_registration(context, operation_id,
+                               m5::WorkerCommand::inspect_bundle);
+}
+
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::bundle_registration(
+    const OperationContext& context, const product::Uuid& operation_id,
+    const m5::WorkerCommand command) {
     m5::WorkerMessage request{};
-    request.command = m5::WorkerCommand::create_bundle;
+    request.command = command;
     request.product_operation_id = operation_id;
     auto reply = exchange(context, std::move(request));
     if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
     if (!reply.value().status.has_value()) {
         return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
-            L"ServiceWorkerSession::create_bundle",
-            L"the create reply carries no status").error());
+            L"ServiceWorkerSession::bundle_registration",
+            L"the bundle reply carries no status").error());
     }
-    // The worker refuses a runtime that came up without recording the bundle's
-    // identity, and the shape gate refuses incomplete evidence on the wire.  Both
-    // are checked again here for the same reason the strict observation is: the
-    // caller is about to make a durable record of this, so it must not have to
-    // trust that the reply came through either gate.
+    // The worker refuses to answer without the bundle's identity, and the shape
+    // gate refuses incomplete evidence on the wire.  Both are checked again here
+    // for the same reason the strict observation is: the caller is about to make
+    // a durable record of this, so it must not have to trust that the reply came
+    // through either gate.
     if (!reply.value().status->bundle.has_value() ||
         !reply.value().status->bundle->complete()) {
         return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
-            L"ServiceWorkerSession::create_bundle",
-            L"the create reply carries no complete bundle evidence").error());
+            L"ServiceWorkerSession::bundle_registration",
+            L"the bundle reply carries no complete bundle evidence").error());
     }
     return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
 }

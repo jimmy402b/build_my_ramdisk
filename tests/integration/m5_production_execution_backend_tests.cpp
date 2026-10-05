@@ -98,17 +98,24 @@ public:
 // `profile::Profile` holds a `product::Uuid`, which has no public default
 // constructor, so it cannot be value-initialized -- every case builds it through
 // the aggregate, and the field order below is the struct's own.
+// The lifecycle is a parameter because it decides which lifecycle a launch
+// runs, and that is not a detail of this fixture.  It defaults to `ready`
+// deliberately: a `provisioning` profile makes the worker *create and provision*
+// a real volume on this machine, and a case that only wants to prove the worker
+// was reached must not do that as a side effect of the fixture it borrowed.
 profile::ProfileRecord profile_record(const product::Uuid& profile_id,
                                       const product::Uuid& image_id,
                                       const std::wstring& bundle_path,
                                       const std::wstring& mount_target = L"R:",
-                                      const std::uint64_t revision = 7) {
+                                      const std::uint64_t revision = 7,
+                                      const profile::ProfileLifecycle lifecycle =
+                                          profile::ProfileLifecycle::ready) {
     profile::Profile value{
         profile_id,
         L"S-1-5-21-100-200-300-1001",
         L"work",
         1'700'000'000'000ULL,
-        profile::ProfileLifecycle::provisioning,
+        lifecycle,
         bundle_path,
         "disk.rdm",
         image_id,
@@ -133,6 +140,17 @@ profile::ProfileRecord valid_profile(const TempBundle& bundle) {
                           bundle.root.wstring());
 }
 
+// The provider takes a launch request, not a profile: a launch no longer always
+// starts from a durable record, so the seam's input is what both producers
+// translate into.  Going through the translation rather than building a request
+// by hand is deliberate -- a hand-built one would not be the thing production
+// sends.
+WorkerLaunchRequest request_for(const profile::ProfileRecord& profile) {
+    auto translated = make_launch_request(profile);
+    REQUIRE(translated.ok());
+    return translated.value();
+}
+
 } // namespace
 
 TEST_CASE(m5_backend_launches_and_authenticates_a_real_worker) {
@@ -143,7 +161,7 @@ TEST_CASE(m5_backend_launches_and_authenticates_a_real_worker) {
     // runs.
     TempBundle bundle(L"launch");
     WindowsWorkerSessionProvider provider(worker_executable());
-    auto session = provider.launch(valid_profile(bundle), context());
+    auto session = provider.launch(request_for(valid_profile(bundle)), context());
     REQUIRE(session.ok());
     REQUIRE(session.value() != nullptr);
 
@@ -191,14 +209,14 @@ TEST_CASE(m5_backend_two_profiles_never_share_a_worker) {
     WindowsWorkerSessionProvider provider(worker_executable());
 
     auto left = provider.launch(
-        profile_record(uuid("11111111-2222-3333-4444-555555555555"),
-                       uuid("66666666-7777-8888-9999-aaaaaaaaaaaa"),
-                       first.root.wstring()),
+        request_for(profile_record(
+            uuid("11111111-2222-3333-4444-555555555555"),
+            uuid("66666666-7777-8888-9999-aaaaaaaaaaaa"), first.root.wstring())),
         context());
     auto right = provider.launch(
-        profile_record(uuid("12121212-3434-5656-7878-909090909090"),
-                       uuid("abababab-cdcd-efef-0101-232323232323"),
-                       second.root.wstring()),
+        request_for(profile_record(
+            uuid("12121212-3434-5656-7878-909090909090"),
+            uuid("abababab-cdcd-efef-0101-232323232323"), second.root.wstring())),
         context());
     REQUIRE(left.ok());
     REQUIRE(right.ok());
@@ -214,24 +232,15 @@ TEST_CASE(m5_backend_refuses_a_launch_it_cannot_complete) {
     // executable path is refused before a process exists at all.
     TempBundle bundle(L"no-exe");
     WindowsWorkerSessionProvider missing(std::wstring{});
-    const auto refused = missing.launch(valid_profile(bundle), context());
+    const auto refused = missing.launch(request_for(valid_profile(bundle)), context());
     REQUIRE(!refused.ok());
 }
 
-TEST_CASE(m5_backend_refuses_a_mount_target_that_is_not_a_drive_letter) {
-    // The worker takes a drive letter, so a durable target that is not one is
-    // refused here rather than truncated into a plausible letter.  Refused
-    // before any process starts: a worker launched for the wrong mount is a
-    // worker holding the wrong disk.
-    TempBundle bundle(L"bad-mount");
-    WindowsWorkerSessionProvider provider(worker_executable());
-    auto profile = profile_record(
-        uuid("11111111-2222-3333-4444-555555555555"),
-        uuid("66666666-7777-8888-9999-aaaaaaaaaaaa"), bundle.root.wstring(),
-        L"not-a-drive-letter");
-    const auto refused = provider.launch(profile, context());
-    REQUIRE(!refused.ok());
-}
+// The mount-target rule used to be a case here, because the provider was where
+// it lived.  It lives in the translation now -- one gate for both producers, and
+// the profile path additionally has to name a drive-letter *mount kind*, which
+// this case never checked -- so the case moved to `unit.m5.service_worker_control`
+// rather than being kept as a second copy of one rule.
 
 TEST_CASE(m5_backend_attach_finds_nothing_and_says_so) {
     // Adopting a worker this provider did not launch needs a registry of live
@@ -248,11 +257,17 @@ TEST_CASE(m5_backend_attach_finds_nothing_and_says_so) {
 
 TEST_CASE(m5_backend_adapter_reaches_the_worker_it_launched) {
     // The adapter's `create_runtime_and_worker` maps onto a launch and then a
-    // `start`.  `start` cannot succeed here -- it needs an AIM proxy disk and a
-    // real volume -- but the *failure* is what this case is about: it must be
-    // the runtime's failure, arriving over an authenticated channel, and not
-    // `execution_not_bound`, which is what a launch that never happened would
-    // produce.  The two are indistinguishable from a bare `!ok()`.
+    // `start`.  `start` cannot succeed here -- an empty directory is not a
+    // manifest bundle, so recovery refuses it before touching a volume -- but the
+    // *failure* is what this case is about: it must be the runtime's failure,
+    // arriving over an authenticated channel, and not `execution_not_bound`,
+    // which is what a launch that never happened would produce.  The two are
+    // indistinguishable from a bare `!ok()`.
+    //
+    // The profile is `ready`, so the launch adopts.  A `provisioning` one would
+    // run the create lifecycle instead, which provisions a real volume and
+    // claims a real drive letter on this machine -- a side effect this case has
+    // no business causing, and one it would have caused silently.
     TempBundle bundle(L"adapter");
     WindowsWorkerSessionProvider provider(worker_executable());
     ServiceWorkerControl control(provider);
