@@ -801,6 +801,51 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.25 The end-to-end attempt, and the defect it found
+
+§1.24 established that the lifecycle can be driven here. This is the attempt, and
+it did not reach a mounted volume -- but it converted a vague gap into a named
+defect, which is the useful outcome.
+
+**What was built.** A case in the backend suite that creates a real
+generation-zero bundle, claims a free drive letter, launches the worker through
+`WindowsWorkerSessionProvider`, and calls `start`. Two harness mistakes were
+found and fixed on the way, both worth keeping because both hid themselves well:
+`std::wstring mount{1, letter}` picks the **`initializer_list` constructor** and
+builds a two-character string (`0x01` then the letter), which then fails the
+mount-target check for a reason that looks nothing like the mistake; and the
+constants the bundle fixture needs are split across `myrd`, `myrd::persistence`
+and `myrd::storage`, so an unqualified name resolves or does not depending on
+which `using` is in scope.
+
+**The defect.** With both fixed, the worker launched, authenticated, and `start`
+failed with:
+
+```
+op=recover_complete_image
+msg=generation-zero bundle has no durable Windows volume checkpoint
+```
+
+`DiskWorkerRuntime::start()` calls **`DiskRuntime::recover`**. It can only adopt a
+bundle that a previous run already provisioned and mounted. **Nothing in M5
+provisions one**: there is no create path in the worker, and the plan's
+`create_and_verify_bundle` -- which is where provisioning belongs -- is
+fail-closed in the adapter pending Task 6's ordering decision.
+
+So §1.22's functional gap #3 is not a configuration problem or a missing test
+seam. It is that **the operation which turns a fresh bundle into a startable one
+has no implementation anywhere**, and the ordering argument about
+`create_and_verify_bundle` has been about a step nobody wrote. That is the
+concrete thing Task 6 now has to settle, with the failing call site as the
+evidence.
+
+**The case was removed rather than committed failing.** It is not in the tree:
+the framework has no skip, and asserting today's failure would enshrine a defect
+as the expectation -- the same mistake §1.17 caught in an older assertion. It
+comes back when the create path exists, and its shape is recorded here so it does
+not have to be rediscovered: generation-zero bundle, free drive letter, launch,
+`start`, `require_runtime_observation`, `cleanup`.
+
 ### 1.24 The end-to-end run belongs on this host, not the VM
 
 Checked before planning the work, because it changes where it happens.
