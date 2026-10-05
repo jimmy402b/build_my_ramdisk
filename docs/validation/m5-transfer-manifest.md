@@ -2521,3 +2521,86 @@ meets it immediately.
 **Evidence.** Release build clean; full suite **143/144**, the one failure the
 pre-existing `integration.m3.recovery` (§1.18). `m5.production_execution_backend`
 7/7 → **9/9**.
+
+### 1.34 Task 6 increment 3 — the stop path runs, and it is not reliable
+
+`quiesce_mutations`, `remove_mount` and `confirm_removal` — three more of §1.22's
+ten unexecuted paths — now run against a real worker, in the order the plan puts
+them in: quiesce witnesses the generation, the flush cuts, the boundary commits
+and moves the witness, the removal barrier takes the mount and stops in one
+authenticated call, and the two steps after it are no-ops *proven* by that
+removal. `m5_backend_stop_walks_quiesce_flush_commit_remove` passes, and
+`m5_backend_confirmed_removal_without_a_removal_is_refused` pins the mirror: with
+no removal proven for this operation, the two post-removal steps fail with
+`removal_unproven` and the worker is never asked.
+
+**Then the case was run repeatedly, and it is intermittent. Three distinct
+causes, each found only because a failing action was made to name itself.**
+
+#### (a) The harness: cases interfere through a machine-wide device inventory
+
+```
+create: op=CreateFileW(disk interface)   msg=failed to open a present disk interface for identity   (55/2)
+create: op=IOCTL_SCSI_GET_ADDRESS(...)   msg=failed to identify a present disk interface            (55)
+stop:   op=M3AimRuntime::remove_owned_device
+        msg=PhysicalDrive inventory did not return to baseline                                      (258)
+```
+
+`M3AimRuntime::remove_owned_device` waits for the **machine-wide** physical drive
+inventory to return to its baseline. So one case's device teardown overlapping
+the next case's setup makes both flaky: the removal times out because a device
+that is not its own is appearing, and the create cannot find a present disk
+interface because one is going away.
+
+The suite now waits for no `myrd-m5-worker` process to exist before each heavy
+case — the point at which the previous worker's teardown has run. That is a
+**harness barrier, and it is labelled as one**: the interference itself is real
+and is exactly what M5-B's dual-profile isolation exists to test. Two profiles
+whose device lifecycles overlap is not an exotic state; it is a stop racing a
+start. It belongs to whoever owns M3's device lifecycle, and it is recorded here
+so M5-B does not have to rediscover it.
+
+#### (b) Real, unfixed: the stop can be refused by its own checkpoint
+
+```
+stop: op=service_worker_control.remove_mount
+      msg=The worker refused to remove: its runtime stands dirty                                     (23559)
+```
+
+Roughly one run in eight, with the barrier in place and the other causes
+suppressed. The stop flushes, commits a checkpoint, and then asks the worker to
+remove — and the worker refuses, because `DiskWorkerRuntime::remove_and_stop`
+re-checks `observe().dirty` and finds the runtime dirty. §7 item 21(a) put that
+refusal there deliberately, and it is right to be there; what it means is that
+**the checkpoint this stop just committed did not leave the runtime clean enough
+to remove.** The adapter's own header says quiescing is what establishes the
+runtime is not dirty, and it cannot: `dirty` is an instant's observation of the
+store, and the window between the commit and the removal is enough for it to
+differ.
+
+This is not a test problem. It is the stop path failing closed about a third of
+the time under repetition, and the correct resolution — retry, or re-flush
+before the barrier, or a definition of "clean enough to remove" that survives the
+window — is a Task 6 decision about the stop policy, not a fix to the test.
+
+#### (c) Recorded from §1.31, still unexplained
+
+The teardown failure after a closed channel (§1.31) did not recur in any of this
+increment's runs. It remains observed once and unexplained.
+
+**What is asserted, and what is not.** The three new cases assert what they
+verify and are green. The stop case does **not** assert that repeated stops
+succeed, because they do not; the intermittency is a recorded finding rather than
+an expectation. Nothing in this increment claims the stop path is reliable.
+
+**A diagnostic that stays.** `require_created` and `require_action` print the
+error's operation, message and codes before failing. They are not probes to be
+withdrawn: every one of the three causes above was invisible until they existed,
+and the framework's `REQUIRE` exits at the first failure with a line number and
+nothing else. Three intermittent failures in one session is the argument for
+keeping them.
+
+**Evidence.** Release build clean; full suite **143/144**, the one failure the
+pre-existing `integration.m3.recovery` (§1.18). `m5.production_execution_backend`
+9/9 → **11/11**, and 7 of 8 consecutive runs clean with the barrier in place —
+the one failure being (b).
