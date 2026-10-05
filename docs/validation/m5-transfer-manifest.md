@@ -857,7 +857,7 @@ correlation is not last in the payload); and a minor from the future is refused,
 because a payload read as if it ended where this build expects would decode
 trailing bytes into whichever field came next.
 
-### 1.22 Task 5 closes — and the three rulings that close it
+### 1.22 Task 5's scope closes — and the three rulings that close it
 
 Task 5's file list in the plan names one file that is not built here and one it
 no longer needs. Both were put to the user with the caller evidence, and both
@@ -899,9 +899,40 @@ proven afterwards. For M5 that means test artifacts, but the decoder must not
 mis-read them silently, and a legacy correlation must fail closed rather than
 compare as a match against zeros.
 
-**Task 5 is now complete.** Its remaining file is Task 7's, its obsolete function
-is deleted, and the last fail-closed action has a decided path to realization.
-The increment that lands the widening also lands `reconcile_checkpoint`.
+**Task 5's *scope* is now closed. Its outputs are not finished, and "complete"
+would be the wrong word for them.** The distinction matters because the two were
+conflated when this section was first written, and the correction is the useful
+part:
+
+*What is closed:* every file the plan listed for Task 5 either exists or has been
+explicitly re-homed, and no file is left un-owned. That is a statement about
+ownership, not about working software.
+
+*What is open, and how open:*
+
+1. **Three real functional gaps.** `create_and_verify_bundle` and
+   `inspect_bundle_read_only` are fail-closed pending Task 6's ordering decision,
+   so **M5 `create` and `import` do not work**. `attach` returns `nullopt`
+   pending Task 7's live-worker registry, so `recover_bundle` does not work. And
+   the worker's `start()` has never succeeded anywhere, so
+   `create_runtime_and_worker` does not work either.
+2. **The adapter's positive paths have never executed.** `quiesce_mutations`,
+   `flush_exact_volume`, `checkpoint_across_boundary`, `remove_mount`,
+   `confirm_removal`, `verify_startup_step`, `record_volume_identity`,
+   `resume_mutations`, `bind_worker`'s success branch and `reconcile_checkpoint`'s
+   success branch are all exercised by nothing. The model tests drive their own
+   fake `IWorkerControl` (`m4_checkpoint_operation_tests.cpp:719`), and the
+   backend suite asserts `create_runtime_and_worker` *fails*. The production
+   data-plane pieces are in the same state: `capture_bundle_evidence`,
+   `fill_persistent_identity`, `DiskRuntime::adopted_volume`.
+3. **One planned file is not here.** `windows_worker_recovery.{h,cpp}` was in
+   Task 5's list and moved to Task 7 by ruling. The plan's list is not satisfied;
+   it is amended.
+
+So the honest status is: **Task 5's scope is settled, three of its capabilities
+do not work yet, and most of its code has never run.** The remaining work is
+Task 6 for the first gap, Task 7 for the second and third, and the same backend
+suite extended with a real bundle and volume for the verification.
 
 ### 1.21 Task 5 increment 13 — the backend suite that executes increments 10-12
 
