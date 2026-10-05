@@ -1065,6 +1065,14 @@ public:
         ++epoch_publications;
         REQUIRE(last_correlation.has_value());
         REQUIRE_EQ(correlation, last_correlation.value());
+        // The commit landed but the epoch publication did not reach the handler.
+        // That is not a failure of the commit and not a successful operation: it
+        // is the one durable state a restart has to resolve by asking the bundle,
+        // and modelling it is the only way to reach
+        // `committed_pending_epoch_confirmation` across a restart.
+        if (refuse_epoch_publication) {
+            return Result<void>::failure(error(L"publish_checkpoint_epoch"));
+        }
         if (before_epoch_publish) before_epoch_publish();
         return publish(CheckpointEpochObservation{
             correlation, live_dirty_epoch});
@@ -1138,6 +1146,9 @@ public:
     std::function<void()> after_boundary;
     std::function<void()> before_reconcile;
     std::function<void()> before_epoch_publish;
+    // When set, the epoch publication never reaches the handler, so the commit
+    // landed and its confirmation did not.
+    bool refuse_epoch_publication{};
     std::function<void()> before_compaction_boundary;
     std::function<void()> after_compaction_boundary;
     std::function<void()> before_compaction_epoch_publish;

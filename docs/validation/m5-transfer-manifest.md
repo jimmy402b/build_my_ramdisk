@@ -2459,3 +2459,65 @@ table names), and it is not the same case as "the commit was committed".
 **Evidence.** Release build clean; full suite **143/144**, the one failure the
 pre-existing `integration.m3.recovery` (§1.18). `m5.service_orchestration`
 19/19 → **20/20**.
+
+### 1.33 Task 6 increment 2 — the real checkpoint boundary runs, and what the withdrawal path does
+
+`flush_exact_volume`, `cut_candidate`, `checkpoint_across_boundary` and
+`abort_held_candidate` are exercised against a real worker for the first time.
+They are four of the ten paths §1.22 listed as never executed, and they carry the
+P4/P5 shape the whole recovery table is built on. Two cases in
+`m5_production_execution_backend_tests.cpp`:
+
+- **`m5_backend_checkpoint_crosses_the_boundary_and_commits`** — create, flush
+  (the worker's two-phase prepare), boundary continues, commit. Asserts the
+  disposition is `committed`, the reported generation is the candidate
+  generation, and `first_checkpoint_acknowledged` is set. The boundary callback
+  checks the evidence it is handed: the operation, the profile, and a candidate
+  generation that follows the prior one — a boundary deciding about a checkpoint
+  nobody cut is the failure this guards.
+- **`m5_backend_checkpoint_boundary_withdrawal_publishes_nothing`** — the
+  boundary withdraws, so the candidate is aborted. Asserts `not_committed` at the
+  **prior** generation, and no acknowledgement.
+
+#### The finding: a withdrawn candidate poisons the rest of that worker's session
+
+Recorded, reproduced, and **not fixed here**.
+
+After a withdrawal, a second `flush_exact_volume` in the same worker session
+fails:
+
+```
+op=checkpoint.prepare msg=opened bundle file identity differs from the expected identity code=15
+```
+
+The error comes from `image_path.open_target` (`image_paths.cpp:671`) — the
+expectation is a file identity that no longer matches the file at that path, so
+something in the abort replaced or rotated a bundle file while a component still
+held the old identity.
+
+**What makes it a finding rather than a guess is the discriminating experiment.**
+A *committed* candidate leaves the session usable: the commit case cuts a second
+candidate afterwards and it succeeds. Only the abort path breaks it. So the two
+paths are distinguishable, the failure is not "any second prepare", and the
+reproduction is two lines of the withdrawal case.
+
+**Why it is not fixed in this round.** The stale expectation lives inside M3's
+abort handling, and the transfer manifest's mandatory gate forbids M5 from
+changing M3's bundle, journal or manifest formats. Fixing it means understanding
+which file the abort replaces and which component cached its identity — real work
+in the persistence layer, and the wrong fix there is worse than the finding. What
+Task 6 can say is where it is, how to reproduce it, and that it is not an
+artifact of the test.
+
+**How bad it is today, stated as a bound rather than a reassurance.** Every
+abort path in the adapter that I could find is followed by teardown or by the end
+of the operation (`remove_mount` aborts leftovers then removes; `resume_mutations`
+aborts and the stop proceeds; a withdrawn boundary ends the checkpoint), so the
+sequence abort → prepare may not occur in production *today*. That is a statement
+about the current call graph, not about the design: a scheduler that retries a
+checkpoint in the same session, or any future executor that reuses a worker,
+meets it immediately.
+
+**Evidence.** Release build clean; full suite **143/144**, the one failure the
+pre-existing `integration.m3.recovery` (§1.18). `m5.production_execution_backend`
+7/7 → **9/9**.

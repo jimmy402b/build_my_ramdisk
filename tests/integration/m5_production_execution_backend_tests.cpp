@@ -517,3 +517,184 @@ TEST_CASE(m5_backend_adapter_registers_the_bundle_it_creates) {
     // teardown, and removes the drive letter.
     REQUIRE(wait_for_letter_release(letter));
 }
+
+// The profile a checkpoint cut is authorized against.  It is built from the
+// *same* image id the create used, because the cut checks the live runtime's
+// image against the durable record's -- a worker cutting a snapshot for another
+// profile's image is exactly what that check refuses.
+profile::ProfileRecord checkpoint_profile(const product::Uuid& profile_id,
+                                          const product::Uuid& image_id,
+                                          const std::wstring& bundle_path,
+                                          const std::wstring& mount_target) {
+    auto record = profile_record(profile_id, image_id, bundle_path, mount_target);
+    record.profile.lifecycle = profile::ProfileLifecycle::ready;
+    return record;
+}
+
+TEST_CASE(m5_backend_checkpoint_crosses_the_boundary_and_commits) {
+    // The two-phase checkpoint boundary against a real worker.  This is the
+    // largest block of the adapter that nothing had ever run:
+    // `flush_exact_volume`, `cut_candidate`, `checkpoint_across_boundary` and
+    // `abort_held_candidate` all go through here for the first time, and so does
+    // the P4/P5 shape they carry.  The model suite drives the *decisions* with a
+    // fake; only this can show that they survive a real snapshot and a real
+    // commit.
+    TempBundle bundle(L"boundary");
+    const wchar_t letter = free_drive_letter();
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto image_id = uuid("3f3f3f3f-4e4e-5d5d-6c6c-7b7b7b7b7b7b");
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+
+    {
+        WindowsWorkerSessionProvider provider(worker_executable());
+        ServiceWorkerControl control(provider);
+
+        WorkerActionRequest create{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        REQUIRE(control.execute(create).ok());
+
+        auto durable = checkpoint_profile(profile, image_id, bundle.root.wstring(),
+                                          mount_target);
+        WorkerActionRequest flush{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::checkpoint,
+            ActionKind::flush_exact_volume,
+            std::nullopt,
+            durable,
+            std::nullopt};
+        // The flush cuts the candidate a later commit publishes.  It reaches the
+        // worker's two-phase prepare, which had never run outside the model.
+        REQUIRE(control.execute(flush).ok());
+
+        // The boundary is where the service decides, with the candidate already
+        // frozen in the worker.  Here it continues.
+        WorkerActionRequest boundary_request{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::checkpoint,
+            ActionKind::checkpoint,
+            std::nullopt,
+            durable,
+            std::nullopt};
+        auto committed = control.execute_checkpoint(
+            boundary_request,
+            [&](const CheckpointCommitBoundaryEvidence& evidence) {
+                // The evidence is the live worker's own report -- the frozen
+                // candidate's slot and digest, and the operation this session
+                // asked for.  A boundary handed a different identity would be
+                // deciding about a checkpoint nobody cut.
+                REQUIRE(evidence.product_operation_id == operation);
+                REQUIRE(evidence.profile_id == profile);
+                REQUIRE(evidence.candidate_generation
+                        == evidence.prior_generation + 1);
+                return Result<CheckpointCommitBoundaryDecision>::success(
+                    CheckpointCommitBoundaryDecision{true, 0, 0});
+            });
+        REQUIRE(committed.ok());
+        REQUIRE(committed.value().checkpoint.has_value());
+        const auto& checkpoint = committed.value().checkpoint.value();
+        REQUIRE(checkpoint.disposition == CheckpointCommitDisposition::committed);
+        REQUIRE_EQ(checkpoint.generation,
+                   checkpoint.correlation.candidate_generation);
+        // A landed commit is what the provisioning start path acknowledges.
+        REQUIRE(committed.value().lifecycle.first_checkpoint_acknowledged);
+
+        // And the session is still usable afterwards: a landed commit releases
+        // the candidate, so a later flush can cut a fresh one.  Asserted here
+        // because the withdrawal path does *not* have this property -- see the
+        // case below and manifest §1.33.
+        REQUIRE(control.execute(flush).ok());
+    }
+    REQUIRE(wait_for_letter_release(letter));
+}
+
+TEST_CASE(m5_backend_checkpoint_boundary_withdrawal_publishes_nothing) {
+    // The other half of the boundary: the service withdraws the commit after the
+    // candidate is frozen.  Nothing may be published, and the candidate must be
+    // resolved rather than left outstanding -- an abort the worker confirmed is
+    // what makes "not committed" a fact instead of an assumption.
+    TempBundle bundle(L"boundary-withdraw");
+    const wchar_t letter = free_drive_letter();
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto image_id = uuid("4f4f4f4f-5e5e-6d6d-7c7c-8b8b8b8b8b8b");
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+
+    {
+        WindowsWorkerSessionProvider provider(worker_executable());
+        ServiceWorkerControl control(provider);
+
+        WorkerActionRequest create{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        REQUIRE(control.execute(create).ok());
+
+        auto durable = checkpoint_profile(profile, image_id, bundle.root.wstring(),
+                                          mount_target);
+        WorkerActionRequest flush{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::checkpoint,
+            ActionKind::flush_exact_volume,
+            std::nullopt,
+            durable,
+            std::nullopt};
+        REQUIRE(control.execute(flush).ok());
+
+        WorkerActionRequest boundary_request{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::checkpoint,
+            ActionKind::checkpoint,
+            std::nullopt,
+            durable,
+            std::nullopt};
+        auto withdrawn = control.execute_checkpoint(
+            boundary_request,
+            [](const CheckpointCommitBoundaryEvidence&) {
+                return Result<CheckpointCommitBoundaryDecision>::success(
+                    CheckpointCommitBoundaryDecision{false, 0, 0});
+            });
+        REQUIRE(withdrawn.ok());
+        REQUIRE(withdrawn.value().checkpoint.has_value());
+        // Reported as not committed, at the prior generation -- because nothing
+        // was published, and the generation is the runtime's own number rather
+        // than one derived from what the service expected.
+        REQUIRE(withdrawn.value().checkpoint->disposition
+                == CheckpointCommitDisposition::not_committed);
+        REQUIRE_EQ(withdrawn.value().checkpoint->generation,
+                   withdrawn.value().checkpoint->correlation.prior_generation);
+        REQUIRE(!withdrawn.value().lifecycle.first_checkpoint_acknowledged);
+
+        // Deliberately *not* asserted here: that a later flush can cut a fresh
+        // candidate.  It cannot.  A withdrawn candidate leaves the runtime
+        // unable to prepare another one -- `image_path.open_target` reports the
+        // bundle file identity differs from the expected one -- while a
+        // *committed* candidate leaves the session perfectly usable (asserted in
+        // the case above, which is what makes the two paths distinguishable).
+        // The finding and its minimal reproduction are manifest §1.33, and it is
+        // not fixed here: the expectation lives inside M3's abort handling, and
+        // the transfer manifest's mandatory gate forbids M5 from changing M3's
+        // bundle, journal or manifest formats.
+    }
+    REQUIRE(wait_for_letter_release(letter));
+}

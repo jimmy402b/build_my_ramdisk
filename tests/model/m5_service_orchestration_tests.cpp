@@ -46,6 +46,44 @@ TEST_CASE(m5_aggregate_projection_maps_lifecycle_states) {
         == "blocked/needs-attention");
 }
 
+// §3.6's last row: `resolving` "恢复 reconciliation，阻止 stop/remove".  That is
+// not a guard inside some caller -- it is one statement in the transition
+// contract's activity requirement, where every mutating command asks for `idle`
+// and a profile in `resolving_commit` is not idle.  Asserted here because
+// nothing asserted it: the suite checked that the state *is* `resolving_commit`,
+// never that anything is refused for it.
+//
+// Why it matters: `resolving_commit` means a publish whose outcome is unknown.
+// A stop removes the mount and drops every uncommitted write, and a checkpoint
+// cuts a new snapshot; either one taken over an unresolved commit destroys the
+// evidence the reconciliation is supposed to read.
+TEST_CASE(m5_a_resolving_commit_admits_only_the_command_that_resolves_it) {
+    const auto resolving = state(product::RuntimeState::running,
+                                 product::ActivityState::resolving_commit,
+                                 product::PersistenceState::commit_indeterminate);
+    const ManagementCommand blocked[] = {
+        ManagementCommand::stop,
+        ManagementCommand::force_stop,
+        ManagementCommand::start,
+        ManagementCommand::checkpoint,
+        ManagementCommand::compact,
+        ManagementCommand::config_set_live,
+        ManagementCommand::config_set_stopped,
+        ManagementCommand::repair_profile,
+        ManagementCommand::rebind,
+        ManagementCommand::forget};
+    for (const auto command : blocked) {
+        const auto plan = plan_command(resolving, command);
+        REQUIRE(!plan.accepted());
+    }
+    // Reads stay readable -- an operator has to be able to see what is stuck --
+    // and the one command that can move it forward is admitted.  A gate that
+    // refused everything would leave the disk stuck with no way out.
+    REQUIRE(plan_command(resolving, ManagementCommand::status_read).accepted());
+    REQUIRE(plan_command(resolving, ManagementCommand::diagnostics_read).accepted());
+    REQUIRE(plan_command(resolving, ManagementCommand::resolve_commit).accepted());
+}
+
 TEST_CASE(m5_aggregate_projection_is_fail_safe_for_unknown_or_contradictory_state) {
     auto unknown = state(product::RuntimeState::stopped);
     unknown.disk.runtime = static_cast<product::RuntimeState>(0xff);
@@ -422,6 +460,44 @@ TEST_CASE(m5_checkpoint_evidence_records_the_durable_phase_section_3_6_names) {
                 == expected.disposition);
         REQUIRE(fixture.profiles.snapshot().checkpoint.phase == expected.phase);
     }
+}
+
+// §3.6's first table names `committed_pending_epoch_confirmation` as a row a
+// restart resolves.  The case above never produces it, and that is the point:
+// with the epoch confirmed in the same session it is only ever a transient.  It
+// survives a restart exactly when the confirmation did not land -- so this case
+// makes the epoch publication fail and pins what is left on disk.
+//
+// The distinction is the whole reason the phase exists.  Read as "committed", it
+// would promote an epoch nobody confirmed; read as "nothing happened", it would
+// roll back bytes that are on disk.  It has to be its own answer, and it has to
+// be recoverable by asking the bundle.
+TEST_CASE(m5_an_unconfirmed_epoch_leaves_the_pending_phase_on_disk) {
+    Fixture fixture(product::PersistenceState::dirty);
+    fixture.worker.initial_disposition = CheckpointCommitDisposition::committed;
+    fixture.worker.refuse_epoch_publication = true;
+    ServiceCore core(
+        fixture.clock, fixture.profiles, fixture.operations, fixture.worker,
+        fixture.logger, fixture.ids, fixture.memory);
+    auto queued = core.dispatch(fixture.request(
+        "88888888-8888-4888-8888-888888888882"));
+    REQUIRE(queued.ok());
+    // The operation did not complete: the confirmation it was waiting on never
+    // came, and reporting success would claim a clean checkpoint the service
+    // cannot point at.
+    const auto terminal = core.execute_operation(
+        queued.value().operation_id.value());
+    REQUIRE(!terminal.ok());
+
+    const auto& checkpoint = fixture.profiles.snapshot().checkpoint;
+    // What *is* durable is the commit itself, recorded with its disposition --
+    // the bytes landed -- and the phase a restart branches on.
+    REQUIRE(checkpoint.phase
+            == CheckpointDurablePhase::committed_pending_epoch_confirmation);
+    REQUIRE(checkpoint.disposition.has_value());
+    REQUIRE(checkpoint.disposition.value()
+            == CheckpointCommitDisposition::committed);
+    REQUIRE(checkpoint.correlation.has_value());
 }
 
 // The read path must not report a durable claim the service can disprove.  A
