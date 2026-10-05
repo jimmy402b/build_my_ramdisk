@@ -856,6 +856,19 @@ TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     REQUIRE(committed.value().checkpoint->disposition
             == CheckpointCommitDisposition::committed);
 
+    // Production does not stop here either: ServiceCore confirms the epoch after
+    // the commit, and the runtime is only clean once it has.  Leaving it out was
+    // the first version of this case, and the intermittency it produced is
+    // recorded in §1.34.
+    REQUIRE(control
+                .publish_checkpoint_epoch(
+                    stop_request(ActionKind::checkpoint),
+                    committed.value().checkpoint->correlation,
+                    [](const CheckpointEpochObservation&) {
+                        return Result<void>::success();
+                    })
+                .ok());
+
     // The removal barrier.  It must remove and stop in one authenticated call --
     // a reply claiming one without the other was refused on the wire -- and it
     // releases the mount as part of that.

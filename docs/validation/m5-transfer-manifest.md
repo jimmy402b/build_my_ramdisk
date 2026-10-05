@@ -2554,34 +2554,46 @@ interface because one is going away.
 
 The suite now waits for no `myrd-m5-worker` process to exist before each heavy
 case — the point at which the previous worker's teardown has run. That is a
+**Verified by turning it off**: with the barrier disabled and everything
+else in place, 2 of 8 runs failed with exactly the `remove_owned_device`
+timeout above; with it enabled, 8 of 8 are clean. So the barrier is doing
+the work it claims to.
+
 **harness barrier, and it is labelled as one**: the interference itself is real
 and is exactly what M5-B's dual-profile isolation exists to test. Two profiles
 whose device lifecycles overlap is not an exotic state; it is a stop racing a
 start. It belongs to whoever owns M3's device lifecycle, and it is recorded here
 so M5-B does not have to rediscover it.
 
-#### (b) Real, unfixed: the stop can be refused by its own checkpoint
+#### (b) CLOSED — it was the test, not the product
 
 ```
 stop: op=service_worker_control.remove_mount
       msg=The worker refused to remove: its runtime stands dirty                                     (23559)
 ```
 
-Roughly one run in eight, with the barrier in place and the other causes
-suppressed. The stop flushes, commits a checkpoint, and then asks the worker to
-remove — and the worker refuses, because `DiskWorkerRuntime::remove_and_stop`
-re-checks `observe().dirty` and finds the runtime dirty. §7 item 21(a) put that
-refusal there deliberately, and it is right to be there; what it means is that
-**the checkpoint this stop just committed did not leave the runtime clean enough
-to remove.** The adapter's own header says quiescing is what establishes the
-runtime is not dirty, and it cannot: `dirty` is an instant's observation of the
-store, and the window between the commit and the removal is enough for it to
-differ.
+Roughly one run in eight, with the barrier in place. The stop flushes, commits a
+checkpoint, and then asks the worker to remove — and the worker refuses, because
+`DiskWorkerRuntime::remove_and_stop` re-checks `observe().dirty` and finds the
+runtime dirty.
 
-This is not a test problem. It is the stop path failing closed about a third of
-the time under repetition, and the correct resolution — retry, or re-flush
-before the barrier, or a definition of "clean enough to remove" that survives the
-window — is a Task 6 decision about the stop policy, not a fix to the test.
+I first wrote this up as a product defect — "the stop path failing closed about a
+third of the time", "not a test problem" — and **that was wrong.** The case never
+called `IWorkerControl::publish_checkpoint_epoch`, which is what ServiceCore does
+immediately after the commit. Without it the epoch is never confirmed, the runtime
+stays dirty by definition, and the removal is refused exactly as designed. With
+the call added, **8 of 8 consecutive runs are clean.**
+
+Kept in the record rather than deleted, because the mistake is the useful part.
+The evidence I had — an intermittent refusal, a deliberate refusal mechanism, and
+a plausible story about an observation window — was enough to write a convincing
+defect report about my own missing step. What would have caught it sooner is the
+question §1.29 and §1.30 keep asking: *where does this value come from?* `dirty`
+comes from the runtime, and the runtime is only clean after an epoch confirmation;
+the case was asserting a production sequence it was not performing. The same shape
+as §7 item 20a, one layer up — looking at where the failure stopped instead of at
+what the caller was supposed to have done first.
+
 
 #### (c) Recorded from §1.31, still unexplained
 
@@ -2602,5 +2614,7 @@ keeping them.
 
 **Evidence.** Release build clean; full suite **143/144**, the one failure the
 pre-existing `integration.m3.recovery` (§1.18). `m5.production_execution_backend`
-9/9 → **11/11**, and 7 of 8 consecutive runs clean with the barrier in place —
-the one failure being (b).
+9/9 → **11/11**. With the barrier in place and the epoch published, **8 of 8
+consecutive runs are clean**. Each of the two claims was settled by an on/off
+experiment rather than by reasoning, which is the only reason (a) survived and
+(b) did not.
