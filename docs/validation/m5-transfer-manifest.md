@@ -801,6 +801,55 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.26 The create path: a `create_bundle` private command, designed
+
+Ruled by the user: add a private protocol command so `create_and_verify_bundle`
+becomes realizable. The design below is settled; the code is not written yet, and
+this is recorded so it is not re-derived.
+
+**The interface fact that made it possible.** `create_and_verify_bundle` runs
+*before* `publish_provisioning_profile`, so at that moment no durable profile
+exists -- and `bind_worker` requires one to launch. But `WorkerActionRequest`
+also carries `lifecycle_intent`, and `LifecycleOperationIntent` holds
+`profile_id`, `expected_image_id`, `bundle_path`, `mount_target` and
+`requested_capacity_bytes`. That is everything a `WorkerLaunchSpec` needs. So the
+adapter can launch a worker for a profile that is not durable yet, and the
+ordering the plan already has does not have to move.
+
+**The command.** `create_bundle`, operation-scoped like the other mutations. Its
+reply needs no new payload type: `WorkerRuntimeStatus` already carries
+`WorkerBundleEvidence` (§1.18), so the reply is a status with the bundle
+engaged, and the shape table gains one bit rather than a second evidence shape
+that could drift from the first.
+
+**What the worker does for it.** `DiskRuntime::create` plus `start()` performs
+the whole sequence -- generation-zero, AIM start, provision, verify, flush,
+checkpoint -- in one call, because that is the only granularity the runtime
+offers. So `create_bundle` realizes **both** the bundle's creation and its
+provisioning, and the plan's later provisioning-family steps keep their existing
+mapping: `verify_startup_step` reads a status that is now a started runtime's,
+which is the same "proven by the authenticated start" boundary the startup-step
+ruling already established (§7 item 19).
+
+**Why this is the right slice rather than a convenient one.** The alternative --
+having the worker create only generation-zero and letting the later `start`
+provision -- does not work: a bundle with no volume checkpoint cannot be
+`recover`ed, which is exactly the defect §1.25 found. Create and provision are
+one operation in this runtime, and the protocol should say one operation.
+
+**What changes, in order.** The launch spec gains what selects the mode (the
+profile's lifecycle already distinguishes a fresh disk from an adopted one, and
+`append_start_actions` in `state_machine.cpp` branches on precisely that). The
+worker's runtime keeps the mode and `start()` picks `DiskRuntime::create` or
+`::recover` accordingly. `create_bundle` is added to the worker's command loop.
+The adapter's `create_and_verify_bundle` becomes: launch from the intent, send
+`create_bundle`, map the returned evidence into `BundleRegistrationEvidence` with
+the source the evidence actually came from. `inspect_bundle_read_only` follows
+the same path for import, where there is no provisioning to do.
+
+**The end-to-end case from §1.25 comes back when this lands**, and is the thing
+that proves it: create a bundle, launch, `start`, observe, `cleanup`.
+
 ### 1.25 The end-to-end attempt, and the defect it found
 
 §1.24 established that the lifecycle can be driven here. This is the attempt, and
