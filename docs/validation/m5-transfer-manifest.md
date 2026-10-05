@@ -801,6 +801,71 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.28 Task 5 increment 15 (unit B) — the launch decides which lifecycle runs
+
+`DiskWorkerRuntime::start()` was hardcoded to `DiskRuntime::recover`, which can
+only adopt a bundle a previous run already provisioned. That is §1.25's defect,
+and this is the half of it that lives in the worker.
+
+**The mode travels in the launch spec, and its criterion is copied rather than
+invented.** `WorkerVolumeMode` has two values, `adopt_existing` (the zero value)
+and `provision_new`, and the line between them is the profile's own lifecycle --
+which is exactly what `append_start_actions` branches on, where `provisioning`
+means "this bundle has no volume yet". `adopt_existing` is the default
+deliberately: a launch that failed to carry a mode must not be the kind that
+creates anything.
+
+**The mode is not the only thing that decides.** `DiskRuntime::start()` already
+classifies the bundle and requires `empty` for a create and `manifest` for a
+recover, so a mode that disagrees with what is actually on disk fails closed
+inside the runtime rather than quietly taking the other path. The worker chooses
+which call to make; the runtime is what refuses a choice reality contradicts.
+
+**The expected image had to become optional, and the reason is not
+convenience.** `BundleEvidenceSource::read_only_inspection` means "record what
+the bundle turns out to hold"; every other path means "this bundle must hold
+this image". A zero uuid used as a sentinel would make those one message, so the
+launch spec carries the uuid behind a presence bit and the worker verifies the
+claim *or* adopts what it finds. It is refused when a create carries no image at
+all, because a create has no bundle to inspect and would otherwise invent the
+durable identity the service is about to record.
+
+**The image id now reaches generation zero, which is what made the create path
+possible at all.** `M4PersistenceAdapter` generated a random image uuid, so a
+worker-created bundle could never have carried the id the service derived from
+the create request -- and `valid_bundle_evidence` (`service_core.cpp:419`)
+requires exactly that equality. `M4PersistenceOptions` therefore regained the
+optional image uuid the historical adapter had, and it is threaded from the
+launch spec through `ProductionRuntimeAdapter::Config` down to the
+`GenerationZeroCreateRequest`. This reaches into Task 4's `src/run`; §7 item 23
+records it as a deviation.
+
+**One more thing moved, because it was the wrong value.** `observe()` reported
+`config.image_id` -- the image the service *claimed* -- and `remove_and_stop`
+compared a removal authorization against it. Both now use the identity the
+worker actually read and verified out of the bundle, which is the fact a removal
+authorization is supposed to be checked against.
+
+**Evidence.** Release build clean after a full object rebuild; no compiler
+warnings. Full suite **143/144**, the one failure the pre-existing
+`integration.m3.recovery` (§1.18).
+
+**New coverage.** `unit.m5.worker_private_pipe` 8/8 → **11/11**: both modes
+round-trip as themselves, an absent image stays distinguishable from a zero one,
+and a mode this protocol does not define is refused *on the way out* as well as
+on the way in. One branch is deliberately unreachable from a test and is named
+here rather than left implicit: the decoder's own mode check exists for a peer
+that disagrees with this build, and `encode_launch_spec` now refuses the same
+value first, so no case in this tree can hand the decoder one.
+
+`unit.m4.persistence_adapter` 3/3 → **4/4**: a generation-zero created with a
+named image uuid reports that uuid, and recovery re-reads the same identity from
+the bundle's own bytes rather than from anything the caller remembered. This is
+the first test of the new plumbing, and it is where the "free space could not be
+queried" failure was found -- `M4PersistenceAdapter` claims a manifest inside a
+bundle directory it does not create, so the test has to make one, exactly as
+`ProductionRuntimeAdapter::create_generation_zero` does.
+
 ### 1.27 Task 5 increment 15 (unit A) — the `create_bundle` command exists
 
 Lands the first of §1.26's five changes: the private command itself, its shape,
@@ -2022,3 +2087,24 @@ Recorded so the plan and the tree do not silently diverge.
 
     Recorded as still open because the code does not exist yet; the shape is
     settled and the remaining work is Task 5's adapter plus Task 6's ordering.
+
+23. **The create path reached into Task 4's `src/run`, and it had to.** Same
+    shape as item 18 and recorded for the same reason: the change is additive
+    and behaviour-preserving, and it was necessary rather than convenient.
+    `M4PersistenceAdapter` generated a random image uuid, so a bundle the worker
+    created could never have carried the id ServiceCore derives from the create
+    request -- and `valid_bundle_evidence` refuses evidence whose image id is not
+    that one, so the whole create path would have failed validation with no
+    local explanation. `M4PersistenceOptions` regained the optional image uuid
+    the historical adapter carried (`feature/m5-unified-integration`), and
+    `ProductionRuntimeAdapter::Config` gained it as a last field so every
+    existing aggregate initializer keeps its meaning. Absent means "generate
+    one", which is exactly what the foreground M4 path does today, so no
+    existing behaviour moved. `unit.m4.persistence_adapter` gained the case that
+    pins it.
+
+    The type is the persistence layer's `ImageUuid` rather than `product::Uuid`
+    as the historical version had it. It is the `GenerationZeroCreateRequest`
+    field verbatim, so the product type would only have added a conversion
+    between two sixteen-byte encodings -- and the management layer already has
+    the one conversion it needs, in `WindowsWorkerSessionProvider`.

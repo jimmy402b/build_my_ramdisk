@@ -68,6 +68,12 @@ struct DiskWorkerRuntime::Impl final {
     WorkerRuntimeConfig config;
     std::unique_ptr<ProductionRuntimeAdapter> adapter;
     std::unique_ptr<DiskRuntime> runtime;
+    // The image the bundle turned out to hold, read from the bundle itself and
+    // -- for an adopt -- checked against the one the service named.  Seeded from
+    // the claim so a status read before `start()` describes the profile rather
+    // than reporting an identity nobody has looked at yet, and replaced by the
+    // verified one the moment there is one.
+    persistence::ImageUuid observed_image_id{};
     // Engaged only after `start()` has confirmed the bundle's own image uuid.
     bool identity_verified{};
     bool cleaned_up{};
@@ -120,7 +126,11 @@ Result<WorkerBundleEvidence> capture_bundle_evidence(
 }
 
 DiskWorkerRuntime::DiskWorkerRuntime(WorkerRuntimeConfig config) noexcept
-    : impl_(std::make_unique<Impl>(std::move(config))) {}
+    : impl_(std::make_unique<Impl>(std::move(config))) {
+    if (impl_->config.image_id.has_value()) {
+        impl_->observed_image_id = *impl_->config.image_id;
+    }
+}
 
 DiskWorkerRuntime::~DiskWorkerRuntime() noexcept = default;
 
@@ -149,10 +159,22 @@ Result<void> DiskWorkerRuntime::start() {
             runtime_error(L"DiskWorkerRuntime::start",
                           L"the worker runtime has already been started"));
     }
+    const bool provision_new =
+        impl.config.volume_mode == WorkerVolumeMode::provision_new;
+    if (provision_new && !impl.config.image_id.has_value()) {
+        // A create has no bundle to inspect, so an absent image id would leave
+        // the worker inventing the durable identity the service is going to
+        // record.  Refused here rather than discovered by the service afterwards
+        // refusing evidence it cannot match.
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::start",
+            L"a new bundle cannot be created without the image it must hold"));
+    }
     impl.adapter = std::make_unique<ProductionRuntimeAdapter>(
         ProductionRuntimeAdapter::Config{
             impl.config.bundle, impl.config.virtual_bytes,
-            impl.config.drive_letter, impl.config.owner_token, 0});
+            impl.config.drive_letter, impl.config.owner_token, 0,
+            impl.config.image_id});
     RuntimeAdapterDependencies dependencies{
         impl.config.bundle,
         impl.config.virtual_bytes,
@@ -169,7 +191,14 @@ Result<void> DiskWorkerRuntime::start() {
     options.bundle = impl.config.bundle;
     options.virtual_bytes = impl.config.virtual_bytes;
     options.drive_letter = impl.config.drive_letter;
-    auto runtime = DiskRuntime::recover(options, operations.move_value());
+    // Which of the two lifecycles this worker runs, decided by the launch and
+    // not by what it finds: `DiskRuntime` independently requires the bundle's
+    // own kind to match the mode (empty for a create, manifest for an adopt), so
+    // a mode that disagrees with reality fails closed inside the runtime rather
+    // than picking the other path.
+    auto runtime = provision_new
+        ? DiskRuntime::create(options, operations.move_value())
+        : DiskRuntime::recover(options, operations.move_value());
     if (!runtime.ok()) return Result<void>::failure(runtime.error());
     impl.runtime = runtime.move_value();
 
@@ -181,7 +210,7 @@ Result<void> DiskWorkerRuntime::start() {
         return started;
     }
 
-    // Verify the identity the service claimed against the bundle's own bytes.
+    // The identity is taken from the bundle's own bytes, never from the claim.
     // A worker that took the service's word for which image it is running could
     // then be asked to remove resources belonging to a different one.
     persistence::ImageInspectOptions inspect{};
@@ -193,13 +222,24 @@ Result<void> DiskWorkerRuntime::start() {
         static_cast<void>(impl.runtime->shutdown_clean());
         return Result<void>::failure(image.error());
     }
-    if (!image.value().selected.has_value() ||
-        !(image.value().selected->image_uuid == impl.config.image_id)) {
+    if (!image.value().selected.has_value()) {
+        static_cast<void>(impl.runtime->shutdown_clean());
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::start",
+            L"the bundle holds no image this worker can verify"));
+    }
+    // A claim is verified; an absent one is adopted.  The difference is the
+    // whole of what `read_only_inspection` means: an import records the bundle
+    // it found, while every other launch names the image it expects and is
+    // refused when the bundle is a different one.
+    if (impl.config.image_id.has_value() &&
+        !(image.value().selected->image_uuid == *impl.config.image_id)) {
         static_cast<void>(impl.runtime->shutdown_clean());
         return Result<void>::failure(runtime_error(
             L"DiskWorkerRuntime::start",
             L"the bundle's image uuid is not the one this worker was launched for"));
     }
+    impl.observed_image_id = image.value().selected->image_uuid;
     // The evidence the service records as its durable registration, captured
     // now because this is the only moment the bundle is known to be the one the
     // service named -- the uuid above has just been checked against it.
@@ -218,7 +258,11 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
     auto& impl = *impl_;
     WorkerRuntimeStatus status{};
     status.worker_alive = impl.runtime != nullptr && !impl.cleaned_up;
-    status.image_id = impl.config.image_id;
+    // The identity the worker verified for itself, which is what a removal
+    // authorization is checked against.  Reporting the launch's claim here
+    // instead would let the service authorize a removal against an image the
+    // worker never confirmed it holds.
+    status.image_id = impl.observed_image_id;
     if (impl.runtime) {
         const auto stats = impl.runtime->maintenance_stats();
         status.committed_generation = stats.generation;
@@ -391,7 +435,7 @@ Result<WorkerRemoveAndStopReply> DiskWorkerRuntime::remove_and_stop(
     // of no return is cheap.  A partial proof never reaches it.
     if (!authorization.writer_lock_proved || !authorization.device_match_proved ||
         !authorization.bundle_identity_proved ||
-        !(authorization.image_id == impl.config.image_id)) {
+        !(authorization.image_id == impl.observed_image_id)) {
         return Result<WorkerRemoveAndStopReply>::failure(runtime_error(
             L"DiskWorkerRuntime::remove_and_stop",
             L"the removal authorization does not cover this worker's own image"));

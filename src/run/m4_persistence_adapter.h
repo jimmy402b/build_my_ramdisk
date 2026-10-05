@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace myrd {
@@ -18,6 +19,17 @@ struct M4PersistenceOptions final {
     std::filesystem::path bundle_root;
     std::uint64_t virtual_bytes{};
     std::string manifest_name{"disk.rdm"};
+    // The image the generation-zero request must be created *with*, when the
+    // caller already knows which image this bundle is meant to hold.  The
+    // service derives the image id from the create request before the bundle
+    // exists and validates the bundle's evidence against it afterwards, so a
+    // randomly generated identity could never be recorded.  Absent means the
+    // caller does not care -- which is what the foreground M4 path is.
+    //
+    // The persistence layer's own uuid type, because this is the
+    // `GenerationZeroCreateRequest` field: carrying the product uuid here would
+    // only add a conversion between two sixteen-byte encodings.
+    std::optional<persistence::ImageUuid> image_uuid;
 };
 
 class M4PersistenceAdapter final {

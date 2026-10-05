@@ -30,7 +30,11 @@ namespace {
 // "M5LP" on the wire, so a launch spec and a worker message can never be
 // mistaken for one another even if a handle is crossed by mistake.
 constexpr std::uint32_t kLaunchSpecMagic = 0x504C354DU;
-constexpr std::uint16_t kLaunchSpecVersion = 1;
+// 2: the expected image id became optional and the volume mode was added.  The
+// parent and the child are always the same build -- the spec crosses an
+// inherited handle, not a network -- so a version bump is what keeps a spec from
+// one build out of the other rather than a compatibility window.
+constexpr std::uint16_t kLaunchSpecVersion = 2;
 
 constexpr std::size_t kFrameHeaderBytes = 4;
 // Comfortably above one encoded message and one launch spec.
@@ -223,7 +227,20 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     }
     WorkerLaunchSpec spec{*profile_id, reader.u64()};
     spec.bundle_path = reader.text();
-    spec.image_id = reader.image_uuid();
+    if (reader.boolean()) spec.image_id = reader.image_uuid();
+    const auto volume_mode = reader.u8();
+    if (volume_mode
+        > static_cast<std::uint8_t>(WorkerVolumeMode::provision_new)) {
+        // An unrecognised mode is refused rather than defaulted.  Coercing it
+        // would run one of the two lifecycles -- and which one is the question
+        // this field exists to answer, so guessing is the one thing it must not
+        // do.
+        return Result<WorkerLaunchSpec>::failure(pipe_error(
+            static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+            L"decode_launch_spec",
+            L"launch spec volume mode is not one this protocol defines"));
+    }
+    spec.volume_mode = static_cast<WorkerVolumeMode>(volume_mode);
     spec.logical_size_bytes = reader.u64();
     spec.mount_target = reader.text();
     spec.session_generation = reader.u64();
@@ -262,6 +279,18 @@ Result<StartupSecret> StartupSecret::generate() {
 }
 
 Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) {
+    // The mode is checked on the way out as well as on the way in.  It selects
+    // one of two lifecycles and there is no safe default to fall back on, so a
+    // value this protocol does not define must not reach the wire at all -- the
+    // decoder's own check is the mirror for a peer that disagrees, not the
+    // only place this is enforced.
+    if (spec.volume_mode != WorkerVolumeMode::adopt_existing &&
+        spec.volume_mode != WorkerVolumeMode::provision_new) {
+        return Result<std::vector<std::byte>>::failure(pipe_error(
+            static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
+            L"encode_launch_spec",
+            L"the launch spec volume mode is not one this protocol defines"));
+    }
     detail::WorkerBytesWriter writer;
     writer.u32(kLaunchSpecMagic);
     writer.u16(kLaunchSpecVersion);
@@ -269,7 +298,12 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     writer.uuid(spec.profile_id);
     writer.u64(spec.profile_revision);
     writer.text(spec.bundle_path);
-    writer.image_uuid(spec.image_id);
+    // Presence, then the uuid: an absent expected image is a fact the worker has
+    // to be able to tell from a zero one, because "the bundle must hold this
+    // image" and "record whatever the bundle holds" are different instructions.
+    writer.boolean(spec.image_id.has_value());
+    if (spec.image_id.has_value()) writer.image_uuid(*spec.image_id);
+    writer.u8(static_cast<std::uint8_t>(spec.volume_mode));
     writer.u64(spec.logical_size_bytes);
     writer.text(spec.mount_target);
     writer.u64(spec.session_generation);

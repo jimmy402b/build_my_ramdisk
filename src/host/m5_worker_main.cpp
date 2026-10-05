@@ -146,7 +146,10 @@ int wmain(const int argc, wchar_t** argv) {
     WorkerRuntimeConfig config{};
     config.bundle = std::filesystem::path(spec.value().bundle_path);
     config.manifest_name = "disk.rdm";
+    // Absent for an import, which records the bundle it finds rather than naming
+    // the image it expects; refused for a create, which has no bundle to inspect.
     config.image_id = spec.value().image_id;
+    config.volume_mode = spec.value().volume_mode;
     config.virtual_bytes = spec.value().logical_size_bytes;
     config.drive_letter =
         spec.value().mount_target.empty() ? L'\0' : spec.value().mount_target[0];

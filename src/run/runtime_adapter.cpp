@@ -267,7 +267,8 @@ Result<DiskRuntimeOperations> make_runtime_operations(
 
 struct ProductionRuntimeAdapter::Impl final {
     explicit Impl(const Config& config)
-        : persistence({config.bundle, config.virtual_bytes}),
+        : persistence({config.bundle, config.virtual_bytes, "disk.rdm",
+                       config.image_uuid}),
           owner_token(config.owner_token),
           ram_limit_bytes(config.ram_limit_bytes) {}
 

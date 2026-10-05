@@ -53,6 +53,9 @@ WorkerBinding binding() {
 WorkerLaunchSpec launch_spec() {
     WorkerLaunchSpec spec{profile_id(), 3};
     spec.bundle_path = L"C:\\ProgramData\\MyRamDisk\\profiles\\a\\bundle";
+    spec.image_id = persistence::ImageUuid{};
+    spec.image_id->bytes[0] = std::byte{0x42};
+    spec.volume_mode = WorkerVolumeMode::provision_new;
     spec.logical_size_bytes = 8ull * 1024 * 1024;
     spec.mount_target = L"R:";
     spec.session_generation = 7;
@@ -74,6 +77,58 @@ TEST_CASE(m5_launch_spec_round_trips_every_field) {
     // The secret is part of the spec, not a separate side channel, so a worker
     // that has the spec has the secret and nothing else does.
     REQUIRE(decoded.value().startup_secret == secret());
+}
+
+TEST_CASE(m5_launch_spec_round_trips_both_volume_modes) {
+    // The mode selects one of two lifecycles -- create the volume or adopt the
+    // one that is already there -- so a launch that lost it would run the wrong
+    // one.  Both values survive the channel, and they decode as themselves
+    // rather than as each other.
+    for (const auto mode : {WorkerVolumeMode::adopt_existing,
+                            WorkerVolumeMode::provision_new}) {
+        auto spec = launch_spec();
+        spec.volume_mode = mode;
+        auto encoded = encode_launch_spec(spec);
+        REQUIRE(encoded.ok());
+        auto decoded = decode_launch_spec(encoded.value());
+        REQUIRE(decoded.ok());
+        REQUIRE(decoded.value().volume_mode == mode);
+    }
+}
+
+TEST_CASE(m5_launch_spec_distinguishes_an_absent_image_from_a_zero_one) {
+    // "This bundle must hold this image" and "record whatever the bundle holds"
+    // are different instructions, and the second is what an import asks for.  A
+    // zero uuid used as the sentinel would make them the same message, so the
+    // image travels as a presence bit.
+    auto spec = launch_spec();
+    spec.image_id.reset();
+    auto encoded = encode_launch_spec(spec);
+    REQUIRE(encoded.ok());
+    auto decoded = decode_launch_spec(encoded.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(!decoded.value().image_id.has_value());
+    REQUIRE(decoded.value() == spec);
+
+    // And a present image survives byte for byte, so an adopt checks the
+    // identity the service named rather than one the channel invented.
+    spec.image_id = persistence::ImageUuid{};
+    spec.image_id->bytes[15] = std::byte{0x9C};
+    auto round_trip = encode_launch_spec(spec);
+    REQUIRE(round_trip.ok());
+    auto back = decode_launch_spec(round_trip.value());
+    REQUIRE(back.ok());
+    REQUIRE(back.value().image_id.has_value());
+    REQUIRE(back.value().image_id->bytes[15] == std::byte{0x9C});
+}
+
+TEST_CASE(m5_launch_spec_refuses_a_volume_mode_it_does_not_define) {
+    // There is no safe default to fall back on: one mode creates a volume and
+    // the other mounts an existing one, and a spec asking for neither is a spec
+    // this build cannot honour.
+    auto spec = launch_spec();
+    spec.volume_mode = static_cast<WorkerVolumeMode>(7);
+    REQUIRE(!encode_launch_spec(spec).ok());
 }
 
 TEST_CASE(m5_launch_spec_refuses_a_foreign_body) {

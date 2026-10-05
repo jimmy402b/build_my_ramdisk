@@ -11,6 +11,7 @@
 
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
+#include "src/host/m5_worker_private_pipe.h"
 #include "src/host/m5_worker_session.h"
 #include "src/persistence/image_inspector.h"
 #include "src/persistence/recovery_engine.h"
@@ -18,6 +19,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace myrd::m5 {
@@ -25,14 +27,22 @@ namespace myrd::m5 {
 struct WorkerRuntimeConfig final {
     std::filesystem::path bundle;
     std::string manifest_name;
-    // The image the service recorded for this profile.  The worker does not
-    // take this on trust: `start()` re-reads the bundle's own image uuid and
-    // refuses to run when the two disagree, so `observe()` never reports an
-    // identity the worker has not verified for itself.
-    persistence::ImageUuid image_id{};
+    // The image this bundle holds, or must be created to hold.
+    //
+    // `provision_new` creates generation zero *with* it, so the service's
+    // derived image id and the bundle's own are one fact rather than two that
+    // have to agree later.  `adopt_existing` checks it against the bundle's own
+    // bytes and refuses to run when they disagree.  Absent means "record
+    // whatever the bundle holds", which is what an import asks for -- and it is
+    // refused for a create, where there is nothing yet to record.
+    std::optional<persistence::ImageUuid> image_id;
     std::uint64_t virtual_bytes{};
     wchar_t drive_letter{};
     std::wstring owner_token;
+    // What `start()` does with the volume.  Declared beside the image rather
+    // than near the end because the two are read together: between them they
+    // say which of the two lifecycles this worker runs.
+    WorkerVolumeMode volume_mode{WorkerVolumeMode::adopt_existing};
     persistence::RecoveryOptions recovery{};
 };
 

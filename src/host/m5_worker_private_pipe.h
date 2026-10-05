@@ -28,11 +28,24 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace myrd::m5 {
+
+// What the worker's runtime must do with the volume behind its bundle.
+//
+// The line is already drawn by the profile's own lifecycle -- `append_start_actions`
+// branches on exactly it, and `provisioning` means "this profile has a bundle but
+// has never had a volume" -- so this restates that criterion rather than
+// inventing a second one.  `adopt_existing` is the zero value deliberately: a
+// launch that failed to carry a mode must not be the kind that creates anything.
+enum class WorkerVolumeMode : std::uint8_t {
+    adopt_existing = 0,
+    provision_new,
+};
 
 // Everything one worker needs to know, delivered once through the inherited
 // startup channel.
@@ -51,12 +64,21 @@ struct WorkerLaunchSpec final {
     product::Uuid profile_id;
     std::uint64_t profile_revision{};
     std::wstring bundle_path;
-    // What the service recorded for this profile.  The worker verifies it
-    // against the bundle's own uuid and refuses to run when they disagree, so
-    // this is a claim to check rather than an identity to take on trust.
-    persistence::ImageUuid image_id{};
+    // The image this bundle holds, or must be created to hold.
+    //
+    // `provision_new`: the uuid generation zero is created *with*, which is how
+    // the service's derived image id and the bundle's actual one stay one fact
+    // rather than two that have to agree later.  `adopt_existing`: the identity
+    // the bundle must already have, checked against the bundle's own bytes --
+    // a claim to verify, not to take on trust.  Absent only for an import, where
+    // the service is recording what the bundle turns out to hold instead of
+    // naming it in advance.
+    std::optional<persistence::ImageUuid> image_id;
     std::uint64_t logical_size_bytes{};
     std::wstring mount_target;
+    // What the runtime does with the volume.  Declared here rather than beside
+    // `image_id` so the fields the launch already had keep their encoded order.
+    WorkerVolumeMode volume_mode{WorkerVolumeMode::adopt_existing};
     std::uint64_t session_generation{};
     std::wstring private_pipe_name;
     std::uint64_t session_nonce{};

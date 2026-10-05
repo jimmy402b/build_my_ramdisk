@@ -8,6 +8,8 @@
 #include "src/persistence/vhdx_format.h"
 
 #include <bcrypt.h>
+
+#include <algorithm>
 #include <limits>
 
 namespace myrd {
@@ -69,7 +71,15 @@ Result<RecoveredImage> make_generation_zero_request(
     request.geometry = {options.virtual_bytes, 512, 4096};
 
     NTSTATUS random_status{};
-    if (!random_bytes(request.image_uuid.bytes, random_status).ok() ||
+    // A caller that already knows which image this bundle is supposed to hold
+    // supplies it; the generation-zero request then *is* that image rather than
+    // one the service would afterwards refuse to record.  Only the identities
+    // nobody can predict are generated here.
+    if (options.image_uuid.has_value()) {
+        request.image_uuid = *options.image_uuid;
+    }
+    if ((!options.image_uuid.has_value() &&
+         !random_bytes(request.image_uuid.bytes, random_status).ok()) ||
         !random_bytes(request.base_identity.file_identity.file_write_guid,
                       random_status).ok() ||
         !random_bytes(request.base_identity.file_identity.data_write_guid,

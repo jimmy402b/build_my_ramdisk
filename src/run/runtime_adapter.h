@@ -1,6 +1,7 @@
 #pragma once
 
 #include "src/common/result.h"
+#include "src/persistence/persistence_types.h"
 #include "src/run/disk_runtime.h"
 #include "src/run/windows_volume.h"
 
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace myrd {
@@ -125,6 +127,13 @@ public:
         wchar_t drive_letter{};
         std::wstring owner_token;
         std::uint64_t ram_limit_bytes{};
+        // The image a create must produce, when the caller already knows it.
+        // The service derives the image id before the bundle exists and
+        // validates the recorded evidence against it, so a create that invented
+        // its own identity could never be registered.  Declared last so every
+        // existing aggregate initializer keeps its meaning; the foreground M4
+        // path leaves it absent and keeps generating a random one.
+        std::optional<persistence::ImageUuid> image_uuid;
     };
 
     explicit ProductionRuntimeAdapter(Config config);
