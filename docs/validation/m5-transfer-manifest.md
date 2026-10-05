@@ -2410,3 +2410,52 @@ now there.
 warnings. Full suite **143/144**, the one failure the pre-existing
 `integration.m3.recovery` (§1.18). `m5.production_execution_backend` 6/6 →
 **7/7**, five consecutive clean runs.
+
+### 1.32 Task 6 begins — §3.6's disposition table is implemented, and now pinned
+
+The first Task 6 increment is a survey before any code, because the plan's premise
+needed checking: its Step 2-4 say "Implement P4", "Implement P5 and recovery",
+"Implement normal stop policy", and the ported `service_core.cpp` already
+appears to contain all three.
+
+**What the survey found, and the limit on it.** Sampled, not read end to end:
+all six `CheckpointDurablePhase` values are written (admitted ×6, commit_boundary
+×1, evidence_recorded ×2, committed_pending_epoch_confirmation ×1, resolving ×4,
+back to stable ×4); P4's `commit_boundary` publish is at `:4369`; the §3.6
+disposition table is at `:5168-5340`; the restart gate-restoration and the
+operation-first crash window are at `:7167-7270`; `recover_after_restart` is
+complete at `:6555`; the dirty-truth stop branches are at `:2618`, `:3976` and
+`:4004`. A grep shows code *exists*; it does not show it is right or that it has
+ever run. So the first increment is a test that turns the inference into
+evidence.
+
+**`m5_checkpoint_evidence_records_the_durable_phase_section_3_6_names`** drives
+`ServiceCore` with the model's fake `IWorkerControl` (the harness
+`m4_checkpoint_operation_tests.cpp` already provides) through all four
+dispositions and asserts the durable phase and the recorded disposition. It
+passes:
+
+| disposition | durable phase after the operation |
+| --- | --- |
+| `committed` | `stable`, disposition `committed`, generation advanced |
+| `not_committed` | `stable`, disposition `not_committed` |
+| `commit_indeterminate` | `resolving` |
+| `committed_needs_reconciliation` | `resolving` |
+
+So §3.6's second table **is** implemented, and the suite already had a case that
+would have passed with any of four wrong answers: it asserts only that an
+uncertain disposition never reports success. That is the coarsest consequence;
+these are the durable facts a restart branches on.
+
+**The first version of the test was wrong, and the reason is the useful part.**
+It expected `committed` to leave `committed_pending_epoch_confirmation`. It does
+not: the phase is written at `:5491`, the epoch is published in the same session
+at `:5507`, and a landed confirmation moves it to `stable` at `:5548`. So
+`committed_pending_epoch_confirmation` is a **transient**, and it survives a
+restart only when the epoch confirmation did not land -- which needs an epoch
+publication that fails. That is a case worth having (it is the row §3.6's first
+table names), and it is not the same case as "the commit was committed".
+
+**Evidence.** Release build clean; full suite **143/144**, the one failure the
+pre-existing `integration.m3.recovery` (§1.18). `m5.service_orchestration`
+19/19 → **20/20**.

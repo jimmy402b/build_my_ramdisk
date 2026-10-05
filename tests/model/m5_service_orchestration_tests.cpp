@@ -369,6 +369,61 @@ TEST_CASE(m5_service_core_checkpoint_dispositions_never_report_success_on_uncert
     }
 }
 
+// §3.6's second table, as the durable *phase* rather than the terminal state.
+// The case above asserts the coarsest consequence -- an uncertain disposition
+// never reports success -- which four different wrong answers would all satisfy.
+// These are the durable facts the restart table is built on, and one of them
+// wrong means a restart either rolls back bytes that landed or promotes bytes
+// that never did.
+//
+// `evidence_recorded` is the P5 point: the commit evidence is durable and the
+// epoch confirmation is not.  What it becomes afterwards is what the table
+// then decides on.
+TEST_CASE(m5_checkpoint_evidence_records_the_durable_phase_section_3_6_names) {
+    struct Expectation final {
+        CheckpointCommitDisposition disposition;
+        CheckpointDurablePhase phase;
+    };
+    // committed            -> the epoch was confirmed in this same session, so
+    //                         the profile is stable again with the new
+    //                         generation confirmed.  `committed_pending_epoch_
+    //                         confirmation` is the *transient* on the way there,
+    //                         and it only survives a restart when the
+    //                         confirmation did not land -- which is a different
+    //                         case, because it needs an epoch publication that
+    //                         fails.
+    // not_committed        -> the prior generation is the durable truth again
+    // the two uncertain    -> resolving, because neither answer may be assumed
+    const Expectation expectations[] = {
+        {CheckpointCommitDisposition::committed,
+         CheckpointDurablePhase::stable},
+        {CheckpointCommitDisposition::not_committed,
+         CheckpointDurablePhase::stable},
+        {CheckpointCommitDisposition::commit_indeterminate,
+         CheckpointDurablePhase::resolving},
+        {CheckpointCommitDisposition::committed_needs_reconciliation,
+         CheckpointDurablePhase::resolving},
+    };
+    for (const auto& expected : expectations) {
+        Fixture fixture(product::PersistenceState::dirty);
+        fixture.worker.initial_disposition = expected.disposition;
+        ServiceCore core(
+            fixture.clock, fixture.profiles, fixture.operations, fixture.worker,
+            fixture.logger, fixture.ids, fixture.memory);
+        auto queued = core.dispatch(fixture.request(
+            "88888888-8888-4888-8888-888888888881"));
+        REQUIRE(queued.ok());
+        auto terminal = core.execute_operation(
+            queued.value().operation_id.value());
+        REQUIRE(terminal.ok());
+        // The disposition is recorded whichever phase it left behind: a record
+        // that forgot what the publish did could not be reconciled later.
+        REQUIRE(fixture.profiles.snapshot().checkpoint.disposition
+                == expected.disposition);
+        REQUIRE(fixture.profiles.snapshot().checkpoint.phase == expected.phase);
+    }
+}
+
 // The read path must not report a durable claim the service can disprove.  A
 // record that says `running` asserts a live worker; when the authority that
 // holds the worker facts says there is none, neither the record's "running" nor
