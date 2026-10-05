@@ -2321,3 +2321,35 @@ Recorded so the plan and the tree do not silently diverge.
     `src/CMakeLists.txt` now attaches the same `.rc` to `myrd-m5-worker`, which
     is what makes the worker a first-class driver of the same engine rather
     than a target that happens to link it.
+
+26. **The scope question was put to the user and answered: multi-disk stays.**
+    Recorded so it is not re-derived, and because the analysis is the useful
+    part. The question was whether dropping multi-profile support ("one RAM disk
+    per machine") would make M5 much faster to finish.
+
+    It would make M5 *smaller* but not much *faster*, and the reason is where
+    the remaining work is. From `docs/superpowers/plans/2026-09-30-m5-lifecycle-tasklist.md`:
+    single-profile deletes **M5-08** ("two-profile isolation and service/worker
+    restart suites") and the **M5-B** acceptance stage -- one task of twelve and
+    one acceptance stage of four. It does not touch **M5-06** (the next task:
+    P4/P5 core, reconciliation, dirty-truth stop), **M5-07** (scheduler, public
+    pipe, CLI, service lifecycle, auto-start), **M5-C** (service restart and
+    auto-start recovery) or **M5-D** (preshutdown and power-off recovery). Those
+    are the durability-across-restart semantics, and they are independent of how
+    many disks exist -- §3.5's "worker 退出（崩溃/被杀）" branch is a whole
+    paragraph about one worker dying mid-transaction, not about N of them. Both
+    of §7 item 25's defects would be hit identically by a single-profile M5.
+
+    The multi-disk-specific machinery that does exist (the profile-keyed session
+    map, the live-worker registry Task 7 owes, `materialize_memory_policy`'s
+    arbitration between profiles) is mostly *already written* -- the management
+    layer was ported in Tasks 1-3 and runs. Cancelling the feature does not
+    refund it.
+
+    The larger lever was put on the record too and declined: dropping the
+    separate worker *process* and running execution inside the service would
+    delete the whole private protocol (roughly half of Task 5's increments). It
+    is a safety decision rather than a scope one -- the design treats a killed
+    worker as a normal branch the service reconciles from durable state, and
+    `myrd_assert_execution_boundary` would have to go -- and it is independent
+    of disk count.
