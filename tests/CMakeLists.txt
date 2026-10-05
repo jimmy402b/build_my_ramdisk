@@ -161,7 +161,7 @@ add_dependencies(myrd_m5_production_execution_backend_tests myrd-m5-worker)
 myrd_enable_warnings(myrd_m5_production_execution_backend_tests)
 add_test(NAME m5.production_execution_backend
          COMMAND myrd_m5_production_execution_backend_tests)
-set_tests_properties(m5.production_execution_backend PROPERTIES TIMEOUT 120)
+set_tests_properties(m5.production_execution_backend PROPERTIES TIMEOUT 300)
 
 # ---- M5 IWorkerControl adapter (Task 5) -------------------------------------
 # Drives the adapter's fail-closed set and its observation mapping.  The paths

@@ -4,18 +4,20 @@
 // session provider, and the adapter that drives them.  Everything before it was
 // reviewed-but-unexecuted code, and this is where that stops being true.
 //
-// **What it deliberately does not reach, and why.** The worker's `start()`
-// command runs `DiskRuntime::start()`, which needs an AIM proxy disk and a real
-// volume -- the acceptance environment, not a unit harness.  So the cases here
-// drive the worker up to and including the authenticated session and stop
-// there, and `start` is exercised only far enough to show the adapter *reached*
-// the runtime rather than failing to reach the worker at all.  The runtime
-// lifecycle itself is covered by the M4/M3 integration suites, which do run
-// against the driver.
+// Most of what is here is the service-to-worker hop: process launch, inherited
+// startup channel, pipe ACL, handshake, binding, and the commands that carry a
+// profile's lifecycle across it.  The runtime lifecycle below that hop is the
+// M4/M3 suites' subject, and these cases deliberately leave it alone -- a launch
+// that adopts a bundle stops at the bundle kind, and one that fails to reach the
+// worker at all is distinguished from one that reached it by *which* failure
+// comes back.
 //
-// That boundary is the point: what did not exist before this file is the
-// service-to-worker hop -- process launch, inherited startup channel, pipe ACL,
-// handshake, binding -- and that hop is fully exercised here.
+// `m5_backend_creates_a_bundle_and_mounts_it_end_to_end` is the exception, and
+// it is the only case in this tree that drives the whole thing: a real
+// generation-zero image, a real AIM proxy disk, a real provisioned and formatted
+// volume, a real drive letter, mounted and released.  It claims a letter it has
+// verified is free and releases it on every path, and it is slow enough that the
+// suite's own timeout has to allow for a provisioning round-trip.
 
 #include "tests/support/test_framework.h"
 
@@ -27,6 +29,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -53,6 +56,32 @@ product::Uuid uuid(const char* text) {
 
 OperationContext context() {
     return {{}, std::chrono::steady_clock::now() + std::chrono::seconds(30)};
+}
+
+// A budget for the one command that does real work.  The session refuses a
+// deadline beyond what a worker may be asked to wait, and a create provisions a
+// volume through PowerShell, so the default 30 seconds is a guess that would
+// show up as a transport timeout rather than as the result it was waiting for.
+OperationContext provisioning_context() {
+    return {{}, std::chrono::steady_clock::now() + std::chrono::seconds(100)};
+}
+
+// A drive letter this machine is not using, verified rather than assumed.  A
+// real lifecycle claims a real letter here, so a case that guessed one would
+// take a drive someone else is using -- or fail for a reason that has nothing to
+// do with what it is testing.  Scanned from the end of the alphabet downwards,
+// because that is where a desktop is least likely to keep something.
+wchar_t free_drive_letter() {
+    const DWORD in_use = GetLogicalDrives();
+    for (wchar_t letter = L'Z'; letter >= L'R'; --letter) {
+        if ((in_use & (1u << (letter - L'A'))) == 0) return letter;
+    }
+    REQUIRE(false);
+    return L'\0';
+}
+
+bool is_letter_assigned(const wchar_t letter) {
+    return (GetLogicalDrives() & (1u << (letter - L'A'))) != 0;
 }
 
 // The worker binary the build just produced, found relative to this test's own
@@ -138,6 +167,42 @@ profile::ProfileRecord valid_profile(const TempBundle& bundle) {
     return profile_record(uuid("11111111-2222-3333-4444-555555555555"),
                           uuid("66666666-7777-8888-9999-aaaaaaaaaaaa"),
                           bundle.root.wstring());
+}
+
+// What an end-to-end create asks for.  Built as the *intent*, not as a durable
+// record, because that is what production has at this point: the profile is not
+// published until after the bundle action the case below drives.
+constexpr std::uint64_t kCapacityBytes = 64ull * 1024 * 1024;
+
+LifecycleOperationIntent create_intent(const product::Uuid& image_id,
+                                       const TempBundle& bundle,
+                                       const std::wstring& mount_target) {
+    return LifecycleOperationIntent{
+        LifecycleOperationKind::create,
+        uuid("11111111-2222-3333-4444-555555555555"),
+        image_id,
+        L"S-1-5-21-100-200-300-1001",
+        L"work",
+        bundle.root.wstring(),
+        mount_target,
+        kCapacityBytes,
+        false,
+        control::MemoryMode::automatic,
+        std::nullopt,
+        std::nullopt,
+        std::nullopt,
+        PhysicalMemorySnapshot{},
+        0};
+}
+
+// The launched image id is a product uuid and the worker reports the
+// persistence layer's sixteen raw bytes.  The bytes are the same sixteen in the
+// same order, so this is the comparison the product itself makes.
+persistence::ImageUuid image_bytes(const product::Uuid& id) noexcept {
+    persistence::ImageUuid value{};
+    const auto bytes = id.bytes();
+    std::memcpy(value.bytes.data(), bytes.data(), value.bytes.size());
+    return value;
 }
 
 // The provider takes a launch request, not a profile: a launch no longer always
@@ -288,4 +353,74 @@ TEST_CASE(m5_backend_adapter_reaches_the_worker_it_launched) {
     REQUIRE(result.error().code
             != static_cast<std::uint32_t>(
                 ServiceWorkerControlError::execution_not_bound));
+}
+
+TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
+    // §1.25's case, brought back now that the operation it needed exists. Every
+    // step below has been run before in isolation against a fake, and none of it
+    // has ever run in order against the real thing: a real worker process, a real
+    // generation-zero image, a real AIM proxy disk, a real provisioned and
+    // formatted volume, a real drive letter.
+    //
+    // It is also the first case in this tree to touch any of that, so its side
+    // effects are stated rather than discovered: it claims a letter it has
+    // verified is free, and every exit path releases it -- `cleanup` removes the
+    // drive letter and dismounts, and a worker whose channel is closed without
+    // one runs the same teardown as it exits.
+    TempBundle bundle(L"e2e");
+    const wchar_t letter = free_drive_letter();
+    REQUIRE(!is_letter_assigned(letter));
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto image_id = uuid("1f1f1f1f-2e2e-3d3d-4c4c-5b5b5b5b5b5b");
+
+    auto launch_request =
+        make_launch_request(create_intent(image_id, bundle, mount_target));
+    REQUIRE(launch_request.ok());
+    // A create asks for a new volume, which is the whole of what unit B added:
+    // the same launch used to recover and fail on an empty bundle.
+    REQUIRE(launch_request.value().volume_mode
+            == m5::WorkerVolumeMode::provision_new);
+
+    WindowsWorkerSessionProvider provider(worker_executable());
+    auto launched = provider.launch(launch_request.value(), context());
+    REQUIRE(launched.ok());
+    auto& session = *launched.value();
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+
+    // The command §1.26 designed: it creates the bundle, provisions the volume,
+    // and answers with the identity the service records as its registration.
+    // A failure here exits the process at the assertion, so the reason is not
+    // visible from this run -- the framework has no message form.  Locating one
+    // means a temporary `fprintf` of `created.error()`, which is exactly how the
+    // two defects this case found on its first run were located: a zero RAM
+    // budget and a missing provisioning resource.
+    const auto created = session.create_bundle(provisioning_context(), operation);
+    REQUIRE(created.ok());
+    REQUIRE(created.value().bundle.has_value());
+    REQUIRE(created.value().bundle->complete());
+    // The image is the one the launch named -- not a random one -- because the
+    // service derived it before the bundle existed and validates the recorded
+    // evidence against it.
+    REQUIRE(created.value().bundle->image_id == image_bytes(image_id));
+    REQUIRE_EQ(created.value().bundle->virtual_bytes, kCapacityBytes);
+    REQUIRE_EQ(created.value().bundle->logical_sector_size, 512u);
+    REQUIRE_EQ(created.value().bundle->physical_sector_size, 4096u);
+
+    // The runtime the create brought up is observable and holds a volume with a
+    // complete persistent identity. This is what the plan's provisioning-family
+    // steps read instead of performing their own.
+    const auto observed = session.require_runtime_observation(context());
+    REQUIRE(observed.ok());
+    REQUIRE(observed.value().worker_alive);
+    REQUIRE(observed.value().volume.has_value());
+    REQUIRE(observed.value().volume->complete());
+    REQUIRE(observed.value().image_id == image_bytes(image_id));
+
+    // And the volume is really there: the letter this case claimed is assigned.
+    REQUIRE(is_letter_assigned(letter));
+
+    const auto cleaned = session.cleanup(context(), operation);
+    REQUIRE(cleaned.ok());
+    // Released, which is the half of the side effect that has to be stated.
+    REQUIRE(!is_letter_assigned(letter));
 }

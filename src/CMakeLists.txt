@@ -404,6 +404,14 @@ myrd_assert_execution_boundary(myrd_m5_worker_protocol)
 add_executable(myrd-m5-worker
     host/m5_worker_main.cpp
     host/m5_worker_runtime.cpp host/m5_worker_runtime.h
+    # The provisioning script, for the same reason `myrd` carries it: it is a
+    # process resource, and `run_provisioning_helper` resolves it from
+    # `GetModuleHandleW(nullptr)` -- the *executable*, not the static library the
+    # volume code is linked from.  Without it the worker creates a generation-zero
+    # image, starts AIM, and then dies in `provision_new_volume` with
+    # ERROR_RESOURCE_TYPE_NOT_FOUND, which is what the create path did before
+    # this line existed.
+    run/run_resources.rc
 )
 target_include_directories(myrd-m5-worker PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-m5-worker PRIVATE

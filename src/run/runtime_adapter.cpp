@@ -35,9 +35,17 @@ Result<void> ensure_bundle_directory(const std::filesystem::path& bundle) {
 }
 
 DynamicBlockStoreOptions store_options_for(const std::uint64_t ram_limit_bytes) {
+    auto result = m3::production_store_options();
+    // Zero is "the caller has no budget to impose", not "a store with no
+    // memory".  Every one of these is a hard limit that must be non-zero and
+    // strictly ordered, so a literal zero can only produce options no provider
+    // will accept -- which is exactly what it did: the M5 worker passes no
+    // budget because the launch spec does not yet carry the profile's memory
+    // policy, and every `start()` it ever attempted died in `M3Provider::open`
+    // with "provider limits are invalid" before reaching a bundle.
+    if (ram_limit_bytes == 0) return result;
     // The parser guarantees at least 64 MiB and power-of-two byte units, so
     // these limits remain block-aligned and satisfy the M3 strict ordering.
-    auto result = m3::production_store_options();
     result.hard_limit_bytes = ram_limit_bytes;
     result.soft_limit_bytes = ram_limit_bytes / 2;
     result.eviction_low_watermark_bytes = ram_limit_bytes / 4;

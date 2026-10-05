@@ -801,6 +801,70 @@ the code was not.** The disagreement check was first written as
 with themselves and accepting the contradictory ones. Two suites failed on it at
 once, which is what a rule stated in one place buys.
 
+### 1.30 Task 5 increment 15 (unit D) — the end-to-end case, and the two defects it found
+
+§1.25's case is back, and it passes. It is the only case in this tree that drives
+a whole lifecycle through the real objects: a real `myrd-m5-worker` process, a
+real generation-zero image, a real AIM proxy disk, a real provisioned and
+formatted 64 MiB volume, a real drive letter assigned and released.
+
+**It found two defects on its first run, and neither was the mode §1.25
+blamed.** With the mode fixed, `start()` still could not come up:
+
+1. **The worker passed a zero RAM budget.** `DiskWorkerRuntime` built its
+   `ProductionRuntimeAdapter` with `ram_limit_bytes = 0`, and
+   `store_options_for(0)` set `hard_limit_bytes`, `soft_limit_bytes` and
+   `eviction_low_watermark_bytes` to zero. Every one of those is a hard limit
+   the M3 store requires to be non-zero and strictly ordered, so
+   `M3Provider::open` refused with *"provider limits are invalid"* -- before a
+   bundle was opened. Zero now means "the caller has no budget to impose", and
+   the production defaults stand. That is the fix rather than a magic number in
+   the worker, because the worker's launch spec does not carry the profile's
+   memory policy at all (see below) and 0 could never be a valid budget.
+2. **`myrd-m5-worker` had no embedded provisioning script.**
+   `run_provisioning_helper` resolves the script from `GetModuleHandleW(nullptr)`
+   -- the *executable* module -- and the `.rc` was attached to `myrd_m4_run`
+   (static) and `myrd` only. The worker therefore created generation zero,
+   started AIM, and died in `provision_new_volume` with
+   `ERROR_RESOURCE_TYPE_NOT_FOUND` (1813). The target now carries the resource,
+   for the same reason `myrd` does.
+
+So §1.22's functional gap #3 -- "the worker's `start()` has never succeeded
+anywhere" -- had three causes, not one. §1.25 found the mode; these two were
+behind it, and both are the kind that only a run can find: a value that is
+unset-but-treated-as-set, and a resource that lives in the wrong module. They
+are recorded as §7 item 25.
+
+**Evidence.** Release build clean after a full object rebuild; no compiler
+warnings. Full suite **143/144**, the one failure the pre-existing
+`integration.m3.recovery` (§1.18). `m5.production_execution_backend` 5/5 →
+**6/6**, and the whole suite -- including the real lifecycle -- runs in **8.4 s**.
+The suite's timeout went from 120 s to 300 s to allow for a provisioning
+round-trip; the observed cost says that was generous rather than necessary.
+
+**The side effects, verified rather than assumed.** The case claims a drive
+letter it has confirmed is free (scanned from `Z:` downwards) and releases it on
+every path: `cleanup` removes the letter and dismounts, and a worker whose
+channel closes without one runs the same teardown as it exits. Checked after the
+run: no extra drive letter, no extra disk, no `myrd-m5-worker` process.
+
+**The probe is gone.** Locating either defect meant a temporary `fprintf` of the
+error, because the framework's `REQUIRE` exits at the first failure and prints
+only a line number. The case's comment says so, so the next person does not
+rediscover why a bare `created.ok()` tells them nothing.
+
+#### What this unit does not settle
+
+**The launch still does not carry the profile's memory policy.** A profile has
+one (`MemoryPolicy::hard_limit_bytes` and its two companions), the create intent
+carries the inputs it is materialized from, and the worker gets none of it -- so
+a worker runs with the production store defaults rather than the limits the
+profile was configured with. That is a real functional gap in M5 and it is
+unchanged by this round; what changed is that it is no longer *fatal*. Carrying
+it means widening the launch spec, and the create path would have to materialize
+the policy before the profile is published, which is the same boundary §1.26 was
+about. Recorded rather than decided.
+
 ### 1.29 Task 5 increment 15 (unit C) — the two bundle actions are realized
 
 `create` and `import` can now complete. Both are answered by launching a worker
@@ -1252,6 +1316,16 @@ ownership, not about working software.
    pending Task 7's live-worker registry, so `recover_bundle` does not work. And
    the worker's `start()` has never succeeded anywhere, so
    `create_runtime_and_worker` does not work either.
+
+   > **RESOLVED for `create`, by §1.29–§1.30.** `create` works end to end and is
+   > proved by a real lifecycle. It needed three fixes, not the one §1.25 named:
+   > the disk mode (§1.28), a zero RAM budget that killed every start before a
+   > bundle was opened, and a provisioning resource missing from the worker
+   > module (§7 item 25). `import` works too, through a read-only inspection
+   > rather than the mounting path §1.26 assumed (§1.29). Two gaps remain from
+   > this list: `attach` still returns `nullopt` (Task 7's live-worker registry),
+   > and `recover_bundle` with it. The launch also still does not carry the
+   > profile's memory policy.
 2. **The adapter's positive paths have never executed.** `quiesce_mutations`,
    `flush_exact_volume`, `checkpoint_across_boundary`, `remove_mount`,
    `confirm_removal`, `verify_startup_step`, `record_volume_identity`,
@@ -2220,3 +2294,30 @@ Recorded so the plan and the tree do not silently diverge.
     read-only. `inspect_bundle` therefore exists, is operation-scoped, answers
     with the same bare status, and runs no lifecycle. The shape table gains two
     entries rather than one; no payload type was added either way.
+
+25. **Two defects the end-to-end case found, both outside Task 5's files and
+    both fatal to the create path.** Recorded here because they are fixes to
+    code this task did not own, and because the *shape* of each is the reason
+    they survived: neither is visible without running the whole path.
+
+    **(a) A zero RAM budget, read as a budget.** `DiskWorkerRuntime` passed
+    `ram_limit_bytes = 0` to `ProductionRuntimeAdapter`, and
+    `store_options_for` wrote it straight into three store limits that must be
+    non-zero and strictly ordered -- so `M3Provider::open` refused every start
+    with *"provider limits are invalid"*, before any bundle was opened. By the
+    time the create path ran for real this was the *first* thing that happened.
+    The fix is in `src/run/runtime_adapter.cpp`: zero now means "no budget to
+    impose" and the production defaults stand, which is the only reading a
+    literal zero can have for a field that is invalid at zero. The worker
+    carries no budget because the launch spec does not carry the profile's
+    memory policy -- a separate, still-open gap (§1.30).
+
+    **(b) A process resource in the wrong module.** `run_provisioning_helper`
+    reads `provision_volume.ps1` from `GetModuleHandleW(nullptr)`, the
+    *executable*. `run_resources.rc` was attached to `myrd_m4_run` (a static
+    library) and to `myrd`, so `myrd` had it and `myrd-m5-worker` did not: the
+    worker created generation zero, started AIM, and died in
+    `provision_new_volume` with `ERROR_RESOURCE_TYPE_NOT_FOUND` (1813).
+    `src/CMakeLists.txt` now attaches the same `.rc` to `myrd-m5-worker`, which
+    is what makes the worker a first-class driver of the same engine rather
+    than a target that happens to link it.
