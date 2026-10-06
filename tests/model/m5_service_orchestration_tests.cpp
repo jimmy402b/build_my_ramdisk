@@ -475,7 +475,7 @@ TEST_CASE(m5_checkpoint_evidence_records_the_durable_phase_section_3_6_names) {
 TEST_CASE(m5_an_unconfirmed_epoch_leaves_the_pending_phase_on_disk) {
     Fixture fixture(product::PersistenceState::dirty);
     fixture.worker.initial_disposition = CheckpointCommitDisposition::committed;
-    fixture.worker.refuse_epoch_publication = true;
+    fixture.worker.refuse_epoch_publications_remaining = 1;
     ServiceCore core(
         fixture.clock, fixture.profiles, fixture.operations, fixture.worker,
         fixture.logger, fixture.ids, fixture.memory);
@@ -498,6 +498,62 @@ TEST_CASE(m5_an_unconfirmed_epoch_leaves_the_pending_phase_on_disk) {
     REQUIRE(checkpoint.disposition.value()
             == CheckpointCommitDisposition::committed);
     REQUIRE(checkpoint.correlation.has_value());
+}
+
+// §3.6's `committed_pending_epoch_confirmation` row, across the restart it
+// exists for: "同 session 确认 epoch，或 reconcile".  The case above leaves the
+// durable state behind; this one restarts the service on top of it.
+//
+// The distinction it pins is the one that matters to a caller: the commit
+// already landed, so the recovery must *finish* it -- confirm the epoch -- and
+// must not treat the operation as work still to be done and cut a second
+// candidate.  A second cut would snapshot a disk the first commit already
+// published, and the generation would advance twice for one user command.
+TEST_CASE(m5_a_restart_after_p5_finishes_the_commit_it_recorded) {
+    Fixture fixture(product::PersistenceState::dirty);
+    fixture.worker.initial_disposition = CheckpointCommitDisposition::committed;
+    fixture.worker.refuse_epoch_publications_remaining = 1;
+    const auto operation_id =
+        uuid("44444444-4444-4444-8444-444444444444");
+    {
+        ServiceCore first(
+            fixture.clock, fixture.profiles, fixture.operations,
+            fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+        auto queued = first.dispatch(fixture.request(
+            "88888888-8888-4888-8888-888888888883"));
+        REQUIRE(queued.ok());
+        REQUIRE(!first.execute_operation(operation_id).ok());
+    }
+
+    // What the crash left: the commit and its disposition are durable, the
+    // confirmed generation is not, and the cut the commit published is named by
+    // the correlation.
+    const auto crashed = fixture.profiles.snapshot().checkpoint;
+    REQUIRE(crashed.phase
+            == CheckpointDurablePhase::committed_pending_epoch_confirmation);
+    REQUIRE(crashed.disposition.has_value()
+            && crashed.disposition.value()
+                == CheckpointCommitDisposition::committed);
+    REQUIRE(crashed.correlation.has_value());
+    const auto committed_generation = crashed.correlation->candidate_generation;
+    REQUIRE(crashed.confirmed_generation != committed_generation);
+    const auto cuts_before = fixture.worker.boundary_calls;
+
+    ServiceCore restarted(
+        fixture.clock, fixture.profiles, fixture.operations, fixture.worker,
+        fixture.logger, fixture.ids, fixture.memory);
+    REQUIRE(restarted.recover_after_restart().ok());
+    const auto completed = restarted.execute_operation(operation_id);
+    REQUIRE(completed.ok());
+
+    // The commit is now confirmed rather than repeated, and the disk is clean
+    // because the epoch landed.
+    const auto recovered = fixture.profiles.snapshot().checkpoint;
+    REQUIRE_EQ(recovered.confirmed_generation, committed_generation);
+    REQUIRE_EQ(recovered.phase, CheckpointDurablePhase::stable);
+    REQUIRE_EQ(fixture.worker.boundary_calls, cuts_before);
+    REQUIRE_EQ(fixture.profiles.snapshot().state.disk.persistence,
+               product::PersistenceState::clean);
 }
 
 // The read path must not report a durable claim the service can disprove.  A

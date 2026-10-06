@@ -1070,7 +1070,8 @@ public:
         // is the one durable state a restart has to resolve by asking the bundle,
         // and modelling it is the only way to reach
         // `committed_pending_epoch_confirmation` across a restart.
-        if (refuse_epoch_publication) {
+        if (refuse_epoch_publications_remaining != 0) {
+            --refuse_epoch_publications_remaining;
             return Result<void>::failure(error(L"publish_checkpoint_epoch"));
         }
         if (before_epoch_publish) before_epoch_publish();
@@ -1156,9 +1157,11 @@ public:
     std::function<void()> after_boundary;
     std::function<void()> before_reconcile;
     std::function<void()> before_epoch_publish;
-    // When set, the epoch publication never reaches the handler, so the commit
-    // landed and its confirmation did not.
-    bool refuse_epoch_publication{};
+    // The epoch publication does not reach the handler this many times, so the
+    // commit landed and its confirmation did not.  A count rather than a flag
+    // because the state it produces -- durable commit, no confirmation -- is the
+    // one a crash leaves behind, and a restart has to be able to finish it.
+    std::size_t refuse_epoch_publications_remaining{};
     std::function<void()> before_compaction_boundary;
     std::function<void()> after_compaction_boundary;
     std::function<void()> before_compaction_epoch_publish;

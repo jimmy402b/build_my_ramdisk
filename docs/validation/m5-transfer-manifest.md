@@ -2673,3 +2673,44 @@ Recorded because each is a way the suite could have passed while testing nothing
 **Evidence.** Release build clean; full suite **144/145**, the one failure the
 pre-existing `integration.m3.recovery` (§1.18). `m4.recovery_commands` **7/7**,
 a new target.
+
+### 1.36 Task 6 increment 5 — the restart rows of §3.6's first table
+
+§3.6's first table is about a *restart*, and the suite's coverage of it was
+uneven: three cases existed for the pre-boundary crash window and the P5
+lower-epoch row, and nothing restarted the service on top of a durable
+`committed_pending_epoch_confirmation` — the row the epoch transient exists for.
+
+**`m5_a_restart_after_p5_finishes_the_commit_it_recorded`** produces the state a
+crash between P5 and the epoch publication leaves behind (durable commit, durable
+disposition, no confirmed generation), restarts `ServiceCore`, and asserts what
+§3.6 requires of recovery: the commit is **finished, not repeated**. The epoch is
+confirmed, the phase returns to `stable`, the disk is clean, and — the assertion
+that distinguishes the two — the worker's boundary count is unchanged, so the
+recovery did not cut a second candidate. A second cut would snapshot a disk the
+first commit already published, and one user command would advance the generation
+twice.
+
+That required one change to the model's worker control:
+`refuse_epoch_publication` became `refuse_epoch_publications_remaining`, a count
+rather than a flag. A permanent refusal models "the epoch can never be published",
+which is not the state a crash leaves; a one-shot refusal models the crash and
+lets the restart finish the work, which is the whole question the case asks.
+
+**What this increment does not claim.** Two rows of the first table remain
+unverified, and one of them may not be implementable at all:
+
+- **"原 worker 可重连"** appears structurally impossible in M5. `m5_worker_main`
+  leaves its loop the moment the channel closes, so a service restart always
+  finds the original worker gone. If that is right, the row should be struck from
+  the table with the reason rather than implemented — but establishing it means
+  checking every path by which a worker could outlive its channel, which this
+  increment did not do.
+- **"原 worker 不存在 → 新 worker 只读 recovery proof"** cannot execute today, and
+  not for a Task 6 reason: reaching a new worker needs a session, `attach` returns
+  `nullopt`, and `recover_bundle` is wired to adopt-only (§1.29, class 3). The
+  recovery *decision* is tested; the recovery *execution* waits for Task 7.
+
+**Evidence.** Release build clean; full suite **144/145**, the one failure the
+pre-existing `integration.m3.recovery` (§1.18). `m5.service_orchestration`
+22/22 → **23/23**; `m4.checkpoint_operation` 23/23 unchanged.
