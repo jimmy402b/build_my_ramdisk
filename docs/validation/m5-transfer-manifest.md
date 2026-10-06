@@ -2714,3 +2714,57 @@ unverified, and one of them may not be implementable at all:
 **Evidence.** Release build clean; full suite **144/145**, the one failure the
 pre-existing `integration.m3.recovery` (§1.18). `m5.service_orchestration`
 22/22 → **23/23**; `m4.checkpoint_operation` 23/23 unchanged.
+
+### 1.37 Task 6 increment 6 — the normal-stop policies, and Task 6's own account
+
+`m5_stop_policies_differ_in_what_they_do_with_the_same_plan` covers Task 6 Step
+4, which was the last unverified step. The only tests that had mentioned
+`NormalStopPolicy` were codec round-trips, so nothing exercised what the policies
+*do* — and they do opposite things to the same plan:
+
+- `checkpoint_required` rewrites the plan's `checkpoint_if_required` into an
+  unconditional `checkpoint`, and the worker is asked to cut (`boundary_calls >
+  0`). The decision of whether the cut committed, came back clean or failed
+  belongs to the P4/P5 boundary and the worker's own evidence, not to a
+  prediction made here.
+- `require_clean` does **not** checkpoint — `boundary_calls == 0` — because the
+  checkpoint it would take is itself a mutation of a disk the policy says is not
+  in a state to be touched, and because "could not ask" must never read as clean.
+
+#### Task 6 as the plan defines it, step by step
+
+| Step | State | Evidence |
+| --- | --- | --- |
+| 1. State-transition tests | **done** | four dispositions → durable phases (§1.32); the epoch transient (§1.32); `resolving` blocks every mutation but its own resolver (§1.32); the P5 restart row (§1.36); the pre-boundary crash window and the lower-epoch row already existed |
+| 2. Implement P4 | **already present, now pinned** | `commit_boundary` published at `:4369`, the operation-first split repaired and the unmarked pre-boundary record rejected by the existing restart cases |
+| 3. Implement P5 and recovery | **already present, now pinned** | the §3.6 disposition table at `:5168-5340`; the restart rows above |
+| 4. Implement normal stop policy | **already present, now pinned** | both branches at `:3976` and `:4004`; the case above |
+| 5. Verify and commit | **done** | full suite **144/145**, the one failure pre-existing |
+
+**The honest summary, because "steps complete" and "verified" are different
+claims.** Steps 2–4 were *not implemented in this round* — the ported
+`service_core.cpp` already contained them, which is what the survey found and
+what the plan's own wording ("edits the ported `service_core.cpp` rather than
+creating it") anticipated. What this round added is the verification the plan
+asked for and the code never had: the four dispositions, the epoch transient,
+the `resolving` row, the P5 restart row, the stop policies, and the recovery
+command family. Every one of those was a test written against behaviour that
+already existed and had never been asked about.
+
+**And two things Task 6 cannot close.** The `原 worker 可重连` row of §3.6's first
+table looks structurally impossible (§1.36); the `原 worker 不存在 → recovery
+proof` row cannot execute until Task 7's registry exists (§1.29, class 3). Task 6
+tested the recovery *decision*; the recovery *execution* is Task 7's.
+
+**Open findings carried out of Task 6, all recorded rather than fixed:**
+
+- **§1.33** — a withdrawn candidate leaves the worker unable to prepare again
+  (`image_path.open_target`, identity mismatch). A committed candidate does not.
+  The expectation lives in M3's abort handling, and the mandatory gate forbids M5
+  from changing M3's on-disk formats.
+- **§1.34(a)** — M3's `remove_owned_device` waits on the machine-wide physical
+  drive inventory, so overlapping device lifecycles break each other. It is what
+  M5-B's dual-profile isolation exists to test and it is currently mitigated in
+  the *harness*, not in the product.
+- **§1.31** — a worker teardown failure after a closed channel, observed once and
+  never reproduced.

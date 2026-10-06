@@ -556,6 +556,52 @@ TEST_CASE(m5_a_restart_after_p5_finishes_the_commit_it_recorded) {
                product::PersistenceState::clean);
 }
 
+// Task 6 Step 4: the two normal-stop policies.  The only tests that mentioned
+// `NormalStopPolicy` were codec round-trips, so nothing exercised what the
+// policies *do* -- and they do opposite things with the same plan.
+//
+// `checkpoint_required` always checkpoints: the plan's own `checkpoint_if_required`
+// is rewritten to an unconditional `checkpoint`, because the decision of whether
+// the cut committed, came back clean or failed belongs to the P4/P5 boundary and
+// the worker's own evidence, not to a prediction made here.
+//
+// `require_clean` refuses to checkpoint at all.  It demands the runtime already
+// be clean -- and "could not ask" is not clean, because a service that read a
+// failed observation as cleanliness would remove a mount over uncommitted
+// writes.
+TEST_CASE(m5_stop_policies_differ_in_what_they_do_with_the_same_plan) {
+    for (const auto policy : {profile::NormalStopPolicy::checkpoint_required,
+                              profile::NormalStopPolicy::require_clean}) {
+        Fixture fixture(product::PersistenceState::dirty);
+        auto snapshot = fixture.profiles.snapshot();
+        snapshot.record.profile.checkpoint.normal_stop = policy;
+        fixture.profiles.replace(std::move(snapshot));
+
+        auto request = fixture.request("88888888-8888-4888-8888-888888888884");
+        request.command = control::Command(
+            control::DiskStopCommand{L"work", false});
+        ServiceCore core(
+            fixture.clock, fixture.profiles, fixture.operations,
+            fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+        const auto queued = core.dispatch(request);
+        REQUIRE(queued.ok());
+        const auto terminal = core.execute_operation(
+            queued.value().operation_id.value());
+        REQUIRE(terminal.ok());
+
+        if (policy == profile::NormalStopPolicy::checkpoint_required) {
+            // The checkpoint ran, so the runtime was asked to cut one.
+            REQUIRE(fixture.worker.boundary_calls > 0);
+        } else {
+            // It did not: `require_clean` may not checkpoint even to make a
+            // dirty runtime removable, because the checkpoint it would take is
+            // itself a mutation of a disk the policy says is not in a state to
+            // be touched.
+            REQUIRE_EQ(fixture.worker.boundary_calls, 0U);
+        }
+    }
+}
+
 // The read path must not report a durable claim the service can disprove.  A
 // record that says `running` asserts a live worker; when the authority that
 // holds the worker facts says there is none, neither the record's "running" nor
