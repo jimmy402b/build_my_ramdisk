@@ -633,6 +633,22 @@ add_test(NAME m5.service_orchestration
     COMMAND myrd_m5_service_orchestration_tests)
 set_tests_properties(m5.service_orchestration PROPERTIES TIMEOUT 120)
 
+# The recovery command family -- repair, rebind and forget -- named by Task 6's
+# file list and missing until now.  It includes the checkpoint model's fixture
+# for its fakes alone, exactly as the orchestration suite does.
+add_executable(myrd_m4_recovery_commands_tests
+    model/m4_recovery_commands_tests.cpp
+)
+target_link_libraries(myrd_m4_recovery_commands_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m4_recovery_commands_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/model")
+myrd_enable_warnings(myrd_m4_recovery_commands_tests)
+add_test(NAME m4.recovery_commands
+    COMMAND myrd_m4_recovery_commands_tests)
+set_tests_properties(m4.recovery_commands PROPERTIES TIMEOUT 120)
+
 add_executable(myrd_m4_checkpoint_operation_tests
     model/m4_checkpoint_operation_tests.cpp
 )

@@ -2618,3 +2618,58 @@ pre-existing `integration.m3.recovery` (§1.18). `m5.production_execution_backen
 consecutive runs are clean**. Each of the two claims was settled by an on/off
 experiment rather than by reasoning, which is the only reason (a) survived and
 (b) did not.
+
+### 1.35 Task 6 increment 4 — the recovery command family has tests
+
+`tests/model/m4_recovery_commands_tests.cpp` — named by Task 6's file list and
+absent until now — exists, with seven cases. Nothing had tested repair, rebind or
+forget at any level: the model suite covered checkpoint and stop, and the unit
+suite covers the adapter's fail-closed set, not the commands.
+
+It includes the checkpoint model's fixture with `MYRD_CHECKPOINT_FIXTURE_ONLY`,
+exactly as the orchestration suite does, because the recovery commands share its
+profile store, operation store and worker control — re-implementing them here
+would test a different object than the one that runs.
+
+**Forget, which is the one with a hard requirement attached.** The transfer
+manifest's mandatory gate says a forget that cannot prove the writer lock, the
+matching device and the retained bundle identity are safe must refuse, retain
+both the registration and the bundle, and never report success. Three cases now
+assert that from three directions: the proof not being takeable (`reserved`
+tombstone, profile retained, terminal state not `succeeded`), the confirmation
+not matching the profile, and the disk not being stopped. The last two refuse
+before the worker is asked at all, which is the property that stops a refusal
+from depending on what a live worker happened to answer.
+
+The fixture gained one flag to make the first case possible:
+`refuse_forget_proof` on the model's worker control, because its default is a
+*successful* proof and there was otherwise no way to say "the safety proof cannot
+be taken" — which is what the M5 worker control always answers, since it
+deliberately does not override `prove_forget_safe`.
+
+**Repair** restores the previous durable truth from a needs-attention profile,
+and is refused outright for a healthy one — a repair is not a licence to rewrite
+a record the caller merely dislikes. **Rebind** refuses an image the profile does
+not hold and admits the one it does, so the refusal is provably about the
+mismatch rather than rebind being broken for every input.
+
+**Three things the first version of these cases got wrong, all of them mine.**
+Recorded because each is a way the suite could have passed while testing nothing:
+
+1. It used the fixture's caller, which is an authenticated **owner**. All three
+   commands are `administrator_only` (`authorization.cpp:181-186`), so every case
+   was refused by the authorization gate and none of them reached the property
+   they named.
+2. It asserted on `dispatch` alone for the forget. `dispatch` admits; the proof
+   is taken during `execute_operation`. Asserting on the dispatch would have
+   tested the request validator and called it the safety property.
+3. It required `!forget_tombstone.has_value()` and then that the tombstone carry
+   no retained bundle identity. Both were guesses: a `reserved` tombstone is the
+   durable record of *intent* — what lets a crash mid-forget be resolved — and
+   `retained_bundle_identity` names the bundle that must be kept *because* the
+   proof did not come. The assertion is on the phase, which is the part the
+   requirement actually names.
+
+**Evidence.** Release build clean; full suite **144/145**, the one failure the
+pre-existing `integration.m3.recovery` (§1.18). `m4.recovery_commands` **7/7**,
+a new target.

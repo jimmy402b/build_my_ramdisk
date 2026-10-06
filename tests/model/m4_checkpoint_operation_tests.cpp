@@ -1090,6 +1090,15 @@ public:
             return Result<ForgetSafetyEvidence>::failure(
                 error(L"worker.forget.profile"));
         }
+        // When set, the proof cannot be taken at all -- which is what the M5
+        // worker control always answers, since it deliberately does not override
+        // `prove_forget_safe` and keeps the inherited fail-closed default.  A
+        // forget that cannot prove safety must retain both the registration and
+        // the bundle, so the model needs a way to say "no proof".
+        if (refuse_forget_proof) {
+            return Result<ForgetSafetyEvidence>::failure(
+                error(L"worker.forget.safety"));
+        }
         return Result<ForgetSafetyEvidence>::success(
             forget_proof.value_or(ForgetSafetyEvidence{
                 request.profile_id,
@@ -1102,6 +1111,7 @@ public:
                 test_bundle_file_identity()}));
     }
 
+    bool refuse_forget_proof{};
     std::uint64_t live_dirty_epoch{11};
     std::uint64_t checkpoint_cut_dirty_epoch{11};
     std::uint32_t failure_code{15};
