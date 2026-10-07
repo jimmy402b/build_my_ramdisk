@@ -331,7 +331,7 @@ Result<void> M3AimRuntime::remove_owned_device() {
         device_removed_ = true;
     }
 
-    if (physical_baseline_ && !physical_drive_restored_) {
+    if (!physical_drive_restored_) {
         // REMOVE_DEVICE updates the AIM adapter's owned-device inventory, but
         // Windows does not necessarily retire the corresponding disk devnode
         // until the adapter is re-enumerated.  Keep this after
@@ -339,21 +339,22 @@ Result<void> M3AimRuntime::remove_owned_device() {
         // without issuing REMOVE_DEVICE again for an already absent id.
         auto rescanned = aim::rescan_aim_adapter(adapter_handle_->dev_inst);
         if (!rescanned) return rescanned;
-        for (;;) {
-            auto numbers = aim::snapshot_physical_drive_numbers();
-            if (numbers && std::is_permutation(
-                    numbers.value().begin(), numbers.value().end(),
-                    physical_baseline_->begin(), physical_baseline_->end())) {
-                break;
-            }
-            if (std::chrono::steady_clock::now() >= deadline) {
-                return Result<void>::failure({
-                    ErrorDomain::cleanup, WAIT_TIMEOUT,
-                    L"M3AimRuntime::remove_owned_device",
-                    L"PhysicalDrive inventory did not return to baseline"});
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
+        // The condition is that *this* device's devnode has retired -- not that
+        // the machine's disk set has returned to the snapshot taken at `start`.
+        // That earlier condition could never hold once any disk had appeared
+        // since, and with two profiles one always had: the first disk stopped
+        // while a second was mounted waited for a set that could not come back,
+        // and timed out (manifest §1.38).  A teardown must be about the device
+        // being torn down.
+        const auto now = std::chrono::steady_clock::now();
+        const auto remaining =
+            now < deadline
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                      deadline - now)
+                : std::chrono::milliseconds(0);
+        auto retired = aim::wait_for_physical_drive_retired(
+            *owned_device_, info_.virtual_bytes, remaining);
+        if (!retired) return retired;
         physical_drive_restored_ = true;
     }
     return Result<void>::success();

@@ -2354,6 +2354,39 @@ Recorded so the plan and the tree do not silently diverge.
     `myrd_assert_execution_boundary` would have to go -- and it is independent
     of disk count.
 
+27. **An M3 defect was fixed on the M5 branch, by the user's decision.** §1.38's
+    fix touches `src/driver/physical_drive_locator.{h,cpp}` and
+    `src/m3/m3_windows_acceptance.cpp`. Neither is in any M5 task's file list,
+    and the plan's ownership table puts the device lifecycle in M3/M4. Recorded
+    here because the plan text did not anticipate this, not because a gate
+    forbids it: the mandatory gate prohibits changing M3's **bundle, journal,
+    manifest and profile on-disk formats**, and this changes a Win32 polling
+    predicate and an enumeration's failure semantics. No byte written to a bundle
+    changes.
+
+    **Why it could not be avoided rather than merely deferred.** The predicate is
+    unsatisfiable with a second disk present, no matter how M5 schedules: a
+    baseline snapshotted at one runtime's start cannot be restored once another
+    disk exists, and *whichever of two disks is stopped first fails*. Working
+    around it from M5 would have meant either depending on a stop order users do
+    not follow, or a second device-lifecycle implementation in the product —
+    two sources of truth for the thing the service exists to manage.
+
+    **The decision, and the three placements put to the user.** (a) fix in place
+    on `feature/m5-lifecycle`; (b) a separate fix branch off `main` and rebase
+    M5; (c) defer past Task 7. The user chose **(a)**, which keeps `main` at
+    `cb3df08` and leaves the fix riding this branch. The cost of (a) is the
+    obligation (b) would have moved elsewhere: the changed files are shared by
+    `m1`, `m2`, `m3`, `poc` and M4's foreground `myrd run`, so the whole suite —
+    not just the M5 backend binary — is the evidence that the other consumers
+    still behave. It was run: **144/145**, the one failure the pre-existing
+    `integration.m3.recovery` (§1.18).
+
+    **This is a latent M4 defect, not one M5 introduced.** Two disks under the
+    foreground `myrd run` meet the same predicate today. M5 is simply the first
+    thing in the product that *needs* two disks, which is why it is the first
+    thing that found it.
+
 ### 1.31 Task 5 increment 15 (unit E) — the adapter's own registration path runs
 
 Unit D drove `ServiceWorkerSession` directly, and the unit suite drives
@@ -2565,6 +2598,15 @@ whose device lifecycles overlap is not an exotic state; it is a stop racing a
 start. It belongs to whoever owns M3's device lifecycle, and it is recorded here
 so M5-B does not have to rediscover it.
 
+> **CORRECTED — §1.38. This subsection was wrong twice, and both errors pointed
+> the same way: at the harness.** It is not a harness problem, and it is not a
+> race. The predicate is about the whole machine, so it is unsatisfiable with a
+> second disk present *in a strictly sequential run*, with no overlap at all.
+> "A stop racing a start" was my description of the overlap I could see in the
+> suite; the overlap was incidental to the failure, not the cause of it. The
+> section is left as written so the correction can be read against it, in the
+> same way as (b) below.
+
 #### (b) CLOSED — it was the test, not the product
 
 ```
@@ -2766,5 +2808,107 @@ tested the recovery *decision*; the recovery *execution* is Task 7's.
   drive inventory, so overlapping device lifecycles break each other. It is what
   M5-B's dual-profile isolation exists to test and it is currently mitigated in
   the *harness*, not in the product.
+  → **CLOSED by §1.38.** It was neither a harness problem nor a race: the
+  predicate is unsatisfiable with a second disk present even in a strictly
+  sequential run. Fixed in M3, on this branch, with the user's decision recorded
+  in §7 item 27.
 - **§1.31** — a worker teardown failure after a closed channel, observed once and
   never reproduced.
+
+### 1.38 The two-disk teardown, and the M3 predicate that could not be satisfied
+
+§1.34(a) was filed as a harness problem about a stop racing a start. **Both
+halves of that were wrong**, and this increment is the correction. The first
+thing the round did was write the case that decides it:
+
+`m5_backend_stopping_one_profile_does_not_require_the_other_gone` — create A,
+create B, stop A, stop B, with nothing concurrent anywhere. Run before any
+source change, it failed on **`stop A`**:
+
+```
+myrd-test: stop A failed: op=M3AimRuntime::remove_owned_device
+          msg=PhysicalDrive inventory did not return to baseline native=0 code=258
+```
+
+and the worker's own teardown failed with the same error as the channel closed.
+`258` is `WAIT_TIMEOUT`. That is the prediction this round started from, checked
+rather than assumed.
+
+#### The mechanism, which needs no concurrency to state
+
+`M3AimRuntime::start()` snapshots the machine-wide PhysicalDrive numbers
+(`m3_windows_acceptance.cpp:174-179`), before it creates anything.
+`remove_owned_device` then waited for that set to come back as a permutation of
+the snapshot (`:334-358`). A disk that appeared after the snapshot can never
+un-appear, so the wait can never end:
+
+| | A's baseline | inventory when A stops | verdict |
+| --- | --- | --- | --- |
+| A stopped while B is up | `{machine}` | `{machine, N_B}` | never equal → timeout |
+| B stopped after A is gone | `{machine, N_A}` | `{machine}` | never equal → timeout |
+
+The second row is the one that settles it: it involves no overlap at all, only
+the *order* the two disks are stopped in. **Whichever of two disks is stopped
+first fails**, and it fails on the removal of a device that was, in fact,
+removed — `remove_device` had already returned, and the AIM inventory no longer
+held the id. What failed was a claim about the rest of the machine.
+
+The predicate reads like an acceptance assertion — "the machine is as it was" —
+that was written as a runtime precondition. As a precondition it is not merely
+strict: it is unachievable in exactly the product configuration multi-disk
+support exists to create.
+
+#### The fix, in two parts, both in M3's device layer
+
+1. **The wait is now about the device being torn down**
+   (`src/driver/physical_drive_locator.cpp`,
+   `wait_for_physical_drive_retired`). It polls for a candidate at *that*
+   device's SCSI address carrying *its* expected length, and succeeds when there
+   is none. `m3_windows_acceptance.cpp:334` calls it instead of comparing against
+   the snapshot.
+   The identity check deliberately does **not** consult `existed_before`, unlike
+   `match_created_disk`. There, a candidate wrongly marked pre-existing makes the
+   create wait time out — it fails closed. Here it would make the wait conclude
+   the device is *already gone* while it is still there, i.e. report a removal
+   that did not happen, which is the one direction a teardown must never fail in.
+   The residual is the opposite and safer one: a device that somehow reassumed the
+   same address *and* length holds the wait to its timeout (30 s, the existing
+   `device_timeout_`), rather than being mistaken for absence.
+2. **Enumeration tolerates a device retiring under it**
+   (`device_vanished`, same file). `enumerate_disk_candidates` treated any
+   `CreateFileW`/IOCTL failure as fatal, so a device retiring between
+   `SetupDiEnumDeviceInterfaces` and `CreateFileW` failed the whole scan — the
+   `CreateFileW(disk interface)` symptom §1.34(a) recorded on the create side.
+   `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND` / `ERROR_NO_SUCH_DEVICE` now
+   skip that candidate. **The set is narrow on purpose**:
+   `ERROR_ACCESS_DENIED` stays fatal, because skipping a disk this process may not
+   open would convert a real refusal into a device that appears not to exist.
+
+#### What was verified, and what was not
+
+- **The case fails before and passes after**, both observed in this round.
+- **The harness barrier is gone.** §1.34(a) admitted the
+  `wait_for_no_worker_process()` barrier was hiding the defect, so leaving it
+  would have made "fixed" self-certifying. It is deleted from
+  `m5_production_execution_backend_tests.cpp` outright rather than disabled, and
+  the backend suite then ran **5 of 5 clean**. Before the fix, with that barrier
+  disabled, §1.34(a) recorded 2 of 8 runs failing on this same timeout.
+- **Full suite 144/145**, the one failure the pre-existing `integration.m3.recovery`.
+- **Not verified:** the restart path (A stopped, then started again while B is
+  up). It is not a discriminating test for this defect — under the old predicate
+  a *restarted* A re-snapshots with B's disk already present, so it passed before
+  the fix too — and it belongs to M5-C's subject rather than this one. Nor has any
+  of this run on the VM; M5-B is where the product configuration gets exercised
+  for real.
+
+#### The correction worth keeping
+
+§1.34(a) saw an intermittent failure, found a plausible mechanism (two device
+lifecycles overlapping) and filed it against the harness — while noting that
+"the interference itself is real". The intermittent observation was accurate. The
+*attribution* was not, and the bar for settling it was one sequential test case,
+which nobody wrote because the flakiness looked explained. §1.34(b), twelve lines
+earlier in the same table, is the same mistake with the sign flipped: there a
+real-looking product defect was my own missing step. Both were resolved by
+running the discriminating case, not by reasoning about the evidence already in
+hand.

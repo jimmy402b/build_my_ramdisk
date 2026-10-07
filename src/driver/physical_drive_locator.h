@@ -53,4 +53,17 @@ Result<LocatedDisk> wait_for_created_physical_drive(
     std::uint64_t expected_size_bytes,
     std::chrono::milliseconds timeout);
 
+// Waits until the PhysicalDrive created for `owned` is gone from the machine.
+//
+// This is the mirror of `wait_for_created_physical_drive`, and it is deliberately
+// about *that device's identity* rather than about the machine's disk set.  A
+// teardown that waits for the inventory to return to some earlier snapshot of
+// the whole machine can never finish while a disk created after that snapshot is
+// still there -- which is the ordinary case for a second RAM disk, not an exotic
+// one.  Absence is decided from the SCSI address and the expected length alone;
+// see the definition for why `existed_before` must not be consulted here.
+Result<void> wait_for_physical_drive_retired(
+    DeviceId owned, std::uint64_t expected_size_bytes,
+    std::chrono::milliseconds timeout);
+
 } // namespace myrd::aim

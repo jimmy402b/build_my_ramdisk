@@ -122,6 +122,21 @@ struct DevInfoDeleter {
 using DevInfoGuard = std::unique_ptr<
     std::remove_pointer_t<HDEVINFO>, DevInfoDeleter>;
 
+// A disk that retires between being enumerated and being opened is not an
+// enumeration failure -- it is a disk that is no longer there, and the caller is
+// entitled to a picture of what *is* there.  This matters as soon as any device
+// on the machine can come and go while this runs, which is exactly what a
+// second RAM disk is.
+//
+// The set is deliberately narrow.  `ERROR_ACCESS_DENIED` in particular stays a
+// failure: skipping a disk this process is not allowed to open would turn a real
+// refusal into a disk that appears not to exist, and a locator that cannot see a
+// device must say so rather than look past it.
+bool device_vanished(const DWORD error) noexcept {
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ||
+        error == ERROR_NO_SUCH_DEVICE;
+}
+
 Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
     static const GUID kDiskGuid = GUID_DEVINTERFACE_DISK;
     std::vector<DiskCandidate> candidates;
@@ -182,9 +197,11 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            if (device_vanished(error)) continue; // retired under this scan
             return Result<std::vector<DiskCandidate>>::failure(
                 {ErrorDomain::win32,
-                 static_cast<std::uint32_t>(GetLastError()),
+                 static_cast<std::uint32_t>(error),
                  L"CreateFileW(disk interface)",
                  L"failed to open a present disk interface for identity"});
         }
@@ -198,6 +215,7 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
                 &scsi_addr, sizeof(scsi_addr), &br, nullptr)) {
             const DWORD error = GetLastError();
             CloseHandle(h);
+            if (device_vanished(error)) continue;
             return Result<std::vector<DiskCandidate>>::failure(
                 {ErrorDomain::win32,
                  static_cast<std::uint32_t>(error),
@@ -214,6 +232,7 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
                 &dev_num, sizeof(dev_num), &br, nullptr)) {
             const DWORD error = GetLastError();
             CloseHandle(h);
+            if (device_vanished(error)) continue;
             return Result<std::vector<DiskCandidate>>::failure(
                 {ErrorDomain::win32,
                  static_cast<std::uint32_t>(error),
@@ -228,6 +247,7 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
                 &len, sizeof(len), &br, nullptr)) {
             const DWORD error = GetLastError();
             CloseHandle(h);
+            if (device_vanished(error)) continue;
             return Result<std::vector<DiskCandidate>>::failure(
                 {ErrorDomain::win32,
                  static_cast<std::uint32_t>(error),
@@ -345,6 +365,64 @@ Result<LocatedDisk> wait_for_created_physical_drive(
     return Result<LocatedDisk>::failure({
         ErrorDomain::evidence, WAIT_TIMEOUT,
         L"wait_for_created_physical_drive", L"timed out"});
+}
+
+// ── Retirement wait ───────────────────────────────────────────
+
+namespace {
+
+// True while a candidate sits at the created device's SCSI address carrying its
+// expected length.
+//
+// `existed_before` is deliberately *not* consulted, unlike `match_created_disk`.
+// There, a candidate wrongly marked pre-existing makes the create wait time out,
+// which fails closed.  Here it would make the wait decide the device is already
+// gone while it is still there -- a teardown reporting a removal that did not
+// happen, which is the one direction this must never fail in.  The cost of the
+// stricter reading is that a device which somehow reassumed the same address and
+// length would hold the wait until its timeout, and that is the right way round.
+bool present_at_identity(
+    DeviceId own, std::span<const DiskCandidate> candidates,
+    std::uint64_t expected_size_bytes) {
+
+    const auto addr = decode_device_address(own);
+    for (const auto& c : candidates) {
+        if (c.path_id == addr.path_id && c.target_id == addr.target_id &&
+            c.lun == addr.lun && c.length_bytes == expected_size_bytes) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // anonymous namespace
+
+Result<void> wait_for_physical_drive_retired(
+    DeviceId owned, std::uint64_t expected_size_bytes,
+    std::chrono::milliseconds timeout) {
+
+    if (expected_size_bytes == 0) {
+        return Result<void>::failure(
+            {ErrorDomain::evidence, ERROR_INVALID_PARAMETER,
+             L"wait_for_physical_drive_retired",
+             L"expected disk size must be non-zero"});
+    }
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        auto cand = enumerate_disk_candidates();
+        if (!cand) return Result<void>::failure(cand.error());
+        if (!present_at_identity(owned, cand.value(), expected_size_bytes)) {
+            return Result<void>::success();
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return Result<void>::failure(
+                {ErrorDomain::cleanup, WAIT_TIMEOUT,
+                 L"wait_for_physical_drive_retired",
+                 L"the created PhysicalDrive was still present at its identity"});
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }
 
 Result<std::vector<LocatedDisk>> enumerate_present_physical_drives() {

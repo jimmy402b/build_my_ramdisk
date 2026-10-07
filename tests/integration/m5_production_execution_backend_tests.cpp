@@ -36,6 +36,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -44,7 +45,6 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
-#include <tlhelp32.h>
 
 namespace {
 
@@ -69,19 +69,23 @@ OperationContext provisioning_context() {
     return {{}, std::chrono::steady_clock::now() + std::chrono::seconds(100)};
 }
 
-// A drive letter this machine is not using, verified rather than assumed.  A
-// real lifecycle claims a real letter here, so a case that guessed one would
+// `count` drive letters this machine is not using, verified rather than assumed.
+// A real lifecycle claims a real letter here, so a case that guessed one would
 // take a drive someone else is using -- or fail for a reason that has nothing to
 // do with what it is testing.  Scanned from the end of the alphabet downwards,
 // because that is where a desktop is least likely to keep something.
-wchar_t free_drive_letter() {
+std::vector<wchar_t> free_drive_letters(const std::size_t count) {
     const DWORD in_use = GetLogicalDrives();
-    for (wchar_t letter = L'Z'; letter >= L'R'; --letter) {
-        if ((in_use & (1u << (letter - L'A'))) == 0) return letter;
+    std::vector<wchar_t> letters;
+    for (wchar_t letter = L'Z'; letter >= L'R' && letters.size() != count;
+         --letter) {
+        if ((in_use & (1u << (letter - L'A'))) == 0) letters.push_back(letter);
     }
-    REQUIRE(false);
-    return L'\0';
+    REQUIRE(letters.size() == count);
+    return letters;
 }
+
+wchar_t free_drive_letter() { return free_drive_letters(1).front(); }
 
 bool is_letter_assigned(const wchar_t letter) {
     return (GetLogicalDrives() & (1u << (letter - L'A'))) != 0;
@@ -97,42 +101,6 @@ bool wait_for_letter_release(const wchar_t letter) {
         Sleep(100);
     }
     return !is_letter_assigned(letter);
-}
-
-// Blocks until no worker process is left, which is not the same as "the drive
-// letter came back".
-//
-// The heavy cases each bring up an AIM proxy disk, and M3's device removal waits
-// for the *machine-wide* physical drive inventory to return to its baseline
-// (`M3AimRuntime::remove_owned_device`: "PhysicalDrive inventory did not return
-// to baseline").  So one case's teardown overlapping the next case's setup makes
-// both flaky: the create cannot find a present disk interface, or the removal
-// times out because a device that is not its own is appearing.  Waiting for the
-// previous worker to exit is the point at which its teardown has run.
-//
-// This is a harness barrier, not a fix.  The underlying interference is real and
-// is recorded in manifest §1.34 -- it is what M5-B's dual-profile isolation is
-// supposed to test, and it belongs to whoever owns M3's device lifecycle.
-bool wait_for_no_worker_process() {
-    for (int attempt = 0; attempt != 300; ++attempt) {
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snapshot == INVALID_HANDLE_VALUE) return false;
-        bool found = false;
-        PROCESSENTRY32W entry{};
-        entry.dwSize = sizeof(entry);
-        if (Process32FirstW(snapshot, &entry)) {
-            do {
-                if (std::wstring_view(entry.szExeFile) == L"myrd-m5-worker.exe") {
-                    found = true;
-                    break;
-                }
-            } while (Process32NextW(snapshot, &entry));
-        }
-        CloseHandle(snapshot);
-        if (!found) return true;
-        Sleep(100);
-    }
-    return false;
 }
 
 // The worker binary the build just produced, found relative to this test's own
@@ -225,12 +193,13 @@ profile::ProfileRecord valid_profile(const TempBundle& bundle) {
 // published until after the bundle action the case below drives.
 constexpr std::uint64_t kCapacityBytes = 64ull * 1024 * 1024;
 
-LifecycleOperationIntent create_intent(const product::Uuid& image_id,
-                                       const TempBundle& bundle,
-                                       const std::wstring& mount_target) {
+LifecycleOperationIntent create_intent_for(const product::Uuid& profile_id,
+                                           const product::Uuid& image_id,
+                                           const TempBundle& bundle,
+                                           const std::wstring& mount_target) {
     return LifecycleOperationIntent{
         LifecycleOperationKind::create,
-        uuid("11111111-2222-3333-4444-555555555555"),
+        profile_id,
         image_id,
         L"S-1-5-21-100-200-300-1001",
         L"work",
@@ -244,6 +213,13 @@ LifecycleOperationIntent create_intent(const product::Uuid& image_id,
         std::nullopt,
         PhysicalMemorySnapshot{},
         0};
+}
+
+LifecycleOperationIntent create_intent(const product::Uuid& image_id,
+                                       const TempBundle& bundle,
+                                       const std::wstring& mount_target) {
+    return create_intent_for(uuid("11111111-2222-3333-4444-555555555555"),
+                             image_id, bundle, mount_target);
 }
 
 // The launched image id is a product uuid and the worker reports the
@@ -419,10 +395,6 @@ TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
     // drive letter and dismounts, and a worker whose channel is closed without
     // one runs the same teardown as it exits.
     TempBundle bundle(L"e2e");
-    // A clean machine before the case starts: the previous case's device
-    // teardown must have finished, or the two interfere (see
-    // wait_for_no_worker_process).
-    REQUIRE(wait_for_no_worker_process());
     const wchar_t letter = free_drive_letter();
     REQUIRE(!is_letter_assigned(letter));
     const std::wstring mount_target = std::wstring(1, letter) + L":";
@@ -488,10 +460,6 @@ TEST_CASE(m5_backend_adapter_registers_the_bundle_it_creates) {
     // evidence, deciding whether to hold the session, converting the image id --
     // had never run.  It is the adapter the service actually calls.
     TempBundle bundle(L"adapter-create");
-    // A clean machine before the case starts: the previous case's device
-    // teardown must have finished, or the two interfere (see
-    // wait_for_no_worker_process).
-    REQUIRE(wait_for_no_worker_process());
     const wchar_t letter = free_drive_letter();
     REQUIRE(!is_letter_assigned(letter));
     const std::wstring mount_target = std::wstring(1, letter) + L":";
@@ -619,10 +587,6 @@ TEST_CASE(m5_backend_checkpoint_crosses_the_boundary_and_commits) {
     // fake; only this can show that they survive a real snapshot and a real
     // commit.
     TempBundle bundle(L"boundary");
-    // A clean machine before the case starts: the previous case's device
-    // teardown must have finished, or the two interfere (see
-    // wait_for_no_worker_process).
-    REQUIRE(wait_for_no_worker_process());
     const wchar_t letter = free_drive_letter();
     const std::wstring mount_target = std::wstring(1, letter) + L":";
     const auto profile = uuid("11111111-2222-3333-4444-555555555555");
@@ -708,10 +672,6 @@ TEST_CASE(m5_backend_checkpoint_boundary_withdrawal_publishes_nothing) {
     // resolved rather than left outstanding -- an abort the worker confirmed is
     // what makes "not committed" a fact instead of an assumption.
     TempBundle bundle(L"boundary-withdraw");
-    // A clean machine before the case starts: the previous case's device
-    // teardown must have finished, or the two interfere (see
-    // wait_for_no_worker_process).
-    REQUIRE(wait_for_no_worker_process());
     const wchar_t letter = free_drive_letter();
     const std::wstring mount_target = std::wstring(1, letter) + L":";
     const auto profile = uuid("11111111-2222-3333-4444-555555555555");
@@ -798,10 +758,6 @@ TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     // service proved, and the two steps after it are no-ops *proven* by that
     // removal rather than assumed from it.
     TempBundle bundle(L"stop");
-    // A clean machine before the case starts: the previous case's device
-    // teardown must have finished, or the two interfere (see
-    // wait_for_no_worker_process).
-    REQUIRE(wait_for_no_worker_process());
     const wchar_t letter = free_drive_letter();
     const std::wstring mount_target = std::wstring(1, letter) + L":";
     const auto profile = uuid("11111111-2222-3333-4444-555555555555");
@@ -911,4 +867,137 @@ TEST_CASE(m5_backend_confirmed_removal_without_a_removal_is_refused) {
                    static_cast<std::uint32_t>(
                        ServiceWorkerControlError::removal_unproven));
     }
+}
+
+// The single-disk stop plan as one call, returning the result of the removal
+// barrier -- the step a second live profile breaks.
+//
+// Factored out rather than copied because the case below walks the identical
+// plan for two profiles, and a second copy is a second thing that can drift
+// from what production does without anything noticing.
+Result<WorkerActionResult> run_stop_plan(ServiceWorkerControl& control,
+                                        const product::Uuid& operation,
+                                        const product::Uuid& profile,
+                                        const profile::ProfileRecord& durable) {
+    auto request = [&](const ActionKind action) {
+        return WorkerActionRequest{operation, operation, profile,
+                                   ManagementCommand::stop, action,
+                                   std::nullopt, durable, std::nullopt};
+    };
+    require_action(control.execute(request(ActionKind::quiesce_mutations)),
+                   "stop plan");
+    require_action(control.execute(request(ActionKind::flush_exact_volume)),
+                   "stop plan");
+    auto committed = control.execute_checkpoint(
+        request(ActionKind::checkpoint),
+        [](const CheckpointCommitBoundaryEvidence&) {
+            return Result<CheckpointCommitBoundaryDecision>::success(
+                CheckpointCommitBoundaryDecision{true, 0, 0});
+        });
+    REQUIRE(committed.ok());
+    REQUIRE(committed.value().checkpoint.has_value());
+    REQUIRE(committed.value().checkpoint->disposition
+            == CheckpointCommitDisposition::committed);
+    // The epoch confirmation is not optional, and its absence is §1.34(b): a
+    // runtime is dirty until the commit it made has been confirmed, and a dirty
+    // runtime is refused its own removal.
+    REQUIRE(control
+                .publish_checkpoint_epoch(
+                    request(ActionKind::checkpoint),
+                    committed.value().checkpoint->correlation,
+                    [](const CheckpointEpochObservation&) {
+                        return Result<void>::success();
+                    })
+                .ok());
+    auto removed = control.execute(request(ActionKind::remove_mount));
+    if (removed.ok()) {
+        // Only on a removal that was proven, exactly as production does it.
+        require_action(
+            control.execute(request(ActionKind::remove_exact_device)),
+            "stop plan");
+        require_action(
+            control.execute(request(ActionKind::stop_runtime_and_release_lock)),
+            "stop plan");
+    }
+    return removed;
+}
+
+TEST_CASE(m5_backend_stopping_one_profile_does_not_require_the_other_gone) {
+    // Two profiles alive at once, and the *first* one stopped while the second
+    // is still mounted.  This is the regression test for §1.38.
+    //
+    // It failed before the fix, on `stop A`, with
+    // `M3AimRuntime::remove_owned_device` / "PhysicalDrive inventory did not
+    // return to baseline" (`WAIT_TIMEOUT`).  Why it could not have passed is
+    // worth keeping beside it: M3's device removal waited for the machine-wide
+    // physical drive inventory to return to the set it saw when that runtime
+    // started, and a second profile's disk appeared after this one took its
+    // baseline and cannot un-appear.
+    //
+    // Nothing here is a race, which is what makes it decisive: create A, create
+    // B, stop A is sequential, and it was enough.  That is also why a harness
+    // barrier could never have been the answer -- a barrier serialises *cases*,
+    // and these two disks are both supposed to be alive.
+    //
+    // The two stops below were chosen to cover both ways the old predicate
+    // failed: A is stopped while a disk that appeared after its baseline is up,
+    // and B is stopped after A's disk is gone -- a disk B's own baseline still
+    // contained, so the inventory could not return to it either.
+    TempBundle bundle_a(L"isolate-a");
+    TempBundle bundle_b(L"isolate-b");
+    const auto letters = free_drive_letters(2);
+    const std::wstring mount_a = std::wstring(1, letters[0]) + L":";
+    const std::wstring mount_b = std::wstring(1, letters[1]) + L":";
+    const auto profile_a = uuid("11111111-2222-3333-4444-555555555555");
+    const auto profile_b = uuid("12121212-3434-5656-7878-909090909090");
+    const auto image_a = uuid("7a7a7a7a-8b8b-9c9c-adad-bebebebebebe");
+    const auto image_b = uuid("8b8b8b8b-9c9c-adad-bebe-cfcfcfcfcfcf");
+    // Distinct product operations: the removal proof is per operation, so one
+    // profile's proven removal must not be readable as the other's.
+    const auto operation_a = uuid("99999999-8888-7777-6666-555555555551");
+    const auto operation_b = uuid("99999999-8888-7777-6666-555555555552");
+
+    WindowsWorkerSessionProvider provider(worker_executable());
+    ServiceWorkerControl control(provider);
+    const auto durable_a =
+        checkpoint_profile(profile_a, image_a, bundle_a.root.wstring(), mount_a);
+    const auto durable_b =
+        checkpoint_profile(profile_b, image_b, bundle_b.root.wstring(), mount_b);
+
+    auto create = [&](const product::Uuid& operation,
+                      const product::Uuid& profile,
+                      const product::Uuid& image,
+                      const TempBundle& bundle,
+                      const std::wstring& mount_target) {
+        WorkerActionRequest request{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent_for(profile, image, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        return control.execute(request);
+    };
+    require_created(create(operation_a, profile_a, image_a, bundle_a, mount_a));
+    require_created(create(operation_b, profile_b, image_b, bundle_b, mount_b));
+    REQUIRE(is_letter_assigned(letters[0]));
+    REQUIRE(is_letter_assigned(letters[1]));
+
+    // The stop that cannot succeed today.  Every step before the removal is the
+    // same plan the single-disk case walks -- quiesce, flush, commit, confirm
+    // the epoch -- so it arrives at the device teardown with nothing else
+    // outstanding, and that is where it fails.
+    require_action(run_stop_plan(control, operation_a, profile_a, durable_a),
+                   "stop A");
+    REQUIRE(!is_letter_assigned(letters[0]));
+    // The other half of the property, and the reason this is not merely "does
+    // the first stop work": stopping one disk must leave the other mounted.  A
+    // service that took both down to satisfy the first would otherwise pass.
+    REQUIRE(is_letter_assigned(letters[1]));
+
+    require_action(run_stop_plan(control, operation_b, profile_b, durable_b),
+                   "stop B");
+    REQUIRE(!is_letter_assigned(letters[1]));
 }

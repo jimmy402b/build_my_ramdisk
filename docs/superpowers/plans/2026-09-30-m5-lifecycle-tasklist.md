@@ -67,14 +67,14 @@ against a worker. Evidence is in transfer manifest §1.32–§1.37.
    session, `attach` returns `nullopt`, and `recover_bundle` is wired to
    adopt-only. M5-06 tested the recovery *decision*; the *execution* is M5-07's.
 
-**Open findings carried out of M5-06** (all in the transfer manifest, none
-fixed): §1.33, a withdrawn candidate leaves a worker unable to prepare again --
-the expectation is in M3's abort handling and the mandatory gate forbids M5 from
-changing M3's on-disk formats; §1.34(a), M3's `remove_owned_device` waits on the
-machine-wide physical drive inventory, so overlapping device lifecycles break
-each other, which is what M5-B exists to test and is currently mitigated only in
-the test harness; §1.31, a worker teardown failure after a closed channel,
-observed once and never reproduced.
+**Open findings carried out of M5-06**: §1.33, a withdrawn candidate leaves a
+worker unable to prepare again -- the expectation is in M3's abort handling and
+the mandatory gate forbids M5 from changing M3's on-disk formats; §1.31, a worker
+teardown failure after a closed channel, observed once and never reproduced.
+§1.34(a), M3's machine-wide device-removal wait, is **no longer open**: §1.38
+found it was not a race at all but an unsatisfiable predicate, reproduced it
+sequentially, and fixed it in M3 on this branch (§7 item 27) — with the harness
+barrier that had been hiding it deleted rather than disabled.
 
 **Rows above this note that predate the transfer manifest's evidence.** M5-02,
 M5-03 and M5-05 carry statuses written before the increments they describe were
