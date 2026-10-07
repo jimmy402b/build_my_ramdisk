@@ -633,6 +633,26 @@ add_test(NAME m5.service_orchestration
     COMMAND myrd_m5_service_orchestration_tests)
 set_tests_properties(m5.service_orchestration PROPERTIES TIMEOUT 120)
 
+# ---- M5 execution scheduler (Task 7 Step 1) ---------------------------------
+# The one executor of admitted work.  It includes the checkpoint model's fixture
+# for its stores and its worker double, exactly as the orchestration suite does,
+# and asserts the four claims Task 7 Step 1 names that this layer owns: durable
+# admission precedes execution, only a claim this core handed out may be
+# discharged, the scheduler is the serialization the command path holds, and a
+# client's timeout or withdrawal never cancels the operation.
+add_executable(myrd_m5_execution_scheduler_tests
+    model/m5_execution_scheduler_tests.cpp
+)
+target_link_libraries(myrd_m5_execution_scheduler_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_execution_scheduler_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/model")
+myrd_enable_warnings(myrd_m5_execution_scheduler_tests)
+add_test(NAME m5.execution_scheduler
+    COMMAND myrd_m5_execution_scheduler_tests)
+set_tests_properties(m5.execution_scheduler PROPERTIES TIMEOUT 120)
+
 # The recovery command family -- repair, rebind and forget -- named by Task 6's
 # file list and missing until now.  It includes the checkpoint model's fixture
 # for its fakes alone, exactly as the orchestration suite does.

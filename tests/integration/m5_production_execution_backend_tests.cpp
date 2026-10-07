@@ -45,6 +45,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <tlhelp32.h>
 
 namespace {
 
@@ -101,6 +102,99 @@ bool wait_for_letter_release(const wchar_t letter) {
         Sleep(100);
     }
     return !is_letter_assigned(letter);
+}
+
+// Serializes the heavy cases: the next one starts only once the previous case's
+// worker has exited.
+//
+// **What this is for, exactly, because it was removed once for the wrong
+// reason.** The heavy cases each bring up an AIM proxy disk, and PhysicalDrive
+// devnodes are a *machine-wide* namespace.  One case's worker still retiring a
+// device while the next case enumerates or creates its own is interference
+// between two cases, not a defect in either: the symptom is
+// `CreateFileW(disk interface)` / `failed to open a present disk interface for
+// identity` on the create side, or a removal refused because a device that is
+// not its own is appearing.  Waiting for the previous worker to exit is the
+// point at which its teardown has run, so this closes the window.
+//
+// It is **not** a fix for anything, and it is deliberately not load-bearing for
+// the two-disk case (§1.38): that case creates *both* of its workers inside
+// itself, so a barrier taken at case start cannot affect it and its
+// failing-before / passing-after evidence stands on the M3 fix alone.
+//
+// It was deleted in §1.38 on the argument that it made "fixed" self-certifying.
+// That argument does not hold for the defect §1.38 found, and the deletion was
+// measured afterwards to reintroduce this inter-case class: with the same M3
+// code, the suite failed 2 of 5 isolated runs without this barrier and 0 of 4
+// with it (§1.39).
+// Whether a snapshot entry names a process that is still running.
+//
+// `CreateToolhelp32Snapshot` lists a process that has exited but whose handle is
+// still open somewhere.  A test run killed from outside leaves exactly that --
+// the worker is gone, but it lingers in the snapshot, and a barrier that counted
+// it would wait out its whole timeout on every case for the rest of the boot
+// session.  Such a process cannot be tearing a device down, so it must not hold
+// the barrier.
+//
+// "Could not tell" holds the barrier, which is the direction it is allowed to be
+// wrong in.
+enum class ProcessState { exited, alive, unknown };
+
+ProcessState process_state(const DWORD pid) {
+    HANDLE process =
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (process == nullptr) return ProcessState::unknown;
+    DWORD code = 0;
+    const BOOL ok = GetExitCodeProcess(process, &code);
+    CloseHandle(process);
+    if (ok == FALSE) return ProcessState::unknown;
+    return code == STILL_ACTIVE ? ProcessState::alive : ProcessState::exited;
+}
+
+const char* process_state_name(const ProcessState state) {
+    switch (state) {
+    case ProcessState::exited: return "exited";
+    case ProcessState::alive: return "alive";
+    case ProcessState::unknown: return "unknown";
+    }
+    return "unknown";
+}
+
+bool wait_for_no_worker_process() {
+    for (int attempt = 0; attempt != 300; ++attempt) {
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE) return false;
+        bool found = false;
+        DWORD found_pid = 0;
+        ProcessState found_state = ProcessState::unknown;
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (Process32FirstW(snapshot, &entry)) {
+            do {
+                if (std::wstring_view(entry.szExeFile) != L"myrd-m5-worker.exe") {
+                    continue;
+                }
+                const auto state = process_state(entry.th32ProcessID);
+                if (state == ProcessState::exited) continue;
+                found = true;
+                found_pid = entry.th32ProcessID;
+                found_state = state;
+                break;
+            } while (Process32NextW(snapshot, &entry));
+        }
+        CloseHandle(snapshot);
+        if (!found) return true;
+        if (attempt == 299) {
+            // Named rather than silent, for the same reason `require_action`
+            // exists: a bare timeout says nothing about what was still running.
+            std::fprintf(stderr,
+                         "myrd-test: barrier held by myrd-m5-worker pid=%lu state=%s\n",
+                         static_cast<unsigned long>(found_pid),
+                         process_state_name(found_state));
+        }
+        Sleep(100);
+    }
+    return false;
 }
 
 // The worker binary the build just produced, found relative to this test's own
@@ -394,6 +488,7 @@ TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
     // verified is free, and every exit path releases it -- `cleanup` removes the
     // drive letter and dismounts, and a worker whose channel is closed without
     // one runs the same teardown as it exits.
+    REQUIRE(wait_for_no_worker_process());
     TempBundle bundle(L"e2e");
     const wchar_t letter = free_drive_letter();
     REQUIRE(!is_letter_assigned(letter));
@@ -459,6 +554,7 @@ TEST_CASE(m5_backend_adapter_registers_the_bundle_it_creates) {
     // Between them, `register_bundle`'s success branch -- mapping the worker's
     // evidence, deciding whether to hold the session, converting the image id --
     // had never run.  It is the adapter the service actually calls.
+    REQUIRE(wait_for_no_worker_process());
     TempBundle bundle(L"adapter-create");
     const wchar_t letter = free_drive_letter();
     REQUIRE(!is_letter_assigned(letter));
@@ -586,6 +682,7 @@ TEST_CASE(m5_backend_checkpoint_crosses_the_boundary_and_commits) {
     // the P4/P5 shape they carry.  The model suite drives the *decisions* with a
     // fake; only this can show that they survive a real snapshot and a real
     // commit.
+    REQUIRE(wait_for_no_worker_process());
     TempBundle bundle(L"boundary");
     const wchar_t letter = free_drive_letter();
     const std::wstring mount_target = std::wstring(1, letter) + L":";
@@ -671,6 +768,7 @@ TEST_CASE(m5_backend_checkpoint_boundary_withdrawal_publishes_nothing) {
     // candidate is frozen.  Nothing may be published, and the candidate must be
     // resolved rather than left outstanding -- an abort the worker confirmed is
     // what makes "not committed" a fact instead of an assumption.
+    REQUIRE(wait_for_no_worker_process());
     TempBundle bundle(L"boundary-withdraw");
     const wchar_t letter = free_drive_letter();
     const std::wstring mount_target = std::wstring(1, letter) + L":";
@@ -757,6 +855,7 @@ TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     // what *moves* that witness; the removal must happen at the generation the
     // service proved, and the two steps after it are no-ops *proven* by that
     // removal rather than assumed from it.
+    REQUIRE(wait_for_no_worker_process());
     TempBundle bundle(L"stop");
     const wchar_t letter = free_drive_letter();
     const std::wstring mount_target = std::wstring(1, letter) + L":";
@@ -943,6 +1042,7 @@ TEST_CASE(m5_backend_stopping_one_profile_does_not_require_the_other_gone) {
     // failed: A is stopped while a disk that appeared after its baseline is up,
     // and B is stopped after A's disk is gone -- a disk B's own baseline still
     // contained, so the inventory could not return to it either.
+    REQUIRE(wait_for_no_worker_process());
     TempBundle bundle_a(L"isolate-a");
     TempBundle bundle_b(L"isolate-b");
     const auto letters = free_drive_letters(2);

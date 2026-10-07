@@ -2387,6 +2387,25 @@ Recorded so the plan and the tree do not silently diverge.
     thing in the product that *needs* two disks, which is why it is the first
     thing that found it.
 
+28. **Task 7 commits once per step, not once at the end.** The plan gives Task 7
+    a single commit at Step 5 (`feat(m5): host lifecycle authority in Windows
+    Service`). Task 7 is the largest assembly on this branch — a composition
+    root, the public pipe, the CLI, the service lifecycle and nine test files —
+    and one commit at the end would leave no verified checkpoint between "the
+    scheduler works" and "the service runs". Steps are committed as they are
+    verified, each with its own evidence in this manifest. Step 5's commit
+    message is kept for the step that completes the assembly.
+
+29. **The §1.38 barrier deletion was reverted (§1.39).** A test-harness change,
+    not a product one, but it reverses part of a committed decision, so it is
+    recorded. `wait_for_no_worker_process()` is restored at the head of the six
+    device-creating cases with a liveness check and a diagnostic, and §1.38's
+    "self-certifying" rationale is corrected in place. The measurement that
+    forced it: same M3 source, **2 of 5** isolated runs red without the barrier
+    and **0 of 4** with it. See §1.39 for what is still unverified — the
+    restored file has not itself been measured clean, because the local machine
+    was left unusable by test runs this increment killed mid-flight.
+
 ### 1.31 Task 5 increment 15 (unit E) — the adapter's own registration path runs
 
 Unit D drove `ServiceWorkerSession` directly, and the unit suite drives
@@ -2893,6 +2912,18 @@ support exists to create.
   `m5_production_execution_backend_tests.cpp` outright rather than disabled, and
   the backend suite then ran **5 of 5 clean**. Before the fix, with that barrier
   disabled, §1.34(a) recorded 2 of 8 runs failing on this same timeout.
+
+> **CORRECTED — §1.39. Deleting the barrier was an over-removal, and the reason
+> given for it does not hold.** The barrier could not have made the two-disk
+> case's fix self-certifying: that case creates *both* of its workers inside
+> itself, so a barrier taken at case start cannot affect it. The barrier had a
+> second job — serializing cases that share the machine-wide `PhysicalDrive`
+> namespace — and removing it re-introduced a measured intermittency: with the
+> same M3 source, the suite failed **2 of 5** isolated runs without it and **0 of
+> 4** with it. The "5 of 5 clean" above was read as "the flakiness is gone" when
+> it was a small sample of a suite that is still intermittently red. The barrier
+> is restored (§1.39), with the claim it is allowed to make written down beside
+> it.
 - **Full suite 144/145**, the one failure the pre-existing `integration.m3.recovery`.
 - **Not verified:** the restart path (A stopped, then started again while B is
   up). It is not a discriminating test for this defect — under the old predicate
@@ -2912,3 +2943,103 @@ earlier in the same table, is the same mistake with the sign flipped: there a
 real-looking product defect was my own missing step. Both were resolved by
 running the discriminating case, not by reasoning about the evidence already in
 hand.
+
+### 1.39 The barrier §1.38 removed, and why removing it was wrong
+
+Found while running Task 7 Step 1's full-suite gate. The gate came back
+**2 of 146** red — `integration.m3.recovery` (pre-existing, §1.18) and, new,
+`m5.production_execution_backend`. The first full-suite run after the change had
+shown only `integration.m3.recovery`, so the second failure looked like it might
+be mine. It is not, and the way it is *not* turns out to matter.
+
+#### The measurement, stated as it was run
+
+`m5.production_execution_backend` drives real AIM proxy disks, so it was run in
+isolation, repeatedly, without any other test on the machine:
+
+| Tree under test | Isolated runs | Failures |
+| --- | --- | --- |
+| HEAD (§1.38 fix, barrier deleted) | 5 | **2** |
+| §1.38 fix, barrier **restored** (pre-§1.38 test file) | 4 | **0** |
+| §1.38 fix **reverted** (pre-fix M3 sources), barrier deleted | 4 | **4** |
+
+The third row is the control that matters most: reverting the M3 fix makes it
+*worse*, and three of those four failures are the §1.38 defect verbatim —
+`M3AimRuntime::remove_owned_device` / "PhysicalDrive inventory did not return to
+baseline" (`WAIT_TIMEOUT`, 258). **The M3 fix removes a failure class; it did not
+add one.** With it in place and the barrier in place, the suite was clean.
+
+The two failure signatures at HEAD, neither of which is the §1.38 timeout:
+
+```
+stop step failed: op=service_worker_control.remove_mount
+                  msg=The worker refused to remove: its runtime stands dirty   (23559)
+PROBE-STOP op=CreateFileW(disk interface)
+           msg=failed to open a present disk interface for identity           (55)
+```
+
+`55` is `ERROR_DEV_NOT_EXIST`. The second is the create side of the same
+interference §1.34(a) recorded, and `device_vanished` does not currently cover
+it — `55` is not in the `{2, 3, 433}` set. That is a *candidate* gap, not a
+finding: it is a hypothesis about code the evidence has not been run against.
+
+#### The correction to §1.38's reasoning
+
+§1.38 deleted the barrier because "leaving it would have made 'fixed'
+self-certifying". **That argument does not hold for the defect §1.38 found.** The
+two-disk case creates both of its workers inside itself; a barrier taken at case
+start, before either exists, cannot suppress a failure that arises between them.
+Its failing-before / passing-after evidence therefore stands on the M3 fix alone,
+and the barrier was never a threat to it.
+
+What the barrier was actually doing is in its own deleted comment, which §1.38
+read past: *"one case's teardown overlapping the next case's setup makes both
+flaky: the create cannot find a present disk interface, or the removal times out
+because a device that is not its own is appearing."* That is interference between
+two *cases*, not a defect in either. `PhysicalDrive` devnodes are a machine-wide
+namespace, and the heavy cases each create one and tear it down; a case that
+starts while the previous worker is still retiring a device is racing a namespace
+it does not own. The barrier is the serialization that closes that window, and it
+is legitimate test scaffolding — the illegitimate thing was reading a green suite
+as evidence about the two-disk defect, which nobody had done.
+
+The lesson is narrower than §1.38's. That entry correctly established that the
+intra-case predicate was unsatisfiable; it then removed a second mechanism on an
+argument that only applied to the first. **A barrier can hide a defect and also
+do real work; establishing the first does not establish that it does nothing
+else.** The 5-of-5 run that licensed the removal was a small sample, and the
+failures it missed are intermittent by nature.
+
+#### The barrier is restored, with one repair
+
+`wait_for_no_worker_process()` is back at the head of the six device-creating
+cases, and its comment now states what it is for and, explicitly, that it is not
+load-bearing for the two-disk case.
+
+One defect in the original was fixed while restoring it: it counted *any*
+snapshot entry named `myrd-m5-worker.exe`, including a process that has exited
+but whose handle is still open. A test run killed from outside leaves exactly
+that, and the barrier then timed out on every case for the rest of the boot
+session. It now asks the process for its exit code
+(`PROCESS_QUERY_LIMITED_INFORMATION` + `GetExitCodeProcess`; `SYNCHRONIZE` and
+`WaitForSingleObject` were tried first and are refused on this worker) and skips
+one that has exited. "Could not tell" still holds the barrier, which is the
+direction it is allowed to be wrong in. On timeout it now names the process that
+held it — the same rule as `require_action`, for the same reason.
+
+#### What is not verified, and why
+
+- **That the suite is green with the barrier restored in the current file.** The
+  experiment above used the *pre-§1.38* test file; the restored version also
+  carries the two-disk case from §1.38 and the liveness fix. It has not been
+  measured clean.
+- **The local machine is no longer usable for this measurement.** Several runs in
+  this increment were killed by a 10-minute command timeout while the test binary
+  was mid-flight, which orphans a live `myrd-m5-worker` and its AIM device. After
+  those, a bare `Get-CimInstance Win32_DiskDrive` hangs past 120 s. The last
+  observed run failed in `create_bundle` inside the end-to-end case with no
+  further detail. **This contamination is mine, it is a property of the harness
+  (a killed run leaves a live worker holding a device), and it is not evidence
+  about the product.** The machine needs a reboot before the backend suite means
+  anything again.
+- **Nothing here has run on the VM.**

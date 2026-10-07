@@ -14,7 +14,7 @@
 | M5-04 | PASSED | M5-03 | Foreground and worker share one DiskRuntime production adapter. |
 | M5-05 | IN_PROGRESS | M5-02, M5-04 | Authenticated per-profile worker, private IPC and recovery proof. Per the 2026-10-02 solution this owns `service_worker_control`, `service_worker_session`, `windows_worker_observation.h` and `windows_worker_recovery.{h,cpp}`. |
 | M5-06 | PASSED | M5-02, M5-05 | P4/P5 core, reconciliation, dirty-truth stop policies. Orchestration only: no worker launch, no pipe framing, no bundle/journal reads. See the status notes below for what this does and does not cover. |
-| M5-07 | NOT_STARTED | M5-06 | Scheduler, public pipe, CLI, service lifecycle, auto-start. |
+| M5-07 | IN_PROGRESS | M5-06 | Scheduler, public pipe, CLI, service lifecycle, auto-start. Step 1 (the execution scheduler) is done; steps 2-5 are not. |
 | M5-08 | NOT_STARTED | M5-07 | Two-profile isolation and service/worker restart suites pass. |
 | M5-09 | NOT_STARTED | M5-08 | Clean local Debug/Release results and evidence tools. |
 | M5-10 | NOT_STARTED | M5-09 | VMware M5-A through M5-D evidence and frozen release manifest. |
@@ -75,6 +75,16 @@ teardown failure after a closed channel, observed once and never reproduced.
 found it was not a race at all but an unsatisfiable predicate, reproduced it
 sequentially, and fixed it in M3 on this branch (§7 item 27) — with the harness
 barrier that had been hiding it deleted rather than disabled.
+
+**M5-07 Step 1 is done (the execution scheduler).** `ServiceExecutionScheduler`
+and its seven ported cases plus two written for Step 1's own claims — durable
+admission precedes execution, and a client's timeout or withdrawal never cancels
+an admitted operation — are in `tests/model/m5_execution_scheduler_tests.cpp`,
+9 of 9 green. Steps 2-5 (the composition root, the public pipe and CLI, the
+service lifecycle) are untouched. The full suite at that point was **144 of
+146**: `integration.m3.recovery` (pre-existing) and the intermittent
+`m5.production_execution_backend`, whose status is the subject of §1.39 —
+including the correction that §1.38 was wrong to delete the harness barrier.
 
 **Rows above this note that predate the transfer manifest's evidence.** M5-02,
 M5-03 and M5-05 carry statuses written before the increments they describe were

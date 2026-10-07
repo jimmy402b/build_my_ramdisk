@@ -342,6 +342,7 @@ myrd_assert_execution_boundary(myrd_profile)
 # drives execution through IWorkerControl, whose sole implementation is the
 # rebuilt worker control from Task 5. Nothing here may link an execution target.
 add_library(myrd_management STATIC
+    management/execution_scheduler.cpp management/execution_scheduler.h
     management/operation_store.cpp management/operation_store.h
     management/profile_registration_codec.cpp management/profile_registration_codec.h
     management/profile_registration_store.cpp management/profile_registration_store.h
