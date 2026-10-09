@@ -86,6 +86,14 @@ service lifecycle) are untouched. The full suite at that point was **144 of
 `m5.production_execution_backend`, whose status is the subject of §1.39 —
 including the correction that §1.38 was wrong to delete the harness barrier.
 
+**Test execution is now VM-only (`AGENTS.md` §4).** No test runs on the dev
+machine — not ctest, not any test binary, unit or model included. The dev machine
+builds; the VM runs. Every "full suite" number recorded from here on is a VM
+number, and the per-increment gate below is a VM gate. The reason is in §1.39: a
+device test killed mid-flight orphans a worker holding an AIM disk, and enough of
+those degrade the dev machine's storage stack past the point where even a
+`Win32_DiskDrive` query returns.
+
 **Rows above this note that predate the transfer manifest's evidence.** M5-02,
 M5-03 and M5-05 carry statuses written before the increments they describe were
 recorded, and M5-02 in particular reads `NOT_STARTED` while the manifest's §1.3

@@ -3040,6 +3040,37 @@ held it — the same rule as `require_action`, for the same reason.
   observed run failed in `create_bundle` inside the end-to-end case with no
   further detail. **This contamination is mine, it is a property of the harness
   (a killed run leaves a live worker holding a device), and it is not evidence
-  about the product.** The machine needs a reboot before the backend suite means
-  anything again.
+  about the product.**
 - **Nothing here has run on the VM.**
+
+#### The rule this produced
+
+Running device tests on the dev machine is over. It is now a standing constraint
+(`AGENTS.md` §4): **test execution happens only on the VM; the dev machine builds,
+the VM runs.** The dev machine is not merely inconvenient for this — it is the
+wrong host. Its storage stack is shared with the work the machine is for, and a
+single killed run leaves a worker holding a device that nothing short of a reboot
+releases. The VM is disposable and is already the home of M5's acceptance
+procedure.
+
+Consequences worth stating, because they change what an increment's evidence is:
+
+- Every "full suite" and every isolated repeat recorded from here on is a **VM**
+  number. The numbers in this entry and in §1.38 were dev-machine numbers and are
+  the last of them.
+- **How much of the count above can be trusted, arm by arm.** The 2-of-5 arm ran
+  before any test run in this increment had been killed, so no orphan existed.
+  The 0-of-4 arm ran after the first killed run — but it passed 4 of 4 with the
+  *old* barrier, the one that counts any matching process name regardless of exit
+  state, and that is only possible if no `myrd-m5-worker.exe` entry was in the
+  process snapshot at all. So neither arm was measured on a contaminated process
+  table. What was *not* checked in either arm is the device side — whether the
+  AIM inventory had been left with a stray disk — and a clean process table is
+  not the same as a clean device set. The 4-of-4 control is the arm that
+  overlapped the degradation, and its result only reinforced the conclusion (the
+  M3 fix removes a failure class).
+  **All three arms should be re-run on the VM before §1.39 is treated as
+  settled**, and the re-run is cheap: same binary, same sequence, a disposable
+  host.
+- The restored barrier has not been measured clean anywhere. That measurement
+  moves to the VM and is now the first thing Task 7 owes.
