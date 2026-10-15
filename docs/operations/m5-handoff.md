@@ -162,13 +162,31 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
    `m5_backend_creates_a_bundle_and_mounts_it_end_to_end` 失败在 `created.ok()`，
    干净重启后 13/13 通过。**设备类用例失败前先确认没有孤儿 worker / 多余物理盘。**
 
-### 7.2 一处"写了又删"的测试，诚实记录
+### 7.2 重入锁：测过、结论已取、用例未入库（含一个新缺陷）
 
-方案曾要求先写"已持锁时再 lock"的重入探针。写了、跑了一次、删了：它必须伪造
-`ProductVolume` 并直调 `Win32VolumeAdapter::lock`，结果在 VM 上把卷卡住、把 VM 拖进
-需要硬重启的状态，而它测的是 `CreateFileW` 加伪造结构的行为，不是产品路径。
-重入这条规则现在由**构造**（类型上不可再 lock）加**端到端测量**（13 个用例全过、
-20/20）覆盖。细节见证据文档 §4.3。
+方案曾要求"先写'已持锁时再 lock'的重入测试"。**在 VM 上对真实卷测过了**，结论：
+
+- 本进程已持有该卷锁时，**第二次获取被拒**；方式**不是** `busy`，而是
+  `CreateFileW(设备路径, GENERIC_READ|GENERIC_WRITE, 0 /* 无共享 */)` 返回
+  **`ERROR_NOT_READY`(21)**（`lock` 只把 sharing/lock/busy 违规映射成 `busy`）。
+  所以第二次获取**根本不会成功**——这正是冻结必须**保留并向下传递**的原因。
+- 释放后同一个卷可以再次被取锁 ⇒ 拒绝不是"卷坏了"。
+
+**用例没留在套件里**，因为它会稳定暴露一个**新的、独立的**缺陷：
+留档时它以 25–50% 的概率让最后一个用例的收尾失败
+（`op=dismount_volume ... native=32` = `ERROR_SHARING_VIOLATION`），
+而**探针自己的句柄已全部关闭** ⇒ **worker 进程内有未关闭的卷句柄**，
+worker 打不开自己刚 flush 过的卷来拆卸。**这是 worker 拆卸路径的句柄泄漏，应单独立项。**
+对照实验：带探针 9/20 与 2/6，移除后 **20/20**。
+细节与原始读数见证据文档 §4.4。
+
+**自我纠正**：我先前把这个探针的失败归因于"测试形态不可行"，**那是错的**——
+原因是**我自己 kill 掉 host 侧等待进程、留下孤儿 worker 污染了 VM**。
+设备类用例间歇失败时，**先排除环境污染，再质疑测试或产品**。
+
+**顺带保留的改进**：`VolumeLockAttempt` 增加 `native_code`，`dismount` 把它带进错误。
+此前 `native=0` 把 sharing violation / `ERROR_NOT_READY` / 权限拒绝压成同一个不可区分的失败——
+它当时正在**把一个真实缺陷伪装成"间歇"**。
 
 ---
 
@@ -183,6 +201,15 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
 3. **两个 structural 用例需要 Visual Studio**：已归类为环境受限并接受；
    真要 146/146 就得给客机装 Build Tools，性价比不划算。
 4. **设计未决项**（需要用户裁决）：Primo 的 "Mini Tools" 定义；T4-02 单文件 VHDX 导出是否保留。
+5. **【新，待立项】worker 拆卸路径的卷句柄泄漏**：T1-11 的重入探针稳定暴露出
+   `op=dismount_volume ... native=32`（`ERROR_SHARING_VIOLATION`），而**调用方句柄已全部关闭**
+   ⇒ worker 进程内仍有未关闭的卷句柄，导致它打不开自己刚 flush 过的卷来拆卸。
+   复现率 25–50%（探针在套件内时）。关键事实：探针三把句柄在拆卸前已确认关闭。
+   建议下一个会话单独立项（现象、`native=32`、"句柄全关仍冲突"三点已齐备）。
+6. **【新】`integration.m1.shm` 是跨用例干扰型间发项**：整套连跑时失败一次
+   （`m1_shm_session_tests.cpp:190: session.snapshot().state == SessionState::serving`），
+   单独 `-Repeat 10` 全过。T1-01 的 Consecutive 普查按构造抓不到这个形状——
+   调查文档 §2.8 结尾提到的 "Sweep 顺序对照普查" 就是为它准备的。
 5. **§7.17 那个 ABI 陷阱**仍未被根治：项目没有可靠的头文件依赖跟踪，只靠"记得加
    `--clean-first`"这条纪律。
 
