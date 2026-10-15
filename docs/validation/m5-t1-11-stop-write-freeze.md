@@ -189,9 +189,11 @@ Consecutive 顺序）按构造抓不到这个形状：它只在**整套顺序**�
 
 ---
 
-## 5. 端到端行为（终局测量的 `-TraceTestCases` 观测）
+## 5. 端到端行为（`-TraceTestCases` 观测）
 
-选中 13 个用例，全部通过（`-Repeat 1` 的追踪跑，用于确认失败点位置）：
+诊断期的一次追踪跑（当时该套件含 12 个用例、外加一个后来被删掉的重入探针）。
+**12 个产品用例全部通过，包括 T1-11 的目标用例**；第 13 个是被删掉的探针，
+它失败在自己伪造卷的那一步（打不开卷），与产品路径无关：
 
 ```
 PASS m5_backend_launches_and_authenticates_a_real_worker
@@ -207,6 +209,9 @@ PASS m5_backend_stop_walks_quiesce_flush_commit_remove   ← T1-11 的目标用�
 PASS m5_backend_confirmed_removal_without_a_removal_is_refused
 PASS m5_backend_stopping_one_profile_does_not_require_the_other_gone
 ```
+
+（探针删除后该套件为 **12 个用例**；§4.3 的两次整套 = 146 个用例，
+其中 `m5.production_execution_backend` 计为 1 项，两次都通过。）
 
 ---
 
