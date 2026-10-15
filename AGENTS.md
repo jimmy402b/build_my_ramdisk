@@ -58,5 +58,16 @@
 统一通过 **OpenSSH**（`ssh.exe` / `scp.exe`）连接，使用**密钥认证**以保证非交互可用；
 不使用 `plink` / `pscp`，不使用明文密码。
 
-客户机 IP 目前不固定，固化方案待用户指定；在那之前，脚本一律把主机地址作为参数传入，
-不得把地址硬编码进任何脚本。
+**客户机 IP 已固化**（2026-10-14）：VMnet8 NAT + `vmnetdhcp.conf` 里按 MAC
+`00:0C:29:02:90:C1` 的保留，地址 `192.168.180.129`，主机别名 **`myrd-vm`**
+（`~/.ssh/config`）。脚本一律传 `myrd-vm`，**仍然不得把地址硬编码进任何脚本**——
+别名就是为了让地址将来再变时不用改脚本。
+
+驱动方式：`tools/m5vm/Invoke-M5Vm.ps1`（`-Probe` / `-Stage` / `-Run`）。
+三条通道各自的边界、一次性配置与 11 个已修的坑见 `docs/operations/m5-vm-harness.md`；
+新会话请先读 `docs/operations/m5-handoff.md`。
+
+**最容易踩的一条**：本仓库任何**头文件**改动之后、测量之前，必须
+`cmake --build out/build/msvc --config Release --clean-first`。增量构建不会重编所有
+包含该头文件的 TU，会得到 `0xC0000005` 的假崩溃（transfer manifest §7 item 17，
+已两次现身）。
