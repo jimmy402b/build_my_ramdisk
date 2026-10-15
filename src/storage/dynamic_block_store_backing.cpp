@@ -170,7 +170,11 @@ Result<void> DynamicBlockStore::install_backing_view_impl(
                 1, std::memory_order_release);
         });
         backing_view_condition_.wait(lock, [this] {
-            return backing_publications_in_progress_ == 0 ||
+            // The test-held publication is observed here because a test needs to
+            // make this wait happen; it is deliberately NOT part of
+            // finish_close()'s invariant.  See the field's comment in the header.
+            return (backing_publications_in_progress_ +
+                    backing_publications_held_by_test_) == 0 ||
                    closing_requested();
         });
         if (closing_requested()) {
@@ -573,11 +577,11 @@ bool DynamicBlockStoreTestAccess::release_persisted_ack_gap(
 bool DynamicBlockStoreTestAccess::begin_backing_publication(
     DynamicBlockStore& store) {
     std::scoped_lock state_lock(store.state_mutex_);
-    if (store.backing_publications_in_progress_ ==
+    if (store.backing_publications_held_by_test_ ==
         (std::numeric_limits<std::uint64_t>::max)()) {
         return false;
     }
-    ++store.backing_publications_in_progress_;
+    ++store.backing_publications_held_by_test_;
     return true;
 }
 
@@ -585,10 +589,10 @@ bool DynamicBlockStoreTestAccess::end_backing_publication(
     DynamicBlockStore& store) {
     {
         std::scoped_lock state_lock(store.state_mutex_);
-        if (store.backing_publications_in_progress_ == 0) {
+        if (store.backing_publications_held_by_test_ == 0) {
             return false;
         }
-        --store.backing_publications_in_progress_;
+        --store.backing_publications_held_by_test_;
     }
     store.backing_view_condition_.notify_all();
     return true;

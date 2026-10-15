@@ -302,6 +302,23 @@ private:
     std::uint64_t committed_bytes_{};
     std::uint64_t commit_reservation_bytes_{};
     std::uint64_t backing_publications_in_progress_{};
+    // A publication held by DynamicBlockStoreTestAccess, tracked SEPARATELY.
+    //
+    // The test hook used to increment the production counter above, and that
+    // made finish_close()'s invariant -- "no backing publication outlives the
+    // drain of every request" -- fire on a state the hook itself created.
+    // Whether it fired depended on which thread reached its next step first, so
+    // m2_backing_install_wait_is_interrupted_by_close aborted (0xC0000409, i.e.
+    // std::terminate -> abort) about half the time: measured 0/20 on the
+    // development machine and ~20/40 on the VM.
+    //
+    // The invariant is worth keeping: every production increment happens inside
+    // a request, so active_requests_ == 0 really does imply that no production
+    // publication is in flight.  What was wrong is a TEST counterfeiting it.
+    // The hook now has its own counter, and only the predicate that has to
+    // observe a held publication (the install wait) consults it.  Production
+    // never touches this field, so production behaviour is unchanged.
+    std::uint64_t backing_publications_held_by_test_{};
 
     mutable std::mutex lifecycle_mutex_;
     // condition_variable_any gives mutation admission a native C++20
