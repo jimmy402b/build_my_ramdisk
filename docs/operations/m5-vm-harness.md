@@ -293,6 +293,10 @@ schtasks /create /tn MyRamDisk-M5-Agent /f `
 | 9 | **无介质光驱上的 `std::filesystem::exists()` 会抛异常** | `unit.m4.profile_codec` 以 `exception` 失败（用例断言 `!exists(L"D:\...")`） | 客机的 `D:` 是光驱。设 `sata0:1.startConnected="FALSE"` 会让它变"无介质"，而 `exists()` 这时抛 `ERROR_NOT_READY` 而不是返回 false。正解是**整个移除设备**（`sata0:1.present="FALSE"`） |
 | 10 | **两个 structural 用例需要 Visual Studio** | `vswhere.exe not found`（`tools/Enter-MsvcEnvironment.ps1:6`） | 客机没装 VS。**环境受阻，不是产品失败**——除非给客机装 Build Tools，否则这两个用例在 VM 上永远不会绿 |
 | 11 | **`-join` 不能作为 `Select-Object` 的参数** | `找不到与参数名称"join"匹配的参数` | `($x | Select-Object -First 5) -join ', '` —— 括号先收口再 `-join`。这个错误在本轮犯了两次 |
+| 12 | **只删 `.done` 而不删 `.request.ps1` 会让请求被重放** | 下一次 `-Drain` 又把一个已完成的请求跑一遍 | agent 会跳过"已有 `<id>.done`"的请求，但 `Invoke-OneRequest` 开头**会先删掉 `.done`**，所以清理时必须**同时**删除 `.request.ps1`。清控制目录时 `.request.ps1`/`.done`/`.response.txt` 三个一起删 |
+| 13 | **用管道收集会 spawn 子进程的程序的输出，会被孤儿挂死** | 测试被杀后它 spawn 的 worker 继承 stdout 管道并存活 → 异步读永不结束 → **整轮挂死 30 分钟**，还留下一个从 SSH 和 vmrun 都杀不掉的孤儿占着 AIM 设备 | 已改：子进程输出写**文件**（不经管道），超时用 `taskkill /T` 杀**整棵树**，并清扫残留 `myrd*` 进程 |
+| 14 | **上一次 drain 未结束时 `schtasks /run` 会起第二个 agent** | 两个 agent 同时处理请求，互相踩 | 触发前确认没有正在跑的 agent；一次只提交一个请求 |
+| 15 | **改头文件后增量构建会给出假崩溃** | `0xC0000005` 满屏、输出全空 | 测量前 `--clean-first`。见 `docs/validation/m5-intermittent-findings.md` §2.7 |
 
 另外两条与 harness 无关、但会影响读数：
 
