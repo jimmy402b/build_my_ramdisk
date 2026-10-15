@@ -26,8 +26,12 @@
 #include "src/management/windows_worker_sessions.h"
 #include "src/profile/profile_types.h"
 #include "src/product/uuid.h"
+#include "src/run/windows_volume.h"
 
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -36,6 +40,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -45,6 +50,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <winioctl.h>
 #include <tlhelp32.h>
 
 namespace {
@@ -1143,31 +1149,212 @@ TEST_CASE(m5_backend_stopping_one_profile_does_not_require_the_other_gone) {
 // `m5_backend_stop_walks_quiesce_flush_commit_remove` above, whose freeze step
 // cannot pass unless the real lock is really held.
 //
-// ---------------------------------------------------------------------------
-// A probe case was written here, measured against a real volume, and removed.
-// What it established, so that a future session does not have to re-derive it:
-//
-//   * a second lock attempt while this process holds the volume **is refused**,
-//     and not as `busy`.  `CreateFileW` on the device path with no sharing mode
-//     fails with `ERROR_NOT_READY` (21), and `Win32VolumeAdapter::lock` only maps
-//     sharing/lock/busy violations to `busy`, so it reports the native failure.
-//     Either way no lock is handed out, which is exactly why the freeze is
-//     retained and passed down rather than re-acquired (see `disk_runtime.h`);
-//   * the volume is intact afterwards: releasing the lock lets the same volume be
-//     locked again, so the refusal is a refusal and not a broken volume.
-//
-// It was removed because it is not safe to ship.  Run against a real worker it
-// failed the last case's teardown 25-50% of the time with
-// `op=dismount_volume ... native=32` (`ERROR_SHARING_VIOLATION`) -- while its own
-// three probe handles were each demonstrably closed before the teardown was
-// asked for.  A sharing violation with no handle of ours open means the worker
-// could not open the volume it had just flushed in order to dismantle it, and
-// that is a finding about the worker's own teardown, not about re-entrancy.  It
-// is recorded in `docs/validation/m5-t1-11-stop-write-freeze.md` section 4.4 and
-// belongs in its own increment with its own evidence.
-//
-// The lesson is kept and the test is not: a case that fails a quarter of the time
-// would poison every later run on the VM, which is the opposite of what a test is
-// for.
+// It is also why `Win32VolumeAdapter::lock` retries inside its budget: building
+// this case showed that a volume whose last handle was closed a moment ago
+// refuses the exclusive open the teardown needs, which read as a deterministic
+// "volume is busy" until the worker was instrumented and the retry was measured
+// to succeed.
 // ---------------------------------------------------------------------------
 
+// What one lock attempt did, out of the probe thread.
+struct LockProbeResult final {
+    bool ran{};
+    bool ok{};
+    bool acquired{};
+    bool busy{};
+    bool held{};
+    std::uint32_t error_code{};
+    std::uint32_t native_code{};
+    std::wstring message;
+};
+
+// The adopted volume, restated in the engine's own type from what the volume
+// itself reports.
+//
+// The device path is resolved through the mount point rather than pasted from the
+// worker's observation: the worker reports the *GPT identity* as canonical text
+// (`{guid}` with no prefix) while `ProductVolume` carries the device path
+// `\\?\Volume{guid}`, and building one from the other by concatenation would be a
+// second encoding of the same fact.
+ProductVolume read_adopted_volume(const wchar_t letter,
+                                  const std::wstring& owner_token) {
+    const std::wstring mount{letter, L':', L'\\', L'\0'};
+    std::array<wchar_t, MAX_PATH> device_path{};
+    if (GetVolumeNameForVolumeMountPointW(mount.c_str(), device_path.data(),
+                                          static_cast<DWORD>(device_path.size()))
+        != TRUE) {
+        std::fprintf(stderr, "PROBE-VOLUME: no device path for %c: err=%lu\n",
+                     letter, static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        return {};
+    }
+    ProductVolume volume{};
+    volume.owner_token = owner_token;
+    volume.volume_guid = device_path.data();
+    volume.drive_letter = letter;
+    volume.mounted = true;
+    volume.operation_owned = true;
+
+    std::wstring device = volume.volume_guid;
+    while (!device.empty() && device.back() == L'\\') device.pop_back();
+    HANDLE handle = CreateFileW(device.c_str(), 0,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        std::fprintf(stderr, "PROBE-VOLUME: opening for extents failed err=%lu\n",
+                     static_cast<unsigned long>(GetLastError()));
+        std::fflush(stderr);
+        return {};
+    }
+    std::array<std::byte, 64 * 1024> bytes{};
+    DWORD returned = 0;
+    const BOOL queried = DeviceIoControl(
+        handle, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0, bytes.data(),
+        static_cast<DWORD>(bytes.size()), &returned, nullptr);
+    const DWORD query_error = GetLastError();
+    CloseHandle(handle);
+    const auto header = offsetof(VOLUME_DISK_EXTENTS, Extents);
+    if (queried != TRUE || returned < header + sizeof(DISK_EXTENT)) {
+        std::fprintf(stderr, "PROBE-VOLUME: extents query failed err=%lu\n",
+                     static_cast<unsigned long>(query_error));
+        std::fflush(stderr);
+        return {};
+    }
+    const auto* extents =
+        reinterpret_cast<const VOLUME_DISK_EXTENTS*>(bytes.data());
+    for (DWORD index = 0; index != extents->NumberOfDiskExtents; ++index) {
+        const auto& extent = extents->Extents[index];
+        volume.extents.push_back(
+            {extent.DiskNumber,
+             static_cast<std::uint64_t>(extent.StartingOffset.QuadPart),
+             static_cast<std::uint64_t>(extent.ExtentLength.QuadPart)});
+    }
+    return volume;
+}
+
+// Runs one lock attempt on its own thread so the case can prove it *returned*:
+// the failure being ruled out is a hang, and a hung test reports a timeout
+// instead of a reason.
+LockProbeResult probe_lock(Win32VolumeAdapter& adapter,
+                           const ProductVolume& volume,
+                           std::optional<LockedVolume>& out) {
+    LockProbeResult result{};
+    std::atomic<bool> finished{false};
+    std::thread worker([&] {
+        auto attempt = adapter.lock(volume, 30000);
+        result.ran = true;
+        if (attempt.ok()) {
+            result.ok = true;
+            result.acquired = attempt.value().acquired;
+            result.busy = attempt.value().busy;
+            if (attempt.value().locked.has_value()) {
+                out = std::move(*attempt.value().locked);
+                result.held = true;
+            }
+        } else {
+            result.error_code = attempt.error().code;
+            result.native_code = attempt.error().native_code;
+            result.message = attempt.error().message;
+        }
+        finished.store(true);
+    });
+    for (std::uint32_t waited = 0; waited < 60000; waited += 50) {
+        if (finished.load()) {
+            worker.join();
+            return result;
+        }
+        Sleep(50);
+    }
+    // Wedged inside a device call with no cancellation.  Detached rather than
+    // joined: joining would hang the suite, which is the one outcome this guard
+    // exists to prevent.  `ran` stays false so the case fails loudly.
+    worker.detach();
+    return result;
+}
+
+TEST_CASE(m5_backend_holding_the_volume_lock_refuses_a_second_lock) {
+    REQUIRE(wait_for_no_worker_process());
+    TempBundle bundle(L"reentrant-lock");
+    const wchar_t letter = free_drive_letter();
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto image_id = uuid("7c7c7c7c-8d8d-9e9e-afaf-b0b0b0b0b0b0");
+
+    WindowsWorkerSessionProvider provider(worker_executable());
+    auto launched = provider.launch(
+        make_launch_request(create_intent(image_id, bundle, mount_target))
+            .value(),
+        context());
+    REQUIRE(launched.ok());
+    auto& session = *launched.value();
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+    const auto created = session.create_bundle(provisioning_context(), operation);
+    REQUIRE(created.ok());
+    REQUIRE(is_letter_assigned(letter));
+
+    const ProductVolume volume = read_adopted_volume(letter, L"probe");
+    REQUIRE(!volume.volume_guid.empty());
+    REQUIRE(!volume.extents.empty());
+
+    Win32VolumeAdapter adapter;
+
+    // The first lock, standing in for the write freeze a runtime holds.
+    std::optional<LockedVolume> held;
+    const auto first = probe_lock(adapter, volume, held);
+    const bool first_held =
+        first.ran && first.ok && first.acquired && first.held;
+
+    // The attempt that answers the question, while the first is still held.
+    std::optional<LockedVolume> second;
+    const auto again = probe_lock(adapter, volume, second);
+    second.reset();
+
+    // The holder is undisturbed by a refused attempt.
+    const bool holder_survived = held.has_value() && held->valid();
+    held.reset();
+
+    // And the volume is winnable again once given back -- without this the case
+    // could pass because the volume had been left unusable.
+    std::optional<LockedVolume> third;
+    const auto recovered = probe_lock(adapter, volume, third);
+    const bool third_held =
+        recovered.ran && recovered.ok && recovered.acquired && recovered.held;
+    third.reset();
+
+    REQUIRE(first_held);
+    REQUIRE(again.ran);
+    // The measured rule: the second acquisition does not happen.  What was
+    // measured on a real AIM-backed NTFS volume is narrower than the guess this
+    // case was written from -- the refusal is not `busy`: `CreateFileW` on the
+    // device path with no sharing mode, while this process already holds the
+    // lock, fails with `ERROR_NOT_READY` (21), and `lock` only maps
+    // sharing/lock/busy violations to `busy`.  Either way no lock is handed out,
+    // which is the fact the teardown is built on.  The native code is *recorded*
+    // rather than pinned: asserting it would turn a platform observation into a
+    // contract this project does not control.
+    if (again.acquired) {
+        std::fprintf(stderr,
+                     "PROBE-REENTRANT: a SECOND lock was granted while the first "
+                     "was held\n");
+        std::fflush(stderr);
+    }
+    REQUIRE(!again.acquired);
+    REQUIRE(!again.held);
+    REQUIRE(holder_survived);
+    REQUIRE(third_held);
+
+    // Every probe handle is closed by here, so the worker can still tear its own
+    // volume down.  This is the step that failed 25-50% of the time before the
+    // lock retry was added.
+    const auto cleaned = session.cleanup(context(), operation);
+    if (!cleaned.ok()) {
+        std::fprintf(stderr,
+                     "PROBE-REENTRANT cleanup failed: op=%ls msg=%ls native=%u "
+                     "code=%u\n",
+                     cleaned.error().operation.c_str(),
+                     cleaned.error().message.c_str(),
+                     cleaned.error().native_code, cleaned.error().code);
+        std::fflush(stderr);
+    }
+    REQUIRE(cleaned.ok());
+    REQUIRE(wait_for_letter_release(letter));
+}

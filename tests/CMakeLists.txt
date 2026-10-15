@@ -146,8 +146,14 @@ add_test(NAME unit.m5.registration_codec
 add_executable(myrd_m5_production_execution_backend_tests
     integration/m5_production_execution_backend_tests.cpp
 )
+# `myrd_m4_run` is linked for one case: the write-freeze re-entrancy case drives
+# the *real* `Win32VolumeAdapter::lock` against the volume this worker actually
+# mounted.  What a second lock attempt on a volume this process already holds does
+# is a property of the production lock implementation and of Win32, not of any
+# seam, so a fake would answer a different question.  No product library changes:
+# this is a test executable reaching the real adapter.
 target_link_libraries(myrd_m5_production_execution_backend_tests PRIVATE
-    myrd_test_support myrd_management)
+    myrd_test_support myrd_management myrd_m4_run)
 target_include_directories(myrd_m5_production_execution_backend_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
 # A *relative* path with forward slashes, resolved at run time against this test

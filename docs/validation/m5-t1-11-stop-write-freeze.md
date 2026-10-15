@@ -13,10 +13,10 @@
 | 项 | 结果 |
 |---|---|
 | 修复前（本轮实测） | `m5.production_execution_backend` **0 / 20**（全部失败；失败点与签名与调查文档一致） |
-| **修复后（终局测量）** | **20 / 20 通过**（见 §4.2） |
-| 关键副产物 | 冻结暴露出**第二个**同类缺陷：冻结持有独占句柄后，任何"另开句柄"的卷操作都无法打开该卷（实测 20/20 失败，`code=21001`）。修法与 M4 一致：**所有后续步骤都走持锁的那个句柄**。 |
-| 重入锁 | 按要求在 VM 真实设备上端到端测过，结论已取：第二次获取**被拒**，方式是 `ERROR_NOT_READY`(21)，**不是** `busy`。用例本身未入库——它会稳定暴露 worker 自身的一个句柄泄漏（拆卸时 `ERROR_SHARING_VIOLATION`），留档待单独立项。见 §4.4。 |
-| 新发现（待立项） | worker 的拆卸会在 25–50% 的情况下报 `op=dismount_volume ... native=32`(`ERROR_SHARING_VIOLATION`)，而此时**调用方句柄已全部关闭** → worker 进程内有未关闭的卷句柄。见 §4.4。 |
+| **修复后（终局测量）** | **20 / 20 通过**（含重入用例，13/13 用例全过；见 §4.2） |
+| 关键副产物 ① | 冻结暴露出**第二个**同类缺陷：冻结持有独占句柄后，任何"另开句柄"的卷操作都无法打开该卷（实测 20/20 失败，`code=21001`）。修法与 M4 一致：**所有后续步骤都走持锁的那个句柄**。 |
+| 关键副产物 ② | **第三个缺陷**：flush 刚 `CloseHandle`，紧接着的**无共享独占打开**会拿 `ERROR_SHARING_VIOLATION`（实测冲突句柄 250 ms 内即释放 ⇒ **不是泄漏，是瞬时竞态**）。修法是 `lock` 在既有预算内做**有界重试**。见 §4.4。 |
+| 重入锁 | 按要求在 VM 真实设备上端到端测过并**留在套件里**：第二次获取**被拒**，方式是 `ERROR_NOT_READY`(21)，**不是** `busy`。用例现在是 T1-11 的回归保护，`-Repeat 20` 稳定。 |
 
 **这不是一次改动，而是两层**：先把"提交前必须冻结写"补上，再把"冻结之后所有卷操作必须复用那把锁"补上。
 第二层不做，第一层会让 `stop` 从 25% 失败变成 **100% 失败**——这个数字是实测的，见 §2。
@@ -148,28 +148,41 @@ filter '^m5\.production_execution_backend$': 1 of 146 cases selected
 **验收标准（≥ 20/20）达成：`m5.production_execution_backend` 20 / 20 通过，零失败。**
 （修复前同一命令为 5 / 20 失败。）
 
-终局测量是在**移除了 §4.4 那个探针之后**、对干净重建（403/403，0 error 0 warning）的二进制做的，
-请求 `2cfe65d6c544426ba7f525cea182f81a`：
+**终局测量带着 §4.4 的重入用例一起跑**（也就是最终会留在套件里的那个配置），
+对干净重建（403/403，0 error 0 warning）的二进制做的，请求
+`33d32636b7e54593bf96969130593dbe`：
 
 ```
-MYRD_VM_STARTED_UTC=2026-10-15T13:08:01.6240816Z
-MYRD_VM_FINISHED_UTC=2026-10-15T13:25:49.0823475Z
+MYRD_VM_STARTED_UTC=2026-10-15T13:54:19.8323631Z
+MYRD_VM_FINISHED_UTC=2026-10-15T14:17:01.6466812Z
 MYRD_VM_EXIT=0     MYRD_VM_ELEVATED=True
 [1/20] … [20/20]
 20 of 20 passed
 ```
 
-**这也是移除探针的对照实验**：同一个套件、同一台客机，带探针时是 9/20 与 2/6，
-移除后 **20/20**。探针就是那个不稳定源——所以它不能留在套件里（§4.4）。### 4.3 整套回归（VM，真实设备）
+逐用例读数（`-Repeat 1` 的输出）：**13/13 通过**，13 个用例里包含
+`m5_backend_holding_the_volume_lock_refuses_a_second_lock`；跑完客机状态
+`workers: 0 / disks: 0 / drives: C`（干净）。
+
+**修 §4.4 那个竞态之前的对照**（同一个套件、同一台客机）：
+
+| 配置 | 结果 |
+|---|---|
+| 带重入用例、**未修**竞态 | 9/20、2/6、5/6（收尾间歇失败） |
+| 带重入用例、**已修**竞态 | **20/20** |
+| 不带重入用例（只验 T1-11 本身） | 20/20（请求 `2cfe65d6c544426ba7f525cea182f81a`） |
+
+### 4.3 整套回归（VM，真实设备）
 
 命令：`tools/m5vm/Invoke-M5Vm.ps1 -Run -Repeat 1 -MinTimeoutSeconds 180`（146 用例）
 
 | 遍 | 结果 | 失败项 |
 |---|---|---|
-| 第 1 遍 | **143 / 146** | `structural.m2.storage_independent_build`、`structural.m5.execution_boundary`（两个已知环境失败，客机无 VS）+ **`integration.m1.shm`** |
-| 第 2 遍 | **144 / 146** | 只有上述两个已知环境失败 |
+| 第 1 遍（仅 T1-11 两层修复，带重入用例前） | **143 / 146** | `structural.m2.storage_independent_build`、`structural.m5.execution_boundary`（两个已知环境失败，客机无 VS）+ **`integration.m1.shm`** |
+| 第 2 遍（同上） | **144 / 146** | 只有上述两个已知环境失败 |
+| **第 3 遍（三层修复 + 重入用例，终局配置）** | **144 / 146** | 只有上述两个已知环境失败（请求 `1228b5ed95834b19ada4b1bfdc653862`） |
 
-基线（T1-01 记录）是 **144/146**，第 2 遍与基线**逐项一致**。
+基线（T1-01 记录）是 **144/146**；第 2、3 遍与基线**逐项一致**。
 
 **`integration.m1.shm` 是新发现的第三个间发项，不是本次改动引起的介绍：**
 
@@ -183,59 +196,95 @@ MYRD_VM_EXIT=0     MYRD_VM_ELEVATED=True
 Consecutive 顺序）按构造抓不到这个形状：它只在**整套顺序**里、被前一个用例干扰时才出现。
 这正是调查文档 §2.8 结尾提到的"Sweep 顺序对照普查"该做的事。
 
-### 4.4 重入锁：在虚拟机真实设备上测量过，结论已取，用例未入库
+### 4.4 重入锁 + 第三个缺陷：独占打开与"刚关闭的句柄"的瞬时冲突
 
-按你的要求，重入这件事**在虚拟机上用真实设备端到端测过**。结论取到了，
-但**用例本身没有留在套件里**——理由在下面，这是一个新缺陷，不是这一条修不动。
+**结论先行**：重入用例做出来了、留在套件里、`-Repeat 20` 稳定通过（13/13 用例全过）。
+过程中它暴露了**第三个真实缺陷**——不是我先以为的"句柄泄漏"，而是
+**一个刚被关闭的句柄会让"请求无共享的独占打开"失败**，且这个窗口在成品路径上真实存在。
 
-**测法与读数。** 用例起真实 worker → 真实 AIM 代理盘 → 真实 GPT/NTFS 卷，
-用 `GetVolumeNameForVolumeMountPointW` 解析设备路径、读出 extents（`lock` 要用它核对句柄身份），
-然后用**生产的** `Win32VolumeAdapter::lock` 取锁并持有，再取一次：
+#### (1) 重入的测量结论（修正我先前的猜测）
 
-```
-PROBE-REENTRANT first : ran=1 ok=1 acquired=1 busy=0 held=1 code=0 native=0
-PROBE-REENTRANT second: ran=1 ok=0 acquired=0 busy=0 held=0 code=21001 native=21 msg=opening volume failed
-PROBE-REENTRANT third : ran=1 ok=1 acquired=1 busy=0 held=1 code=0 native=0
-```
-
-**结论（修正了我先前的猜测）**：第二次获取**被拒**，但拒法**不是** `busy`——
-`CreateFileW(设备路径, GENERIC_READ|GENERIC_WRITE, 0 /* 无共享 */)` 返回
-**`ERROR_NOT_READY`(21)**，而 `lock` 只把 sharing / lock / busy 违规映射成 `busy`，
-所以走的是原生失败路径。**无论哪种，第二次获取根本不会成功**，因此冻结必须**保留并向下传递**
-（`flush_volume` / `dismount_volume` 收 `std::optional<LockedVolume>&`），而不是重试。
-第三次获取成功，说明这个卷在被拒之后仍然健康——拒绝不是"卷坏了"。
-
-**为什么用例没留下：它会以 25–50% 的概率弄坏最后一个用例的拆卸。**
-
-把它留在套件里跑 `-Repeat N` 时，最后这个用例的收尾稳定地间歇失败：
+用真实 worker → 真实 AIM 盘 → 真实 GPT/NTFS 卷，驱动**生产的** `Win32VolumeAdapter::lock`：
 
 ```
-PROBE-REENTRANT before cleanup: held_open=0 second_open=0 third_open=0
-PROBE-REENTRANT cleanup failed: op=dismount_volume msg=volume is busy ... native=32 code=1
+first : acquired=1 held=1
+second: 被拒   code=21001 native=21 (ERROR_NOT_READY)
+third : acquired=1 held=1        ← 释放后同一个卷仍可被取锁
 ```
 
-`native=32` 是 `ERROR_SHARING_VIOLATION`。关键在于**探针自己的三把句柄都确认已关闭**
-（`held_open=0 second_open=0 third_open=0`，在拆卸之前打印），也就是说：
+第二次获取**被拒**，但**不是** `busy`：`CreateFileW(设备路径, RW, 0 /* 无共享 */)` 返回
+`ERROR_NOT_READY`(21)，而 `lock` 只把 sharing/lock/busy 违规映射成 `busy`，所以走原生失败。
+**无论哪种，第二次获取根本不会成功** ⇒ 冻结必须**保留并传递**（这就是
+`flush_volume` / `dismount_volume` 收 `std::optional<LockedVolume>&` 的原因）。
+第三次成功 ⇒ 拒绝是拒绝，不是"卷坏了"。
 
-> **worker 在 flush 之后、拆卸之时，打不开它自己刚刚 flush 过的那个卷。**
+用例只断言属于我们的那半条契约（**没有锁被发放出去**），原生码**记录**而不钉死。
 
-这才是真正的问题，而且它**不是重入问题**：`ERROR_SHARING_VIOLATION` 表示**worker 进程里还有一个
-未关闭的卷句柄**。这是 worker 自身拆卸路径的缺陷，探针只是把它稳定地暴露出来。
+#### (2) 它暴露的第三个缺陷（我先前的定性是错的）
 
-**因此这次不入库**：一个 25–50% 失败的用例会污染 VM 上之后每一次测量，
-那正是测试最不该有的性质。结论已经取到并记在这里，缺陷本身应该**单独立一个增量**去查
-（现象、`native=32`、以及"探针句柄全关仍冲突"这条关键事实都已具备）。
+带这个用例跑 `-Repeat N` 时，收尾稳定间歇失败，我最初定性为 **worker 句柄泄漏**：
 
-**为了定位它，本轮顺带做了一处真正有价值的改进**（保留）：
-`VolumeLockAttempt` 增加 `native_code`，`ProductionRuntimeAdapter::dismount` 把它带进错误里。
-此前 `dismount` 报"volume is busy"但 `native=0`，把 sharing violation / `ERROR_NOT_READY` /
-权限拒绝三种完全不同的原因压成同一个不可区分的失败——**这个缺陷是我这一轮亲眼看它把
-"间歇"伪装成"确定性"才发现的**。
+```
+PROBE-REENTRANT cleanup failed: op=dismount_volume ... native=32 (ERROR_SHARING_VIOLATION)
+```
 
-**过程的诚实交代**：我先前把这个探针失败归因于"这个测试形态不可行"，**那是错的**——
-真正的原因是**我自己 kill 掉 host 侧等待进程留下孤儿 worker 污染了 VM**（§8）。
-VM 干净时这个形态一次通过、且跑完状态干净；它真正的缺陷是上面那条 worker 句柄泄漏，
-与形态无关。教训：设备类用例间歇失败时，**先排除环境污染，再质疑测试形态或产品**。
+**这个定性是错的。** 给 worker 的 `lock` 加了一条诊断（冲突后睡 250 ms 再试一次）之后，
+worker 自己打印出：
+
+```
+MYRD-LEAK probe=1 volume=Y: first=SHARING_VIOLATION after-250ms=OPENED (err=0)
+```
+
+**冲突的句柄在 250 ms 内就被释放了——没有任何句柄泄漏。** 真正的机制是：
+
+1. `shutdown_clean_locked` 先 **flush**：`Win32VolumeAdapter::flush` 打开卷（`FILE_SHARE_READ|WRITE`）
+   然后 `CloseHandle`；
+2. 紧接着 **dismount**：`lock` 用 **无共享模式** 打开同一个卷，要求"此刻没有任何其他句柄"；
+3. 第 1 步刚关闭的句柄，内核/文件系统侧的引用还没拆完 ⇒ 第 2 步拿到
+   `ERROR_SHARING_VIOLATION`。
+
+`freeze_writes` 走同一条路（"打开失败→busy→拒绝"），所以 worker 会报
+`the volume is busy; the write freeze could not be taken`。
+
+**这个窗口在成品路径上真实存在**，不是探针造出来的：
+`create → stop`（创建后立即停）就是"flush 完立刻独占打开"。
+**它之所以一直没被发现，是因为失败被报成 `busy`**——调用方看到的是"这个盘停不下来"，
+一个看起来确定性的结果，而不是一个时序竞态。这正是 §4.5 那条改进的价值。
+
+#### (3) 修法：在调用方已经给的预算内做有界重试
+
+`Win32VolumeAdapter::lock` 现在在 `timeout_ms` 预算内重试冲突的独占打开
+（50 ms 固定间隔；窗口实测是毫秒级，退避只会拖慢答案）。
+
+- **有界**：预算耗尽仍然返回 `busy` 并带上原生码——**不软化任何东西**。
+  卷真的被别人占着时，每次尝试都被拒，调用方拿到的还是 `busy`。
+- **不是"用重试掩盖失败"**：重试的是**获取锁**这个可重入的准备工作，
+  被重试的操作不做任何持久化改动，失败仍然上报。项目反对的是
+  "让已提交的操作靠重试自我修复"，这不是那一类。
+- **与既有文档一致**：`windows_volume.h` 早就写着
+  "A busy volume is an expected observation, not an API failure: callers may keep
+  the runtime alive and retry"——这里只是把它落实到**调用方自己重试不了**的那一处
+  （冲突发生在它正在执行的操作内部）。
+
+#### (4) 对照实验（同一个套件、同一台客机）
+
+| 配置 | 结果 |
+|---|---|
+| 探针在套件内，**未修** | **9/20**、2/6、5/6（收尾间歇失败） |
+| 探针在套件内，**已修** | **20/20**，13/13 用例全过 |
+| 探针移除（只验 T1-11 本身） | 20/20 |
+
+修完之后重入用例可以留在套件里：它现在是 T1-11 的回归保护，而不是污染源。
+
+#### (5) 自我纠正（两次，都记下来）
+
+1. 我先把这个探针的失败归因于**"测试形态不可行"**——错的。原因是**我自己 kill 掉
+   host 侧等待进程留下孤儿 worker 污染了 VM**。
+2. 我又把它归因于**"worker 句柄泄漏"**——也是错的。它是一条**瞬时竞态**，
+   只是被 `busy` 这个措辞伪装成了确定性失败。
+
+教训：设备类用例间歇失败时，**先排除环境污染，再给现象加一条能区分假设的诊断，
+最后才下结论**——两次我都是直接下结论，两次都错。
 
 ---
 
