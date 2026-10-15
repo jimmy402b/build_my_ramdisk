@@ -101,15 +101,29 @@ public:
     [[nodiscard]] Result<void> flush() const;
     [[nodiscard]] Result<void> dismount() const;
 
-private:
-    friend class Win32VolumeAdapter;
+    // Adopts a handle that already holds the volume's lock, with the identity it
+    // was verified against.
+    //
+    // Public because the lock's *lifecycle* is what the engine layer reasons
+    // about -- `DiskRuntime` retains one across several commands -- and a fake
+    // provider on that seam has to be able to produce one.  Production reaches
+    // this through `Win32VolumeAdapter::lock`, which is still the only thing that
+    // can obtain a handle from a device.  Reaching it directly from production
+    // code would mean adopting a lock nobody took, which is why every caller is
+    // a lock result or a test that never dereferences the handle.
 #ifdef _WIN32
     explicit LockedVolume(HANDLE handle, ProductVolume identity) noexcept
         : handle_(handle), identity_(std::move(identity)) {}
-    HANDLE handle_{INVALID_HANDLE_VALUE};
 #else
     explicit LockedVolume(void* handle, ProductVolume identity) noexcept
         : handle_(handle), identity_(std::move(identity)) {}
+#endif
+
+private:
+    friend class Win32VolumeAdapter;
+#ifdef _WIN32
+    HANDLE handle_{INVALID_HANDLE_VALUE};
+#else
     void* handle_{};
 #endif
     ProductVolume identity_{};

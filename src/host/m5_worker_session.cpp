@@ -216,6 +216,58 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
+    case WorkerCommand::freeze_writes: {
+        if (!started_) {
+            reply.error =
+                refusal(L"freeze_writes", L"the runtime has not been started");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto frozen = runtime_.freeze_writes();
+        if (!frozen.ok()) {
+            reply.error = frozen.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // The observation is what answers the command: `writes_frozen` is the
+        // fact the caller is asking for, and a bare success would leave it
+        // trusting that this call, rather than the runtime, took the lock.
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = status.move_value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::release_write_freeze: {
+        if (!started_) {
+            reply.error = refusal(L"release_write_freeze",
+                                  L"the runtime has not been started");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto released = runtime_.release_write_freeze();
+        if (!released.ok()) {
+            reply.error = released.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // The observation is the answer, and on this path it is required to say
+        // the freeze is *gone*: the caller is about to let a still-running
+        // profile accept writes again, and a success that left the lock held
+        // would be recorded as a resumed disk that cannot be written to.
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        if (status.value().writes_frozen) {
+            reply.error = refusal(L"release_write_freeze",
+                                  L"the volume write freeze is still held");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = status.move_value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
     case WorkerCommand::checkpoint_prepare: {
         if (!started_) {
             reply.error =

@@ -78,6 +78,16 @@ struct FakeRuntime final {
     std::uint64_t observed_prepare_native_id{};
     DiskCheckpointCommitRequest observed_commit{};
     std::optional<std::uint64_t> observed_abort_native_id{};
+    // The write freeze, observed from the runtime's side of the boundary.  These
+    // are the facts the stop path's correctness turns on: how many locks were
+    // taken, whether the dismantle used the retained one, and whether the lock
+    // was still held at the moment the volume was taken apart.
+    std::uint32_t volume_lock_attempts{};
+    std::optional<std::uint64_t> volume_lock_timeout_ms{};
+    bool volume_lock_busy{};
+    bool freeze_acquired{};
+    bool dismount_ran_frozen{};
+    bool fail_freeze{};
 
     DiskRuntimeOperations operations() {
         DiskRuntimeOperations ops;
@@ -158,8 +168,12 @@ struct FakeRuntime final {
             return fail_verify ? Result<void>::failure(runtime_error())
                                : Result<void>::success();
         };
-        ops.flush_volume = [this](const ProductVolume&) {
-            events.push_back("flush");
+        ops.flush_volume = [this](const ProductVolume&,
+                                  std::optional<LockedVolume>& held) {
+            // Tagged, because "the flush went through the write freeze" and "the
+            // flush opened its own handle" are different facts: only the first is
+            // even possible while the volume is frozen.
+            events.push_back(held.has_value() ? "flush-frozen" : "flush");
             REQUIRE(volume_observed);
             REQUIRE(verified);
             flushed = true;
@@ -175,10 +189,37 @@ struct FakeRuntime final {
             return fail_assign ? Result<void>::failure(runtime_error())
                                : Result<void>::success();
         };
-        ops.dismount_volume = [this](const ProductVolume&) {
-            events.push_back("dismount");
+        ops.dismount_volume = [this](const ProductVolume&,
+                                     std::optional<LockedVolume>& held) {
+            // Tagged rather than logged flatly: "the runtime dismantled this
+            // volume while holding its write freeze" and "the runtime dismantled
+            // it with nothing held" are the two behaviours under test, and a fake
+            // that logged one event for both could not tell them apart.
+            if (held.has_value()) {
+                events.push_back("dismount-frozen");
+                dismount_ran_frozen = true;
+            } else {
+                events.push_back("dismount");
+            }
             return fail_dismount ? Result<void>::failure(runtime_error())
                                  : Result<void>::success();
+        };
+        ops.lock_volume = [this](const ProductVolume&, std::uint64_t timeout_ms) {
+            events.push_back("freeze");
+            ++volume_lock_attempts;
+            volume_lock_timeout_ms = timeout_ms;
+            if (fail_freeze) return Result<VolumeLockAttempt>::failure(runtime_error());
+            if (volume_lock_busy) return Result<VolumeLockAttempt>::success({false, true});
+            freeze_acquired = true;
+            // `locked` carries the descriptor the runtime retains.  The fake
+            // supplies a real one here because the freeze *is* retained and the
+            // dismount is told about it; no native call is ever made with it, so
+            // the handle it wraps is never touched.
+            VolumeLockAttempt attempt{};
+            attempt.acquired = true;
+            attempt.locked =
+                std::optional<LockedVolume>(LockedVolume(HANDLE{}, ProductVolume{}));
+            return Result<VolumeLockAttempt>::success(std::move(attempt));
         };
         ops.remove_drive_letter = [this](const ProductVolume&) {
             events.push_back("remove-letter");
@@ -291,6 +332,129 @@ TEST_CASE(m4_disk_runtime_reports_no_adopted_volume_after_teardown) {
     // The removal barrier took the volume with it, so there is no longer an
     // identity a durable profile could honestly be written from.
     REQUIRE(!runtime.value()->adopted_volume().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// The write freeze: one lock, held across everything it has to cover.
+//
+// This is the mechanic the stop path depends on, tested at the layer that owns
+// it.  The contract has four parts and each one is a way the original defect
+// came back:
+//
+//   * the lock is taken exactly once, and taking it is what "frozen" means;
+//   * a second request is a no-op rather than a second acquisition, because a
+//     second acquisition is impossible and reporting it as a failure would turn
+//     a retry of an already-satisfied precondition into a stop that cannot run;
+//   * the flush and the commit happen *while* writes are frozen -- the whole
+//     point, since a commit taken before the freeze is a commit writes can still
+//     follow;
+//   * the dismantle is told about the retained lock, and the freeze is reported
+//     as held right up to it, because the descriptor is handed over at that
+//     moment and "no descriptor" is not "no freeze".
+// ---------------------------------------------------------------------------
+TEST_CASE(m4_disk_runtime_write_freeze_is_taken_once_and_covers_the_commit) {
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+
+    REQUIRE(!runtime.value()->writes_frozen());
+    const auto after_start = fake.volume_lock_attempts;
+    REQUIRE_EQ(after_start, 0u);
+
+    REQUIRE(runtime.value()->freeze_writes().ok());
+    REQUIRE(runtime.value()->writes_frozen());
+    REQUIRE_EQ(fake.volume_lock_attempts, 1u);
+    // The runtime's own configured budget, reused rather than a second timeout
+    // invented for this path: `options()` gives one second here, and production
+    // gives thirty, so the assertion is about *which* value travelled and not
+    // about the number itself.
+    REQUIRE_EQ(fake.volume_lock_timeout_ms.value(), 1000u);
+
+    // The flush and the commit must both land inside the frozen window, and the
+    // flush must go *through* the freeze: a flush that opened its own handle
+    // cannot open an exclusively locked volume at all.  Searched forward from
+    // the freeze, because start() already flushed once before any of this -- a
+    // search from the beginning would find that earlier flush and pass while
+    // saying nothing about the frozen window.
+    REQUIRE(runtime.value()->flush_volume().ok());
+    REQUIRE(runtime.value()->checkpoint().ok());
+    const auto freeze_at = std::find(fake.events.begin(), fake.events.end(),
+                                     std::string("freeze"));
+    REQUIRE(freeze_at != fake.events.end());
+    const auto flush_at = std::find(freeze_at, fake.events.end(),
+                                    std::string("flush-frozen"));
+    REQUIRE(flush_at != fake.events.end());
+    const auto commit_at = std::find(flush_at, fake.events.end(),
+                                     std::string("checkpoint"));
+    REQUIRE(commit_at != fake.events.end());
+
+    // Freezing again is asking for a state, not for a lock.
+    REQUIRE(runtime.value()->freeze_writes().ok());
+    REQUIRE_EQ(fake.volume_lock_attempts, 1u);
+    REQUIRE(runtime.value()->writes_frozen());
+
+    // The teardown runs with the freeze in place, and the freeze is reported as
+    // held while it does -- including at the dismantle itself, where the
+    // descriptor has already been handed to the provider.
+    REQUIRE(runtime.value()->shutdown_clean().ok());
+    REQUIRE(fake.dismount_ran_frozen);
+    REQUIRE(!runtime.value()->writes_frozen());
+    REQUIRE(!runtime.value()->adopted_volume().has_value());
+
+    // And the freeze is gone, so the same volume can be frozen again.  Without
+    // this the release could be a no-op and nothing above would notice.
+    REQUIRE(runtime.value()->shutdown_clean().ok());
+    REQUIRE_EQ(fake.volume_lock_attempts, 1u);
+}
+
+TEST_CASE(m4_disk_runtime_write_freeze_release_lets_the_volume_go) {
+    // The rollback path.  A stop that fails after the freeze leaves a profile
+    // that is still supposed to be running, so the freeze has to be giveable
+    // back without dismantling anything -- otherwise the cure is worse than the
+    // defect it closes, and the disk it "protected" cannot be written to.
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE(runtime.value()->freeze_writes().ok());
+    REQUIRE(runtime.value()->writes_frozen());
+
+    REQUIRE(runtime.value()->release_write_freeze().ok());
+    REQUIRE(!runtime.value()->writes_frozen());
+    REQUIRE(runtime.value()->adopted_volume().has_value());
+    // Nothing was dismantled: the profile is still mounted and still running.
+    const auto dismantled = std::find(fake.events.begin(), fake.events.end(),
+                                      std::string("dismount-frozen"));
+    REQUIRE(dismantled == fake.events.end());
+
+    // Releasable again, and re-freezable: the second freeze is a real
+    // acquisition, so the release really gave the lock back.
+    REQUIRE(runtime.value()->release_write_freeze().ok());
+    REQUIRE(runtime.value()->freeze_writes().ok());
+    REQUIRE_EQ(fake.volume_lock_attempts, 2u);
+    REQUIRE(runtime.value()->writes_frozen());
+}
+
+TEST_CASE(m4_disk_runtime_write_freeze_refuses_a_busy_volume) {
+    // A busy volume is a refused freeze, never a silent downgrade.  Carrying on
+    // unfrozen is precisely the defect this increment closes: the commit that
+    // follows would not be the last word on the volume, and the removal would
+    // then be refused over a runtime that really is dirty again.
+    FakeRuntime fake;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    fake.volume_lock_busy = true;
+    REQUIRE(!runtime.value()->freeze_writes().ok());
+    REQUIRE(!runtime.value()->writes_frozen());
+    // Busy is retryable, so the runtime keeps everything and a later attempt can
+    // succeed -- which is the whole reason this is a failure the caller may
+    // repeat rather than a fatal state.
+    fake.volume_lock_busy = false;
+    REQUIRE(runtime.value()->freeze_writes().ok());
+    REQUIRE(runtime.value()->writes_frozen());
+    REQUIRE_EQ(fake.volume_lock_attempts, 2u);
 }
 
 TEST_CASE(m4_disk_runtime_create_shutdown_removes_created_drive_letter) {

@@ -118,15 +118,15 @@ bool wait_for_letter_release(const wchar_t letter) {
 // point at which its teardown has run, so this closes the window.
 //
 // It is **not** a fix for anything, and it is deliberately not load-bearing for
-// the two-disk case (§1.38): that case creates *both* of its workers inside
+// the two-disk case (搂1.38): that case creates *both* of its workers inside
 // itself, so a barrier taken at case start cannot affect it and its
 // failing-before / passing-after evidence stands on the M3 fix alone.
 //
-// It was deleted in §1.38 on the argument that it made "fixed" self-certifying.
-// That argument does not hold for the defect §1.38 found, and the deletion was
+// It was deleted in 搂1.38 on the argument that it made "fixed" self-certifying.
+// That argument does not hold for the defect 搂1.38 found, and the deletion was
 // measured afterwards to reintroduce this inter-case class: with the same M3
 // code, the suite failed 2 of 5 isolated runs without this barrier and 0 of 4
-// with it (§1.39).
+// with it (搂1.39).
 // Whether a snapshot entry names a process that is still running.
 //
 // `CreateToolhelp32Snapshot` lists a process that has exited but whose handle is
@@ -477,7 +477,7 @@ TEST_CASE(m5_backend_adapter_reaches_the_worker_it_launched) {
 }
 
 TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
-    // §1.25's case, brought back now that the operation it needed exists. Every
+    // 搂1.25's case, brought back now that the operation it needed exists. Every
     // step below has been run before in isolation against a fake, and none of it
     // has ever run in order against the real thing: a real worker process, a real
     // generation-zero image, a real AIM proxy disk, a real provisioned and
@@ -509,7 +509,7 @@ TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
     auto& session = *launched.value();
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
 
-    // The command §1.26 designed: it creates the bundle, provisions the volume,
+    // The command 搂1.26 designed: it creates the bundle, provisions the volume,
     // and answers with the identity the service records as its registration.
     // A failure here exits the process at the assertion, so the reason is not
     // visible from this run -- the framework has no message form.  Locating one
@@ -757,7 +757,7 @@ TEST_CASE(m5_backend_checkpoint_crosses_the_boundary_and_commits) {
         // And the session is still usable afterwards: a landed commit releases
         // the candidate, so a later flush can cut a fresh one.  Asserted here
         // because the withdrawal path does *not* have this property -- see the
-        // case below and manifest §1.33.
+        // case below and manifest 搂1.33.
         REQUIRE(control.execute(flush).ok());
     }
     REQUIRE(wait_for_letter_release(letter));
@@ -836,7 +836,7 @@ TEST_CASE(m5_backend_checkpoint_boundary_withdrawal_publishes_nothing) {
         // bundle file identity differs from the expected one -- while a
         // *committed* candidate leaves the session perfectly usable (asserted in
         // the case above, which is what makes the two paths distinguishable).
-        // The finding and its minimal reproduction are manifest §1.33, and it is
+        // The finding and its minimal reproduction are manifest 搂1.33, and it is
         // not fixed here: the expectation lives inside M3's abort handling, and
         // the transfer manifest's mandatory gate forbids M5 from changing M3's
         // bundle, journal or manifest formats.
@@ -846,7 +846,7 @@ TEST_CASE(m5_backend_checkpoint_boundary_withdrawal_publishes_nothing) {
 
 TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     // The whole stop plan against a real worker, which is the other half of
-    // §1.22's unexecuted list: `quiesce_mutations`, `remove_mount` and
+    // 搂1.22's unexecuted list: `quiesce_mutations`, `remove_mount` and
     // `confirm_removal` all run here for the first time, in the order the plan
     // puts them in.
     //
@@ -897,6 +897,12 @@ TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     // holds none -- so what protects the write stream is downstream and real.
     require_action(control.execute(stop_request(ActionKind::quiesce_mutations)), "stop step");
 
+    // The write freeze.  This is the step the case below
+    // (`m5_backend_holding_the_volume_lock_refuses_a_second_lock`) exists to
+    // justify, and leaving it out here was how the first version of this case
+    // certified a sequence production does not run.
+    require_action(control.execute(stop_request(ActionKind::freeze_writes)), "stop step");
+
     // The flush cuts the candidate, the boundary continues, the commit lands and
     // advances the witness the removal will be checked against.
     require_action(control.execute(stop_request(ActionKind::flush_exact_volume)), "stop step");
@@ -914,7 +920,7 @@ TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     // Production does not stop here either: ServiceCore confirms the epoch after
     // the commit, and the runtime is only clean once it has.  Leaving it out was
     // the first version of this case, and the intermittency it produced is
-    // recorded in §1.34.
+    // recorded in 搂1.34.
     REQUIRE(control
                 .publish_checkpoint_epoch(
                     stop_request(ActionKind::checkpoint),
@@ -985,6 +991,12 @@ Result<WorkerActionResult> run_stop_plan(ServiceWorkerControl& control,
     };
     require_action(control.execute(request(ActionKind::quiesce_mutations)),
                    "stop plan");
+    // The write freeze, in the position the plan puts it.  Omitting it here
+    // would make this helper certify a stop sequence production never runs --
+    // and the removal below depends on it: an unfrozen commit is not the last
+    // word on the volume, which is what the 25% `runtime_dirty` refusal was.
+    require_action(control.execute(request(ActionKind::freeze_writes)),
+                   "stop plan");
     require_action(control.execute(request(ActionKind::flush_exact_volume)),
                    "stop plan");
     auto committed = control.execute_checkpoint(
@@ -997,7 +1009,7 @@ Result<WorkerActionResult> run_stop_plan(ServiceWorkerControl& control,
     REQUIRE(committed.value().checkpoint.has_value());
     REQUIRE(committed.value().checkpoint->disposition
             == CheckpointCommitDisposition::committed);
-    // The epoch confirmation is not optional, and its absence is §1.34(b): a
+    // The epoch confirmation is not optional, and its absence is 搂1.34(b): a
     // runtime is dirty until the commit it made has been confirmed, and a dirty
     // runtime is refused its own removal.
     REQUIRE(control
@@ -1023,7 +1035,7 @@ Result<WorkerActionResult> run_stop_plan(ServiceWorkerControl& control,
 
 TEST_CASE(m5_backend_stopping_one_profile_does_not_require_the_other_gone) {
     // Two profiles alive at once, and the *first* one stopped while the second
-    // is still mounted.  This is the regression test for §1.38.
+    // is still mounted.  This is the regression test for 搂1.38.
     //
     // It failed before the fix, on `stop A`, with
     // `M3AimRuntime::remove_owned_device` / "PhysicalDrive inventory did not
@@ -1101,3 +1113,37 @@ TEST_CASE(m5_backend_stopping_one_profile_does_not_require_the_other_gone) {
                    "stop B");
     REQUIRE(!is_letter_assigned(letters[1]));
 }
+
+// ---------------------------------------------------------------------------
+// The write freeze, and the one thing about it that had to be learned from a
+// device rather than from reasoning.
+//
+// `FSCTL_LOCK_VOLUME` is not re-entrant through this adapter, and the reason is
+// one line of `Win32VolumeAdapter::lock`: it opens the volume with *no* sharing
+// mode, so while this process holds the lock, a second acquisition cannot open
+// the volume at all and comes back as `busy` -- the adapter's documented answer
+// for "someone else holds it".  It cannot tell "someone else" from "this same
+// runtime", and it must not try.
+//
+// That is a rule about the *implementation*, and the first version of T1-11
+// broke against it twice, both times on a real volume:
+//
+//   * `flush_exact_volume` after the freeze failed with
+//     `op=flush msg=opening volume failed code=21001` in 20 of 20 runs, because
+//     a flush that opened its own handle could not open the frozen volume;
+//   * the same applies to the dismantle, which is why
+//     `DiskRuntimeOperations::dismount_volume` takes the retained lock as an
+//     argument instead of acquiring one.
+//
+// So the invariant is *structural*, not procedural: once a runtime has frozen a
+// volume, every later step that touches the volume runs through the handle that
+// holds the freeze, and the type signature is what makes re-acquiring it
+// unrepresentable.  A separate case that fabricated a second lock to observe the
+// refusal was written, run, and removed: what it measured is a property of
+// `CreateFileW` plus a fabricated `ProductVolume`, and while it was in the tree
+// it wedged the volume on the VM instead of discriminating anything.  The
+// behaviour that actually matters -- a stop that freezes, flushes, commits and
+// then dismantles cleanly, 20 times out of 20 -- is measured by
+// `m5_backend_stop_walks_quiesce_flush_commit_remove` above, whose freeze step
+// cannot pass unless the real lock is really held.
+// ---------------------------------------------------------------------------

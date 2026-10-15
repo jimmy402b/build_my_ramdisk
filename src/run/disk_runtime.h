@@ -128,10 +128,42 @@ struct DiskRuntimeOperations final {
     std::function<Result<ProductVolume>(wchar_t)> find_recovered_volume;
     std::function<Result<void>(const ProductVolume&, std::uint64_t)>
         verify_volume;
-    std::function<Result<void>(const ProductVolume&)> flush_volume;
+    // Flushes the volume's cached writes.  `held` is the write freeze this
+    // runtime already holds, if any, and the flush must go *through it*: the
+    // freeze opens the volume for exclusive access, so an implementation that
+    // opened its own handle here would be refused by the runtime's own lock.  An
+    // empty `held` means there is no freeze and the implementation opens its own,
+    // which is what the create path and every M4 caller do.
+    std::function<Result<void>(const ProductVolume&,
+                               std::optional<LockedVolume>&)>
+        flush_volume;
     std::function<Result<void>(const ProductVolume&, wchar_t)>
         assign_drive_letter;
-    std::function<Result<void>(const ProductVolume&)> dismount_volume;
+    // Takes and *returns* the volume's exclusive lock, which the runtime then
+    // retains.  Ownership travels with the attempt rather than being left with
+    // the provider, because the window the lock has to cover is not one call:
+    // the stop plan freezes writes, flushes, commits and only then dismantles,
+    // and each of those is a separate command.  A lock the provider held would
+    // be released the moment its call returned, which is the defect this hook
+    // exists to end.
+    //
+    // Optional so a foreground M4 run -- which takes its own lock through its
+    // own hooks and never freezes -- keeps working unchanged.
+    std::function<Result<VolumeLockAttempt>(const ProductVolume&, std::uint64_t)>
+        lock_volume;
+    // Dismantles the volume, given the lock the runtime is holding for it.
+    //
+    // The lock is *passed*, not re-acquired, because acquiring it a second time
+    // is not possible: the provider opens the volume for exclusive access, so a
+    // second attempt while this runtime already holds it is refused as busy by
+    // this operation's own lock.  Re-acquiring was a real defect -- it made
+    // `remove_mount` fail on the freeze it was relying on -- so the fact that the
+    // runtime holds a lock is stated here instead of being rediscovered below.
+    // An empty optional means the runtime holds no lock; the implementation then
+    // takes its own, which is the M4 behaviour and remains correct.
+    std::function<Result<void>(const ProductVolume&,
+                               std::optional<LockedVolume>&)>
+        dismount_volume;
     std::function<Result<void>(const ProductVolume&)> remove_drive_letter;
 
     std::function<Result<DiskCheckpointResult>()> checkpoint;
@@ -184,6 +216,38 @@ public:
     // This is intentionally separate from checkpoint() so the M4 run loop
     // can enforce the filesystem durability ordering.
     Result<void> flush_volume();
+
+    // Takes the adopted volume's exclusive lock and keeps it, which is what
+    // makes "the writes have stopped" a fact rather than a hope.
+    //
+    // The M4 shutdown order is `lock -> verify -> flush -> checkpoint ->
+    // dismount`, and the lock is what gives the commit its meaning: while the
+    // volume is locked the filesystem accepts no further write, so a commit that
+    // lands afterwards is the last word on that volume.  Without it a stop can
+    // commit, then be written to again, and the removal that follows is refused
+    // because the runtime it is refusing over is genuinely dirty again.
+    //
+    // The lock is held by this runtime, not by the caller, because the window it
+    // must cover spans flush, checkpoint and removal -- three separate commands
+    // with three separate callers.  It is released by `release_write_freeze`,
+    // which the teardown runs once the volume is dismantled.
+    //
+    // Idempotent: a second call succeeds and keeps the lock already held.  That
+    // is deliberate rather than lenient -- taking a second lock is not possible
+    // (the provider opens the volume exclusively), so "freeze again" is only ever
+    // a request for a state the runtime is already in, and failing it would turn
+    // a retry of an already-satisfied precondition into a stop that cannot
+    // proceed.
+    //
+    // A busy volume is a failure, not a silent downgrade: continuing unfrozen
+    // would reinstate exactly the window this call exists to close, and the
+    // caller must be able to retry a stop rather than discover later that its
+    // commit was not the last write.
+    Result<void> freeze_writes();
+    [[nodiscard]] bool writes_frozen() const;
+    // Releases the write freeze if one is held.  Idempotent, and deliberately
+    // `noexcept`: every failure path of a teardown has to be able to run it.
+    Result<void> release_write_freeze() noexcept;
     // May only be called after start() succeeds. The provider's disposition is
     // returned verbatim, including not_committed and commit_indeterminate;
     // callers must not infer commitment from a successful API call alone.
@@ -220,6 +284,10 @@ private:
     // caller must retain the runtime rather than stop it.
     Result<void> abort_pending_checkpoint_locked();
     Result<void> shutdown_clean_locked();
+    // The freeze release without the runtime mutex, for the teardown that is
+    // already holding it.  Separate from the public call so the two cannot drift
+    // into a self-deadlock on one runtime mutex.
+    void release_write_freeze_locked() noexcept;
 
     DiskRuntimeMode mode_;
     DiskRuntimeOptions options_;
@@ -237,6 +305,18 @@ private:
     // commit/abort must repeat to publish or release it.
     std::optional<DiskCheckpointPrepared> pending_checkpoint_;
     std::uint64_t pending_native_operation_id_{};
+    // The retained write freeze.  Owned here rather than by the provider so its
+    // lifetime -- and with it the window in which the volume accepts no write --
+    // is the runtime's decision and not one function's scope.
+    std::optional<LockedVolume> held_volume_lock_;
+    // Whether writes are frozen, tracked apart from the descriptor above.
+    //
+    // The two are not the same fact, and conflating them was a real defect: the
+    // teardown *hands the descriptor to the dismantle*, so the descriptor is
+    // empty while the volume is still frozen and still mounted.  A runtime that
+    // reported "not frozen" at that moment would tell the worker its volume was
+    // writable during the one step where the lock is doing its whole job.
+    bool writes_frozen_{};
 };
 
 } // namespace myrd

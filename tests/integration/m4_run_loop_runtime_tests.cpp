@@ -68,7 +68,8 @@ struct FakeRuntime final {
             verified = true;
             return Result<void>::success();
         };
-        ops.flush_volume = [this](const ProductVolume&) {
+        ops.flush_volume = [this](const ProductVolume&,
+                                  std::optional<LockedVolume>&) {
             events.push_back("flush");
             if (!verified) return Result<void>::failure(fake_error(L"flush"));
             flushed = true;
@@ -91,7 +92,8 @@ struct FakeRuntime final {
             }
             return Result<void>::success();
         };
-        ops.dismount_volume = [this](const ProductVolume&) {
+        ops.dismount_volume = [this](const ProductVolume&,
+                                     std::optional<LockedVolume>&) {
             events.push_back("dismount");
             return Result<void>::success();
         };

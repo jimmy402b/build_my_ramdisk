@@ -106,7 +106,8 @@ struct FakeInstance final {
                 ? Result<void>::failure(fake_error(L"verify"))
                 : Result<void>::success();
         };
-        ops.flush_volume = [this](const ProductVolume&) {
+        ops.flush_volume = [this](const ProductVolume&,
+                                  std::optional<LockedVolume>&) {
             events.push_back("flush");
             return Result<void>::success();
         };
@@ -118,7 +119,8 @@ struct FakeInstance final {
             return Result<DiskCheckpointResult>::success(
                 {DiskCheckpointDisposition::committed, generation});
         };
-        ops.dismount_volume = [this](const ProductVolume&) {
+        ops.dismount_volume = [this](const ProductVolume&,
+                                     std::optional<LockedVolume>&) {
             events.push_back("dismount");
             return Result<void>::success();
         };

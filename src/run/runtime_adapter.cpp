@@ -244,15 +244,21 @@ Result<DiskRuntimeOperations> make_runtime_operations(
                                           const std::uint64_t bytes) {
         return volumes.verify(volume, bytes);
     };
-    operations.flush_volume = [&volumes](const ProductVolume& volume) {
-        return volumes.flush(volume);
+    operations.flush_volume = [&volumes](const ProductVolume& volume,
+                                         std::optional<LockedVolume>& held) {
+        return volumes.flush(volume, held);
     };
     operations.assign_drive_letter = [&volumes](const ProductVolume& volume,
                                                 const wchar_t letter) {
         return volumes.assign(volume, letter);
     };
-    operations.dismount_volume = [&volumes](const ProductVolume& volume) {
-        return volumes.dismount(volume);
+    operations.lock_volume = [&volumes](const ProductVolume& volume,
+                                        const std::uint64_t timeout) {
+        return volumes.lock(volume, static_cast<std::uint32_t>(timeout));
+    };
+    operations.dismount_volume = [&volumes](const ProductVolume& volume,
+                                            std::optional<LockedVolume>& held) {
+        return volumes.dismount(volume, held);
     };
     operations.remove_drive_letter = [&volumes](const ProductVolume& volume) {
         return volumes.remove_letter(volume);
@@ -427,7 +433,17 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
     return Result<void>::success();
 }
 
-Result<void> ProductionRuntimeAdapter::flush(const ProductVolume& volume) {
+Result<void> ProductionRuntimeAdapter::flush(const ProductVolume& volume,
+                                            std::optional<LockedVolume>& held) {
+    if (held.has_value()) {
+        // Through the retained freeze.  This is not an optimization: the freeze
+        // opened the volume with no sharing mode, so `Win32VolumeAdapter::flush`
+        // -- which opens its own handle -- cannot open it at all while the
+        // runtime holds the lock.  That is what a frozen volume *means*, and it
+        // is why M4's shutdown order is `lock -> verify -> flush -> checkpoint`:
+        // every step after the lock runs through the handle that holds it.
+        return held->flush();
+    }
     return impl_->volume_adapter.flush(volume);
 }
 
@@ -440,7 +456,26 @@ Result<void> ProductionRuntimeAdapter::remove_letter(const ProductVolume& volume
     return impl_->volume_adapter.remove_drive_letter(volume);
 }
 
-Result<void> ProductionRuntimeAdapter::dismount(const ProductVolume& volume) {
+Result<VolumeLockAttempt> ProductionRuntimeAdapter::lock(const ProductVolume& volume,
+                                                         const std::uint32_t timeout_ms) {
+    return impl_->volume_adapter.lock(volume, timeout_ms);
+}
+
+Result<void> ProductionRuntimeAdapter::dismount(const ProductVolume& volume,
+                                                std::optional<LockedVolume>& held) {
+    if (held.has_value()) {
+        // The runtime already froze this volume, and that lock is the one to
+        // dismantle through.  Re-acquiring would open the volume for exclusive
+        // access a second time while this process holds it, which Win32 refuses
+        // as busy -- so a `remove_mount` that re-locked here failed against the
+        // very freeze the stop had correctly taken.
+        //
+        // Dismantling through the retained lock is also the stronger order: the
+        // FSCTL_DISMOUNT_VOLUME is issued on the handle that has held the volume
+        // frozen across the flush, the commit and the mount removal, so nothing
+        // can slip a write in between the commit and the teardown.
+        return held->dismount();
+    }
     auto locked = impl_->volume_adapter.lock(volume, 30000);
     if (!locked.ok()) return Result<void>::failure(locked.error());
     if (locked.value().busy || !locked.value().locked.has_value()) {

@@ -58,8 +58,9 @@ struct FakeBackend final : WindowsVolumeOperations, M3RuntimeOperations {
         observed_verify_bytes = bytes;
         return Result<void>::success();
     }
-    Result<void> flush(const ProductVolume&) override {
-        events->push_back("flush");
+    Result<void> flush(const ProductVolume&,
+                       std::optional<LockedVolume>& held) override {
+        events->push_back(held.has_value() ? "flush-frozen" : "flush");
         return Result<void>::success();
     }
     Result<void> assign(const ProductVolume&, const wchar_t) override {
@@ -70,8 +71,19 @@ struct FakeBackend final : WindowsVolumeOperations, M3RuntimeOperations {
         events->push_back("remove-letter");
         return Result<void>::success();
     }
-    Result<void> dismount(const ProductVolume&) override {
-        events->push_back("dismount");
+    Result<VolumeLockAttempt> lock(const ProductVolume&,
+                                   const std::uint32_t) override {
+        events->push_back("lock");
+        return Result<VolumeLockAttempt>::success({false, true});
+    }
+    // Records whether it dismantled through a lock the caller already held.  The
+    // two are different facts -- "the runtime froze this volume and dismantled
+    // it through that freeze" versus "the runtime took its own lock here" -- and
+    // the log has to be able to tell them apart, which is what the M5 stop path
+    // turns on.
+    Result<void> dismount(const ProductVolume&,
+                          std::optional<LockedVolume>& held) override {
+        events->push_back(held.has_value() ? "dismount-frozen" : "dismount");
         return Result<void>::success();
     }
 

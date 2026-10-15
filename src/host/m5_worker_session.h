@@ -31,6 +31,19 @@ public:
     virtual Result<WorkerRuntimeStatus> inspect_bundle() = 0;
     virtual Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) = 0;
+    // Takes the adopted volume's exclusive lock and keeps it across the commands
+    // that follow, so the mounted filesystem accepts no further write until the
+    // runtime is dismantled or the freeze is released.
+    //
+    // It is its own command because the window it opens spans a flush, a commit
+    // and a removal -- three separate calls -- and a lock taken inside any one of
+    // them would end with that call.  A lock that ends before the commit it is
+    // protecting has protected nothing.
+    virtual Result<void> freeze_writes() = 0;
+    // Releases the freeze if one is held, and dismantles nothing.  Idempotent,
+    // because the rollback that calls it cannot know whether the freeze it is
+    // undoing was ever taken.
+    virtual Result<void> release_write_freeze() = 0;
     // The commit answer: the disposition the persistence layer actually
     // returned, the post-commit observation, and -- when the commit did not
     // cleanly land -- the failure that decided it.

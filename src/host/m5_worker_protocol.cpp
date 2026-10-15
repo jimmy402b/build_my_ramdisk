@@ -150,6 +150,23 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
                     (kind == WorkerMessageKind::request ? kHasRemoval
                                                         : kHasRemovalReply),
                 kHasError};
+    case WorkerCommand::freeze_writes:
+        // Operation-scoped, like the removal it protects: a freeze is taken on
+        // behalf of one stop operation, and one that was not attributable could
+        // never be released by the same operation.  Answered with a bare status,
+        // because the one fact the caller needs -- whether the freeze is now
+        // held -- is `writes_frozen`, and a payload type of its own would be a
+        // second place for that answer to live.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
+    case WorkerCommand::release_write_freeze:
+        // The mirror of `freeze_writes`, and shaped the same way for the same
+        // reason: the fact the caller needs -- whether a freeze is still held --
+        // is `writes_frozen`, and the reply is only honest if it reports it.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
     }
     return {};
 }
@@ -319,6 +336,7 @@ Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
         std::memcpy(bundle.file_id.data(), file_id.data(), file_id.size());
         status.bundle = std::move(bundle);
     }
+    status.writes_frozen = reader.boolean();
     return Result<WorkerRuntimeStatus>::success(std::move(status));
 }
 
@@ -601,6 +619,9 @@ void write_status(detail::WorkerBytesWriter& writer,
         writer.u64(status.bundle->volume_serial);
         writer.raw(status.bundle->file_id);
     }
+    // Always written, never implied: a reader that assumed "frozen" from the
+    // presence of a volume would record a write freeze no call ever took.
+    writer.boolean(status.writes_frozen);
 }
 
 void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message) {

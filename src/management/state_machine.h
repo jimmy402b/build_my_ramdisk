@@ -182,6 +182,13 @@ enum class ActionKind : std::uint8_t {
     // private worker protocol and durable model fixtures.
     quiesce_mutations,
     resume_mutations,
+    // Appended for the same reason.  It sits in the stop plan between
+    // `quiesce_mutations` and `flush_exact_volume`, and it is the step that makes
+    // the commit that follows mean something: while the volume is frozen the
+    // mounted filesystem accepts no further write, so a checkpoint that lands
+    // afterwards is the last word on that generation rather than one more
+    // snapshot taken while writes continued.
+    freeze_writes,
 };
 
 inline constexpr std::size_t kMaximumPlanActions = 16;

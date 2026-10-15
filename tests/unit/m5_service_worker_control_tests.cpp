@@ -150,7 +150,7 @@ TEST_CASE(m5_worker_control_declares_no_cancellation_boundary) {
     const ActionKind actions[] = {
         ActionKind::checkpoint,      ActionKind::flush_exact_volume,
         ActionKind::remove_mount,    ActionKind::stop_runtime_and_release_lock,
-        ActionKind::quiesce_mutations};
+        ActionKind::quiesce_mutations, ActionKind::freeze_writes};
     for (const auto action : actions) {
         REQUIRE(!control.begins_noncancellable(action));
     }

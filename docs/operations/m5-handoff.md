@@ -10,14 +10,19 @@
 
 ## 1. 一句话现状
 
-**T1-01（VM 测试回路）已完成并验证**，读数 **144/146**（唯二失败是客机没有 Visual Studio
-的环境受阻）。**下一步是 T1-11**（stop 路径补写冻结），实施方案已写定但**尚未实现**。
+**T1-11（stop 路径补写冻结）已实现并验证**：`m5.production_execution_backend`
+`-Repeat 20` 实测 **20/20 通过**（修复前 5/20 失败）。证据与踩坑记录：
+`docs/validation/m5-t1-11-stop-write-freeze.md`。
+**下一步按 tasklist 顺序是 T1-02**（组合根 + 服务骨架）。
 
-已完成的两个实质修复：
+已完成的三个实质修复：
 - `067f9b3` —— 修掉一个 **50% 崩溃的 M2 测试缺陷**（测试钩子在冒充生产不变量），
   修复前 ~20/40 崩溃 → 修复后 **20/20 通过**；
 - `8a310bd` —— 建立 VM 回路，并做了**首次稳定性普查**：146 用例 × 5 = 730 次运行，
-  **718/730 通过，只有 2 个用例真间发**。
+  **718/730 通过，只有 2 个用例真间发**；
+- T1-11 —— stop 路径补写冻结。这是 **两层**改动：先把"提交前必须冻结写"补上，
+  再修"冻结之后所有卷操作必须复用那把锁"（不做第二层，stop 从 25% 失败变成 **100%** 失败）。
+  见 `docs/validation/m5-t1-11-stop-write-freeze.md` §2。
 
 ---
 
@@ -121,21 +126,49 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
 
 ---
 
-## 7. 下一步：T1-11（方案已定，未实现）
+## 7. T1-11 已完成（记录结论，供回溯）
 
-见 `docs/superpowers/plans/2026-10-14-t1-11-stop-write-freeze.md`。要点：
+证据：`docs/validation/m5-t1-11-stop-write-freeze.md`。要点：
 
 - **缺陷**：`disk stop` 实测 **25%（5/20）** 在 `remove_mount` 被拒
   （`The worker refused to remove: its runtime stands dirty`），
-  因为 `quiesce_mutations` **只证明不冻结**（`service_worker_control.cpp:492-495` 自述
-  "holds no write freeze to take"），提交之后仍挂载的卷还能被写入。
-- **M4 是对的**：`ShutdownHooks` 的顺序是 `lock_volume → verify → flush → final_checkpoint
-  → dismount`——**先锁卷再提交**。
-- **关键细节**：锁已经存在（`runtime_adapter.cpp:443`），但**太晚（提交之后）太短
-  （函数返回即释放）**；而 `DiskRuntimeOperations` **没有 `lock_volume` 钩子**。
-- **最大风险**：`FSCTL_LOCK_VOLUME` 非重入。**第一步必须先写"已持锁时再 lock"的重入测试**，
-  通过之后才动 `dismount()`。
-- **验收**：`-Repeat 20` 要求 **20/20**（修复前 5/20 失败）。
+  因为 `quiesce_mutations` **只证明不冻结**，提交之后仍挂载的卷还能被写入。
+- **修法**：stop 计划插入一步真正的写冻结，并让锁**跨命令**存活：
+
+  ```
+  quiesce → freeze_writes → flush → checkpoint → remove_mount
+          → remove_exact_device → stop_runtime_and_release_lock
+  ```
+
+  锁持有在 `DiskRuntime` 里；`freeze_writes` 是 **worker 协议的新动作**
+  （不是塞进 `quiesce`：一个是"证明停哪个 runtime"，一个是"让它不能再改"，失败含义相反）。
+- **第二层（实测得来，最容易漏）**：`Win32VolumeAdapter::lock` 用**无共享模式**打开卷，
+  所以一持锁，**同进程再开这个卷也会失败**（报成 `busy`，它分不出"别人"和"自己"）。
+  第一版把冻结放在 flush 之前 → STOP **20/20 失败**（`code=21001`）。
+  正解就是 M4 的顺序：**锁之后每一步都走持锁的那个句柄**。
+  为此 `flush_volume` 与 `dismount_volume` 都增加了 `std::optional<LockedVolume>&` 参数，
+  让"再 lock 一次"在类型上不可表达。
+- **附带**：`writes_frozen` 不能由"是否还握着描述符"推导——拆卸会把描述符交给下层，
+  那一刻描述符为空但卷仍冻结。故冻结状态由独立的 `writes_frozen_` 承载。
+- **验收**：`-Repeat 20` → **20/20 通过**（修复前 5/20 失败）。
+
+### 7.1 这一步踩到的两个环境事故（下次直接避开）
+
+1. **kill host 侧的 `Invoke-M5Vm.ps1` 不会停掉客机上的运行**。客机上的测试继续跑，
+   留下孤儿 worker 并占住 AIM 代理盘 → `Get-Disk` 多出 `PhysicalDrive1`、
+   `diskpart rescan` 挂住、`Stop-Process` 报"拒绝访问"。
+   **要停就停客机上的测试进程；恢复手段是 `vmrun ... stop <vmx> hard` 然后 `start`。**
+2. **污染状态下失败会伪装成产品缺陷**：同一个二进制，污染时
+   `m5_backend_creates_a_bundle_and_mounts_it_end_to_end` 失败在 `created.ok()`，
+   干净重启后 13/13 通过。**设备类用例失败前先确认没有孤儿 worker / 多余物理盘。**
+
+### 7.2 一处"写了又删"的测试，诚实记录
+
+方案曾要求先写"已持锁时再 lock"的重入探针。写了、跑了一次、删了：它必须伪造
+`ProductVolume` 并直调 `Win32VolumeAdapter::lock`，结果在 VM 上把卷卡住、把 VM 拖进
+需要硬重启的状态，而它测的是 `CreateFileW` 加伪造结构的行为，不是产品路径。
+重入这条规则现在由**构造**（类型上不可再 lock）加**端到端测量**（13 个用例全过、
+20/20）覆盖。细节见证据文档 §4.3。
 
 ---
 

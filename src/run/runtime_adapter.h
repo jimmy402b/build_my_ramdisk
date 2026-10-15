@@ -41,10 +41,24 @@ public:
     virtual Result<ProductVolume> find(wchar_t letter) = 0;
     virtual Result<void> verify(const ProductVolume& volume,
                                 std::uint64_t bytes) = 0;
-    virtual Result<void> flush(const ProductVolume& volume) = 0;
+    // Flushes the volume's cached writes.  `held` is a lock the caller already
+    // holds for it; a flush taken through that lock is the only one possible
+    // while the volume is frozen, because the acquisition opens it exclusively.
+    virtual Result<void> flush(const ProductVolume& volume,
+                               std::optional<LockedVolume>& held) = 0;
     virtual Result<void> assign(const ProductVolume& volume, wchar_t letter) = 0;
     virtual Result<void> remove_letter(const ProductVolume& volume) = 0;
-    virtual Result<void> dismount(const ProductVolume& volume) = 0;
+    // Takes the volume's exclusive lock.  The attempt owns the lock it acquires,
+    // so a caller that means to keep it must retain the attempt's `locked`.
+    virtual Result<VolumeLockAttempt> lock(const ProductVolume& volume,
+                                           std::uint32_t timeout_ms) = 0;
+    // Dismantles the volume.  `held` is the lock the caller already holds for it,
+    // if any: it is used rather than re-acquired, because the acquisition opens
+    // the volume exclusively and would be refused as busy against the caller's
+    // own lock.  An empty `held` means the caller holds none and this
+    // implementation must take its own, which is what an M4 teardown does.
+    virtual Result<void> dismount(const ProductVolume& volume,
+                                  std::optional<LockedVolume>& held) = 0;
 };
 
 // M3 runtime boundary: the persistence/device lifecycle behind one bundle.
@@ -149,10 +163,14 @@ public:
     Result<ProductVolume> find(wchar_t letter) override;
     Result<void> verify(const ProductVolume& volume,
                         std::uint64_t bytes) override;
-    Result<void> flush(const ProductVolume& volume) override;
+    Result<void> flush(const ProductVolume& volume,
+                       std::optional<LockedVolume>& held) override;
     Result<void> assign(const ProductVolume& volume, wchar_t letter) override;
     Result<void> remove_letter(const ProductVolume& volume) override;
-    Result<void> dismount(const ProductVolume& volume) override;
+    Result<VolumeLockAttempt> lock(const ProductVolume& volume,
+                                   std::uint32_t timeout_ms) override;
+    Result<void> dismount(const ProductVolume& volume,
+                          std::optional<LockedVolume>& held) override;
 
     // M3RuntimeOperations
     Result<void> create_generation_zero(std::uint64_t bytes) override;

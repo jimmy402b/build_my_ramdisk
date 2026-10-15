@@ -77,6 +77,11 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     bool fail_commit{};
     bool fail_abort{};
     bool refuse_removal{};
+    bool fail_freeze{};
+    // Whether this runtime currently holds the volume write freeze.  The fake
+    // models the real runtime's own bookkeeping, so a case can prove that a
+    // freeze the session reported was one the runtime actually took.
+    bool writes_frozen{};
     // What the fake publish reports.  `committed` by default so every existing
     // case keeps meaning what it meant; a case that wants one of the three
     // unsuccessful dispositions sets it and gets the matching failure evidence,
@@ -126,7 +131,19 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         status.dirty = dirty;
         status.dirty_epoch = dirty_epoch;
         status.bundle = bundle;
+        status.writes_frozen = writes_frozen;
         return Result<WorkerRuntimeStatus>::success(status);
+    }
+    Result<void> freeze_writes() override {
+        events.push_back("freeze");
+        if (fail_freeze) return Result<void>::failure(fake_error(L"freeze"));
+        writes_frozen = true;
+        return Result<void>::success();
+    }
+    Result<void> release_write_freeze() override {
+        events.push_back("release-freeze");
+        writes_frozen = false;
+        return Result<void>::success();
     }
     Result<WorkerPreparedCandidate> prepare_checkpoint(
         const std::uint64_t native_operation_id) override {

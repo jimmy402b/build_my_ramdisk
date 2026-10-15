@@ -343,6 +343,13 @@ void fill_actions(ActionPlan& plan) noexcept {
         return;
     case ManagementCommand::stop:
         append_action(plan, ActionKind::quiesce_mutations);
+        // The write freeze is its own plan step and not part of the quiesce
+        // above.  Quiescing proves *which* runtime is about to be stopped; the
+        // freeze is what stops it from changing.  Folding them would make a
+        // failed proof (the operation was aimed at the wrong runtime) and a busy
+        // volume (retryable) arrive as the same plan failure, and the two want
+        // opposite handling.
+        append_action(plan, ActionKind::freeze_writes);
         append_action(plan, ActionKind::flush_exact_volume);
         append_action(plan, ActionKind::checkpoint_if_required);
         append_action(plan, ActionKind::remove_mount);

@@ -146,6 +146,53 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::require_runtime_observatio
     return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
 }
 
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::freeze_writes(
+    const OperationContext& context, const product::Uuid& operation_id) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::freeze_writes;
+    request.product_operation_id = operation_id;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
+    if (!reply.value().status.has_value()) {
+        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
+            L"ServiceWorkerSession::freeze_writes",
+            L"the freeze reply carries no status").error());
+    }
+    // The reply is only honest if it says the freeze is actually held.  A worker
+    // that answered success without one would leave the service believing the
+    // commit it is about to take is protected when the write window is still
+    // open -- the defect this command exists to close, wearing the reply's face.
+    if (!reply.value().status->writes_frozen) {
+        return Result<m5::WorkerRuntimeStatus>::failure(session_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"ServiceWorkerSession::freeze_writes",
+            L"the freeze reply does not report the volume as frozen"));
+    }
+    return Result<m5::WorkerRuntimeStatus>::success(
+        *reply.value().status);
+}
+
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::release_write_freeze(
+    const OperationContext& context, const product::Uuid& operation_id) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::release_write_freeze;
+    request.product_operation_id = operation_id;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
+    if (!reply.value().status.has_value()) {
+        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
+            L"ServiceWorkerSession::release_write_freeze",
+            L"the release reply carries no status").error());
+    }
+    if (reply.value().status->writes_frozen) {
+        return Result<m5::WorkerRuntimeStatus>::failure(session_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"ServiceWorkerSession::release_write_freeze",
+            L"the release reply still reports the volume as frozen"));
+    }
+    return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
+}
+
 Result<m5::WorkerPreparedCandidate> ServiceWorkerSession::prepare_checkpoint(
     const OperationContext& context, const product::Uuid& operation_id) {
     m5::WorkerMessage request{};

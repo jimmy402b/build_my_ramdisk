@@ -59,6 +59,8 @@ public:
     Result<WorkerRuntimeStatus> inspect_bundle() override;
     Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) override;
+    Result<void> freeze_writes() override;
+    Result<void> release_write_freeze() override;
     Result<WorkerCheckpointCommitReply> commit_checkpoint(
         const WorkerCheckpointCommit& commit) override;
     Result<WorkerCheckpointAbortReply> abort_checkpoint(

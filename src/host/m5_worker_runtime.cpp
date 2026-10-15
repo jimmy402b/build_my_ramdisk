@@ -288,6 +288,11 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
         const auto stats = impl.runtime->maintenance_stats();
         status.committed_generation = stats.generation;
         status.dirty = stats.dirty_bytes != 0;
+        // Reported from the runtime that holds it, not inferred from the fact
+        // that a freeze was once requested: the two answers differ exactly when
+        // it matters, which is when a stop has to know whether the removal it is
+        // about to authorize is protected by a freeze or merely preceded by one.
+        status.writes_frozen = impl.runtime->writes_frozen();
         // The identities the service records into the durable profile come from
         // the volume this runtime actually adopted -- and only when all three
         // were read.  An incomplete triple is not a weaker identity: it is one
@@ -305,6 +310,25 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
     // the same object after a teardown.  Reported whenever it was captured.
     status.bundle = impl.bundle_evidence;
     return Result<WorkerRuntimeStatus>::success(status);
+}
+
+Result<void> DiskWorkerRuntime::freeze_writes() {
+    auto& impl = *impl_;
+    if (!impl.runtime || !impl.identity_verified) {
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::freeze_writes",
+            L"the worker runtime is not running"));
+    }
+    // Idempotent at this layer too, and for the same reason it is at the runtime:
+    // a service that retries the freeze after a transport failure is asking for a
+    // state, not for a second lock, and a second lock is not possible.
+    return impl.runtime->freeze_writes();
+}
+
+Result<void> DiskWorkerRuntime::release_write_freeze() {
+    auto& impl = *impl_;
+    if (!impl.runtime) return Result<void>::success();
+    return impl.runtime->release_write_freeze();
 }
 
 Result<WorkerPreparedCandidate> DiskWorkerRuntime::prepare_checkpoint(

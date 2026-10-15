@@ -35,7 +35,12 @@ namespace myrd::m5 {
 //      sequence is a replay and is refused rather than re-executed.
 
 inline constexpr std::uint16_t kWorkerProtocolMajor = 1;
-inline constexpr std::uint16_t kWorkerProtocolMinor = 0;
+// 0 -> 1: `WorkerRuntimeStatus` gained `writes_frozen`, so the status payload
+// changed length.  Both ends of this channel are built together and the
+// handshake requires an exact match, so bumping the minor is what makes a stale
+// worker fail the handshake instead of decoding a status one byte short and
+// reporting a plausible runtime that was never observed.
+inline constexpr std::uint16_t kWorkerProtocolMinor = 1;
 // One prepared candidate carries a digest and small integer fields only, so the
 // bound is comfortably above every message this protocol defines.
 inline constexpr std::uint32_t kMaxWorkerMessageBytes = 64U * 1024U;
@@ -80,6 +85,38 @@ enum class WorkerCommand : std::uint16_t {
     // assigns a drive letter and mounts a volume the import never asked for.
     // The action is named read-only, so the command is.
     inspect_bundle = 13,
+    // Takes the exact volume's exclusive lock and *keeps* it, so the mounted
+    // filesystem cannot accept another write until the runtime that holds it
+    // either dismantles the volume or releases it.
+    //
+    // It exists as its own command rather than as a mode of `remove_and_stop`
+    // because the window it opens has to cover three separate commands.  The
+    // stop plan is `quiesce -> freeze -> flush -> checkpoint -> remove`, and only
+    // the last of those dismantles anything; a freeze taken inside the removal
+    // would leave the commit it is supposed to protect outside its own window,
+    // which is exactly the defect this closes.  The lock therefore lives in the
+    // worker's runtime, which is the only place that survives across commands.
+    //
+    // It is also deliberately not folded into `quiesce_mutations`.  Quiescing
+    // there is a *proof* -- that the runtime being stopped is the live one the
+    // durable profile describes -- and the comment at that adapter records the
+    // real constraint that it holds no write freeze to take.  Making quiescing
+    // take the lock would erase the distinction between "I verified what is
+    // running" and "I stopped it from changing", and the two have different
+    // failure meanings: a failed proof means the operation was aimed at the
+    // wrong runtime, a failed freeze means the volume is busy and the stop must
+    // be retried rather than forced.
+    freeze_writes = 14,
+    // Releases the write freeze `freeze_writes` took, without dismantling
+    // anything.
+    //
+    // It is here because the stop plan can be rolled back: a flush or a commit
+    // that fails leaves a profile that is still supposed to be running, and a
+    // freeze nobody releases would leave that profile mounted and unwritable
+    // until its worker died -- a worse outcome than the open write window this
+    // whole increment exists to close.  Dismantling is not an acceptable
+    // substitute, because the profile is not being stopped any more.
+    release_write_freeze = 15,
 };
 
 // Identity of one worker process bound to one profile for one session.
@@ -304,6 +341,18 @@ struct WorkerRuntimeStatus final {
     // bundle yet, or holds one whose identity it could not read in full -- the
     // two are the same answer to the service, and neither may be recorded.
     std::optional<WorkerBundleEvidence> bundle;
+    // Whether this runtime currently holds the volume's exclusive write freeze.
+    //
+    // It is its own field rather than something a caller infers, because the two
+    // ways a stop can be refused look identical from outside: "the runtime is
+    // dirty and the writes must not be dropped" and "the write freeze was never
+    // taken, so the removal has no clean moment to protect".  The service acts on
+    // the difference -- the first is resolved against durable truth, the second
+    // is retried -- and a status that could not tell it apart would leave the
+    // caller guessing at the one moment guessing is most expensive.
+    //
+    // Declared last so every existing aggregate initializer keeps its meaning.
+    bool writes_frozen{};
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };

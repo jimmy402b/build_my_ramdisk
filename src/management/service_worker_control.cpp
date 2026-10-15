@@ -480,6 +480,53 @@ Result<WorkerActionResult> ServiceWorkerControl::verify_startup_step(
         L"The live runtime does not evidence the step the plan reached"));
 }
 
+Result<WorkerActionResult> ServiceWorkerControl::freeze_writes(
+    const WorkerActionRequest& request) {
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    // Unlike the quiesce above, this one *is* a mutation: it changes what the
+    // mounted filesystem may do.  It is therefore required to name the operation
+    // it belongs to, because the only thing that may release it is the same
+    // operation -- `resume_mutations` -- and a freeze nobody can attribute is a
+    // freeze nobody can release.
+    if (is_zero_uuid(request.operation_id)) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.freeze_writes",
+            L"A write freeze cannot be taken without an operation identity"));
+    }
+    // The identity is checked *before* the freeze, not after it.  Freezing is the
+    // step that starts refusing writes to a mounted volume, and a refusal that
+    // came back saying "different image" once the volume was already frozen would
+    // leave this adapter holding a lock on a disk it has just declared it does
+    // not own -- with no operation able to release it.  Observed first, so the
+    // fail-closed answer happens while nothing has been taken.
+    auto observed = session.value()->require_runtime_observation(context());
+    if (!observed.ok()) {
+        return Result<WorkerActionResult>::failure(observed.error());
+    }
+    if (request.durable_profile.has_value()) {
+        auto image = to_product_uuid(observed.value().image_id);
+        if (!image.has_value()
+            || !(*image == request.durable_profile->profile.image_uuid)) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::execution_identity_conflict,
+                L"service_worker_control.freeze_writes",
+                L"The live runtime serves a different product image"));
+        }
+    }
+    auto status = session.value()->freeze_writes(context(), request.operation_id);
+    if (!status.ok()) {
+        return Result<WorkerActionResult>::failure(status.error());
+    }
+    return Result<WorkerActionResult>::success(completed_result());
+}
+
 Result<WorkerActionResult> ServiceWorkerControl::quiesce_mutations(
     const WorkerActionRequest& request) {
     auto session = require_session(request.profile_id, true);
@@ -679,10 +726,13 @@ Result<WorkerActionResult> ServiceWorkerControl::resume_mutations(
     const WorkerActionRequest& request) {
     auto held = take_candidate(request.profile_id, request.operation_id);
     if (!held.has_value()) {
-        // quiesce_mutations takes no write freeze, so there is nothing to
-        // resume.  The only state this call can resolve is an undecided
-        // candidate, and there is none.
-        return Result<WorkerActionResult>::success(completed_result());
+        // Nothing this call owns is still undecided.  The write freeze, when one
+        // was taken, is still released below: it belongs to the operation, not to
+        // the candidate, and a rolled-back stop that left the volume frozen would
+        // strand a profile that is supposed to be running.  There is nothing to
+        // resume here only when no freeze was taken either -- the release is
+        // idempotent, so the safe direction is always to ask.
+        return release_freeze_if_held(request);
     }
     auto* const session = find_session(request.profile_id);
     if (session == nullptr) {
@@ -691,7 +741,30 @@ Result<WorkerActionResult> ServiceWorkerControl::resume_mutations(
             L"service_worker_control.resume_mutations",
             L"An undecided candidate outlived the runtime that cut it"));
     }
-    return abort_held_candidate(*session, held.value());
+    auto aborted = abort_held_candidate(*session, held.value());
+    if (!aborted.ok()) return aborted;
+    return release_freeze_if_held(request);
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::release_freeze_if_held(
+    const WorkerActionRequest& request) {
+    // Deliberately `find_session` and not `require_session`: a profile this
+    // adapter has no bound channel to holds no freeze either.  A freeze can only
+    // have been taken through this adapter's own session -- the reply that
+    // confirmed it came over that channel -- so no session is a proof that there
+    // is nothing here to release, not a failure to reach something.  Attaching
+    // instead would let a resume launch or adopt a worker for a profile that is
+    // mid-rollback, which is a much larger action than giving a lock back.
+    auto* const session = find_session(request.profile_id);
+    if (session == nullptr) {
+        return Result<WorkerActionResult>::success(completed_result());
+    }
+    auto released =
+        session->release_write_freeze(context(), request.operation_id);
+    if (!released.ok()) {
+        return Result<WorkerActionResult>::failure(released.error());
+    }
+    return Result<WorkerActionResult>::success(completed_result());
 }
 
 Result<WorkerActionResult> ServiceWorkerControl::remove_mount(
@@ -953,6 +1026,8 @@ Result<WorkerActionResult> ServiceWorkerControl::execute(
         return verify_startup_step(request);
     case ActionKind::quiesce_mutations:
         return quiesce_mutations(request);
+    case ActionKind::freeze_writes:
+        return freeze_writes(request);
     case ActionKind::flush_exact_volume:
         return flush_exact_volume(request);
     case ActionKind::resume_mutations:

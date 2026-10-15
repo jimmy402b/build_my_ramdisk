@@ -160,7 +160,6 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     // Not operation-scoped: an operation id here would be a stray field, and
     // the shape table refuses stray fields rather than ignoring them.
     message.status = status();
-
     const auto bytes = encode(message);
     REQUIRE(bytes.ok());
     const auto decoded = decode_worker_message(bytes.value());
@@ -906,5 +905,90 @@ TEST_CASE(m5_worker_protocol_refuses_a_payload_its_command_does_not_define) {
     message.binding = session_binding();
     message.handshake = WorkerHandshake{};
     message.status = WorkerRuntimeStatus{};
+    REQUIRE(!encode(message).ok());
+}
+
+// ---------------------------------------------------------------------------
+// The write freeze on the wire.
+//
+// `writes_frozen` is the answer to the only question the stop path has at this
+// point -- "is the volume actually frozen, or was a freeze merely requested?" --
+// so it has to be a field the codec carries rather than something a caller infers
+// from a successful reply.  Both directions are checked: a frozen status must
+// survive the round trip, and an unfrozen one must not acquire the flag.
+// ---------------------------------------------------------------------------
+TEST_CASE(m5_worker_protocol_status_carries_the_write_freeze) {
+    WorkerRuntimeStatus frozen = status();
+    frozen.writes_frozen = true;
+
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::freeze_writes;
+    message.sequence = 5;
+    message.binding = session_binding();
+    // The freeze command is operation-scoped: a freeze nobody can attribute is a
+    // freeze nobody can release.
+    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    message.status = frozen;
+
+    const auto bytes = encode(message);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().status.has_value());
+    REQUIRE(decoded.value().status->writes_frozen);
+    REQUIRE(*decoded.value().status == frozen);
+
+    // And the negative: an unfrozen observation must not read as frozen.  A codec
+    // that hard-coded the bit, or that let one status's value leak into another,
+    // would pass everything above and fail here.
+    WorkerRuntimeStatus open = status();
+    open.writes_frozen = false;
+    WorkerMessage unfrozen = message;
+    unfrozen.status = open;
+    const auto open_bytes = encode(unfrozen);
+    REQUIRE(open_bytes.ok());
+    const auto open_decoded = decode_worker_message(open_bytes.value());
+    REQUIRE(open_decoded.ok());
+    REQUIRE(!open_decoded.value().status->writes_frozen);
+}
+
+TEST_CASE(m5_worker_protocol_write_freeze_commands_are_operation_scoped) {
+    // Both halves of the freeze lifecycle name the operation they belong to.
+    // Without the id a reply could not be matched to the stop that asked, and
+    // the release -- which is the only thing that may give the lock back -- could
+    // be issued against another operation's freeze.
+    for (const auto command : {WorkerCommand::freeze_writes,
+                               WorkerCommand::release_write_freeze}) {
+        WorkerMessage missing{};
+        missing.kind = WorkerMessageKind::reply;
+        missing.command = command;
+        missing.sequence = 5;
+        missing.binding = session_binding();
+        missing.status = WorkerRuntimeStatus{};
+        REQUIRE(!encode(missing).ok());
+
+        WorkerMessage present = missing;
+        present.product_operation_id =
+            uuid("99999999-8888-7777-6666-555555555555");
+        const auto bytes = encode(present);
+        REQUIRE(bytes.ok());
+        const auto decoded = decode_worker_message(bytes.value());
+        REQUIRE(decoded.ok());
+        REQUIRE(decoded.value().status.has_value());
+        REQUIRE(authenticate_worker_message(decoded.value(), session_binding(), 4).ok());
+    }
+}
+
+TEST_CASE(m5_worker_protocol_refuses_an_unknown_command_value) {
+    // The command is a wire value, so a peer that speaks a different protocol
+    // must be refused rather than decoded into whichever command happens to
+    // share its number.  This is what makes bumping the protocol safe: a stale
+    // worker cannot silently answer a command it has never heard of.
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::request;
+    message.command = static_cast<WorkerCommand>(0x7FFF);
+    message.sequence = 1;
+    message.binding = session_binding();
     REQUIRE(!encode(message).ok());
 }

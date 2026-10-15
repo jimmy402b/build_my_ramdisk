@@ -3550,13 +3550,13 @@ Result<OperationRecord> ServiceCore::execute_operation(
             switch (current_profile->stop.phase) {
             case StopDurablePhase::checkpoint_confirmed:
             case StopDurablePhase::removal_boundary:
-                return normal_stop ? 3U : 0U;
+                return normal_stop ? 4U : 0U;
             case StopDurablePhase::mount_removed:
-                return normal_stop ? 4U : 1U;
+                return normal_stop ? 5U : 1U;
             case StopDurablePhase::device_removed:
-                return normal_stop ? 5U : 2U;
+                return normal_stop ? 6U : 2U;
             case StopDurablePhase::runtime_stopped:
-                return normal_stop ? 6U : 3U;
+                return normal_stop ? 7U : 3U;
             default:
                 return (std::numeric_limits<std::size_t>::max)();
             }
@@ -3875,6 +3875,13 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 std::nullopt,
                 current_profile->record});
         };
+        // The write freeze, driven through the same executor every other stop
+        // step uses.  The release is not wrapped here: it *is* the
+        // `resume_mutations` step, and both rollback paths below already drive it
+        // through that executor.
+        const auto freeze_writes = [&]() -> Result<WorkerActionResult> {
+            return execute_stop_action(ActionKind::freeze_writes);
+        };
         const auto rollback_stop = [&](std::vector<std::byte> result)
             -> Result<OperationRecord> {
             auto resumed = execute_stop_action(ActionKind::resume_mutations);
@@ -3945,6 +3952,39 @@ Result<OperationRecord> ServiceCore::execute_operation(
             }
         }
 
+        // The write freeze.  It runs after the quiesce proved which runtime is
+        // being stopped and before anything is flushed or committed, and it is
+        // what makes the commit that follows the *last* word on this volume
+        // rather than one more snapshot taken while writes continued.  Without
+        // it the removal below is refused 25% of the time, because the volume it
+        // is refusing over really is dirty again.
+        //
+        // A failure here is transient and retryable by construction: a busy
+        // volume is the only realistic cause and it is an observation, not a
+        // broken runtime.  The profile is left running, and the rollback releases
+        // nothing because nothing was taken.
+        if (stop_state.phase == StopDurablePhase::admitted) {
+            auto frozen = freeze_writes();
+            if (!frozen.ok()
+                || !is_successful_completion(frozen.value().completion)) {
+                return finalize_operation(
+                    current_operation, current_profile, pending_plan,
+                    CompletionOutcome::transient_failure,
+                    OperationState::failed,
+                    {std::byte{'f'}, std::byte{'r'}, std::byte{'e'}, std::byte{'e'},
+                     std::byte{'z'}, std::byte{'e'}});
+            }
+            stop_state = current_profile->stop;
+            stop_state.phase = StopDurablePhase::quiesced;
+            auto persisted = publish_stop_truth(
+                stop_state, current_profile->state,
+                current_profile->checkpoint, current_profile->compaction);
+            if (!persisted.ok()) {
+                return Result<OperationRecord>::failure(
+                    persisted.error());
+            }
+        }
+
         if (current_profile->stop.phase == StopDurablePhase::quiesced) {
             auto flushed = execute_stop_action(
                 ActionKind::flush_exact_volume);
@@ -3965,13 +4005,13 @@ Result<OperationRecord> ServiceCore::execute_operation(
             }
         }
 
-        // The quiesce and flush have run; both are now behind the plan.  The
-        // checkpoint decision is policy-driven, not guessed from the durable
-        // epoch -- that counter is per-process and meaningless across a worker
-        // restart.
+        // The quiesce, the write freeze and the flush have run; all three are
+        // now behind the plan.  The checkpoint decision is policy-driven, not
+        // guessed from the durable epoch -- that counter is per-process and
+        // meaningless across a worker restart.
         execution_actions.erase(
             execution_actions.begin(),
-            execution_actions.begin() + 2);
+            execution_actions.begin() + 3);
         if (current_profile->stop.policy
                 == profile::NormalStopPolicy::checkpoint_required) {
             // Always checkpoint.  The P4/P5 boundary decides commit, cleanliness

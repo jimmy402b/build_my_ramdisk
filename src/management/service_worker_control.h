@@ -376,12 +376,19 @@ private:
         const WorkerActionRequest& request);
     Result<WorkerActionResult> quiesce_mutations(
         const WorkerActionRequest& request);
+    Result<WorkerActionResult> freeze_writes(
+        const WorkerActionRequest& request);
     Result<WorkerActionResult> flush_exact_volume(
         const WorkerActionRequest& request);
     Result<WorkerActionResult> remove_mount(const WorkerActionRequest& request);
     Result<WorkerActionResult> confirm_removal(
         const WorkerActionRequest& request);
     Result<WorkerActionResult> resume_mutations(
+        const WorkerActionRequest& request);
+    // The freeze half of a resume.  Separate from `resume_mutations` because the
+    // two are different facts -- an unpublished candidate to cancel, and a write
+    // freeze to give back -- and either can be outstanding without the other.
+    Result<WorkerActionResult> release_freeze_if_held(
         const WorkerActionRequest& request);
     Result<WorkerActionResult> unrealized(
         const WorkerActionRequest& request) const;

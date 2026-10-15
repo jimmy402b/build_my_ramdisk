@@ -139,7 +139,7 @@ Result<void> DiskRuntime::start() {
 
     if (mode_ == DiskRuntimeMode::create) {
         if (!operations_.flush_volume) return fail(missing_void(L"flush_volume"));
-        result = operations_.flush_volume(*volume_);
+        result = operations_.flush_volume(*volume_, held_volume_lock_);
         if (!result.ok()) return fail(result);
         if (!operations_.checkpoint) return fail(missing_void(L"checkpoint"));
         auto committed = operations_.checkpoint();
@@ -180,7 +180,56 @@ Result<void> DiskRuntime::flush_volume() {
     std::lock_guard<std::mutex> guard(mutex_);
     if (!started_ || !volume_ || !operations_.flush_volume)
         return missing_void(L"flush_volume");
-    return operations_.flush_volume(*volume_);
+    return operations_.flush_volume(*volume_, held_volume_lock_);
+}
+
+Result<void> DiskRuntime::freeze_writes() {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!started_ || !volume_)
+        return missing_void(L"freeze_writes");
+    // Already frozen is the state the caller is asking for, so this is a
+    // success and not a second acquisition.  Attempting one would be refused by
+    // this runtime's own lock -- the provider opens the volume exclusively --
+    // and reporting that as a failure would make a retry of an
+    // already-satisfied precondition unable to proceed.
+    if (held_volume_lock_.has_value()) return Result<void>::success();
+    if (!operations_.lock_volume) return missing_void(L"lock_volume");
+
+    auto attempt = operations_.lock_volume(*volume_, options_.volume_timeout.count());
+    if (!attempt.ok()) {
+        // The provider's own error, relayed.  A timeout and a native API failure
+        // are different facts and the caller must not have to guess which it got.
+        return Result<void>::failure(attempt.error());
+    }
+    if (!attempt.value().acquired || !attempt.value().locked.has_value()) {
+        // Busy is the expected, retryable case and is named as such: the volume
+        // is still open elsewhere, so the writes cannot be frozen and a stop that
+        // carried on would re-open the very window this call closes.
+        return Result<void>::failure({ErrorDomain::cleanup, 1,
+                                      L"freeze_writes",
+                                      L"the volume is busy; the write freeze "
+                                      L"could not be taken",
+                                      0});
+    }
+    held_volume_lock_ = std::move(attempt.value().locked);
+    writes_frozen_ = true;
+    return Result<void>::success();
+}
+
+bool DiskRuntime::writes_frozen() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return writes_frozen_;
+}
+
+Result<void> DiskRuntime::release_write_freeze() noexcept {
+    std::lock_guard<std::mutex> guard(mutex_);
+    release_write_freeze_locked();
+    return Result<void>::success();
+}
+
+void DiskRuntime::release_write_freeze_locked() noexcept {
+    held_volume_lock_.reset();
+    writes_frozen_ = false;
 }
 
 Result<DiskCheckpointResult> DiskRuntime::checkpoint() {
@@ -320,7 +369,10 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
             if (!operations_.flush_volume)
                 record(missing_void(L"flush_volume"));
             else
-                record(operations_.flush_volume(*volume_));
+                // Through the retained freeze when there is one: the freeze
+                // holds the volume exclusively, so a flush that opened its own
+                // handle could not open the volume it is flushing.
+                record(operations_.flush_volume(*volume_, held_volume_lock_));
         }
         if (drive_letter_assigned_) {
             if (!operations_.remove_drive_letter) {
@@ -346,7 +398,13 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
             if (!operations_.dismount_volume) {
                 record(missing_void(L"dismount_volume"));
             } else {
-                auto dismounted = operations_.dismount_volume(*volume_);
+                // The retained freeze travels down rather than being
+                // re-acquired.  The provider opens the volume for exclusive
+                // access, so a second attempt while this runtime holds the lock
+                // is refused as busy by this runtime's own lock -- which is how
+                // a stop that froze correctly then failed to dismantle.
+                auto dismounted =
+                    operations_.dismount_volume(*volume_, held_volume_lock_);
                 record(dismounted);
                 if (dismounted.ok()) volume_dismounted_ = true;
             }
@@ -388,6 +446,13 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
     // owned resource survives, so repeated shutdown_clean() retries cleanup
     // rather than silently returning success/no-op.
     started_ = bundle_lock_held_ || aim_started_ || volume_.has_value();
+    // The write freeze is released only once the volume it was protecting is
+    // gone.  Releasing it earlier -- while a mount survives -- would hand the
+    // volume back to the filesystem with the runtime still holding it, and the
+    // writes it then accepts are the ones the freeze existed to stop.  While a
+    // volume survives the lock is kept, and the next `shutdown_clean` retry
+    // reuses it.
+    if (!volume_) release_write_freeze_locked();
     return first_error;
 }
 

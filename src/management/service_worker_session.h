@@ -63,6 +63,18 @@ public:
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> require_runtime_observation(
         const OperationContext& context);
 
+    // Takes the worker's volume write freeze and keeps it.  The reply's
+    // `writes_frozen` is required, not consulted: a success that did not carry it
+    // would report a protected commit over a volume that is still writable.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> freeze_writes(
+        const OperationContext& context, const product::Uuid& operation_id);
+    // Releases the freeze without dismantling anything, for a stop that is being
+    // rolled back.  The reply is required to report the freeze as *gone*: a
+    // success that left the volume locked would record a resumed profile that
+    // cannot be written to.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> release_write_freeze(
+        const OperationContext& context, const product::Uuid& operation_id);
+
     // The native operation id is deliberately *not* a parameter.  The worker
     // derives it from the generation it observes and re-derives it from M3's
     // reply; a service-supplied id would be a second source for the same number,

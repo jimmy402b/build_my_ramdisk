@@ -65,6 +65,12 @@ struct FakeWorkerRuntime final : WorkerRuntime {
     std::uint64_t committed_generation{5};
     bool worker_alive{true};
     bool refuse_removal{};
+    bool writes_frozen{};
+    // Models the one dishonest reply the service-side session has to refuse: a
+    // freeze that reported success while the observation says no freeze is held.
+    // Set here rather than by leaving the runtime unfrozen so the *only* thing
+    // wrong with the reply is what it says.
+    bool refuse_freeze_status{};
     std::optional<WorkerPreparedCandidate> prepared;
 
     Result<void> start() override { return Result<void>::success(); }
@@ -82,7 +88,16 @@ struct FakeWorkerRuntime final : WorkerRuntime {
         status.worker_alive = worker_alive;
         status.image_id = image_id();
         status.committed_generation = committed_generation;
+        status.writes_frozen = writes_frozen && !refuse_freeze_status;
         return Result<WorkerRuntimeStatus>::success(status);
+    }
+    Result<void> freeze_writes() override {
+        writes_frozen = true;
+        return Result<void>::success();
+    }
+    Result<void> release_write_freeze() override {
+        writes_frozen = false;
+        return Result<void>::success();
     }
     Result<WorkerPreparedCandidate> prepare_checkpoint(
         const std::uint64_t native_operation_id) override {
@@ -235,6 +250,52 @@ TEST_CASE(m5_service_worker_session_status_round_trips_over_the_real_wire) {
     REQUIRE(session.value()
                 ->shutdown(context(), operation_id())
                 .ok());
+    peer.join();
+}
+
+TEST_CASE(m5_service_worker_session_freezes_and_releases_the_volume) {
+    // The stop path's write freeze, over a real wire and a real worker session:
+    // the two commands exist so the lock can outlive any single call, and this is
+    // the one place both directions are exercised against the framing that
+    // production uses.
+    WorkerPeer peer;
+    peer.serve_until_closed();
+    auto session = peer.accept();
+    REQUIRE(session.ok());
+    REQUIRE(session.value()->start(context(), operation_id()).ok());
+
+    auto frozen = session.value()->freeze_writes(context(), operation_id());
+    REQUIRE(frozen.ok());
+    // The reply is only accepted because it says the volume is frozen.  A worker
+    // that answered success without the freeze would leave the commit that
+    // follows unprotected, which is the defect this command closes.
+    REQUIRE(frozen.value().writes_frozen);
+
+    auto released =
+        session.value()->release_write_freeze(context(), operation_id());
+    REQUIRE(released.ok());
+    REQUIRE(!released.value().writes_frozen);
+
+    REQUIRE(session.value()->shutdown(context(), operation_id()).ok());
+    peer.join();
+}
+
+TEST_CASE(m5_service_worker_session_refuses_a_freeze_the_worker_did_not_take) {
+    // The negative that gives the check above its teeth: a worker whose reply
+    // claims success while reporting no freeze must be refused here rather than
+    // handed on as a protected commit.  Driven through the fake runtime's own
+    // freeze flag, so the reply is well-formed and the *only* thing wrong with it
+    // is that it does not say what it claims.
+    WorkerPeer peer;
+    peer.runtime.writes_frozen = false;
+    peer.runtime.refuse_freeze_status = true;
+    peer.serve_until_closed();
+    auto session = peer.accept();
+    REQUIRE(session.ok());
+    REQUIRE(session.value()->start(context(), operation_id()).ok());
+
+    auto frozen = session.value()->freeze_writes(context(), operation_id());
+    REQUIRE(!frozen.ok());
     peer.join();
 }
 
