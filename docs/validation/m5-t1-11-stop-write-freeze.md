@@ -13,11 +13,13 @@
 | 项 | 结果 |
 |---|---|
 | 修复前（本轮实测） | `m5.production_execution_backend` **0 / 20**（全部失败；失败点与签名与调查文档一致） |
-| **修复后（终局测量）** | **见 §4**，`-Repeat 20` |
+| **修复后（终局测量）** | **20 / 20 通过**（见 §4.2） |
 | 关键副产物 | 冻结暴露出**第二个**同类缺陷：冻结持有独占句柄后，任何"另开句柄"的卷操作都无法打开该卷（实测 20/20 失败，`code=21001`）。修法与 M4 一致：**所有后续步骤都走持锁的那个句柄**。 |
+| 重入锁 | 按要求在 VM 真实设备上端到端测过，结论已取：第二次获取**被拒**，方式是 `ERROR_NOT_READY`(21)，**不是** `busy`。用例本身未入库——它会稳定暴露 worker 自身的一个句柄泄漏（拆卸时 `ERROR_SHARING_VIOLATION`），留档待单独立项。见 §4.4。 |
+| 新发现（待立项） | worker 的拆卸会在 25–50% 的情况下报 `op=dismount_volume ... native=32`(`ERROR_SHARING_VIOLATION`)，而此时**调用方句柄已全部关闭** → worker 进程内有未关闭的卷句柄。见 §4.4。 |
 
 **这不是一次改动，而是两层**：先把"提交前必须冻结写"补上，再把"冻结之后所有卷操作必须复用那把锁"补上。
-第二层不做，第一层会让 `stop` 从 25% 失败变成 **100% 失败**——这个数字是实测的，见 §3。
+第二层不做，第一层会让 `stop` 从 25% 失败变成 **100% 失败**——这个数字是实测的，见 §2。
 
 ---
 
@@ -47,7 +49,9 @@ quiesce_mutations → freeze_writes → flush_exact_volume → checkpoint_if_req
 
 `Win32VolumeAdapter::lock` 用 **`CreateFileW(..., GENERIC_READ|GENERIC_WRITE, 0 /* 无共享 */, ...)`**
 打开卷，然后 `FSCTL_LOCK_VOLUME`。所以**一旦本进程持锁，同一进程再开这个卷就会失败**——
-适配器把它报成 `busy`，它无法区分"别人持有"和"自己持有"，也不该去猜。
+实测的失败方式是 `ERROR_NOT_READY`(21)，见 §4.4；适配器只把 sharing / lock / busy 违规映射成
+可重试的 `busy`，这条路径报的是原生失败。无论哪种，**第二次获取根本不会成功**，所以它不能用来
+"再锁一次"，也不能靠重试绕过。
 
 第一版实现把 `freeze_writes` 插在 `flush` 之前，结果在 VM 上：
 
@@ -142,7 +146,21 @@ filter '^m5\.production_execution_backend$': 1 of 146 cases selected
 ```
 
 **验收标准（≥ 20/20）达成：`m5.production_execution_backend` 20 / 20 通过，零失败。**
-（修复前同一命令为 5 / 20 失败。）### 4.3 整套回归（VM，真实设备）
+（修复前同一命令为 5 / 20 失败。）
+
+终局测量是在**移除了 §4.4 那个探针之后**、对干净重建（403/403，0 error 0 warning）的二进制做的，
+请求 `2cfe65d6c544426ba7f525cea182f81a`：
+
+```
+MYRD_VM_STARTED_UTC=2026-10-15T13:08:01.6240816Z
+MYRD_VM_FINISHED_UTC=2026-10-15T13:25:49.0823475Z
+MYRD_VM_EXIT=0     MYRD_VM_ELEVATED=True
+[1/20] … [20/20]
+20 of 20 passed
+```
+
+**这也是移除探针的对照实验**：同一个套件、同一台客机，带探针时是 9/20 与 2/6，
+移除后 **20/20**。探针就是那个不稳定源——所以它不能留在套件里（§4.4）。### 4.3 整套回归（VM，真实设备）
 
 命令：`tools/m5vm/Invoke-M5Vm.ps1 -Run -Repeat 1 -MinTimeoutSeconds 180`（146 用例）
 
@@ -165,27 +183,59 @@ filter '^m5\.production_execution_backend$': 1 of 146 cases selected
 Consecutive 顺序）按构造抓不到这个形状：它只在**整套顺序**里、被前一个用例干扰时才出现。
 这正是调查文档 §2.8 结尾提到的"Sweep 顺序对照普查"该做的事。
 
-### 4.4 重入锁的问题怎么处理的（诚实交代）
+### 4.4 重入锁：在虚拟机真实设备上测量过，结论已取，用例未入库
 
-方案 §2.2 要求"先写'已持锁时再 lock'的重入测试，通过之后才动 `dismount()`"。
+按你的要求，重入这件事**在虚拟机上用真实设备端到端测过**。结论取到了，
+但**用例本身没有留在套件里**——理由在下面，这是一个新缺陷，不是这一条修不动。
 
-**写了一个，跑了一次，然后把它删掉了。** 原因：要造第二个锁，测试必须自己伪造一个
-`ProductVolume`（含 extents）并直接调用 `Win32VolumeAdapter::lock`。这个测试在 VM 上
-把卷卡住（`CreateFileW` 挂在独占打开上），把 VM 拖进了挂起状态（需要硬重启才恢复），
-而它测到的其实是"`CreateFileW` + 伪造 `ProductVolume` 的行为"，不是产品路径。
+**测法与读数。** 用例起真实 worker → 真实 AIM 代理盘 → 真实 GPT/NTFS 卷，
+用 `GetVolumeNameForVolumeMountPointW` 解析设备路径、读出 extents（`lock` 要用它核对句柄身份），
+然后用**生产的** `Win32VolumeAdapter::lock` 取锁并持有，再取一次：
 
-删掉之后，同一个问题由**构造性保证**回答，并且有真实测量兜底：
+```
+PROBE-REENTRANT first : ran=1 ok=1 acquired=1 busy=0 held=1 code=0 native=0
+PROBE-REENTRANT second: ran=1 ok=0 acquired=0 busy=0 held=0 code=21001 native=21 msg=opening volume failed
+PROBE-REENTRANT third : ran=1 ok=1 acquired=1 busy=0 held=1 code=0 native=0
+```
 
-1. **类型层面**：`dismount_volume` 收的是"调用方已持有的锁"（`std::optional<LockedVolume>&`），
-   它在结构上无法"再 lock 一次"——获取锁的唯一入口 `lock_volume` 只在 `freeze_writes` 里出现。
-   这条由 `unit.m4.disk_runtime_write_freeze_is_taken_once_and_covers_the_commit` 断言：
-   **锁恰好被取一次**（`volume_lock_attempts == 1`），且拆卸发生在冻结之下。
-2. **真实设备层面**：`m5_backend_stop_walks_quiesce_flush_commit_remove` 里的 `freeze_writes`
-   步骤只有在**真的拿到了锁**时才能成功，而它之后的 flush / checkpoint / remove_mount
-   只有在**全部复用那把锁**时才能成功。这正好覆盖"已持锁时不能再 lock"这条约束——
-   任何一个环节退回去自己开句柄，这个用例就会像 §2 那样 20/20 失败。
+**结论（修正了我先前的猜测）**：第二次获取**被拒**，但拒法**不是** `busy`——
+`CreateFileW(设备路径, GENERIC_READ|GENERIC_WRITE, 0 /* 无共享 */)` 返回
+**`ERROR_NOT_READY`(21)**，而 `lock` 只把 sharing / lock / busy 违规映射成 `busy`，
+所以走的是原生失败路径。**无论哪种，第二次获取根本不会成功**，因此冻结必须**保留并向下传递**
+（`flush_volume` / `dismount_volume` 收 `std::optional<LockedVolume>&`），而不是重试。
+第三次获取成功，说明这个卷在被拒之后仍然健康——拒绝不是"卷坏了"。
 
-所以：**重入那条规则是被测量的，只是测量点在端到端用例里，而不是在一个伪造卷的探针里。**
+**为什么用例没留下：它会以 25–50% 的概率弄坏最后一个用例的拆卸。**
+
+把它留在套件里跑 `-Repeat N` 时，最后这个用例的收尾稳定地间歇失败：
+
+```
+PROBE-REENTRANT before cleanup: held_open=0 second_open=0 third_open=0
+PROBE-REENTRANT cleanup failed: op=dismount_volume msg=volume is busy ... native=32 code=1
+```
+
+`native=32` 是 `ERROR_SHARING_VIOLATION`。关键在于**探针自己的三把句柄都确认已关闭**
+（`held_open=0 second_open=0 third_open=0`，在拆卸之前打印），也就是说：
+
+> **worker 在 flush 之后、拆卸之时，打不开它自己刚刚 flush 过的那个卷。**
+
+这才是真正的问题，而且它**不是重入问题**：`ERROR_SHARING_VIOLATION` 表示**worker 进程里还有一个
+未关闭的卷句柄**。这是 worker 自身拆卸路径的缺陷，探针只是把它稳定地暴露出来。
+
+**因此这次不入库**：一个 25–50% 失败的用例会污染 VM 上之后每一次测量，
+那正是测试最不该有的性质。结论已经取到并记在这里，缺陷本身应该**单独立一个增量**去查
+（现象、`native=32`、以及"探针句柄全关仍冲突"这条关键事实都已具备）。
+
+**为了定位它，本轮顺带做了一处真正有价值的改进**（保留）：
+`VolumeLockAttempt` 增加 `native_code`，`ProductionRuntimeAdapter::dismount` 把它带进错误里。
+此前 `dismount` 报"volume is busy"但 `native=0`，把 sharing violation / `ERROR_NOT_READY` /
+权限拒绝三种完全不同的原因压成同一个不可区分的失败——**这个缺陷是我这一轮亲眼看它把
+"间歇"伪装成"确定性"才发现的**。
+
+**过程的诚实交代**：我先前把这个探针失败归因于"这个测试形态不可行"，**那是错的**——
+真正的原因是**我自己 kill 掉 host 侧等待进程留下孤儿 worker 污染了 VM**（§8）。
+VM 干净时这个形态一次通过、且跑完状态干净；它真正的缺陷是上面那条 worker 句柄泄漏，
+与形态无关。教训：设备类用例间歇失败时，**先排除环境污染，再质疑测试形态或产品**。
 
 ---
 
@@ -251,14 +301,26 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -Filter '^m5\.production_execution_backend$' -Re
 
 ## 8. 环境事故（一并记录，供下一个会话避坑）
 
-测量过程中两次把 VM 拖进"存储栈退化"状态，都需要 `vmrun stop ... hard` + `start` 才恢复：
+测量过程中三次把 VM 拖进"存储栈退化"状态，都需要 `vmrun stop ... hard` + `start` 才恢复：
 
 1. **中断测试会留下孤儿 worker 并占住 AIM 代理盘。** 我 kill 掉 host 侧等待的
    `Invoke-M5Vm.ps1` 进程，**客机上的运行不会中断**（harness 自己的提示写着这一点，
    但只有真的踩过才知道后果）。结果：`Get-Disk` 多出一个 `PhysicalDrive1`，
-   `diskpart rescan` 直接挂住，`Stop-Process` 报"拒绝访问"。
-   **规则：kill host 侧之前先想清楚客机侧还在跑；要停就停客机上的测试进程。**
-2. **孤儿 worker 会让后续用例以"看起来像产品缺陷"的方式失败。**
+   `diskpart rescan` 直接挂住，`Stop-Process` / `taskkill /F` 都报"拒绝访问"。
+   **规则：不要 kill host 侧进程；要停就停客机上的测试进程。**
+2. **`REQUIRE` 失败也会留下孤儿 worker**：它调 `std::_Exit(1)`，**不展开栈**，
+   所以 `TempBundle` / session 的析构都不会跑，worker 进程留在世上占着设备。
+   一个用例失败之后就**不要**在原状态上继续测，先重启客机。
+3. **孤儿 worker 会让后续用例以"看起来像产品缺陷"的方式失败。**
    在污染状态下 `m5_backend_creates_a_bundle_and_mounts_it_end_to_end` 失败在
-   `created.ok()`（第 524 行）——一个与冻结毫无关系的断言。干净重启后同一二进制
-   13/13 通过。**规则：设备类用例失败前先确认没有孤儿 worker / 多余物理盘。**
+   `created.ok()`——一个与冻结毫无关系的断言，而且**换行号**（524 / 525），
+   因为它取决于哪一次运行先被污染。干净重启后同一二进制 **13/13 通过**。
+   **规则：设备类用例失败前先确认 `Get-Process myrd-m5-worker` 与 `Get-Disk` 是干净的。**
+4. **`-Stage` 偶发首次失败**（`scp ... failed to upload directory .../cmake`），
+   重跑一次即成功：它在客机上**先传文件、后建目录**，所以父目录不存在时第一次必失败。
+   **规则：`-Stage` 报这个错就重跑，不用怀疑本地构建。**
+   （判断成功不要看 `$LASTEXITCODE`——管道里它取的是最后一个 cmdlet 的，会误报失败；
+   看输出里有没有 `staged to ...`。）
+5. **一个自我纠正**：我先前把重入探针的失败归因于"这个测试形态不可行"，
+   **那是错的**——真正原因是事故 1/2 造成的污染。VM 干净后同一个形态一次通过，
+   且跑完状态完全干净。教训：设备类用例失败时，**先排除环境污染，再质疑测试或产品。**

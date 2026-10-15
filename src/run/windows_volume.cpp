@@ -788,7 +788,7 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY)
-            return Result<VolumeLockAttempt>::success({false, true});
+            return Result<VolumeLockAttempt>::success({false, true, std::nullopt, error});
         return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock", L"opening volume failed", error));
     }
     DWORD ignored = 0;
@@ -805,7 +805,7 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
     }
     CloseHandle(handle);
     if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY)
-        return Result<VolumeLockAttempt>::success({false, true});
+        return Result<VolumeLockAttempt>::success({false, true, std::nullopt, error});
     return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock", L"FSCTL_LOCK_VOLUME failed", error));
 #else
     (void)owned; (void)timeout_ms;

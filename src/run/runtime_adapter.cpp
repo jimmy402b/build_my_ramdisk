@@ -479,9 +479,17 @@ Result<void> ProductionRuntimeAdapter::dismount(const ProductVolume& volume,
     auto locked = impl_->volume_adapter.lock(volume, 30000);
     if (!locked.ok()) return Result<void>::failure(locked.error());
     if (locked.value().busy || !locked.value().locked.has_value()) {
+        // The native code travels with the refusal rather than being dropped.
+        // "The volume is busy" names the decision but not the cause, and the
+        // cause is what a caller has to act on: a sharing violation is another
+        // process using the disk, `ERROR_NOT_READY` is a volume still settling,
+        // and an access denial is a permissions problem.  Reporting `native=0`
+        // for all three -- which this did -- makes an intermittent teardown
+        // failure indistinguishable from a deterministic one.
         return Result<void>::failure(adapter_error(
             ErrorDomain::cleanup, 1, L"dismount_volume",
-            L"volume is busy; close applications using the RAM disk and retry"));
+            L"volume is busy; close applications using the RAM disk and retry",
+            locked.value().native_code));
     }
     return locked.value().locked->dismount();
 }

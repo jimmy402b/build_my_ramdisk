@@ -148,6 +148,17 @@ struct VolumeLockAttempt final {
     bool acquired{};
     bool busy{};
     std::optional<LockedVolume> locked{};
+    // The Win32 error that decided a refusal, when one did.
+    //
+    // Carried because "busy" is a decision, not a cause, and the cause is what a
+    // caller acts on: a sharing violation is another process using the disk,
+    // `ERROR_NOT_READY` is a volume still settling, and an access denial is a
+    // permissions problem.  It is not part of `operator==` on purpose -- equality
+    // is about what the attempt *decided*, and two refusals for different native
+    // reasons are still the same decision.
+    //
+    // Declared last so every existing aggregate initializer keeps its meaning.
+    std::uint32_t native_code{};
 
     bool operator==(const VolumeLockAttempt& other) const noexcept {
         return acquired == other.acquired && busy == other.busy;
