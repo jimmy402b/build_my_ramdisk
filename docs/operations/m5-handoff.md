@@ -15,14 +15,19 @@
 `docs/validation/m5-t1-11-stop-write-freeze.md`。
 **下一步按 tasklist 顺序是 T1-02**（组合根 + 服务骨架）。
 
-已完成的三个实质修复：
+已完成的四个实质修复：
 - `067f9b3` —— 修掉一个 **50% 崩溃的 M2 测试缺陷**（测试钩子在冒充生产不变量），
   修复前 ~20/40 崩溃 → 修复后 **20/20 通过**；
 - `8a310bd` —— 建立 VM 回路，并做了**首次稳定性普查**：146 用例 × 5 = 730 次运行，
   **718/730 通过，只有 2 个用例真间发**；
-- T1-11 —— stop 路径补写冻结。这是 **两层**改动：先把"提交前必须冻结写"补上，
-  再修"冻结之后所有卷操作必须复用那把锁"（不做第二层，stop 从 25% 失败变成 **100%** 失败）。
-  见 `docs/validation/m5-t1-11-stop-write-freeze.md` §2。
+- T1-11 —— stop 路径补写冻结。这是 **三层**改动：先补"提交前必须冻结写"，
+  再修"冻结之后所有卷操作必须复用那把锁"，最后修"无共享独占打开会撞上刚关闭的句柄"
+  （实测是**瞬时竞态，不是句柄泄漏**）。`-Repeat 20` **20/20**。
+  见 `docs/validation/m5-t1-11-stop-write-freeze.md`；
+- `integration.m1.shm` —— `start()` 返回成功时状态还没到 `serving`（**契约违约**，
+  平时 worker 线程赢下这个窗口，整套连跑压起来就输）。整套 × 3 Sweep：
+  **432/438**，该用例 **3/3**（修前 1/3 失败）。见
+  `docs/validation/m5-intermittent-findings.md` §4。
 
 ---
 
@@ -209,11 +214,6 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
 3. **两个 structural 用例需要 Visual Studio**：已归类为环境受限并接受；
    真要 146/146 就得给客机装 Build Tools，性价比不划算。
 4. **设计未决项**（需要用户裁决）：Primo 的 "Mini Tools" 定义；T4-02 单文件 VHDX 导出是否保留。
-5. **【新】`integration.m1.shm` 是跨用例干扰型间发项**：整套连跑时失败一次
-   （`m1_shm_session_tests.cpp:190: session.snapshot().state == SessionState::serving`），
-   单独 `-Repeat 10` 全过。T1-01 的 Consecutive 普查按构造抓不到这个形状——
-   调查文档 §2.8 结尾提到的 "Sweep 顺序对照普查" 就是为它准备的。
-   （T1-11 期间整套共跑 3 遍：第 1 遍出现、第 2/3 遍未出现。**仍是待观察项**。）
 5. **§7.17 那个 ABI 陷阱**仍未被根治：项目没有可靠的头文件依赖跟踪，只靠"记得加
    `--clean-first`"这条纪律。
 

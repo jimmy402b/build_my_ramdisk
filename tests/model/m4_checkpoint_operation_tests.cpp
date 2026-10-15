@@ -665,6 +665,12 @@ public:
 
     Result<std::vector<OperationRecord>> reconcile_after_restart(
         std::uint64_t now_unix_ms) override {
+        // A store that cannot be reconciled is the one state the service must
+        // never admit an executor over, so a case has to be able to produce it.
+        if (fail_reconcile) {
+            return Result<std::vector<OperationRecord>>::failure(
+                error(L"operations.reconcile.injected"));
+        }
         for (auto& record : records) {
             if (record.state != OperationState::running) continue;
             ++record.revision;
@@ -714,6 +720,10 @@ public:
     std::size_t write_calls{};
     std::optional<std::size_t> failed_write_call;
     std::optional<std::size_t> failed_after_write_call;
+    // A store that cannot be reconciled.  The service lifecycle has to refuse to
+    // admit an executor over this, and a case can only assert that if it can
+    // produce it.
+    bool fail_reconcile{};
 };
 
 class Worker final : public IWorkerControl {

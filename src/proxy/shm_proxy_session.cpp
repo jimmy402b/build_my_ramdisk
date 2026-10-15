@@ -94,19 +94,36 @@ Result<void> ShmProxySession::start() {
                     }
                 }
 
+                // `serving` is published *before* the caller is told the start
+                // succeeded, because "start returned success" has to mean the
+                // session is serving -- that is what every caller reads it as.
+                //
+                // The two were the other way round, and the gap between them was a
+                // real race: the promise was fulfilled while the state was still
+                // `ready`, and only afterwards did the worker make it `serving`.
+                // A caller that checked the state on the strength of a successful
+                // `start()` could therefore observe `ready` and conclude the
+                // session had not come up.  Under load the worker lost that race
+                // outright, which is how it surfaced: the full suite failed
+                // `session.snapshot().state == SessionState::serving` once, while
+                // the same case passed 10/10 in isolation.
+                //
+                // `ready` still means what it always did -- the objects are up and
+                // the loop is about to serve -- it is simply no longer observable
+                // from outside, because the state now advances to `serving` before
+                // anything is published.  Publishing both was not an option: two
+                // `set_value` calls on one promise throw, and the intermediate
+                // state is not one any caller has business acting on.
                 {
                     std::scoped_lock lock(mutex_);
                     state_ = SessionState::ready;
                 }
-                promise.set_value(Result<void>::success());
-                ready_published = true;
-
                 {
                     std::scoped_lock lock(mutex_);
-                    if (state_ == SessionState::ready) {
-                        state_ = SessionState::serving;
-                    }
+                    state_ = SessionState::serving;
                 }
+                promise.set_value(Result<void>::success());
+                ready_published = true;
 
                 while (!token.stop_requested()) {
                     HANDLE handles[] = {

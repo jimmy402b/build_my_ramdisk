@@ -310,10 +310,77 @@ M2/M3 的 legacy 测试集在虚拟机上**从未被完整跑过**。因此：
 
 ---
 
-## 4. 建议的下一步
+## 4. `integration.m1.shm`：`start()` 返回成功时状态还没到 `serving`（已修）
 
-1. **先修 §1 的写冻结**：根因清楚、修法明确、复用 M4 已验收机制，而且它落在
-   `disk stop`（目标 G2 的核心动作）与 preshutdown 的必经路径上。
-2. **§2 的崩溃走取证**：配 LocalDumps → 复跑 → 读栈。在此之前不要凭猜测改 M2 代码。
-3. 两者都不阻塞 T1-02 的开工，但 **§1 必须在 T1-09（单盘验收）之前修完**，
-   否则 preshutdown 的逐盘 stop 会以 25% 的概率踩到同一处。
+### 4.1 现象与它的特殊形状
+
+T1-11 期间整套连跑时失败过一次：
+
+```
+FAIL tests/integration/m1_shm_session_tests.cpp:190:
+     session.snapshot().state == SessionState::serving
+```
+
+单独 `-Filter '^integration\.m1\.shm$' -Repeat 10` → **10 / 10 通过**。
+
+**它和 §1/§2 是不同形状**：不是"某个用例自己抖"，而是**只在整套顺序里出现**。
+T1-01 的普查用 Consecutive 顺序（每个用例连跑 5 次），**按构造抓不到它**——
+这正是本文档 §2.8 结尾提到的"Sweep 顺序对照普查"要覆盖的那一类。
+
+### 4.2 根因：一个契约违约，不是测试写错
+
+`ShmProxySession::start()` 在 worker 线程里按这个顺序做事：
+
+```
+state_ = ready;                    // 对象就绪
+promise.set_value(success);        // ← 调用方在这里被唤醒
+state_ = serving;                  // ← 循环真正开始服务
+```
+
+`promise.set_value` 与 `state_ = serving` 之间有一个窗口，而调用方的契约是
+**"`start()` 返回成功 ⇒ 会话在 serving"**。所以调用方（以及这个测试）在
+`start()` 成功后读状态，可能读到 `ready`。
+
+平时 worker 线程几乎总能赢下这个窗口，所以它一直没暴露；整套连跑把机器压起来之后，
+调度一变就输了。
+
+**所以这是产品侧的时序缺陷，不是测试断言太严。** 测试的期望是对的。
+
+### 4.3 修法
+
+把 `serving` **发布在通知调用方之前**：
+
+```cpp
+{ std::scoped_lock lock(mutex_); state_ = SessionState::ready; }
+{ std::scoped_lock lock(mutex_); state_ = SessionState::serving; }
+promise.set_value(Result<void>::success());
+```
+
+`ready` 的含义不变（对象起来了、循环即将服务），只是**从外部不再可观察**——
+状态在发布任何东西之前就推进到 `serving` 了。
+
+> 为什么不"两个都发布"：一个 promise 上两次 `set_value` 会抛异常，
+> 而 `ready` 这个中间态也不是任何调用方有业务去处理的状态。
+
+### 4.4 验证（VM，真实设备）
+
+| 测量 | 结果 |
+|---|---|
+| 该用例单独 `-Repeat 30` | **30 / 30 通过** |
+| **整套 × 3（`-RepeatMode Sweep`）** | **432 / 438**，`integration.m1.shm` **3/3 通过** |
+
+剩余的每遍 2 个失败仍然是同一对已知环境失败
+（`structural.m2.storage_independent_build`、`structural.m5.execution_boundary`，客机无 VS）。
+
+**修前基线**：同样三遍里它失败一次（1/3）；**修后 3/3**。
+
+---
+
+## 5. 建议的下一步
+
+1. **§1 的写冻结已修**（T1-11）：`-Repeat 20` 20/20，见
+   `docs/validation/m5-t1-11-stop-write-freeze.md`。
+2. **§2 的崩溃已修**：测试钩子不再冒充生产不变量，20/20。
+3. **§4 已修**：见上。
+4. 下一个增量是 **T1-02**（组合根 + 服务骨架，SCM 注册/观察在 VM 上做）。
+5. **T1-09（单盘验收）之前**应再做一次 Sweep 顺序的整套普查，作为验收的前置条件。

@@ -366,6 +366,20 @@ target_link_libraries(myrd_management PUBLIC
 myrd_enable_warnings(myrd_management)
 myrd_assert_execution_boundary(myrd_management)
 
+# ---- M5 service lifecycle (Task T1-02) ---------------------------------------
+# The service's own lifecycle with no SCM in it: bring the durable state up,
+# admit work, and come down within a budget.  The SCM protocol lives in the
+# executable above this, and the execution lives behind the worker control below
+# it, so this target is ordinary linkable code and its start/stop paths are
+# measured by ordinary tests rather than only by installing a service.
+add_library(myrd_service STATIC
+    service/service_host.cpp service/service_host.h
+)
+target_include_directories(myrd_service PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_service PUBLIC myrd_management myrd_common)
+myrd_enable_warnings(myrd_service)
+myrd_assert_execution_boundary(myrd_service)
+
 # ---- M5 private worker protocol and session (Task 5) -------------------------
 # The typed service <-> per-profile worker messages, their strict codec, the
 # single definition of the M5 native checkpoint operation id rule

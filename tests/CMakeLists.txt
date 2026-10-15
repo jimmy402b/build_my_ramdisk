@@ -659,6 +659,28 @@ add_test(NAME m5.execution_scheduler
     COMMAND myrd_m5_execution_scheduler_tests)
 set_tests_properties(m5.execution_scheduler PROPERTIES TIMEOUT 120)
 
+# ---- M5 service lifecycle (T1-02) -------------------------------------------
+# The service's own lifecycle with no SCM in it.  It includes the checkpoint
+# model's fixture for its stores and its worker double, exactly as the
+# orchestration suite does, and measures what the VM cannot measure cheaply:
+# start and stop order, idempotence, the budget a stop hands down, and that an
+# executor is never admitted over a store that could not be reconciled.
+#
+# What the VM adds for T1-02 is the SCM itself -- that a control manager can
+# start the service, stop it, and reach it before the process is killed.
+add_executable(myrd_m5_service_host_tests
+    model/m5_service_host_tests.cpp
+)
+target_link_libraries(myrd_m5_service_host_tests PRIVATE
+    myrd_test_support myrd_management myrd_service)
+target_include_directories(myrd_m5_service_host_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/model")
+myrd_enable_warnings(myrd_m5_service_host_tests)
+add_test(NAME m5.service_host
+    COMMAND myrd_m5_service_host_tests)
+set_tests_properties(m5.service_host PROPERTIES TIMEOUT 120)
+
 # The recovery command family -- repair, rebind and forget -- named by Task 6's
 # file list and missing until now.  It includes the checkpoint model's fixture
 # for its fakes alone, exactly as the orchestration suite does.
