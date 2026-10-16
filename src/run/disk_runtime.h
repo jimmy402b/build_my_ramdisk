@@ -23,7 +23,21 @@ enum class DiskBundleKind : std::uint8_t {
     unknown_nonempty,
 };
 
-enum class DiskRuntimeMode : std::uint8_t { create, recover };
+// `reclaim` is the third mode, and it exists because a leftover cannot be recovered.
+//
+// A worker that was killed rather than asked to leave left a mounted volume with its
+// drive letter **already assigned**.  `recover` cannot help: its contract says it
+// *"assigns the requested drive letter"*, and the letter it would request is the one the
+// residue is holding -- so it collides with itself.  `reclaim` is the mode whose whole
+// job is the opposite: adopt the existing volume through the attach-only find, assign
+// **nothing**, and hand the runtime straight to teardown.
+//
+// It is an explicit mode rather than a flag on `recover` because the two differ in what
+// they promise, not in how they are parameterized: `recover` brings a profile back into
+// service, `reclaim` takes one out of it, and a caller that could not tell them apart
+// would be able to mount a volume by accident on a path whose entire purpose is to avoid
+// doing so.
+enum class DiskRuntimeMode : std::uint8_t { create, recover, reclaim };
 
 enum class DiskCheckpointDisposition : std::uint8_t {
     committed,
@@ -188,6 +202,11 @@ public:
         DiskRuntimeOptions options, DiskRuntimeOperations operations);
     static Result<std::unique_ptr<DiskRuntime>> recover(
         DiskRuntimeOptions options, DiskRuntimeOperations operations);
+    // Adopts an existing, already-mounted volume **without assigning anything**, so the
+    // caller can dismantle a leftover.  See `DiskRuntimeMode::reclaim` for why this is a
+    // mode of its own rather than `recover` with a flag.
+    static Result<std::unique_ptr<DiskRuntime>> reclaim(
+        DiskRuntimeOptions options, DiskRuntimeOperations operations);
 
     ~DiskRuntime() noexcept;
     DiskRuntime(const DiskRuntime&) = delete;
@@ -295,7 +314,17 @@ private:
     std::optional<ProductVolume> volume_;
     bool bundle_lock_held_{};
     bool aim_started_{};
+    // Whether this runtime *created* the mount, as opposed to adopting one that was
+    // already there.  Kept because a caller can legitimately ask who established a mount.
     bool drive_letter_assigned_{};
+    // Whether a drive letter is mounted on `volume_` **right now**, whoever put it there.
+    //
+    // The flag teardown actually needs, and separating it from the one above is a
+    // correction: teardown gated on `drive_letter_assigned_`, which is false in `reclaim`
+    // mode, so a reclaim adopted the residue, removed nothing, and reported success.  The
+    // two questions -- "did I create this?" and "is a letter mounted here?" -- have
+    // different answers on exactly the path that matters.
+    bool drive_letter_present_{};
     bool volume_dismounted_{};
     bool started_{};
     bool cleanup_attempted_{};

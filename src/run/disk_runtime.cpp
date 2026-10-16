@@ -42,6 +42,14 @@ Result<std::unique_ptr<DiskRuntime>> DiskRuntime::recover(
                             std::move(operations))));
 }
 
+Result<std::unique_ptr<DiskRuntime>> DiskRuntime::reclaim(
+    DiskRuntimeOptions options, DiskRuntimeOperations operations) {
+    return Result<std::unique_ptr<DiskRuntime>>::success(
+        std::unique_ptr<DiskRuntime>(
+            new DiskRuntime(DiskRuntimeMode::reclaim, std::move(options),
+                            std::move(operations))));
+}
+
 DiskRuntime::~DiskRuntime() noexcept {
     // Destructors cannot report cleanup failures.  Best effort cleanup is
     // nevertheless important when a caller abandons a failed start.
@@ -79,8 +87,13 @@ Result<void> DiskRuntime::start() {
     // Reject a mode/kind mismatch only after the writer lock is acquired so
     // the failure follows the same deterministic ownership boundary as all
     // later lifecycle stages.
+    //
+    // `reclaim` is grouped with `recover` deliberately and with a reason: both open an
+    // *existing* complete image, and neither may ever provision.  What separates them is
+    // further down -- whether a drive letter is assigned -- and that is the only
+    // difference, which is why this branch reads the same for both.
     if ((mode_ == DiskRuntimeMode::create && kind != DiskBundleKind::empty) ||
-        (mode_ == DiskRuntimeMode::recover && kind != DiskBundleKind::manifest)) {
+        (mode_ != DiskRuntimeMode::create && kind != DiskBundleKind::manifest)) {
         auto invalid = Result<void>::failure(
             runtime_error(L"classify_bundle", L"bundle kind does not match runtime mode"));
         (void)shutdown_clean_locked();
@@ -117,11 +130,16 @@ Result<void> DiskRuntime::start() {
         // drive letter.  Record that ownership immediately so every later
         // failure path removes only the mount established by this runtime.
         drive_letter_assigned_ = true;
+        drive_letter_present_ = true;
     } else {
         // Recovery is intentionally attach-only: the validated M3 image is
         // reopened first, then AIM is started and the pre-existing volume is
         // discovered.  Provisioning is never a recovery fallback; a missing
         // or mismatched volume must fail closed rather than format anything.
+        //
+        // `reclaim` takes this same path, and finds the volume by the same letter --
+        // which is what makes it work for a leftover: the letter is the one the residue
+        // already holds, so the find *matches* it rather than colliding with it.
         if (!operations_.find_recovered_volume)
             return fail(missing_void(L"find_recovered_volume"));
         auto found = operations_.find_recovered_volume(options_.drive_letter);
@@ -153,13 +171,31 @@ Result<void> DiskRuntime::start() {
             (void)shutdown_clean_locked();
             return not_committed;
         }
-    } else {
+    } else if (mode_ == DiskRuntimeMode::recover) {
         if (!operations_.assign_drive_letter)
             return fail(missing_void(L"assign_drive_letter"));
         result = operations_.assign_drive_letter(*volume_, options_.drive_letter);
         if (!result.ok()) return fail(result);
         drive_letter_assigned_ = true;
+        drive_letter_present_ = true;
+    } else {
+        // `reclaim`.  The volume was found *by* the recorded letter, so a letter **is**
+        // mounted on it -- adopted rather than assigned -- and teardown must remove it.
+        // Recording that here is what makes the difference between a reclaim that works
+        // and one that returns having achieved nothing.
+        drive_letter_present_ = true;
     }
+    // `reclaim` assigns nothing, and the omission is the whole point of the mode.
+    //
+    // The volume was found *by* the recorded letter, so the letter is already the one we
+    // want; asking for it again is what `recover` does and why it cannot serve here.  Its
+    // `start()` would request a letter the residue is holding and collide with itself.
+    //
+    // `drive_letter_assigned_` is therefore left false, which correctly says "this runtime
+    // did not establish this mount".  What must *not* follow is leaving the letter in
+    // place: the teardown runs because the runtime holds the volume, not because it
+    // assigned the letter, and a reclaim that returned with the residue still mounted
+    // would have achieved nothing.
 
     started_ = true;
     return Result<void>::success();
@@ -338,8 +374,8 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
     if (!started_) {
         // A failed start has already performed cleanup.  Calls before any
         // successful start are rejected and intentionally have no side effects.
-        if (!bundle_lock_held_ && !aim_started_ && !volume_ &&
-            !drive_letter_assigned_)
+        if (!bundle_lock_held_ && !aim_started_ && !volume_
+            && !drive_letter_present_)
             return cleanup_attempted_ ? Result<void>::success() :
                 Result<void>::failure(runtime_error(
                     L"shutdown_clean", L"runtime has not been started"));
@@ -374,7 +410,15 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
                 // handle could not open the volume it is flushing.
                 record(operations_.flush_volume(*volume_, held_volume_lock_));
         }
-        if (drive_letter_assigned_) {
+        // The letter is removed whenever this runtime holds a **mounted** volume, not
+        // only when it assigned one.
+        //
+        // The first version gated this on `drive_letter_assigned_`, which is false in
+        // `reclaim` mode -- so a reclaim would adopt the residue, dismount nothing, and
+        // return having achieved precisely nothing while reporting success.  The flag was
+        // answering "did I create this mount?", and that is not the question teardown
+        // needs answered.  `drive_letter_present_` answers the one it does.
+        if (drive_letter_present_) {
             if (!operations_.remove_drive_letter) {
                 record(missing_void(L"remove_drive_letter"));
             } else {
@@ -384,13 +428,19 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
                 // cleanup can retry the same exact resource.  Clearing this
                 // bit here would leak a mount while falsely claiming cleanup
                 // done.
-                if (removed.ok()) drive_letter_assigned_ = false;
+                if (removed.ok()) {
+                    drive_letter_present_ = false;
+                    drive_letter_assigned_ = false;
+                }
             }
         }
         // A mount must remain intact until its drive letter has been removed.
         // If that child cleanup fails, retain the volume and all parents for
         // a later retry; dismounting here would strand the assigned letter.
-        if (drive_letter_assigned_) {
+        //
+        // The same flag as the removal above, for the same reason: what matters is that a
+        // letter is still mounted on this volume, not who put it there.
+        if (drive_letter_present_) {
             started_ = true;
             return first_error;
         }
