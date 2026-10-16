@@ -2483,6 +2483,57 @@ PnP rescan → 等 PhysicalDrive 消失，
 
 **T1-03 不得标 PASSED。****本轮未改产品代码。**
 
+#### 4.15.49 **三项前置检查全部通过；可以移除，且只剩一个显示层注意点**（part 70，本轮）
+
+上一节列的三个待核实项，本轮逐条查完（**全部是读代码，未上客机**）：
+
+**检查 1：归属是否由别处证明？——是，而且这次等待发生在所有校验之后。**
+`start` 的顺序是：
+1. `find_existing_device(spec)`（**接管**路径）或 `create_proxy_disk(spec)`（**新建**路径）
+   ⇒ **这一步就确立了"这块盘是我们的"**，并随即赋给 `owned_device_`；
+2. `query_device(*owned_device_)` ⇒ **身份校验**：
+   `id == owned_device_` **且** `size_bytes == geometry.virtual_bytes`
+   **且** `sector_size == geometry.logical_sector_size`
+   **且**（接管时豁免 `native_object_path`，因为那是**死 worker 的随机会话名**；
+   新建时要求 `native_object_path == names.driver_path`）；
+3. **然后才是** `wait_for_present_physical_drive`。
+
+⇒ **"证明归属"与"身份校验"都在第 1、2 步完成，且都在这次等待之前。**
+**这次等待不是归属证明**，它只是"把那块盘定位出来、填进 `info_.disk`"。
+**这一点是上一节最大的疑点，现已排除。**
+
+**检查 2：后续步骤是否需要盘号？——不需要。**
+`wait_for_physical_drive_retired` 的签名是
+**`(DeviceId owned, std::uint64_t expected_size_bytes, timeout)`**——
+**它按 SCSI 地址与期望长度判断"盘已消失"，根本没有盘号参数**。
+（`remove_owned_device` 同理，只用 `owned_device_` 与 `adapter_`。）
+
+**检查 3：谁真正读那个被生产出来的盘号？——只有 m1 与状态输出。**
+全仓库检索 `physical_drive_number` 的读者：
+
+| 位置 | 用途 | 是否受影响 |
+|---|---|---|
+| `src/m1/m1_raw_protocol_io.cpp:121/141/377` | **M1 自己的原始协议 I/O**（不是 M3 链路） | **不受影响** |
+| `src/m3/m3_aim_server_main.cpp:113/115/129` | **把盘号打进状态输出**（`info.disk...`） | **只影响"显示"** |
+
+⇒ **M3 的拆卸链路一处都不读它。**
+
+**唯一需要在实现时处理的注意点（本轮发现，必须写明）**：
+移除之后，**reclaim 路径下 `info_.disk` 会是空**，
+于是 **`m3_aim_server_main.cpp` 里那两处状态输出会打印一个空的盘号**。
+**这不是正确性问题**（拆卸不依赖它），**但是"对外可见的行为变化"**：
+- 若 M5 的服务/CLI **会把这个状态读给用户看**，那**reclaim 之后该字段会是空的**，
+  需要**明确它是"未知/不适用"，而不是静默留空**；
+- **实现时应当让该字段在 reclaim 下显式表达"不适用"**，
+  并在证据里记下这个行为变化。
+
+**结论**：**三检查通过 ⇒ 把 `wait_for_present_physical_drive` 从 reclaim 路径移除是安全的**，
+代价只有上面那一处显示层注意点。**按质量门，改完必须在客机上用 `-Repeat 20` 验证**，
+并且**要检验的正是"移除后 reclaim 是否不再卡"**——
+**若仍卡，则说明这次等待不是阻塞源，必须回到"细分枚举内部各步"那条路。**
+
+**T1-03 不得标 PASSED。****本轮未改产品代码**（本轮的价值是把"可以改"变成"已核实可以改"）。
+
 #### 4.15.47 **内侧仪表给出明确读数：负载下枚举第 1 圈就吃掉整个 10 秒预算**（part 68，本轮）
 
 按上一节定下的方法，把仪表**埋进 `wait_for_physical_drive` 内部**后跑 `-Repeat 3`
