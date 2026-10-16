@@ -401,7 +401,20 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
     }
 
     if (volume_) {
-        if (started_) {
+        // **A reclaim does not flush either, for the same reason it does not dismount.**
+        //
+        // Flushing exists to get a *live* profile's writes onto the disk before its volume goes
+        // away.  A reclaim is not shutting a profile down: it is taking away a device whose worker
+        // is already dead, and the volume's contents are not being preserved for anyone.  What the
+        // flush does achieve here is a failure -- opening the volume fails while the killed
+        // worker's handle still holds it, and a recorded failure blocks the device removal that
+        // follows and is the only step that can actually clear the machine.
+        //
+        // `remove_owned_device` proves that skipping is right rather than merely convenient: it
+        // sends `kRemoveDevice` to the AIM driver and never touches the volume, so the removal path
+        // has no use for a flush at all.  Guarded on the mode, because for a create or a recovery
+        // the flush is exactly what makes a clean stop clean.
+        if (started_ && mode_ != DiskRuntimeMode::reclaim) {
             if (!operations_.flush_volume)
                 record(missing_void(L"flush_volume"));
             else
