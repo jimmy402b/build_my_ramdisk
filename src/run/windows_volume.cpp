@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <mutex>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -171,8 +172,21 @@ Result<void> run_provisioning_helper(std::uint32_t disk_number,
     }
 
     std::atomic<DWORD> out_bytes{}, err_bytes{};
+    // **The helper's own words, kept rather than counted.**
+    //
+    // The drain threads used to discard what they read and keep only a byte count, so a failing
+    // provisioning helper reported `native=1 code=21001` -- a bare exit code with the reason thrown away.
+    // That is why this failure has been illegible: the PowerShell script says what went wrong and the
+    // code dropped it on the floor.  Both streams are now retained (bounded by the same cap that already
+    // guards the byte counts) and printed when the helper fails.
+    //
+    // Guarded by a mutex because two drain threads append, and interleaved halves of two messages would
+    // be worse than none.
+    std::mutex text_mutex;
+    // Narrow, because the bytes come off the pipe as they are; widened only when printed.
+    std::string out_text, err_text;
     std::atomic_bool producer_done{}, cancel_drains{}, output_overflow{}, pipe_error{};
-    auto drain = [&](HANDLE pipe, std::atomic<DWORD>& total) {
+    auto drain = [&](HANDLE pipe, std::atomic<DWORD>& total, std::string& text) {
         std::array<std::byte, 4096> buffer{};
         for (;;) {
             if (cancel_drains) return;
@@ -189,6 +203,12 @@ Result<void> run_provisioning_helper(std::uint32_t disk_number,
                     if (!producer_done) pipe_error = true;
                     return;
                 }
+                {
+                    // Appended as it arrived; a multi-byte character split across two reads would only
+                    // ever cost readability, and the helper's messages are ASCII in practice.
+                    std::lock_guard<std::mutex> guard(text_mutex);
+                    text.append(reinterpret_cast<const char*>(buffer.data()), read);
+                }
                 const DWORD previous = total.fetch_add(read);
                 if (previous > kProvisionOutputCap || read > kProvisionOutputCap - previous) {
                     output_overflow = true; cancel_drains = true; return;
@@ -199,8 +219,8 @@ Result<void> run_provisioning_helper(std::uint32_t disk_number,
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     };
-    std::thread out_thread(drain, out_read, std::ref(out_bytes));
-    std::thread err_thread(drain, err_read, std::ref(err_bytes));
+    std::thread out_thread(drain, out_read, std::ref(out_bytes), std::ref(out_text));
+    std::thread err_thread(drain, err_read, std::ref(err_bytes), std::ref(err_text));
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     DWORD wait = WAIT_TIMEOUT; bool exited = false; bool terminate_failed = false;
     for (;;) {
@@ -233,6 +253,25 @@ Result<void> run_provisioning_helper(std::uint32_t disk_number,
     const DWORD delete_error = GetLastError();
     if (!deleted || !exit_ok || output_overflow || pipe_error || terminate_failed ||
         wait != WAIT_OBJECT_0 || exit_code != 0) {
+        // **Print what the helper said before returning, because that is the whole diagnosis.**
+        //
+        // The script is the only thing that knows why the volume could not be provisioned -- which disk
+        // it could not find, which partition call refused, which letter was taken.  Reporting only the
+        // exit code is what made this failure take several rounds to even locate, since it looked like a
+        // storage fault rather than a script refusal.
+        {
+            std::lock_guard<std::mutex> guard(text_mutex);
+            // Printed with %hs since the captured bytes are narrow and the stream is wide.
+            if (!out_text.empty()) {
+                std::fwprintf(stderr, L"myrd-test: provisioning helper stdout: %hs\n",
+                              out_text.c_str());
+            }
+            if (!err_text.empty()) {
+                std::fwprintf(stderr, L"myrd-test: provisioning helper stderr: %hs\n",
+                              err_text.c_str());
+            }
+            std::fflush(stderr);
+        }
         return Result<void>::failure(failure(VolumeError::platform_error,
             L"provision_new_volume",
             output_overflow ? L"provisioning helper output exceeded 64 KiB" :
