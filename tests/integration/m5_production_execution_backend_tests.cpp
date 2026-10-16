@@ -707,6 +707,13 @@ TEST_CASE(m5_backend_a_killed_worker_leaves_no_process_mount_or_device) {
         WorkerJobFixture job;
         WindowsWorkerSessionProvider provider(worker_executable(), job.source());
         ServiceWorkerControl control(provider);
+        // Traced for the same reason the reclaim case is traced, and the first attempt to read
+        // this cleanup failed for want of it: a reclaim that blocks cannot say which step it
+        // reached, and this call site runs *before* the case that sets the variable -- so the
+        // trace file was never written and the failure was a bare timeout with no diagnosis.
+        const std::wstring trace_path = L"C:\\tmp\\m5-reclaim-trace.txt";
+        static_cast<void>(_wputenv_s(L"MYRD_TRACE_FILE", trace_path.c_str()));
+        static_cast<void>(DeleteFileW(trace_path.c_str()));
         // The durable record is what the reclaim launches from, so it carries the letter the
         // residue holds and the capacity the bundle was created with -- a mismatch there makes
         // the runtime refuse at geometry verification, which is a correct refusal and not a
