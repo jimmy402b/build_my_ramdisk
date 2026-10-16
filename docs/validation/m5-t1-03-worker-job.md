@@ -1070,7 +1070,44 @@ worker 主流程的每一阶段（进程起来、读到 launch spec、打开 run
 给 `Win32VolumeAdapter::flush` 内部打点/加界，
 或者先确认它到底阻塞在哪个系统调用上（卷锁？`FlushFileBuffers`？`FSCTL`？）。
 **若确认同样缺少超时，那就和 part 23 是同一个修法**——
-把该调用也变成有界可取消的，而不是再绕开它。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+把该调用也变成有界可取消的，而不是再绕开它。
+
+#### 4.15.16 **flush 也被清白了；真正的阻塞点是 `dismount_volume`**（part 34，本轮）
+
+**读数**（请求 `72fe36db65bb49eea3a8c9da833e6ea5`，0/1）——把 flush 内部两个调用都打点之后：
+
+```
+15:44:19.973Z flush_volume: begin
+15:44:19.973Z   Win32VolumeAdapter::flush: opening the volume
+15:44:19.973Z   Win32VolumeAdapter::flush: volume opened, flushing buffers
+15:44:19.975Z   Win32VolumeAdapter::flush: done          ← 2 ms，清白
+15:44:19.975Z   ok
+15:44:19.975Z remove_drive_letter: begin
+15:44:19.977Z   ok                                       ← 2 ms，清白
+15:44:19.982Z dismount_volume: begin
+                                                          ← 此后无输出
+```
+
+**结论：拆卸里真正卡住的是 `dismount_volume`。**
+`flush_volume` 与 `remove_drive_letter` **都已证明是好的**（各 2 ms）。
+这也再次说明**逐步打点是对的**：上一步只知道"卡在 flush"，
+而这一次把 flush 内部也打点后，才看到**它早就过了 flush**。
+
+**当前完整的拆卸阻塞点清单（每一步都有实测）**：
+
+| 步骤 | 结果 |
+|---|---|
+| `flush_volume`（含内部 open / `FlushFileBuffers`） | ✅ 2 ms |
+| `remove_drive_letter` | ✅ 2 ms |
+| **`dismount_volume`** | **❌ 阻塞（4107 超时）** |
+| `stop_aim` | 未到达 |
+| `release_bundle_lock` | 未到达 |
+
+**下一步（下一轮第一件事）**：查 `dismount_volume` 的实现
+（`Win32VolumeAdapter::dismount` / `ProductVolume::dismount`，
+很可能还有卷锁释放 / `FSCTL_DISMOUNT_VOLUME` / `IOCTL` 这类**同步且无超时**的调用），
+**极可能是第三个（或第四个）同类无限阻塞点**——与 part 23 是同一个修法方向：
+**给调用加界并使其可取消**，而不是继续绕。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
