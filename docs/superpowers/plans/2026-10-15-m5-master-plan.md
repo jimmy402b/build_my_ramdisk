@@ -339,6 +339,30 @@ start_aim: begin → 此后无输出                    ← **卡在这里**
 **每个子步骤之间打点**；跑一次即可定位具体子步骤。
 （直接从 `src/m3` 调 worker 的私有 trace 会跨层并造成依赖倒挂，所以要先提升它。）
 
+**part 25：已提升并**一步定位**——阻塞点是 `rescan_aim_adapter`**
+
+- trace 现为 `src/common/diagnostic_trace.{h,cpp}`（`MYRD_TRACE_FILE` 开启）——
+  `src/m3` 本来就依赖 `src/common`，因此**合法且无依赖倒挂**；
+- 客机读数（请求 `32aff28d4dbf41f795ff95c69c1fcc61`，0/1）：
+  `provider open`(98 ms) → `provider start`(8 ms) → `discover adapter`(2 ms) →
+  `physical baseline`(4 ms) → **`create proxy disk`(2 ms，已返回！)** →
+  **`rescan adapter` → 无输出**；
+- **part 23 的 IOCTL 修正被证明是有效且命中目标的**（`create_proxy_disk` 就是原来被怀疑的点）；
+- **真正的阻塞点**：`rescan_aim_adapter`（`adapter_discovery.cpp:170`）里的
+  **`CM_Reenumerate_DevNode(dev_inst, 0)`** ——
+  **同步 PnP 重新枚举、没有超时参数**（`0` 是 flags），
+  **M0/M3 驱动层的第二个无限阻塞点**。
+
+**待裁决（两条都超出实现细节，本轮未动手）**：
+
+- **A'（推荐）**：**reclaim 不要重新枚举**。reclaim 的前提是**设备已经存在**，
+  而 `start_aim` 现在**先 create 再 rescan**——对残留这两步**可能根本不该做**。
+  正确做法是**接上既有设备**，即"reclaim 走一条更窄的 AIM 启动路径"。
+  **这是设计问题（该路径要不要建新设备），不是打补丁**；
+- **B'**：给 `CM_Reenumerate_DevNode` 加超时——CfgMgr32 **没有**带 timeout 的版本，
+  只能把调用丢进**可放弃的线程**等；而**放弃一个正在 PnP 里的线程**有风险
+  （它可能稍后继续动设备），**比 `CancelIoEx` 危险得多**，不应轻率实施。
+
 **part 18 的关键点**：
 
 - 验收**另开一个用例而不是改第一个**，因为**残留必须活过产生它的作用域**：
