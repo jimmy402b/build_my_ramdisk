@@ -576,6 +576,47 @@ FAIL ...m5_production_execution_backend_tests.cpp:792: reclaimed.ok()
 - 失败之后**不能直接重试**，必须先硬重启；
 - 这也**从另一个角度证明 reclaimer 是必需的**：没有它，一次失败会**持续污染**后续运行。
 
+#### 4.15.3 reclaim 到底卡在**哪一步**：候选已缩到两个（下一步的抓手）
+
+reclaim 模式下 `DiskRuntime::start()` 的**严格顺序**（`disk_runtime.cpp` 行号为准）：
+
+| # | 步骤 | 行 | 说明 |
+|---|---|---|---|
+| 1 | `acquire_bundle_lock(bundle)` | 83 | 排他写锁 |
+| 2 | `recover_complete_image(virtual_bytes)` | 110 | **M3 恢复**（重开并校验 M3 镜像） |
+| 3 | `start_aim()` | 115 | **启动/接管 AIM** |
+| 4 | `find_recovered_volume(letter)` | 144 | attach-only 找已挂载卷 |
+| 5 | `verify_volume(volume, bytes)` | 145 | 几何校验 |
+| — | **不分配盘符**（reclaim 与 recover 的唯一分歧） | 174–190 | |
+
+**测量把范围压到"1–3 之一"**：CPU 两分钟只涨 0.1 s（阻塞在系统调用）、
+且进程寿命**正好等于 120 s 预算**。
+
+**两个候选（都需要下一轮用诊断区分，本轮不作断言）**：
+
+- **(a) `recover_complete_image`（M3 恢复）**：被强杀的 worker 可能在 bundle/journal 上留下
+  未完成状态，恢复路径**等待某个永远不会到来的条件**；
+- **(b) `start_aim()`**：被强杀的 worker 所建的 **AIM 设备可能仍在**，
+  新的 reclaim worker 再去建/接管同一块盘的设备时**与它冲突并阻塞**。
+
+**(b) 是我更怀疑的一个**，理由：`KILL_ON_JOB_CLOSE` **被刻意不设**，
+所以 worker 被 `TerminateProcess` 后**没有任何东西替它移除 AIM 设备**——
+这正是"残留"的一部分（part 12 测到 `disks: 1,0 / letters: C,Z` 就是它）。
+
+**另外一件必须说清楚的事**：**reclaim 这条路径此前从未被"跑通过"**。
+part 3 的 `LeftoverReclaimer` 用例只用了 fake 的 profile store 与 worker control
+（验的是**决策**），part 12 的强杀用例**不调 reclaim**，part 18 的验收用例**至今 0/1**。
+所以：**代码编译通过、接线完整，但没有任何一次成功的端到端 reclaim 行为证据**。
+**T1-03 因此不能标 PASSED。**
+
+**下一步的抓手（按代价从低到高）**：
+
+1. 在 worker 侧给 reclaim 路径的**每一步**加一条**写到文件**的 trace
+   （本项目的既有纪律：先给现象加一条能区分假设的诊断），跑一次即可定位是 2 还是 3；
+2. 若定位到 `start_aim`：确认"被杀 worker 的 AIM 设备是否仍在"，
+   并决定 reclaim 前是否应先移除该设备（**这会是新的设计细节，需要记录**）；
+3. 若定位到 M3 恢复：转为 M3 恢复路径的问题，**优先级更高**（触及不变量 4）。
+
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），

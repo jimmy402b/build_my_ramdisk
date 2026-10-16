@@ -286,8 +286,23 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 `WaitForSingleObject(event, remaining_ms(context))`），而**把 deadline 提到 120 s 后依然超时**
 ⇒ **worker 在 120 s 内没有回包**，不是预算不足。整个用例约 150 s 结束，**不是挂死**；
 四个邻居全绿。失败点在 `start`（attach-only 接管），不在拆卸。
-**下一步实验**：对"干净停止"留下的卷做 reclaim 是否也卡——用来区分
-"reclaim 本身有问题"与"AIM 设备在 worker 被杀后仍存在、接管时冲突"。
+
+**part 21 的测量把范围压到三步之一**：按 3 s 粒度采样客机，
+**CPU 两分钟只涨 0.1 s**（阻塞在系统调用，**不是死循环**），
+且 worker **寿命正好等于 120 s 预算**（是超时结束它，不是它自己崩）。
+reclaim 在 `start` 里的严格顺序是
+`acquire_bundle_lock`(83) → `recover_complete_image`(110) → `start_aim`(115)
+→ `find_recovered_volume`(144) → `verify_volume`(145)，而**不分配盘符**。
+**两个候选**：(a) M3 恢复等待永不到来的条件；(b) **被强杀 worker 的 AIM 设备仍在**，
+新建/接管时冲突阻塞。**(b) 更可疑**，因为 `KILL_ON_JOB_CLOSE` 是**刻意不设**的，
+所以 worker 被杀后**没有任何东西替它移除 AIM 设备**。
+
+**必须说清的一条**：**reclaim 这条路径此前从未跑通过**——part 3 只用 fake 验决策，
+part 12 不调 reclaim，part 18 的验收用例至今 0/1。
+**代码编译通过、接线完整，但零成功的端到端行为证据。**
+
+**下一步抓手**：给 reclaim 路径**每一步写文件 trace**（本项目既有纪律：
+先加一条能区分假设的诊断），跑一次即可定位是第 2 步还是第 3 步。
 详见 `docs/validation/m5-t1-03-worker-job.md` §4.15。
 
 **part 18 的关键点**：
@@ -828,7 +843,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–20。协议动词 ✅、`DiskRuntimeMode::reclaim` ✅、worker 侧 ✅、服务侧驾驶 ✅、`LeftoverReclaimer` ✅、`ServiceRuntime` 接线 ✅、验收用例已写但 **⚠ 0/1**：reclaim 在 `start`（attach-only 接管）**120 s 内不回包**，`WorkerPipeChannel::read` deadline 超时（4107）。**下一步用"干净停止的卷"做对照实验**区分"reclaim 本身"与"AIM 残留设备冲突"。**未拿到读数前不得标 PASSED**。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
+| T1-03 | **IN_PROGRESS** | part 1–21。全部实现 ✅（协议动词、`DiskRuntimeMode::reclaim`、worker 侧、服务侧驾驶、`LeftoverReclaimer`、`ServiceRuntime` 接线），但 **⚠ 端到端验收 0/1**：reclaim 在 `start` 里**阻塞超过 120 s**不回包（CPU 两分钟只涨 0.1 s，是系统调用阻塞；worker 寿命正好等于预算）。候选缩到两步：M3 恢复 / **被杀 worker 留下的 AIM 设备冲突**。**reclaim 路径从未跑通过，T1-03 不得标 PASSED**。下一步：给 reclaim 各步加文件 trace 定位。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
