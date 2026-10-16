@@ -350,9 +350,19 @@ Result<void> M3AimRuntime::start() {
     }
 
     diagnostic_trace("M3AimRuntime::start: wait for physical drive");
-    auto located = aim::wait_for_created_physical_drive(
-        *owned_device_, *physical_baseline_, geometry.virtual_bytes,
-        device_timeout_);
+    // **Two ways to find the disk, because the two cases are genuinely different.**
+    //
+    // A device this runtime created is new to the machine, so the create wait finds it by
+    // differencing against the baseline -- which also serves as a check that the disk we act on
+    // is the one we just brought up.  An **adopted** device's disk is already in that baseline,
+    // and the create wait skips anything marked pre-existing, so it would wait out its whole
+    // timeout and fail.  The present-wait matches on the device's own identity instead.
+    auto located = adopting_existing
+        ? aim::wait_for_present_physical_drive(
+              *owned_device_, geometry.virtual_bytes, device_timeout_)
+        : aim::wait_for_created_physical_drive(
+              *owned_device_, *physical_baseline_, geometry.virtual_bytes,
+              device_timeout_);
     if (!located) {
         (void)remove_owned_device();
         (void)stop_provider();

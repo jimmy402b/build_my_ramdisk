@@ -53,6 +53,18 @@ Result<LocatedDisk> wait_for_created_physical_drive(
     std::uint64_t expected_size_bytes,
     std::chrono::milliseconds timeout);
 
+// Waits until the PhysicalDrive backed by `created` is present, whether or not this process
+// created it.
+//
+// The mirror of `wait_for_created_physical_drive` for the **attach** case: a reclaim adopts the
+// proxy disk a killed worker left behind, so that disk is already in the machine and the create
+// wait would never see it as newly created -- it skips anything marked pre-existing.  Identity is
+// decided from the SCSI address and the expected length instead, which is the same rule
+// `wait_for_physical_drive_retired` states for the opposite direction.
+Result<LocatedDisk> wait_for_present_physical_drive(
+    DeviceId created, std::uint64_t expected_size_bytes,
+    std::chrono::milliseconds timeout);
+
 // Waits until the PhysicalDrive created for `owned` is gone from the machine.
 //
 // This is the mirror of `wait_for_created_physical_drive`, and it is deliberately

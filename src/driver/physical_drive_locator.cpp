@@ -367,6 +367,28 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         L"wait_for_created_physical_drive", L"timed out"});
 }
 
+// ── Present-disk wait (attach mode) ───────────────────────────
+
+Result<LocatedDisk> wait_for_present_physical_drive(
+    DeviceId created, std::uint64_t expected_size_bytes,
+    std::chrono::milliseconds timeout) {
+    // Deliberately the *same* matching and confirmation logic as the create wait, with an empty
+    // baseline -- and the empty baseline is the whole of the difference.
+    //
+    // `match_created_disk` skips any candidate flagged `existed_before`, which is exactly right
+    // when waiting for a disk the adapter has just created and exactly wrong when adopting one
+    // that was already there.  Marking nothing as pre-existing makes the match turn on the facts
+    // that identify the device -- its SCSI address and its length -- rather than on when the
+    // machine happened to enumerate it.
+    //
+    // Written as a call to the create wait rather than as a copy of it on purpose: the polling
+    // interval, the repeat-confirmation step and the decision to treat a transient length
+    // mismatch as "not yet" rather than as a wrong disk are all one behaviour, and duplicating
+    // them would be duplicating the subtlest part of this file.
+    return wait_for_created_physical_drive(
+        created, std::span<const std::uint32_t>{}, expected_size_bytes, timeout);
+}
+
 // ── Retirement wait ───────────────────────────────────────────
 
 namespace {
