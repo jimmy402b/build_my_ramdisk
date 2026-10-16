@@ -113,6 +113,11 @@ public:
                                         const product::Uuid& operation_id);
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> cleanup(
         const OperationContext& context, const product::Uuid& operation_id);
+    // Dismantles a leftover this service proved is its own.  Requires that `start` already
+    // adopted the volume -- the worker refuses otherwise -- so a reclaim that adopted
+    // nothing cannot report a still-mounted residue as dismantled.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> reclaim_leftover(
+        const OperationContext& context, const product::Uuid& operation_id);
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> start(
         const OperationContext& context, const product::Uuid& operation_id);
     // Brings the runtime up and requires the bundle evidence that makes a

@@ -1012,6 +1012,59 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
     return Result<WorkerActionResult>::success(std::move(result));
 }
 
+Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover(
+    const WorkerActionRequest& request) {
+    if (!request.lifecycle_intent.has_value()) {
+        // No intent means no bundle path, no mount target and no image -- and a reclaim
+        // without those could only guess at which volume to dismantle, which is the
+        // identity-free cleanup the design forbids outright.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.reclaim_leftover",
+            L"A leftover reclaim needs the profile's own launch facts"));
+    }
+    auto launch_request = make_launch_request(request.lifecycle_intent.value());
+    if (!launch_request.ok()) {
+        return Result<WorkerActionResult>::failure(launch_request.error());
+    }
+    // **The mode is overridden here, and that is the whole point of this method.**  The
+    // translation above picks `provision_new`/`adopt_existing` from the profile's
+    // lifecycle, and both of those *bring a volume into service*.  A reclaim must take a
+    // leftover **out** of service, which means adopting the already-mounted volume and
+    // assigning nothing -- `reclaim_existing`.  Leaving the translated mode in place would
+    // have this method mount the very volume it was called to dismantle.
+    launch_request.value().volume_mode = m5::WorkerVolumeMode::reclaim_existing;
+
+    auto launched = sessions_.launch(launch_request.value(), context());
+    if (!launched.ok()) {
+        return Result<WorkerActionResult>::failure(launched.error());
+    }
+    auto owned = launched.move_value();
+    auto* const session = owned.get();
+
+    // `start` performs the adoption: the runtime finds the volume by the recorded letter
+    // and attaches without assigning anything.  A failure here is reported rather than
+    // retried, because a volume that cannot be attached is one this service may not have
+    // owned in the first place.
+    const auto adopted = session->start(context(), request.operation_id);
+    if (!adopted.ok()) {
+        return Result<WorkerActionResult>::failure(adopted.error());
+    }
+    // The teardown, which is the same call every other path uses.
+    const auto reclaimed = session->reclaim_leftover(context(), request.operation_id);
+    if (!reclaimed.ok()) {
+        return Result<WorkerActionResult>::failure(reclaimed.error());
+    }
+
+    WorkerActionResult result = completed_result();
+    // No evidence is produced, and that is deliberate rather than an omission: a reclaim
+    // *removes* durable facts about a resource, so answering with a
+    // `VolumeRegistrationEvidence` would be the service recording a volume it has just
+    // dismantled.  The caller's proof that it worked is the reply's status, which reports
+    // the runtime with no volume -- and, in the acceptance, the drive letter being gone.
+    return Result<WorkerActionResult>::success(std::move(result));
+}
+
 Result<WorkerActionResult> ServiceWorkerControl::execute(
     const WorkerActionRequest& request) {
     switch (request.action) {
@@ -1056,6 +1109,12 @@ Result<WorkerActionResult> ServiceWorkerControl::execute(
     case ActionKind::remove_exact_device:
     case ActionKind::stop_runtime_and_release_lock:
         return confirm_removal(request);
+    case ActionKind::reclaim_leftover:
+        // Explicit rather than left to the `default:` below, and that is not style: the
+        // default answers `unrealized`, so a new action kind that reached it would be
+        // reported as "no worker did this" and a leftover would never be dismantled --
+        // silently, and while every test that does not exercise it still passed.
+        return reclaim_leftover(request);
     default:
         return unrealized(request);
     }

@@ -189,6 +189,19 @@ enum class ActionKind : std::uint8_t {
     // afterwards is the last word on that generation rather than one more
     // snapshot taken while writes continued.
     freeze_writes,
+    // Dismantles a leftover this service has proved is its own.
+    //
+    // Appended for the same reason as the two above: the values are already used by the
+    // private worker protocol and the durable model fixtures, so inserting one would
+    // silently reinterpret every action after it.
+    //
+    // **It appears in no plan.**  Every other action is a step of a profile's lifecycle, and
+    // the state machine decides when it runs; this one is the startup sweep's, and it runs
+    // for a profile that is *not* being managed at all -- its worker is dead and only its
+    // device is left.  It is an `ActionKind` because that is the vocabulary the worker
+    // adapter is driven by, and giving it a second dispatch mechanism to avoid one enum
+    // value would be a second thing to keep in step.
+    reclaim_leftover,
 };
 
 inline constexpr std::size_t kMaximumPlanActions = 16;

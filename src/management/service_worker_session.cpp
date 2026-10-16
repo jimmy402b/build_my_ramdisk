@@ -334,6 +334,28 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::cleanup(
     return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
 }
 
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::reclaim_leftover(
+    const OperationContext& context, const product::Uuid& operation_id) {
+    // The same shape as `cleanup` -- operation-scoped, answered with a status -- because
+    // the worker reaches the same teardown for both.  What separates them is on the worker
+    // side and at the caller: `cleanup` is idempotent housekeeping, this one refuses unless
+    // the runtime was started, so a reclaim that adopted nothing cannot report a residue as
+    // dismantled.
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::reclaim_leftover;
+    request.product_operation_id = operation_id;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) {
+        return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
+    }
+    if (!reply.value().status.has_value()) {
+        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
+            L"ServiceWorkerSession::reclaim_leftover",
+            L"the reclaim reply carries no status").error());
+    }
+    return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
+}
+
 Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::start(
     const OperationContext& context, const product::Uuid& operation_id) {
     m5::WorkerMessage request{};

@@ -375,6 +375,14 @@ private:
     // kind.
     Result<WorkerActionResult> register_bundle(const WorkerActionRequest& request,
                                                BundleEvidenceSource source);
+    // Dismantles a leftover: launches in `reclaim_existing` mode, has it adopt the
+    // already-mounted volume without assigning anything, and tears it down.
+    //
+    // Overrides the translated launch mode, and that override is the point: the
+    // translation picks a mode that *brings a volume into service*, and this method's whole
+    // purpose is to take one out of it.
+    Result<WorkerActionResult> reclaim_leftover(
+        const WorkerActionRequest& request);
     Result<WorkerActionResult> verify_startup_step(
         const WorkerActionRequest& request);
     Result<WorkerActionResult> quiesce_mutations(
