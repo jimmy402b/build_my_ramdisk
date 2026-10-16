@@ -935,7 +935,38 @@ FAIL ...m5_production_execution_backend_tests.cpp:744: created.ok()
 
 **另一条应当固化的纪律**：`REQUIRE(result.ok())` 一律**先打印 error 再断言**
 （本轮又是这样才拿到 `op=provision_new_volume`）。**同一用例里的下一个断言也要一起加**，
-否则只是把下一次盲猜往后挪一格——本轮正是如此。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+否则只是把下一次盲猜往后挪一格——本轮正是如此。
+
+#### 4.15.12 级联已从源头修掉；**cleanup 那条 reclaim 仍然超时**（part 30，本轮）
+
+**已实施**：`m5_backend_a_killed_worker_leaves_no_process_mount_or_device`
+**先断言残留存在、然后自己把它 reclaim 掉**（`394d8d0`）。这从源头去掉了
+"两条设备用例必须靠重启客机才能相继运行"的环境依赖，
+并且**让这条用例成为"reclaimer 能处理强杀留下的残留"的证明**——
+顺序也是唯一诚实的那种：先断言它在，再断言它没了。
+
+**读数（两条，都是 0/1，但都不是"create 失败"了）**：
+
+| 请求 | 失败点 | 现象 |
+|---|---|---|
+| `b78559db100d4f56915198c0c1ec30fe` | `:736 reclaimed.ok()`（**cleanup 的 reclaim**） | `pipe transfer exceeded its bounded wait`（4107） |
+| 第二轮（cleanup 已加 trace 后） | 未取到 | **超过 30 分钟无结果**，且**trace 文件根本没被创建**，`scp` 取不到；已终止并硬重启客机 |
+
+**关键结论（本轮最有价值的一点）**：**级联确实修好了**——
+失败点从"下一条用例的 create（`provision_new_volume` 21001）"
+变成了"**这条用例自己的 cleanup reclaim 超时**"。
+也就是说：**现在卡住的正是 reclaimer 本身，而不是测试环境。**
+
+**trace 文件没被创建这一点本身也是信息**：说明
+`M3AimRuntime::start` 的**第一个打点**（`provider open`）都没到——
+即 worker 在 `start_aim` **之前**就没有回应，
+或者这次运行的 worker 根本没能进到 `M3AimRuntime::start`。
+这与"cleanup 用的 durable record 让 reclaim 走了另一条路"一致，**但本轮无法判定**。
+
+**下一步（下一轮第一件事）**：用**单次、带 trace、并在跑之前确认 trace 文件不存在**的方式跑，
+并在**运行中**（而不是结束后）用 `scp` 抓一次 trace——
+本轮是在"结束之后"抓，而客机那时已经不稳，两次都取不到。
+**先把"能不能在运行中抓到 trace"解决掉**，否则下一轮还会卡在同一处。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
