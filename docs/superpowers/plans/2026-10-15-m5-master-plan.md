@@ -152,10 +152,26 @@ T1-09 ─→ T4-02 ─→ T4-03 ─→ T4-04
 
 | 字段 | 内容 |
 |---|---|
-| **状态** | **NEXT** |
+| **状态** | **IN_PROGRESS**（part 1 已完成：决策核心 + 10 用例） |
 | **依赖** | T1-02 |
 | **工作量** | L |
 | **目标** | G3、G4 |
+
+**已完成（part 1，`8bb2b36`）**：`src/management/worker_sweep_policy.{h,cpp}` +
+`tests/model/m5_worker_sweep_policy_tests.cpp`（**10/10 通过**，开发机纯逻辑，不建进程）。
+把两个安全问题变成**纯函数决策**并逐条钉住：**pid 不是身份**（creation time 不匹配 ⇒
+`pid_recycled`，既不杀也不收养）、**只比身份不比名字**、**身份不完整 ⇒ 不回收**（`nullopt`）、
+**"判不了"不是许可**（零 pid / 缺 creation time ⇒ `indeterminate`）、generation 0 是真实 generation。
+先做这一块的理由：sweep 的每一次危险失败都是**决策失败**，而不是读 job object 读错。
+
+**剩余（part 2，下一步）**：
+
+1. **命名 job object** `Global\MyRamDisk.M5.Workers`；**不设** `KILL_ON_JOB_CLOSE`；
+   **保留进程句柄**（现在被 `close_launched_worker` 丢弃）。
+2. **协作优先 + 有界升级**：私有 `shutdown` → 等退出 → 超时 `TerminateProcess`
+   （**按 profile 粒度**）→ 记 needs-attention。
+3. **活 worker 注册表**（sweep 要枚举它；`WindowsWorkerSessionProvider::attach` 也等它）。
+4. **持久化"最后观测身份"**，喂给上面的决策核心。
 
 **做什么**（设计 §5）：
 
@@ -637,7 +653,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **NEXT** | — |
+| T1-03 | **IN_PROGRESS** | part 1（决策核心 10/10）无独立证据文档，读数见本卡片 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
