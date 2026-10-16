@@ -617,6 +617,44 @@ part 3 的 `LeftoverReclaimer` 用例只用了 fake 的 profile store 与 worker
    并决定 reclaim 前是否应先移除该设备（**这会是新的设计细节，需要记录**）；
 3. 若定位到 M3 恢复：转为 M3 恢复路径的问题，**优先级更高**（触及不变量 4）。
 
+#### 4.15.4 **诊断完成：卡在 `start_aim`**（part 22，带步骤 trace 的客机读数）
+
+抓手 1 已实现（worker 侧 `MYRD_RECLAIM_TRACE=<file>`，仅 reclaim 模式包装各步，
+每步一行、**写后强制 flush**——因为要观察的进程可能**正阻塞在其后那个调用里**，
+缓冲或握住句柄的 trace 恰好对最关键的那一步什么都看不到）。
+读数（请求 `2552917a3f624a5eab849c7aee2b86d5`，0/1）：
+
+```
+2026-10-16T12:25:28.734Z acquire_bundle_lock: begin
+2026-10-16T12:25:28.736Z   ok                     ← 2 ms
+2026-10-16T12:25:28.736Z recover_complete_image: begin
+2026-10-16T12:25:28.852Z   ok                     ← 116 ms，M3 恢复没问题
+2026-10-16T12:25:28.854Z start_aim: begin
+                                                  ← 此后无线，直到预算耗尽
+```
+
+**结论（不再是推测）**：
+
+- **第 1、2 步都是毫秒级成功**，所以 **M3 恢复路径无责**——抓手 3 被排除，
+  **不需要上升到不变量 4**；
+- **阻塞点是第 3 步 `start_aim`**，即候选 (b)；**抓手 2 成立**。
+
+**阻塞的机制已定位到代码**：`ProductionRuntimeAdapter::start()`
+（`runtime_adapter.cpp:342`）会用 `factory.provider.request_timeout = std::chrono::seconds(30)`
+去建并启动 `M3AimRuntime`，然后 `impl_->aim_runtime->start()`。
+被杀 worker 留下的 **AIM 设备仍在**（part 12 量到的 `disks: 1,0` 就是它），
+新 AIM runtime 起来时**与它冲突/等待它**，于是**永远不返回**。
+
+**为什么这是本增量的必然结果而不是意外**：`KILL_ON_JOB_CLOSE` 是**刻意不设**的
+（那是为了让"被请求离开"的 worker 走有序拆卸）。代价就是：
+**worker 被强杀后，没有任何东西替它移除 AIM 设备**——而这恰好是 reclaimer 要去处理的状态。
+所以 reclaimer 必须先处理"设备已存在"这件事，不能假定 AIM 是干净的。
+
+**最后一步要做的（未做，故 T1-03 仍不得标 PASSED）**：
+在 reclaim 路径上**先确认/移除遗留的 AIM 设备**，再 `start_aim`；
+具体手段需要在 M3/AIM 适配层找一条"查询并清理既有设备"的路径
+（**若不存在，则属于设计需要新增的能力，要记录并请示**）。
+
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），

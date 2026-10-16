@@ -748,7 +748,18 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
 
     // Phase two: the reclaim, from a fresh control and a fresh job -- which is what a
     // service restart leaves behind.
+    //
+    // The reclaim is traced, because the symptom it was written for is a worker that blocks
+    // for its whole budget and therefore **cannot say which step blocked** -- the reply never
+    // comes back.  The variable names a file the worker appends one line per step to; the
+    // worker inherits it from this process, so nothing has to travel through the protocol.
+    // The create phase above deliberately does not set it, so the file holds unambiguous
+    // timestamps from the reclaim alone.
     {
+        const std::wstring trace_path = L"C:\\tmp\\m5-reclaim-trace.txt";
+        static_cast<void>(_wputenv_s(L"MYRD_RECLAIM_TRACE", trace_path.c_str()));
+        static_cast<void>(DeleteFileW(trace_path.c_str()));
+
         WorkerJobFixture job;
         WindowsWorkerSessionProvider provider(worker_executable(), job.source());
         ServiceWorkerControl control(provider);

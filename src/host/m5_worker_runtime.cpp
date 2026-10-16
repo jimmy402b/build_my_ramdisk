@@ -9,6 +9,108 @@
 namespace myrd::m5 {
 namespace {
 
+// Appends one stamped line to the file `MYRD_RECLAIM_TRACE` names, if it names one.
+//
+// Opened, written and closed per line rather than held open, and that is the point: the
+// process this exists to observe may be **blocked inside the very call that follows**, so a
+// buffered or still-open handle would show nothing for exactly the step that matters.  A
+// trace that needs the process to survive to be useful would be useless here.
+//
+// Best-effort by design: a trace that cannot be written must not change what the worker does,
+// because the run it is explaining would then be a different run.
+void reclaim_trace(const wchar_t* step) {
+    wchar_t path[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"MYRD_RECLAIM_TRACE", path,
+                                                 static_cast<DWORD>(MAX_PATH));
+    if (length == 0 || length >= MAX_PATH) return;
+
+    HANDLE file = CreateFileW(path, FILE_APPEND_DATA,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+
+    SYSTEMTIME now{};
+    GetSystemTime(&now);
+    wchar_t line[256]{};
+    const int written = _snwprintf_s(
+        line, _countof(line), _TRUNCATE,
+        L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ %s\r\n", now.wYear, now.wMonth,
+        now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, step);
+    if (written > 0) {
+        DWORD ignored = 0;
+        static_cast<void>(WriteFile(file, line,
+                                    static_cast<DWORD>(written * sizeof(wchar_t)),
+                                    &ignored, nullptr));
+        // Forced to the device before returning: a buffered append would be lost precisely
+        // when the process is killed for exceeding its budget, which is the case this exists
+        // to explain.
+        static_cast<void>(FlushFileBuffers(file));
+    }
+    static_cast<void>(CloseHandle(file));
+}
+
+// Wraps the reclaim's start sequence so each step is recorded before and after it runs.
+//
+// The names are the `DiskRuntime` steps, in the order that runtime calls them, because the
+// question is *which* of them blocks -- so the trace has to be in their terms rather than in
+// the adapter's.  A step that logs a start and no finish is the one that hung.
+void trace_reclaim_steps(DiskRuntimeOperations& operations) {
+    // `acquire_bundle_lock` takes the bundle path, so it is wrapped on its own rather than
+    // through a shared helper -- the signatures differ and forcing one would need a
+    // template argument that buys nothing here.
+    if (operations.acquire_bundle_lock) {
+        auto inner = operations.acquire_bundle_lock;
+        operations.acquire_bundle_lock =
+            [inner](const std::filesystem::path& path) {
+                reclaim_trace(L"acquire_bundle_lock: begin");
+                auto result = inner(path);
+                reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+                return result;
+            };
+    }
+    // `recover_complete_image` and `start_aim` take nothing but bytes (or nothing at all),
+    // and the two after them take a letter and a volume; each is wrapped in its own terms.
+    if (operations.recover_complete_image) {
+        auto inner = operations.recover_complete_image;
+        operations.recover_complete_image = [inner](const std::uint64_t bytes) {
+            reclaim_trace(L"recover_complete_image: begin");
+            auto result = inner(bytes);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.start_aim) {
+        auto inner = operations.start_aim;
+        operations.start_aim = [inner] {
+            reclaim_trace(L"start_aim: begin");
+            auto result = inner();
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.find_recovered_volume) {
+        auto inner = operations.find_recovered_volume;
+        operations.find_recovered_volume = [inner](const wchar_t letter) {
+            reclaim_trace(L"find_recovered_volume: begin");
+            auto result = inner(letter);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.verify_volume) {
+        auto inner = operations.verify_volume;
+        operations.verify_volume = [inner](const ProductVolume& volume,
+                                           const std::uint64_t bytes) {
+            reclaim_trace(L"verify_volume: begin");
+            auto result = inner(volume, bytes);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+}
+
+} // namespace
+
 constexpr auto kWorkerOperationTimeout = std::chrono::minutes(5);
 
 OperationContext context() {
@@ -59,8 +161,6 @@ persistence::RecoveryOptions default_recovery_options() {
                       64 * 4096, 64, 2 * kMiB, 2 * kMiB};
     return options;
 }
-
-} // namespace
 
 struct DiskWorkerRuntime::Impl final {
     explicit Impl(WorkerRuntimeConfig value) : config(std::move(value)) {}
@@ -186,6 +286,22 @@ Result<void> DiskWorkerRuntime::start() {
     auto operations = make_runtime_operations(dependencies);
     if (!operations.ok()) {
         return Result<void>::failure(operations.error());
+    }
+    // **A reclaim gets a per-step trace, and only a reclaim.**  The measured symptom is a
+    // reclaim that blocks for the whole command budget while its process consumes almost no
+    // CPU -- a blocked system call somewhere in the start sequence -- and neither the
+    // service nor the worker can say which step, because the reply never comes back.  A
+    // trace file is the only way to see inside a worker that is not answering.
+    //
+    // It is applied here rather than in `make_runtime_operations` for two reasons: this is
+    // the layer that knows which mode is running, so a create or a recovery is untouched;
+    // and `runtime_adapter.cpp` is shared with the foreground CLI, which must not gain
+    // tracing for a defect that only the service's reclaimer has.
+    //
+    // Gated on `MYRD_RECLAIM_TRACE` naming a file, so production pays a `GetEnvironmentVariableW`
+    // per step and nothing else, and a run without the variable behaves exactly as before.
+    if (impl.config.volume_mode == WorkerVolumeMode::reclaim_existing) {
+        trace_reclaim_steps(operations.value());
     }
     DiskRuntimeOptions options{};
     options.bundle = impl.config.bundle;
