@@ -686,7 +686,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1+2+3：`m5.worker_sweep_policy` 18/18（开发机）、`m5.production_execution_backend` **3/3**（VM，含重开 job 可见活 worker）；证据 `docs/validation/m5-t1-03-worker-job.md` |
+| T1-03 | **IN_PROGRESS** | part 1–5：`m5.worker_sweep_policy` 18/18、`m5.worker_binding_store` 10/10、`m5.worker_sweep` 8/8、`m5.service_host` 14/14（全开发机）；`m5.production_execution_backend` 3/3（VM）。证据 `docs/validation/m5-t1-03-worker-job.md`。**剩余：launch 写指纹 + bindings adapter + 组合根 + 强杀验收（`-Repeat 20`）** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |

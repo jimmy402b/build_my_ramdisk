@@ -110,9 +110,49 @@ part 1/2 见 `docs/superpowers/plans/2026-10-15-m5-master-plan.md` 的 T1-03 卡
 因此该用例**被删掉而不是留着空过**，性质交给 part 3 的 VM 验收（真杀服务、真孤儿），
 并作为已知限制记在这里。
 
-### 4.2 尚未接线（part 3 剩余）
+### 4.2 本轮新增（part 4 + part 5，`6c7346b` / `3fa2733`）
 
-1. **持久化"最后观测身份"**（喂给 part 1 的 `reclaimable_resources`）；
-2. **服务启动时跑 sweep**（读 durable 绑定 → `sweep_verdicts` → 执行）；
-3. **强杀验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
+| 交付 | 内容 | 读数 |
+|---|---|---|
+| `worker_binding_store.{h,cpp}` | 设计 §5.5 的"最后观测身份"，最小形态：每 profile 记录 worker 的 **pid + process creation time + generation**，落在 `<ProgramData>\MyRamDisk\profiles\workers`（复用安装器已建好的 ACL 受保护根，不再造第二个受保护根） | `m5.worker_binding_store` **10/10** |
+| `worker_sweep.{h,cpp}` | 把 part 1/2 的决策**执行**出来：问下孤儿、只在被允许时升级、adopt 预期在服务的、并**报告**做了什么 | `m5.worker_sweep` **8/8** |
+| `service_host` 的 sweep 接缝 | `IStartupSweep` + 启动序列（**recovery 之后、scheduler 之前**）+ 三种结果区分 | `m5.service_host` **14/14**（新增 6） |
+
+**两个"答案不同"的设计点，各有独立用例**：
+
+- **"没有记录" ≠ "记录读不出来"**：前者是 `nullopt`（不可归属），后者是失败。
+  合并两者会让一个损坏的文件看起来像"这个 profile 从来没有过 worker"；
+- **读不到 durable 绑定必须让 sweep 停下，而不是改道**：没有绑定时每个孤儿都像"不认识的绑定"，
+  最直白的实现会把它们**全部强杀**——杀掉可能正在有序拆卸、且本来属于我们的 worker。
+  枚举失败同理**不是"世界干净"**，因为那是唯一确定会终止排查的答案。
+
+**我自己在这轮犯的错（都在解析器里，都由 round-trip 用例抓到）**：
+
+- 字段写成 ` key=value`，所以值前面有分隔空格，`from_chars` 拒绝；
+  **这份 store 写出的每一条记录都读不回来**；
+- 最后一个字段后面跟着换行，`generation=7\n` 因此同样被拒。
+  只修剪一端不够，而**第二个缺陷在第一个修好之前是不可见的**。
+
+两次都是**把抓到的字节打出来**才找到的，而不是重读那段"看起来正确过三次"的代码。
+
+**启动序列的三种结果**（`m5.service_host` 逐条钉住）：
+
+- sweep **跑不起来** ⇒ **启动失败**，且 scheduler 从未启动（不能在没扫过的世界上准入工作）；
+- sweep **发现需要人看的东西** ⇒ **默认照常启动**，但通过
+  `ServiceHostDiagnostics::sweep_needs_attention` **报出来**。理由是一个选择而非疏忽：
+  机器上有一个不肯死的残留 worker，其余盘仍然要被服务，拒绝启动等于把一个卡住的孤儿
+  变成一个下线的服务；
+- 想要"宁可不启动"的部署可以打开
+  `ServiceHostOptions::fail_start_when_sweep_needs_attention`。
+
+### 4.3 尚未接线（下一步，T1-03 最后一步）
+
+1. **launch 时写指纹**（provider 拿到 profile 与进程，两者都只有它知道）；
+2. **从 store 推出 expected bindings**（`recorded_creation_time` 必须来自 store，
+   否则 sweep 永远判 `leave_alone`）；
+3. **组合根建生产 sweep 并传给 host**；
+4. **强杀验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
    无法证明归属 → 不清且报 needs-attention。**至少 `-Repeat 20`**。
+
+**在 1–3 完成之前，sweep 的绑定集是空的**——所以本轮**没有**尝试强杀验收，
+也没有从逻辑测试去宣称它。这是刻意的。
