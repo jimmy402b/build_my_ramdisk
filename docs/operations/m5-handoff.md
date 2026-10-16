@@ -205,6 +205,20 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
 留孤儿 worker 污染了 VM）；又归因于"worker 句柄泄漏"（也错，是瞬时竞态）。
 **设备类用例间歇失败时：先排除环境污染，再给现象加一条能区分假设的诊断，最后才下结论。**
 
+### 7.1 工具链的两个静默陷阱（2026-10-16 实测并已修）
+
+- **`-Stage` 会静默丢包**：它先清空客机目标树再逐条 scp，有时上传没落地却仍然打印
+  `staged N test binaries` 并成功返回。症状是 runner 打印
+  `MISSING .../<test>.exe`，**读起来完全像构建问题**——已有一轮排查因此走错方向，
+  而"再 stage 一次"修好了一个从未存在的缺陷。
+  **现已加校验**：staging 结束后在客机上数测试可执行文件并与本地比对，不符即报错并写明
+  "这是 staging 没落地，不要把随后的运行失败当成产品缺陷"。
+  **仍要记住**：看到 `MISSING` 先怀疑 staging，不要先怀疑构建。
+- **UTF-8 BOM 会打断远程脚本首行**：`Invoke-M5Vm.ps1` 带 BOM，而 `powershell -Command -` 不剥 BOM，
+  BOM 粘在正文第一个 token 上 ⇒ 客机报"无法将该项识别为 cmdlet"。
+  `Invoke-Remote` 现在先发一个空行吸收它；**这同时修好了一个先前就存在的失败**
+  （git 元数据解包那步的 `& 'tar.exe' ...` 一直报 `CommandNotFoundException`）。
+
 ---
 
 ## 8. 未解 / 待查（不要当成已解释）

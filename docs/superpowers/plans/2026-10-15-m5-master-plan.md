@@ -177,13 +177,33 @@ T1-09 ─→ T4-02 ─→ T4-03 ─→ T4-04
 startup secret，而它随父进程死了。所以这条路径报明确失败而不是伪造成功；孤儿能被执行的是"被终止"，
 它留下的 durable 记录由恢复路径对账（**那是 T1-06 的题目**）。
 
-**剩余 part 3（下一步）**：
+**已完成 part 3（`7349efd`）**——job 接线 + 句柄保留 + 观测修正，证据：
+`docs/validation/m5-t1-03-worker-job.md`：
 
-1. `WindowsWorkerSessionProvider::launch` **保留句柄**（不再由 `close_launched_worker` 丢弃）、
-   把每次 launch **指派进 job**、并在注册表登记 pid + creation time；
-2. **持久化"最后观测身份"**（喂给 part 1 的决策核心）；
-3. **服务启动时跑 sweep**（读 durable 绑定 → `sweep_verdicts` → 执行）。
-4. **VM 验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
+- `launch_private_worker` 增加**必需**的 job 参数，用 **`PROC_THREAD_ATTRIBUTE_JOB_LIST`** 随创建属性指派
+  （不是创建后再 `AssignProcessToJobObject`——那会留一个"worker 在所有 job 之外运行"的窗口）；
+- provider **保留句柄**（不再由 `close_launched_worker` 丢弃），且**在构造 session 之前**保留，
+  这样 session 构造失败也不会留下"在 job 里但够不到"的 worker；
+- **抓到 2 个产品缺陷**：① `SILENT_BREAKAWAY_OK` 让 job **不再记账**其成员（改为 `BREAKAWAY_OK`）；
+  ② `JobObjectBasicProcessIdList` 对一个**确实含进程**的 job 报 0 个成员
+  （`IsProcessInJob` 报 1）⇒ 改为**遍历进程表 + 逐进程问成员资格**；
+- **修正 2 个工具链缺陷**：③ `-Stage` 静默丢包（现在**在客机上数**可执行文件，不符即报错并写明
+  "不要把随后的运行失败当成产品缺陷"）；④ 本文件带 BOM 而 `powershell -Command -` 不剥 BOM，
+  导致远程脚本首行失败（`Invoke-Remote` 补空行吸收；顺带修好了先前就存在的 git 元数据解包失败）；
+- **验证**：`m5.production_execution_backend` **3/3**（`-Repeat 3`），含
+  "**重开的 job 句柄仍能看到活着的 worker**"——**这是整个 sweep 成立的前提**。
+
+**已知限制（写清楚，未验证）**：`AssignProcessToJobObject` 在提权 SSH 会话里返回
+`ERROR_ACCESS_DENIED(5)`，所以工具链里每个进程都已在**别人创建的 job** 中，
+`IsProcessInJob(.., nullptr, ..)` 因此会因无关原因报 true；加上"关掉最后一个句柄再按名字重开未必是同一对象"，
+**"关闭 job 不杀 worker"这条性质在本测试环境里无法干净测量**。该用例**删除而非空过**，
+交给 part 3 的"真杀服务"验收。
+
+**剩余（part 3 收尾，下一步）**：
+
+1. **持久化"最后观测身份"**（喂给 part 1 的 `reclaimable_resources`）；
+2. **服务启动时跑 sweep**（读 durable 绑定 → `sweep_verdicts` → 执行）；
+3. **强杀验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
    无法证明归属 → 不清且报 needs-attention。**至少 `-Repeat 20`**。
 
 **做什么**（设计 §5）：
@@ -666,7 +686,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1（决策核心）+ part 2（job object/verdict）：`m5.worker_sweep_policy` **18/18**，开发机纯逻辑 |
+| T1-03 | **IN_PROGRESS** | part 1+2+3：`m5.worker_sweep_policy` 18/18（开发机）、`m5.production_execution_backend` **3/3**（VM，含重开 job 可见活 worker）；证据 `docs/validation/m5-t1-03-worker-job.md` |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
