@@ -205,6 +205,27 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
 留孤儿 worker 污染了 VM）；又归因于"worker 句柄泄漏"（也错，是瞬时竞态）。
 **设备类用例间歇失败时：先排除环境污染，再给现象加一条能区分假设的诊断，最后才下结论。**
 
+### 7.0.0 **绝不要用 `Set-Content -Encoding ASCII` 改文档**（2026-10-16，**已犯第三次**）
+
+本轮我用 `Set-Content -Path <plan> -Value $c -NoNewline -Encoding ASCII` 改一份**中文文档**，
+把**整份 master-plan 的中文全部变成 `???`**（368 处），
+`git --no-pager diff --stat` 立刻显示 `409 insertions / 658 deletions` —— 一份正常的
+小改动不可能有这种比例。**已用 `git checkout --` 恢复。**
+
+**为什么会出现这个行为**：本会话的 PowerShell 是 **PowerShell 7**（提示符 `?>`），
+而 PS 7 的 `-Encoding ASCII` **不再静默升级为 UTF-8**——它真的按 ASCII 写，
+**每个非 ASCII 字符都变成 `?`**。在 Windows PowerShell 5.1 上同样的命令不会这样破坏。
+
+**规则（硬性）**：
+
+- **改文本文件一律用 `edit` 工具**，不要用 `Set-Content`；
+- 确实需要写文件时，**只能用 `-Encoding utf8NoBOM`**（PS 7）或 `utf8`（5.1），
+  **永远不要 `ASCII`**；
+- **改完中文文件后先查 `???`**：`(Select-String -Path <f> -Pattern "\?\?\?" | Measure-Object).Count`
+  必须为 0；再查 `git diff --stat` 的比例是否合理；
+- 这个坑本次会话在**测试文件**上犯过一次（已记录），这是**第三次**——
+  所以它是纪律问题，不是偶发。
+
 ### 7.0.1 会创建真实设备的用例的两个环境事实（2026-10-16）
 
 - **`Set-Disk -IsOffline` 会在客机上挂住**：本轮清理强杀残留时它卡死，

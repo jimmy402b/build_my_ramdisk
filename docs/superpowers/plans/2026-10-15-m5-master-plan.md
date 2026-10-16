@@ -289,23 +289,11 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 一条用 `find_recovered_volume` 接管、**跳过 `assign_drive_letter`**、然后走既有
 `remove_drive_letter` → `dismount` → `stop_aim` 拆卸的路径。
 
-**为什么需要裁决**：这要**动 M4 的 run 层**。设计 §3 / 不变量 4 写的是"不改 M4 前台
-单阶段 checkpoint 行为"，而 `DiskRuntime::start()` 正是 M4 的路径。加一个模式
-**可以**做到不改既有行为（新分支、既有分支逐字不动），但它属于
-**"需要重写某一层并重挣 M3/M4 证据"**这一类，按 goal 的规则**必须停下来问**：
-
-- **选项 A（推荐）**：给 `DiskRuntime` 加一个**显式的 reclaim 模式**，
-  既有 `create`/`recover` 分支**逐字不动**，并用**既有 M4 套件全绿**来证明未受影响
-  （而不是只声明没影响）。风险：M4 套件的读数需要重跑一遍作为证据。
-- **选项 B**：把拆卸路径放到 worker 侧**绕过 `DiskRuntime`**，直接用
-  `WindowsVolumeAdapter` 的三步。风险：绕过 run 层意味着**第二套拆卸实现**，
-  与"不新增第二套状态机/执行核心"的项目铁律冲突。
-- **选项 C**：**推迟**到 M5 之后 / 单独一片，先在 `DeferredResourceReclaimer` 下
-  如实报 needs-attention（当前状态），把设备残留交给人工。
-
-**我倾向 A**，理由：它不绕过任何层、把"必须不分配盘符"这件事变成一个**显式模式**
-而不是散落的特例，并且用既有 M4 套件全绿来证明既有行为未变 —— 这正是
-"要动就拿出证据"而不是"声明一下"。
+**已裁决并已实现（选项 A）**，见本节上方的进度表与 part 14。
+当时记录了三个选项（A：加显式 reclaim 模式；B：worker 侧绕过 run 层，
+会造出第二套拆卸实现；C：推迟），用户选 A；
+**要求是"证明而不是声明"未受影响**，已用 `unit.m4.disk_runtime` 通过 +
+M4 套件 10/11（唯一失败是既有环境用例）来满足。
 
 **一个必须一起处理的前提（本轮发现）**：reclaimer 的数据来源是
 `ProfileResourceIdentities`，它读的是 **durable profile 记录**；
@@ -768,7 +756,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–12 完成（见下）。**剩余 1 片：真正的 reclaimer**，已精确划定为"协议 + worker 动词 + 服务侧 reclaimer + 接线"四件，验收与实测残留见上方专门小节。part 12 已把残留**量出来并断言为存在**，所以实现会被逼红 |
+| T1-03 | **IN_PROGRESS** | part 1–14。**剩余片的裁决：选项 A（已实现一半）** —— 协议动词 ✅ part 13、`DiskRuntimeMode::reclaim` ✅ part 14（M4 套件 10/11，唯一失败是既有环境用例）；**待做：worker handler + 服务侧 reclaimer + 接线**。part 14 抓到本增量第二个"检查答错了问题、会报成功却什么也没做"的缺陷（`drive_letter_assigned_` → `drive_letter_present_`）。证据 `docs/validation/m5-t1-03-worker-job.md` |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
