@@ -691,6 +691,53 @@ TEST_CASE(m5_backend_a_killed_worker_leaves_no_process_mount_or_device) {
     // letter is what this case can hold reliably.
     REQUIRE(wait_for_no_worker_process());
     REQUIRE(is_letter_assigned(letter));
+
+    // **And then this case cleans up after itself, which is not tidiness.**
+    //
+    // The residue is real and stays real for as long as nothing dismantles it -- so leaving it
+    // behind made the *next* case fail at its own create (`provision_new_volume`, error 21001),
+    // because both cases use the same virtual size and a leftover device of that size blocks the
+    // provisioning that follows.  A suite whose cases can only run on a freshly restarted machine
+    // is a suite that hides regressions behind an environment procedure.
+    //
+    // Dismantling it here has a second benefit that is the real one: it makes **this** case the
+    // one that proves the reclaimer works on the residue the kill produced, in the only order that
+    // is honest -- assert the residue, then assert it is gone.
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+        // The durable record is what the reclaim launches from, so it carries the letter the
+        // residue holds and the capacity the bundle was created with -- a mismatch there makes
+        // the runtime refuse at geometry verification, which is a correct refusal and not a
+        // reclaim failure.
+        auto record = profile_record(profile, image_id, bundle.root.wstring(),
+                                    mount_target, 7,
+                                    profile::ProfileLifecycle::ready);
+        record.profile.logical_capacity_bytes = kCapacityBytes;
+        WorkerActionRequest cleanup{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::stop,
+            ActionKind::reclaim_leftover,
+            std::nullopt,
+            record,
+            std::nullopt};
+        const auto reclaimed = control.reclaim_leftover(cleanup);
+        if (!reclaimed.ok()) {
+            std::fprintf(stderr,
+                         "myrd-test: residue cleanup failed: op=%ls msg=%ls native=%u code=%u",
+                         reclaimed.error().operation.c_str(),
+                         reclaimed.error().message.c_str(),
+                         reclaimed.error().native_code, reclaimed.error().code);
+            std::fputc(10, stderr);
+        }
+        REQUIRE(reclaimed.ok());
+    }
+    REQUIRE(wait_for_letter_release(letter));
+    REQUIRE(!is_letter_assigned(letter));
+    REQUIRE(wait_for_no_worker_process());
 }
 
 TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
@@ -787,19 +834,22 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
         // geometry against `options_.virtual_bytes`, so a record that disagrees makes the
         // runtime refuse -- correctly, and for a reason that has nothing to do with
         // dismantling.  The failure looked like a broken reclaim and was a wrong input.
-        auto profile = profile_record(profile_id, image_id, bundle.root.wstring(),
-                                      mount_target, 7,
-                                      profile::ProfileLifecycle::ready);
-        profile.profile.logical_capacity_bytes = kCapacityBytes;        WorkerActionRequest reclaim{
+        auto record = profile_record(profile_id, image_id, bundle.root.wstring(),
+                                     mount_target, 7,
+                                     profile::ProfileLifecycle::ready);
+        record.profile.logical_capacity_bytes = kCapacityBytes;
+
+        WorkerActionRequest reclaim{
             operation,
             operation,
             profile_id,
             ManagementCommand::stop,
             ActionKind::reclaim_leftover,
             std::nullopt,
-            profile,
+            record,
             std::nullopt};
-        const auto reclaimed = control.reclaim_leftover(reclaim);        if (!reclaimed.ok()) {
+        const auto reclaimed = control.reclaim_leftover(reclaim);
+        if (!reclaimed.ok()) {
             // Reported rather than only asserted, because this case failed twice with a bare
             // `reclaimed.ok()` and no way to see which layer refused -- which cost a full
             // guest cycle each time.  The message is the whole diagnosis: an adopt failure, a
