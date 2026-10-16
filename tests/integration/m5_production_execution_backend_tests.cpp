@@ -729,6 +729,18 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
             std::nullopt,
             std::nullopt};
         const auto created = control.execute(request);
+        if (!created.ok()) {
+            // The same lesson the reclaim assertion below already carries, applied here after it
+            // cost another cycle: this case's *own* first phase can fail, and a bare `ok()` cannot
+            // say why.  A create that fails at the bundle step and one that fails at provisioning
+            // are different problems with different fixes.
+            std::fprintf(stderr,
+                         "myrd-test: reclaim-case create failed: op=%ls msg=%ls native=%u code=%u",
+                         created.error().operation.c_str(),
+                         created.error().message.c_str(),
+                         created.error().native_code, created.error().code);
+            std::fputc(10, stderr);
+        }
         REQUIRE(created.ok());
         REQUIRE(is_letter_assigned(letter));
 
