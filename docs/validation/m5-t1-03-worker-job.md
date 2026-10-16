@@ -1155,7 +1155,51 @@ if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ig
 **这是一处更大的改动**（触及 M4 取卷锁的路径），
 **因此下一轮的第一件事不是直接改代码，而是先判定**：
 "以 `FILE_FLAG_OVERLAPPED` 打开被锁定的卷"是否会影响 M4 既有的锁语义与证据——
-**若是，则又一次属于"重写某一层并重挣 M3/M4 证据"，需要请示后再动。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**若是，则又一次属于"重写某一层并重挣 M3/M4 证据"，需要请示后再动。**
+
+#### 4.15.18 `dismount` 已加界（part 36），**但读数显示卡点还在 `dismount` 内部更早处**
+
+**裁决的前提问题本轮自己查清了，答案是"不用担心"**：
+独占性是 **share mode = 0**，而 `FILE_FLAG_OVERLAPPED` **只影响 I/O 完成的通知方式**，
+**不改锁与共享语义**；不用 `OVERLAPPED` 的调用方行为与之前**逐字相同**。
+同句柄上另两个调用（`IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`、`FlushFileBuffers`）
+在 overlapped 句柄上都是安全且文档允许的。
+**所以这不是"重写某一层"，只是加一个 flag**——本轮据此直接实施，未再请示。
+
+**已实施**（`407d259`）：`LockedVolume::dismount` 改为
+**overlapped + `CancelIoEx` + 10 s 界**，超时**取消并等待完成**，
+失败按**拒绝**返回（引擎对"未能完成的拆卸"本来就是保留卷并报错，
+**而无界等待永远到不了这个结果**）。
+开发机：干净构建 0/0、**M4/M3/volume 43/44 绿**（唯一失败是既有的 `unit.m4.profile_store`）
+——对一次触及 M4 锁路径的改动，这就是需要的证据。
+
+**但读数（请求 `9a1e7af2eaf4469883bfbfb5346108c5`，0/1）显示卡点更早**：
+
+```
+15:55:24.216Z remove_drive_letter: begin → ok
+15:55:24.223Z dismount_volume: begin
+                                      ← 无输出；**我新加的那条 `LockedVolume::dismount` 打点根本没出现**
+```
+
+⇒ **阻塞发生在 `dismount_volume` 这一步内部、`LockedVolume::dismount()` 之前。**
+
+**原因已经定位到代码**：`ProductionRuntimeAdapter::dismount`（`runtime_adapter.cpp`）
+**有两个分支**：
+
+- `held.has_value()` ⇒ **`held->dismount()`**（我加界的那条）；
+- 否则 ⇒ **`impl_->volume_adapter.lock(volume, 30000)`**，
+  **这条路径会重新取锁**，而且它的循环体是 `CreateFileW(..., 0 sharing, ..., FILE_FLAG_OVERLAPPED)`。
+
+而本次运行的 trace 里 **`flush` 走的是 `Win32VolumeAdapter::flush`**
+（不是 `LockedVolume::flush`）⇒ **reclaim 的 runtime 没有持有锁（`held` 为空）**
+⇒ **走的是重新取锁那条分支**。
+
+**下一轮第一件事（范围极小）**：给 `ProductionRuntimeAdapter::dismount` 的
+**两个分支各打一条点**，以及 `Win32VolumeAdapter::lock` 的**重试循环每次打一条**——
+**一次运行即可看出是"取锁一直在被拒"还是"取锁之后就卡住"。**
+**注意**：`lock` 有 30 s 预算，而现象是**超过 120 s 都没回包**，
+所以要么重试循环比预算更久，要么阻塞在预算管不到的地方——
+**这正是下一条打点要分清的两件事。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
