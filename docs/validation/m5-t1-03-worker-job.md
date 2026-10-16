@@ -1199,7 +1199,48 @@ if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ig
 **一次运行即可看出是"取锁一直在被拒"还是"取锁之后就卡住"。**
 **注意**：`lock` 有 30 s 预算，而现象是**超过 120 s 都没回包**，
 所以要么重试循环比预算更久，要么阻塞在预算管不到的地方——
-**这正是下一条打点要分清的两件事。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**这正是下一条打点要分清的两件事。**
+
+#### 4.15.19 **分清了：卡在 `lock` 里那句 `CreateFileW`，连一次重试都没发生**（part 37，本轮）
+
+**读数**（请求 `fc741c8ce1a84a5ab85114c7204aa0a6`，0/1，trace 共 36 行）：
+
+```
+16:04:01.267Z remove_drive_letter: begin → ok
+16:04:01.277Z dismount_volume: begin
+16:04:01.280Z dismount: re-acquiring the lock      ← 分支确认（不是 held 那条）
+                                                    ← 之后什么都没有
+```
+
+**两条新打点给出了一个干净的二选一结果**：
+
+- **`open refused, retrying` 出现 0 次**；
+- **`opened exclusively` / `gave up opening` 两条也都没出现**。
+
+⇒ **它既没有被拒绝、也没有打开成功、更没有耗尽 30 s 预算**，
+而是**卡在 `lock` 里那句 `CreateFileW` 上**（`windows_volume.cpp:880`）——
+**在它返回之前，循环体一次都没走完**。
+
+**这就是"预算管不到的地方"**：`timeout_ms` 只约束**重试循环的总时长**，
+而**单次 `CreateFileW` 本身没有任何界**。
+所以一个卡住的独占打开会**穿透那 30 s**，也就解释了"现象超过 120 s"。
+
+**为什么独占打开会卡、而 flush 的打开不卡**：两者差在**共享模式**——
+- flush：`GENERIC_READ|GENERIC_WRITE` + **share read/write** ⇒ 成功（实测 2 ms）；
+- lock：`GENERIC_READ|GENERIC_WRITE` + **share 0（独占）** ⇒ **卡住**。
+
+即：**这个卷上还存在着另一个打开**（被强杀的 worker 留下的），
+**拒绝共享的打开因此等待**，而它等的东西永远不会来。
+
+**这正是"残留"的另一面**：part 12 量到的残留在 UI 上是"盘符还在"，
+**在这里是"卷上还挂着一个没人会关的句柄"**。
+
+**下一轮的下一步（方向已明确）**：让这次独占打开**可放弃**。
+`CreateFileW` 没有超时参数，但卷上的独占打开等待的是卷的强制锁，
+可由 **`CancelSynchronousIo`（对发起线程）或改成 overlapped 打开**来放弃。
+**注意**：`lock` 的句柄**已经是 `FILE_FLAG_OVERLAPPED`**（part 36 加的），
+所以这里**很可能可以直接用"overlapped 打开 + 超时 + `CancelIoEx`"**——
+**但这一点必须先确认（未经实测，不得当作结论）**。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
