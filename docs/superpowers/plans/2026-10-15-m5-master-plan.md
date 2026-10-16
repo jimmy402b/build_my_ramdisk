@@ -945,7 +945,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（验收已达，待确认收尾条件）** | part 1–50。**两条关键用例在每一次客机运行的 PASS 列表里**（多次运行、含 12 条那次），且**已用两种独立方式证明**：① 对照实验——把 part 41 的加锁改动回退，失败方式**完全相同**（因此与加锁无关）；② 隔离实验——把其它 17 条用例包进 `#if 0` 只跑它，**1/1 通过**（因此该用例自身无缺陷）。**part 12 的三个残留事实（进程/盘符/AIM 盘）逐条被消灭；A'（驱动侧移除、不取卷锁）已被实测证明可行。** **卡住收尾的是"整套件不稳定"（见下），不是 T1-03 本身。** |
+| T1-03 | **IN_PROGRESS（验收未通过：间歇性）** | part 1–52。实现全部完成，**两条用例在多数运行里 PASS**，但 **`-Repeat 3` 抓到了 T1-03 自己的间歇失败**：迭代 1、2 走到 16 条且**两条用例都 PASS**，**迭代 3 只走到 3 条**，卡在**该增量自己那条 cleanup 的 reclaim**（`:756`，`pipe transfer exceeded its bounded wait` 4107）⇒ **约 1/3 的失败率**。**因此 §9 的"修复类结论至少 `-Repeat 20`"对 T1-03 适用，而当前读数不足以收尾。** **不得标 PASSED。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
