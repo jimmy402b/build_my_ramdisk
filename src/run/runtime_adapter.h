@@ -148,6 +148,18 @@ public:
         // existing aggregate initializer keeps its meaning; the foreground M4
         // path leaves it absent and keeps generating a random one.
         std::optional<persistence::ImageUuid> image_uuid;
+
+        // **True when this runtime exists to dismantle a leftover rather than to serve a disk.**
+        //
+        // Declared last, like `image_uuid` above and for the same reason: existing aggregate
+        // initializers keep their meaning.  The foreground M4 path and the M5 create and recover paths
+        // all leave it false; only the M5 reclaim path sets it.
+        //
+        // It lives here because it has to reach M3.  In reclaim, M3 skips the physical-drive wait, which
+        // located the disk only so `info_.disk` could be filled -- a value no teardown step reads.  See
+        // `M3AimProviderFactoryConfig::reclaim_only` for the measurements behind skipping rather than
+        // bounding it.
+        bool reclaim_only{};
     };
 
     explicit ProductionRuntimeAdapter(Config config);

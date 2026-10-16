@@ -25,6 +25,20 @@ DynamicBlockStoreOptions production_store_options() noexcept;
 struct M3AimProviderFactoryConfig final {
     OperationContext context{};
     M3ProviderConfig provider{};
+
+    // **Set when this runtime exists to dismantle a leftover rather than to serve a disk.**
+    //
+    // The mode lived only above this layer -- `WorkerVolumeMode::reclaim_existing` in the host mapping to
+    // `DiskRuntimeMode::reclaim` -- and the host builds this runtime through an injected callback, so it
+    // always knew and simply never said.  It has to be said now because reclaim skips the physical-drive
+    // wait, and skipping is only sound if this runtime can tell that it is reclaiming.
+    //
+    // What that wait was for: locating the disk so `info_.disk` could be filled.  It is **not** how
+    // ownership is proven -- `find_existing_device` or `create_proxy_disk` does that, and `query_device`
+    // verifies the identity, both before the wait is reached.  It is skipped rather than bounded because
+    // bounding was measured insufficient: under load its first turn consumed the whole ten-second bound
+    // that guards enumeration, while the same path measured about 2.5 ms on an idle guest.
+    bool reclaim_only{};
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     M3ProviderFactories test_factories{};
 #endif
@@ -45,7 +59,16 @@ private:
 
 struct M3AimRuntimeInfo final {
     aim::DeviceId device_id{};
-    aim::LocatedDisk disk{};
+    // **Optional because a reclaiming runtime never locates the disk.**
+    //
+    // Reclaim skips the physical-drive wait, since that wait only produced this value and no teardown
+    // step reads it.  An earlier attempt left this a plain `LocatedDisk` and printed `null` in the
+    // status output, which cannot be expressed that way -- default-constructed it means *physical drive
+    // 0*, a real drive and a false claim.  An optional says what is true instead.
+    //
+    // Callers that need the number must handle its absence rather than read a zero, because a zero is
+    // indistinguishable from the machine's first disk.
+    std::optional<aim::LocatedDisk> disk{};
     std::uint64_t virtual_bytes{};
     std::uint32_t sector_size{};
     std::wstring native_object_path;

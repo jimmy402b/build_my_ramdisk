@@ -310,7 +310,10 @@ Result<void> DiskWorkerRuntime::start() {
         ProductionRuntimeAdapter::Config{
             impl.config.bundle, impl.config.virtual_bytes,
             impl.config.drive_letter, impl.config.owner_token, 0,
-            impl.config.image_id});
+            impl.config.image_id,
+            // The one place that knows this worker is dismantling rather than serving, handed down so
+            // M3 can skip the physical-drive wait it would otherwise pay for a value nobody reads.
+            impl.config.volume_mode == WorkerVolumeMode::reclaim_existing});
     RuntimeAdapterDependencies dependencies{
         impl.config.bundle,
         impl.config.virtual_bytes,

@@ -368,15 +368,34 @@ Result<void> M3AimRuntime::start() {
     // filter needed a baseline -- the whole-machine enumeration removed just above.  The identity the
     // match actually turns on is the device's SCSI path, target and LUN plus its expected length, and
     // that is the same for a device this runtime created and one it adopted.  So both cases use it.
-    auto located = aim::wait_for_present_physical_drive(
-        *owned_device_, geometry.virtual_bytes, device_timeout_);
-    if (!located) {
-        (void)remove_owned_device();
-        (void)stop_provider();
-        return Result<void>::failure(located.error());
+    // **Reclaim skips this wait, because the wait produces something reclaim never reads.**
+    //
+    // It locates the disk so `info_.disk` can be filled.  It is not how ownership is established -- both
+    // paths above do that, and `query_device` has already verified the identity by the time control
+    // reaches here.  Nor does any teardown step read the number: `remove_owned_device` uses only the
+    // device id and the adapter, and `wait_for_physical_drive_retired` decides from the SCSI address and
+    // the expected length.
+    //
+    // Skipped rather than bounded because bounding was measured insufficient.  This wait was
+    // instrumented and, on the reclaim case under load, its first turn consumed the entire ten-second
+    // bound that guards enumeration -- while the same path measured about 2.5 ms on an idle guest.  A
+    // bound merely converts that into a failure which still fails the reclaim; not doing the work is what
+    // removes the stall.
+    //
+    // `info_.disk` stays empty, which is why it is an optional.  Callers that need the number handle its
+    // absence, and the status output reports null rather than a zero that would name the machine's first
+    // real disk.
+    if (!config_.reclaim_only) {
+        auto located = aim::wait_for_present_physical_drive(
+            *owned_device_, geometry.virtual_bytes, device_timeout_);
+        if (!located) {
+            (void)remove_owned_device();
+            (void)stop_provider();
+            return Result<void>::failure(located.error());
+        }
+        info_.disk = located.move_value();
     }
     info_.device_id = *owned_device_;
-    info_.disk = located.move_value();
     info_.virtual_bytes = geometry.virtual_bytes;
     info_.sector_size = geometry.logical_sector_size;
     info_.native_object_path = queried.value().native_object_path;
