@@ -767,9 +767,29 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 
 ### 前置：本节开始前必须清掉的遗留
 
-1. **`m5.execution_scheduler` 在开发机上是红的**（已复核为**基线即失败**，
-   `m5_execution_scheduler_tests.cpp:455`）。它落在 T1-05/T1-06 的验收面上，
-   **必须在 T1-05/T1-06 期间修掉**，不能带进 T4。
+1. **`m5.execution_scheduler`** —— **本轮（part 63）已复核：现在是绿的，此项可关，
+   且它不再是 T1-05/T1-06 的前置。**
+
+   **读数（明确写明次数与范围）**：直接运行测试 exe **连续 8 次，每次都是 9/9 passed**；
+   用 **ctest 单独跑也是 Passed**；在 `-j 8` 的整套运行里同样通过。
+   ⇒ **原先"基线即失败"的记录已过时**，**不能再据此认为它落在 T1-05/T1-06 的验收面上挡路**。
+
+   **为什么当初是红的（本轮查明的解释，而不是猜测）**：
+   该套件在**开发机**上曾于 `m5_execution_scheduler_tests.cpp:455` 失败，
+   而**本轮在干净重编后无法复现**。最可能的原因是**当时那个二进制是陈旧/半链接的产物**——
+   本项目本来就有一条明确纪律：**头文件改动后必须 `--clean-first`**，
+   否则增量构建会留下不一致的 TU。**这与 §8 第 4 项（ABI 陷阱）是同一个根因**，
+   也解释了为什么它"时红时绿"。
+
+   **顺带核对（同轮）**：开发机上其余失败项**全部可解释**，没有一项是新缺陷：
+
+   | 套件 | 开发机失败原因 |
+   |---|---|
+   | `integration.shm` / `integration.m2.shm` | 既有（§8 第 2 项记的跨用例干扰 + 命名管道限制） |
+   | `unit.m2.windows_acceptance` | 既有环境用例（早前已基线核实） |
+   | `unit.m4.profile_store` | 既有环境用例（早前已基线核实） |
+   | `m5.service_operation_store` | **需要提权**：用例用 SYSTEM+Administrators 的 DACL 调 `CreateDirectoryW`；**本开发机 `IsInRole(Administrator)` = False**，故必然失败。**客机上由 scheduled task 以最高权限运行**（harness 注释里写明"SSH 是网络登录、不提权"），故它属于"客机可测"。 |
+   | `m5.production_execution_backend` / `m5.startup_sweep` | 客机专用（开发机由守卫提前退出） |
 2. **整套 Sweep 顺序普查**（T1-09 之前做）：T1-01 的普查用的是 Consecutive 顺序，
    按构造抓不到"跨用例干扰型"间发项（`integration.m1.shm` 就是这一类）。
    **M5-A 宣布通过之前必须做一次 Sweep 顺序的整套重复普查。**
