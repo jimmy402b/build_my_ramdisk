@@ -1371,7 +1371,57 @@ const BOOL ok = DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 
 
 **本轮到此为止**（上下文预算见底）：**实现已提交、语义已验证未破坏，
 但最后的读数表明这是一个设计层面的问题，故不再用实现细节去试，
-而是把它作为需要裁决的选项记录下来。T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+而是把它作为需要裁决的选项记录下来。T1-03 仍不得标 PASSED。**
+
+#### 4.15.23 **裁决 A 已实施：residue cleanup 不再挂住了**（part 42，本轮）
+
+**用户裁决 A（从驱动侧移除设备，不取卷锁）**，已实施（`c218294`）：
+**reclaim 模式跳过拆卸**——因为它**做不到**（取独占锁的前提被残留句柄否掉）
+且**不需要**（随后 `stop_aim` 会**从驱动侧移除设备，卷随之消失**）。
+**只在 `reclaim` 模式跳过**：create / recover 拆的是自己拥有的、没有竞争句柄的卷，
+在那里跳过会把卷留在挂载状态——**那是另一个 bug**，所以按模式判断而不是一律跳过。
+开发机：干净构建 0/0、**M4 10/11**（唯一失败是既有的 `unit.m4.profile_store`）。
+
+**读数（请求 `94a22cb16f444d10a2deaa6dc9211f25`）——这是本轮最重要的进展**：
+
+- **之前**：失败在 `:743`，即 **residue cleanup 的 reclaim 超时**；
+- **现在**：失败在 **`:1235`（另一条、更靠后的用例）**，
+  而那一条失败在**它自己的 create**（`provision_new_volume`，21001）。
+
+⇒ **`:743` 不再失败**：**那条一直挂住的 cleanup reclaim 通过了**，
+**裁决 A 解决了它**。（`:736` 那两条"断言残留被清掉"的检查也随之通过。）
+
+**但残留并没有真正清干净**，这一点必须说清楚。trace 的同一段里出现了：
+
+```
+17:40:20.956Z M3AimRuntime::start: ADOPTING the existing device
+17:40:22.560Z Win32VolumeAdapter::flush: opening the volume
+17:40:22.562Z dismount: re-acquiring the lock
+17:40:22.562Z Win32VolumeAdapter::lock: gave up opening
+17:40:22.562Z Win32VolumeAdapter::flush: opening the volume
+17:40:22.564Z dismount: re-acquiring the lock
+17:40:22.564Z Win32VolumeAdapter::lock: gave up opening
+```
+
+即**同一条 worker 在反复"flush → 取锁失败"**（注意 `wait for physical drive` 到下一行之间
+隔了 **1.6 s**），而 worker 自己的 stderr 也说了：
+
+```
+myrd-m5-worker: the worker's resources could not be released
+                (op=flush msg=opening volume failed native=0 code=21001)
+```
+
+**⇒ 接管的那块残留设备没有被成功移除**，于是它挡住了**后面那条用例**的 create。
+**"cleanup 不挂住"与"残留真被清掉"是两件事**，本轮只证明了**前者**。
+
+**下一步（下一轮第一件事）**：查为什么接管后的设备**没有在拆卸里被移除**——
+`stop_aim` 走 `M3AimRuntime::stop()` ⇒ `remove_owned_device()`，
+而 `remove_owned_device` 大概也会走 `wait_for_physical_drive_retired` 之类的等待，
+**需要打点确认它是不是又卡在某个无界调用上**（这将是第六个候选）。
+**注意**：`remove_owned_device` 的 `REMOVE_DEVICE` 本身也可能需要驱动回应，
+**若同样无界，那就是同一个系统性问题再一处。**
+
+**T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
