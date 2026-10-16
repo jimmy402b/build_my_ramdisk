@@ -336,13 +336,6 @@ Result<void> WindowsWorkerProcessSource::terminate_process(
     if (process.process_creation_time.has_value()) {
         const auto live = creation_time_of(handle);
         if (!live.has_value() || *live != *process.process_creation_time) {
-            std::fprintf(stderr,
-                         "DIAG terminate pid=%u observed=%llu live=%llu has=%d\n",
-                         process.process_id,
-                         static_cast<unsigned long long>(
-                             process.process_creation_time.value_or(0)),
-                         static_cast<unsigned long long>(live.value_or(0)),
-                         live.has_value() ? 1 : 0);
             CloseHandle(handle);
             return Result<void>::failure(job_error(
                 L"terminate_process",

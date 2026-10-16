@@ -216,8 +216,12 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
   **仍要记住**：看到 `MISSING` 先怀疑 staging，不要先怀疑构建。
 - **UTF-8 BOM 会打断远程脚本首行**：`Invoke-M5Vm.ps1` 带 BOM，而 `powershell -Command -` 不剥 BOM，
   BOM 粘在正文第一个 token 上 ⇒ 客机报"无法将该项识别为 cmdlet"。
-  `Invoke-Remote` 现在先发一个空行吸收它；**这同时修好了一个先前就存在的失败**
-  （git 元数据解包那步的 `& 'tar.exe' ...` 一直报 `CommandNotFoundException`）。
+  修法**两次才修对**：第一次加在 `Invoke-Remote`（漏了直接调 `Invoke-Native` 的解包步骤），
+  第二次移到 `Invoke-Native` 却**没删掉第一份** ⇒ 空行变两行、**BOM 落到第二行**，
+  把原本要修的调用弄坏，**同样的报错、不同的原因**。
+  最终把 staging 自检里的计数改成 **.NET 静态调用**（`[System.IO.Directory]::GetFiles(...).Length`），
+  **没有 cmdlet 名字可被污染**——把脆弱性去掉，而不是继续绕过。
+  **教训**：这个工具链上"报错信息相同"不代表"原因相同"，改工具时要重跑**所有**受影响的调用。
 
 ---
 
