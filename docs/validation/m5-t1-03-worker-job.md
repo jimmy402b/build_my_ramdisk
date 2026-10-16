@@ -1463,7 +1463,7 @@ worker 的 stderr 是 `op=flush msg=opening volume failed`，
 
 **T1-03 仍不得标 PASSED。**
 
-#### 4.15.26 **`remove_owned_device` 四步全部走通**（part 45，本轮）
+#### 4.15.25 **裁决 A 的延伸已实施**（part 44）
 
 **读数**（请求 `4371187ba7964c8db9933a78ebb79106`）——新加的四条打点**全部出现**，
 而且**同一段里完整跑了两遍**：
@@ -1506,7 +1506,7 @@ worker 的 stderr 也仍是 `op=flush msg=opening volume failed`。
 
 **T1-03 仍不得标 PASSED。**
 
-#### 4.15.25 **裁决 A 的延伸已实施，但读数显示残留仍未清掉**（part 44）
+#### 4.15.26 **`remove_owned_device` 四步全部走通**（part 45）
 
 **已实施**（`dc56a57`）：**reclaim 也不 flush**。理由与"不 dismount"同源，
 而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
