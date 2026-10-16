@@ -958,6 +958,18 @@ public:
     virtual bool begins_noncancellable(ActionKind action) const noexcept = 0;
     virtual Result<WorkerActionResult> execute(
         const WorkerActionRequest& request) = 0;
+    // Dismantles a leftover this service proved is its own.  On the interface rather than
+    // reached through `execute`, because the sweep calls it directly and does not drive a
+    // plan: the profile it acts on is not being managed at all -- its worker is dead and
+    // only its device is left.
+    //
+    // **Defaulted to a refusal rather than left pure.**  An adapter that cannot dismantle a
+    // leftover must say so: a virtual with no implementation would force every test fake to
+    // grow a method it has no opinion about, and the tempting way to satisfy that is to
+    // return success -- which would have a fake report a residue as cleared.  A default that
+    // fails is the one a caller cannot mistake for the real thing.
+    virtual Result<WorkerActionResult> reclaim_leftover(
+        const WorkerActionRequest& request);
     virtual Result<WorkerActionResult> execute_checkpoint(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryHandler& boundary);

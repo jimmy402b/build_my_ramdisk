@@ -113,6 +113,44 @@ public:
     }
 };
 
+// Dismantles a leftover by launching a worker that adopts the already-mounted volume and
+// tears it down.
+//
+// It reaches that through `ServiceWorkerControl::reclaim_leftover`, which overrides the
+// translated launch mode to `reclaim_existing` -- the mode that assigns **no** drive
+// letter.  Every other mode would mount the volume, and the volume it would mount is the
+// residue being dismantled, holding the very letter the mount would ask for.
+//
+// **It re-reads the profile rather than trusting only the identity it was handed.**  The
+// identity says what the sweep *proved* from the durable records; the launch facts a worker
+// needs -- bundle path, mount target, image -- come from those same records, and re-reading
+// them means the reclaim acts on the profile as it is now.  A caller that handed a stale
+// identity would otherwise have the service dismantle whatever that profile has become
+// since.
+class LeftoverReclaimer final : public management::IResourceReclaimer {
+public:
+    LeftoverReclaimer(management::IServiceProfileStore& profiles,
+                      management::IWorkerControl& worker) noexcept;
+
+    [[nodiscard]] bool can_reclaim() const noexcept override { return true; }
+
+    [[nodiscard]] Result<bool> reclaim(
+        const product::Uuid& profile_id,
+        const management::ObservedResourceIdentity& identity) override;
+
+    // Why the last reclaim did not succeed, for the sweep's report and the operator.  Kept
+    // as text because `reclaim` answers a bool: "it ran and the residue is still there" is
+    // not a failure of the call, it is a condition to report.
+    [[nodiscard]] const std::wstring& last_failure() const noexcept {
+        return last_failure_;
+    }
+
+private:
+    management::IServiceProfileStore& profiles_;
+    management::IWorkerControl& worker_;
+    std::wstring last_failure_;
+};
+
 // The sweep, as the host calls it.
 class ProductionStartupSweep final : public IStartupSweep {
 public:

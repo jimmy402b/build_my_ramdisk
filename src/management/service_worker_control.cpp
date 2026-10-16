@@ -1014,16 +1014,22 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
 
 Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover(
     const WorkerActionRequest& request) {
-    if (!request.lifecycle_intent.has_value()) {
-        // No intent means no bundle path, no mount target and no image -- and a reclaim
-        // without those could only guess at which volume to dismantle, which is the
+    // The **durable profile** is the input, not the lifecycle intent, and the difference
+    // matters: an intent is what a *command* carries before a profile exists, while a
+    // leftover is by definition a profile that has already been published.  It also avoids
+    // a conversion this layer does not have -- there is no profile-to-intent helper, and
+    // inventing one here to satisfy a parameter shape would be a second translation of the
+    // same facts.
+    if (!request.durable_profile.has_value()) {
+        // No profile means no bundle path, no mount target and no image -- and a reclaim
+        // without those could only guess which volume to dismantle, which is the
         // identity-free cleanup the design forbids outright.
         return Result<WorkerActionResult>::failure(control_error(
             ServiceWorkerControlError::invalid_argument,
             L"service_worker_control.reclaim_leftover",
-            L"A leftover reclaim needs the profile's own launch facts"));
+            L"A leftover reclaim needs the profile it is reclaiming for"));
     }
-    auto launch_request = make_launch_request(request.lifecycle_intent.value());
+    auto launch_request = make_launch_request(request.durable_profile.value());
     if (!launch_request.ok()) {
         return Result<WorkerActionResult>::failure(launch_request.error());
     }

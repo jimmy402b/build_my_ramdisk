@@ -1290,6 +1290,19 @@ Result<ForgetTombstone> IServiceProfileStore::remove_forget_metadata(
         L"The profile store does not implement metadata-only forget"));
 }
 
+Result<WorkerActionResult> IWorkerControl::reclaim_leftover(
+    const WorkerActionRequest&) {
+    // The default an adapter inherits when it has no way to dismantle a leftover, and it
+    // **fails** rather than succeeding.  That direction is the whole point: the sweep turns
+    // a failed reclaim into the profile staying in its needs-attention count, while a
+    // success would record the residue as cleared and leave an operator with a drive letter
+    // that outlives the disk.
+    return Result<WorkerActionResult>::failure(service_error(
+        ServiceCoreError::dependency_failure,
+        L"service_core.reclaim_leftover",
+        L"The worker does not implement leftover reclamation"));
+}
+
 Result<WorkerActionResult> IWorkerControl::execute_checkpoint(
     const WorkerActionRequest&,
     const CheckpointCommitBoundaryHandler&) {

@@ -382,7 +382,7 @@ private:
     // translation picks a mode that *brings a volume into service*, and this method's whole
     // purpose is to take one out of it.
     Result<WorkerActionResult> reclaim_leftover(
-        const WorkerActionRequest& request);
+        const WorkerActionRequest& request) override;
     Result<WorkerActionResult> verify_startup_step(
         const WorkerActionRequest& request);
     Result<WorkerActionResult> quiesce_mutations(

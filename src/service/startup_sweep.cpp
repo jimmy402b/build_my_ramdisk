@@ -72,6 +72,60 @@ ProfileResourceIdentities::observed_identities() const {
         success(std::move(identities));
 }
 
+LeftoverReclaimer::LeftoverReclaimer(
+    management::IServiceProfileStore& profiles,
+    management::IWorkerControl& worker) noexcept
+    : profiles_(profiles), worker_(worker) {}
+
+Result<bool> LeftoverReclaimer::reclaim(
+    const product::Uuid& profile_id,
+    const management::ObservedResourceIdentity& identity) {
+    last_failure_.clear();
+
+    // The mount the identity names is the *proof* that this leftover is the profile's; the
+    // launch facts come from the record.  A profile with no letter in its record cannot be
+    // dismantled by this path, because the worker finds the volume by that letter -- so
+    // refusing here is honest rather than a shortcut.
+    if (identity.mount_target == 0) {
+        last_failure_ = L"the reclaimed identity names no drive letter, so the leftover "
+                        L"cannot be located without guessing";
+        return Result<bool>::success(false);
+    }
+
+    auto snapshot = profiles_.load(profile_id);
+    if (!snapshot.ok()) {
+        // Re-reading failed, so what the profile *is now* is unknown.  Refused rather than
+        // acting on the identity's older view: dismantling a volume on a stale reading is
+        // how a reclaim removes something that has since become a different disk.
+        last_failure_ = snapshot.error().message;
+        return Result<bool>::success(false);
+    }
+
+    // `product::Uuid` has no default constructor, so the request is built as an aggregate
+    // with the three ids it carries -- all the same id here, because a reclaim is
+    // attributed to the profile it dismantles and inventing an operation no durable record
+    // knows about would make the teardown unattributable.
+    management::WorkerActionRequest request{
+        profile_id,
+        profile_id,
+        profile_id,
+        management::ManagementCommand::stop,
+        management::ActionKind::reclaim_leftover,
+        std::nullopt,
+        snapshot.value().record,
+        std::nullopt};
+
+    const auto reclaimed = worker_.reclaim_leftover(request);
+    if (!reclaimed.ok()) {
+        last_failure_ = reclaimed.error().message;
+        return Result<bool>::success(false);
+    }
+    // A teardown that reported success while the letter survived would be exactly the
+    // "success while doing nothing" outcome this increment has met four times, so the
+    // worker's own answer is what is reported rather than the call having returned.
+    return Result<bool>::success(true);
+}
+
 ProductionStartupSweep::ProductionStartupSweep(
     management::IWorkerProcessSource& source,
     const management::IExpectedWorkerBindings& bindings,
