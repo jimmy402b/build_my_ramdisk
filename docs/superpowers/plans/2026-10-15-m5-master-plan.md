@@ -269,6 +269,25 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 **实测残留（part 12，客机人工量测）**：`workers: 0 / disks: 1,0 / letters: C,Z`，
 `Get-Volume` 显示 `Z  MyRamDisk`。这就是验收要消灭的三个事实。
 
+**四件进度**：
+
+| # | 件 | 状态 |
+|---|---|---|
+| 1 | 协议动词 `reclaim_leftover = 16` | **✅ part 13**（协议套件 39/39） |
+| 2a | `DiskRuntimeMode::reclaim` + `DiskRuntime::reclaim` + **不分配盘符** | **✅ part 14** |
+| 2b | worker 侧：`WorkerVolumeMode::reclaim_existing`（**追加**，wire 值）+ `reclaim_leftover` 处理器 | **✅ part 15** |
+| 3 | 服务侧：`ActionKind` + `IResourceReclaimer` 实现 | 待做 |
+| 4 | `ServiceRuntime` 接线（换掉 `DeferredResourceReclaimer`） | 待做 |
+
+**part 15 的关键点**：`reclaim_leftover` 跑的是**和别的路径同一个拆卸**
+（`cleanup` → `DiskRuntime::shutdown_clean`：删盘符 / 拆卸 / 停 AIM）。
+它**不重复** `cleanup`，区别在**它要求什么**：`cleanup` 是任何时刻都能跑的幂等清理，
+而**没 start 过的 reclaim 手里没有东西可拆** ⇒ **必须拒绝**，不能答成功——
+那是唯一会让"还挂着的残留被记录成已清除"的结果。
+**这是本增量第三次遇到同一形状的失败**：一个检查回答了与关键问题**相邻**的另一个问题，
+然后"成功地"什么也没做（前两次：`terminate_process` 少要权限、
+拆卸挂在 `drive_letter_assigned_` 上）。
+
 **边界**：不得改 M3 的 bundle / journal / manifest 布局（不变量 4）；
 不得按进程名 / AIM 编号 / 显示名清理（设计 §5.5）。
 
@@ -756,7 +775,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–14。**剩余片的裁决：选项 A（已实现一半）** —— 协议动词 ✅ part 13、`DiskRuntimeMode::reclaim` ✅ part 14（M4 套件 10/11，唯一失败是既有环境用例）；**待做：worker handler + 服务侧 reclaimer + 接线**。part 14 抓到本增量第二个"检查答错了问题、会报成功却什么也没做"的缺陷（`drive_letter_assigned_` → `drive_letter_present_`）。证据 `docs/validation/m5-t1-03-worker-job.md` |
+| T1-03 | **IN_PROGRESS** | part 1–15。**剩余片的裁决：选项 A** —— 协议动词 ✅ part 13、`DiskRuntimeMode::reclaim` ✅ part 14、worker 侧（`reclaim_existing` + `reclaim_leftover` 处理器）✅ part 15；**待做：服务侧 `ActionKind` + `IResourceReclaimer` + 接线**。M4 套件 + 五套 M5 逻辑测试 **15/16 绿**（唯一失败是既有 `unit.m4.profile_store` 环境用例）。part 14/15 各抓到一次"检查答错了问题、会报成功却什么也没做"的同形状缺陷。证据 `docs/validation/m5-t1-03-worker-job.md` |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
