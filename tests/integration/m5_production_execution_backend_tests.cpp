@@ -757,9 +757,17 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
         // translation ask for `adopt_existing` -- the mode the reclaim then overrides.
         // A create-shaped record would have asked for `provision_new` and the override is
         // precisely what stops this from provisioning a second volume.
+        //
+        // **The capacity must be the one the bundle actually has**, and getting this wrong
+        // is how this case first failed: the `profile_record` helper defaults to 8 MiB while
+        // this bundle was created at `kCapacityBytes`.  `reclaim` verifies the volume's
+        // geometry against `options_.virtual_bytes`, so a record that disagrees makes the
+        // runtime refuse -- correctly, and for a reason that has nothing to do with
+        // dismantling.  The failure looked like a broken reclaim and was a wrong input.
         auto profile = profile_record(profile_id, image_id, bundle.root.wstring(),
-                                      mount_target);
-        WorkerActionRequest reclaim{
+                                      mount_target, 7,
+                                      profile::ProfileLifecycle::ready);
+        profile.profile.logical_capacity_bytes = kCapacityBytes;        WorkerActionRequest reclaim{
             operation,
             operation,
             profile_id,
@@ -769,6 +777,19 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
             profile,
             std::nullopt};
         const auto reclaimed = control.reclaim_leftover(reclaim);
+        if (!reclaimed.ok()) {
+            // Reported rather than only asserted, because this case failed twice with a bare
+            // `reclaimed.ok()` and no way to see which layer refused -- which cost a full
+            // guest cycle each time.  The message is the whole diagnosis: an adopt failure, a
+            // verify failure and a teardown failure are three different problems and all
+            // three arrive here as the same false.
+            std::fprintf(stderr,
+                         "myrd-test: reclaim failed: op=%ls msg=%ls native=%u code=%u",
+                         reclaimed.error().operation.c_str(),
+                         reclaimed.error().message.c_str(),
+                         reclaimed.error().native_code, reclaimed.error().code);
+            std::fputc(10, stderr);
+        }
         REQUIRE(reclaimed.ok());
     }
 

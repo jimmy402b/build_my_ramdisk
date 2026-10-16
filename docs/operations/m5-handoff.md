@@ -237,6 +237,63 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
   而且该用例**断言它存在**。跑完它之后客机**不是干净的**，
   **下一个依赖干净设备的用例之前必须硬重启**。
 
+### 7.0.2 `-Stage` 可能**先删后用**，失败后客机既没有 stage 也没有构建树（2026-10-16 新）
+
+**现象**：`-Stage` 报 `remote command failed (exit 1)`，客机侧消息是
+`GetFiles('...\out\build\msvc\tests\Release')` 抛 `DirectoryNotFoundException`，
+并且 `C:\tmp\m5-vm\stage` **不存在**。本地 `out/build/msvc/tests/Release` 有 **119** 个 exe，
+**本地构建没问题**。
+
+**本轮取证到的客机状态（stage 失败之后）**：
+
+```
+workers: 1          ← 有孤儿 worker
+disks: 1,2,0        ← 两块 AIM 盘
+letters: C,Y,Z      ← 两个残留盘符
+guest tests\Release exists: False
+no stage dir
+```
+
+**两点判断**：
+
+- **失败的 stage 会留下脏客机**：孤儿 worker + 两块盘 + 两个盘符。
+  **所以 stage 失败之后不能直接重试**，必须先硬重启；
+- 这**同时是一次意外但有价值的观测**：它说明"残留"不需要靠强杀用例制造，
+  **一次中途失败的 stage/run 就会留下它**——这正是 reclaimer 要处理的东西。
+
+**下一次遇到 stage 失败的第一动作**：`vmrun stop <vmx> hard` + `start <vmx> nogui`，
+然后确认 `workers: 0 / disks: 0 / letters: C` 再重试。**不要**用 `Set-Disk` 清（会挂，见 7.0.1）。
+
+### 7.0.3 断言失败时**必须打印 error 消息**（2026-10-16，本轮付了两次学费）
+
+本轮 `m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created` **连续两轮 0/20、0/3 全红**，
+而 stderr 只有一行 `FAIL ...: reclaimed.ok()`——
+**看不出是 adopt 失败、verify 失败还是拆卸失败**，于是**每轮都白跑一整次客机循环**。
+
+**规则**：凡是断言一个 `Result`，就用本仓库既有写法把错误打出来：
+
+```cpp
+if (!x.ok()) {
+    std::fprintf(stderr, "myrd-test: <what> failed: op=%ls msg=%ls native=%u code=%u",
+                 x.error().operation.c_str(), x.error().message.c_str(),
+                 x.error().native_code, x.error().code);
+    std::fputc(10, stderr);
+}
+REQUIRE(x.ok());
+```
+
+**"先给现象加一条能区分假设的诊断"这条纪律，对 `Result` 断言同样适用**，
+而且在这里代价特别高：一次客机往返约 5–30 分钟。
+
+- **`Set-Disk -IsOffline` 会在客机上挂住**：本轮清理强杀残留时它卡死，
+  需要 `vmrun stop <vmx> hard` + `start <vmx> nogui` 硬重启（这是让客机存储栈恢复的唯一可靠手段，
+  重启后 `disks: 0`）。
+  **规则**：不要用 `Set-Disk` / `diskpart` 去清残留；**硬重启 VM**，它更快也更可靠。
+- **留残留是合法的中间状态，但要有意为之**：`m5.production_execution_backend` 的强杀用例
+  会**故意留下** `disks: 1,0 / letters: C,Z`，因为那正是 reclaimer 必须清掉的东西，
+  而且该用例**断言它存在**。跑完它之后客机**不是干净的**，
+  **下一个依赖干净设备的用例之前必须硬重启**。
+
 ### 7.0 会创建真实进程的用例必须自带守卫（2026-10-16 新增，**已犯过一次**）
 
 **我写了一个会创建真实进程的用例（`m5.startup_sweep`），却忘了它只能上客机。**
