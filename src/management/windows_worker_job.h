@@ -75,6 +75,13 @@ public:
     [[nodiscard]] Result<void> terminate_process(
         const OrphanedProcess& process) override;
 
+    // The job handle, for the launcher to place a new process into.  Exposed as
+    // an opaque pointer rather than a `HANDLE` so callers of this header do not
+    // take a dependency on `<windows.h>`, and deliberately *only* for creation
+    // attributes: there is no accessor that could be handed to
+    // `TerminateJobObject`, which is the G4 rule this class exists to enforce.
+    [[nodiscard]] void* job_handle() const noexcept { return job_; }
+
     // For a case that needs to reason about the job without a process in it.
     [[nodiscard]] bool valid() const noexcept;
 

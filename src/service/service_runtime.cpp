@@ -1,5 +1,6 @@
 #include "src/service/service_runtime.h"
 
+#include "src/management/windows_worker_job.h"
 #include "src/profile/profile_store.h"
 
 #include <filesystem>
@@ -122,10 +123,26 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
     }
     runtime->operations_.emplace(operations.move_value());
 
+    // The worker job and its live registry, before anything that launches a
+    // worker.  Both obligations of the job are impossible to add later: a worker
+    // launched without one is invisible to a sweep, and a handle not retained at
+    // launch cannot be recovered afterwards.
+    auto processes = management::WindowsWorkerProcessSource::create();
+    if (!processes.ok()) {
+        return Result<std::unique_ptr<ServiceRuntime>>::failure(
+            processes.error());
+    }
+    runtime->processes_ = processes.move_value();
+    runtime->sessions_.emplace(runtime->config_.worker_executable,
+                               *runtime->processes_);
+    runtime->worker_.emplace(*runtime->sessions_,
+                             runtime->config_.worker_control_timeout_ms);
+    runtime->execution_gate_ = std::make_unique<std::mutex>();
+
     // The core borrows every store above, so it is emplaced after them; the
     // scheduler borrows the core, so it is emplaced after that.
     runtime->core_.emplace(runtime->clock_, *runtime->registrations_,
-                           *runtime->operations_, runtime->worker_,
+                           *runtime->operations_, *runtime->worker_,
                            runtime->logger_, runtime->ids_, runtime->memory_,
                            &*runtime->registrations_);
     runtime->scheduler_.emplace(*runtime->core_, runtime->clock_,
@@ -135,10 +152,7 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
 }
 
 ServiceRuntime::ServiceRuntime(ServiceRuntimeConfig config) noexcept
-    : config_(std::move(config)),
-      sessions_(config_.worker_executable),
-      worker_(sessions_, config_.worker_control_timeout_ms),
-      execution_gate_(std::make_unique<std::mutex>()) {}
+    : config_(std::move(config)) {}
 
 ServiceRuntime::~ServiceRuntime() noexcept = default;
 

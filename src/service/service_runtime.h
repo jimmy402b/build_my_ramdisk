@@ -119,8 +119,13 @@ private:
     std::optional<management::ServiceCore> core_;
     std::optional<management::ProfileRegistrationStore> registrations_;
     std::optional<management::ServiceOperationStore> operations_;
-    management::WindowsWorkerSessionProvider sessions_;
-    management::ServiceWorkerControl worker_;
+    // The worker job and its live registry, declared before the two things that
+    // borrow it.  The session provider places every launch into this job and
+    // retains the process handle there, so a provider built without it could
+    // launch workers nothing could ever find or stop.
+    std::unique_ptr<management::WindowsWorkerProcessSource> processes_;
+    std::optional<management::WindowsWorkerSessionProvider> sessions_;
+    std::optional<management::ServiceWorkerControl> worker_;
     StderrServiceLogger logger_{};
     SystemIdGenerator ids_{};
     SystemPhysicalMemoryQuery memory_{};

@@ -1,6 +1,7 @@
 #include "src/management/windows_worker_sessions.h"
 
 #include "src/host/m5_worker_private_pipe.h"
+#include "src/management/windows_worker_job.h"
 
 #include <array>
 #include <cstddef>
@@ -32,8 +33,9 @@ persistence::ImageUuid to_image_uuid(const product::Uuid& id) noexcept {
 } // namespace
 
 WindowsWorkerSessionProvider::WindowsWorkerSessionProvider(
-    std::wstring worker_executable) noexcept
-    : worker_executable_(std::move(worker_executable)) {}
+    std::wstring worker_executable,
+    WindowsWorkerProcessSource& processes) noexcept
+    : worker_executable_(std::move(worker_executable)), processes_(processes) {}
 
 Result<std::unique_ptr<ServiceWorkerSession>>
 WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
@@ -71,21 +73,38 @@ WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
     spec.session_nonce = session_generation ^ 0x5EED'0000'0000'0000ull;
     spec.startup_secret = secret.value();
 
-    auto launched = m5::launch_private_worker(context, worker_executable_, spec);
+    auto launched = m5::launch_private_worker(context, worker_executable_, spec,
+                                              processes_.job_handle());
     if (!launched.ok()) {
         return Result<std::unique_ptr<ServiceWorkerSession>>::failure(
             launched.error());
     }
     auto worker = launched.move_value();
+
+    // The handle is *retained* before the session is built, and that order is the
+    // one that cannot leak.  If building the session fails, the registry already
+    // holds the worker, so the sweep will still find it and the next start will
+    // clean it up; closing the handle here instead would leave a process that is
+    // in the job and unreachable.
+    auto retained = processes_.retain_launched(
+        worker.binding.process_id, worker.binding.process_creation_time,
+        worker.process_handle);
+    if (!retained.ok()) {
+        // Retention failed, so nothing owns the handle.  Close it rather than
+        // dropping it, and report: a worker the registry refused is a worker no
+        // sweep could account for, which is worse than a launch that failed.
+        m5::close_launched_worker(worker);
+        return Result<std::unique_ptr<ServiceWorkerSession>>::failure(
+            retained.error());
+    }
+    // Ownership has moved into the registry.  Cleared so `close_launched_worker`
+    // is a no-op from here on -- the registry needs the handle to wait for the
+    // process, and closing it would leave a worker that can be seen and never
+    // waited for.
+    worker.process_handle = nullptr;
+
     auto session = ServiceWorkerSession::create(std::move(worker.channel),
                                                 worker.binding);
-    // The process handle is closed either way.  Nothing in the M5 adapter
-    // observes the process -- a removal is proven by the worker's own
-    // authenticated answer rather than by waiting for it to die -- so retaining
-    // the handle would be a resource held for no reader.  When the composition
-    // gains a live-worker registry it will need one, and that is where it
-    // belongs.
-    m5::close_launched_worker(worker);
     if (!session.ok()) {
         return Result<std::unique_ptr<ServiceWorkerSession>>::failure(
             session.error());

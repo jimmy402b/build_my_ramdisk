@@ -1,6 +1,7 @@
 #include "src/management/windows_worker_job.h"
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <cstddef>
 #include <utility>
@@ -52,13 +53,25 @@ WindowsWorkerProcessSource::create() {
                       GetLastError()));
     }
 
-    // `SILENT_BREAKAWAY_OK` so a child the *worker* spawns -- the provisioning
-    // helper is one -- does not join this job.  Without it, terminating a worker
-    // would drag its helper down, and the escrow between the two is not
-    // something this service is entitled to decide.
+    // `BREAKAWAY_OK`, *not* `SILENT_BREAKAWAY_OK`.
+    //
+    // Both exist to keep a child the *worker* spawns -- the provisioning helper is
+    // one -- from being dragged down with the worker.  They differ in a way that
+    // cost a test to find: `SILENT_BREAKAWAY_OK` makes the job non-holding, which
+    // is documented to mean `TerminateJobObject` and `KILL_ON_JOB_CLOSE` no longer
+    // take effect on processes in it -- and it turns out the process is not
+    // meaningfully *in* the job at all, so the job also stops accounting for it.
+    // Measured: with `SILENT_BREAKAWAY_OK` set, a worker launched through
+    // `PROC_THREAD_ATTRIBUTE_JOB_LIST` survived the launch and then vanished from
+    // `JobObjectBasicProcessIdList` once the job handle was closed -- the startup
+    // sweep would have been blind to exactly the orphans it exists to find.
+    //
+    // `BREAKAWAY_OK` grants the permission without waiving membership: a child
+    // must still ask with `CREATE_BREAKAWAY_FROM_JOB`, and until today nothing in
+    // this tree spawns anything from inside a worker.  Membership is the property
+    // the sweep depends on, so membership is what wins.
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     // Deliberately *not* set: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.  Setting it
     // would mean a service that died takes its workers with it, and a killed
     // worker cannot remove its drive letter, dismount its volume or stop AIM.
@@ -161,47 +174,81 @@ WindowsWorkerProcessSource::observe_orphans() const {
             job_error(L"observe_orphans", L"the worker job is not open"));
     }
 
-    // Two calls by contract: ask for the byte count, then ask for the list.  The
-    // count can grow between them, so an `ERROR_MORE_DATA` is a retry rather than
-    // a failure -- a worker launched by something else while we enumerate must not
-    // make the sweep refuse to run.
-    DWORD needed = 0;
-    (void)QueryInformationJobObject(job_, JobObjectBasicProcessIdList, nullptr, 0,
-                                    &needed);
-    if (needed == 0) {
-        // A job with no processes reports zero bytes needed, which is an empty
-        // list and not an error.  A fresh service finds exactly this.
-        return Result<std::vector<OrphanedProcess>>::success({});
-    }
-    std::vector<std::byte> buffer(needed + sizeof(ULONG_PTR) * 16);
-    auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
-    if (QueryInformationJobObject(job_, JobObjectBasicProcessIdList, list, 
-                                  static_cast<DWORD>(buffer.size()), &needed)
-        == FALSE) {
+    // A snapshot of the live process table, not a job query.
+    //
+    // This started as `JobObjectBasicProcessIdList`, which is the obvious call
+    // and which was measured *not to work here*: on the guest,
+    // `IsProcessInJob(child, job)` reported 1 while the same job's
+    // `JobObjectBasicProcessIdList` reported zero processes -- an enumeration that
+    // silently omits every member is worse than one that fails, because the sweep
+    // would conclude the world was clean.  Membership and observation are
+    // therefore asked separately, and observation comes from the table.
+    //
+    // The cost of the change, stated: this reads processes this service did not
+    // start, so "is it ours" is decided in two steps -- membership (a primitive
+    // that measurably works) and then the recorded binding (pid *and* creation
+    // time) in `sweep_verdicts`.  Neither step alone is sufficient, which is the
+    // same division of labour the job query would have needed anyway.
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
         return Result<std::vector<OrphanedProcess>>::failure(
-            job_error(L"QueryInformationJobObject",
-                      L"the worker job's processes could not be listed",
-                      GetLastError()));
+            job_error(L"CreateToolhelp32Snapshot",
+                      L"the process table could not be read", GetLastError()));
     }
 
     std::vector<OrphanedProcess> orphans;
-    for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index) {
-        const auto pid = static_cast<std::uint32_t>(list->ProcessIdList[index]);
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry) == FALSE) {
+        const DWORD error = GetLastError();
+        CloseHandle(snapshot);
+        // An empty table is not an error; `ERROR_NO_MORE_FILES` is how the
+        // enumeration reports "there was nothing to walk".
+        if (error == ERROR_NO_MORE_FILES) {
+            return Result<std::vector<OrphanedProcess>>::success({});
+        }
+        return Result<std::vector<OrphanedProcess>>::failure(
+            job_error(L"Process32FirstW", L"the process table is unreadable",
+                      error));
+    }
+
+    do {
+        const auto pid = static_cast<std::uint32_t>(entry.th32ProcessID);
         if (pid == 0) continue;
+
+        // `PROCESS_QUERY_LIMITED_INFORMATION` and `SYNCHRONIZE`: enough to read
+        // the creation time and to test whether it is still running, and nothing
+        // that could end or command it.
+        HANDLE probe = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+        if (probe == nullptr) {
+            // A process that cannot be opened is one this service cannot attribute
+            // or terminate.  Skipped rather than guessed at: including it with no
+            // identity would make it a `terminate_forced` candidate in the
+            // verdicts, which is exactly the name-based cleanup the design
+            // forbids.
+            continue;
+        }
+
+        BOOL in_job = FALSE;
+        if (IsProcessInJob(probe, static_cast<HANDLE>(job_), &in_job) == FALSE
+            || in_job == FALSE) {
+            CloseHandle(probe);
+            continue;
+        }
+
+        // A process still inside the job that has already exited is not an orphan
+        // to clean up -- its resources are the reclamation path's problem, not the
+        // sweep's.  `WAIT_TIMEOUT` is the only outcome that means "still running".
+        if (WaitForSingleObject(probe, 0) != WAIT_TIMEOUT) {
+            CloseHandle(probe);
+            continue;
+        }
 
         OrphanedProcess orphan{};
         orphan.process_id = pid;
-
-        // The creation time needs a handle, but not a *retained* one.  Opened for
-        // query only, so a process this session launched is recognised and then
-        // released -- the retained handle is the launcher's, and holding a second
-        // one here would keep a dead worker's process object alive for as long as
-        // the sweep took.
-        HANDLE probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (probe != nullptr) {
-            orphan.process_creation_time = creation_time_of(probe);
-            CloseHandle(probe);
-        }
+        orphan.process_creation_time = creation_time_of(probe);
+        CloseHandle(probe);
 
         {
             // Processes this session launched are not orphans.  Matching on pid
@@ -222,7 +269,9 @@ WindowsWorkerProcessSource::observe_orphans() const {
         // honest answer, and `sweep_verdicts` treats "no binding" as its own case
         // rather than as a match.
         orphans.push_back(orphan);
-    }
+    } while (Process32NextW(snapshot, &entry) != FALSE);
+
+    CloseHandle(snapshot);
     return Result<std::vector<OrphanedProcess>>::success(std::move(orphans));
 }
 

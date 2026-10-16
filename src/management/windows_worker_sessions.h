@@ -15,6 +15,7 @@
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
 #include "src/management/service_worker_control.h"
+#include "src/management/worker_process_source.h"
 #include "src/product/uuid.h"
 
 #include <cstdint>
@@ -23,12 +24,26 @@
 
 namespace myrd::management {
 
+// Forward declared rather than included: this header only needs the name for a
+// reference, and `windows_worker_job.h` includes this one's interface -- so
+// including it back would be a cycle.  The provider never touches the job
+// directly; it hands the handle to the launcher and the process to the registry.
+class WindowsWorkerProcessSource;
+
 class WindowsWorkerSessionProvider final : public IWorkerSessionProvider {
 public:
     // The executable to start.  Passed in rather than derived: where the worker
     // binary lives is an installation question, and a provider that guessed
     // would be a second place for the answer to be wrong.
-    explicit WindowsWorkerSessionProvider(std::wstring worker_executable) noexcept;
+    //
+    // `processes` is the worker job and its live registry.  The provider needs it
+    // for two things that must not be separable: every launch is placed into the
+    // job at creation, and the process handle is *retained* there so the sweep can
+    // find the worker after a crash and so a termination can wait for it.  A
+    // provider without one would launch workers nothing could ever account for, so
+    // it is a constructor parameter rather than an optional setter.
+    WindowsWorkerSessionProvider(std::wstring worker_executable,
+                                 WindowsWorkerProcessSource& processes) noexcept;
 
     [[nodiscard]] Result<std::unique_ptr<ServiceWorkerSession>> launch(
         const WorkerLaunchRequest& request,
@@ -39,6 +54,9 @@ public:
 
 private:
     std::wstring worker_executable_;
+    // Borrowed for the provider's whole life, and must outlive it: it owns the
+    // job the workers are created into and the handles that keep them reachable.
+    WindowsWorkerProcessSource& processes_;
     // One per launched session, so a recycled pipe name can never be mistaken
     // for this session's, and so a worker from a previous service session cannot
     // authenticate against this one.

@@ -1,0 +1,118 @@
+# T1-03 证据（part 3）：worker job 接线、句柄保留、观测
+
+日期：2026-10-16
+分支：`feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`
+设计：`docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md` §5
+增量：tasklist T1-03
+本轮涵盖：**part 3**（job 接线 + 句柄保留 + 观测修正 + 工具链修正）。
+part 1/2 见 `docs/superpowers/plans/2026-10-15-m5-master-plan.md` 的 T1-03 卡片。
+
+---
+
+## 0. 结论
+
+| 项 | 结果 |
+|---|---|
+| `m5.production_execution_backend`（含 3 个新用例） | **3/3 通过**（`-Repeat 3`，请求 `16b2e9ffc0f84a72be45072429c9b8a6`） |
+| 开发机纯逻辑 `m5.worker_sweep_policy` + `m5.service_host` | **全绿** |
+| 干净构建 | 0 error 0 warning |
+| **worker 用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时进入命名 job** | 通过（真机测量） |
+| **重开的 job 句柄仍能看到活着的 worker** | 通过（真机测量，这是 sweep 能成立的前提） |
+| JOB 对象内部计数 | 通过（`m5.service_host` 等，未变） |
+
+**本轮抓到 4 个真缺陷**，其中 2 个在产品代码、2 个在测试基础设施。
+
+---
+
+## 1. 已交付（产品代码）
+
+| 文件 | 变更 |
+|---|---|
+| `src/host/m5_worker_private_pipe.{h,cpp}` | `launch_private_worker` 增加**必需的** `worker_job` 参数；job 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` **随创建属性一起**指派（不是创建后再 `AssignProcessToJobObject`） |
+| `src/management/windows_worker_job.{h,cpp}` | job 上限改为 `JOB_OBJECT_LIMIT_BREAKAWAY_OK`；`job_handle()`；**`observe_orphans` 改用进程表 + `IsProcessInJob`** |
+| `src/management/windows_worker_sessions.{h,cpp}` | provider 构造增加 `WindowsWorkerProcessSource&`；launch 后**保留句柄**（`retain_launched`）而不是丢弃 |
+| `src/service/service_runtime.{h,cpp}` | 组合根先建 job 与注册表，再建 provider / worker |
+
+**job 的三条设计义务仍然成立**：命名（重启能找到）、**不设 `KILL_ON_JOB_CLOSE`**（否则被杀的 worker 跑不到有序拆卸）、**只有按进程终止**（compile-time 断言钉住，加 job 级终止就编译失败）。
+
+---
+
+## 2. 四个缺陷（按发现顺序）
+
+### 2.1 `SILENT_BREAKAWAY_OK` 让 job **不记账**（产品缺陷）
+
+原本用 `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK` 让 worker 自己 spawn 的 provisioning helper 不加入本 job。
+真机测量发现：这样设了之后，worker 从 `JobObjectBasicProcessIdList` 里**消失**——sweep 会看不见它存在的理由。
+
+改为 **`BREAKAWAY_OK`**：仍然允许脱离，但**必须显式请求**（`CREATE_BREAKAWAY_FROM_JOB`），而本仓库至今没有任何代码在 worker 内部 spawn 东西。**成员资格是 sweep 依赖的性质，所以成员资格优先。**
+
+### 2.2 `QueryInformationJobObject` 枚举不到成员（产品缺陷）
+
+换成 `BREAKAWAY_OK` 后，**`IsProcessInJob` 报 1，而同一个 job 的 `JobObjectBasicProcessIdList` 报 0 个进程**。
+一个静默漏掉全部成员的枚举比一个会失败的枚举更糟：**sweep 会得出"世界是干净的"这个结论**。
+
+`observe_orphans` 因此改为：**遍历进程表（`CreateToolhelp32Snapshot`）→ 对每个进程问 `IsProcessInJob` → 用 creation time 核对身份**。
+代价写在代码注释里：这会读到本服务没启动的进程，所以"是不是我们的"由两步决定——成员资格（一个实测可用的原语）加上已记录的绑定（pid **与** creation time），由 `sweep_verdicts` 裁决。两步缺一不可，这正是 job 查询本来也需要的那种分工。
+
+### 2.3 `-Stage` 静默丢包（工具链缺陷，**两次误导排查**）
+
+**根因**：staging 会先清空客机上的目标树，再按条目 scp；有时上传没有真正落地，但工具仍然打印
+`staged 116 test binaries` 并返回成功。
+
+**症状**：runner 打印
+`MISSING .../myrd_m5_production_execution_backend_tests.exe`，
+**读起来完全像一个构建问题**——于是有一轮排查被引到了错误的方向，而"再 stage 一次"就修好了一个从未存在过的缺陷。
+
+**修法**：staging 结束后**在客机上数**测试可执行文件，与本地数目比对，不一致就 `throw` 并明确写出
+"这是 staging 没落地，不要把随后的运行失败当成产品缺陷"。
+
+### 2.4 BOM 打断远程脚本首行（工具链缺陷）
+
+本文件带 UTF-8 BOM，而 `powershell -Command -` **不剥 BOM**：BOM 粘在正文第一个 token 上，
+`Get-ChildItem ...` 到客机变成 `\ufeffGet-ChildItem ...`，客机回答"无法将该项识别为 cmdlet"。
+
+**修法**：`Invoke-Remote` 在正文前补一个空行吸收 BOM。这同时修好了一个**先前就存在**的失败——git 元数据解包那一步（`& 'tar.exe' ...`）此前也因同样原因报 `CommandNotFoundException`。
+
+### 2.5 我自己在测试里犯的两个错（记录以免重犯）
+
+- 用 `cmd.exe /c ping -n 60 ...` 当"长生"子进程：**在客机上它立刻退出**，而退出进程不可能是孤儿，
+  于是用例什么都没测到；
+- 先关闭 session 再观测 worker：session 一关**私有管道就 EOF，worker 是"干净退出"**的——
+  把"干净退出"读成了"job 杀了它"。
+
+两次都是**测试主体（subject）选错**，不是产品错。最终用例把 session 保持在**外层作用域**，
+确保整个测量期间 worker 都活着。
+
+---
+
+## 3. 量测范围（重要，不含糊）
+
+- 虚拟机：`m5.production_execution_backend` **`-Repeat 3`，3/3 通过**，真实 worker 进程。
+  这是**功能验收**，不是稳定性验收；`-Repeat 20` 留给 part 3 的强杀/回收场景。
+- 开发机：`m5.worker_sweep_policy`（18 用例）与 `m5.service_host` 全绿；**不创建任何进程**。
+- 干净构建 0 error 0 warning（改过头文件，测量前已 `--clean-first`）。
+
+---
+
+## 4. 明确的已知限制（**未验证**）
+
+### 4.1 "关闭 job 不会杀死 worker"在**本测试环境里无法干净测量**
+
+性质本身没有疑问（不设 `KILL_ON_JOB_CLOSE` 就是为此），但**测量**在这里做不到，两条原因都实测过：
+
+1. **`AssignProcessToJobObject` 在提权 SSH 会话里返回 `ERROR_ACCESS_DENIED`（5）**，
+   所以本工具链里**每个进程都已经嵌套在一个不是我们创建的 job 里**；
+   于是 `IsProcessInJob(process, nullptr, &r)` 会因为与本 job 无关的原因报 true——
+   探针**分不清"还在我们的 job 里"和"在工具链的 job 里"**；
+2. **关闭 job 的最后一个句柄再按名字重开，观测到的未必是同一个对象**：
+   一个重开的句柄可能是一个**新的空 job**，从外面看和"worker 离开了"一模一样。
+
+因此该用例**被删掉而不是留着空过**，性质交给 part 3 的 VM 验收（真杀服务、真孤儿），
+并作为已知限制记在这里。
+
+### 4.2 尚未接线（part 3 剩余）
+
+1. **持久化"最后观测身份"**（喂给 part 1 的 `reclaimable_resources`）；
+2. **服务启动时跑 sweep**（读 durable 绑定 → `sweep_verdicts` → 执行）；
+3. **强杀验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
+   无法证明归属 → 不清且报 needs-attention。**至少 `-Repeat 20`**。

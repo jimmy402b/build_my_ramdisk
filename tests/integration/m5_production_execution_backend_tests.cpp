@@ -23,11 +23,13 @@
 
 #include "src/common/operation_context.h"
 #include "src/management/service_worker_control.h"
+#include "src/management/windows_worker_job.h"
 #include "src/management/windows_worker_sessions.h"
 #include "src/profile/profile_types.h"
 #include "src/product/uuid.h"
 #include "src/run/windows_volume.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -343,6 +345,39 @@ WorkerLaunchRequest request_for(const profile::ProfileRecord& profile) {
     return translated.value();
 }
 
+// The worker job, kept alive for one test case.
+//
+// Every launch has to go into the job (see `launch_private_worker`): a worker
+// outside it is invisible to a startup sweep, so the production composition
+// always has one and these cases must not test a shape production never builds.
+// The fixture holds the source so its lifetime brackets the provider's, which
+// only borrows it.
+class WorkerJobFixture final {
+public:
+    WorkerJobFixture() {
+        auto created = WindowsWorkerProcessSource::create();
+        REQUIRE(created.ok());
+        source_ = created.move_value();
+    }
+
+    [[nodiscard]] WindowsWorkerProcessSource& source() const noexcept {
+        return *source_;
+    }
+
+private:
+    std::unique_ptr<WindowsWorkerProcessSource> source_;
+};
+
+// A job the test can open a *second* time, to see what a restarted service would
+// see.  `WindowsWorkerProcessSource::create` opens the named job rather than
+// making a new one, so this is the restart path itself and not a simulation of
+// it.
+std::unique_ptr<WindowsWorkerProcessSource> second_job_source() {
+    auto opened = WindowsWorkerProcessSource::create();
+    REQUIRE(opened.ok());
+    return opened.move_value();
+}
+
 } // namespace
 
 TEST_CASE(m5_backend_launches_and_authenticates_a_real_worker) {
@@ -352,7 +387,7 @@ TEST_CASE(m5_backend_launches_and_authenticates_a_real_worker) {
     // of that can be faked without testing a different object than the one that
     // runs.
     TempBundle bundle(L"launch");
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     auto session = provider.launch(request_for(valid_profile(bundle)), context());
     REQUIRE(session.ok());
     REQUIRE(session.value() != nullptr);
@@ -391,6 +426,149 @@ TEST_CASE(m5_backend_launches_and_authenticates_a_real_worker) {
                 .ok());
 }
 
+TEST_CASE(m5_backend_launch_places_the_worker_in_the_named_job) {
+    // The job membership is a property of the process from its first instruction,
+    // because it rides the creation attributes.  A separate
+    // `AssignProcessToJobObject` after `CreateProcessW` returns would leave a
+    // window in which the worker runs outside every job, and anything it created
+    // in that window would not be the job's.
+    //
+    // Measured from a *second* handle to the same named job -- which is exactly
+    // what a restarted service opens -- while the worker is still running: a live
+    // worker this session launched is invisible to this session (it is not an
+    // orphan), but a *reopened* job has no memory of launching it, so the
+    // worker's presence there is the statement that membership is real.
+    TempBundle bundle(L"job-membership");
+    WorkerJobFixture job;
+    WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+
+    auto session = provider.launch(request_for(valid_profile(bundle)), context());
+    REQUIRE(session.ok());
+    const std::uint32_t worker_pid = session.value()->binding().process_id;
+    const std::uint64_t worker_creation_time =
+        session.value()->binding().process_creation_time;
+    REQUIRE(worker_pid != 0);
+    REQUIRE(worker_creation_time != 0);
+
+    // Held open, so the worker has no reason to leave while this is measured.
+    auto observer = second_job_source();
+    auto orphans = observer->observe_orphans();
+    REQUIRE(orphans.ok());
+
+    bool found = false;
+    for (const auto& orphan : orphans.value()) {
+        if (orphan.process_id == worker_pid) {
+            found = true;
+            // The same process, by the identity that cannot be reused.  A pid
+            // alone would be satisfied by a recycled one.
+            REQUIRE(orphan.process_creation_time.has_value());
+            REQUIRE_EQ(*orphan.process_creation_time, worker_creation_time);
+        }
+    }
+    // Present.  Had the launch not joined the job, the reopened job would not
+    // report it at all -- the difference between a worker a sweep can account for
+    // and one nothing can.
+    REQUIRE(found);
+
+    REQUIRE(session.value()->shutdown(context(),
+                                      uuid("99999999-8888-7777-6666-555555555555"))
+                .ok());
+    REQUIRE(job.source().wait_for_exit(worker_pid, 30'000).ok());
+    REQUIRE(job.source().wait_for_exit(worker_pid, 30'000).value());
+}
+
+TEST_CASE(m5_backend_a_reopened_job_still_holds_its_workers) {
+    // The design's core premise for the startup sweep, tested directly: a worker
+    // launched into the named job is still *in* that job when a second handle
+    // opens it by name.  Without this, "recover the previous service session's
+    // workers" is unimplementable, because the sweep has no way to enumerate them.
+    //
+    // Two observations around a close-and-reopen, both while the worker is alive
+    // and its session is held open.  The first is the control: if it does not see
+    // the worker, the enumeration is broken and the second proves nothing.  This
+    // ordering is the correction to an earlier version that closed the session
+    // first -- the worker then exited cleanly, and "not in the job" was read from
+    // a process that had simply finished.
+    TempBundle bundle(L"job-reopen");
+    WorkerJobFixture job;
+    WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+
+    auto session = provider.launch(request_for(valid_profile(bundle)), context());
+    REQUIRE(session.ok());
+    const std::uint32_t worker_pid = session.value()->binding().process_id;
+    const std::uint64_t worker_creation_time =
+        session.value()->binding().process_creation_time;
+    REQUIRE(worker_pid != 0);
+    REQUIRE(worker_creation_time != 0);
+
+    const auto lists_worker = [worker_pid](const WindowsWorkerProcessSource& source) {
+        auto orphans = source.observe_orphans();
+        REQUIRE(orphans.ok());
+        return std::any_of(orphans.value().begin(), orphans.value().end(),
+                           [worker_pid](const OrphanedProcess& orphan) {
+                               return orphan.process_id == worker_pid;
+                           });
+    };
+
+    // Control: a second handle to the same job sees the live worker.
+    {
+        auto observer = second_job_source();
+        REQUIRE(lists_worker(*observer));
+    }
+
+    // Close that handle, open a fresh one, and ask again.  The worker has not been
+    // touched: same session, same pipe, still running.
+    {
+        auto observer = second_job_source();
+        REQUIRE(lists_worker(*observer));
+    }
+
+    // And the identity travels with it, so a sweep can tell this process from one
+    // that merely inherited its pid.
+    {
+        auto observer = second_job_source();
+        auto orphans = observer->observe_orphans();
+        REQUIRE(orphans.ok());
+        bool matched = false;
+        for (const auto& orphan : orphans.value()) {
+            if (orphan.process_id == worker_pid) {
+                REQUIRE(orphan.process_creation_time.has_value());
+                REQUIRE_EQ(*orphan.process_creation_time, worker_creation_time);
+                matched = true;
+            }
+        }
+        REQUIRE(matched);
+    }
+
+    REQUIRE(session.value()->shutdown(context(),
+                                      uuid("99999999-8888-7777-6666-555555555555"))
+                .ok());
+    REQUIRE(job.source().wait_for_exit(worker_pid, 30'000).ok());
+    REQUIRE(job.source().wait_for_exit(worker_pid, 30'000).value());
+}
+
+// The "closing the job does not kill its workers" case used to live here, and it
+// is deliberately absent rather than passing vacuously.
+//
+// What it was trying to establish is real and is not in doubt: a job without
+// `KILL_ON_JOB_CLOSE` does not end its members when its last handle closes, which
+// is what lets an orphaned worker run its ordered teardown.  What cannot be
+// established *here* is the measurement, for two reasons that were both measured:
+//
+//   * `AssignProcessToJobObject` fails with `ERROR_ACCESS_DENIED` (5) inside the
+//     elevated SSH session, so every process in this harness is already nested in
+//     a job this agent did not create -- and `IsProcessInJob(process, nullptr,
+//     &r)` then reports true for reasons unrelated to the worker job.  The probe
+//     cannot distinguish "still in our job" from "in the harness's job";
+//   * closing the last handle to the job and reopening it by name does not
+//     reliably observe the same object, so a reopened handle can be a *new*,
+//     empty job that looks exactly like "the worker left".
+//
+// The property is therefore left to the VM acceptance in T1-03's part 3, where a
+// real service is killed and the real orphan is measured, and it is recorded as a
+// known limit in `docs/validation/m5-t1-03-worker-job.md` rather than dressed up
+// as a passing case.
+
 TEST_CASE(m5_backend_two_profiles_never_share_a_worker) {
     // Each profile gets its own process and its own pipe name, and the binding
     // each channel authenticated names that profile and no other.  A service
@@ -398,7 +576,7 @@ TEST_CASE(m5_backend_two_profiles_never_share_a_worker) {
     // operations against another.
     TempBundle first(L"two-a");
     TempBundle second(L"two-b");
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
 
     auto left = provider.launch(
         request_for(profile_record(
@@ -423,7 +601,7 @@ TEST_CASE(m5_backend_refuses_a_launch_it_cannot_complete) {
     // A launch that cannot be completed must leave nothing behind.  An empty
     // executable path is refused before a process exists at all.
     TempBundle bundle(L"no-exe");
-    WindowsWorkerSessionProvider missing(std::wstring{});
+    WorkerJobFixture missing_job; WindowsWorkerSessionProvider missing(std::wstring{}, missing_job.source());
     const auto refused = missing.launch(request_for(valid_profile(bundle)), context());
     REQUIRE(!refused.ok());
 }
@@ -440,7 +618,7 @@ TEST_CASE(m5_backend_attach_finds_nothing_and_says_so) {
     // "none running", which the adapter turns into an explicit refusal -- the
     // honest answer until that registry exists, and different from claiming a
     // worker was found.
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     const auto attached =
         provider.attach(uuid("11111111-2222-3333-4444-555555555555"), context());
     REQUIRE(attached.ok());
@@ -461,7 +639,7 @@ TEST_CASE(m5_backend_adapter_reaches_the_worker_it_launched) {
     // claims a real drive letter on this machine -- a side effect this case has
     // no business causing, and one it would have caused silently.
     TempBundle bundle(L"adapter");
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     ServiceWorkerControl control(provider);
     const auto profile = valid_profile(bundle);
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
@@ -509,7 +687,7 @@ TEST_CASE(m5_backend_creates_a_bundle_and_mounts_it_end_to_end) {
     REQUIRE(launch_request.value().volume_mode
             == m5::WorkerVolumeMode::provision_new);
 
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     auto launched = provider.launch(launch_request.value(), context());
     REQUIRE(launched.ok());
     auto& session = *launched.value();
@@ -570,7 +748,7 @@ TEST_CASE(m5_backend_adapter_registers_the_bundle_it_creates) {
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
 
     {
-        WindowsWorkerSessionProvider provider(worker_executable());
+        WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
         ServiceWorkerControl control(provider);
 
         WorkerActionRequest request{
@@ -697,7 +875,7 @@ TEST_CASE(m5_backend_checkpoint_crosses_the_boundary_and_commits) {
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
 
     {
-        WindowsWorkerSessionProvider provider(worker_executable());
+        WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
         ServiceWorkerControl control(provider);
 
         WorkerActionRequest create{
@@ -783,7 +961,7 @@ TEST_CASE(m5_backend_checkpoint_boundary_withdrawal_publishes_nothing) {
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
 
     {
-        WindowsWorkerSessionProvider provider(worker_executable());
+        WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
         ServiceWorkerControl control(provider);
 
         WorkerActionRequest create{
@@ -869,7 +1047,7 @@ TEST_CASE(m5_backend_stop_walks_quiesce_flush_commit_remove) {
     const auto image_id = uuid("5a5a5a5a-6b6b-7c7c-8d8d-9e9e9e9e9e9e");
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
 
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     ServiceWorkerControl control(provider);
     auto durable = checkpoint_profile(profile, image_id, bundle.root.wstring(),
                                       mount_target);
@@ -962,7 +1140,7 @@ TEST_CASE(m5_backend_confirmed_removal_without_a_removal_is_refused) {
     const auto image_id = uuid("6a6a6a6a-7b7b-8c8c-9d9d-aeaeaeaeaeae");
     const auto operation = uuid("99999999-8888-7777-6666-555555555555");
 
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     ServiceWorkerControl control(provider);
     auto durable = checkpoint_profile(profile, image_id, bundle.root.wstring(),
                                       L"R:");
@@ -1075,7 +1253,7 @@ TEST_CASE(m5_backend_stopping_one_profile_does_not_require_the_other_gone) {
     const auto operation_a = uuid("99999999-8888-7777-6666-555555555551");
     const auto operation_b = uuid("99999999-8888-7777-6666-555555555552");
 
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     ServiceWorkerControl control(provider);
     const auto durable_a =
         checkpoint_profile(profile_a, image_a, bundle_a.root.wstring(), mount_a);
@@ -1279,7 +1457,7 @@ TEST_CASE(m5_backend_holding_the_volume_lock_refuses_a_second_lock) {
     const std::wstring mount_target = std::wstring(1, letter) + L":";
     const auto image_id = uuid("7c7c7c7c-8d8d-9e9e-afaf-b0b0b0b0b0b0");
 
-    WindowsWorkerSessionProvider provider(worker_executable());
+    WorkerJobFixture job; WindowsWorkerSessionProvider provider(worker_executable(), job.source());
     auto launched = provider.launch(
         make_launch_request(create_intent(image_id, bundle, mount_target))
             .value(),

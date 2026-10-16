@@ -207,14 +207,29 @@ struct LaunchedWorker final {
 // and a process nobody has a handle to is a process nobody can stop.
 // The budget is the context's own deadline: a separately passed timeout would be
 // a second bound on the same wait, and the two could disagree.
+//
+// `worker_job` is the job object the new process is placed into, and it is
+// **required**: a worker outside the job is invisible to the startup sweep, so a
+// service that restarted could never find or clean up after it.  Passing null is
+// a failure rather than a launch without a job, because the leak it would create
+// is silent and only shows up as a device nobody can account for.
+//
+// The assignment is atomic with creation (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), not
+// a separate call afterwards.  Doing it after `CreateProcessW` returns would
+// leave a window in which the worker is running outside every job, and the
+// objects it creates in that window would not be the job's.
 [[nodiscard]] Result<LaunchedWorker> launch_private_worker(
     const OperationContext& context, const std::wstring& worker_executable,
-    const WorkerLaunchSpec& spec);
+    const WorkerLaunchSpec& spec, void* worker_job);
 
-// Closes the process handle.  Nothing retains it yet: a removal is proven by the
-// worker's own authenticated answer rather than by waiting for it to die, so
-// there is no reader for a process-exit wait.  One will be added with the
-// live-worker registry that needs it rather than kept here unused.
+// Closes the process handle.
+//
+// Only for a worker whose handle was *not* retained.  A caller that carries the
+// handle into the live-worker registry (`WindowsWorkerProcessSource::
+// retain_launched`) must not also call this: the registry needs the handle to
+// wait for the process, and closing it here would leave a worker that can be
+// observed and never waited for.  The two are distinguishable because retention
+// takes the handle by reference and clears it.
 void close_launched_worker(LaunchedWorker& worker) noexcept;
 
 // The worker side: connects to the name it was told, then authenticates.

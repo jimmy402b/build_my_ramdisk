@@ -138,8 +138,15 @@ function Invoke-Native {
 function Invoke-Remote {
     param([Parameter(Mandatory)][string]$Script)
     # The body goes over stdin so no quoting rule can rewrite it.
+    #
+    # A leading newline is prepended because this file is saved with a UTF-8 BOM
+    # and `powershell -Command -` does not strip it: the BOM ends up glued to the
+    # first token of the body, so `Get-ChildItem ...` arrives as
+    # `\ufeffGet-ChildItem ...` and the guest answers
+    # "The term ... is not recognized as the name of a cmdlet".  The empty first
+    # line absorbs it, so the real body starts clean.
     $a = $sshArgs + @($target, 'powershell.exe -NoProfile -NonInteractive -Command -')
-    $r = Invoke-Native -FilePath 'ssh.exe' -Arguments $a -InputLines @($Script)
+    $r = Invoke-Native -FilePath 'ssh.exe' -Arguments $a -InputLines @('', $Script)
     if ($r.ExitCode -ne 0) {
         throw "remote command failed (exit $($r.ExitCode)):`n$($r.Output -join "`n")"
     }
@@ -410,6 +417,32 @@ if ($Stage) {
                    "Remove-Item '$mainRepoScp/.m5-git-meta.tgz' -Force -ErrorAction SilentlyContinue; " +
                    "'git metadata extracted to $mainRepoScp/.git'"
         Invoke-Remote -Script $extract | ForEach-Object { Write-Host "  $_" }
+    }
+
+    # Verify the payload actually landed, and fail loudly if it did not.
+    #
+    # This exists because staging reported "staged 116 test binaries" and then ran
+    # against a guest whose test directory was EMPTY, twice in one session.  The
+    # symptom was the runner printing
+    # `MISSING .../myrd_m5_production_execution_backend_tests.exe`, which reads
+    # exactly like a build problem -- so the failure sent the investigation to the
+    # wrong place, and one re-stage "fixed" a defect that had never existed.
+    #
+    # Counting on the guest is the only statement that cannot be satisfied by a
+    # successful `scp` exit code, and the number is the same one printed above, so
+    # a mismatch is unambiguous.
+    $guestExeDir = "$guestRepoWin\out\build\msvc\tests\$Configuration"
+    $countScript = "Get-ChildItem -LiteralPath '$guestExeDir' -Filter *.exe -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"
+    $guestExeLines = @(Invoke-Remote -Script $countScript)
+    $guestExeCount = -1
+    foreach ($line in $guestExeLines) {
+        $parsed = 0
+        if ([int]::TryParse(([string]$line).Trim(), [ref]$parsed)) { $guestExeCount = $parsed }
+    }
+    if ($guestExeCount -ne $stagedExes) {
+        throw ("staging did not land: the guest has $guestExeCount test executables in " +
+               "$guestExeDir but $stagedExes were staged.  Re-run -Stage; do not treat the " +
+               "run failure that follows as a product defect.")
     }
 
     Write-Host "staged to ${target}:$guestRepoScp  (tests.json in $RemoteRoot)"

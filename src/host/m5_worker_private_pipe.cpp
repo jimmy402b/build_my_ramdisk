@@ -768,7 +768,18 @@ Result<std::uint64_t> creation_time_of(void* process_handle) {
 
 Result<LaunchedWorker> launch_private_worker(
     const OperationContext& context, const std::wstring& worker_executable,
-    const WorkerLaunchSpec& spec) {
+    const WorkerLaunchSpec& spec, void* const worker_job) {
+    // Fail before anything is created.  A worker launched without a job cannot be
+    // found by a sweep after a crash, and the leftover it would produce is a real
+    // AIM device that nothing can account for -- so this is refused up front
+    // rather than allowed to become a device nobody can explain.
+    if (worker_job == nullptr) {
+        return Result<LaunchedWorker>::failure(pipe_error(
+            0, L"launch_private_worker",
+            L"a worker must be launched into the job object; refusing to launch "
+            L"one that no sweep could ever find"));
+    }
+
     auto startup = create_startup_channel();
     if (!startup.ok()) return Result<LaunchedWorker>::failure(startup.error());
     void* const child_read = startup.value().child_read_handle;
@@ -786,16 +797,20 @@ Result<LaunchedWorker> launch_private_worker(
     // handle this process holds, which for a service is a great deal more than a
     // startup pipe -- and each of those is a thing the child could then be made
     // to act on.
+    //
+    // Two attributes need room now: the inherited-handle list, and the job.
     STARTUPINFOEXW startup_info{};
     startup_info.StartupInfo.cb = sizeof(startup_info);
+    constexpr DWORD kAttributeCount = 2;
     SIZE_T attribute_bytes = 0;
-    static_cast<void>(InitializeProcThreadAttributeList(nullptr, 1, 0,
-                                                        &attribute_bytes));
+    static_cast<void>(InitializeProcThreadAttributeList(nullptr, kAttributeCount,
+                                                        0, &attribute_bytes));
     std::vector<std::byte> attribute_storage(attribute_bytes);
     startup_info.lpAttributeList =
         reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
             attribute_storage.data());
-    if (!InitializeProcThreadAttributeList(startup_info.lpAttributeList, 1, 0,
+    if (!InitializeProcThreadAttributeList(startup_info.lpAttributeList,
+                                           kAttributeCount, 0,
                                            &attribute_bytes)) {
         close_startup_handle(child_read);
         close_startup_handle(parent_write);
@@ -816,6 +831,28 @@ Result<LaunchedWorker> launch_private_worker(
         return Result<LaunchedWorker>::failure(pipe_error(
             0, L"launch_private_worker",
             L"the inherited handle could not be added to the list", native));
+    }
+
+    // The job rides the *creation* attributes rather than being assigned
+    // afterwards.  `AssignProcessToJobObject` after `CreateProcessW` returns
+    // leaves a window in which the worker is running outside every job: anything
+    // it spawned in that window would not be the job's, and a crash inside the
+    // window would leave a process the sweep could never see.  Assigning at
+    // creation makes the job membership a property of the process from its first
+    // instruction.
+    HANDLE job_list[1] = {static_cast<HANDLE>(worker_job)};
+    const BOOL jobed = UpdateProcThreadAttribute(
+        startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+        job_list, sizeof(job_list), nullptr, nullptr);
+    if (!jobed) {
+        const auto native = GetLastError();
+        DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+        close_startup_handle(child_read);
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(pipe_error(
+            0, L"launch_private_worker",
+            L"the worker job could not be added to the creation attributes",
+            native));
     }
 
     std::wstring command = L"\"" + worker_executable + L"\" --launch-handle "
