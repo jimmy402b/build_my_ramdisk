@@ -1,5 +1,6 @@
 #include "src/host/m5_worker_runtime.h"
 
+#include "src/common/diagnostic_trace.h"
 #include "src/m3/m3_provider.h"
 #include "src/run/runtime_adapter.h"
 
@@ -9,44 +10,21 @@
 namespace myrd::m5 {
 namespace {
 
-// Appends one stamped line to the file `MYRD_RECLAIM_TRACE` names, if it names one.
+// The trace itself now lives in `src/common/diagnostic_trace.h`, because the steps worth
+// naming are no longer only this layer's: the block turned out to be inside M3's own start
+// sequence, and `src/m3` may not depend on a worker-private function.  This is a thin adapter
+// so the call sites below keep reading in terms of the reclaim.
 //
-// Opened, written and closed per line rather than held open, and that is the point: the
-// process this exists to observe may be **blocked inside the very call that follows**, so a
-// buffered or still-open handle would show nothing for exactly the step that matters.  A
-// trace that needs the process to survive to be useful would be useless here.
-//
-// Best-effort by design: a trace that cannot be written must not change what the worker does,
-// because the run it is explaining would then be a different run.
+// The variable it responds to is `MYRD_TRACE_FILE`.
 void reclaim_trace(const wchar_t* step) {
-    wchar_t path[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(L"MYRD_RECLAIM_TRACE", path,
-                                                 static_cast<DWORD>(MAX_PATH));
-    if (length == 0 || length >= MAX_PATH) return;
-
-    HANDLE file = CreateFileW(path, FILE_APPEND_DATA,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return;
-
-    SYSTEMTIME now{};
-    GetSystemTime(&now);
-    wchar_t line[256]{};
-    const int written = _snwprintf_s(
-        line, _countof(line), _TRUNCATE,
-        L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ %s\r\n", now.wYear, now.wMonth,
-        now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, step);
-    if (written > 0) {
-        DWORD ignored = 0;
-        static_cast<void>(WriteFile(file, line,
-                                    static_cast<DWORD>(written * sizeof(wchar_t)),
-                                    &ignored, nullptr));
-        // Forced to the device before returning: a buffered append would be lost precisely
-        // when the process is killed for exceeding its budget, which is the case this exists
-        // to explain.
-        static_cast<void>(FlushFileBuffers(file));
-    }
-    static_cast<void>(CloseHandle(file));
+    // Narrowed because the shared facility takes bytes and the call sites are wide string
+    // literals; every step name here is ASCII, so nothing can be lost.
+    char name[128]{};
+    const int converted =
+        WideCharToMultiByte(CP_UTF8, 0, step, -1, name, sizeof(name) - 1,
+                            nullptr, nullptr);
+    if (converted <= 0) return;
+    diagnostic_trace(name);
 }
 
 // Wraps the reclaim's start sequence so each step is recorded before and after it runs.
@@ -251,7 +229,7 @@ Result<std::unique_ptr<DiskWorkerRuntime>> DiskWorkerRuntime::open(
     }
     // Opening the provider is deferred to `start()`.  The worker must not touch
     // a bundle, an AIM device or a volume before the handshake completes
-    // (solution §2.4), and this call is made before the handshake.
+    // (solution ?2.4), and this call is made before the handshake.
     return Result<std::unique_ptr<DiskWorkerRuntime>>::success(
         std::unique_ptr<DiskWorkerRuntime>(
             new DiskWorkerRuntime(std::move(config))));

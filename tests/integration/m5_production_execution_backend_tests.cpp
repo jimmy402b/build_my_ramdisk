@@ -757,7 +757,7 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
     // timestamps from the reclaim alone.
     {
         const std::wstring trace_path = L"C:\\tmp\\m5-reclaim-trace.txt";
-        static_cast<void>(_wputenv_s(L"MYRD_RECLAIM_TRACE", trace_path.c_str()));
+        static_cast<void>(_wputenv_s(L"MYRD_TRACE_FILE", trace_path.c_str()));
         static_cast<void>(DeleteFileW(trace_path.c_str()));
 
         WorkerJobFixture job;

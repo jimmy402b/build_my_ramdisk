@@ -736,7 +736,62 @@ start_aim: begin → 此后无输出
 **公共的、由环境变量开启的诊断设施**（放在 common 层），
 然后在 `M3AimRuntime::start()` 的每一步之间打点，跑一次即可定位到具体子步骤。
 **本轮到此为止**：IOCTL 的修正是真实且独立的收益（它移除了一个真实的无限阻塞），
-但 **T1-03 仍未通过，仍不得标 PASSED**。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+但 **T1-03 仍未通过，仍不得标 PASSED**。
+
+#### 4.15.7 提升 trace 后**一步就定位到了**：`rescan_aim_adapter`（part 25）
+
+**已完成提升**：trace 变成 `src/common/diagnostic_trace.{h,cpp}`
+（`MYRD_TRACE_FILE` 开启，逐行写并 flush，失败一律吞掉、绝不改变被观察行为），
+`src/m3` 因此可以合法打点（它本来就依赖 `src/common`，不存在依赖倒挂）。
+
+**客机读数**（请求 `32aff28d4dbf41f795ff95c69c1fcc61`，0/1）：
+
+```
+13:10:08.605Z start_aim: begin
+13:10:08.605Z M3AimRuntime::start: provider open
+13:10:08.703Z M3AimRuntime::start: provider start
+13:10:08.711Z M3AimRuntime::start: discover adapter
+13:10:08.713Z M3AimRuntime::start: physical baseline
+13:10:08.717Z M3AimRuntime::start: create proxy disk
+13:10:08.719Z M3AimRuntime::start: rescan adapter      ← 此后无输出
+```
+
+**结论（两层都清了）**：
+
+- **`create_proxy_disk` 2 ms 就返回了** ⇒ **part 23 的 IOCTL 修正是有效且命中目标的**
+  （原来它才是被怀疑的无限阻塞点）；
+- **真正的阻塞点是 `rescan_aim_adapter`**。
+
+**那个调用本身也没有超时**：`rescan_aim_adapter`
+（`adapter_discovery.cpp:170`）只是
+
+```cpp
+const CONFIGRET status = CM_Reenumerate_DevNode(
+    static_cast<DEVINST>(dev_inst), 0);
+```
+
+**`CM_Reenumerate_DevNode` 是同步的 PnP 重新枚举，没有超时参数**，
+`0` 是 flags（不是 timeout）。**PnP 重新枚举可以被无限期阻塞**
+（等待设备/驱动响应），于是它把上面所有 deadline 全部穿透——
+与"worker 阻塞在系统调用、CPU 不涨"的读数完全一致。
+
+**这是 M0/M3 驱动层的第二个无限阻塞点，和前一个不同一个调用。**
+
+**修法（本轮不动手，因为都要裁决）**：
+
+- **A'：不要重新枚举**。reclaim 的前提是**设备已经存在**（被强杀 worker 留下的），
+  而 `start_aim` 现在**先 `create_proxy_disk` 再 rescan** ——
+  对残留而言这两步**可能根本不该做**。若 AIM 已能为该 bundle 提供磁盘，
+  正确做法是**接上它**而不是再造一个再重新枚举。
+  **这是"reclaim 应该走一条更窄的 AIM 启动路径"的设计问题**，而不是打补丁；
+- **B'：给 `CM_Reenumerate_DevNode` 加超时**：CfgMgr32 **没有**带 timeout 的版本，
+  唯一办法是把整个调用**移到一个可放弃的线程**里等——
+  而"放弃"一个正在 PnP 里的线程是有风险的（它可能稍后继续动设备），
+  **比前一个 IOCTL 的 `CancelIoEx` 危险得多**，不该轻率实施。
+
+**倾向 A'**：它不试图去"超时一个不该发生的操作"，而是**不发起那个操作**。
+但 A' 需要设计判断（reclaim 的 AIM 启动路径到底要不要建新设备），
+**故按 goal 规则停下来请示**，不自行发明。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**

@@ -1,4 +1,6 @@
 #include "src/m3/m3_windows_acceptance.h"
+
+#include "src/common/diagnostic_trace.h"
 #include "src/persistence/vhdx_reader.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -145,6 +147,12 @@ Result<void> M3AimRuntime::start() {
     auto checked = check_operation_context(config_.context);
     if (!checked) return checked;
 
+    // **Each sub-step of bringing M3 up is named before it runs.**  The trace above this one
+    // proved the reclaim blocks inside `start_aim`, which M4 treats as a *single* step -- so
+    // the reading could not say which of these it was.  These markers are what make one guest
+    // run answer that.  They are unconditional calls that cost one environment lookup when no
+    // trace is configured, and the facility changes nothing it observes.
+    diagnostic_trace("M3AimRuntime::start: provider open");
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     proxy::KernelVisibleNamespacePolicy policy;
     auto opened = M3Provider::open_for_test(
@@ -155,12 +163,14 @@ Result<void> M3AimRuntime::start() {
 #endif
     if (!opened) return Result<void>::failure(opened.error());
     provider_ = opened.move_value();
+    diagnostic_trace("M3AimRuntime::start: provider start");
     auto started = provider_->start(config_.context);
     if (!started) {
         (void)stop_provider();
         return started;
     }
 
+    diagnostic_trace("M3AimRuntime::start: discover adapter");
     auto discovered = aim::discover_aim_adapter();
     if (!discovered) {
         (void)stop_provider();
@@ -171,6 +181,7 @@ Result<void> M3AimRuntime::start() {
         adapter_handle_->handle.get());
     adapter_ = std::make_unique<aim::DirectAimAdapter>(*transport_);
 
+    diagnostic_trace("M3AimRuntime::start: physical baseline");
     auto baseline = aim::snapshot_physical_drive_numbers();
     if (!baseline) {
         (void)stop_provider();
@@ -184,6 +195,7 @@ Result<void> M3AimRuntime::start() {
         geometry.virtual_bytes,
         geometry.logical_sector_size,
         names.driver_path};
+    diagnostic_trace("M3AimRuntime::start: create proxy disk");
     auto created = adapter_->create_proxy_disk(spec);
     if (!created) {
         (void)stop_provider();
@@ -198,12 +210,14 @@ Result<void> M3AimRuntime::start() {
     }
     owned_device_ = created.value();
 
+    diagnostic_trace("M3AimRuntime::start: rescan adapter");
     auto rescanned = aim::rescan_aim_adapter(adapter_handle_->dev_inst);
     if (!rescanned) {
         (void)remove_owned_device();
         (void)stop_provider();
         return rescanned;
     }
+    diagnostic_trace("M3AimRuntime::start: query device");
     auto queried = adapter_->query_device(*owned_device_);
     if (!queried) {
         (void)remove_owned_device();
@@ -221,6 +235,7 @@ Result<void> M3AimRuntime::start() {
             L"AIM QUERY_DEVICE identity did not match M3 provider"});
     }
 
+    diagnostic_trace("M3AimRuntime::start: wait for physical drive");
     auto located = aim::wait_for_created_physical_drive(
         *owned_device_, *physical_baseline_, geometry.virtual_bytes,
         device_timeout_);
@@ -344,7 +359,7 @@ Result<void> M3AimRuntime::remove_owned_device() {
         // That earlier condition could never hold once any disk had appeared
         // since, and with two profiles one always had: the first disk stopped
         // while a second was mounted waited for a set that could not come back,
-        // and timed out (manifest §1.38).  A teardown must be about the device
+        // and timed out (manifest ?1.38).  A teardown must be about the device
         // being torn down.
         const auto now = std::chrono::steady_clock::now();
         const auto remaining =
