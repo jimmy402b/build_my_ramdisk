@@ -8,6 +8,7 @@
 #include <ntddscsi.h>
 
 #include <chrono>
+#include <future>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -262,6 +263,42 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
     return Result<std::vector<DiskCandidate>>::success(candidates);
 }
 
+// How long one enumeration of the disk interfaces is allowed to take.
+//
+// A worst-case bound, not a performance target: a healthy enumeration is milliseconds, and this
+// project's guest has been measured over eighty seconds without returning.
+constexpr auto kEnumerateTimeout = std::chrono::seconds(10);
+
+// Runs `enumerate_disk_candidates` with a bound, because it has none of its own.
+//
+// **This is the fix for an intermittent timeout, not a tidy-up.**  The wait loop below checks its
+// deadline once, before the body, and then calls this enumeration -- a sequence of synchronous
+// SetupAPI and IOCTL calls with no overlapped form and nothing to cancel.  So that deadline bounded
+// how many times the loop turned, not how long a turn took, and one non-returning enumeration outlived
+// it.  Measured: a worker hung here for over eighty seconds at 0.23 s of CPU, and the reply carrying
+// its own timeout never arrived.
+//
+// The bound sits on the caller's side because there is nothing to cancel inside.  The work runs on a
+// detached thread and, if it overruns, is abandoned rather than waited for.
+//
+// **Abandoning is acceptable here, and that is the reason for this route.**  The abandoned work is
+// read-only: list interfaces, ask each for its SCSI address and its length.  It creates, mounts,
+// dismantles and alters nothing, so a thread still inside the kernel cannot leave the machine holding
+// a resource nobody owns.  That is materially different from abandoning a teardown, which is why the
+// earlier fixes in this project cancelled where a handle allowed it and this one bounds an execution.
+Result<std::vector<DiskCandidate>> enumerate_disk_candidates_within(
+    const std::chrono::milliseconds timeout) {
+    auto work = std::async(std::launch::async,
+                           [] { return enumerate_disk_candidates(); });
+    if (work.wait_for(timeout) != std::future_status::ready) {
+        return Result<std::vector<DiskCandidate>>::failure(
+            {ErrorDomain::win32, static_cast<std::uint32_t>(WAIT_TIMEOUT),
+             L"enumerate_disk_candidates",
+             L"enumerating the disk interfaces did not finish within its bound"});
+    }
+    return work.get();
+}
+
 } // anonymous namespace
 
 // ── Snapshot ──────────────────────────────────────────────────
@@ -315,7 +352,9 @@ Result<LocatedDisk> wait_for_created_physical_drive(
     };
 
     while (std::chrono::steady_clock::now() < deadline) {
-        auto cand = enumerate_disk_candidates();
+        // Bounded, because this enumeration has no bound of its own and the deadline above is only
+        // consulted once per turn -- see `enumerate_disk_candidates_within` for what that cost.
+        auto cand = enumerate_disk_candidates_within(kEnumerateTimeout);
         if (!cand) {
             return Result<LocatedDisk>::failure(cand.error());
         }
@@ -341,7 +380,8 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         }
 
         std::this_thread::sleep_for(kConfirmationDelay);
-        auto confirmed_candidates = enumerate_disk_candidates();
+        auto confirmed_candidates =
+            enumerate_disk_candidates_within(kEnumerateTimeout);
         if (!confirmed_candidates) {
             return Result<LocatedDisk>::failure(
                 confirmed_candidates.error());

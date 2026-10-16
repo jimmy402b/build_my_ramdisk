@@ -2099,3 +2099,48 @@ while (std::chrono::steady_clock::now() < deadline) {
 **否则任何一处遗留的枚举仍能把整个 worker 挂死。**
 
 **T1-03 仍不得标 PASSED。**
+
+#### 4.15.40 **推进修法前的一个阻塞事实：驱动报不出盘号**（part 57，本轮）
+
+上一节把修法方向定为"**不问机器、直接问驱动那块盘是几号**"。
+**本轮去核对它是否可行，结论是：`QUERY_DEVICE` 报不出盘号。**
+
+- `query_device` 发 `kQueryDevice`，返回体按 **`DeviceConfiguration`** 解析
+  （`direct_aim_adapter.cpp`，容量 `sizeof(DeviceConfiguration) + 260`）；
+- `DeviceConfiguration` 的字段是
+  `DeviceNumber / DiskSize / BytesPerSector / ImageOffset / Flags / FileNameLength / 文件名`
+  （见 `create_proxy_disk` 对同一结构体的构造，`direct_aim_adapter.cpp:85-92`）；
+- **`DeviceNumber` 是 AIM 自己的设备号**（创建时用的是 `kAutoDeviceNumber`），
+  **不是 Windows 的 `PhysicalDrive` 号**——
+  后者是 **Windows 枚举该 SCSI 设备时分配的**，
+  而 AIM 是无盘设备（SHM 代理），**它并不知道 Windows 给它编了几号**。
+
+⇒ **"直接问驱动"这条路在当前 `QUERY_DEVICE` 能力下走不通**，
+除非**扩展协议/驱动**（那是改 M0/M3 的接口，属于要请示的范围）。
+
+**因此"去掉枚举"只剩两种落法，且都需先判定**：
+
+1. **用 `created` 的 SCSI 地址自己拼出设备接口路径**（`\\?\scsi#disk&...`）直接打开那块盘——
+   **不枚举**。可行性**未验证**：要确认 Windows 对 AIM 代理盘生成的接口路径格式，
+   以及实例哈希能否由 `path/target/lun` 唯一决定；
+2. **保留枚举，但把每次枚举放进可放弃的执行体并加强制上限**（见下）。
+
+**而无论选哪一种，有一件事本身就应当做**（与本增量其余五个修法同型）：
+
+> **`enumerate_disk_candidates()` 必须有一个"最坏情况上限"。**
+> 它现在**同步、无 overlapped 形式、也不可取消**；
+> **任何一处遗留的枚举都能把整个 worker 挂死**——这正是 4107 的机制
+> （预算在循环外，管不住单次调用）。
+
+**具体做法（本轮判定为可自行实施的范围内，下一轮做）**：
+把 `enumerate_disk_candidates()` 的调用**放进可放弃的执行体**
+（例如 `std::async` + `wait_for(超时)`，超时即返回超时错误并**不再等待**），
+**于是"单次枚举"有了上限，循环级预算重新变得有意义**。
+**与 part 23/36/39 同型**（都是"让一次可能不返回的调用变得可以放弃"），
+只是这次没有 overlapped 可用，所以**用执行体而不是取消 I/O**。
+
+**风险写明（作为选这条路的理由）**：被放弃的执行体**仍可能在内核里**，
+但它是**只读枚举**（列接口、查地址、查长度），**不改变设备状态**——
+**放弃它比放弃一个正在拆卸的调用安全得多。**
+
+**本轮未改代码**（只完成可行性判定与方法确定）。**T1-03 仍不得标 PASSED。**
