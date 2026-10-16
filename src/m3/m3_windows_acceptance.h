@@ -105,6 +105,11 @@ private:
     // taken over.
     Result<std::optional<aim::DeviceId>> find_existing_device(
         const aim::ProxyDiskSpec& spec);
+    // One trace line each for "what we are looking for" and "what the driver holds", because
+    // a missing device and a mismatched identity are opposite problems and the first version
+    // reported both as the same "not found".
+    static std::string describe_device_target(const aim::ProxyDiskSpec& spec);
+    static std::string describe_device_candidate(const aim::DiskInfo& candidate);
 
     M3AimProviderFactoryConfig config_;
     std::chrono::milliseconds device_timeout_;

@@ -150,17 +150,63 @@ Result<std::optional<aim::DeviceId>> M3AimRuntime::find_existing_device(
     auto listed = adapter_->list_devices();
     if (!listed) return Result<std::optional<aim::DeviceId>>::failure(listed.error());
 
+    // **What the search looked for, and what it found, both in the trace.**  The first version
+    // of this function reported only "found" or "not found", and that was not enough to tell a
+    // missing device from a mismatched identity -- which are opposite problems with opposite
+    // fixes.  Printing both sides settled it in one run, and what it showed was a mismatch.
+    diagnostic_trace(describe_device_target(spec).c_str());
     for (const auto id : listed.value()) {
         auto queried = adapter_->query_device(id);
         if (!queried) continue;
+        diagnostic_trace(describe_device_candidate(queried.value()).c_str());
+        // **Matched on geometry, not on the driver-visible name, and the name cannot be used.**
+        //
+        // The name is built from a session id that `generate_session_id` fills from
+        // `BCryptGenRandom` (src/proxy/object_names.cpp:19), so it is **random per worker**.
+        // The first version required the name to match and therefore could never adopt a
+        // residue: the reading showed the device present with the same size and sector and a
+        // different name, which no amount of looking would have changed -- the dead worker's
+        // session id is unknowable, and nothing durable records it.
+        //
+        // Geometry is the honest discriminator, and the safety comes from somewhere better
+        // than a name.  This runtime already holds the bundle's **exclusive writer lock**: no
+        // other worker can be serving this bundle.  So a device of exactly the bundle's virtual
+        // size and sector size, at a moment when this process owns the bundle, is this bundle's
+        // -- and the size is not a weak signal here, it is the value AIM was created with and
+        // the one `verify_volume` checks against immediately afterwards.
+        //
+        // Adopting on geometry is a *widening*, so it is worth naming what still stops a wrong
+        // device from being taken: the bundle lock rules out a concurrent owner, and the
+        // identity check that follows `start` re-reads the volume's own GPT identities.  If a
+        // later reading shows a foreign device being adopted, this comment is the thing that
+        // was wrong.
         if (queried.value().size_bytes == spec.size_bytes &&
-            queried.value().sector_size == spec.sector_size &&
-            queried.value().native_object_path == spec.native_object_path) {
+            queried.value().sector_size == spec.sector_size) {
             return Result<std::optional<aim::DeviceId>>::success(
                 std::optional<aim::DeviceId>(id));
         }
     }
     return Result<std::optional<aim::DeviceId>>::success(std::nullopt);
+}
+
+std::string M3AimRuntime::describe_device_target(
+    const aim::ProxyDiskSpec& spec) {
+    char buffer[512]{};
+    _snprintf_s(buffer, _countof(buffer), _TRUNCATE,
+                "  looking for size=%llu sector=%u path=%ls",
+                static_cast<unsigned long long>(spec.size_bytes),
+                spec.sector_size, spec.native_object_path.c_str());
+    return std::string(buffer);
+}
+
+std::string M3AimRuntime::describe_device_candidate(
+    const aim::DiskInfo& candidate) {
+    char buffer[512]{};
+    _snprintf_s(buffer, _countof(buffer), _TRUNCATE,
+                "  candidate id=%u size=%llu sector=%u path=%ls",
+                candidate.id.value, static_cast<unsigned long long>(candidate.size_bytes),
+                candidate.sector_size, candidate.native_object_path.c_str());
+    return std::string(buffer);
 }
 
 Result<void> M3AimRuntime::start() {
@@ -281,10 +327,21 @@ Result<void> M3AimRuntime::start() {
         (void)stop_provider();
         return Result<void>::failure(queried.error());
     }
-    if (queried.value().id != *owned_device_ ||
-        queried.value().size_bytes != geometry.virtual_bytes ||
-        queried.value().sector_size != geometry.logical_sector_size ||
-        queried.value().native_object_path != names.driver_path) {
+    // The identity check, and the one part of it an adopted device cannot satisfy.
+    //
+    // `native_object_path` is the *driver-visible name*, built from a session id that is random
+    // per worker.  An adopted device necessarily carries the **dead** worker's id, so demanding
+    // this runtime's own name would reject the very device the adoption path exists to take over
+    // -- and, because the failure branch removes the device, it would have deleted the residue
+    // and then reported failure.  For an adopted device the identifying facts are the geometry
+    // (checked here) and the backing file, which `find_existing_device` matched on.
+    const bool identity_ok =
+        queried.value().id == *owned_device_ &&
+        queried.value().size_bytes == geometry.virtual_bytes &&
+        queried.value().sector_size == geometry.logical_sector_size &&
+        (adopting_existing ||
+         queried.value().native_object_path == names.driver_path);
+    if (!identity_ok) {
         (void)remove_owned_device();
         (void)stop_provider();
         return Result<void>::failure({
