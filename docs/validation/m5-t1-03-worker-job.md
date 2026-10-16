@@ -2389,3 +2389,56 @@ while (std::chrono::steady_clock::now() < deadline) {
    `kRemoveDevice` 之后仍留实例？还是 worker 被杀导致 `kRemoveDevice` 根本没发出？
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.46 **两个机制解释都被实测证伪；真实原因仍未知**（part 67，本轮）
+
+**本轮写了两个一次性探针**（`tools/probe/disk_presence_probe.cpp`、
+`tools/probe/disk_open_probe.cpp`，**只读查询、不创建不改状态**），在客机上直接量。
+**结果把我前两轮的机制解释都推翻了。**
+
+**探针一：`DIGCF_PRESENT` 会不会返回那 22 个幽灵盘？**
+
+```
+disk interfaces with DIGCF_PRESENT : 1        ← 只有真实的 1 个
+disk interfaces without it         : 27       ← 不设 PRESENT 时才是 27
+```
+
+**⇒ 幽灵盘被 `DIGCF_PRESENT` 正确滤掉了。**
+**所以 part 65/66 写的"枚举在 26 个幽灵上打转"是错的**——枚举根本看不到它们
+（连跑 5 次结果一致，不是偶发）。
+
+**探针二：枚举的每一步各要多久？**（把 `enumerate_disk_candidates` 拆开计时）
+
+```
+SetupDiGetClassDevsW              :    1.5 ms
+SetupDiEnumDeviceInterfaces       :    0.0 ms   (got=1)
+SetupDiGetDeviceInterfaceDetailW  :    0.0 ms
+CreateFileW (与定位器同参数)       :    0.8 ms   (handle=ok)
+IOCTL_SCSI_GET_ADDRESS            :    0.0 ms   (ok=1)
+IOCTL_STORAGE_GET_DEVICE_NUMBER   :    0.0 ms   (ok=1, disk=0)
+第二次 CreateFileW（持有句柄时）   :    0.0 ms   (handle=ok)
+```
+
+**⇒ 整条枚举路径（含打开与两个 IOCTL）在客机上只要约 2.5 毫秒，而且全部成功。**
+part 66 猜测的"打开/IOCTL 会卡"**同样错误**，包括"持锁时会阻塞"那一条。
+
+**因此必须更正**：**连续两轮的机制解释都不成立**，且**都是被直接量测推翻的**。
+**`enumerate_disk_candidates` 在当前状态下又快又稳。**
+
+**那"80 秒挂死 / 10 秒超时"是什么？现在只能说到这一步**：
+
+- **挂死确实发生在 `wait_for_present_physical_drive` 里**（part 56 的 trace 是现场证据：
+  当时 worker CPU 0.23 s、84 秒无进展）；
+- **但它的组成部分在空闲状态下都是毫秒级**；
+- ⇒ **触发条件不是"这台机器现在慢"，而是"某个特定状态下才慢/卡"**，
+  最可能是**那块盘/卷正被 worker 持有、或 AIM 设备处于过渡态时**某一步才阻塞；
+- **两个探针都是在"没有 worker、没有挂载卷"的空闲客机上跑的**，
+  **测的是健康状态，不是出事时的状态**——**这正是它们没能复现的原因**。
+
+**下一步（方法必须换，否则还会得到同样的证伪）**：
+**在"出事的那个状态"下量**。可行做法：**把每步耗时埋进
+`wait_for_present_physical_drive` 内部**（每次枚举/打开前后各一条 trace），
+**跑 `-Repeat 3`，在失败那次读出逐步耗时**。
+**这比"卡住时从旁边探"可靠**，因为它不依赖时机。**建议下一轮做这个。**
+
+**T1-03 不得标 PASSED。****本轮未改产品代码**（只加了两个只读探针与本文记录）。
