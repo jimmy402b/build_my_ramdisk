@@ -945,7 +945,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（验收未通过：间歇性）** | part 1–52。实现全部完成，**两条用例在多数运行里 PASS**，但 **`-Repeat 3` 抓到了 T1-03 自己的间歇失败**：迭代 1、2 走到 16 条且**两条用例都 PASS**，**迭代 3 只走到 3 条**，卡在**该增量自己那条 cleanup 的 reclaim**（`:756`，`pipe transfer exceeded its bounded wait` 4107）⇒ **约 1/3 的失败率**。**因此 §9 的"修复类结论至少 `-Repeat 20`"对 T1-03 适用，而当前读数不足以收尾。** **不得标 PASSED。** |
+| T1-03 | **IN_PROGRESS（验收未通过：间歇性，根因已定位）** | part 1–54。实现全部完成，**两条用例在多数运行里 PASS**；`-Repeat 3` 显示 **约 1/3 失败**，卡在该增量自己那条 cleanup 的 reclaim（`:756`，4107）。**根因已找到**：`start_aim` 每次都调 `snapshot_physical_drive_numbers()` → **`SetupDiGetClassDevsW` 全机器枚举磁盘接口、无超时（第六个无界阻塞点）**；套件每条用例都建/拆卷 ⇒ 接口集增长 ⇒ 枚举变慢直到卡住（这同时解释了 18/20 迭代连第 3 条都过不去）。**已裁决：不再每次启动取全机器 baseline（选项 A）**，实施路径见证据文档 §4.15.37。**不得标 PASSED。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |

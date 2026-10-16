@@ -1920,6 +1920,44 @@ const HDEVINFO raw_device_info = SetupDiGetClassDevsW(
 
 **T1-03 仍不得标 PASSED。**
 
+#### 4.15.37 **裁决：不取全机器 baseline（选项 A）——实施要点与依赖**（part 54，本轮）
+
+**用户裁决 A**：**不要每次启动都取全机器 baseline**。
+这与本增量已经确立两次的方向一致（**不做不需要做的事**：
+reclaim 不做 flush、不做 dismount）。**本轮记录下来并说清它牵动什么**，因为这不是一行改动：
+
+**baseline 目前的作用**：`snapshot_physical_drive_numbers()` 取"启动时机器上有哪些盘号"，
+`wait_for_created_physical_drive(device, baseline, size, timeout)` 靠**与它做差集**来认出
+**"刚被创建的那块盘"**（`match_created_disk` 会**跳过标记为 `existed_before` 的候选**）。
+
+**因此去掉 baseline 就必须给出替代判据**，而 `find_created_disk` 的匹配本来就已经用了
+**更强的身份**：`DeviceId`（SCSI 目标地址）+ **期望长度**。
+也就是说 —— **这两项已经足以定位那块盘**，baseline 只是**额外的**一层过滤；
+而 part 29 为"接管"路径新增的 `wait_for_present_physical_drive`
+**正是同一个匹配、传空 baseline**（`std::span<const std::uint32_t>{}`），
+**并且已在客机上实测可用**（parts 32/34 的 trace 走的就是它）。
+
+⇒ **实施方向已经清楚且风险可控**：
+**让"新建"路径也用同一个"按身份匹配"的等待**（即 `wait_for_present_physical_drive`），
+**从而不再需要 baseline**；`snapshot_physical_drive_numbers` 与其调用点一并去掉。
+**保留 `wait_for_physical_drive_retired`（拆卸侧）不变**，它本来就不看 baseline。
+
+**下一步（下一轮第一件事）**：
+1. 在 `M3AimRuntime::start` 里**去掉 baseline 的获取**，
+   把新建路径的等待换成按身份匹配的那一个；
+2. **确认 `match_created_disk` 在"不标记 existed_before"时仍能正确拒绝异己盘**
+   （它已有 `expected_size_bytes` 这一重身份；**需要读一遍它的实现确认**，
+   因为这正是 part 28 我为接管路径写过的同一条安全论证）；
+3. 开发机干净构建 + M3/driver 套件；
+4. 客机 `-Repeat 3` → 若不再卡在 `physical baseline`，再上 `-Repeat 20` 取 T1-03 的收尾读数。
+
+**预期收益（应写进读数）**：若根因判断正确，
+**`-Repeat 20` 应从"18/20 连第 3 条都过不去"变成大部分迭代能跑到 T1-03 的用例**——
+**这同时是对"根因是它"这个判断本身的检验**：
+**若换掉 baseline 后套件稳定了，则根因确认；若仍不稳定，则另有原因。**
+
+**T1-03 仍不得标 PASSED（且本轮未改代码，只记录裁决与实施路径）。**
+
 **已实施**（`dc56a57`）：**reclaim 也不 flush**。理由与"不 dismount"同源，
 而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
 **从不碰卷**（`direct_aim_adapter.cpp`），所以**驱动侧移除本来就不需要卷**——
