@@ -2959,3 +2959,61 @@ FAIL ...m5_production_execution_backend_tests.cpp:756: reclaimed.ok()
    这至少能一次性把 21001 这条线索关掉或推进。
 
 **T1-03 不得标 PASSED。****本轮净改动**：provisioning helper 的输出保留（**这一项无争议，属纯改进**）。
+
+#### 4.15.57 **真凶确认：`CreateFileW` 在"设备正在被退役"的窗口里会阻塞 11 秒；而 overlapped 治不了它**（part 77，本轮）
+
+**先按上一节的方法取到了干净的现场**（每次运行前删 trace、跑 `-Repeat 1`、跑完立刻取），
+**4 次运行全部失败，4 份 trace 各 42 行，且都停在同一步**：
+
+```
+enumerate_disk_candidates: SetupDiEnumDeviceInterfaces[1] took 0 ms
+enumerate_disk_candidates: SetupDiGetDeviceInterfaceDetailW took 0 ms
+enumerate_disk_candidates: opening the candidate
+wait_for_physical_drive: enumeration failed on turn 1 after 10011 ms (total 10011 ms) -- the bound fired
+remove_owned_device: remove_device
+remove_owned_device: polling the inventory
+remove_owned_device: device gone from the inventory
+remove_owned_device: rescanning the adapter
+remove_owned_device: waiting for the PhysicalDrive to retire
+enumerate_disk_candidates: CreateFileW took 11017 ms        ← **就是它**
+```
+
+⇒ **确认：阻塞点就是 `CreateFileW`（打开磁盘接口候选），实测 11017 ms。**
+**其它步骤（枚举、取细节、两个 IOCTL）全部 0–1 ms。**
+而且从交错顺序能看出**触发条件**：
+**这次打开发生在 `remove_owned_device` 正在"等 PhysicalDrive 退役"的同时**
+——即**在"设备正在被移除"的窗口里去打开它**。
+
+**（1）已尝试的修法：`FILE_FLAG_OVERLAPPED`——无效。**
+理由（照 part 36/41 对卷句柄的先例）：让等待可放弃。**实测否掉**：
+
+```
+enumerate_disk_candidates: CreateFileW took 1 ms          ← 正常那次
+wait_for_physical_drive: enumeration failed ... -- the bound fired
+enumerate_disk_candidates: CreateFileW took 11015 ms      ← 加了 overlapped 之后，仍然 11 秒
+```
+
+**（2）为什么无效（这是本轮的解释，不是猜测）**：
+**`FILE_FLAG_OVERLAPPED` 让"对句柄的 I/O"变成异步（可 `CancelIoEx`），
+但它不改变"创建句柄这件事本身"的同步性**——
+`CreateFileW` 的 IRP_MJ_CREATE **必须同步完成**才能返回句柄，
+所以**在设备栈不响应 create 的时候，任何 flag 都不能让调用者走开**。
+**这与卷句柄那两次（part 36/41）不同**：那里卡的是**对已打开句柄的 IOCTL**，
+overlapped + `CancelIoEx` 确实能取消；**这里卡的是 create 本身。**
+
+**（3）这次尝试的净结果**：`FILE_FLAG_OVERLAPPED` 这一行是**无害但无效**的，
+**本轮如实记录为"试过、不解决问题"**（不声称它是修法）。
+
+**（4）因此可行方向收窄为"不要在那个窗口里打开它"**：
+- **已知触发条件**：目标设备**正在被退役**（`remove_owned_device` 正在等它消失）；
+- **可选做法**：
+  1. **在拆卸路径上不要做这次枚举/打开**——但 part 72 已实测
+     **`find_recovered_volume` 确实需要盘号**，所以不能简单跳过；
+  2. **让"取盘号"不走"打开候选"这条路**（即 part 67 记录的设计缺口：
+     按 SCSI 地址直接构造设备路径，或扩展 AIM，**避开 `CreateFileW`**）；
+  3. **给 create 换一种可放弃的途径**（例如把打开放在**可终止的子进程**里，
+     或使用驱动侧查询）——但这比 2 更重。
+- **结论**：**方向 2（按身份而非枚举来定位）现在是唯一既符合设计、又绕开真实阻塞的路**，
+  且**它正是 part 67 早就记下的那个设计缺口**。
+
+**T1-03 不得标 PASSED。**
