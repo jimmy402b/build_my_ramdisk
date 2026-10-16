@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
+#include "src/common/diagnostic_trace.h"
 #include "src/run/runtime_adapter.h"
 
 #include "src/m3/m3_windows_acceptance.h"
@@ -463,6 +464,13 @@ Result<VolumeLockAttempt> ProductionRuntimeAdapter::lock(const ProductVolume& vo
 
 Result<void> ProductionRuntimeAdapter::dismount(const ProductVolume& volume,
                                                 std::optional<LockedVolume>& held) {
+    // **Which branch runs is traced, because the two fail for opposite reasons and the reading
+    // could not tell them apart.**  A dismantle that blocks through a lock this runtime already
+    // holds is one problem; one that blocks trying to *acquire* a lock is another, and the second
+    // has a budget of its own that a reading must be able to check.
+    myrd::diagnostic_trace(held.has_value()
+                               ? "dismount: through the retained lock"
+                               : "dismount: re-acquiring the lock");
     if (held.has_value()) {
         // The runtime already froze this volume, and that lock is the one to
         // dismantle through.  Re-acquiring would open the volume for exclusive

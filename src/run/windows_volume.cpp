@@ -888,8 +888,17 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
         // A short, fixed pause.  The window being waited out is the filesystem
         // releasing a handle that has already been closed, which is measured in
         // milliseconds; a backoff would only delay the answer.
+        //
+        // Traced, because a reclaim was measured blocking here for longer than this function's
+        // own budget and the two explanations are opposite: a burst of refusals that ends before
+        // the budget, or a loop that outlives it.  One line per iteration separates them, and the
+        // trace is off unless asked for.
+        myrd::diagnostic_trace("Win32VolumeAdapter::lock: open refused, retrying");
         Sleep(remaining() < 50 ? remaining() : 50);
     }
+    myrd::diagnostic_trace(handle == INVALID_HANDLE_VALUE
+                               ? "Win32VolumeAdapter::lock: gave up opening"
+                               : "Win32VolumeAdapter::lock: opened exclusively");
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY)
