@@ -1463,7 +1463,22 @@ worker 的 stderr 是 `op=flush msg=opening volume failed`，
 
 **T1-03 仍不得标 PASSED。**
 
-#### 4.15.25 **裁决 A 的延伸已实施**（part 44）
+#### 4.15.25 **裁决 A 的延伸已实施：reclaim 也不 flush**（part 44）
+
+**已实施**（`dc56a57`）：reclaim 模式**也跳过 flush**，理由与"不 dismount"同源，
+而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
+**从不碰卷**（`direct_aim_adapter.cpp`），所以**驱动侧移除本来就不需要卷**——
+而拆卸却**在它之前的 flush 上失败**，那个失败被 `record()` 记下后
+**挡住了唯一能真正清掉机器的步骤**。
+flush 的意义是"把**活着的** profile 的写落到盘上"；
+reclaim 不是关停一个 profile，而是**拿走一个 worker 已死的设备**，
+其内容不为任何人保留。**只在 reclaim 模式跳过**（create/recover 的 flush 正是"干净停止"的定义）。
+开发机：干净构建 0/0、**M4 10/11**（唯一失败是既有环境用例）。
+
+**当时的读数（请求 `47c342b6b0e8400cbd99c18b398fbbe5`）失败点未变**，
+我据此写下"残留仍占着位置"——**这个推断在 part 46 被读全 stdout 推翻**，见下节。
+
+#### 4.15.26 **`remove_owned_device` 四步全部走通**（part 45）
 
 **读数**（请求 `4371187ba7964c8db9933a78ebb79106`）——新加的四条打点**全部出现**，
 而且**同一段里完整跑了两遍**：
@@ -1506,7 +1521,64 @@ worker 的 stderr 也仍是 `op=flush msg=opening volume failed`。
 
 **T1-03 仍不得标 PASSED。**
 
-#### 4.15.26 **`remove_owned_device` 四步全部走通**（part 45）
+#### 4.15.27 **读全 stdout 之后：T1-03 的两条用例都通过了；失败的是 checkpoint 用例**（part 46，本轮）
+
+**本轮最重要的一件事，是读全 stdout 而不是只看 stderr 的第一行。** 读数（请求
+`4371187ba7964c8db9933a78ebb79106`，套件共 **18** 条，跑了 16 条）：
+
+```
+PASS m5_backend_launches_and_authenticates_a_real_worker
+PASS m5_backend_launch_places_the_worker_in_the_named_job
+PASS m5_backend_bundle_registration_persists_the_identity_it_just_read
+PASS m5_backend_a_killed_worker_leaves_no_process_mount_or_device      ← 含"自己 reclaim 掉残留"
+PASS m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created       ← **通过**
+PASS m5_backend_a_reopened_job_still_holds_its_workers
+PASS m5_backend_two_profiles_never_share_a_worker
+PASS m5_backend_refuses_a_launch_it_cannot_complete
+PASS m5_backend_attach_finds_nothing_and_says_so
+PASS m5_backend_adapter_reaches_the_worker_it_launched
+PASS m5_backend_creates_a_bundle_and_mounts_it_end_to_end
+PASS m5_backend_adapter_registers_the_bundle_it_creates
+PASS m5_backend_checkpoint_crosses_the_boundary_and_commits            ← **通过**
+PASS m5_backend_checkpoint_boundary_withdrawal_publishes_nothing       ← **通过**
+PASS m5_backend_stop_walks_quiesce_flush_commit_remove                 ← **通过**
+PASS m5_backend_confirmed_removal_without_a_removal_is_refused
+```
+
+**⇒ T1-03 的两条关键用例名称都在 PASS 列表里。**
+**`m5_backend_a_killed_worker_leaves_no_process_mount_or_device` 通过**，
+意味着它末尾那三条新断言**全部成立**：
+
+```cpp
+REQUIRE(reclaimed.ok());              // 残留的 reclaim 成功
+REQUIRE(wait_for_letter_release(letter));
+REQUIRE(!is_letter_assigned(letter));  // 盘符真的被清掉了
+```
+
+**这就是 part 12 那三个残留事实（进程 / 盘符 / AIM 盘）被逐条消灭的证据**——
+**T1-03 的验收目标在设备层面达成了**，只是**整个套件还因为别的用例而 0/1**。
+
+**必须更正我在 part 43/44 里写的一句话**：我写过
+"后来的那条用例仍然在它自己的 create 上失败，说明接管的那块残留仍然占着位置"。
+**这个推断不成立**：失败的那条是
+**`m5_backend_checkpoint_crosses_the_boundary_and_commits`（声明于 1263，guest 侧行号）**，
+它调 `require_created` 于 **1292**，
+而**在它之前跑过的 16 条（含两条 reclaim 用例）全部 PASS**。
+**所以"残留挡住下一步"是我的误读**——真正失败的是 **checkpoint 用例**，
+**在它之前有两条完整 create+mount+stop 的用例也都通过了**。
+
+**并且失败的行号"1235"解释清楚了**：那是 **`require_created` 这个 helper 内部那行 `REQUIRE`**
+（guest 侧 1226–1236），**不是调用点**——TestMain 报的是**断言行**。
+**我此前按本地文件行号去反查调用点，方向就错了**（guest 是 stage 过去的副本，行号与本地不同）。
+
+**当前该查的（与 T1-03 无关，但会让整个套件 0/1）**：
+`m5_backend_checkpoint_crosses_the_boundary_and_commits` 的 create 失败
+（`provision_new_volume` / 21001，PowerShell provisioning helper）。
+**它是否是本增量最近几轮改动引起的，尚未验证**——
+**下一轮第一件事就是把它与 HEAD 基线对比**（本项目既有的"先排除是不是自己干的"纪律），
+**这也是判定 T1-03 能否收尾的关键：若那是既有失败，T1-03 的验收其实已经成立。**
+
+**T1-03 仍不得标 PASSED（但已接近，且剩下的证据问题不在 reclaim 本身）。**
 
 **已实施**（`dc56a57`）：**reclaim 也不 flush**。理由与"不 dismount"同源，
 而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
