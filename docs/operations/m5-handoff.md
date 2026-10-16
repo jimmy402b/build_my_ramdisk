@@ -347,6 +347,27 @@ if (work.wait_for(timeout) != std::future_status::ready) { return timeout_error;
 那种情况要用 `CancelIoEx` 之类**真正取消**（本项目的 part 23/36/39 就是这么做的），
 **不是**丢下不管。
 
+### 7.0.8 **`dumpbin /directives` 对已链接的 exe 无效；要查 CRT/STL 链接请用 `/dependents`**（2026-10-16）
+
+**计划 §8 第 5 项原来建议**"`dumpbin /directives` 对比 `myrd_storage.lib` 与测试 exe 的 `/DEFAULTLIB`"。
+**实测：那条命令对 exe 不产出任何 `DEFAULTLIB`**——
+该开关面向 `.obj` / `.lib`，**不是已链接的映像**。
+**照它做会得到"exe 没有任何 DEFAULTLIB"这个无意义的结论**，
+很容易被误读成"链接配置缺失"。
+
+**正确做法**：**查 exe 用 `/dependents`**（看它实际绑定哪个 CRT/STL DLL），
+**查 lib 用 `/directives`**（看它要求链接什么）。
+
+**本项目的实际读数（2026-10-16，供以后对照）**：
+
+| 对象 | 命令 | 结果 |
+|---|---|---|
+| `myrd_storage.lib` | `/directives` | `msvcprt` / `MSVCRT` / `OLDNAMES` / `uuid.lib` ⇒ **动态 STL** |
+| 测试 exe | `/dependents` | `MSVCP140.dll` / `VCRUNTIME140.dll` ⇒ **动态** |
+| 全树 `*.lib` | `/directives` 扫 `LIBCMT`/`libcpmt` | **一个都没有** ⇒ **无静态 STL** |
+
+⇒ **本项目没有静态/动态 STL 混链**（§8 第 5 项据此关闭）。
+
 ### 7.0.7 **设计缺口：设计文档从未设计"如何找到那块物理盘"**（2026-10-16，**T1-03 的真正阻塞**）
 
 **若下一位接手 T1-03，先读这条，它比 trace 更重要。**

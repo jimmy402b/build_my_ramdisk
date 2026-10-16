@@ -778,8 +778,25 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    否则安装到别的路径就全错。
 4. **ABI 陷阱未根治**：项目没有可靠的头文件依赖跟踪，只靠"记得加 `--clean-first`"这条纪律。
    T4-04 的干净构建门是可接受的兜底，但**这条纪律要在 T4 期间写进构建脚本**（能自动就别靠记）。
-5. **`set_terminate` 处理器从未触发**：可能意味着静态/动态 STL 混链。
-   `dumpbin /directives` 对比 `myrd_storage.lib` 与测试 exe 的 `/DEFAULTLIB`，很便宜。
+5. **`set_terminate` 处理器从未触发** —— **本轮（part 62）已查，不是静态/动态 STL 混链，此项可关**。
+   计划里原来建议的命令是 `dumpbin /directives` 对比 `.lib` 与 exe 的 `/DEFAULTLIB`；
+   **实测发现那条命令对 exe 无效**（**它的 `/directives` 不产出任何 `DEFAULTLIB`**，
+   因为该开关面向 `.obj`/`.lib`，不是已链接的映像）。**正确的查法是 `/dependents`。**
+
+   **读数（干净且一致）**：
+   - `myrd_storage.lib` 的 `/DEFAULTLIB`：`msvcprt` / `MSVCRT` / `OLDNAMES` / `uuid.lib`
+     —— **动态 STL（`msvcprt`）**；
+   - 测试 exe 的 `/dependents`：**`MSVCP140.dll`、`VCRUNTIME140.dll`、`VCRUNTIME140_1.dll`**
+     —— **同样动态**；
+   - **全构建树的 `*.lib` 中没有任何一个引入 `LIBCMT` 或 `libcpmt`**（即静态 STL）；
+   - 抽查三个测试 exe **全部只依赖 `MSVCP140.dll`**。
+
+   ⇒ **没有静态/动态 STL 混链**，"从未触发"因此**不是**混链的症状，**第 5 项可以关掉**。
+   **剩下的解释是良性的**：测试进程**根本就没有走到 `std::terminate`**
+   （常见形状的测试跑在断言上，而断言走的是框架的失败路径，不是未处理异常/纯虚调用）。
+   若要把这条**坐实**，只需一个**故意触发 terminate 的用例**
+   （例如投掷一个逃出 `main` 的异常）并断言处理器确实被调用——
+   **这是"证明处理器接线正确"，而不是"解释它为何没响"**，故列为可选，不再作为 T4 前置。
 6. **`m5.production_execution_backend` 整套在客机上不稳定**（T1-03 收尾时发现，**与本增量无关**）。
    **`-Repeat 20` 已跑完**（请求 `dd250ebdffc24308ac8b862daaaec4be`，0/20，约 39 分钟），
    **但逐次看输出后，结论不是"20 次都失败"**：
