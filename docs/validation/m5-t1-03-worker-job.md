@@ -2031,7 +2031,71 @@ myrd-m5-worker: the worker's resources could not be released (op=flush msg=openi
 还是移除后卡在"等待 PhysicalDrive 消失"的那段有界轮询里（后者会返回超时错误）。
 **这是本轮之后唯一还没被排除的可能。**
 
-**T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**T1-03 仍不得标 PASSED。**
+
+### 4.16 强杀验收的边界（写清楚，避免误读）
+
+**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
+
+#### 4.15.39 **按迭代分离 trace 抓住了现场：卡在 `wait_for_present_physical_drive`，而超时打不响**（part 56，本轮）
+
+**这一次按上一节定下的方法做**：先删掉客机上**所有**陈旧 trace，再跑，
+**并在运行中**（而不是跑完）用 `scp` 取一次。结果**当场抓到一个正在挂住的 worker**：
+
+```
+19:32:01.434Z M3AimRuntime::start: look for an existing device
+19:32:01.436Z M3AimRuntime::start: ADOPTING the existing device
+19:32:01.436Z M3AimRuntime::start: query device
+19:32:01.438Z M3AimRuntime::start: wait for physical drive     ← 就停在这里
+```
+
+**同时读到该 worker 的进程状态**：`pid 580`、**CPU 0.23 s**、启动于 `03:32:01`，
+到 `03:33:25` **已 84 秒无进展**——**又是"阻塞在系统调用"的形态**。
+
+**为什么它有 30 秒预算却不生效**（本轮关键，有代码依据）：
+`wait_for_created_physical_drive` 的循环形如
+
+```cpp
+while (std::chrono::steady_clock::now() < deadline) {
+    auto cand = enumerate_disk_candidates();   // ← 这里没有任何界
+```
+
+**deadline 只在进入循环体之前检查一次**，
+而 **`enumerate_disk_candidates()` 内部全是同步、无界的 PnP 与 IOCTL 调用**
+（`SetupDiGetClassDevsW` / `SetupDiEnumDeviceInterfaces` /
+`DeviceIoControl(IOCTL_SCSI_GET_ADDRESS)` / `IOCTL_STORAGE_GET_DEVICE_NUMBER`）。
+⇒ **只要其中任何一次不返回，那个 30 秒预算就永远不会被重新检查**——
+**预算管的是"循环转几圈"，管不住"单圈要多久"。**
+
+**这把前两轮的矛盾解释清楚了**：
+
+- part 53 定位到 `SetupDiGetClassDevsW` **且它确实无界**——但那不是全部；
+- part 55 我删掉了**启动 baseline 的那一次**枚举，**预测失败是对的**：
+  **同一个枚举还在等待循环里**，而等待循环**每次 worker 启动都会跑**；
+- 所以 4107 一直在，**只是位置始终在同一个函数里**；
+  我第一次读到的 trace 是**跨迭代累积**的，第二次按迭代分离才看清。
+
+**根因陈述（比之前精确）**：**`enumerate_disk_candidates` 本身无界，
+而它在等待循环内被反复调用；预算是"循环级"的，管不住"单次调用级"的阻塞。**
+**两个缺陷叠加**才产生那个间歇的 4107：
+机器上磁盘接口越多/越坏，单次枚举越慢，最终某一次不返回。
+
+**修法方向（与裁决 A 同源，但更深一层）**：
+**不要靠"枚举机器上的盘"来找我们自己的盘**——
+**那块盘是 AIM 驱动按我们的设备创建的，驱动知道它对应哪个 `PhysicalDrive`。**
+`DiskInfo` 已有 `size_bytes` / `sector_size` / `native_object_path`；
+**若能把"这个设备对应的盘号"从驱动问出来**（`QUERY_DEVICE` 扩展，
+或用 `created` 的 SCSI 地址直接拼出设备路径去打开），
+**等待循环就完全不需要 `enumerate_disk_candidates`**，
+**这个无界调用在启动路径上就消失了**——与"不取 baseline"同一方向，
+只是**这次要连等待循环里的那次也去掉**。
+
+**这是设计取舍（要不要扩展 AIM 的查询能力），故记下来请示，不自行发明。**
+**另有一件应同时做的**：**给 `enumerate_disk_candidates` 的每次调用本身加界**
+（它既无 overlapped 形式也不可放弃），
+**否则任何一处遗留的枚举仍能把整个 worker 挂死。**
+
+**T1-03 仍不得标 PASSED。**
