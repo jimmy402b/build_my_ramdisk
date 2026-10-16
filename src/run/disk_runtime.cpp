@@ -445,7 +445,24 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
             return first_error;
         }
         if (!volume_dismounted_) {
-            if (!operations_.dismount_volume) {
+            // **A reclaim does not dismount, because it cannot and does not need to.**
+            //
+            // Dismantling a volume requires taking it exclusively, and that is exactly what a
+            // killed worker's leftover handle prevents -- measured: `FSCTL_LOCK_VOLUME` never
+            // returned while the residue held the volume.  Waiting there also cannot be abandoned,
+            // because the volume manager appears to implement that control synchronously.
+            //
+            // A reclaim does not need the lock, because it is not detaching the volume for reuse:
+            // the device that backs it is removed immediately afterwards, which takes the volume
+            // with it.  So the step is skipped rather than attempted-and-abandoned, and the
+            // cleanup that follows is what actually clears the machine.
+            //
+            // Only for `reclaim`.  A create or a recovery dismantles a volume it owns with no
+            // competing handle, and skipping the dismount there would leave the volume mounted --
+            // which is a different bug entirely, so the mode is checked rather than assumed.
+            if (mode_ == DiskRuntimeMode::reclaim) {
+                volume_dismounted_ = true;
+            } else if (!operations_.dismount_volume) {
                 record(missing_void(L"dismount_volume"));
             } else {
                 // The retained freeze travels down rather than being
