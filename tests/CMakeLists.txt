@@ -745,9 +745,14 @@ add_executable(myrd_m5_startup_sweep_tests
     integration/m5_startup_sweep_tests.cpp
 )
 target_link_libraries(myrd_m5_startup_sweep_tests PRIVATE
-    myrd_test_support myrd_management myrd_service)
+    myrd_test_support myrd_management myrd_service myrd_m4_run)
 target_include_directories(myrd_m5_startup_sweep_tests PRIVATE
     "${CMAKE_SOURCE_DIR}")
+# The same relpath and worker dependency the backend suite carries, because this
+# executable includes that suite's fixtures and therefore launches the same worker.
+target_compile_definitions(myrd_m5_startup_sweep_tests PRIVATE
+    "MYRD_M5_WORKER_RELPATH=\"../../src/$<CONFIG>/myrd-m5-worker.exe\"")
+add_dependencies(myrd_m5_startup_sweep_tests myrd-m5-worker)
 myrd_enable_warnings(myrd_m5_startup_sweep_tests)
 add_test(NAME m5.startup_sweep
     COMMAND myrd_m5_startup_sweep_tests)
