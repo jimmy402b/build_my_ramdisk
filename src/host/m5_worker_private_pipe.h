@@ -45,6 +45,18 @@ namespace myrd::m5 {
 enum class WorkerVolumeMode : std::uint8_t {
     adopt_existing = 0,
     provision_new,
+    // Adopt an **already-mounted** volume and tear it down, assigning nothing.
+    //
+    // It is appended rather than inserted, and that is not tidiness: the value is on the
+    // wire, so inserting one would silently reinterpret `provision_new` for every peer
+    // that speaks the older encoding.
+    //
+    // It exists as a third mode rather than a flag on `adopt_existing` because the two
+    // are opposites in what they do to the machine: `adopt_existing` brings a volume into
+    // service, this one takes a leftover out of it, and the whole reason this mode is
+    // needed is that the second must not assign a drive letter.  A launch that carried
+    // the wrong one would mount where it was asked to dismantle.
+    reclaim_existing,
 };
 
 // Everything one worker needs to know, delivered once through the inherited

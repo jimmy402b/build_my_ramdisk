@@ -191,14 +191,20 @@ Result<void> DiskWorkerRuntime::start() {
     options.bundle = impl.config.bundle;
     options.virtual_bytes = impl.config.virtual_bytes;
     options.drive_letter = impl.config.drive_letter;
-    // Which of the two lifecycles this worker runs, decided by the launch and
-    // not by what it finds: `DiskRuntime` independently requires the bundle's
-    // own kind to match the mode (empty for a create, manifest for an adopt), so
-    // a mode that disagrees with reality fails closed inside the runtime rather
-    // than picking the other path.
-    auto runtime = provision_new
+    // Which lifecycle this worker runs, chosen by the launch and not by what it finds:
+    // `DiskRuntime` independently requires the bundle's own kind to match the mode, so a
+    // mode that disagrees with reality fails closed inside the runtime rather than
+    // silently taking the other path.
+    //
+    // `reclaim_existing` is the third option, and it maps to `DiskRuntime::reclaim` --
+    // which shares the attach-only find with `recover` and differs in the one way that
+    // matters here: it assigns no drive letter, because the leftover already holds the
+    // one being requested.
+    auto runtime = impl.config.volume_mode == WorkerVolumeMode::provision_new
         ? DiskRuntime::create(options, operations.move_value())
-        : DiskRuntime::recover(options, operations.move_value());
+        : (impl.config.volume_mode == WorkerVolumeMode::reclaim_existing
+               ? DiskRuntime::reclaim(options, operations.move_value())
+               : DiskRuntime::recover(options, operations.move_value()));
     if (!runtime.ok()) return Result<void>::failure(runtime.error());
     impl.runtime = runtime.move_value();
 

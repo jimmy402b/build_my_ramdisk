@@ -268,6 +268,41 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
+    case WorkerCommand::reclaim_leftover: {
+        // The runtime this command runs against was launched in `reclaim_existing` mode,
+        // so starting it already adopted the leftover's volume **without assigning a
+        // drive letter**.  What remains is the teardown, and it is the *same* teardown
+        // every other path uses -- `cleanup` runs `DiskRuntime::shutdown_clean`, which
+        // removes the drive letter, dismounts and stops AIM.
+        //
+        // So this command does not duplicate `cleanup`; it differs in what it requires.
+        // `cleanup` is idempotent housekeeping that a session may run at any point, and a
+        // reclaim that never started holds nothing to dismantle -- so a loop reported as
+        // a leftover's teardown must refuse here rather than answer success, which is the
+        // one outcome that would let a still-mounted residue be recorded as cleared.
+        if (!started_) {
+            reply.error = refusal(L"reclaim_leftover",
+                                  L"the runtime has not been started");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto dismantled = runtime_.cleanup();
+        if (!dismantled.ok()) {
+            reply.error = dismantled.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        cleaned_up_ = true;
+        // The answer is an observation rather than a bare success, for the same reason
+        // `release_write_freeze` answers with one: the caller has to be able to see that
+        // the volume is gone, and "the call returned" is not that fact.
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = status.move_value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
     case WorkerCommand::checkpoint_prepare: {
         if (!started_) {
             reply.error =

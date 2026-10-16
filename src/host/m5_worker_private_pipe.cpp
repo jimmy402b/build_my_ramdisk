@@ -230,7 +230,7 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     if (reader.boolean()) spec.image_id = reader.image_uuid();
     const auto volume_mode = reader.u8();
     if (volume_mode
-        > static_cast<std::uint8_t>(WorkerVolumeMode::provision_new)) {
+        > static_cast<std::uint8_t>(WorkerVolumeMode::reclaim_existing)) {
         // An unrecognised mode is refused rather than defaulted.  Coercing it
         // would run one of the two lifecycles -- and which one is the question
         // this field exists to answer, so guessing is the one thing it must not
@@ -285,7 +285,8 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     // decoder's own check is the mirror for a peer that disagrees, not the
     // only place this is enforced.
     if (spec.volume_mode != WorkerVolumeMode::adopt_existing &&
-        spec.volume_mode != WorkerVolumeMode::provision_new) {
+        spec.volume_mode != WorkerVolumeMode::provision_new &&
+        spec.volume_mode != WorkerVolumeMode::reclaim_existing) {
         return Result<std::vector<std::byte>>::failure(pipe_error(
             static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
             L"encode_launch_spec",
