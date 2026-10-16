@@ -357,6 +357,21 @@ private:
     };
 
     [[nodiscard]] OperationContext context() const;
+    // The deadline a leftover reclaim is given, which is **not** `context()`.
+    //
+    // A reclaim has to adopt a whole volume before it can dismantle one: the worker runs M3
+    // recovery, finds the extent, attaches it and verifies its geometry -- and with a real
+    // volume that is tens of seconds of work, while `context()`'s default is the same bound
+    // an ordinary command gets.  The first guest reading failed exactly here, as
+    // `WorkerPipeChannel::read ... pipe transfer exceeded its bounded wait`: a **transport
+    // timeout that looked like a reclaim defect**.
+    //
+    // Taking the session's maximum is right rather than generous, because of *when* this
+    // runs: a reclaim happens at startup, for a profile nothing is waiting on, and a
+    // drive letter left behind is worse than a slow boot.  A path a user is blocked on must
+    // not borrow this bound, which is why it is a separate function rather than a change to
+    // `context()`.
+    [[nodiscard]] OperationContext reclaim_context() const;
     [[nodiscard]] ServiceWorkerSession* find_session(
         const product::Uuid& profile_id) noexcept;
     // The session for this profile, adopting an existing worker when none is

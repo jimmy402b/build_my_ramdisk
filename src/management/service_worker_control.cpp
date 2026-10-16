@@ -187,6 +187,18 @@ OperationContext ServiceWorkerControl::context() const {
     return value;
 }
 
+OperationContext ServiceWorkerControl::reclaim_context() const {
+    OperationContext value{};
+    // The longer of the configured command budget and the session's own maximum, so a
+    // service configured with a large budget is not silently narrowed here, and one
+    // configured with a small budget still gets a bound that a real volume can meet.
+    const auto budget = std::max<std::uint64_t>(
+        control_timeout_ms_, kMaximumWorkerCommandTimeoutMs);
+    value.deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(budget);
+    return value;
+}
+
 bool ServiceWorkerControl::begins_noncancellable(const ActionKind) const noexcept {
     // Deliberately nothing.  Every mutation this adapter performs is either
     // already forced noncancellable by ServiceCore's own stop-removal-boundary
@@ -1041,7 +1053,7 @@ Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover(
     // have this method mount the very volume it was called to dismantle.
     launch_request.value().volume_mode = m5::WorkerVolumeMode::reclaim_existing;
 
-    auto launched = sessions_.launch(launch_request.value(), context());
+    auto launched = sessions_.launch(launch_request.value(), reclaim_context());
     if (!launched.ok()) {
         return Result<WorkerActionResult>::failure(launched.error());
     }
@@ -1052,12 +1064,16 @@ Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover(
     // and attaches without assigning anything.  A failure here is reported rather than
     // retried, because a volume that cannot be attached is one this service may not have
     // owned in the first place.
-    const auto adopted = session->start(context(), request.operation_id);
+    //
+    // Both commands take the reclaim budget rather than the ordinary one, because the
+    // adoption is the expensive part and it happens inside this pair.
+    const auto adopted = session->start(reclaim_context(), request.operation_id);
     if (!adopted.ok()) {
         return Result<WorkerActionResult>::failure(adopted.error());
     }
     // The teardown, which is the same call every other path uses.
-    const auto reclaimed = session->reclaim_leftover(context(), request.operation_id);
+    const auto reclaimed =
+        session->reclaim_leftover(reclaim_context(), request.operation_id);
     if (!reclaimed.ok()) {
         return Result<WorkerActionResult>::failure(reclaimed.error());
     }

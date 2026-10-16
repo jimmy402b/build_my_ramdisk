@@ -776,8 +776,7 @@ TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
             std::nullopt,
             profile,
             std::nullopt};
-        const auto reclaimed = control.reclaim_leftover(reclaim);
-        if (!reclaimed.ok()) {
+        const auto reclaimed = control.reclaim_leftover(reclaim);        if (!reclaimed.ok()) {
             // Reported rather than only asserted, because this case failed twice with a bare
             // `reclaimed.ok()` and no way to see which layer refused -- which cost a full
             // guest cycle each time.  The message is the whole diagnosis: an adopt failure, a
