@@ -916,7 +916,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–24。全部实现 ✅，端到端验收 **⚠ 0/1**。步骤 trace 已确定卡在 `start_aim`（前两步 2 ms / 96 ms 成功 ⇒ **M3 恢复无责**）。**裁决 A 已实施**（`transact` → overlapped + `CancelIoEx`，移除了一个真实的无限阻塞；33 套 M3/driver 绿），**但 `start_aim` 仍卡且 trace 不变** ⇒ 阻塞点在 `create_proxy_disk` **之前**（provider open/start、adapter 发现、baseline 快照之一）。**下一步：把 trace 提升到 common 层，给 `M3AimRuntime::start()` 逐子步骤打点**。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
+| T1-03 | **IN_PROGRESS（接近完成）** | part 1–46。**全部实现 ✅**，且**两条关键用例在客机读数里都在 PASS 列表内**（请求 `4371187ba7964c8db9933a78ebb79106`，16/18 条 PASS）：`m5_backend_a_killed_worker_leaves_no_process_mount_or_device`（断言残留存在 → **自己 reclaim 掉** → 盘符释放）与 `m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created`。**part 12 的三个残留事实（进程/盘符/AIM 盘）逐条被消灭，A'（驱动侧移除）已被实测证明可行**。**剩余：同一套件里 `m5_backend_checkpoint_crosses_the_boundary_and_commits` 在自己的 create 上失败（`provision_new_volume` 21001），导致整个套件 0/1；尚未验证它是否是既有失败**——若是，T1-03 的验收即成立。**未验证前不得标 PASSED。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
