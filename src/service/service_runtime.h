@@ -138,7 +138,15 @@ private:
     // The resource half of the sweep: the durable identities, and the reclaimer that
     // currently reports it cannot act.  Declared before the sweep that borrows both.
     std::optional<service::ProfileResourceIdentities> resource_identities_;
-    service::DeferredResourceReclaimer resource_reclaimer_{};
+    // The reclaimer is now the real one, so a *proven* leftover is dismantled rather than
+    // only reported.  `DeferredResourceReclaimer` is kept as the honest option for a service
+    // composed without a worker adapter; it is still the type a test uses to exercise the
+    // "cannot reclaim" branch, which has to keep working because it is the branch an
+    // operator sees whenever reclamation is unavailable.
+    //
+    // It borrows the registrations and the worker, and is emplaced in that order because
+    // both must outlive it.
+    std::optional<service::LeftoverReclaimer> resource_reclaimer_;
     std::optional<service::ProductionStartupSweep> startup_sweep_;
     StderrServiceLogger logger_{};
     SystemIdGenerator ids_{};

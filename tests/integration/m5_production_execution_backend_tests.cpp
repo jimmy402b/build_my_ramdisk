@@ -693,6 +693,92 @@ TEST_CASE(m5_backend_a_killed_worker_leaves_no_process_mount_or_device) {
     REQUIRE(is_letter_assigned(letter));
 }
 
+TEST_CASE(m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created) {
+    // **T1-03's acceptance, end to end.**  A worker is killed while it holds a real,
+    // provisioned volume, and then a reclaim has to take that residue away: no process, no
+    // drive letter, no mounted volume.
+    //
+    // The case above this one stops at *measuring* the residue and asserts it is present,
+    // deliberately, so that implementing the reclaim would turn it red.  This is the case
+    // that does the reclaiming, and it is separate because the residue has to survive the
+    // scope that created it: a reclaim that reused the dead worker's session would be
+    // dismantling through the very session the kill invalidated, which is not the situation
+    // a crash leaves behind.
+    REQUIRE(wait_for_no_worker_process());
+    TempBundle bundle(L"reclaim-after-kill");
+    const wchar_t letter = free_drive_letter();
+    REQUIRE(!is_letter_assigned(letter));
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto image_id = uuid("6b6b6b6b-7c7c-8d8d-9e9e-afafafafafaf");
+    const auto profile_id = uuid("11111111-2222-3333-4444-555555555555");
+    const auto operation = uuid("66666666-7777-8888-9999-bbbbbbbbbbbb");
+
+    // Phase one: a real create, then a kill, then the scope drops the dead session.  This
+    // mirrors the case above so that the residue under test is produced the same way.
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+        WorkerActionRequest request{
+            operation,
+            operation,
+            profile_id,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        const auto created = control.execute(request);
+        REQUIRE(created.ok());
+        REQUIRE(is_letter_assigned(letter));
+
+        const std::uint32_t worker_pid =
+            *job.source().launched_process_ids().begin();
+        HANDLE victim = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE,
+                                    worker_pid);
+        REQUIRE(victim != nullptr);
+        REQUIRE(TerminateProcess(victim, 1) != FALSE);
+        REQUIRE_EQ(WaitForSingleObject(victim, 30'000), WAIT_OBJECT_0);
+        static_cast<void>(CloseHandle(victim));
+    }
+    REQUIRE(wait_for_no_worker_process());
+    // The residue this case is about, asserted before the reclaim so a case that quietly
+    // had nothing to reclaim cannot pass by doing nothing.
+    REQUIRE(is_letter_assigned(letter));
+
+    // Phase two: the reclaim, from a fresh control and a fresh job -- which is what a
+    // service restart leaves behind.
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+
+        // The durable record is the input, and its `ready` lifecycle is what makes the
+        // translation ask for `adopt_existing` -- the mode the reclaim then overrides.
+        // A create-shaped record would have asked for `provision_new` and the override is
+        // precisely what stops this from provisioning a second volume.
+        auto profile = profile_record(profile_id, image_id, bundle.root.wstring(),
+                                      mount_target);
+        WorkerActionRequest reclaim{
+            operation,
+            operation,
+            profile_id,
+            ManagementCommand::stop,
+            ActionKind::reclaim_leftover,
+            std::nullopt,
+            profile,
+            std::nullopt};
+        const auto reclaimed = control.reclaim_leftover(reclaim);
+        REQUIRE(reclaimed.ok());
+    }
+
+    // **The acceptance itself.**  The letter is gone and no worker outlived the reclaim --
+    // which is the whole of what the residue was, in the two facts an operator can see.
+    REQUIRE(wait_for_letter_release(letter));
+    REQUIRE(!is_letter_assigned(letter));
+    REQUIRE(wait_for_no_worker_process());
+}
+
 TEST_CASE(m5_backend_a_reopened_job_still_holds_its_workers) {
     // The design's core premise for the startup sweep, tested directly: a worker
     // launched into the named job is still *in* that job when a second handle

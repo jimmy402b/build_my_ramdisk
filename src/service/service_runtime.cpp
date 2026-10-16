@@ -173,11 +173,15 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
                 == product::RuntimeState::running;
         });
     runtime->resource_identities_.emplace(*runtime->registrations_);
+    // The real reclaimer, composed after the two things it borrows.  It re-reads the
+    // *same* registration store the sweep proved the identity from, which is what makes the
+    // reclaim act on the profile as it is now rather than on the sweep's older reading of it.
+    runtime->resource_reclaimer_.emplace(*runtime->registrations_, *runtime->worker_);
     runtime->startup_sweep_.emplace(*runtime->processes_,
                                     *runtime->expected_bindings_,
                                     management::WorkerSweepOptions{},
                                     &*runtime->resource_identities_,
-                                    &runtime->resource_reclaimer_);
+                                    &*runtime->resource_reclaimer_);
 
     // The core borrows every store above, so it is emplaced after them; the
     // scheduler borrows the core, so it is emplaced after that.
