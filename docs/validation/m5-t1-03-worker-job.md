@@ -1463,7 +1463,50 @@ worker 的 stderr 是 `op=flush msg=opening volume failed`，
 
 **T1-03 仍不得标 PASSED。**
 
-#### 4.15.25 **裁决 A 的延伸已实施，但读数显示残留仍未清掉**（part 44，本轮）
+#### 4.15.26 **`remove_owned_device` 四步全部走通**（part 45，本轮）
+
+**读数**（请求 `4371187ba7964c8db9933a78ebb79106`）——新加的四条打点**全部出现**，
+而且**同一段里完整跑了两遍**：
+
+```
+17:54:49.587Z remove_owned_device: remove_device
+17:54:49.590Z remove_owned_device: polling the inventory
+17:54:49.604Z remove_owned_device: device gone from the inventory   ← kRemoveDevice 确实移除了它
+17:54:49.609Z remove_owned_device: rescanning the adapter
+17:54:49.616Z remove_owned_device: PhysicalDrive retired
+17:54:49.625Z remove_owned_device: remove_device                    ← 又开始第二遍
+```
+
+**结论（这一条是明确的进展，且是正面的）**：
+
+- `kRemoveDevice` **确实移除了设备**（`device gone from the inventory`）；
+- 随后的 **adapter rescan 也完成**、**PhysicalDrive 也 retired**；
+- **四步全部返回成功**，**没有超时、没有被拒绝**。
+
+⇒ **裁决 A 的完整链条（接管 → 不 flush → 不 dismount → 驱动侧移除）在设备层面是通的**：
+**"从驱动侧移除设备"这条设计路径被实测证明可行**，
+而 section 4.15.24 里那个"`remove_device` 是否需要卷"的疑问
+**已被代码与实测一起回答：不需要。**
+
+**但测试仍然失败，且失败点没变**（`:1235`，那条用例自己的 `provision_new_volume` 21001），
+worker 的 stderr 也仍是 `op=flush msg=opening volume failed`。
+**因此必须区分两件事**：
+
+| 主张 | 状态 |
+|---|---|
+| reclaim 的拆卸链路（含驱动侧移除）**能走通** | **✅ 本轮实测** |
+| **残留被彻底清掉、后续用例不受影响** | **❌ 仍未成立** |
+
+**下一轮要查的就是这中间的那一段**：设备已移除、盘已 retired，
+**但机器上似乎仍留着能挡住 `provision_new_volume` 的东西**
+（part 12 量到残留有三个事实：进程、盘符、AIM 盘；本轮证明了**AIM 设备**那条已通，
+所以嫌疑落在**盘符/卷**那一条）。**下一次读数应在 reclaim 之后立即查
+`disks` / `letters` / `Get-Volume`**，而不是只看 trace——
+**这比再加打点更直接**。
+
+**T1-03 仍不得标 PASSED。**
+
+#### 4.15.25 **裁决 A 的延伸已实施，但读数显示残留仍未清掉**（part 44）
 
 **已实施**（`dc56a57`）：**reclaim 也不 flush**。理由与"不 dismount"同源，
 而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
