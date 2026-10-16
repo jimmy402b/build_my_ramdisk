@@ -96,6 +96,15 @@ private:
 
     Result<void> remove_owned_device();
     Result<void> stop_provider();
+    // The device this provider's bundle is already backed by, if the driver still holds one.
+    //
+    // Exists for the reclaim path: a killed worker leaves its proxy disk behind, and adopting
+    // that device lets the reclaimer avoid creating a second one and re-enumerating the
+    // adapter -- a PnP call with no timeout, which is what used to block forever.  Matched on
+    // size, sector size and backing file, so a device belonging to another profile is never
+    // taken over.
+    Result<std::optional<aim::DeviceId>> find_existing_device(
+        const aim::ProxyDiskSpec& spec);
 
     M3AimProviderFactoryConfig config_;
     std::chrono::milliseconds device_timeout_;

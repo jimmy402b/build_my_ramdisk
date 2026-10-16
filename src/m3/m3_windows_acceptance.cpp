@@ -137,6 +137,32 @@ Result<std::unique_ptr<M3AimRuntime>> M3AimRuntime::create(
             std::move(config), device_timeout)));
 }
 
+Result<std::optional<aim::DeviceId>> M3AimRuntime::find_existing_device(
+    const aim::ProxyDiskSpec& spec) {
+    // The driver's own list, queried device by device, and matched on **all three** of the
+    // facts that identify a proxy disk: its size, its sector size and the file behind it.  A
+    // partial match would be worse than none -- adopting a device that belongs to another
+    // profile is the one way this path could cause harm rather than prevent it.
+    //
+    // A device that cannot be queried is skipped rather than failing the search: a broken or
+    // foreign entry in the list is not this runtime's problem, and refusing to start because
+    // of one would turn an unrelated defect into a reclaim failure.
+    auto listed = adapter_->list_devices();
+    if (!listed) return Result<std::optional<aim::DeviceId>>::failure(listed.error());
+
+    for (const auto id : listed.value()) {
+        auto queried = adapter_->query_device(id);
+        if (!queried) continue;
+        if (queried.value().size_bytes == spec.size_bytes &&
+            queried.value().sector_size == spec.sector_size &&
+            queried.value().native_object_path == spec.native_object_path) {
+            return Result<std::optional<aim::DeviceId>>::success(
+                std::optional<aim::DeviceId>(id));
+        }
+    }
+    return Result<std::optional<aim::DeviceId>>::success(std::nullopt);
+}
+
 Result<void> M3AimRuntime::start() {
     if (started_) {
         return Result<void>::failure({
@@ -195,27 +221,58 @@ Result<void> M3AimRuntime::start() {
         geometry.virtual_bytes,
         geometry.logical_sector_size,
         names.driver_path};
-    diagnostic_trace("M3AimRuntime::start: create proxy disk");
-    auto created = adapter_->create_proxy_disk(spec);
-    if (!created) {
+    // **Attach if the disk is already there, and that is a fix rather than an optimization.**
+    //
+    // The whole premise of adopting a leftover is that a *killed* worker's proxy disk is still
+    // present.  Creating a second one for that disk and then re-enumerating the adapter was the
+    // path that never returned: `CM_Reenumerate_DevNode` is a synchronous PnP re-enumeration
+    // with no timeout, so it blocked past every deadline above it.
+    //
+    // Asking the driver what it already holds is the safe way to decide, because the reply is
+    // the driver's own statement and it is checked against the same identity the create path
+    // checks afterwards.  A device that does not match this provider's geometry and backing
+    // file is not adopted -- so a leftover of some *other* profile cannot be taken over by
+    // accident, which is the one way this could do harm.
+    diagnostic_trace("M3AimRuntime::start: look for an existing device");
+    auto existing = find_existing_device(spec);
+    if (!existing.ok()) {
         (void)stop_provider();
-        return Result<void>::failure(created.error());
+        return Result<void>::failure(existing.error());
     }
-    if (created.value().value == aim::kAllDevices ||
-        created.value().value == aim::kAutoDeviceNumber) {
-        (void)stop_provider();
-        return Result<void>::failure({
-            ErrorDomain::evidence, 0, L"M3AimRuntime::start",
-            L"driver returned an unsafe sentinel DeviceId"});
-    }
-    owned_device_ = created.value();
 
-    diagnostic_trace("M3AimRuntime::start: rescan adapter");
-    auto rescanned = aim::rescan_aim_adapter(adapter_handle_->dev_inst);
-    if (!rescanned) {
-        (void)remove_owned_device();
-        (void)stop_provider();
-        return rescanned;
+    const bool adopting_existing = existing.value().has_value();
+    if (adopting_existing) {
+        // Taken ownership *before* anything else can fail, so the failure paths below remove
+        // exactly the device this runtime decided it owns -- the same rule the create path
+        // follows, and the reason `owned_device_` is assigned here rather than after validation.
+        diagnostic_trace("M3AimRuntime::start: ADOPTING the existing device");
+        owned_device_ = *existing.value();
+    } else {
+        diagnostic_trace("M3AimRuntime::start: create proxy disk");
+        auto created = adapter_->create_proxy_disk(spec);
+        if (!created) {
+            (void)stop_provider();
+            return Result<void>::failure(created.error());
+        }
+        if (created.value().value == aim::kAllDevices ||
+            created.value().value == aim::kAutoDeviceNumber) {
+            (void)stop_provider();
+            return Result<void>::failure({
+                ErrorDomain::evidence, 0, L"M3AimRuntime::start",
+                L"driver returned an unsafe sentinel DeviceId"});
+        }
+        owned_device_ = created.value();
+
+        // Only a device this call created needs the adapter re-enumerated; one that was
+        // already enumerated is, by definition, already visible.  Skipping it here is the
+        // point of the attach path.
+        diagnostic_trace("M3AimRuntime::start: rescan adapter");
+        auto rescanned = aim::rescan_aim_adapter(adapter_handle_->dev_inst);
+        if (!rescanned) {
+            (void)remove_owned_device();
+            (void)stop_provider();
+            return rescanned;
+        }
     }
     diagnostic_trace("M3AimRuntime::start: query device");
     auto queried = adapter_->query_device(*owned_device_);
