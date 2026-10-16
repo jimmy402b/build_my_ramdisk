@@ -276,8 +276,21 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 | 1 | 协议动词 `reclaim_leftover = 16` | **✅ part 13**（协议套件 39/39） |
 | 2a | `DiskRuntimeMode::reclaim` + `DiskRuntime::reclaim` + **不分配盘符** | **✅ part 14** |
 | 2b | worker 侧：`WorkerVolumeMode::reclaim_existing`（**追加**，wire 值）+ `reclaim_leftover` 处理器 | **✅ part 15** |
-| 3 | 服务侧：`ActionKind` + `IResourceReclaimer` 实现 | 待做 |
+| 3a | 服务侧驾驶：`ActionKind::reclaim_leftover` + `ServiceWorkerControl::reclaim_leftover`（**覆盖 launch 模式为 `reclaim_existing`**）+ session client | **✅ part 16** |
+| 3b | `IResourceReclaimer` 的生产实现 | 待做 |
 | 4 | `ServiceRuntime` 接线（换掉 `DeferredResourceReclaimer`） | 待做 |
+
+**part 16 的两个关键点**：
+
+- **模式覆盖就是那个方法的全部意义**：launch 翻译按 profile lifecycle 选
+  `provision_new`/`adopt_existing`，而**这两个都是把卷带入服务**；reclaim 要把它**带出服务**。
+  不覆盖就会**挂载它被叫来拆卸的那个卷**；
+- **又抓到一次同形状的失败（第四次）**：dispatch `switch` 末尾是
+  `default: return unrealized(request)`，我新加的 action kind **会落进 default**，
+  被报成"没有 worker 做过这件事"，而**残留永远不会被拆**——**静默地**，
+  且**所有不针对它的测试照旧全绿**。现在它有显式 case。
+  前三次：`terminate_process` 少要权限、拆卸挂在 `drive_letter_assigned_`、
+  reclaim 动词缺 `started_` 前置。
 
 **part 15 的关键点**：`reclaim_leftover` 跑的是**和别的路径同一个拆卸**
 （`cleanup` → `DiskRuntime::shutdown_clean`：删盘符 / 拆卸 / 停 AIM）。
