@@ -803,6 +803,25 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    **当迭代之间的环境本身在退化时，`x of N passed` 会被"后面的迭代根本没跑到"污染**，
    **必须逐次看"走到了哪一条用例"**，而不是只看汇总数。
    **本套件即为例证**：汇总读数是 0/20，而其中 18 次是"无信息"、2 次显示 T1-03 全部通过。
+
+8. **`enumerate_disk_candidates()` 无界，且被 M1/M2/POC/M3 共用**（T1-03 收尾时查明，**项目级**）：
+   它是同步、无 overlapped 形式、不可取消的 SetupAPI + IOCTL 序列，
+   **实测在客机上挂死 80+ 秒**。调用点包括
+   `snapshot_physical_drive_numbers`（`src/m1/main.cpp`、`src/poc/main.cpp`、
+   **`src/m2/m2_windows_acceptance.cpp` 五处**）以及本文件内的等待循环。
+   ⇒ **"枚举会卡住"不是 M3 的问题，M2 的 Windows 验收同样会中招。**
+
+   **统一修法（唯一一处，已实测有效）**：**把界下沉到 `enumerate_disk_candidates()` 本身**
+   （part 58 已证明 detached 线程 + 堆上共享状态的写法有效；
+   现在界只在等待循环的两处调用上，`snapshot_*` 与 `enumerate_present_*` 仍无界）。
+   **它不改变语义**（超时返回 `WAIT_TIMEOUT`，调用方本就要处理失败），
+   **且一次修改让所有调用点受益**，而不是在 m2 的五处各改一遍。
+   **待请示**：它触及 M1/M2 共用的驱动层，故未自行推广。
+
+   **另一件（同样待请示）**：**让 reclaim 不依赖枚举**——
+   用 `created` 的 SCSI 地址拼设备接口路径直接打开，或扩展 AIM 查询能力。
+   **驱动报不出盘号**（`DeviceConfiguration.DeviceNumber` 是 AIM 自己的设备号）
+   已查明，故这条路必须绕开"问驱动盘号"。
 7. **测试框架不支持按用例筛选**（T1-03 收尾时发现）：`m5vm` 的 `-Filter` 匹配的是
    `tests.json` 里的**可执行文件名**（如 `m5.production_execution_backend`），
    **不是用例名**；因此"单跑一条用例"只能靠**源码级隔离**（把其它用例包进 `#if 0`）。
