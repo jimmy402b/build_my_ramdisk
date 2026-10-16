@@ -2534,6 +2534,53 @@ PnP rescan → 等 PhysicalDrive 消失，
 
 **T1-03 不得标 PASSED。****本轮未改产品代码**（本轮的价值是把"可以改"变成"已核实可以改"）。
 
+#### 4.15.50 **实施前的最后一个障碍：M3 目前不知道自己是 reclaim**（part 70 续，本轮）
+
+开始实施时发现**真正的改动点不在 `m3_windows_acceptance.cpp` 那几行，而在"模式如何传到 M3"**，
+**这必须在动手前说清楚，否则会做成半截改动**：
+
+**事实**：
+- `M3AimRuntime::create(config, device_timeout)` 与 `M3AimProviderFactoryConfig`
+  **都没有"模式"这个概念**——`config` 的字段只有
+  `OperationContext context`、`M3ProviderConfig provider`，以及测试缝 `M3ProviderFactories`；
+- **模式只存在于上层**：`WorkerVolumeMode::reclaim_existing`（host）
+  → `DiskRuntimeMode::reclaim`（`src/run/disk_runtime.{h,cpp}`）；
+- 而 `M3AimRuntime` 是**由 host 通过注入的 `operations_.start_aim` 回调**构造的
+  （`m5_worker_runtime.cpp`）——**也就是说，模式在 host 那一侧是已知的，
+  只是没有被传进 M3。**
+
+**因此实施路径是清楚的，但要动三层**：
+
+1. **`M3AimProviderFactoryConfig` 增加一个模式字段**
+   （例如 `bool reclaim_only{false}` 或一个小型枚举）；
+2. **host 在构造 M3 时把模式填进去**（`m5_worker_runtime.cpp` 里
+   由 `volume_mode` 决定，那里已经有 `WorkerVolumeMode::reclaim_existing` 的判断）；
+3. **`M3AimRuntime::start` 在该模式下跳过 `wait_for_present_physical_drive`**，
+   并把 `info_.disk` 置为**显式的"不适用"**（见 part 70 的显示层注意点）。
+
+**另外两件要在同一改动里落实的**（否则会留下不一致）：
+- **`info_.disk` 的可选性**：若它变成"reclaim 下为空"，那么
+  `m3_aim_server_main.cpp` 的两处状态输出必须能处理空值
+  （**显式表达"不适用"**，而不是打印空盘号）；
+- **`M3AimRuntimeInfo` 的既有消费者**：目前只看到那两处状态输出，
+  但**改完后要用 `git grep` 复核一次**（含 tests），确认没有别的读取者。
+
+**为什么本轮不直接改**：它跨 3 个文件、涉及一个**对外可见的字段语义变化**，
+而**本轮剩余的上下文不足以"改 + 干净构建 + 客机 `-Repeat 20` + 证据"走完整个收尾循环**。
+**按本项目的纪律，宁可留下"已核实可以改 + 精确的改动清单"，也不留下半截改动。**
+
+**下一轮的完整清单（可直接执行）**：
+1. 加 `M3AimProviderFactoryConfig::reclaim_only`；
+2. host 侧填值；`start()` 在该模式下跳过物理盘等待、`info_.disk` 置"不适用"；
+3. 处理状态输出的空值；
+4. 干净构建 0 error 0 warning；
+5. **客机 `-Repeat 20`**：**要看的正是"reclaim 是否不再卡"**；
+   - **若通过** ⇒ T1-03 的阻塞解除，可进入收尾；
+   - **若仍卡** ⇒ **这次等待不是阻塞源**，回到"细分枚举内部各步耗时"那条路
+     （见 part 68 末尾）。
+
+**T1-03 不得标 PASSED。**
+
 #### 4.15.47 **内侧仪表给出明确读数：负载下枚举第 1 圈就吃掉整个 10 秒预算**（part 68，本轮）
 
 按上一节定下的方法，把仪表**埋进 `wait_for_physical_drive` 内部**后跑 `-Repeat 3`
