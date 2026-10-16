@@ -1461,6 +1461,43 @@ worker 的 stderr 是 `op=flush msg=opening volume failed`，
 （`remove_device` 之前/之后、每次轮询、以及 `physical_drive_restored_` 那一段），
 **一次运行即可看出它是在 `remove_device` 还是在其后的等待里失败**。
 
+**T1-03 仍不得标 PASSED。**
+
+#### 4.15.25 **裁决 A 的延伸已实施，但读数显示残留仍未清掉**（part 44，本轮）
+
+**已实施**（`dc56a57`）：**reclaim 也不 flush**。理由与"不 dismount"同源，
+而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
+**从不碰卷**（`direct_aim_adapter.cpp`），所以**驱动侧移除本来就不需要卷**——
+而拆卸却**在它之前的 flush 上失败**，那个失败被 `record()` 记下后
+**挡住了唯一能真正清掉机器的步骤**。
+flush 存在的意义是"把**活着的** profile 的写落到盘上"；
+reclaim 不是关停一个 profile，而是**拿走一个 worker 已死的设备**，
+其内容不为任何人保留。开发机：干净构建 0/0、**M4 10/11**（唯一失败是既有环境用例）。
+
+**但读数（请求 `47c342b6b0e8400cbd99c18b398fbbe5`）显示失败点没有变化**：
+
+```
+myrd-test: create failed: op=provision_new_volume msg=provisioning helper failed native=1 code=21001
+FAIL ...:1235: created.ok()
+myrd-m5-worker: the worker's resources could not be released (op=flush msg=opening volume failed ...)
+```
+
+**⇒ 后来的那条用例仍然在它自己的 create 上失败，说明接管的那块残留仍然占着位置。**
+
+**一处必须点明的观察**：这一段 trace 里**没有 `dismount_volume: begin` / `flush_volume: begin`**
+（那两条是 `DiskRuntime` 打的），
+**而 `flush: opening the volume` 与 `dismount: re-acquiring the lock` 出现了两次**——
+说明**这些 flush/dismount 来自另一条路径**（很可能是**那条后来用例自己的清理过程**），
+**不是我们这条 reclaim 的拆卸**。
+所以**不能把它们当作"reclaim 又失败"的证据**——**这一点本轮只做到"指出不属于同一路径"，
+未能进一步定位。**
+
+**下一轮第一件事（已缩小到一件事）**：给 **`remove_owned_device` 内部逐步打点**——
+`remove_device()` 之前/之后、确认轮询的每次迭代、以及 `physical_drive_restored_` 那一段。
+**一次运行即可回答**：设备到底**有没有**被 `kRemoveDevice` 移除、
+还是移除后卡在"等待 PhysicalDrive 消失"的那段有界轮询里（后者会返回超时错误）。
+**这是本轮之后唯一还没被排除的可能。**
+
 **T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
