@@ -14,6 +14,8 @@
 #include <optional>
 #include <thread>
 
+#include "src/common/diagnostic_trace.h"
+
 #pragma comment(lib, "setupapi.lib")
 
 namespace myrd::aim {
@@ -383,15 +385,56 @@ Result<LocatedDisk> wait_for_created_physical_drive(
         }
     };
 
+    // **Instrumented because two mechanism guesses were already falsified by measurement.**
+    //
+    // The probes in `tools/probe` showed this whole path costing about 2.5 ms and succeeding on an idle
+    // guest, while a worker in the reclaim case hung for over eighty seconds with 0.23 s of CPU and a
+    // ten-second bound on this very call expired.  Both facts cannot be about the same conditions, so the
+    // difference must be the *state*: something about a disk or volume being held.  Guessing produced two
+    // wrong answers, so from here the loop reports what it actually did -- how long each turn took, how
+    // many candidates it saw, and whether it ever matched -- and the failing run explains itself.
+    const auto started = std::chrono::steady_clock::now();
+    int turns = 0;
+
     while (std::chrono::steady_clock::now() < deadline) {
+        ++turns;
         // Bounded, because this enumeration has no bound of its own and the deadline above is only
         // consulted once per turn -- see `enumerate_disk_candidates_within` for what that cost.
+        const auto turn_started = std::chrono::steady_clock::now();
         auto cand = enumerate_disk_candidates_within(kEnumerateTimeout);
+        const auto enumerate_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - turn_started)
+                                      .count();
         if (!cand) {
+            char line[256]{};
+            (void)_snprintf_s(line, _TRUNCATE,
+                             "wait_for_physical_drive: enumeration failed on turn %d after "
+                             "%lld ms (total %lld ms) -- the bound fired",
+                             turns, static_cast<long long>(enumerate_ms),
+                             static_cast<long long>(
+                                 std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - started)
+                                     .count()));
+            diagnostic_trace(line);
             return Result<LocatedDisk>::failure(cand.error());
         }
 
         mark_existed_before(cand.value());
+
+        // Reported every turn while the loop is slow, because the question is precisely which turns are
+        // slow and how many candidates they saw -- the probes saw one candidate and a millisecond.
+        if (enumerate_ms > 100 || turns <= 3 || (turns % 25) == 0) {
+            char line[256]{};
+            (void)_snprintf_s(
+                line, _TRUNCATE,
+                "wait_for_physical_drive: turn %d saw %zu candidates in %lld ms (total %lld ms)",
+                turns, cand.value().size(), static_cast<long long>(enumerate_ms),
+                static_cast<long long>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started)
+                        .count()));
+            diagnostic_trace(line);
+        }
 
         auto first = match_created_disk(
             created, cand.value(), expected_size_bytes);
