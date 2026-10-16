@@ -780,6 +780,22 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    T4-04 的干净构建门是可接受的兜底，但**这条纪律要在 T4 期间写进构建脚本**（能自动就别靠记）。
 5. **`set_terminate` 处理器从未触发**：可能意味着静态/动态 STL 混链。
    `dumpbin /directives` 对比 `myrd_storage.lib` 与测试 exe 的 `/DEFAULTLIB`，很便宜。
+6. **`m5.production_execution_backend` 整套在客机上不稳定**（T1-03 收尾时发现，**与本增量无关**）：
+   同一条命令、干净客机下，**连续三次得到 12 / 16 / 16 条通过**，
+   **失败点与原因都会变**：
+   `create failed: op=provision_new_volume ... 21001` ↔
+   `create failed: op=checkpoint msg=generation-zero checkpoint was not committed`。
+   **已用两个独立实验排除**：① **加锁语义**（把它回退，失败方式完全相同）；
+   ② **失败的那条用例本身**（源码级隔离后单跑 **1/1 通过**）。
+   ⇒ **这是套件级的资源/时序问题**，需要一次**重复普查**（同 §8 第 2 条的 Sweep 普查方法）
+   来定量，**不要**据此判断 T1-03 的成败。
+   **注意**：`-Repeat 20` 的定量读数在 T1-03 收尾时已开始采集，结果要补记进本节。
+7. **测试框架不支持按用例筛选**（T1-03 收尾时发现）：`m5vm` 的 `-Filter` 匹配的是
+   `tests.json` 里的**可执行文件名**（如 `m5.production_execution_backend`），
+   **不是用例名**；因此"单跑一条用例"只能靠**源码级隔离**（把其它用例包进 `#if 0`）。
+   **做隔离实验时务必 `touch` 还原后的文件**，否则 CMake 会因时间戳未变而**静默跳过重编**
+   （已踩过：会把"隔离版的旧二进制"误读成"完整套件通过"）。
+   **可靠的判据是耗时**：完整套件约 **50–75 秒**，被裁剪过的约 **10 秒**。
 
 ### T4-01 — 安装器
 
@@ -916,7 +932,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（接近完成）** | part 1–46。**全部实现 ✅**，且**两条关键用例在客机读数里都在 PASS 列表内**（请求 `4371187ba7964c8db9933a78ebb79106`，16/18 条 PASS）：`m5_backend_a_killed_worker_leaves_no_process_mount_or_device`（断言残留存在 → **自己 reclaim 掉** → 盘符释放）与 `m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created`。**part 12 的三个残留事实（进程/盘符/AIM 盘）逐条被消灭，A'（驱动侧移除）已被实测证明可行**。**剩余：同一套件里 `m5_backend_checkpoint_crosses_the_boundary_and_commits` 在自己的 create 上失败（`provision_new_volume` 21001），导致整个套件 0/1；尚未验证它是否是既有失败**——若是，T1-03 的验收即成立。**未验证前不得标 PASSED。** |
+| T1-03 | **IN_PROGRESS（验收已达，待确认收尾条件）** | part 1–50。**两条关键用例在每一次客机运行的 PASS 列表里**（多次运行、含 12 条那次），且**已用两种独立方式证明**：① 对照实验——把 part 41 的加锁改动回退，失败方式**完全相同**（因此与加锁无关）；② 隔离实验——把其它 17 条用例包进 `#if 0` 只跑它，**1/1 通过**（因此该用例自身无缺陷）。**part 12 的三个残留事实（进程/盘符/AIM 盘）逐条被消灭；A'（驱动侧移除、不取卷锁）已被实测证明可行。** **卡住收尾的是"整套件不稳定"（见下），不是 T1-03 本身。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
