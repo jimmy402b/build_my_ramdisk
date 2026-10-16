@@ -1036,7 +1036,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（未通过；失败原因已明确且可修）** | part 1–58。实现全部完成。**两条用例在"能跑到它们"的迭代里 PASS**，但 `-Repeat 5` 显示迭代 3–5 仍失败。**经过**：① part 53 曾把根因归给 `SetupDiGetClassDevsW`，part 55 去掉启动 baseline 后**预测被证伪**（失败一模一样）——**part 56 按迭代分离 trace 才抓到真正现场**：卡在 `wait_for_present_physical_drive`，而**预算只在循环外检查一次，管不住单次枚举**；② part 58 **给枚举加了界**（detached 线程 + 10 s，`std::async` 的 future 析构会等待、**看起来生效实际无效**，已在代码注释里记下这个坑）。**现在失败很快且自述原因**：`op=enumerate_disk_candidates ... did not finish within its bound`（258，10 s 内），而**以前是挂死 80+ 秒 + 不透明 4107**。**剩余**：**本客机上"枚举磁盘接口"确实会卡住**，而 reclaim 路径仍依赖枚举 ⇒ **必须让它在不枚举的前提下找到那块盘**。**驱动报不出盘号**（`DeviceConfiguration.DeviceNumber` 是 AIM 自己的设备号），故候选为：**用 `created` 的 SCSI 地址拼设备接口路径直接打开**，或**扩展 AIM 查询能力**——**两者都需设计判断，待请示**。**不得标 PASSED。** |
+| T1-03 | **IN_PROGRESS（实现完成；阻塞点已确证）** | part 1–77。**两条关键用例在能跑到它们的运行里 PASS**，但整套 `m5.production_execution_backend` 间歇失败。**根因（本轮确证，有逐步计时证据）**：`enumerate_disk_candidates` 里**打开候选盘的 `CreateFileW` 在"目标设备正被退役"的窗口内会阻塞 ~11 秒**（实测 11017 ms），而该函数其它每一步都是 0–1 ms。**`FILE_FLAG_OVERLAPPED` 试过、无效**（原因：它只让对已打开句柄的 I/O 可取消，**create IRP 必须同步完成**；part 36/41 的卷句柄先例不适用）。**剩余唯一既合设计又绕开真实阻塞的路**：**不再靠"打开候选"取盘号**——即 part 67 记录的设计缺口（按 SCSI 地址构造设备路径，或扩展 AIM 查询）。**跳过枚举不可行**（part 72 实测 `find_recovered_volume` 需要盘号）。**不得标 PASSED。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |

@@ -368,6 +368,46 @@ if (work.wait_for(timeout) != std::future_status::ready) { return timeout_error;
 
 ⇒ **本项目没有静态/动态 STL 混链**（§8 第 5 项据此关闭）。
 
+### 7.0.10 **T1-03 的真实阻塞点：`CreateFileW` 在设备退役窗口内阻塞 ~11 秒**（2026-10-16，**接手 T1-03 先读这条**）
+
+**这是最终确证的根因，取代 7.0.7 与 7.0.9 的一切猜测。**
+
+**证据（每次运行前删 trace、跑 `-Repeat 1`、跑完立刻取；4 次失败各自 42 行、停在同一处）**：
+
+```
+enumerate_disk_candidates: opening the candidate
+wait_for_physical_drive: enumeration failed on turn 1 after 10011 ms -- the bound fired
+remove_owned_device: rescanning the adapter
+remove_owned_device: waiting for the PhysicalDrive to retire
+enumerate_disk_candidates: CreateFileW took 11017 ms        ← 就是它
+```
+
+`enumerate_disk_candidates`（`src/driver/physical_drive_locator.cpp`）里
+**其它每一步都是 0–1 ms**（类枚举、取接口细节、两个 IOCTL），**只有打开候选盘这一步 11 秒**。
+**触发条件是交错顺序暴露的**：这次打开发生在 **`remove_owned_device` 正在等 PhysicalDrive 退役**的同时
+——**即"在设备正被移除时去打开它"**。
+
+**试过且无效**：`FILE_FLAG_OVERLAPPED`。实测加与不加都是 ~11 秒。
+**为什么无效**：它让**对已打开句柄的 I/O**变成异步、可 `CancelIoEx`，
+**但 create IRP 必须同步完成**才能返回句柄。
+**part 36/41 的卷句柄先例不适用**（那里卡的是对已打开句柄的 IOCTL）。
+
+**不可行的**：**拆卸时跳过这次枚举**——part 72 实测 `find_recovered_volume`
+**确实需要盘号**（`aim_disk_number` → `volume_adapter.find_recovered_volume(disk, letter, ...)`）。
+
+**剩下的路（唯一既合设计又绕开真实阻塞的）**：
+**不再靠"打开候选盘"去取盘号**，即 7.0.7 记的那个设计缺口：
+**按 `DeviceId` 里的 SCSI 地址（path/target/lun）直接构造设备接口路径并打开，
+或扩展 AIM 让驱动报出 Windows 盘号**（注意 `DeviceConfiguration.DeviceNumber` 是 AIM 自己的设备号，
+**不是** Windows 的 `PhysicalDrive` 号）。
+
+**诊断工具已就位，别拆掉**：
+- `enumerate_disk_candidates` 内部**每步一条带耗时的 trace**（`StepTimer`）；
+- `wait_for_physical_drive` **每圈报候选数与耗时**；
+- **`diagnostic_trace` 是 append（`FILE_APPEND_DATA`）**，
+  所以**必须"每次运行前删 `C:\tmp\m5-reclaim-trace.txt`、跑完立刻取"**，否则多轮混在一起；
+- provisioning helper 的输出**现在会被打印**（以前只报退出码）。
+
 ### 7.0.9 **⚠ 更正："枚举阻塞"是错的根因；真凶是陈旧二进制害我追错了好几轮**（2026-10-16，**先读这条**）
 
 **若你正要接着修 T1-03，请先读这条，它比 7.0.7 更重要。**

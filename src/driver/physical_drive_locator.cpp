@@ -244,17 +244,27 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
         }
 
         diagnostic_trace("enumerate_disk_candidates: opening the candidate");
-        // **Opened with `FILE_FLAG_OVERLAPPED`, and per-step timing is what proved it necessary.**
+        // **Opened with `FILE_FLAG_OVERLAPPED`, which turned out not to help -- read this before relying on it.**
         //
-        // This call was measured at **11017 ms** on one candidate while the caller's ten-second bound
-        // expired, and a `CreateFileW` that does not return cannot be given up -- which is the whole
-        // reason the wait loop's budget could not bound a turn.  Opening overlapped is the same change
-        // this project already made for volume handles (parts 36 and 41) for the same reason: it does not
-        // alter what the handle is for, it makes an operation on it something the caller can abandon.
+        // Per-step timing found the real block here: this call was measured at 11017 ms while the caller's
+        // ten-second bound expired, and the interleaving shows why -- it happens while
+        // `remove_owned_device` is waiting for the PhysicalDrive to retire, so it is an open attempted
+        // inside the window where the device is being removed.  Everything else in this function is zero
+        // to one millisecond.
         //
-        // The access and sharing are deliberately unchanged.  Only the flag that governs whether kernel
-        // waits are interruptible is added, so a candidate that opens today still opens and a candidate
-        // that does not is still skipped.
+        // The flag was added by analogy with the volume handles in parts 36 and 41, where making waits
+        // abandonable was the fix.  **Measurement refused that here**: after adding it, one open took a
+        // millisecond and another took 11015.  The reason is the difference the analogy misses --
+        // `FILE_FLAG_OVERLAPPED` makes I/O *on* a handle asynchronous and cancellable, but a create IRP has
+        // to complete synchronously before the call can return a handle.  In those volume cases the block
+        // was an IOCTL on an already-open handle, which `CancelIoEx` can cancel; here it is the create
+        // itself, and no flag lets the caller walk away.
+        //
+        // So the flag is kept only because it is harmless, and **it is not a fix**.  The open is the real
+        // problem, and the routes out are to stop opening candidates in that window: obtain the drive
+        // number without opening them (the design gap recorded in the T1-03 evidence -- build the device
+        // path from the SCSI address, or extend AIM).  Skipping the enumeration during teardown is not an
+        // option, since `find_recovered_volume` genuinely needs that number.
         HANDLE h = [&] {
             StepTimer step("CreateFileW");
             return CreateFileW(detail->DevicePath,
