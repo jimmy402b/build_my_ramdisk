@@ -8,8 +8,9 @@
 #include <ntddscsi.h>
 
 #include <chrono>
-#include <future>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -278,8 +279,11 @@ constexpr auto kEnumerateTimeout = std::chrono::seconds(10);
 // it.  Measured: a worker hung here for over eighty seconds at 0.23 s of CPU, and the reply carrying
 // its own timeout never arrived.
 //
-// The bound sits on the caller's side because there is nothing to cancel inside.  The work runs on a
-// detached thread and, if it overruns, is abandoned rather than waited for.
+// **A `std::async` future cannot express this bound, and using one cost a measurement.**  Its
+// destructor blocks until the task finishes, so `wait_for` timing out and then letting the future go
+// out of scope waits exactly as long as the thing being bounded -- the bound reads as if it works and
+// changes nothing.  The first version of this function did that, and a `-Repeat 5` reading showed the
+// same 4107 timeouts as before.  A detached thread is what actually abandons the work.
 //
 // **Abandoning is acceptable here, and that is the reason for this route.**  The abandoned work is
 // read-only: list interfaces, ask each for its SCSI address and its length.  It creates, mounts,
@@ -288,15 +292,43 @@ constexpr auto kEnumerateTimeout = std::chrono::seconds(10);
 // earlier fixes in this project cancelled where a handle allowed it and this one bounds an execution.
 Result<std::vector<DiskCandidate>> enumerate_disk_candidates_within(
     const std::chrono::milliseconds timeout) {
-    auto work = std::async(std::launch::async,
-                           [] { return enumerate_disk_candidates(); });
-    if (work.wait_for(timeout) != std::future_status::ready) {
+    // Heap state shared with the detached thread rather than locals it would outlive.  The thread may
+    // still be inside the kernel when this function gives up, so everything it touches has to survive
+    // this scope by construction instead of by an argument about which paths return.
+    struct Shared final {
+        std::mutex mutex;
+        std::condition_variable done;
+        std::optional<Result<std::vector<DiskCandidate>>> outcome;
+        bool complete{};
+    };
+    auto shared = std::make_shared<Shared>();
+
+    // Detached on purpose: the point is that a call which never returns must not hold this one, and
+    // joining would do exactly that.  The shared state is kept alive by the thread's own copy.
+    std::thread([shared] {
+        auto produced = enumerate_disk_candidates();
+        {
+            std::lock_guard<std::mutex> guard(shared->mutex);
+            shared->outcome = std::move(produced);
+            shared->complete = true;
+        }
+        shared->done.notify_one();
+    }).detach();
+
+    std::unique_lock<std::mutex> guard(shared->mutex);
+    const auto finish = std::chrono::steady_clock::now() + timeout;
+    if (!shared->done.wait_until(guard, finish,
+                                 [&shared] { return shared->complete; })) {
         return Result<std::vector<DiskCandidate>>::failure(
             {ErrorDomain::win32, static_cast<std::uint32_t>(WAIT_TIMEOUT),
              L"enumerate_disk_candidates",
              L"enumerating the disk interfaces did not finish within its bound"});
     }
-    return work.get();
+    return shared->outcome.has_value()
+        ? std::move(*shared->outcome)
+        : Result<std::vector<DiskCandidate>>::failure(
+              {ErrorDomain::internal, 0, L"enumerate_disk_candidates",
+               L"enumeration completed without producing a result"});
 }
 
 } // anonymous namespace
