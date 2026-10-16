@@ -439,7 +439,35 @@ worker 动手而不是对孤儿动手。**只给 pid**：句柄保持私有，
 **未做，且现在边界精确**：清掉残留的 reclaimer。在它存在之前，
 `DeferredResourceReclaimer` 报"无法动手"，所以 sweep **报 needs-attention 而不是假装**。
 
-### 4.13 尚未接线（T1-03 最后一步）
+### 4.13 本轮（part 13）：协议动词 + **确认它可做**（这一片不再是设计问题）
+
+**协议**：`WorkerCommand::reclaim_leftover = 16`，**追加而非插入**
+（值是上线格式，插入会静默改写它之后的每一个命令）。
+operation-scoped + bare status reply，与 `freeze_writes` 同形：
+拆卸卷与"移除"是同类动作，必须归属到某个 operation，
+而调用方真正需要知道的就是"盘符与卷是否都没了"。
+
+**请求里不带自己的卷身份**，这是刻意的：它需要的（bundle、挂载目标、镜像）
+**已经在这台 worker 的 launch spec 里**，线上再放一份就是**第二个可能与实际动手对象不一致的东西**。
+
+**让后续三件变成"有界工作"而不是"设计问题"的发现**：
+`Win32VolumeAdapter::find_recovered_volume(disk_number, drive_letter, owner_token)`
+（`windows_volume.h:187`）的注释就是
+**"Recovery is attach-only: enumerate existing volumes and adopt exactly one candidate
+backed by disk_number and mounted at drive_letter"**——
+**这正好就是残留的状态**：**接管**一个已挂载的卷，而不是挂载它。
+随后 `remove_drive_letter(owned)` 与 `ProductVolume::dismount()` 完成拆卸。
+**不需要新的 M3 能力。**
+
+**这同时纠正了上一轮我的一个错判**：我写过 `adopt_existing`"会挂载，而挂载不是拆卸"。
+对**生命周期那条路**成立，对 `find_recovered_volume` **不成立**——而后者才是 reclaimer 会用的调用。
+计划里的这一片描述已改正。
+
+**读数**：开发机 `m5.worker_protocol_reclaim_leftover_is_operation_scoped`
+覆盖两个方向（缺 operation id 的 **reply** 被拒、**request** 也被拒），
+协议套件 **39/39**；五套 M5 逻辑测试全绿；干净构建 0 error 0 warning。
+
+### 4.14 尚未接线（T1-03 最后两件，均有界）
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
