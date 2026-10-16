@@ -65,6 +65,7 @@
 | 当前读数与失败分类 | `docs\validation\m5-current-state.md` |
 | **两个间发缺陷的完整调查**（含"为什么前四层能过"） | `docs\validation\m5-intermittent-findings.md` |
 | 增量清单与状态 | `docs\superpowers\plans\2026-10-14-m5-v3-tasklist.md` |
+| **总体执行计划（顺序 / 验收 / 风险 / 何时停下问）** | `docs\superpowers\plans\2026-10-15-m5-master-plan.md` |
 | 设计（v3） | `docs\superpowers\specs\2026-10-14-m5-service-cli-gui-design-v3.md` |
 | T1-11 实施方案 | `docs\superpowers\plans\2026-10-14-t1-11-stop-write-freeze.md` |
 | 无调试器时读崩溃转储 | `tools\m5vm\read-minidump.py` |
