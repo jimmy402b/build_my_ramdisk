@@ -541,6 +541,19 @@ TEST_CASE(m5_backend_bundle_registration_persists_the_identity_it_just_read) {
             std::nullopt,
             std::nullopt};
         const auto result = control.execute(request);
+        if (!result.ok()) {
+            // **This assertion was the one legible gap left in the suite**, and it cost a reading:
+            // iterations stopping here reported only `:544: result.ok()` with no error at all, while
+            // failing iterations elsewhere printed their cause.  This case is the third one and
+            // therefore the *first* to provision a volume, so its failure is what most often hides
+            // why the suite cannot get going at all.
+            std::fprintf(stderr,
+                         "myrd-test: bundle-registration create failed: op=%ls msg=%ls native=%u code=%u",
+                         result.error().operation.c_str(),
+                         result.error().message.c_str(),
+                         result.error().native_code, result.error().code);
+            std::fputc(10, stderr);
+        }
         REQUIRE(result.ok());
         REQUIRE(result.value().lifecycle.bundle.has_value());
     }
