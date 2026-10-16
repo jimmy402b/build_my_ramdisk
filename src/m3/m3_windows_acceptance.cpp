@@ -446,8 +446,17 @@ Result<void> M3AimRuntime::remove_owned_device() {
     }
     const auto deadline = std::chrono::steady_clock::now() + device_timeout_;
     if (!device_removed_) {
+        // **Each step is named, because the question left is which one fails.**
+        //
+        // `REMOVE_DEVICE` is an SRB command to the driver and never touches the volume, so it is
+        // not expected to be blocked by an occupied volume -- but the steps *after* it are a device
+        // inventory poll and a PnP rescan, and either could be where an adopted device refuses to
+        // go.  Naming all four separates "the driver would not remove it" from "it was removed and
+        // the machine would not let go of the disk", which need different responses.
+        diagnostic_trace("remove_owned_device: remove_device");
         auto removed = adapter_->remove_device(*owned_device_);
         if (!removed) return removed;
+        diagnostic_trace("remove_owned_device: polling the inventory");
         for (;;) {
             auto devices = adapter_->list_devices();
             if (!devices) return Result<void>::failure(devices.error());
@@ -458,6 +467,7 @@ Result<void> M3AimRuntime::remove_owned_device() {
                 });
             if (!present) break;
             if (std::chrono::steady_clock::now() >= deadline) {
+                diagnostic_trace("remove_owned_device: device still present at deadline");
                 return Result<void>::failure({
                     ErrorDomain::cleanup, WAIT_TIMEOUT,
                     L"M3AimRuntime::remove_owned_device",
@@ -465,6 +475,7 @@ Result<void> M3AimRuntime::remove_owned_device() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        diagnostic_trace("remove_owned_device: device gone from the inventory");
         // The AIM object is gone, but the PhysicalDrive may still be draining.
         // Keep the provider alive until that second cleanup boundary is met.
         device_removed_ = true;
@@ -476,6 +487,7 @@ Result<void> M3AimRuntime::remove_owned_device() {
         // until the adapter is re-enumerated.  Keep this after
         // device_removed_ becomes true so a failed rescan is safely retried
         // without issuing REMOVE_DEVICE again for an already absent id.
+        diagnostic_trace("remove_owned_device: rescanning the adapter");
         auto rescanned = aim::rescan_aim_adapter(adapter_handle_->dev_inst);
         if (!rescanned) return rescanned;
         // The condition is that *this* device's devnode has retired -- not that
@@ -491,9 +503,11 @@ Result<void> M3AimRuntime::remove_owned_device() {
                 ? std::chrono::duration_cast<std::chrono::milliseconds>(
                       deadline - now)
                 : std::chrono::milliseconds(0);
+        diagnostic_trace("remove_owned_device: waiting for the PhysicalDrive to retire");
         auto retired = aim::wait_for_physical_drive_retired(
             *owned_device_, info_.virtual_bytes, remaining);
         if (!retired) return retired;
+        diagnostic_trace("remove_owned_device: PhysicalDrive retired");
         physical_drive_restored_ = true;
     }
     return Result<void>::success();
