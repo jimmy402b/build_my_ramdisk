@@ -363,7 +363,36 @@ VM `m5.startup_sweep` `-Repeat 5` **5/5**（请求 `9b7855d08e2c4ac6a47b0e60630f
 在那之前，这个能力**存在但没人用**——正是 part 9 谈的"没有消费者"模式，
 **写在这里以免以后当成意外发现**。之后才是需要它的设备/盘符强杀验收。
 
-### 4.11 尚未接线（T1-03 最后一步）
+### 4.11 本轮（part 11）：**在 worker 读到身份的那一刻把它记下来**
+
+part 10 给了指纹一个**装** bundle 身份的地方，但**没有东西往里放**。本轮补上产生端，
+放在**身份唯一可知的那一刻**：worker 刚刚打开并校验了 bundle，而 `register_bundle`
+正拿着它读到的结果。
+
+| 交付 | 说明 |
+|---|---|
+| `IWorkerFingerprintSink`（独立头文件） | **单方法接缝**，而不是 store 本身：`ServiceWorkerControl` 是命令适配器，store 是持久状态——适配器需要的**一次调用**，不是对持久层的依赖。`WorkerBindingStore` 实现它，所以生产路径就是真 store，而行为可以用 fake 测 |
+| `register_bundle` 里的调用 | **尽力而为，失败不致命**（决定写在头文件里）：刚创建并校验成功的 bundle 是一块**真能用的盘**，因为一个**指纹**写不进去而拒绝它，等于拿一块能用的盘去换一个记账问题。缺身份**代价有界且可见**：该 profile 的残留变成"无法证明"，下次启动的 sweep **报出来**而不是回收 |
+
+**这闭合了 part 9 打开的那个"没有消费者"缺口**，而且值得点出模式：**本项目已经第四次**
+出现"值被产生、被测过、没有任何代码读它"。先是 `reclaimable_resources` 没有调用点，
+然后是 `amend_bundle_identity` 没有调用点。**两个现在都接上了，能力是真的而不是潜在的。**
+
+**虚拟机端到端读数（全部为真）**：真 worker、它**创建并 provision** 的真 bundle、
+真 `WorkerBindingStore` 作为 sink、中间是真 `ServiceWorkerControl`。
+用例先写入一条**没有** bundle 身份的"launch 式"指纹，跑一次真的 `create_and_verify_bundle`，
+然后断言 worker 读到的身份**已经持久化**——并且**amend 没有扰动 pid 与 creation time**，
+那两个才是让 worker 可归属的字段。
+`-Repeat 3` **3/3**（请求 `3dfd843c58d347ca9158f9bc569eca9e`）。
+**用 `-Repeat 3` 而不是 20**：这是新增能力用例而非对间歇缺陷的修复，
+修复类读数已记在 part 8 的 sweep 上。
+
+**我自己两个错误**（都被编译器抓到）：先把接口声明在 `service_worker_control.h` 里
+又让 store 实现它，构成**循环包含**——现在它有自己的头文件；
+新用例调用 `wait_for_letter_release()` **没传参**，而那个 helper **本来就带 `letter` 参数**
+存在，于是我又写了一个重复的。**是"一个 helper 只做一件事"的既有约定让它浮出来的。**
+
+### 4.12 尚未接线（T1-03 最后一步）
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
