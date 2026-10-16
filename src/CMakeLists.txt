@@ -352,7 +352,9 @@ add_library(myrd_management STATIC
     management/service_worker_session.cpp management/service_worker_session.h
     management/state_machine.cpp management/state_machine.h
     management/windows_worker_observation.h
+    management/windows_worker_job.cpp management/windows_worker_job.h
     management/windows_worker_sessions.cpp management/windows_worker_sessions.h
+    management/worker_process_source.cpp management/worker_process_source.h
     management/worker_sweep_policy.cpp management/worker_sweep_policy.h
 )
 target_include_directories(myrd_management PUBLIC "${CMAKE_SOURCE_DIR}")
