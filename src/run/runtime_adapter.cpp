@@ -306,19 +306,8 @@ Result<std::uint32_t> ProductionRuntimeAdapter::aim_disk_number(
         return Result<std::uint32_t>::failure(adapter_error(
             ErrorDomain::internal, 1, operation, L"M3 runtime is unavailable"));
     }
-    // **Refuses rather than reporting a zero, because a zero is a real drive.**
-    //
-    // A reclaiming runtime never located the disk, so it has no number to give.  Returning the
-    // default-constructed value would tell the caller "physical drive 0", which is both wrong and
-    // indistinguishable from the truth on a single-disk machine -- the worst combination for a number
-    // that identifies which disk an operation owns.
-    if (!impl_->aim_runtime->info().disk.has_value()) {
-        return Result<std::uint32_t>::failure(adapter_error(
-            ErrorDomain::internal, 2, operation,
-            L"this runtime did not locate a physical drive (reclaim does not)"));
-    }
     return Result<std::uint32_t>::success(
-        impl_->aim_runtime->info().disk->physical_drive_number);
+        impl_->aim_runtime->info().disk.physical_drive_number);
 }
 
 Result<void> ProductionRuntimeAdapter::create_generation_zero(
@@ -360,9 +349,6 @@ Result<void> ProductionRuntimeAdapter::start() {
         persistence::production_persistence_limits(config_.virtual_bytes);
     factory.provider.store = store_options_for(impl_->ram_limit_bytes);
     factory.provider.request_timeout = std::chrono::seconds(30);
-    // The mode the host knows and M3 needs: see the field's declaration for why reclaim skips the
-    // physical-drive wait rather than merely bounding it.
-    factory.reclaim_only = config_.reclaim_only;
 
     auto created = m3::M3AimRuntime::create(std::move(factory));
     if (!created.ok()) return Result<void>::failure(created.error());
@@ -424,32 +410,17 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
     const auto extent_bytes =
         actual.extents.empty() ? 0ULL : actual.extents.front().length_bytes;
     constexpr std::uint64_t kPartitionOverheadAllowance = 2ULL * 1024ULL * 1024ULL;
-    // **The disk-number comparison applies only when a disk was located.**
-    //
-    // A reclaiming runtime skips the physical-drive wait, so it has no number to compare against -- and
-    // that is not a reason to fail, because reclaim does not need this check to hold.  Leaving the
-    // comparison unguarded would compare against a default zero, which is a real drive, and would refuse
-    // the volume for naming the wrong disk.
-    //
-    // Understood, not assumed: this check verifies that the volume belongs to *this* operation, and in
-    // reclaim the identity comes from elsewhere -- `find_existing_device` matched the driver's own
-    // statement of geometry and backing file, `query_device` verified it again, and this same condition
-    // compares `volume_guid`, ownership and extents.  So one of its five clauses is inapplicable rather
-    // than skipped, and the rest still hold.  A create or recover always has a disk and is unaffected.
-    const bool disk_known = impl_->aim_runtime->info().disk.has_value();
-    const auto aim_disk_number =
-        disk_known ? impl_->aim_runtime->info().disk->physical_drive_number : 0u;
     if (!actual.operation_owned ||
         actual.extents.size() != 1 ||
         extent_bytes == 0 || extent_bytes > expected_bytes ||
         expected_bytes - extent_bytes > kPartitionOverheadAllowance ||
-        (disk_known &&
-         actual.extents.front().disk_number != aim_disk_number) ||
+        actual.extents.front().disk_number !=
+            impl_->aim_runtime->info().disk.physical_drive_number ||
         _wcsicmp(actual_guid.c_str(), expected_guid.c_str()) != 0 ||
         actual.extents != volume.extents) {
         std::wcerr << L"Diagnostic verify_volume: volume_guid="
                    << actual.volume_guid << L" aim_disk="
-                   << (disk_known ? aim_disk_number : 0xFFFFFFFFu)
+                   << impl_->aim_runtime->info().disk.physical_drive_number
                    << L" actual_disk="
                    << (actual.extents.empty() ? 0xFFFFFFFFu :
                        actual.extents.front().disk_number)

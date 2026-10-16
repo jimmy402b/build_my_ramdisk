@@ -105,32 +105,15 @@ bool take_option(
     return true;
 }
 
-// **The disk number is `null` when there is none, which is a real case.**
-//
-// A reclaiming runtime skips the physical-drive wait, because that wait only located the disk so the
-// number could be reported and no teardown step reads it.  Printing a zero would say "physical drive 0",
-// a real drive and the wrong claim; `null` says what is true, that this runtime has no disk to number.
-static void write_physical_drive(std::ostream& out, const M3AimRuntimeInfo& info) {
-    out << ",\"physical_drive_number\":";
-    if (info.disk.has_value()) {
-        out << info.disk->physical_drive_number;
-    } else {
-        out << "null";
-    }
-    out << ",\"physical_drive_path\":";
-    if (info.disk.has_value()) {
-        out << '"' << json_escape(narrow(info.disk->path)) << '"';
-    } else {
-        out << "null";
-    }
-}
-
 void print_ready(const M3AimRuntime& runtime) {
     const auto& info = runtime.info();
     std::cout << "{\"event\":\"ready\",\"device_id\":"
-              << info.device_id.value;
-    write_physical_drive(std::cout, info);
-    std::cout << ",\"virtual_bytes\":" << info.virtual_bytes
+              << info.device_id.value
+              << ",\"physical_drive_number\":"
+              << info.disk.physical_drive_number
+              << ",\"physical_drive_path\":\""
+              << json_escape(narrow(info.disk.path))
+              << "\",\"virtual_bytes\":" << info.virtual_bytes
               << ",\"sector_size\":" << info.sector_size << "}\n"
               << std::flush;
 }
@@ -141,9 +124,10 @@ void print_status(const M3AimRuntime& runtime) {
     const auto transport = runtime.transport_snapshot();
     const auto& requests = transport.requests;
     std::cout << "{\"event\":\"status\",\"device_id\":"
-              << info.device_id.value;
-    write_physical_drive(std::cout, info);
-    std::cout << ",\"storage\":{"
+              << info.device_id.value
+              << ",\"physical_drive_number\":"
+              << info.disk.physical_drive_number
+              << ",\"storage\":{"
               << "\"logical_size_bytes\":" << storage.logical_size_bytes
               << ",\"committed_bytes\":" << storage.committed_bytes
               << ",\"resident_clean_blocks\":"
