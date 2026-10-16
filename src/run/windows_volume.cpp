@@ -866,18 +866,18 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
     };
     HANDLE handle = INVALID_HANDLE_VALUE;
     for (;;) {
-        // **`FILE_FLAG_OVERLAPPED` is here so the lock's own teardown can be abandoned.**
+        // **Opened with sharing, because an exclusive *open* cannot be given up.**
         //
-        // `dismount` issues `FSCTL_DISMOUNT_VOLUME`, and a driver that does not answer in the
-        // state a killed worker leaves behind blocks that synchronous call past every deadline
-        // above it -- measured, not hypothesized.  `CancelIoEx` only works on a handle opened for
-        // overlapped I/O, so the flag has to be set where the handle is obtained.
+        // This used to be `share = 0`, and that call was measured blocking forever: see below.
+        // Exclusivity is not lost by asking for sharing here -- it is taken immediately afterwards
+        // by `FSCTL_LOCK_VOLUME`, which is the call that actually holds the volume, and which is
+        // now bounded and cancellable.  So the same guarantee is obtained through a call the
+        // caller can abandon, instead of one it cannot.
         //
-        // **It changes no locking or sharing semantics.**  Exclusivity is the share mode, and
-        // that is still `0`; `FILE_FLAG_OVERLAPPED` affects only how *I/O completion* is
-        // reported.  A caller that never uses an `OVERLAPPED` on this handle sees exactly the
-        // previous behaviour, which is why this is safe to add without reworking M4's lock path.
-        handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+        // `FILE_FLAG_OVERLAPPED` is what makes that IOCTL cancellable; it has no bearing on
+        // sharing, which is decided solely by the share mode argument.
+        handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (handle != INVALID_HANDLE_VALUE) break;
         const DWORD error = GetLastError();
@@ -898,7 +898,7 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
     }
     myrd::diagnostic_trace(handle == INVALID_HANDLE_VALUE
                                ? "Win32VolumeAdapter::lock: gave up opening"
-                               : "Win32VolumeAdapter::lock: opened exclusively");
+                               : "Win32VolumeAdapter::lock: handle acquired");
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION || error == ERROR_BUSY)
