@@ -90,6 +90,59 @@ void trace_reclaim_steps(DiskRuntimeOperations& operations) {
             return result;
         };
     }
+
+    // **The teardown is traced too, because a reclaim now gets all the way through the adopt
+    // path and then stops.**  The trace ended between `verify_volume: ok` and the reclaim
+    // command, which is the whole dismantle sequence -- four steps, and the reading could not
+    // say which.  Since a reclaim's entire purpose is that sequence, an unreadable teardown is
+    // the one place a trace is worth most.
+    if (operations.remove_drive_letter) {
+        auto inner = operations.remove_drive_letter;
+        operations.remove_drive_letter = [inner](const ProductVolume& volume) {
+            reclaim_trace(L"remove_drive_letter: begin");
+            auto result = inner(volume);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.dismount_volume) {
+        auto inner = operations.dismount_volume;
+        operations.dismount_volume = [inner](const ProductVolume& volume,
+                                             std::optional<LockedVolume>& held) {
+            reclaim_trace(L"dismount_volume: begin");
+            auto result = inner(volume, held);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.stop_aim) {
+        auto inner = operations.stop_aim;
+        operations.stop_aim = [inner] {
+            reclaim_trace(L"stop_aim: begin");
+            auto result = inner();
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.release_bundle_lock) {
+        auto inner = operations.release_bundle_lock;
+        operations.release_bundle_lock = [inner] {
+            reclaim_trace(L"release_bundle_lock: begin");
+            auto result = inner();
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.flush_volume) {
+        auto inner = operations.flush_volume;
+        operations.flush_volume = [inner](const ProductVolume& volume,
+                                          std::optional<LockedVolume>& held) {
+            reclaim_trace(L"flush_volume: begin");
+            auto result = inner(volume, held);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
 }
 
 } // namespace
