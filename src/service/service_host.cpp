@@ -36,6 +36,17 @@ ServiceHost::ServiceHost(management::IServiceClock& clock,
     : clock_(clock), core_(core), scheduler_(scheduler),
       options_(options) {}
 
+ServiceHost::ServiceHost(ServiceHost&& other) noexcept
+    : clock_(other.clock_), core_(other.core_), scheduler_(other.scheduler_),
+      options_(other.options_), state_(other.state_),
+      recovered_operations_(other.recovered_operations_),
+      last_error_(std::move(other.last_error_)) {
+    // The mutex is not moved: an unlocked one is what a moved-to object must
+    // have.  The state fields are read without holding it, which is sound because
+    // a move happens while one thread owns the object and is handing it over --
+    // the same assumption every move constructor makes.
+}
+
 Result<void> ServiceHost::start() {
     std::lock_guard<std::mutex> guard(mutex_);
     // Starting an already-running service is not an error: the SCM will not do

@@ -374,11 +374,24 @@ myrd_assert_execution_boundary(myrd_management)
 # measured by ordinary tests rather than only by installing a service.
 add_library(myrd_service STATIC
     service/service_host.cpp service/service_host.h
+    service/service_runtime.cpp service/service_runtime.h
+    service/service_system.cpp service/service_system.h
 )
 target_include_directories(myrd_service PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_service PUBLIC myrd_management myrd_common)
 myrd_enable_warnings(myrd_service)
 myrd_assert_execution_boundary(myrd_service)
+
+# The service executable.  It is the only target that speaks to the SCM, and it
+# holds no execution coupling: the runtime it drives is out of process, behind
+# the per-profile worker, which is why the boundary check applies to it too.
+add_executable(myrd-service
+    service/service_main.cpp
+)
+target_include_directories(myrd-service PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd-service PRIVATE myrd_service Advapi32)
+myrd_enable_warnings(myrd-service)
+myrd_assert_execution_boundary(myrd-service)
 
 # ---- M5 private worker protocol and session (Task 5) -------------------------
 # The typed service <-> per-profile worker messages, their strict codec, the

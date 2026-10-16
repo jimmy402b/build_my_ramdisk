@@ -81,6 +81,22 @@ public:
 
     ServiceHost(const ServiceHost&) = delete;
     ServiceHost& operator=(const ServiceHost&) = delete;
+    // Hand-written rather than defaulted, and the difference matters: a
+    // `std::mutex` member makes the *implicit* move constructor deleted, so a
+    // defaulted one would be deleted too and callers would silently fall back to
+    // the deleted copy.  The explicit form below reconstructs the mutex instead
+    // of transferring it -- a mutex is not state to move, it is a lock object,
+    // and an unlocked one is what a moved-to host must have.  It is defined in
+    // the .cpp for exactly that reason: the work is a member-wise move plus a
+    // fresh mutex, which a `= default` cannot express.
+    ServiceHost(ServiceHost&& other) noexcept;
+    // Move *assignment* is not offered, and cannot be: the host holds references,
+    // and a reference cannot be rebound -- so an assignment would have to leave
+    // the target pointing at the source's dependencies, which is the dangling
+    // state this whole object exists to make impossible.  Deleted explicitly so
+    // the compiler reports it instead of a defaulted member doing something
+    // surprising.
+    ServiceHost& operator=(ServiceHost&&) = delete;
 
     // Brings the service up.
     //

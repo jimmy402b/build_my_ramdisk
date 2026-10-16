@@ -13,7 +13,10 @@
 **T1-11（stop 路径补写冻结）已实现并验证**：`m5.production_execution_backend`
 `-Repeat 20` 实测 **20/20 通过**（修复前 5/20 失败）。证据与踩坑记录：
 `docs/validation/m5-t1-11-stop-write-freeze.md`。
-**下一步按 tasklist 顺序是 T1-02**（组合根 + 服务骨架）。
+**T1-02（组合根 + 服务骨架）已通过**：`sc create`/`start`/`query`/`stop` 全链路在客机上实测，
+`RUNNING` 报 `ACCEPTS_PRESHUTDOWN`、`STOPPED` 且 `SERVICE_EXIT_CODE 0`、退出后无残留。
+见 `docs/validation/m5-t1-02-service-skeleton.md`。
+**下一步按 tasklist 顺序是 T1-03**（job object + 启动 sweep + 资源身份持久化）。
 
 已完成的四个实质修复：
 - `067f9b3` —— 修掉一个 **50% 崩溃的 M2 测试缺陷**（测试钩子在冒充生产不变量），
