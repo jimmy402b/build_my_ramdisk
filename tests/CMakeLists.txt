@@ -700,6 +700,41 @@ add_test(NAME m5.worker_sweep_policy
     COMMAND myrd_m5_worker_sweep_policy_tests)
 set_tests_properties(m5.worker_sweep_policy PROPERTIES TIMEOUT 120)
 
+# ---- M5 worker sweep orchestration (T1-03) ----------------------------------
+# The order, the escalation and the report, over fakes.  A real orphan is not
+# reproducible on demand, so the part that must not regress -- that an unreadable
+# binding store stops the sweep instead of redirecting it into a mass termination,
+# and that a refusal to ask is not silently escalated into a kill -- is measured
+# here; the live thing is measured on the guest.
+add_executable(myrd_m5_worker_sweep_tests
+    model/m5_worker_sweep_tests.cpp
+)
+target_link_libraries(myrd_m5_worker_sweep_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_worker_sweep_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_worker_sweep_tests)
+add_test(NAME m5.worker_sweep
+    COMMAND myrd_m5_worker_sweep_tests)
+set_tests_properties(m5.worker_sweep PROPERTIES TIMEOUT 120)
+
+# ---- M5 worker fingerprint store (T1-03) ------------------------------------
+# The encoding a sweep reads immediately after a crash to decide whether the
+# process holding a device is its own.  Tested over an in-memory directory so it
+# runs where the ACL-protected ProgramData root cannot be created; the real store
+# is exercised on the guest.
+add_executable(myrd_m5_worker_binding_store_tests
+    model/m5_worker_binding_store_tests.cpp
+)
+target_link_libraries(myrd_m5_worker_binding_store_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_worker_binding_store_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_worker_binding_store_tests)
+add_test(NAME m5.worker_binding_store
+    COMMAND myrd_m5_worker_binding_store_tests)
+set_tests_properties(m5.worker_binding_store PROPERTIES TIMEOUT 120)
+
 # The recovery command family -- repair, rebind and forget -- named by Task 6's
 # file list and missing until now.  It includes the checkpoint model's fixture
 # for its fakes alone, exactly as the orchestration suite does.

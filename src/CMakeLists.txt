@@ -1,4 +1,4 @@
-# Source directory — targets added in later tasks.
+# Source directory ??targets added in later tasks.
 
 add_library(myrd_m4_run STATIC
     run/cli.cpp run/cli.h
@@ -180,7 +180,7 @@ target_include_directories(myrd-m0-poc PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-m0-poc PRIVATE myrd_poc myrd_driver myrd_proxy myrd_storage myrd_common bcrypt wintrust crypt32 Setupapi Cfgmgr32)
 myrd_enable_warnings(myrd-m0-poc)
 
-# ---- M3 persistence library (Task 00) ---------------------------------------
+# ---- M3 persistence library (Task??0) ---------------------------------------
 # Persistence core must not depend on driver, proxy, M1, M2 or virtdisk.
 add_library(myrd_persistence STATIC
     persistence/persistence_types.h
@@ -354,7 +354,9 @@ add_library(myrd_management STATIC
     management/windows_worker_observation.h
     management/windows_worker_job.cpp management/windows_worker_job.h
     management/windows_worker_sessions.cpp management/windows_worker_sessions.h
+    management/worker_binding_store.cpp management/worker_binding_store.h
     management/worker_process_source.cpp management/worker_process_source.h
+    management/worker_sweep.cpp management/worker_sweep.h
     management/worker_sweep_policy.cpp management/worker_sweep_policy.h
 )
 target_include_directories(myrd_management PUBLIC "${CMAKE_SOURCE_DIR}")
@@ -409,7 +411,7 @@ myrd_assert_execution_boundary(myrd-service)
 # It does include `src/persistence/image_inspector.h`, because the P4 recovery
 # correlation it carries *is* the persistence layer's
 # `CheckpointRecoveryCorrelation`: one definition rather than two field sets to
-# keep in sync (see the transfer manifest, §7 item 15).  That is an include
+# keep in sync (see the transfer manifest, ?7 item 15).  That is an include
 # dependency only -- no persistence symbol is called from here, so this target
 # does not link `myrd_persistence` and the management layer that links this
 # target does not gain a persistence link through it.
