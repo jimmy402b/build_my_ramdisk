@@ -2625,3 +2625,68 @@ PnP rescan → 等 PhysicalDrive 消失，
 3. **与此同时保留界**，让其他调用者仍不会被挂死。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.51 **"移除这次等待"试做后撤回：`disk` 字段不是可选的，而且有验收在用它**（part 71，本轮）
+
+**按上一节的清单开始实施，做到第 5 步发现一个未预见的前提，因此撤回、不留半截改动。**
+
+**已做过的改动（现全部 `git checkout` 还原；树干净、构建 0/0）**：
+1. `M3AimProviderFactoryConfig` 加 `reclaim_only`；
+2. `ProductionRuntimeAdapter::Config` 加同名字段——**声明在最后**，与 `image_uuid` 同一手法，
+   使既有聚合初始化器不变义——host 侧由 `volume_mode == reclaim_existing` 填值；
+3. `runtime_adapter.cpp` 把它转交给 M3 工厂；
+4. `M3AimRuntime::start` 在 `reclaim_only` 时跳过 `wait_for_present_physical_drive`；
+5. `m3_aim_server_main.cpp` 两处状态输出改为打印 `null`（而不是默认的 `0`）。
+
+**编译器立刻否掉了第 5 步的前提**：
+
+```
+m3_aim_server_main.cpp(116): error C2039: "has_value" 不是 "myrd::aim::LocatedDisk" 的成员
+m3_aim_server_main.cpp(117): error C2819: "LocatedDisk" 没有重载 "operator ->"
+```
+
+⇒ **`M3AimRuntimeInfo::disk` 不是 `std::optional<LocatedDisk>`，而是普通的
+`aim::LocatedDisk`**（默认构造就是"0 号盘"）。
+**所以"reclaim 下把它留空"在类型上不成立**，必须**先把字段改成 optional**。
+
+**而改成 optional 引出了真正的阻塞点（本轮关键发现）**：
+`git grep` 找到 **`src/run/runtime_adapter.cpp` 有三处读 `disk.physical_drive_number`**，
+其中 **`:421` 是 `verify_volume` 的验收条件**：
+
+```cpp
+actual.extents.front().disk_number !=
+    impl_->aim_runtime->info().disk.physical_drive_number ||   // 用盘号核对"这个卷是不是我们的"
+```
+
+⇒ **盘号不只是显示，它还参与"卷归属"的核对。**
+**因此把 `disk` 变成 optional 会一路牵到 `verify_volume`**，
+而**"reclaim 时 `verify_volume` 是否需要盘号、那时它会不会被调用"本轮没有查清**。
+
+**撤回的理由（按本项目纪律）**：
+- 这**不是实现细节，而是字段语义变更**（`info.disk` 由"总有值"变成"可能没有"），
+  会波及所有读者，**包括一个验收条件**；
+- **在没查清 `verify_volume` 是否在 reclaim 路径上被调用之前就改，
+  等于把风险从"reclaim 卡住"换成"卷归属核对失效"**——
+  后者更危险，正是"按身份核对"这条硬门要防的事；
+- 本轮剩余上下文不足以"改 + 干净构建 + 客机 `-Repeat 20` + 证据"走完整循环。
+
+**因此本轮以"撤回 + 记录"结束，净改动为零**
+（树干净、构建 0/0、`wait_for_present_physical_drive` 仍在原处未动）。
+**这是有意为之：宁可零改动，也不留一个改了一半的跨层改动。**
+
+**下一步必须先查清的两件事（都是读代码）**：
+1. **`verify_volume` 在 reclaim 路径上是否会被调用**——
+   若**不会**，"reclaim 下 `disk` 为空"就碰不到它，风险立刻大幅下降；
+   若**会**，则必须给 reclaim 一条不依赖盘号的核对方式
+   （`verify_volume` 本来也在比 `volume_guid`，这是现成的替代身份）；
+2. **另两处读者（`:310`、`:426`）的语义**——
+   `:426` 只是诊断打印（可像状态输出那样处理 `null`）；
+   `:310` 是 `aim_disk_number()` 的返回值，**要看调用方能否接受"没有盘号"**。
+
+**另有一条更保守的替代路（本轮想到，同样待评估）**：
+**保留这次等待，但只跳过"把盘号写进 `info_`"**，
+即**不动字段类型**，从而不牵动 `verify_volume`。
+**需确认 `wait_for_present_physical_drive` 能否在"不返回 `LocatedDisk`"的前提下
+仍完成它必须做的事**——它现在就是为返回这个而存在的。
+
+**T1-03 不得标 PASSED。****本轮净改动为零**（试做后按纪律撤回）。
