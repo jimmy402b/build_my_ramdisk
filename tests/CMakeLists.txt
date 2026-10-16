@@ -681,6 +681,25 @@ add_test(NAME m5.service_host
     COMMAND myrd_m5_service_host_tests)
 set_tests_properties(m5.service_host PROPERTIES TIMEOUT 120)
 
+# ---- M5 worker sweep policy (T1-03) -----------------------------------------
+# The startup sweep's *decisions*, with no job object and no processes in them:
+# which orphans are ours, which may be terminated, and which leftovers may be
+# reclaimed.  Every dangerous failure of a sweep is a decision failure -- cleaning
+# up another profile's volume, terminating a process that inherited a dead
+# worker's pid, authorising a cleanup from a half-recorded identity -- so the
+# decisions are measured directly rather than only through a job enumeration.
+add_executable(myrd_m5_worker_sweep_policy_tests
+    model/m5_worker_sweep_policy_tests.cpp
+)
+target_link_libraries(myrd_m5_worker_sweep_policy_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_worker_sweep_policy_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_worker_sweep_policy_tests)
+add_test(NAME m5.worker_sweep_policy
+    COMMAND myrd_m5_worker_sweep_policy_tests)
+set_tests_properties(m5.worker_sweep_policy PROPERTIES TIMEOUT 120)
+
 # The recovery command family -- repair, rebind and forget -- named by Task 6's
 # file list and missing until now.  It includes the checkpoint model's fixture
 # for its fakes alone, exactly as the orchestration suite does.
