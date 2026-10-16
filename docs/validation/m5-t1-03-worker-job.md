@@ -502,7 +502,43 @@ backed by disk_number and mounted at drive_letter"**——
 `m5.execution_scheduler`、`unit.m4.profile_store`）。
 本改动可能影响的六套 **6/6 绿**，含 `unit.m4.disk_runtime`。
 
-### 4.15 尚未接线（T1-03 最后一件）
+### 4.15 part 20 — 验收读数与"reclaim 卡住"的定位（**未通过，原因已收窄**）
+
+**读数**：`m5.production_execution_backend` `-Repeat 1`，请求
+`bbe52c6015344aecac5739de020e1f4e`，**0/1**（整个用例约 150 s 完成，**不是挂死**）。
+四个邻居**全绿**（含 part 12 那个量残留的强杀用例），失败只有我新加的这一条：
+
+```
+myrd-test: reclaim failed: op=WorkerPipeChannel::read
+           msg=pipe transfer exceeded its bounded wait native=0 code=4107
+FAIL ...m5_production_execution_backend_tests.cpp:792: reclaimed.ok()
+```
+
+**已定位到的事实**（都有代码依据，非推测）：
+
+1. **这个超时是"deadline 驱动"的**：`overlapped_io` 用
+   `WaitForSingleObject(event, remaining_ms(context))` 等管道 I/O
+   （`m5_worker_private_pipe.cpp:137`）——所以 4107 **就是**操作上下文的 deadline 到了；
+2. **把 deadline 提到 120 s（`reclaim_context()`，part 20）之后，它依然超时**
+   ⇒ **worker 在 120 s 内确实没有回包**，不是"预算给少了"；
+3. 整个用例 150 s 左右结束 ⇒ 时间基本都花在这一个命令上；
+4. **失败发生在 `start`**（reclaim 序列 `launch → start → reclaim_leftover` 的第一步实质动作），
+   而不是拆卸那一步——`start` 在 reclaim 模式下要做"attach-only 接管已挂载卷"，
+   即 M3 recovery + `find_recovered_volume` + 几何校验。
+
+**已排除的**：
+
+- **不是** fixture 容量错（part 19 已修，而且几何校验失败会**立刻失败**，不会超时）；
+- **不是** reclaim 没被调用——`reclaim_leftover` 报的是 `WorkerPipeChannel::read` 超时，
+  这说明它**已经把命令发出去并在等回包**；
+- **不是**用例整体挂死（150 s 正常结束）。
+
+**下一步要用实验区分（尚未做）**：对**被强杀的 worker 留下的残留**做 reclaim 会卡，
+那对**一次"干净停止"留下的、没有 AIM 设备在用的卷**做 reclaim 会不会也卡？
+这能把"reclaim 本身有问题"和"残留里的 AIM 设备状态让接管卡住"分开。
+**若后者不卡，则嫌疑集中在 AIM 设备在 worker 被杀后仍存在，接管时与它冲突。**
+
+**未验证，故不作断言**：本增量到此**没有拿到"残留被清掉"的读数**；T1-03 **不能标 PASSED**。
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——

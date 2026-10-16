@@ -279,7 +279,16 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 | 3a | 服务侧驾驶：`ActionKind::reclaim_leftover` + `ServiceWorkerControl::reclaim_leftover`（**覆盖 launch 模式为 `reclaim_existing`**）+ session client | **✅ part 16** |
 | 3b | `IResourceReclaimer` 的生产实现：`LeftoverReclaimer` | **✅ part 17** |
 | 4 | `ServiceRuntime` 接线（换掉 `DeferredResourceReclaimer`） | **✅ part 18** |
-| 5 | 验收用例 `m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created` | **✅ part 18**（读数见下） |
+| 5 | 验收用例 `m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created` | **⚠ 0/1（请求 `bbe52c6015344aecac5739de020e1f4e`）—— 未通过，T1-03 不能标 PASSED** |
+
+**part 20 的读数与定位**：`WorkerPipeChannel::read ... pipe transfer exceeded its bounded wait`
+（4107）。该错误是 **deadline 驱动**的（`overlapped_io` 用
+`WaitForSingleObject(event, remaining_ms(context))`），而**把 deadline 提到 120 s 后依然超时**
+⇒ **worker 在 120 s 内没有回包**，不是预算不足。整个用例约 150 s 结束，**不是挂死**；
+四个邻居全绿。失败点在 `start`（attach-only 接管），不在拆卸。
+**下一步实验**：对"干净停止"留下的卷做 reclaim 是否也卡——用来区分
+"reclaim 本身有问题"与"AIM 设备在 worker 被杀后仍存在、接管时冲突"。
+详见 `docs/validation/m5-t1-03-worker-job.md` §4.15。
 
 **part 18 的关键点**：
 
@@ -819,7 +828,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–15。**剩余片的裁决：选项 A** —— 协议动词 ✅ part 13、`DiskRuntimeMode::reclaim` ✅ part 14、worker 侧（`reclaim_existing` + `reclaim_leftover` 处理器）✅ part 15；**待做：服务侧 `ActionKind` + `IResourceReclaimer` + 接线**。M4 套件 + 五套 M5 逻辑测试 **15/16 绿**（唯一失败是既有 `unit.m4.profile_store` 环境用例）。part 14/15 各抓到一次"检查答错了问题、会报成功却什么也没做"的同形状缺陷。证据 `docs/validation/m5-t1-03-worker-job.md` |
+| T1-03 | **IN_PROGRESS** | part 1–20。协议动词 ✅、`DiskRuntimeMode::reclaim` ✅、worker 侧 ✅、服务侧驾驶 ✅、`LeftoverReclaimer` ✅、`ServiceRuntime` 接线 ✅、验收用例已写但 **⚠ 0/1**：reclaim 在 `start`（attach-only 接管）**120 s 内不回包**，`WorkerPipeChannel::read` deadline 超时（4107）。**下一步用"干净停止的卷"做对照实验**区分"reclaim 本身"与"AIM 残留设备冲突"。**未拿到读数前不得标 PASSED**。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
