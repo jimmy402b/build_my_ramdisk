@@ -235,6 +235,39 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 
 ---
 
+#### T1-03 剩余片：真正的 reclaimer（**下一片，已精确划定**）
+
+**为什么它是一片而不是一个补丁**：清掉残留需要 **worker 的一个新动词** ——
+"按身份打开一份残留并拆卸它"，而不是"挂载它"。现有 `DiskRuntime::stop` 的拆卸路径
+（`remove_drive_letter` → `dismount_volume` → `stop_aim`，`disk_runtime.cpp:378/398/421`）
+**需要一个已经打开的 `volume_`**，而残留的卷不在任何活着的 runtime 里。
+`adopt_existing` 会去**挂载**，而残留正占着盘符 —— 挂载不是拆卸。
+
+**范围（四件，缺一不可）**：
+
+1. **协议**：新增一个 `WorkerCommand`（按现有约定**追加**，不插入），
+   语义是"打开这份残留并拆卸，不挂载"；
+2. **worker 运行时**：实现该动词。它需要 M3 的只读打开 + 拆卸调用，
+   **不得**走 `start`/`recover` 的挂载路径；
+3. **服务侧 reclaimer**：实现 `IResourceReclaimer::reclaim`，
+   用**已证明的** `ObservedResourceIdentity`（卷 GUID + 盘符 + bundle 身份）去请求拆卸，
+   并且**只有**在身份匹配时才动手；
+4. **接线**：`ServiceRuntime` 把 `DeferredResourceReclaimer` 换成它。
+
+**验收（已存在的用例已经断言了"残留存在"，所以实现会被逼红）**：
+`m5_backend_a_killed_worker_leaves_no_process_mount_or_device`
+（`m5_production_execution_backend_tests.cpp`）现在断言**盘符仍被分配**；
+实现之后要把那两条断言改成"已清除"，并让用例同时覆盖**否例**：
+身份不匹配时**不清**且报 needs-attention。读数**至少 `-Repeat 20`**（这是崩溃回收类行为）。
+
+**实测残留（part 12，客机人工量测）**：`workers: 0 / disks: 1,0 / letters: C,Z`，
+`Get-Volume` 显示 `Z  MyRamDisk`。这就是验收要消灭的三个事实。
+
+**边界**：不得改 M3 的 bundle / journal / manifest 布局（不变量 4）；
+不得按进程名 / AIM 编号 / 显示名清理（设计 §5.5）。
+
+---
+
 ### T1-04 — 读/写分离
 
 | 字段 | 内容 |
@@ -686,7 +719,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–12：逻辑 `m5.worker_sweep_policy` 25/25、`m5.worker_binding_store` 17/17、`m5.worker_sweep` 14/14、`m5.service_host` 14/14（开发机）；VM `m5.startup_sweep` **`-Repeat 20` 20/20**（part 8）、`m5.production_execution_backend` **`-Repeat 3` 3/3**（part 11）、**`-Repeat 1` 1/1**（part 12，强杀持卷 worker **量到设备残留**：盘符 `Z:` 与 AIM 盘都在，进程已消失）。证据 `docs/validation/m5-t1-03-worker-job.md`。**剩余：实现真正的 reclaimer 去清掉该残留**（现在 `DeferredResourceReclaimer` 如实报"无法动手"） |
+| T1-03 | **IN_PROGRESS** | part 1–12 完成（见下）。**剩余 1 片：真正的 reclaimer**，已精确划定为"协议 + worker 动词 + 服务侧 reclaimer + 接线"四件，验收与实测残留见上方专门小节。part 12 已把残留**量出来并断言为存在**，所以实现会被逼红 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
