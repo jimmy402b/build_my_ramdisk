@@ -24,10 +24,12 @@
 
 #include "src/common/result.h"
 #include "src/management/worker_process_source.h"
+#include "src/management/worker_sweep_policy.h"
 
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace myrd::management {
@@ -48,6 +50,17 @@ struct WorkerSweepReport final {
     // is a needs-attention condition: a worker that will not die still holds its
     // device.
     std::uint32_t failed_to_terminate{};
+    // Profiles whose leftover resources could be *proven* to be theirs, so a
+    // reclamation may act on them.  Counted separately from the process counts
+    // because a process and a device are different leaks: a worker that is gone can
+    // still have left a mounted volume behind.
+    std::uint32_t reclaimable_profiles{};
+    // Profiles with leftover resources that could **not** be proven.  This is the
+    // count that matters most and it is not a failure of the sweep: design section
+    // 5.5 says an unprovable attribution must be *reported* rather than acted on,
+    // and a sweep that silently reclaimed nothing here would look identical to one
+    // that found nothing to do.
+    std::uint32_t unprovable_profiles{};
     // The first failure's text, for the operator.  Kept as text rather than as an
     // error object because the sweep is not itself a failure when one process
     // refuses: it reports and moves on, which is the difference between a sweep
@@ -55,7 +68,8 @@ struct WorkerSweepReport final {
     std::wstring first_failure;
 
     [[nodiscard]] bool needs_attention() const noexcept {
-        return left_alone != 0 || failed_to_terminate != 0;
+        return left_alone != 0 || failed_to_terminate != 0
+            || unprovable_profiles != 0;
     }
     [[nodiscard]] std::uint32_t acted_on() const noexcept {
         return asked_to_terminate + forced_to_terminate;
@@ -77,6 +91,51 @@ public:
         const = 0;
 };
 
+// Supplies what the durable records observed about one profile's resources.
+//
+// The sweep needs this to answer design section 5.5's question -- "may I clean up
+// what this profile left behind?" -- and it is a separate seam from the bindings
+// because the two come from different places and fail differently: a missing
+// binding makes a *process* unattributable, a missing identity makes a *device*
+// unattributable, and a sweep must be able to report either without the other.
+class IObservedResourceIdentitySource {
+public:
+    virtual ~IObservedResourceIdentitySource() noexcept = default;
+
+    // `nullopt` means no record exists for the profile -- which is a legitimate
+    // answer and a different one from an incomplete identity, exactly as
+    // `WorkerBindingStore::find` distinguishes them.
+    [[nodiscard]] virtual Result<
+        std::vector<std::pair<product::Uuid, std::optional<ObservedResourceIdentity>>>>
+    observed_identities() const = 0;
+};
+
+// Acts on a profile's leftovers once the identity has been proven.
+//
+// An interface because the production implementation needs a real device to do
+// anything: the only component allowed to open a volume is a worker, so reclaiming
+// means launching one and asking it.  That is `T1-06`'s territory, and until it
+// exists the honest implementation is one that **reports rather than acts** --
+// which is why this seam exists now.  Without it, `reclaimable_resources` had no
+// caller at all, and a decision nobody consults is the "no consumer" defect this
+// project has already recorded three times.
+class IResourceReclaimer {
+public:
+    virtual ~IResourceReclaimer() noexcept = default;
+
+    // Whether this reclaimer can actually carry out a reclamation.  False lets the
+    // sweep say "I proved ownership but cannot act" rather than reporting success
+    // it did not achieve.
+    [[nodiscard]] virtual bool can_reclaim() const noexcept = 0;
+
+    // Called only for an identity `reclaimable_resources` has accepted.  Returns
+    // whether the leftovers were removed; `false` is a needs-attention condition,
+    // not an error.
+    [[nodiscard]] virtual Result<bool> reclaim(
+        const product::Uuid& profile_id,
+        const ObservedResourceIdentity& identity) = 0;
+};
+
 // How long an orphan gets to leave on its own before it is ended.
 struct WorkerSweepOptions final {
     // Generous on purpose.  An ordered teardown dismounts a volume, removes a
@@ -92,8 +151,17 @@ struct WorkerSweepOptions final {
 // Runs one sweep.  Returns a report rather than a failure for per-process
 // problems: a sweep that aborted on the first stubborn orphan would leave the
 // rest of them untouched.
+//
+// `identities` and `reclaimer` are optional and default to null, in which case the
+// resource half is simply not attempted and the report says nothing about it
+// (`reclaimable_profiles` and `unprovable_profiles` both zero).  That is a real
+// configuration: a service composed without a reclaimer, and every test that is only
+// about processes.  What it is *not* is a silent success -- the counts distinguish
+// "not attempted" from "attempted and nothing to do".
 [[nodiscard]] Result<WorkerSweepReport> run_worker_sweep(
     IWorkerProcessSource& source, const IExpectedWorkerBindings& bindings,
-    const WorkerSweepOptions& options);
+    const WorkerSweepOptions& options,
+    const IObservedResourceIdentitySource* identities = nullptr,
+    IResourceReclaimer* reclaimer = nullptr);
 
 } // namespace myrd::management

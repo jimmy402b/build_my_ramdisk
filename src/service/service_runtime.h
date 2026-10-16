@@ -135,6 +135,10 @@ private:
     // The start-up sweep and the two pieces it needs.  Declared after the store it
     // reads and after the job it enumerates, both of which it borrows.
     std::optional<service::FingerprintWorkerBindings> expected_bindings_;
+    // The resource half of the sweep: the durable identities, and the reclaimer that
+    // currently reports it cannot act.  Declared before the sweep that borrows both.
+    std::optional<service::ProfileResourceIdentities> resource_identities_;
+    service::DeferredResourceReclaimer resource_reclaimer_{};
     std::optional<service::ProductionStartupSweep> startup_sweep_;
     StderrServiceLogger logger_{};
     SystemIdGenerator ids_{};

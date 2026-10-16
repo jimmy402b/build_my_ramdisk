@@ -36,17 +36,57 @@ FingerprintWorkerBindings::expected() const {
         std::move(bindings));
 }
 
+ProfileResourceIdentities::ProfileResourceIdentities(
+    management::IServiceProfileStore& store) noexcept
+    : store_(store) {}
+
+Result<std::vector<std::pair<product::Uuid,
+                             std::optional<management::ObservedResourceIdentity>>>>
+ProfileResourceIdentities::observed_identities() const {
+    auto snapshots = store_.list_profiles();
+    if (!snapshots.ok()) {
+        // Propagated, never answered with an empty list: an empty list means "no
+        // profile left anything behind", which would let a read failure look like a
+        // clean machine.
+        return Result<std::vector<std::pair<
+            product::Uuid, std::optional<management::ObservedResourceIdentity>>>>::
+            failure(snapshots.error());
+    }
+
+    std::vector<std::pair<product::Uuid,
+                          std::optional<management::ObservedResourceIdentity>>>
+        identities;
+    identities.reserve(snapshots.value().size());
+    for (const auto& snapshot : snapshots.value()) {
+        // The generation the checkpoint state stands at, and the bundle file identity
+        // that is deliberately absent -- see the header for why, and for why absent
+        // here means "unprovable" rather than "nothing to do".
+        auto identity = management::project_observed_identity(
+            snapshot.record, std::nullopt,
+            snapshot.checkpoint.confirmed_generation);
+        identities.emplace_back(snapshot.record.profile.profile_uuid,
+                                std::move(identity));
+    }
+    return Result<std::vector<std::pair<
+        product::Uuid, std::optional<management::ObservedResourceIdentity>>>>::
+        success(std::move(identities));
+}
+
 ProductionStartupSweep::ProductionStartupSweep(
     management::IWorkerProcessSource& source,
     const management::IExpectedWorkerBindings& bindings,
-    management::WorkerSweepOptions options)
-    : source_(source), bindings_(bindings), options_(options) {}
+    management::WorkerSweepOptions options,
+    const management::IObservedResourceIdentitySource* const identities,
+    management::IResourceReclaimer* const reclaimer)
+    : source_(source), bindings_(bindings), options_(options),
+      identities_(identities), reclaimer_(reclaimer) {}
 
 Result<void> ProductionStartupSweep::run_sweep() {
     last_report_.reset();
     last_error_.clear();
 
-    auto report = management::run_worker_sweep(source_, bindings_, options_);
+    auto report = management::run_worker_sweep(source_, bindings_, options_,
+                                              identities_, reclaimer_);
     if (!report.ok()) {
         last_error_ = report.error().message;
         return Result<void>::failure(report.error());

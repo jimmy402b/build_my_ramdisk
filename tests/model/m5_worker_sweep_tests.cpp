@@ -107,6 +107,66 @@ public:
     }
 };
 
+// The durable resource records, as the profile store would hand them over.
+class FakeIdentities final : public IObservedResourceIdentitySource {
+public:
+    std::vector<std::pair<product::Uuid, std::optional<ObservedResourceIdentity>>>
+        entries;
+    bool fails{false};
+
+    [[nodiscard]] Result<std::vector<
+        std::pair<product::Uuid, std::optional<ObservedResourceIdentity>>>>
+    observed_identities() const override {
+        if (fails) {
+            return Result<std::vector<std::pair<
+                product::Uuid, std::optional<ObservedResourceIdentity>>>>::failure(
+                {ErrorDomain::internal, 5, L"observed_identities",
+                 L"the durable profile store could not be read", 0});
+        }
+        return Result<std::vector<std::pair<
+            product::Uuid, std::optional<ObservedResourceIdentity>>>>::success(
+            entries);
+    }
+};
+
+// A reclaimer that records what it was asked to do, and can be told either that it
+// cannot act at all or that its action failed.
+class FakeReclaimer final : public IResourceReclaimer {
+public:
+    bool able{true};
+    bool succeed{true};
+    bool fail_call{false};
+    std::vector<product::Uuid> reclaimed;
+
+    [[nodiscard]] bool can_reclaim() const noexcept override { return able; }
+
+    [[nodiscard]] Result<bool> reclaim(const product::Uuid& profile_id,
+                                       const ObservedResourceIdentity&) override {
+        reclaimed.push_back(profile_id);
+        if (fail_call) {
+            return Result<bool>::failure(
+                {ErrorDomain::internal, 6, L"reclaim", L"injected", 0});
+        }
+        return Result<bool>::success(succeed);
+    }
+};
+
+// A complete identity, as `m5_worker_sweep_policy_tests` builds one for the
+// projection cases.
+ObservedResourceIdentity complete_identity() {
+    ObservedResourceIdentity identity{};
+    persistence::ImageUuid image{};
+    image.bytes[0] = std::byte{0x11};
+    identity.bundle_image_id = image;
+    BundleFileIdentity file{};
+    file.volume_serial = 0x1234;
+    identity.bundle_file_identity = file;
+    identity.volume_guid = "\\\\?\\Volume{5a5a5a5a-6b6b-7c7c-8d8d-9e9e9e9e9e9e}\\";
+    identity.mount_target = L'R';
+    identity.generation = 7;
+    return identity;
+}
+
 } // namespace
 
 TEST_CASE(m5_sweep_terminates_an_orphan_it_cannot_place) {
@@ -275,4 +335,153 @@ TEST_CASE(m5_sweep_with_no_orphans_is_a_clean_report) {
     REQUIRE_EQ(report.value().orphans_observed, 0U);
     REQUIRE(!report.value().needs_attention());
     REQUIRE(source.calls.empty());
+}
+
+// ---------------------------------------------------------------------------
+// The resource half: what may be cleaned up, and what may not.
+//
+// This is the only caller `reclaimable_resources` has.  Before it existed the
+// function was implemented, tested, and consulted by nothing -- the "no consumer"
+// defect this project has recorded three times, and one that is invisible because
+// every test still passes.
+// ---------------------------------------------------------------------------
+
+TEST_CASE(m5_sweep_reclaims_a_proven_resource) {
+    FakeWorkerProcessSource source;
+    FakeWorkerBindings bindings;
+    FakeIdentities identities;
+    identities.entries = {{profile_a(), complete_identity()}};
+    FakeReclaimer reclaimer;
+
+    const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                         &identities, &reclaimer);
+    REQUIRE(report.ok());
+    REQUIRE_EQ(report.value().reclaimable_profiles, 1U);
+    REQUIRE_EQ(report.value().unprovable_profiles, 0U);
+    REQUIRE(!report.value().needs_attention());
+    REQUIRE_EQ(reclaimer.reclaimed.size(), 1U);
+    REQUIRE(reclaimer.reclaimed[0] == profile_a());
+}
+
+TEST_CASE(m5_sweep_refuses_to_reclaim_an_unprovable_resource) {
+    // Design section 5.5's rule, and the case that matters: an identity that cannot
+    // be proven must be **reported**, never acted on.  A sweep that quietly skipped it
+    // would be indistinguishable from one that found nothing to do -- which is
+    // exactly how a leftover device goes unnoticed.
+    FakeWorkerProcessSource source;
+    FakeWorkerBindings bindings;
+    FakeIdentities identities;
+
+    auto incomplete = complete_identity();
+    incomplete.volume_guid.clear();
+    identities.entries = {{profile_a(), incomplete}};
+    FakeReclaimer reclaimer;
+
+    const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                         &identities, &reclaimer);
+    REQUIRE(report.ok());
+    REQUIRE_EQ(report.value().reclaimable_profiles, 0U);
+    REQUIRE_EQ(report.value().unprovable_profiles, 1U);
+    REQUIRE(report.value().needs_attention());
+    // And nothing was asked of the reclaimer.
+    REQUIRE(reclaimer.reclaimed.empty());
+}
+
+TEST_CASE(m5_sweep_treats_an_absent_identity_as_unprovable) {
+    // `nullopt` is "no record exists", which is a different answer from "the record is
+    // incomplete" and leads to the same conclusion here: nothing may be reclaimed.
+    FakeWorkerProcessSource source;
+    FakeWorkerBindings bindings;
+    FakeIdentities identities;
+    identities.entries = {{profile_a(), std::nullopt}};
+    FakeReclaimer reclaimer;
+
+    const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                         &identities, &reclaimer);
+    REQUIRE(report.ok());
+    REQUIRE_EQ(report.value().unprovable_profiles, 1U);
+    REQUIRE(report.value().needs_attention());
+    REQUIRE(reclaimer.reclaimed.empty());
+}
+
+TEST_CASE(m5_sweep_reports_a_proven_resource_it_cannot_reclaim) {
+    // The state T1-06 fills in, and it must not be reported as done.  A reclaimer that
+    // cannot act, or that acts and fails, leaves a proven leftover in place -- so the
+    // count stays in `unprovable_profiles` and the report says attention is needed,
+    // even though the *identity* was fine.
+    FakeWorkerProcessSource source;
+    FakeWorkerBindings bindings;
+    FakeIdentities identities;
+    identities.entries = {{profile_a(), complete_identity()}};
+
+    {
+        FakeReclaimer unable;
+        unable.able = false;
+        const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                             &identities, &unable);
+        REQUIRE(report.ok());
+        REQUIRE_EQ(report.value().reclaimable_profiles, 1U);
+        REQUIRE_EQ(report.value().unprovable_profiles, 1U);
+        REQUIRE(report.value().needs_attention());
+        REQUIRE(unable.reclaimed.empty());
+        REQUIRE(!report.value().first_failure.empty());
+    }
+
+    {
+        FakeReclaimer failing;
+        failing.succeed = false;
+        const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                             &identities, &failing);
+        REQUIRE(report.ok());
+        REQUIRE_EQ(report.value().unprovable_profiles, 1U);
+        REQUIRE(report.value().needs_attention());
+        REQUIRE_EQ(failing.reclaimed.size(), 1U);
+    }
+
+    {
+        FakeReclaimer throwing;
+        throwing.fail_call = true;
+        const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                             &identities, &throwing);
+        REQUIRE(report.ok());
+        REQUIRE_EQ(report.value().unprovable_profiles, 1U);
+        REQUIRE(!report.value().first_failure.empty());
+    }
+}
+
+TEST_CASE(m5_sweep_fails_rather_than_reporting_everything_unprovable) {
+    // Unreadable identities are fatal, for the same reason unreadable bindings are:
+    // with no records every leftover looks unprovable, so proceeding would report every
+    // disk as needing attention -- and a caller that read "unprovable" as "nothing to
+    // do" would silently do nothing at all.
+    FakeWorkerProcessSource source;
+    FakeWorkerBindings bindings;
+    FakeIdentities identities;
+    identities.fails = true;
+    FakeReclaimer reclaimer;
+
+    const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                         &identities, &reclaimer);
+    REQUIRE(!report.ok());
+    REQUIRE(report.error().operation == L"observed_identities");
+    REQUIRE(reclaimer.reclaimed.empty());
+}
+
+TEST_CASE(m5_sweep_says_nothing_about_resources_when_it_has_no_identity_source) {
+    // A service composed without the resource half is legitimate, and its report must
+    // be distinguishable from "attempted and found nothing wrong": both counts stay
+    // zero, and neither is a needs-attention condition.  Process-only callers -- every
+    // earlier case in this file -- keep their existing meaning.
+    FakeWorkerProcessSource source;
+    source.orphans = {orphan(1, 10, std::nullopt)};
+    FakeWorkerBindings bindings;
+    FakeReclaimer reclaimer;
+
+    const auto report = run_worker_sweep(source, bindings, WorkerSweepOptions{},
+                                         nullptr, &reclaimer);
+    REQUIRE(report.ok());
+    REQUIRE_EQ(report.value().reclaimable_profiles, 0U);
+    REQUIRE_EQ(report.value().unprovable_profiles, 0U);
+    REQUIRE_EQ(report.value().forced_to_terminate, 1U);
+    REQUIRE(reclaimer.reclaimed.empty());
 }

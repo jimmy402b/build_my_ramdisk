@@ -287,7 +287,45 @@ durable `Profile` 记录里已经有 `volume_guid`、`gpt_disk_guid`、`partitio
 **最终读数**：`m5.startup_sweep` **`-Repeat 20` = 20/20**
 （请求 `c2a2c6bf0bbd43baafdb84d3426f82dd`）。
 
-### 4.8 尚未接线（T1-03 最后一步）
+### 4.8 本轮（part 9）：给"能不能回收"这个判断**接上消费者**
+
+**发现**：`reclaimable_resources` 与 `project_observed_identity` 在 `src/` 里
+**一个调用点都没有**——实现了、测过了、**没有任何代码问它们**。
+这正是设计 §7.3 警告过、而且**本项目已经栽过三次**的"没有生产者/没有消费者"缺陷，
+而且它的恶劣之处是**所有测试照旧全绿**。
+
+**修法**：`run_worker_sweep` 增加资源半边，并且是**唯一**的调用者：
+
+- 新增 `IObservedResourceIdentitySource`（durable 记录 → 身份）
+  与 `IResourceReclaimer`（证明归属之后**动手**）两个接缝；
+- 资源半边**排在进程半边之后**——先终止 worker 再回收它留下的东西，
+  这个顺序不会去回收一个**活着的 worker 正在用**的设备；反过来则会和它抢自己的卷；
+- 报告新增两个计数：`reclaimable_profiles`（**能证明**归属）与
+  `unprovable_profiles`（**不能证明**）。
+  **`unprovable_profiles` 一旦非零就计入 needs-attention**——设计 §5.5 要求
+  "无法证明归属 → 报告而不是动手"，而一个**默默什么都不回收**的 sweep
+  与一个**真的没什么可做**的 sweep 从外面看是一样的；
+- **读不到身份 = 致命**（和读不到绑定同理）：没有记录时每一份残留都"无法证明"，
+  于是每一次启动都会把所有盘报成 needs-attention；而如果调用方把"无法证明"
+  读成"无事可做"，就会**悄悄什么都不做**。
+
+**生产接线，以及它现在能做什么、不能做什么**（都写进代码注释，不靠记忆）：
+
+- 卷的那一半来自 durable profile 记录（`volume_guid` / `mount_target` / GPT 身份），**是持久的**；
+- **bundle 的那一半拿不到**：需要 bundle 目录的 **file identity**，而它**不在** durable profile
+  记录里——它跟着 bundle registration evidence，今天唯一被持久化的地方是**删除墓碑**。
+  所以普通 profile 的身份**必然不完整** ⇒ sweep 报 `unprovable` 而**不回收**。
+
+**这是正确结果而不是占位符**：拿一个谁都没确立过的 bundle 身份去回收一个卷，
+就是**凭猜测动手**。生产里的 reclaimer 因此是 `DeferredResourceReclaimer`，
+`can_reclaim()` 返回 false ⇒ **已证明的残留仍然计入 needs-attention，而不是被报成已清理**。
+
+**读数**：开发机 `m5.worker_sweep` **14/14**（新增 6 个资源半边的用例，
+含"能证明但回收不了必须报 needs-attention"这一条）；
+VM `m5.startup_sweep` `-Repeat 5` **5/5**（请求 `df1f78bc01114221b2a02db96363d1a5`）——
+本机没有 profile，所以资源半边不动，进程半边照旧。
+
+### 4.9 尚未接线（T1-03 最后一步）
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——

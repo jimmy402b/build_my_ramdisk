@@ -171,8 +171,12 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
             return snapshot.value().state.disk.runtime
                 == product::RuntimeState::running;
         });
+    runtime->resource_identities_.emplace(*runtime->registrations_);
     runtime->startup_sweep_.emplace(*runtime->processes_,
-                                    *runtime->expected_bindings_);
+                                    *runtime->expected_bindings_,
+                                    management::WorkerSweepOptions{},
+                                    &*runtime->resource_identities_,
+                                    &runtime->resource_reclaimer_);
 
     // The core borrows every store above, so it is emplaced after them; the
     // scheduler borrows the core, so it is emplaced after that.

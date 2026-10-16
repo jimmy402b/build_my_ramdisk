@@ -6,7 +6,9 @@ namespace myrd::management {
 
 Result<WorkerSweepReport> run_worker_sweep(
     IWorkerProcessSource& source, const IExpectedWorkerBindings& bindings,
-    const WorkerSweepOptions& options) {
+    const WorkerSweepOptions& options,
+    const IObservedResourceIdentitySource* const identities,
+    IResourceReclaimer* const reclaimer) {
     // What the job holds that this session did not launch.  Read before anything
     // is touched, so the report describes the world the sweep found rather than
     // the one it made.
@@ -103,6 +105,68 @@ Result<WorkerSweepReport> run_worker_sweep(
             }
             break;
         }
+        }
+    }
+
+    // The resource half, and the reason it is here rather than nowhere: this is the
+    // only caller `reclaimable_resources` has, and a decision no code consults is the
+    // "no consumer" defect this project has recorded three times.
+    //
+    // It runs *after* the process half on purpose.  Terminating a worker and then
+    // reclaiming what it left is the order that cannot reclaim a device a live worker
+    // is still using; the reverse would race the worker for its own volume.
+    if (identities != nullptr) {
+        auto identities_result = identities->observed_identities();
+        if (!identities_result.ok()) {
+            // Fatal, for the same reason an unreadable binding store is: with no
+            // identities, every profile's leftovers would look unprovable and a
+            // sweep that proceeded would report every disk as needing attention --
+            // or, worse, a caller that read "unprovable" as "nothing to do" would
+            // silently do nothing at all.
+            return Result<WorkerSweepReport>::failure(identities_result.error());
+        }
+
+        for (const auto& [profile_id, identity] : identities_result.value()) {
+            // The one call that turns an observation into permission.  `nullopt`
+            // means "cannot prove ownership", which design section 5.5 requires be
+            // *reported* rather than acted on.
+            const auto allowed = reclaimable_resources(identity);
+            if (!allowed.has_value()) {
+                ++report.unprovable_profiles;
+                continue;
+            }
+
+            ++report.reclaimable_profiles;
+            if (reclaimer == nullptr || !reclaimer->can_reclaim()) {
+                // Proven, and there is nothing here that can act on it.  Counted as
+                // still needing attention rather than as done: this is precisely the
+                // state T1-06 fills in, and reporting it as success would be claiming
+                // a cleanup that did not happen.
+                ++report.unprovable_profiles;
+                if (report.first_failure.empty()) {
+                    report.first_failure =
+                        L"the resources of a profile are provably its own, but this "
+                        L"service has no way to reclaim them yet";
+                }
+                continue;
+            }
+
+            auto reclaimed = reclaimer->reclaim(profile_id, *allowed);
+            if (!reclaimed.ok()) {
+                ++report.unprovable_profiles;
+                if (report.first_failure.empty()) {
+                    report.first_failure = reclaimed.error().message;
+                }
+                continue;
+            }
+            if (!reclaimed.value()) {
+                // It ran and did not succeed.  Reported, never silently dropped.
+                ++report.unprovable_profiles;
+                if (report.first_failure.empty()) {
+                    report.first_failure =
+                        L"a proven resource could not be reclaimed";
+                }
+            }
         }
     }
 
