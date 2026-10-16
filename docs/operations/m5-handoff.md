@@ -347,6 +347,35 @@ if (work.wait_for(timeout) != std::future_status::ready) { return timeout_error;
 那种情况要用 `CancelIoEx` 之类**真正取消**（本项目的 part 23/36/39 就是这么做的），
 **不是**丢下不管。
 
+### 7.0.7 **设计缺口：设计文档从未设计"如何找到那块物理盘"**（2026-10-16，**T1-03 的真正阻塞**）
+
+**若下一位接手 T1-03，先读这条，它比 trace 更重要。**
+
+设计文档 `docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md`（434 行）
+对 **`盘符`** 有 10 次交代，但对
+**`SetupDi` / `DeviceInterface` / `dev_inst` / `SCSI` / `PhysicalDrive` 全部 0 次**——
+**即"把 AIM 代理盘对应到 Windows 物理盘号"这一步，设计里根本没有。**
+
+而实现必须有这一步（要对那块盘 `remove`/`restore`），
+于是 M0/M3 **自行选择了"全机器枚举磁盘接口"**（`enumerate_disk_candidates`，
+`SetupAPI` + 每块盘查 `IOCTL_SCSI_GET_ADDRESS` / `IOCTL_STORAGE_GET_DEVICE_NUMBER`）。
+
+**这个自选机制在本项目客机上不可靠**：实测**卡住 80+ 秒不返回**，
+且**每次 worker 启动都会跑**，于是套件里越跑越糟
+（`-Repeat 20` 有 18 次连第 3 条用例都过不去）。
+
+**已做（有用但不解决它）**：给枚举加了界（10 s，detached 线程），
+并**下沉到函数本身**使 M1/M2/POC 全部受益（`174799b`）。
+**效果是"挂死 80 s + 不透明 4107"变成"10 s 内失败并指名 `enumerate_disk_candidates`"**。
+**但它不会让 reclaim 成功**。
+
+**未决（需用户/设计裁决）**：三条路——
+① 改按 **SCSI 地址**（`DeviceId` 里的 `path/target/lun`）直接构造设备路径打开，不枚举；
+② 换成**有界/定向**的发现（只查 AIM 适配器 `dev_inst` 下的子设备，或换能按身份查询的接口）；
+③ **扩展 AIM 查询**让驱动报盘号（**已知当前报的是 AIM 自己的设备号，故须改协议/驱动**）。
+
+**注意**：**不要**把"枚举加界"当成已经修好——它只是让失败可见。
+
 ### 7.0.4 reclaim 用例首次运行**挂住**：多于 30 分钟无结果且 SSH 停止响应（2026-10-16）
 
 **现象**：`-Run -Filter '^m5\.production_execution_backend$' -Repeat 1 -MinTimeoutSeconds 900`
