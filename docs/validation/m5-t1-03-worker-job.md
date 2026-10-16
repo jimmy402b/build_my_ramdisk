@@ -655,6 +655,54 @@ part 3 的 `LeftoverReclaimer` 用例只用了 fake 的 profile store 与 worker
 具体手段需要在 M3/AIM 适配层找一条"查询并清理既有设备"的路径
 （**若不存在，则属于设计需要新增的能力，要记录并请示**）。
 
+#### 4.15.5 **机制查清：那个 `DeviceIoControl` 本身没有超时**（part 23）
+
+**AIM 启动路径**（`m3_windows_acceptance.cpp:138` `M3AimRuntime::start()` 起）：
+`M3Provider::open` → `provider->start` → `discover_aim_adapter` →
+`snapshot_physical_drive_numbers`（**baseline**）→
+**`create_proxy_disk`（:187）** → `rescan_aim_adapter`（:201）→
+`QUERY_DEVICE` 校验（:222）→ `wait_for_created_physical_drive`（:224）。
+
+**关键代码事实**（这是"为什么会永不返回"的答案）：
+
+- `DirectAimAdapter::create_proxy_disk`（`direct_aim_adapter.cpp:96`）确实**传了 30 秒**：
+  `transport_.transact(kCreateDevice, payload, 4, 30)`；
+- 但 `WindowsSrbTransport::transact`（`windows_srb_transport.cpp:26`）是
+  **同步 `DeviceIoControl`**——`lpOverlapped` 传的是 **`nullptr`**，
+  **也没有 `CancelIoEx`**：
+
+  ```cpp
+  BOOL ok = DeviceIoControl(
+      adapter_, IOCTL_SCSI_MINIPORT,
+      frame.value().data(), input_size,
+      frame.value().data(), output_size,
+      &bytes_returned, nullptr);      // ← 没有 overlapped，没有取消
+  ```
+
+- 那个 `30` **只是写进 SRB 帧里给驱动看的**
+  （`build_srb_frame(..., timeout_seconds)`），
+  **它并不约束 `DeviceIoControl` 自身**。
+
+**结论**：**驱动若不回应，这个 `DeviceIoControl` 会永远阻塞**，
+把所有上层超时（30 s provider、120 s 命令预算）**全部穿透**。
+这与四次客机读数完全一致：worker 阻塞在系统调用、CPU 几乎不涨、
+直到服务侧 deadline 到期才由**服务**放弃，worker 进程则被随之结束。
+
+**为什么会触发**：被杀 worker 留下的 **proxy disk 设备仍在**（`KILL_ON_JOB_CLOSE` 刻意不设），
+新的 reclaim worker 再对同一块盘做 `CREATE_DEVICE` / `RESCAN` 时，
+**AIM 驱动在这个状态上没有回应**。
+
+**因此修法有两条，且都需要记录（本轮不动手）**：
+
+1. **让驱动调用可超时**（把 `DeviceIoControl` 改成 overlapped + `CancelIoEx`，
+   让那个 30 秒真正生效）——**动的是 M0/M3 的驱动通信层**，
+   属于"重写某一层"，**按 goal 规则必须停下来问**；
+2. **reclaim 前先确认/移除遗留设备**（绕开冲突），但 `M3AimRuntime` 只公开
+   `start`/`stop`，`remove_owned_device` 是**私有**的 ⇒
+   需要**新增一个公开能力**，同样是设计新增。
+
+**两条都不是"实现细节"，故本轮不自行选择**，已写入 plan 待裁决。
+
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
