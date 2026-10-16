@@ -301,9 +301,24 @@ reclaim 在 `start` 里的严格顺序是
 part 12 不调 reclaim，part 18 的验收用例至今 0/1。
 **代码编译通过、接线完整，但零成功的端到端行为证据。**
 
-**下一步抓手**：给 reclaim 路径**每一步写文件 trace**（本项目既有纪律：
-先加一条能区分假设的诊断），跑一次即可定位是第 2 步还是第 3 步。
-详见 `docs/validation/m5-t1-03-worker-job.md` §4.15。
+**part 22 的步骤 trace 给出了确定答案**（`MYRD_RECLAIM_TRACE`，仅 reclaim 模式包装，每步一行并强制 flush）：
+
+```
+acquire_bundle_lock: begin → ok      (2 ms)
+recover_complete_image: begin → ok   (116 ms)   ← M3 恢复无责
+start_aim: begin → 此后无输出                    ← **卡在这里**
+```
+
+**结论：阻塞点是 `start_aim`**；机制在代码里也定位到了：
+`ProductionRuntimeAdapter::start()`（`runtime_adapter.cpp:342`）用
+`request_timeout = 30 s` 建并启动 `M3AimRuntime`，
+而**被杀 worker 的 AIM 设备仍在**（`KILL_ON_JOB_CLOSE` 刻意不设 ⇒ 无人替它清理），
+新 runtime 起来时与之冲突/等待，**永不返回**。
+**M3 恢复已被排除 ⇒ 不需要上升到不变量 4。**
+
+**最后一步（未做，故不得标 PASSED）**：reclaim 路径在 `start_aim` 之前
+**先确认/移除遗留的 AIM 设备**；若 M3/AIM 层没有这样的能力，
+那是**需要新增的设计能力，必须记录并请示**，不得自行发明。
 
 **part 18 的关键点**：
 
@@ -843,7 +858,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–21。全部实现 ✅（协议动词、`DiskRuntimeMode::reclaim`、worker 侧、服务侧驾驶、`LeftoverReclaimer`、`ServiceRuntime` 接线），但 **⚠ 端到端验收 0/1**：reclaim 在 `start` 里**阻塞超过 120 s**不回包（CPU 两分钟只涨 0.1 s，是系统调用阻塞；worker 寿命正好等于预算）。候选缩到两步：M3 恢复 / **被杀 worker 留下的 AIM 设备冲突**。**reclaim 路径从未跑通过，T1-03 不得标 PASSED**。下一步：给 reclaim 各步加文件 trace 定位。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
+| T1-03 | **IN_PROGRESS** | part 1–22。全部实现 ✅，端到端验收 **⚠ 0/1**，但**根因已由步骤 trace 确定**：卡在 `start_aim`（`acquire_bundle_lock` 2 ms、`recover_complete_image` 116 ms 均成功 ⇒ **M3 恢复无责，不上升不变量 4**）；机制是**被杀 worker 的 AIM 设备仍在**而 `KILL_ON_JOB_CLOSE` 刻意不设，新 AIM runtime 与之冲突永不返回。**剩余：reclaim 在 `start_aim` 前先确认/移除遗留 AIM 设备**；若 M3/AIM 无此能力则为**需请示的设计新增**。Trace 设施已就位（`MYRD_RECLAIM_TRACE`）。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
