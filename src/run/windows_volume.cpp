@@ -1,3 +1,4 @@
+#include "src/common/diagnostic_trace.h"
 #include "src/run/windows_volume.h"
 
 #include <algorithm>
@@ -753,10 +754,16 @@ Result<void> Win32VolumeAdapter::flush(const ProductVolume& owned) const {
 #ifdef _WIN32
     std::wstring device = owned.volume_guid;
     if (!device.empty() && device.back() == L'\\') device.pop_back();
+    // **Both of this function's blocking calls are named, because a reclaim was measured
+    // stopping here.**  A dismantle flushes before it removes the drive letter, so a flush that
+    // never returns is a reclaim that never dismantles -- and the reading could say "flush" but
+    // not *which* call, since neither has a timeout to fail out of.
+    myrd::diagnostic_trace("Win32VolumeAdapter::flush: opening the volume");
     HANDLE handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
         return Result<void>::failure(failure(VolumeError::platform_error, L"flush", L"opening volume failed"));
+    myrd::diagnostic_trace("Win32VolumeAdapter::flush: volume opened, flushing buffers");
     auto verify = [&]() { return verify_native_volume_identity(handle, owned); };
     const auto result = flush_with_identity_checks(verify,
         [&]() -> Result<void> {
@@ -765,6 +772,7 @@ Result<void> Win32VolumeAdapter::flush(const ProductVolume& owned) const {
                     L"flush", L"FlushFileBuffers failed", GetLastError()));
             return Result<void>::success();
         }, verify);
+    myrd::diagnostic_trace("Win32VolumeAdapter::flush: done");
     CloseHandle(handle);
     return result;
 #else
