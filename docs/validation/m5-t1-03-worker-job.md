@@ -998,7 +998,51 @@ FAIL ...m5_production_execution_backend_tests.cpp:744: created.ok()
 
 **下一轮第一件事（一次运行即可判定）**：在**更早**的位置打点——
 worker 主流程的每一阶段（进程起来、读到 launch spec、打开 runtime、连接管道、发首帧），
-而不是只从 `M3AimRuntime::start` 开始。**现有 trace 的第一个点太靠后**，这正是它这次一无所获的原因。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+而不是只从 `M3AimRuntime::start` 开始。**现有 trace 的第一个点太靠后**，这正是它这次一无所获的原因。
+
+#### 4.15.14 **A' 成功了——接管、定位、找卷、校验全部通过**（part 32，本轮）
+
+**先更正上一轮的一个误判**：上一轮"trace 文件从未出现"**不是**"worker 没到达"，
+而是**那次运行的 trace 没有生效**（`_wputenv_s` 没传到那个 worker，或逐次开关文件不可靠）。
+本轮在 worker 启动各阶段加打点后，**同一个 cleanup 路径给出了完整 trace** ——
+所以"阻塞在 `M3AimRuntime::start` 之前"这个结论**作废**，撤回。
+
+**读数**（请求 `5a3542185eb7464a8b022ef43d5219c3`，0/1）：
+
+```
+15:27:42.002Z M3AimRuntime::start: look for an existing device
+15:27:42.003Z   candidate id=0 size=67108864 sector=512 path=...myrd-m1-39f95bee...
+15:27:42.003Z M3AimRuntime::start: ADOPTING the existing device    ← A' 生效
+15:27:42.003Z M3AimRuntime::start: query device
+15:27:42.003Z M3AimRuntime::start: wait for physical drive
+15:27:42.119Z   ok                                                  ← present-wait 生效
+15:27:42.119Z find_recovered_volume: begin
+15:27:42.121Z   ok
+15:27:42.121Z verify_volume: begin
+15:27:42.121Z   ok
+15:27:42.214Z worker: command received                               ← 随后是 reclaim 的拆卸
+```
+
+**这一轮换来的确定结论（多且都是正的）**：
+
+1. **A' 的设计是对的**：设备**名字不同、几何相同**，被判据**正确接管**；
+2. **`find_existing_device` 的几何匹配生效**；
+3. **`wait_for_present_physical_drive`（part 29 新增）生效**——接管的盘**确实被找到**，
+   这正是"靠 baseline 差集找盘"永远做不到的；
+4. **`CM_Reenumerate_DevNode` 被绕开了**：走的是 ADOPTING 分支，**没有 rescan**；
+5. 接管后的**身份校验也没再误删设备**（part 28 修的那点确实必要）。
+
+**剩下的是最后一段**：trace 停在 `verify_volume: ok` 之后、
+`worker: command received` 之前的那一小段——
+即 **`DiskRuntime::start()` 已经成功返回，接下来执行 `reclaim_leftover` 的拆卸**
+（`cleanup` → `shutdown_clean`：删盘符 / 拆卸卷 / **停 AIM** / 释放 bundle 锁），
+**其中某一步阻塞**（stderr 仍是 4107 超时）。
+
+**下一轮第一件事（已定位到很小的范围）**：给**拆卸的每一步**打点
+（`remove_drive_letter` / `dismount_volume` / `stop_aim` / `release_bundle_lock`），
+**一次运行即可指出是哪一步**。**注意**：`stop_aim` 用的是同一个
+`M3AimRuntime::stop()`，而 part 23 只让 **SRB 传输**可超时——
+若 `stop` 走的是别的系统调用（或 PnP），**可能还有第三个无限阻塞点**。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
