@@ -859,7 +859,43 @@ names.driver_path = std::wstring(L"\\BaseNamedObjects\\") + base;
 
 **下一步（下一轮第一件事）**：把 create worker 与 reclaim worker 各自算出的
 `session_id` / `driver_path` 打进 trace 对比一次——**一次运行即可判定**是不是这个原因。
-若是，则修法是让判据不依赖 session id（或让 session id 从 profile/bundle 派生）。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+若是，则修法是让判据不依赖 session id（或让 session id 从 profile/bundle 派生）。
+
+#### 4.15.10 **假设被证实，而且比预想更硬**（part 28）
+
+**读数**（请求 `3eb1fd0c95474ae7805a87ad05f28f55`）——把两侧都打进 trace 后**一次就看清了**：
+
+```
+looking for  path=\BaseNamedObjects\Global\myrd-m1-c91904d39d537e22227c225b5d8f058e
+candidate 256 size=67108864 sector=512 path=...myrd-m1-7f82a121d61ef3896c547049567cb2ff
+candidate 0   size=67108864 sector=512 path=...myrd-m1-d332e262792f35296e1cfc2668d66762
+```
+
+**大小相同、扇区相同、只有名字不同** ⇒ 设备一直在，**只有名字对不上**。
+而名字**永远**对不上：`generate_session_id` 用 `BCryptGenRandom` 生成
+（`src/proxy/object_names.cpp:19`）⇒ **每个 worker 随机**；
+残留带的是**已死 worker** 的 id，而**没有任何 durable 数据记录它**。
+所以原来的判据不是"没满足"，而是**不可能满足**。
+
+**这是"把两侧都打出来"的价值**：第一版只报 found / not found，
+把"设备不存在"和"身份不匹配"报成同一件事——而这是**两个方向相反、修法相反**的问题。
+
+**已改为按几何匹配**（size + sector）。安全性**不来自名字而来自更好的地方**：
+本 runtime 已持有 bundle 的**排他写锁** ⇒ 不可能有别的 worker 在服务这个 bundle；
+而且匹配的这个 size 正是 AIM 创建时用的值、也正是随后 `verify_volume` 检查的值。
+
+**接管带来的两个后果，都已处理或已记录（两者都本来是"静默"的）**：
+
+1. **已修**：`start` 之后那道身份校验会比对 `native_object_path`，
+   而接管的设备**不可能**满足它；那条失败分支会**移除设备**——
+   所以第一版会**先把残留删掉、然后报失败**。现在名字比对**只对新建设备要求**，
+   几何则两者都要求；
+2. **未修，下一件**：`wait_for_created_physical_drive` 是靠"**与启动时 baseline 比较**"
+   来找盘的，而**接管的设备其磁盘本来就在 baseline 里** ⇒ 永远看不到"新创建的"盘。
+   接管路径需要**按 device id 直接定位**，而不是靠 baseline 的差集。
+
+开发机：干净构建 0/0、**33 套 M3/driver/transport 全绿**。
+**本改动的客机读数未取、不作断言。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
