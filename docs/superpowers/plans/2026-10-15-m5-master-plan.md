@@ -686,7 +686,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–6：逻辑 `m5.worker_sweep_policy` 18/18、`m5.worker_binding_store` 10/10、`m5.worker_sweep` 8/8、`m5.service_host` 14/14（开发机）；VM `m5.startup_sweep` **`-Repeat 20` 20/20**（真孤儿被真 sweep 终结）、`m5.production_execution_backend` 3/3。证据 `docs/validation/m5-t1-03-worker-job.md`。**剩余：资源身份回收（设备/盘符）消费者 + 强杀服务/worker 验收** |
+| T1-03 | **IN_PROGRESS** | part 1–7：逻辑 `m5.worker_sweep_policy` 25/25、`m5.worker_binding_store` 10/10、`m5.worker_sweep` 8/8、`m5.service_host` 14/14（开发机）；VM `m5.startup_sweep` **`-Repeat 20` 20/20**（真孤儿被真 sweep 终结，且自带客机守卫）、`m5.production_execution_backend` 3/3。证据 `docs/validation/m5-t1-03-worker-job.md`。**剩余：资源回收消费者（设备/盘符）+ 强杀服务/worker 验收** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
