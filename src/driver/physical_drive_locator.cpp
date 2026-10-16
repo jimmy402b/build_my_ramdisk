@@ -291,7 +291,7 @@ constexpr auto kEnumerateTimeout = std::chrono::seconds(10);
 // a resource nobody owns.  That is materially different from abandoning a teardown, which is why the
 // earlier fixes in this project cancelled where a handle allowed it and this one bounds an execution.
 Result<std::vector<DiskCandidate>> enumerate_disk_candidates_within(
-    const std::chrono::milliseconds timeout) {
+    const std::chrono::milliseconds timeout = kEnumerateTimeout) {
     // Heap state shared with the detached thread rather than locals it would outlive.  The thread may
     // still be inside the kernel when this function gives up, so everything it touches has to survive
     // this scope by construction instead of by an argument about which paths return.
