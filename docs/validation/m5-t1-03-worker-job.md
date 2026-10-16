@@ -1421,6 +1421,46 @@ myrd-m5-worker: the worker's resources could not be released
 **注意**：`remove_owned_device` 的 `REMOVE_DEVICE` 本身也可能需要驱动回应，
 **若同样无界，那就是同一个系统性问题再一处。**
 
+**T1-03 仍不得标 PASSED。**
+
+#### 4.15.24 **定位更新（part 43）：不是第六个无界调用，而是一个"有界但被拒绝"** 
+
+上一节我猜"`REMOVE_DEVICE` 可能也无界"。**读代码后这个猜测不成立，必须更正**：
+
+`M3AimRuntime::remove_owned_device()`（`m3_windows_acceptance.cpp`）是**有界的**：
+
+- `adapter_->remove_device(*owned_device_)` 走 **AIM 的 SRB 传输**，
+  而 **part 23 已让那条传输可超时**；
+- 其后的"确认设备真的消失"轮询有一个**明确的 `deadline = now + device_timeout_`**，
+  超时返回 `cleanup` 域的错误（**不是无限等**）。
+
+⇒ **它不会挂住；它会"失败"**。这与本轮读数一致：
+worker 的 stderr 是 `op=flush msg=opening volume failed`，
+而 **`flush` 的打开失败**（`CreateFileW` 返回 `INVALID_HANDLE_VALUE`）是**立即失败的**，
+不是超时——**这正是"被拒绝"而不是"被挂住"的样子**。
+
+**这个区分对结论很重要**：本增量至今**五个**无界阻塞点都已处理（三修、一绕开、一实测清白），
+**而这一步不是第六个**——它是**正确的失败**：
+**卷还被残留句柄占着，所以 `flush` 打不开、设备也就拆不掉。**
+
+**因此现在的真实状态是**：**reclaim 不再挂住（裁决 A 生效），
+但它在一个"卷被占用"的前提下被正确地拒绝了。**
+**残留之所以还在，是因为要移除设备就需要能操作那个卷，
+而卷被那个永远不会关闭的句柄占着**——**与 4.15.22 记下的那个设计矛盾是同一个根**。
+
+**下一轮该做的（不再是猜，而是二选一）**：
+
+1. 查 **`REMOVE_DEVICE` 是否真的要求卷可打开**：
+   若 **AIM 的 `REMOVE_DEVICE` 可以直接移除设备（不碰卷）**，
+   那失败就出在**我们自己先 flush 的那一步**，**修法是"接管路径下不要先 flush"**，
+   这与裁决 A"不取卷锁"是同一思路的自然延伸；
+2. 若 `REMOVE_DEVICE` 本身也要求卷可用，那么**驱动侧移除也需要卷可操作**，
+   则**裁决 A 不足以完成清理**，需要回到用户那里再定（重启 / 驱动改动）。
+
+**判定手段**：给 `remove_owned_device` 的每一步打点
+（`remove_device` 之前/之后、每次轮询、以及 `physical_drive_restored_` 那一段），
+**一次运行即可看出它是在 `remove_device` 还是在其后的等待里失败**。
+
 **T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
