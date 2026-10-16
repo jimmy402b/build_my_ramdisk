@@ -1281,7 +1281,52 @@ const BOOL ok = DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 
 
 **本轮到此为止**（上下文预算见底）：**定位完成、修法明确、前提已具备，
 但未实施、未取读数——故不作任何"已修好"的声明，T1-03 仍不得标 PASSED。**
-**下一轮第一件事**：按 part 36 的成例把 `FSCTL_LOCK_VOLUME` 变成有界可取消的。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**下一轮第一件事**：按 part 36 的成例把 `FSCTL_LOCK_VOLUME` 变成有界可取消的。
+
+#### 4.15.21 **更正：卡的不是 `FSCTL_LOCK_VOLUME`，而是那句独占 `CreateFileW`**（part 39–40）
+
+**`FSCTL_LOCK_VOLUME` 已按 part 36 的成例加界**（`1827150`：overlapped + `CancelIoEx` +
+调用方预算，超时返回 **`busy`**——该函数的契约本来就把 `busy` 定义为
+"预期中的观察，调用方可保留 runtime 并重试"）。开发机：干净构建 0/0、
+**M4/M3/volume 43/44 绿**（唯一失败是既有的 `unit.m4.profile_store`）。
+
+**但读数（请求 `ba48cd78e6f64d1380e0dfe5e952aee3`，0/1）说明我上一轮的推断错了**：
+
+```
+16:15:20.732Z dismount_volume: begin
+16:15:20.734Z dismount: re-acquiring the lock
+              ← 没有出现 "Win32VolumeAdapter::lock: opened exclusively"
+```
+
+**我新加的那条"打开结果"打点就在 `CreateFileW` 之后第一行，它没出现**
+⇒ **阻塞的是 `CreateFileW` 本身**，不是它后面的 `FSCTL_LOCK_VOLUME`。
+
+**必须更正的我自己的推断**：part 38 我写"`open refused, retrying` 0 次 ⇒ 说明独占打开成功了"。
+**这是错的**：重试打点只在 `CreateFileW` **失败且错误是 busy 类**时才打，
+**"0 次"只说明它没有失败，不能说明它返回了**。**一条不出现的打点被当成了"成功"的证据**——
+这正好是本增量反复出现的那个形状（**把"没有报错"读成"做成了"**），
+只不过这次是我在**读证据**时犯的，而不是在写代码时。
+
+**因此当前事实是**：`lock` 里的 **`CreateFileW(..., share 0, ...)` 会无限期阻塞**
+（卷上还挂着被强杀 worker 留下的句柄），而 `CreateFileW` **没有超时参数**，
+`timeout_ms` 约束的是它**之后**的重试循环。
+
+**这让修法变难，必须如实说明**：
+
+- 句柄虽然已经是 `FILE_FLAG_OVERLAPPED`，但**独占打开本身是同步的**，
+  `CancelIoEx` 针对的是**该句柄上已发出的 I/O**，**不是一个尚未返回的 `CreateFile`**；
+- 可行的方向（都未实测，需下一轮判定）：
+  1. **改申请顺序**：以**共享打开**（像 `flush` 那样，实测 2 ms 成功）拿到句柄，
+     再用**已加界的 `FSCTL_LOCK_VOLUME`** 去锁——**这条最有希望**，
+     因为 part 39 刚让那个 IOCTL 可放弃了；
+  2. 用 `CancelSynchronousIo`（对发起线程）去取消**尚未完成**的打开；
+  3. 在打开前**探测**卷是否已被独占（共享打开 + 查询），
+     代价是要接受探测与打开之间的竞态。
+
+**倾向方向 1**：它把一个**无界的同步打开**换成一个**有界的可取消 IOCTL**，
+而且两者需要的语义（拿到独占锁）完全相同。**但未实测，故只作记录。**
+
+**T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
