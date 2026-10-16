@@ -866,18 +866,24 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
     };
     HANDLE handle = INVALID_HANDLE_VALUE;
     for (;;) {
-        // **Opened with sharing, because an exclusive *open* cannot be given up.**
+        // **`share = 0`, restored: the exclusive open is how this lock excludes others.**
         //
-        // This used to be `share = 0`, and that call was measured blocking forever: see below.
-        // Exclusivity is not lost by asking for sharing here -- it is taken immediately afterwards
-        // by `FSCTL_LOCK_VOLUME`, which is the call that actually holds the volume, and which is
-        // now bounded and cancellable.  So the same guarantee is obtained through a call the
-        // caller can abandon, instead of one it cannot.
+        // It was briefly changed to a shared open plus `FSCTL_LOCK_VOLUME`, so that an
+        // unacquirable volume could be abandoned rather than waited on.  That was reverted: the
+        // exclusive open excludes another handle **the moment this call returns**, while deferring
+        // exclusivity to the IOCTL opens a window between the two steps in which another handle can
+        // arrive.  `integration.m4.multi_instance` does *not* cover that -- it injects its locks as
+        // fake functions over an in-memory flag -- so the change was unverified for the one thing
+        // it altered, and a candidate explanation for a later case failing to provision is worse
+        // than the problem it solved.
         //
-        // `FILE_FLAG_OVERLAPPED` is what makes that IOCTL cancellable; it has no bearing on
-        // sharing, which is decided solely by the share mode argument.
-        handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        // The residue that motivated it does not need it: a reclaim now skips both the flush and
+        // the dismount, so it never has to take this lock.  Whatever the residue still blocks, it
+        // is not this.
+        //
+        // `FILE_FLAG_OVERLAPPED` stays.  It does not affect locking or sharing -- exclusivity is the
+        // share mode -- and it is what makes the handle's own dismantle cancellable.
+        handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
             nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (handle != INVALID_HANDLE_VALUE) break;
         const DWORD error = GetLastError();
