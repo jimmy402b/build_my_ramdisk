@@ -703,7 +703,40 @@ part 3 的 `LeftoverReclaimer` 用例只用了 fake 的 profile store 与 worker
 
 **两条都不是"实现细节"，故本轮不自行选择**，已写入 plan 待裁决。
 
-**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+#### 4.15.6 裁决 A 已实施，但**`start_aim` 仍然卡住**——阻塞点比那个 IOCTL 更早（part 24）
+
+**用户裁决：A（让驱动调用真的可超时）**，已实施（见提交 `9b19ec8`）：
+`WindowsSrbTransport::transact` 改为 **overlapped + `CancelIoEx`**，
+超时后**取消并等待完成**（否则驱动会写已经出作用域的缓冲、
+miniport 也会留下无主的请求）；`timeout_seconds == 0` 从"永久等待"改为**拒绝**。
+开发机：干净构建 0/0，**33 套 M3/driver/transport 用例全绿**。
+
+**但客机读数仍是 0/1**（请求 `1607fc07ec0842829cb1d3da319d86cd`），trace 与之前**一模一样**：
+
+```
+acquire_bundle_lock: begin → ok        (2 ms)
+recover_complete_image: begin → ok     (96 ms)
+start_aim: begin → 此后无输出
+```
+
+**这说明阻塞点比 `create_proxy_disk` 更早**，在 `start_aim` 内部的**前几步**：
+`M3Provider::open` → `provider_->start(context)` → `discover_aim_adapter` →
+`snapshot_physical_drive_numbers` → 然后才是 `create_proxy_disk`。
+
+**已经排除的**：`src/driver` 与 `src/m3` 里**只有两处** `DeviceIoControl` 调用点——
+`windows_srb_transport.cpp`（**已修**）与 `physical_drive_locator.cpp`（不在这条路径上）。
+所以这一次**不是同一个原因的重复**，而是**同一段代码里更早的另一个阻塞点**。
+
+**为什么本轮查不到更细**：worker 侧的 trace 只能标出**worker 能看见的边界**
+（`start_aim` 是 M4 的一个步骤），而 `M3AimRuntime::start()` 内部有 6 个以上子步骤。
+要区分它们，需要**在 M3 层也写 trace**——但目前 trace 机制是 worker 层的私有函数，
+**直接从 `src/m3` 调它会跨层且会造成依赖倒挂**。
+
+**因此下一步是一件有边界的工作，而不是继续猜**：把 trace 提升为一个
+**公共的、由环境变量开启的诊断设施**（放在 common 层），
+然后在 `M3AimRuntime::start()` 的每一步之间打点，跑一次即可定位到具体子步骤。
+**本轮到此为止**：IOCTL 的修正是真实且独立的收益（它移除了一个真实的无限阻塞），
+但 **T1-03 仍未通过，仍不得标 PASSED**。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**

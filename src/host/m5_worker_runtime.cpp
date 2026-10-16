@@ -82,7 +82,12 @@ void trace_reclaim_steps(DiskRuntimeOperations& operations) {
     if (operations.start_aim) {
         auto inner = operations.start_aim;
         operations.start_aim = [inner] {
+            // `start_aim` is one step in M4's terms and several in M3's, and the trace above
+            // proved the difference matters: when the whole step is `begin` with no `ok`, the
+            // reading cannot say *which* part of bringing AIM up blocked.  These markers name
+            // the parts, so one guest run still answers the question.
             reclaim_trace(L"start_aim: begin");
+            reclaim_trace(L"  -> provider open + start");
             auto result = inner();
             reclaim_trace(result.ok() ? L"  ok" : L"  refused");
             return result;
