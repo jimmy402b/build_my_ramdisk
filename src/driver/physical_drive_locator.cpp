@@ -244,12 +244,23 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
         }
 
         diagnostic_trace("enumerate_disk_candidates: opening the candidate");
+        // **Opened with `FILE_FLAG_OVERLAPPED`, and per-step timing is what proved it necessary.**
+        //
+        // This call was measured at **11017 ms** on one candidate while the caller's ten-second bound
+        // expired, and a `CreateFileW` that does not return cannot be given up -- which is the whole
+        // reason the wait loop's budget could not bound a turn.  Opening overlapped is the same change
+        // this project already made for volume handles (parts 36 and 41) for the same reason: it does not
+        // alter what the handle is for, it makes an operation on it something the caller can abandon.
+        //
+        // The access and sharing are deliberately unchanged.  Only the flag that governs whether kernel
+        // waits are interruptible is added, so a candidate that opens today still opens and a candidate
+        // that does not is still skipped.
         HANDLE h = [&] {
             StepTimer step("CreateFileW");
             return CreateFileW(detail->DevicePath,
                 disk_candidate_open_access(),
                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
         }();
         if (h == INVALID_HANDLE_VALUE) {
             const DWORD error = GetLastError();
