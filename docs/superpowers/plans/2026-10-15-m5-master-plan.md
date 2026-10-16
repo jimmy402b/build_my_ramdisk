@@ -817,8 +817,21 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    若要修，正确做法是 harness 文档里已写的那个——
    **让测试从环境变量/相对路径取夹具，而不是配置期烘入绝对路径**。
    **在 T4 之前不必做**；但**若将来要在任意机器上跑测试，则必须先做**。
-4. **ABI 陷阱未根治**：项目没有可靠的头文件依赖跟踪，只靠"记得加 `--clean-first`"这条纪律。
-   T4-04 的干净构建门是可接受的兜底，但**这条纪律要在 T4 期间写进构建脚本**（能自动就别靠记）。
+4. **ABI 陷阱未根治** —— **本轮（part 64）已用机制修掉，此项可关**。
+   原先只靠"记得加 `--clean-first`"这条纪律。
+   **已实施**：在 `CMakeLists.txt` 里设 **`CMAKE_DEPENDS_USE_COMPILER TRUE`**
+   （位置在 `project()` 之后、配置之前），让 **MSVC 输出 `/showIncludes`、
+   CMake 据此记录每个 obj 实际包含了什么**，**构建图由构造保证正确**。
+
+   **实测（不是推断）**：干净构建后，`touch src/common/diagnostic_trace.h` 再增量构建，
+   **重编了 133 个目标**，其中包括
+   `m3_windows_acceptance`、`m5_worker_runtime`、`windows_volume`、`m5_worker_main`——
+   **而在缺这个设置时，只会重编该头文件自己的那一个 TU**，
+   其余按旧头文件继续用，这正是此前那个"不是编译错误、而是偶发崩溃/偶发测试红"的来源。
+   **干净构建 0 error 0 warning。**
+
+   **因此"记得 `--clean-first`"不再是承重纪律**（头文件改动后仍可安全地全量构建，
+   但**不再必需**）。**§8 第 1 项（`execution_scheduler` 时红时绿）已查明同源**，一并受益。
 5. **`set_terminate` 处理器从未触发** —— **本轮（part 62）已查，不是静态/动态 STL 混链，此项可关**。
    计划里原来建议的命令是 `dumpbin /directives` 对比 `.lib` 与 exe 的 `/DEFAULTLIB`；
    **实测发现那条命令对 exe 无效**（**它的 `/directives` 不产出任何 `DEFAULTLIB`**，
