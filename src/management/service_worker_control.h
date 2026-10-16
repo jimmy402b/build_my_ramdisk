@@ -111,7 +111,7 @@
 //                                 and bytes digest, and
 //                                 `CheckpointCommitBoundaryEvidence` carries
 //                                 neither -- so the adapter cannot build one from
-//                                 what it is handed. §7 item 19 claimed this
+//                                 what it is handed. ?7 item 19 claimed this
 //                                 action became realizable; that claim was wrong
 //                                 and is corrected there.
 //
@@ -139,6 +139,7 @@
 #include "src/common/operation_context.h"
 #include "src/common/result.h"
 #include "src/management/service_core.h"
+#include "src/management/worker_fingerprint_sink.h"
 #include "src/management/service_worker_session.h"
 #include "src/product/uuid.h"
 
@@ -266,11 +267,13 @@ public:
         const product::Uuid& profile_id, const OperationContext& context) = 0;
 };
 
+
 class ServiceWorkerControl final : public IWorkerControl {
 public:
     explicit ServiceWorkerControl(
         IWorkerSessionProvider& sessions,
-        std::uint32_t control_timeout_ms = kDefaultWorkerControlTimeoutMs) noexcept;
+        std::uint32_t control_timeout_ms = kDefaultWorkerControlTimeoutMs,
+        IWorkerFingerprintSink* fingerprints = nullptr) noexcept;
 
     // Always false, and deliberately so: declaring a boundary here would narrow
     // M4's cancellation semantics, which M5 may not change.  Nothing is lost by
@@ -404,6 +407,10 @@ private:
 
     IWorkerSessionProvider& sessions_;
     std::uint32_t control_timeout_ms_{};
+    // Borrowed and may be null: a service composed without durable fingerprints has
+    // nowhere to record one, and a null sink is reported as "not recorded" rather than
+    // silently pretending the identity was kept.
+    IWorkerFingerprintSink* fingerprints_{};
     std::vector<std::pair<product::Uuid, std::unique_ptr<ServiceWorkerSession>>>
         sessions_by_profile_;
     std::vector<HeldCandidate> held_candidates_;

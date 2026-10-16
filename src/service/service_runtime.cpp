@@ -149,7 +149,8 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
     runtime->sessions_.emplace(runtime->config_.worker_executable,
                                *runtime->processes_, &*runtime->bindings_);
     runtime->worker_.emplace(*runtime->sessions_,
-                             runtime->config_.worker_control_timeout_ms);
+                             runtime->config_.worker_control_timeout_ms,
+                             &*runtime->bindings_);
     runtime->execution_gate_ = std::make_unique<std::mutex>();
 
     // The sweep's two halves: the durable fingerprints as bindings, and the sweep

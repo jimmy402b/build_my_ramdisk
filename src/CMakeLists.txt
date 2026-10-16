@@ -355,6 +355,7 @@ add_library(myrd_management STATIC
     management/windows_worker_job.cpp management/windows_worker_job.h
     management/windows_worker_sessions.cpp management/windows_worker_sessions.h
     management/worker_binding_store.cpp management/worker_binding_store.h
+    management/worker_fingerprint_sink.h
     management/worker_process_source.cpp management/worker_process_source.h
     management/worker_sweep.cpp management/worker_sweep.h
     management/worker_sweep_policy.cpp management/worker_sweep_policy.h

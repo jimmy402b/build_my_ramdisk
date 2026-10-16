@@ -173,10 +173,12 @@ Result<WorkerLaunchRequest> make_launch_request(
 
 ServiceWorkerControl::ServiceWorkerControl(
     IWorkerSessionProvider& sessions,
-    const std::uint32_t control_timeout_ms) noexcept
+    const std::uint32_t control_timeout_ms,
+    IWorkerFingerprintSink* const fingerprints) noexcept
     : sessions_(sessions),
       control_timeout_ms_(control_timeout_ms == 0 ? kDefaultWorkerControlTimeoutMs
-                                                   : control_timeout_ms) {}
+                                                   : control_timeout_ms),
+      fingerprints_(fingerprints) {}
 
 OperationContext ServiceWorkerControl::context() const {
     OperationContext value{};
@@ -981,6 +983,7 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
     // file identity from the handle it opened.  The manifest name and the
     // payload block size are the product constants the service already holds,
     // which is why they do not travel.
+    const BundleFileIdentity file_identity{evidence.volume_serial, evidence.file_id};
     result.lifecycle.bundle = BundleRegistrationEvidence{
         image_id.value(),
         std::string(kProductManifestName),
@@ -988,8 +991,24 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
         evidence.logical_sector_size,
         evidence.physical_sector_size,
         kProductPayloadBlockBytes,
-        BundleFileIdentity{evidence.volume_serial, evidence.file_id},
+        file_identity,
         source};
+
+    // **This is the moment the bundle's identity becomes knowable**, and therefore the
+    // only moment it can be recorded: the worker has just read it off the handle it
+    // opened.  Before this existed the identity lived only in the return value, so
+    // every profile's leftovers were unprovable and the reclamation could never act.
+    //
+    // Best-effort, and deliberately not fatal.  The disk this operation just created
+    // and verified is real and useful; failing it because a *fingerprint* could not be
+    // written would trade a working disk for a bookkeeping problem.  What a failure
+    // costs is bounded and visible: the profile's leftovers become unprovable, and the
+    // next start's sweep reports that instead of reclaiming them.
+    if (fingerprints_ != nullptr) {
+        static_cast<void>(
+            fingerprints_->amend_bundle_identity(request.profile_id, file_identity));
+    }
+
     return Result<WorkerActionResult>::success(std::move(result));
 }
 

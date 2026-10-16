@@ -30,6 +30,7 @@
 //     termination of the very process it was supposed to identify.
 
 #include "src/common/result.h"
+#include "src/management/worker_fingerprint_sink.h"
 #include "src/management/worker_sweep_policy.h"
 #include "src/product/uuid.h"
 #include "src/profile/profile_store.h"
@@ -79,7 +80,7 @@ struct WorkerFingerprintRecord final {
     bool operator==(const WorkerFingerprintRecord&) const noexcept = default;
 };
 
-class WorkerBindingStore final {
+class WorkerBindingStore final : public IWorkerFingerprintSink {
 public:
     // Opens (or creates) `<root>\MyRamDisk\workers`.  Creation is deliberate here
     // and is *not* a contradiction of the service's fail-closed rule for the
@@ -137,7 +138,7 @@ public:
     // looks like it attributes something.
     [[nodiscard]] Result<bool> amend_bundle_identity(
         const product::Uuid& profile_id,
-        const BundleFileIdentity& bundle_file_identity);
+        const BundleFileIdentity& bundle_file_identity) override;
 
     // Removes one profile's fingerprint.  Called when a profile is removed or
     // forgotten: a stale fingerprint would attribute a *later*, unrelated process

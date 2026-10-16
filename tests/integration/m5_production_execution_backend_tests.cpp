@@ -24,6 +24,7 @@
 #include "src/common/operation_context.h"
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_job.h"
+#include "src/management/worker_binding_store.h"
 #include "src/management/windows_worker_sessions.h"
 #include "src/profile/profile_types.h"
 #include "src/product/uuid.h"
@@ -334,6 +335,18 @@ persistence::ImageUuid image_bytes(const product::Uuid& id) noexcept {
     return value;
 }
 
+// The durable root the installer created, which is where the fingerprint store lives
+// in production.  Read from the environment rather than hardcoded: the installer decides
+// where it lives, and a test that hardcoded it would pass here and mislead elsewhere.
+std::wstring durable_root() {
+    wchar_t buffer[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"ProgramData", buffer,
+                                                 static_cast<DWORD>(MAX_PATH));
+    REQUIRE(length != 0);
+    REQUIRE(length < MAX_PATH);
+    return std::wstring(buffer, length);
+}
+
 // The provider takes a launch request, not a profile: a launch no longer always
 // starts from a durable record, so the seam's input is what both producers
 // translate into.  Going through the translation rather than building a request
@@ -475,6 +488,77 @@ TEST_CASE(m5_backend_launch_places_the_worker_in_the_named_job) {
                 .ok());
     REQUIRE(job.source().wait_for_exit(worker_pid, 30'000).ok());
     REQUIRE(job.source().wait_for_exit(worker_pid, 30'000).value());
+}
+
+TEST_CASE(m5_backend_bundle_registration_persists_the_identity_it_just_read) {
+    // The producing half of design section 5.5, end to end: a worker opens and
+    // verifies a bundle, and the identity it read off that handle reaches the durable
+    // fingerprint rather than dying with the return value.
+    //
+    // Before this existed, `amend_bundle_identity` had no caller at all -- the same
+    // "no consumer" pattern the reclamation decision itself had -- so every profile's
+    // leftovers were unprovable and the sweep could only report them.
+    //
+    // Everything is real: a real worker, a real bundle it creates, and the real
+    // `WorkerBindingStore` as the sink.
+    REQUIRE(wait_for_no_worker_process());
+    TempBundle bundle(L"fingerprint-amend");
+    const wchar_t letter = free_drive_letter();
+    REQUIRE(!is_letter_assigned(letter));
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto image_id = uuid("3f3f3f3f-4e4e-4d4d-5c5c-6d6d6d6d6d6d");
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto operation = uuid("88888888-7777-6666-5555-444444444444");
+
+    auto store = WorkerBindingStore::over_protected_root(durable_root());
+    REQUIRE(store.ok());
+    // The record a launch would have written: a process identity and no bundle
+    // identity, which is exactly the state this case is about improving.
+    REQUIRE(store.value()
+                .record(WorkerFingerprintRecord{profile, 4242,
+                                                133'700'000'000'000ULL, 0})
+                .ok());
+    {
+        auto before = store.value().find(profile);
+        REQUIRE(before.ok());
+        REQUIRE(before.value().has_value());
+        REQUIRE(!before.value()->bundle_file_identity.has_value());
+    }
+
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider, kDefaultWorkerControlTimeoutMs,
+                                     &store.value());
+
+        WorkerActionRequest request{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        const auto result = control.execute(request);
+        REQUIRE(result.ok());
+        REQUIRE(result.value().lifecycle.bundle.has_value());
+    }
+
+    // The identity the worker read is now durable, and it is the *worker's* identity
+    // rather than something the service computed.
+    auto after = store.value().find(profile);
+    REQUIRE(after.ok());
+    REQUIRE(after.value().has_value());
+    REQUIRE(after.value()->bundle_file_identity.has_value());
+    REQUIRE(after.value()->bundle_file_identity->volume_serial != 0);
+    // And the amendment did not disturb the process identity, which is what makes the
+    // worker attributable in the first place.
+    REQUIRE_EQ(after.value()->worker_pid, 4242U);
+    REQUIRE_EQ(after.value()->worker_process_creation_time, 133'700'000'000'000ULL);
+
+    REQUIRE(wait_for_letter_release(letter));
+    static_cast<void>(store.value().forget(profile));
 }
 
 TEST_CASE(m5_backend_a_reopened_job_still_holds_its_workers) {
