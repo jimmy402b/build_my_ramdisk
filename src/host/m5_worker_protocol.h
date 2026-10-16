@@ -117,6 +117,25 @@ enum class WorkerCommand : std::uint16_t {
     // whole increment exists to close.  Dismantling is not an acceptable
     // substitute, because the profile is not being stopped any more.
     release_write_freeze = 15,
+    // Dismantles a volume this service can prove is its own, left behind by a worker
+    // that was killed rather than asked to leave.
+    //
+    // **Why this cannot be an existing command.**  A `TerminateProcess`ed worker never
+    // runs its ordered teardown, so it leaves a mounted volume and an assigned drive
+    // letter that no live runtime owns.  The teardown itself already exists --
+    // `DiskRuntime::shutdown_clean` removes the letter, dismounts and stops AIM -- but
+    // it needs an *open* volume, and `adopt_existing` **mounts**.  Mounting is not
+    // dismantling, and here it cannot even succeed: the residue is holding the very
+    // drive letter the mount would ask for.
+    //
+    // So this command's whole job is to open the recorded volume **for dismantling**:
+    // find it by the identities the service proved, take it without assigning anything,
+    // run the teardown, and answer whether the letter and the volume are gone.
+    //
+    // It is appended rather than inserted, and that is the protocol's own convention:
+    // the values are on the wire, so inserting one would silently reinterpret every
+    // command after it.
+    reclaim_leftover = 16,
 };
 
 // Identity of one worker process bound to one profile for one session.

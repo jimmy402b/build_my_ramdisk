@@ -167,6 +167,21 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
                 kHasError};
+    case WorkerCommand::reclaim_leftover:
+        // Operation-scoped like the removal it performs, because dismantling a volume
+        // is exactly that kind of act: it must be attributable to one operation, and an
+        // unattributable teardown could never be reported against anything.
+        //
+        // The request carries no volume identity of its own.  What it needs -- the
+        // bundle, the mount target and the image -- is already in the launch spec the
+        // worker was started with, and a second copy on the wire would be a second thing
+        // that can disagree with the one the worker will actually act on.  The reply is
+        // answered with a bare status for the same reason `freeze_writes` is: the fact
+        // the caller needs is whether the letter and the volume are gone, and a payload
+        // type of its own would be a second place for that answer to live.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
+                kHasError};
     }
     return {};
 }

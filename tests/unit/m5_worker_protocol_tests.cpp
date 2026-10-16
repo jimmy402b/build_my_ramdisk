@@ -980,6 +980,42 @@ TEST_CASE(m5_worker_protocol_write_freeze_commands_are_operation_scoped) {
     }
 }
 
+TEST_CASE(m5_worker_protocol_reclaim_leftover_is_operation_scoped) {
+    // Dismantling a leftover is an act of the same kind as a removal, so it carries the
+    // same obligation: it must name the operation it belongs to.  An unattributable
+    // teardown could not be reported against anything, and a service that could not say
+    // *which* operation dismantled a volume would have no way to prove it was allowed to.
+    WorkerMessage missing{};
+    missing.kind = WorkerMessageKind::reply;
+    missing.command = WorkerCommand::reclaim_leftover;
+    missing.sequence = 6;
+    missing.binding = session_binding();
+    missing.status = WorkerRuntimeStatus{};
+    REQUIRE(!encode(missing).ok());
+
+    WorkerMessage present = missing;
+    present.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    const auto bytes = encode(present);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    // Answered with a bare status, like the freeze commands: the one fact the caller
+    // needs is whether the letter and the volume are gone, and a payload type of its own
+    // would be a second place for that answer to live.
+    REQUIRE(decoded.value().status.has_value());
+    REQUIRE(authenticate_worker_message(decoded.value(), session_binding(), 5).ok());
+    // And the request side is shaped the same way, so a worker cannot be told to
+    // dismantle something without an operation to attribute it to.
+    WorkerMessage request{};
+    request.kind = WorkerMessageKind::request;
+    request.command = WorkerCommand::reclaim_leftover;
+    request.sequence = 7;
+    request.binding = session_binding();
+    REQUIRE(!encode(request).ok());
+    request.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    REQUIRE(encode(request).ok());
+}
+
 TEST_CASE(m5_worker_protocol_refuses_an_unknown_command_value) {
     // The command is a wire value, so a peer that speaks a different protocol
     // must be refused rather than decoded into whichever command happens to

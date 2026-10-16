@@ -245,10 +245,16 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 
 **范围（四件，缺一不可）**：
 
-1. **协议**：新增一个 `WorkerCommand`（按现有约定**追加**，不插入），
-   语义是"打开这份残留并拆卸，不挂载"；
-2. **worker 运行时**：实现该动词。它需要 M3 的只读打开 + 拆卸调用，
-   **不得**走 `start`/`recover` 的挂载路径；
+1. ~~**协议**：新增一个 `WorkerCommand`~~ —— **✅ 本轮完成**（`reclaim_leftover = 16`，
+   追加而非插入；request/reply 都是 operation-scoped + bare status，
+   测试 `m5_worker_protocol_reclaim_leftover_is_operation_scoped`，协议套件 39/39）；
+2. **worker 运行时**：实现该动词。**本轮确认它可做，靠的是既有接缝**——
+   `Win32VolumeAdapter::find_recovered_volume(disk_number, drive_letter, owner_token)`
+   （`windows_volume.h:187`）的注释就是 **"attach-only: enumerate existing volumes and
+   adopt exactly one candidate backed by disk_number and mounted at drive_letter"**，
+   即**接管一个已经挂载的卷**，正是残留的状态；随后
+   `remove_drive_letter(owned)` + `ProductVolume::dismount()` 完成拆卸。
+   **不需要挂载**，因此不需要新的 M3 能力；
 3. **服务侧 reclaimer**：实现 `IResourceReclaimer::reclaim`，
    用**已证明的** `ObservedResourceIdentity`（卷 GUID + 盘符 + bundle 身份）去请求拆卸，
    并且**只有**在身份匹配时才动手；
