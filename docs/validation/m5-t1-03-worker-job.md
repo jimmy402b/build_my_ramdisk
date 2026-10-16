@@ -2690,3 +2690,61 @@ actual.extents.front().disk_number !=
 仍完成它必须做的事**——它现在就是为返回这个而存在的。
 
 **T1-03 不得标 PASSED。****本轮净改动为零**（试做后按纪律撤回）。
+
+#### 4.15.52 **实施后被客机读数否掉：reclaim 确实需要盘号——`find_recovered_volume` 用它找卷**（part 72，本轮）
+
+**我按上一节的清单完整实施了，干净构建 0/0、开发机 82/84 通过，然后上客机跑 `-Repeat 20`。
+读数把这次改动直接否掉，而且否定得很干净**：
+
+```
+20 次全部 FAIL，而且都是"立刻"失败（不是超时），原因逐字相同：
+  myrd-test: residue cleanup failed: op=find_recovered_volume
+            msg=this runtime did not locate a physical drive (reclaim does not)
+```
+
+**而那条错误消息是我自己新加的**（在 `aim_disk_number` 里"宁可否认、不给 0"的那个分支）。
+⇒ **它精确定位了我的分析错在哪**：
+
+```cpp
+Result<ProductVolume> ProductionRuntimeAdapter::find(const wchar_t letter) {
+    const auto disk = aim_disk_number(L"find_recovered_volume");   // ← 这里要盘号
+    if (!disk.ok()) return Result<ProductVolume>::failure(disk.error());
+    return impl_->volume_adapter.find_recovered_volume(disk.value(), letter,
+                                                       impl_->owner_token);
+}
+```
+
+⇒ **`find_recovered_volume` 拿到盘号后用它去"在那块盘上找这个盘符的卷"**
+（`volume_adapter.find_recovered_volume(disk, letter, owner_token)`）。
+**reclaim 必须在"接管一块已有的残留设备"时找到它上面的那个卷，
+所以它确实需要盘号——我之前说"没有读者"是错的。**
+
+**我的分析错在哪（必须如实写明，因为这正是本轮三次试错里最值得记的一条）**：
+上一节我 `git grep` 的是 **`disk.physical_drive_number`** 这个**成员访问**，
+于是只找到三处直接读者（`:310`、`:421`、`:426`）。
+**而真正的读者是通过 `aim_disk_number()` 这个"取值函数"间接访问的**，
+其中 **`:402`（`find`）是一条我完全没看到的路径**。
+⇒ **教训：只 grep 成员名会漏掉"经由访问器"的读者。
+应同时 grep 访问器名（`aim_disk_number`）与其所有调用点。**
+
+**已按纪律回退**（`git revert 8366c56` ⇒ `a6591af`）：
+- `wait_for_present_physical_drive` **回到原处**；
+- `M3AimRuntimeInfo::disk` **回到普通 `LocatedDisk`**；
+- `reclaim_only` **引用数为 0**；
+- **构建 0 error**；树干净。
+
+**这次撤回与上一次（part 71）性质不同，值得区分**：
+- part 71 是**动手前**发现前提不成立而撤回（省了一次坏改动）；
+- **本轮是"完整实施 + 客机实测"后发现判断错误而撤回**——
+  **价值在于：它用一次真实读数证明了"reclaim 需要盘号"，
+  从而永久关掉这条修法，而不是让它留在待办里反复被试探。**
+
+**因此下一步方向被这次读数收窄了**（不再考虑"跳过这次等待"）：
+1. **既然 reclaim 需要盘号，就必须让"取盘号"这件事本身变可靠**——
+   即回到 **part 68 末尾那条路**：**把计时再下沉一层，
+   查清枚举内部到底是哪一步在负载下阻塞**（枚举 / 取接口细节 / 打开 / 两个 IOCTL）；
+2. **或者**：为 reclaim 提供一条**不经过全机器枚举**的取盘号方式
+   （这正是 part 67 记的"设计缺口：如何按身份找到那块盘"）——
+   **两条路现在都回到同一个设计问题上，而且这次有实测支撑"它绕不过去"。**
+
+**T1-03 不得标 PASSED。****本轮净改动为零**（实施 → 客机读数 → 回退）。
