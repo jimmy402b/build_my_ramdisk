@@ -1042,7 +1042,35 @@ worker 主流程的每一阶段（进程起来、读到 launch spec、打开 run
 （`remove_drive_letter` / `dismount_volume` / `stop_aim` / `release_bundle_lock`），
 **一次运行即可指出是哪一步**。**注意**：`stop_aim` 用的是同一个
 `M3AimRuntime::stop()`，而 part 23 只让 **SRB 传输**可超时——
-若 `stop` 走的是别的系统调用（或 PnP），**可能还有第三个无限阻塞点**。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+若 `stop` 走的是别的系统调用（或 PnP），**可能还有第三个无限阻塞点**。
+
+#### 4.15.15 **拆卸 trace 一步定位：卡在 `flush_volume`**（part 33，本轮）
+
+**读数**（请求 `58bbafd11752431a9549036c2082cb39`，0/1）：
+
+```
+15:36:12.902Z find_recovered_volume: begin → ok
+15:36:12.909Z verify_volume: begin → ok
+15:36:13.023Z worker: command received
+15:36:13.023Z flush_volume: begin        ← 此后没有任何输出
+```
+
+**结论：卡在拆卸的**第一步 `flush_volume`**，不是 `dismount` / `stop_aim` / 释放锁。**
+
+**为什么拆卸里会有 flush**：`shutdown_clean_locked` 在 `started_` 为真时
+**先 flush 再删盘符**（`disk_runtime.cpp:395-404`），而采用接管路径的 reclaim
+启动完成后 `started_` 就是真 ⇒ **它会对"接管的那个卷"做一次 flush**。
+
+**这一步没有任何超时**：`flush_volume` 的实现经 `Win32VolumeAdapter::flush`
+（走卷句柄的 `DeviceIoControl` 类调用 / 卷缓存刷写），
+而 part 23 只让 **SRB 传输**（`windows_srb_transport.cpp`）可超时。
+**所以这很可能是第三个无限阻塞点，且和第二个同类**（同步、无超时）。
+
+**下一步（范围已经很小）**：
+给 `Win32VolumeAdapter::flush` 内部打点/加界，
+或者先确认它到底阻塞在哪个系统调用上（卷锁？`FlushFileBuffers`？`FSCTL`？）。
+**若确认同样缺少超时，那就和 part 23 是同一个修法**——
+把该调用也变成有界可取消的，而不是再绕开它。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
