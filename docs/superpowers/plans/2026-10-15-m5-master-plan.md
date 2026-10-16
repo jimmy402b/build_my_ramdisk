@@ -266,6 +266,14 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 **边界**：不得改 M3 的 bundle / journal / manifest 布局（不变量 4）；
 不得按进程名 / AIM 编号 / 显示名清理（设计 §5.5）。
 
+**一个必须一起处理的前提（本轮发现）**：reclaimer 的数据来源是
+`ProfileResourceIdentities`，它读的是 **durable profile 记录**；
+而 part 12 的强杀用例是**只走进程层**的（`ServiceWorkerControl` 直接调，从不发布 profile），
+所以那份残留**在服务侧看不到**，也就**不会**被 sweep 拿到。
+因此实现 reclaimer 时必须同时决定：验收用例要用**已发布的 durable profile**
+（走 `ServiceCore` 的 create 路径，而不是直接调 worker adapter）造出残留，
+否则会写出一个"reclaimer 正确但用例里根本没有它的输入"的空壳。
+
 ---
 
 ### T1-04 — 读/写分离
