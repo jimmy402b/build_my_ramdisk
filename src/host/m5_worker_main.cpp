@@ -1,4 +1,4 @@
-// The per-profile worker process (solution §2.2).
+// The per-profile worker process (solution ?2.2).
 //
 // It is a thin shell around three things that are already tested:
 // `WorkerPrivatePipeClient` for the channel, `WorkerSession` for the command
@@ -10,12 +10,13 @@
 //      authenticated handshake.
 //   3. Only then open the bundle.
 //
-// Step 3 after step 2 is the rule from §2.4, and it is the reason the runtime is
+// Step 3 after step 2 is the rule from ?2.4, and it is the reason the runtime is
 // constructed at the point it is rather than earlier.  Nothing here takes an
 // argument other than the inherited handle value, which is why no secret can
 // appear in this process's command line.
 
 #include "src/host/m5_worker_private_pipe.h"
+#include "src/common/diagnostic_trace.h"
 #include "src/host/m5_worker_runtime.h"
 #include "src/host/m5_worker_session.h"
 
@@ -140,17 +141,32 @@ int wmain(const int argc, wchar_t** argv) {
     auto self = self_binding(spec.value());
     if (!self.ok()) return fail(L"the worker could not determine its own identity");
 
+    // **The worker's startup phases are traced, because the reclaim trace starts too late to
+    // explain a worker that hangs before it.**
+    //
+    // A cleanup reclaim was measured hanging with **no trace file at all** -- not even the first
+    // marker inside `M3AimRuntime::start` -- while an identical reclaim from the other case
+    // produced a full trace.  So the block is somewhere in these phases, and the only way to say
+    // which is to name them here.
+    //
+    // The environment is not the explanation and this is worth stating: the launcher calls
+    // `CreateProcessW` with a null environment block and `CREATE_UNICODE_ENVIRONMENT`, so the
+    // child **inherits** these variables; a worker that got as far as any traced code would have
+    // written the file.
+    diagnostic_trace("worker: launch spec read, connecting");
     auto client = WorkerPrivatePipeClient::connect(
         context_for(kHandshakeTimeout), spec.value().private_pipe_name);
     if (!client.ok()) {
         return fail(L"the private worker pipe could not be opened");
     }
+    diagnostic_trace("worker: pipe connected, authenticating");
     auto handshaken = client.value()->handshake(
         context_for(kHandshakeTimeout), self.value(), spec.value().session_nonce,
         spec.value().startup_secret);
     if (!handshaken.ok()) {
         return fail(L"the private channel did not authenticate");
     }
+    diagnostic_trace("worker: handshaken, opening the bundle");
 
     // Past this point the channel is authenticated and the bundle may be
     // opened.  Constructing the runtime before this line would open a bundle
@@ -168,11 +184,15 @@ int wmain(const int argc, wchar_t** argv) {
     config.owner_token = L"myrd:worker:" + std::to_wstring(GetCurrentProcessId());
     auto runtime = DiskWorkerRuntime::open(std::move(config));
     if (!runtime.ok()) return fail(L"the worker runtime could not be prepared");
+    diagnostic_trace("worker: runtime open, serving");
 
     WorkerSession session(self.value(), spec.value().session_nonce,
                           spec.value().startup_secret, *runtime.value());
     for (;;) {
         auto request = client.value()->read(context_for(kIdleCommandTimeout));
+        if (request.ok()) {
+            diagnostic_trace("worker: command received");
+        }
         if (!request.ok()) {
             // A closed or failed channel is the end of this worker's life, not
             // an error to retry against: the service will launch a replacement.

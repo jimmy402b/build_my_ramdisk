@@ -966,7 +966,39 @@ FAIL ...m5_production_execution_backend_tests.cpp:744: created.ok()
 **下一步（下一轮第一件事）**：用**单次、带 trace、并在跑之前确认 trace 文件不存在**的方式跑，
 并在**运行中**（而不是结束后）用 `scp` 抓一次 trace——
 本轮是在"结束之后"抓，而客机那时已经不稳，两次都取不到。
-**先把"能不能在运行中抓到 trace"解决掉**，否则下一轮还会卡在同一处。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**先把"能不能在运行中抓到 trace"解决掉**，否则下一轮还会卡在同一处。
+
+#### 4.15.13 **证据拿到手了：cleanup 的 reclaim worker 卡在 `M3AimRuntime::start` 之前**（part 31）
+
+**本轮把取数问题解决了**：跑之前确认 trace 不存在、运行中每 20 秒 `scp` 一次。
+读数（请求 `9a941ec229454b32bfd5e3cf1bb79712`，0/1，约 140 s）：
+
+- stderr：`residue cleanup failed: op=WorkerPipeChannel::read ... bounded wait`（4107），
+  失败点 `:736`（**cleanup 的 reclaim**，不是 create）；
+- **`C:\tmp\m5-reclaim-trace.txt` 在整个运行期间从未出现**（运行中抓不到、结束后 `dir` 也不存在）；
+- **运行结束后客机上仍留着一个 worker**：`pid 3212`，启动时刻与 reclaim 同时，
+  **CPU 只有 0.28 s**（与"阻塞在系统调用"一致）——**这是本次运行留下的孤儿**，
+  也说明**测试超时后 worker 并不会自己退出**（服务侧放弃，进程留着）。
+
+**这一条把范围显著收窄，而且是新信息**：
+
+| 用例 | worker 是否到达 `M3AimRuntime::start` |
+|---|---|
+| reclaim 用例（part 25/27 的读数） | **是**（trace 里有 `provider open` 等每一步） |
+| **cleanup（本轮）** | **否**（**连第一个打点都没有**） |
+
+⇒ **cleanup 的 reclaim worker 卡在更早的地方**：
+在 `M3AimRuntime::start()` **被调用之前**——即 worker 自身启动 / runtime 打开 /
+或**连接私有管道**这些环节之一。
+
+**为什么会不一样（假设，未验证）**：cleanup 紧跟在**强杀**之后；
+而 reclaim 用例是**新 phase、新 job、新 control**，间隔更久。
+**最可疑的是"上一个 worker 刚被杀、其私有管道/名字对象的清理还没完成"**，
+于是新 worker 在**连管道**时等待一个不会再被满足的条件。
+
+**下一轮第一件事（一次运行即可判定）**：在**更早**的位置打点——
+worker 主流程的每一阶段（进程起来、读到 launch spec、打开 runtime、连接管道、发首帧），
+而不是只从 `M3AimRuntime::start` 开始。**现有 trace 的第一个点太靠后**，这正是它这次一无所获的原因。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
