@@ -124,7 +124,19 @@ function Invoke-Native {
     $ErrorActionPreference = 'Continue'
     try {
         if ($PSBoundParameters.ContainsKey('InputLines')) {
-            $output = $InputLines | & $FilePath @Arguments 2>&1
+            # A leading empty line is prepended here, at the single place every
+            # line-fed call goes through, because this file is saved with a UTF-8
+            # BOM and PowerShell does not strip it from the *first* line it pipes:
+            # the BOM arrives glued to that line's first token, so
+            # `Get-ChildItem ...` reaches the guest as `\ufeffGet-ChildItem ...` and
+            # the guest answers "The term ... is not recognized as the name of a
+            # cmdlet".  The empty first line absorbs it.
+            #
+            # Doing this here rather than at each call site is the correction: it
+            # was first added to `Invoke-Remote` alone, which left the direct
+            # `Invoke-Native` call that extracts git metadata still broken -- and
+            # that call had been failing this way since before this session.
+            $output = @('') + $InputLines | & $FilePath @Arguments 2>&1
         } else {
             $output = & $FilePath @Arguments 2>&1
         }
@@ -139,14 +151,12 @@ function Invoke-Remote {
     param([Parameter(Mandatory)][string]$Script)
     # The body goes over stdin so no quoting rule can rewrite it.
     #
-    # A leading newline is prepended because this file is saved with a UTF-8 BOM
-    # and `powershell -Command -` does not strip it: the BOM ends up glued to the
-    # first token of the body, so `Get-ChildItem ...` arrives as
-    # `\ufeffGet-ChildItem ...` and the guest answers
-    # "The term ... is not recognized as the name of a cmdlet".  The empty first
-    # line absorbs it, so the real body starts clean.
+    # Nothing is prepended here: `Invoke-Native` already adds the empty first line
+    # that absorbs this file's UTF-8 BOM, and doing it in both places put the BOM on
+    # the *second* line -- which broke the call it was meant to fix, in the same way
+    # and with the same unhelpful message.
     $a = $sshArgs + @($target, 'powershell.exe -NoProfile -NonInteractive -Command -')
-    $r = Invoke-Native -FilePath 'ssh.exe' -Arguments $a -InputLines @('', $Script)
+    $r = Invoke-Native -FilePath 'ssh.exe' -Arguments $a -InputLines @($Script)
     if ($r.ExitCode -ne 0) {
         throw "remote command failed (exit $($r.ExitCode)):`n$($r.Output -join "`n")"
     }
@@ -432,7 +442,13 @@ if ($Stage) {
     # successful `scp` exit code, and the number is the same one printed above, so
     # a mismatch is unambiguous.
     $guestExeDir = "$guestRepoWin\out\build\msvc\tests\$Configuration"
-    $countScript = "Get-ChildItem -LiteralPath '$guestExeDir' -Filter *.exe -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"
+    # A .NET call rather than a cmdlet, and that is the second correction here.  The
+    # first version used `Get-ChildItem` and was defeated by this file's UTF-8 BOM
+    # being glued to the cmdlet name; adding a blank line to absorb it then put the
+    # BOM on the *second* line of another call and broke that one instead.  A static
+    # .NET call has no cmdlet name to corrupt, so the fragility is removed rather
+    # than worked around.
+    $countScript = "[System.IO.Directory]::GetFiles('$guestExeDir', '*.exe').Length"
     $guestExeLines = @(Invoke-Remote -Script $countScript)
     $guestExeCount = -1
     foreach ($line in $guestExeLines) {

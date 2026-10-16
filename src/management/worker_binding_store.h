@@ -85,6 +85,18 @@ public:
     [[nodiscard]] static WorkerBindingStore over_directory(
         std::unique_ptr<profile::IAtomicFileDirectory> directory) noexcept;
 
+    // The same, over a *real* managed directory the caller opened.
+    //
+    // Two factories rather than one because they measure different things, and the
+    // distinction cost a round: `over_directory` takes a fake and proves the
+    // encoding, while this one proves the four-step atomic publish against the real
+    // Windows directory -- which is where a publish that only ever worked against
+    // an in-memory map would fail on the guest.  An integration test needs this
+    // one; a unit test cannot use it, because creating the protected root is
+    // exactly what a development machine cannot do.
+    [[nodiscard]] static Result<WorkerBindingStore> over_protected_root(
+        std::wstring_view trusted_program_data_root);
+
     // Records what was observed.  Replaces any earlier record for the profile --
     // the fingerprint is "the last worker this profile had", not a history.
     [[nodiscard]] Result<void> record(const WorkerFingerprintRecord& entry);

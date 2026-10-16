@@ -2,6 +2,7 @@
 
 #include "src/host/m5_worker_private_pipe.h"
 #include "src/management/windows_worker_job.h"
+#include "src/management/worker_binding_store.h"
 
 #include <array>
 #include <cstddef>
@@ -34,8 +35,10 @@ persistence::ImageUuid to_image_uuid(const product::Uuid& id) noexcept {
 
 WindowsWorkerSessionProvider::WindowsWorkerSessionProvider(
     std::wstring worker_executable,
-    WindowsWorkerProcessSource& processes) noexcept
-    : worker_executable_(std::move(worker_executable)), processes_(processes) {}
+    WindowsWorkerProcessSource& processes,
+    WorkerBindingStore* const bindings) noexcept
+    : worker_executable_(std::move(worker_executable)), processes_(processes),
+      bindings_(bindings) {}
 
 Result<std::unique_ptr<ServiceWorkerSession>>
 WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
@@ -102,6 +105,24 @@ WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
     // process, and closing it would leave a worker that can be seen and never
     // waited for.
     worker.process_handle = nullptr;
+
+    // The fingerprint, recorded while both halves of it are in hand.
+    //
+    // This is the only place that knows the profile *and* the process together,
+    // which is why it is here rather than in the sweep: a sweep runs in a later
+    // process and has only the durable record to go on.  A failure is deliberately
+    // **not** fatal to the launch.  The worker is running and useful; refusing it
+    // because a hint could not be written would stop a disk over a bookkeeping
+    // problem, and the cost of a missing fingerprint is bounded and visible -- the
+    // next start reports that profile as needing attention instead of cleaning it
+    // up.
+    if (bindings_ != nullptr) {
+        WorkerFingerprintRecord fingerprint{request.profile_id,
+                                            worker.binding.process_id,
+                                            worker.binding.process_creation_time,
+                                            session_generation};
+        static_cast<void>(bindings_->record(fingerprint));
+    }
 
     auto session = ServiceWorkerSession::create(std::move(worker.channel),
                                                 worker.binding);

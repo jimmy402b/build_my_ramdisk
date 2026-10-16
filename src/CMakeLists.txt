@@ -381,6 +381,7 @@ add_library(myrd_service STATIC
     service/service_host.cpp service/service_host.h
     service/service_runtime.cpp service/service_runtime.h
     service/service_system.cpp service/service_system.h
+    service/startup_sweep.cpp service/startup_sweep.h
 )
 target_include_directories(myrd_service PUBLIC "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd_service PUBLIC myrd_management myrd_common)

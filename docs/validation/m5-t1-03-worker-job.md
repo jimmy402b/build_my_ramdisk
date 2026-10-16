@@ -145,14 +145,62 @@ part 1/2 见 `docs/superpowers/plans/2026-10-15-m5-master-plan.md` 的 T1-03 卡
 - 想要"宁可不启动"的部署可以打开
   `ServiceHostOptions::fail_start_when_sweep_needs_attention`。
 
-### 4.3 尚未接线（下一步，T1-03 最后一步）
+### 4.3 已接线（part 6，本轮）：sweep 现在会真的动手
 
-1. **launch 时写指纹**（provider 拿到 profile 与进程，两者都只有它知道）；
-2. **从 store 推出 expected bindings**（`recorded_creation_time` 必须来自 store，
-   否则 sweep 永远判 `leave_alone`）；
-3. **组合根建生产 sweep 并传给 host**；
-4. **强杀验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
-   无法证明归属 → 不清且报 needs-attention。**至少 `-Repeat 20`**。
+**读数（本轮，虚拟机）**：`m5.startup_sweep` **`-Repeat 20` = 20/20 通过**
+（请求 `d70ee7af65d246eeb3aabd79ea7e4a61`；此前 `-Repeat 5` 也 5/5）。
+这是**功能与重复性**读数，量测范围就是这一条用例在客机上的 20 次运行。
 
-**在 1–3 完成之前，sweep 的绑定集是空的**——所以本轮**没有**尝试强杀验收，
-也没有从逻辑测试去宣称它。这是刻意的。
+| 交付 | 内容 |
+|---|---|
+| provider 记录指纹 | launch 成功后写 `WorkerFingerprintRecord`（pid + creation time + session generation）。**写失败不致命**：worker 正在跑且有用，为了一个提示而拒绝一块盘是本末倒置；代价有界且可见（下次启动报 needs-attention 而不是清理） |
+| `FingerprintWorkerBindings` | durable 指纹 → `ExpectedWorkerBinding`。**`recorded_creation_time` 必须来自 store**，否则 `sweep_verdicts` 对每个孤儿都答 `leave_alone`（正确地答，因为 pid 不是身份）——**这个失败在类型上看不出来**，所以写在头文件里 |
+| `ProductionStartupSweep` | `run_worker_sweep` 的 `IStartupSweep` 适配器，保留报告供操作员与证据使用 |
+| 组合根 | 建 store → 建 provider（带 store）→ 建 bindings（`expects_running_worker` 从 **durable profile 记录**读，不猜）→ 建 sweep → 传给 host |
+| `m5.startup_sweep` | **新集成用例**：真 job 里的真孤儿 + 真 store + **真 adapter**，跑生产 sweep，断言孤儿**真的没了** |
+
+**为什么第二个用例被删掉**（见文件内注释）：**"无法归属的孤儿"在真实里不可构造**——
+job 报出的进程**没有 profile**时，它不是"无法归属"，而是**被明确判定为不属于任何 profile**，
+也就是 `terminate_forced` 那条路。要构造"无法归属"需要一个**被 job 打上 profile 标记**的孤儿，
+而 job 打不了这个标记（哪个 worker 服务哪个 profile 存在 durable 记录里，job 不读它）。
+所以那条路在能构造它的地方测（`m5.worker_sweep` / `m5.worker_sweep_policy` 用 fake），
+**而不是留一个空过的用例**。
+
+### 4.4 本轮抓到的 4 个缺陷（全部由"用真东西"逼出来）
+
+**① `terminate_process` 打开了不够的权限（产品缺陷，最严重）**
+
+`OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, ...)` 之后调 `GetProcessTimes`
+——**没有 `PROCESS_QUERY_LIMITED_INFORMATION` 就读不到创建时间**，
+于是 `live` 为空，而那之后的安全检查**拒绝了它本来要结束的每一个进程**。
+实测：`observed=134366055718126761 live=0`，看起来像"pid 被回收"，
+实际是权限没要够。**强制终止 100% 失败，而且伪装成安全检查正常工作。**
+
+**② 指纹 store 的 leaf 目录没人建（产品缺陷）**
+
+`open_managed_atomic_directory` 要求每一级都存在，全新安装没有指纹 ⇒ 第一次启动必然失败。
+而且**继承父目录的权限不够**：子目录继承的是 ACE，自己**不是** `SE_DACL_PROTECTED`，
+所以 `open_managed_atomic_directory` 正确地拒绝它。改成用**显式 descriptor 创建**，
+且 ACE 必须带 `OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE`（否则报 "unexpected ACL entry"）。
+
+**③ 手写四步原子发布被真目录拒绝（产品缺陷）**
+
+我自己写 create/write/flush/publish，真目录回 "Temporary profile file is not verified for publication"
+——那条规则正是防"半份记录"的唯一屏障。改为复用 profile 层的
+`publish_current_preserving_previous`（但**它不能建文件**：第一步就是读目标，
+而真目录把"文件不存在"报成错误 ⇒ 第一次写仍走显式四步，**并包含那次验证性读回**）。
+
+**④ 我修 BOM 修出了第二个 BOM 问题（工具链，自己造成）**
+
+第一次把"吸收 BOM 的空行"加在 `Invoke-Remote`，漏掉了直接调 `Invoke-Native` 的解包那步；
+移到 `Invoke-Native` 后**没有删掉 `Invoke-Remote` 里那份**，于是空行变成两行、
+**BOM 落到第二行**，把原本要修的调用弄坏了——同样的报错信息，不同的原因。
+最终改为**用 .NET 静态调用数文件**（`[System.IO.Directory]::GetFiles(...).Length`），
+**没有 cmdlet 名字可被污染**，把脆弱性去掉而不是绕过。
+
+### 4.5 尚未接线（T1-03 最后一步）
+
+**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
+后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
+而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**

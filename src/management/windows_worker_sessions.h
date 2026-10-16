@@ -25,10 +25,12 @@
 namespace myrd::management {
 
 // Forward declared rather than included: this header only needs the name for a
-// reference, and `windows_worker_job.h` includes this one's interface -- so
-// including it back would be a cycle.  The provider never touches the job
-// directly; it hands the handle to the launcher and the process to the registry.
+// reference or a pointer, and the store that owns the job includes this one's
+// interface -- so including it back would be a cycle.  The provider never touches
+// the job directly; it hands the handle to the launcher and the process to the
+// registry.
 class WindowsWorkerProcessSource;
+class WorkerBindingStore;
 
 class WindowsWorkerSessionProvider final : public IWorkerSessionProvider {
 public:
@@ -43,7 +45,8 @@ public:
     // provider without one would launch workers nothing could ever account for, so
     // it is a constructor parameter rather than an optional setter.
     WindowsWorkerSessionProvider(std::wstring worker_executable,
-                                 WindowsWorkerProcessSource& processes) noexcept;
+                                 WindowsWorkerProcessSource& processes,
+                                 WorkerBindingStore* bindings = nullptr) noexcept;
 
     [[nodiscard]] Result<std::unique_ptr<ServiceWorkerSession>> launch(
         const WorkerLaunchRequest& request,
@@ -57,6 +60,15 @@ private:
     // Borrowed for the provider's whole life, and must outlive it: it owns the
     // job the workers are created into and the handles that keep them reachable.
     WindowsWorkerProcessSource& processes_;
+    // Where the launched worker's fingerprint is recorded, or null when nothing
+    // reads it.
+    //
+    // **Null is a legitimate configuration and a costly one**, which is why it is
+    // documented rather than defaulted quietly: a launch that records nothing
+    // produces a worker the next start cannot attribute, and the sweep will then
+    // report it as needing attention instead of cleaning it up.  Tests pass null
+    // because they never crash and restart; the service never does.
+    WorkerBindingStore* bindings_{};
     // One per launched session, so a recycled pipe name can never be mistaken
     // for this session's, and so a worker from a previous service session cannot
     // authenticate against this one.

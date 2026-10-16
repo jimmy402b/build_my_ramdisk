@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 
 #include <cstddef>
+#include <cstdio>
 #include <utility>
 
 namespace myrd::management {
@@ -300,12 +301,20 @@ Result<void> WindowsWorkerProcessSource::terminate_process(
             L"terminate_process", L"refusing to terminate pid zero"));
     }
 
-    // Opened with the rights to end it and nothing else.  `PROCESS_TERMINATE`
-    // alone is not enough to wait on it, which is deliberate: waiting is the
-    // retained handle's job, and this call is the escalation that only happens
-    // after that wait timed out.
-    HANDLE handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE,
-                                process.process_id);
+    // Opened with the rights to end it, to wait on it, and to *read its creation
+    // time* -- and the third is not optional even though nothing here sets out to
+    // read it.  The re-check below needs it, and without it `GetProcessTimes` fails,
+    // the live creation time comes back absent, and the check rejects the very
+    // process it was invoked to end.  Measured: every forced termination failed with
+    // `observed=134366055718126761 live=0` until this right was added, and the
+    // symptom looked like pid recycling rather than like a missing access right.
+    //
+    // `PROCESS_QUERY_LIMITED_INFORMATION` rather than `PROCESS_QUERY_INFORMATION`:
+    // the limited right is enough for a creation time and is granted where the full
+    // one is not, which matters for a worker running under a different token.
+    HANDLE handle = OpenProcess(
+        PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+        process.process_id);
     if (handle == nullptr) {
         const DWORD error = GetLastError();
         // A process that is already gone is the outcome that was wanted.  Reported
@@ -327,6 +336,13 @@ Result<void> WindowsWorkerProcessSource::terminate_process(
     if (process.process_creation_time.has_value()) {
         const auto live = creation_time_of(handle);
         if (!live.has_value() || *live != *process.process_creation_time) {
+            std::fprintf(stderr,
+                         "DIAG terminate pid=%u observed=%llu live=%llu has=%d\n",
+                         process.process_id,
+                         static_cast<unsigned long long>(
+                             process.process_creation_time.value_or(0)),
+                         static_cast<unsigned long long>(live.value_or(0)),
+                         live.has_value() ? 1 : 0);
             CloseHandle(handle);
             return Result<void>::failure(job_error(
                 L"terminate_process",

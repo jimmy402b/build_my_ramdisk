@@ -735,6 +735,24 @@ add_test(NAME m5.worker_binding_store
     COMMAND myrd_m5_worker_binding_store_tests)
 set_tests_properties(m5.worker_binding_store PROPERTIES TIMEOUT 120)
 
+# ---- M5 startup sweep against a real orphan (T1-03) -------------------------
+# Creates real processes in the real named job, so it is VM-only by the
+# development-machine rule (`AGENTS.md` section 4): it spawns processes and
+# terminates them.  The decisions are measured over fakes elsewhere; what needs a
+# real process is that a real orphan is actually ended, and that one which cannot
+# be attributed is actually left alone.
+add_executable(myrd_m5_startup_sweep_tests
+    integration/m5_startup_sweep_tests.cpp
+)
+target_link_libraries(myrd_m5_startup_sweep_tests PRIVATE
+    myrd_test_support myrd_management myrd_service)
+target_include_directories(myrd_m5_startup_sweep_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_startup_sweep_tests)
+add_test(NAME m5.startup_sweep
+    COMMAND myrd_m5_startup_sweep_tests)
+set_tests_properties(m5.startup_sweep PROPERTIES TIMEOUT 600)
+
 # The recovery command family -- repair, rebind and forget -- named by Task 6's
 # file list and missing until now.  It includes the checkpoint model's fixture
 # for its fakes alone, exactly as the orchestration suite does.

@@ -24,8 +24,10 @@
 #include "src/management/service_operation_store.h"
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_sessions.h"
+#include "src/management/worker_binding_store.h"
 #include "src/service/service_host.h"
 #include "src/service/service_system.h"
+#include "src/service/startup_sweep.h"
 
 #include <cstdint>
 #include <memory>
@@ -126,6 +128,14 @@ private:
     std::unique_ptr<management::WindowsWorkerProcessSource> processes_;
     std::optional<management::WindowsWorkerSessionProvider> sessions_;
     std::optional<management::ServiceWorkerControl> worker_;
+    // Where a launched worker's fingerprint is recorded, so the next start can
+    // tell that worker from a process that merely inherited its pid.  Declared
+    // before the provider, which borrows it.
+    std::optional<management::WorkerBindingStore> bindings_;
+    // The start-up sweep and the two pieces it needs.  Declared after the store it
+    // reads and after the job it enumerates, both of which it borrows.
+    std::optional<service::FingerprintWorkerBindings> expected_bindings_;
+    std::optional<service::ProductionStartupSweep> startup_sweep_;
     StderrServiceLogger logger_{};
     SystemIdGenerator ids_{};
     SystemPhysicalMemoryQuery memory_{};

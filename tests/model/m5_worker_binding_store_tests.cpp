@@ -62,12 +62,23 @@ public:
         }
         const auto found = files.find(std::wstring(name));
         if (found == files.end()) {
-            return Result<std::vector<std::byte>>::failure(
-                {ErrorDomain::internal, 2, L"read_file", L"not found", 0});
+            // An ABSENT file is a successful read of nothing, not a failure.
+            //
+            // The real managed directory answers this way, and
+            // `publish_current_preserving_previous` depends on it: its first act is
+            // to read the destination, so a fake that failed here would make the
+            // first write of any record impossible.  The absent-versus-unreadable
+            // distinction the store's `find` preserves is drawn from the *listing*,
+            // not from this call, which is why `fail_reads` above is a separate
+            // switch.
+            return Result<std::vector<std::byte>>::success({});
         }
         return Result<std::vector<std::byte>>::success(found->second);
     }
 
+    // `publish_temp` on the real directory refuses a temp that was not read back
+    // first -- the check that stops a torn write becoming a half-written record --
+    // so the fake has to keep its temps readable, exactly as the real one does.
     [[nodiscard]] Result<profile::AtomicTempFile> create_unique_temp(
         std::wstring_view) override {
         return Result<profile::AtomicTempFile>::success(

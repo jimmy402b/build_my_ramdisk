@@ -2,11 +2,14 @@
 
 #include "src/profile/profile_store.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,6 +20,98 @@ namespace {
 Error binding_error(const wchar_t* operation, const wchar_t* message,
                     const std::uint32_t native_code = 0) {
     return {ErrorDomain::internal, 1, operation, message, native_code};
+}
+
+// Creates the `workers` leaf with the same protection the sibling profile
+// directories carry: a DACL granting full control to SYSTEM and to Administrators
+// and to nobody else, marked protected so nothing inherited can widen it.
+//
+// Inheriting from the parent is *not* enough, and that was measured rather than
+// assumed: a child directory inherits its parent's access-control *entries* but is
+// not itself marked `SE_DACL_PROTECTED`, so `open_managed_atomic_directory`
+// refuses it -- correctly, because an unprotected DACL can be widened by anything
+// that can write the parent.  The leaf is therefore created *with* an explicit
+// descriptor rather than created and then fixed up, which would leave a window in
+// which the directory exists and is not yet protected.
+Result<void> create_protected_leaf(const std::filesystem::path& path) {
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> system_sid{};
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> admin_sid{};
+    DWORD system_bytes = static_cast<DWORD>(system_sid.size());
+    DWORD admin_bytes = static_cast<DWORD>(admin_sid.size());
+    if (CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid.data(),
+                           &system_bytes)
+            == FALSE
+        || CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+                              admin_sid.data(), &admin_bytes)
+            == FALSE) {
+        return Result<void>::failure(binding_error(L"worker_binding.create",
+                             L"a well-known SID could not be built",
+                             GetLastError()));
+    }
+
+    std::array<std::byte,
+               2 * (sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE)>
+        acl_storage{};
+    auto* acl = reinterpret_cast<PACL>(acl_storage.data());
+    if (InitializeAcl(acl, static_cast<DWORD>(acl_storage.size()), ACL_REVISION)
+        == FALSE) {
+        return Result<void>::failure(binding_error(L"worker_binding.create",
+                             L"the leaf's ACL could not be initialized",
+                             GetLastError()));
+    }
+    constexpr DWORD kFullControl = GENERIC_ALL;
+    // `AddAccessAllowedAceEx` rather than `AddAccessAllowedAce`, and the difference
+    // is the whole reason the first version of this was rejected: the plain form
+    // writes an ACE with no inheritance flags, and
+    // `open_managed_atomic_directory` requires the entries to be inheritable --
+    // otherwise a file created inside the directory would not carry the
+    // protection, which is exactly the property the check exists to establish.
+    constexpr DWORD kInheritable = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+    if (AddAccessAllowedAceEx(acl, ACL_REVISION, kInheritable, kFullControl,
+                              system_sid.data())
+            == FALSE
+        || AddAccessAllowedAceEx(acl, ACL_REVISION, kInheritable, kFullControl,
+                                 admin_sid.data())
+            == FALSE) {
+        return Result<void>::failure(binding_error(
+            L"worker_binding.create",
+            L"the leaf's ACL entries could not be added", GetLastError()));
+    }
+
+    SECURITY_DESCRIPTOR descriptor{};
+    if (InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION)
+            == FALSE
+        || SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) == FALSE) {
+        return Result<void>::failure(binding_error(L"worker_binding.create",
+                             L"the leaf's security descriptor could not be set",
+                             GetLastError()));
+    }
+    // The marker whose absence `open_managed_atomic_directory` rejects.
+    if (SetSecurityDescriptorControl(&descriptor, SE_DACL_PROTECTED,
+                                     SE_DACL_PROTECTED)
+        == FALSE) {
+        return Result<void>::failure(binding_error(L"worker_binding.create",
+                             L"the leaf's DACL could not be marked protected",
+                             GetLastError()));
+    }
+
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = &descriptor;
+    attributes.bInheritHandle = FALSE;
+
+    if (CreateDirectoryW(path.c_str(), &attributes) == FALSE) {
+        const DWORD error = GetLastError();
+        // Already there is the normal case on every start after the first, and not
+        // a failure: whatever created it is about to be verified by the open that
+        // follows, which is the check that actually matters.
+        if (error != ERROR_ALREADY_EXISTS) {
+            return Result<void>::failure(binding_error(
+                L"worker_binding.create",
+                L"the fingerprint directory could not be created", error));
+        }
+    }
+    return Result<void>::success();
 }
 
 // One record per line, six fields, and a fixed order.
@@ -169,8 +264,24 @@ Result<WorkerBindingStore> WorkerBindingStore::open(
     // installer, and the fingerprints are the same class of state as the profile
     // records -- so they live inside it rather than in a second protected root
     // with its own ACL to keep in step.
+    //
+    // The `workers` leaf is created here rather than by the installer, and that is
+    // a deliberate split: `open_managed_atomic_directory` requires every component
+    // to exist, and a fresh install has no fingerprints yet, so requiring the leaf
+    // would make the first boot fail on a machine where nothing is wrong.  The
+    // leaf inherits the parent's protection, so creating it does not weaken
+    // anything -- and it is the store that owns this directory, so it is the store
+    // that should make it.
     constexpr std::array<std::wstring_view, 3> components{
         L"MyRamDisk", L"profiles", L"workers"};
+    const std::filesystem::path leaf =
+        std::filesystem::path(trusted_program_data_root) / L"MyRamDisk"
+        / L"profiles" / L"workers";
+    if (!std::filesystem::exists(leaf)) {
+        auto created = create_protected_leaf(leaf);
+        if (!created.ok()) return Result<WorkerBindingStore>::failure(
+            created.error());
+    }
     auto managed = profile::open_managed_atomic_directory(
         trusted_program_data_root, components);
     if (!managed.ok()) {
@@ -190,24 +301,48 @@ WorkerBindingStore WorkerBindingStore::over_directory(
     return WorkerBindingStore(std::move(impl));
 }
 
+Result<WorkerBindingStore> WorkerBindingStore::over_protected_root(
+    std::wstring_view trusted_program_data_root) {
+    constexpr std::array<std::wstring_view, 3> components{
+        L"MyRamDisk", L"profiles", L"workers"};
+    auto managed = profile::open_managed_atomic_directory(
+        trusted_program_data_root, components);
+    if (!managed.ok()) {
+        return Result<WorkerBindingStore>::failure(managed.error());
+    }
+    auto impl = std::make_unique<Impl>();
+    impl->path = managed.value().path;
+    impl->directory = std::move(managed.value().directory);
+    return Result<WorkerBindingStore>::success(
+        WorkerBindingStore(std::move(impl)));
+}
+
 Result<void> WorkerBindingStore::record(const WorkerFingerprintRecord& entry) {
     if (impl_ == nullptr || impl_->directory == nullptr) {
         return Result<void>::failure(binding_error(
             L"worker_binding.record", L"the fingerprint store is not open"));
     }
 
-    // The four-step atomic publish, stated directly rather than through the
-    // "current + previous" helper the profile records use.
+    // The profile layer's atomic publish handles replacing an existing record, and
+    // it is the layer that already implements and tests the "read the temp back
+    // before publishing it" rule -- a rule that exists because it is the only thing
+    // between a torn write and a fingerprint that half-describes a worker.
     //
-    // A fingerprint is a *hint*, not the durable authority: it says which process
-    // a profile last had, and if the file is lost the sweep reports that profile's
-    // worker as unattributable instead of acting on it.  Keeping a previous copy
-    // would therefore buy nothing that matters and would mean two files that can
-    // disagree about which process a profile owns -- the one reading a sweep must
-    // never have to arbitrate.
+    // It cannot *create* the file, though: its first act is to read the
+    // destination, and the managed directory reports a missing file as an error
+    // rather than as an empty read.  So the first write for a profile takes the
+    // same four steps stated explicitly -- including the verification read -- and
+    // every later write goes through the helper.
     const std::string bytes = encode(entry);
     const auto* begin = reinterpret_cast<const std::byte*>(bytes.data());
     const std::span<const std::byte> payload(begin, bytes.size());
+    const std::wstring name = file_name_for(entry.profile_id);
+
+    auto existing = impl_->directory->read_file(name);
+    if (existing.ok()) {
+        return profile::publish_current_preserving_previous(
+            *impl_->directory, name, payload);
+    }
 
     auto token = impl_->directory->create_unique_temp(L"worker-fingerprint");
     if (!token.ok()) return Result<void>::failure(token.error());
@@ -221,13 +356,27 @@ Result<void> WorkerBindingStore::record(const WorkerFingerprintRecord& entry) {
         impl_->directory->discard_temp(token.value());
         return Result<void>::failure(flushed.error());
     }
-    auto published = impl_->directory->publish_temp(
-        token.value(), file_name_for(entry.profile_id), /*replace_existing=*/true);
+    // The verification read, which `publish_temp` requires and which is worth
+    // having anyway: it is what proves the bytes on disk are the bytes intended
+    // before anything claims they are a record.
+    auto verified = impl_->directory->read_temp(token.value());
+    if (!verified.ok()) {
+        impl_->directory->discard_temp(token.value());
+        return Result<void>::failure(verified.error());
+    }
+    if (!std::equal(verified.value().begin(), verified.value().end(),
+                    payload.begin(), payload.end())) {
+        impl_->directory->discard_temp(token.value());
+        return Result<void>::failure(binding_error(
+            L"worker_binding.record",
+            L"the staged fingerprint did not verify byte-for-byte", 0));
+    }
+    auto published = impl_->directory->publish_temp(token.value(), name, true);
     if (!published.ok()) {
         impl_->directory->discard_temp(token.value());
         return Result<void>::failure(published.error());
     }
-    return Result<void>::success();
+    return impl_->directory->flush_directory();
 }
 
 Result<void> WorkerBindingStore::forget(const product::Uuid& profile_id) {
@@ -247,10 +396,9 @@ Result<std::optional<WorkerFingerprintRecord>> WorkerBindingStore::find(
     }
     auto bytes = impl_->directory->read_file(file_name_for(profile_id));
     if (!bytes.ok()) {
-        // Absent is a legitimate answer and the one the type is shaped around.
-        // Distinguished from a read *failure* by asking the directory whether the
-        // name exists at all, because "I have no record" and "I could not read the
-        // record" lead the sweep to different places.
+        // A read *failure*.  Distinguished from absent by asking the directory
+        // whether the name exists at all, because "I have no record" and "I could
+        // not read the record" lead the sweep to different places.
         auto names = impl_->directory->list_files();
         if (!names.ok()) {
             return Result<std::optional<WorkerFingerprintRecord>>::failure(
@@ -267,6 +415,18 @@ Result<std::optional<WorkerFingerprintRecord>> WorkerBindingStore::find(
         return Result<std::optional<WorkerFingerprintRecord>>::failure(
             bytes.error());
     }
+
+    // A successful read of *nothing* is the absent case, and it is not the same as
+    // a failure.  The managed directory answers "no such file" as an empty read
+    // rather than as an error -- `publish_current_preserving_previous` relies on
+    // exactly that to write a file for the first time -- so treating empty as
+    // "present but unparseable" here would report every profile that has never had
+    // a worker as needing attention.
+    if (bytes.value().empty()) {
+        return Result<std::optional<WorkerFingerprintRecord>>::success(
+            std::nullopt);
+    }
+
     const std::string text = as_text(bytes.value());
     auto decoded = decode(text);
     if (!decoded.ok()) {

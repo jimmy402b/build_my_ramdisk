@@ -133,11 +133,46 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
             processes.error());
     }
     runtime->processes_ = processes.move_value();
+
+    // The fingerprint store, before the provider that writes to it.  Failing here
+    // fails the start rather than running without it: a session that cannot record
+    // what it launched produces workers the next start cannot attribute, and the
+    // sweep would then report a condition on every boot instead of cleaning up.
+    auto bindings = management::WorkerBindingStore::open(
+        runtime->config_.program_data_root);
+    if (!bindings.ok()) {
+        return Result<std::unique_ptr<ServiceRuntime>>::failure(
+            bindings.error());
+    }
+    runtime->bindings_.emplace(bindings.move_value());
+
     runtime->sessions_.emplace(runtime->config_.worker_executable,
-                               *runtime->processes_);
+                               *runtime->processes_, &*runtime->bindings_);
     runtime->worker_.emplace(*runtime->sessions_,
                              runtime->config_.worker_control_timeout_ms);
     runtime->execution_gate_ = std::make_unique<std::mutex>();
+
+    // The sweep's two halves: the durable fingerprints as bindings, and the sweep
+    // itself over the job.
+    //
+    // `expects_running_worker` is answered from the durable *profile* records, not
+    // from the fingerprint -- a fingerprint says which process a profile last had
+    // and nothing about whether that profile is supposed to be up.  The predicate
+    // reads the registration store, and a profile whose record cannot be read is
+    // reported as *not* expected running: that terminates a worker which might have
+    // been meant to serve, which is the safer of the two mistakes, because the
+    // alternative leaves two workers believing they own one bundle.
+    auto* const registrations_for_sweep = &*runtime->registrations_;
+    runtime->expected_bindings_.emplace(
+        *runtime->bindings_,
+        [registrations_for_sweep](const product::Uuid& profile_id) {
+            auto snapshot = registrations_for_sweep->load(profile_id);
+            if (!snapshot.ok()) return false;
+            return snapshot.value().state.disk.runtime
+                == product::RuntimeState::running;
+        });
+    runtime->startup_sweep_.emplace(*runtime->processes_,
+                                    *runtime->expected_bindings_);
 
     // The core borrows every store above, so it is emplaced after them; the
     // scheduler borrows the core, so it is emplaced after that.
@@ -157,7 +192,8 @@ ServiceRuntime::ServiceRuntime(ServiceRuntimeConfig config) noexcept
 ServiceRuntime::~ServiceRuntime() noexcept = default;
 
 ServiceHost ServiceRuntime::host() {
-    return ServiceHost(clock_, *core_, *scheduler_, config_.host);
+    return ServiceHost(clock_, *core_, *scheduler_, config_.host,
+                       startup_sweep_.has_value() ? &*startup_sweep_ : nullptr);
 }
 
 } // namespace myrd::service
