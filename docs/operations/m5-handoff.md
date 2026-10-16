@@ -284,15 +284,32 @@ REQUIRE(x.ok());
 
 **"先给现象加一条能区分假设的诊断"这条纪律，对 `Result` 断言同样适用**，
 而且在这里代价特别高：一次客机往返约 5–30 分钟。
+**这条规则在加上去的当轮就回本了**——它把之前两轮的盲猜变成了一行确切诊断。
 
-- **`Set-Disk -IsOffline` 会在客机上挂住**：本轮清理强杀残留时它卡死，
-  需要 `vmrun stop <vmx> hard` + `start <vmx> nogui` 硬重启（这是让客机存储栈恢复的唯一可靠手段，
-  重启后 `disks: 0`）。
-  **规则**：不要用 `Set-Disk` / `diskpart` 去清残留；**硬重启 VM**，它更快也更可靠。
-- **留残留是合法的中间状态，但要有意为之**：`m5.production_execution_backend` 的强杀用例
-  会**故意留下** `disks: 1,0 / letters: C,Z`，因为那正是 reclaimer 必须清掉的东西，
-  而且该用例**断言它存在**。跑完它之后客机**不是干净的**，
-  **下一个依赖干净设备的用例之前必须硬重启**。
+### 7.0.4 reclaim 用例首次运行**挂住**：多于 30 分钟无结果且 SSH 停止响应（2026-10-16）
+
+**现象**：`-Run -Filter '^m5\.production_execution_backend$' -Repeat 1 -MinTimeoutSeconds 900`
+**staged 成功、run 启动**，但**超过 30 分钟没有结果文件**，同时**新的 SSH 命令不再被服务**
+（`echo ALIVE` 还会答，但任何带内层 PowerShell 的命令挂住）。
+杀掉本地 job + `vmrun stop hard` / `start nogui` 后客机恢复干净。
+
+**已排除 / 已修的**（见 part 19–20）：
+
+- 早先 `0/20`、`0/3` 全红是**我自己的 fixture 容量写错**（8 MiB vs 64 MiB），
+  被 `reclaim` 正确地以几何校验拒绝；
+- 随后可见的错误是 **IPC 超时**（`pipe transfer exceeded its bounded wait`，code 4107），
+  已用 `reclaim_context()`（取 session 最大值 120 s）修掉。
+
+**仍未判定**：修掉超时后到底是**成功**、**仍然超时**还是**真的挂住**——
+**本轮没有读数，故不作任何断言**。区分"会挂"与"会超时"是下一步第一件事。
+
+**下一次跑这个用例的建议**：
+
+- 用**单次** `-Repeat 1`，并**先**确认 `workers: 0 / disks: 0 / letters: C`；
+- 挂住超过 ~10 分钟就**硬重启**，不要等 30 分钟；
+- 若复现，**先取现场再重启**：`myrd-m5-worker` 进程数与启动时间、`Get-Disk`、盘符、
+  以及 `C:\m5\control\run-<id>\*` 是否已有 stdout——
+  用于区分"**reclaim 没被调用**"、"**调用后卡在 adopt**"、"**调用后卡在拆卸**"。
 
 ### 7.0 会创建真实进程的用例必须自带守卫（2026-10-16 新增，**已犯过一次**）
 
