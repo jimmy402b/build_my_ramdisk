@@ -219,6 +219,11 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>                     # 收集已�
 4. **设计未决项**（需要用户裁决）：Primo 的 "Mini Tools" 定义；T4-02 单文件 VHDX 导出是否保留。
 5. **§7.17 那个 ABI 陷阱**仍未被根治：项目没有可靠的头文件依赖跟踪，只靠"记得加
    `--clean-first`"这条纪律。
+6. **【未修】`m5.execution_scheduler` 在开发机上本来就是失败的**：T1-02 期间发现，
+   用 `git stash` 回到未改动的 HEAD 复核过——**同一个用例在基线代码上同样失败**
+   （`m5_execution_scheduler_tests.cpp:455`，`!record_is_succeeded(fixture, operation_id)`），
+   与本轮改动无关。它落在 **T1-05/T1-06 的验收面**上，到那两个增量时一并处理。
+   **在此之前它是"开发机上一个已知红灯"**，不是可忽略项。
 
 ---
 
