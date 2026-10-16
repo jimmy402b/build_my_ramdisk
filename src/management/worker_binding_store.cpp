@@ -133,6 +133,21 @@ std::string encode(const WorkerFingerprintRecord& entry) {
     line += " pid=" + std::to_string(entry.worker_pid);
     line += " created=" + std::to_string(entry.worker_process_creation_time);
     line += " generation=" + std::to_string(entry.generation);
+    // The bundle identity, when one was observed.  `-` is written rather than the
+    // field being omitted, so a record that has no identity and a record written by
+    // an older version of this format are distinguishable -- the second is a format
+    // question and the first is a fact.
+    line += " bundle=";
+    if (entry.bundle_file_identity.has_value()) {
+        line += std::to_string(entry.bundle_file_identity->volume_serial);
+        line += ":";
+        for (const auto value : entry.bundle_file_identity->file_id) {
+            line += std::to_string(std::to_integer<unsigned int>(value));
+            line += ",";
+        }
+    } else {
+        line += "none";
+    }
     line += '\n';
     return line;
 }
@@ -150,30 +165,30 @@ bool parse_u64(std::string_view text, std::uint64_t& out) noexcept {
 
 std::optional<std::string_view> field(std::string_view line,
                                       std::string_view key) noexcept {
-    // `key=` searched with its delimiter so `pid=` cannot match inside `created=`.
-    std::string needle(key);
-    needle += '=';
-    const auto at = line.find(needle);
-    if (at == std::string_view::npos) return std::nullopt;
-    auto start = at + needle.size();
-    // Trim both ends, and both ends are load-bearing.
+    // Tokenised, not substring-searched, and that is a correction with a case behind
+    // it: the first version searched for `key=` anywhere in the line, and `bundle`
+    // then matched **inside `generation=`** whenever the bundle field was absent --
+    // so a record with no bundle identity failed to decode, which is the common case
+    // for a record written at launch.
     //
-    // Each field is written as ` key=value`, so the value of every field except
-    // the first is preceded by a separator space; and the line ends in a newline,
-    // so the value of the *last* field is followed by one.  `from_chars` rejects
-    // either, so a parser that trimmed only one end read back neither `pid` (which
-    // the leading space broke) nor `generation` (which the trailing newline broke).
-    //
-    // Both were found by printing the captured bytes rather than by re-reading the
-    // parser, which had looked correct three times.
-    while (start < line.size() && line[start] == ' ') ++start;
-    auto end = line.find(' ', start);
-    if (end == std::string_view::npos) end = line.size();
-    while (end > start && (line[end - 1] == '\n' || line[end - 1] == '\r'
-                           || line[end - 1] == ' ')) {
-        --end;
+    // A token must equal the key exactly; the value is what follows the `=`.  That
+    // cannot match a key that happens to be a suffix of another.
+    std::size_t at = 0;
+    while (at < line.size()) {
+        auto end = line.find(' ', at);
+        if (end == std::string_view::npos) end = line.size();
+        auto stop = end;
+        while (stop > at && (line[stop - 1] == '\n' || line[stop - 1] == '\r')) {
+            --stop;
+        }
+        const std::string_view token = line.substr(at, stop - at);
+        const auto equals = token.find('=');
+        if (equals != std::string_view::npos && token.substr(0, equals) == key) {
+            return token.substr(equals + 1);
+        }
+        at = end + 1;
     }
-    return line.substr(start, end - start);
+    return std::nullopt;
 }
 
 Result<WorkerFingerprintRecord> decode(std::string_view line) {
@@ -210,6 +225,56 @@ Result<WorkerFingerprintRecord> decode(std::string_view line) {
         static_cast<std::uint32_t>(pid_value),
         created_value,
         generation_value};
+
+    // The bundle identity is optional in the record and therefore optional on the
+    // line.  **A missing field is treated as absent**, and the first version of this
+    // made it an error -- which would have made every record this store writes at
+    // launch unreadable, since the launch has no identity yet to write.  The two
+    // spellings mean the same thing ("no identity observed"), so refusing one of them
+    // bought nothing and broke the common case.
+    //
+    // What *is* an error is an unparseable value: a corrupt identity silently read as
+    // missing is a device nobody will ever reclaim **or** report.
+    const auto bundle = field(line, "bundle");
+    if (bundle.has_value() && !bundle->empty() && *bundle != "none") {
+        const auto colon = bundle->find(':');
+        if (colon == std::string_view::npos) {
+            return Result<WorkerFingerprintRecord>::failure(binding_error(
+                L"worker_binding.decode",
+                L"a worker fingerprint's bundle identity is malformed", 0));
+        }
+        std::uint64_t serial = 0;
+        if (!parse_u64(bundle->substr(0, colon), serial)) {
+            return Result<WorkerFingerprintRecord>::failure(binding_error(
+                L"worker_binding.decode",
+                L"a worker fingerprint's bundle serial is not numeric", 0));
+        }
+        BundleFileIdentity identity{};
+        identity.volume_serial = serial;
+        std::string_view rest = bundle->substr(colon + 1);
+        std::size_t index = 0;
+        while (!rest.empty() && index < identity.file_id.size()) {
+            const auto comma = rest.find(',');
+            const auto piece = rest.substr(0, comma);
+            std::uint64_t byte_value = 0;
+            if (!piece.empty() && !parse_u64(piece, byte_value)) {
+                return Result<WorkerFingerprintRecord>::failure(binding_error(
+                    L"worker_binding.decode",
+                    L"a worker fingerprint's file id is not numeric", 0));
+            }
+            identity.file_id[index] = static_cast<std::byte>(byte_value);
+            ++index;
+            if (comma == std::string_view::npos) break;
+            rest = rest.substr(comma + 1);
+        }
+        if (index != identity.file_id.size()) {
+            return Result<WorkerFingerprintRecord>::failure(binding_error(
+                L"worker_binding.decode",
+                L"a worker fingerprint's file id is the wrong length", 0));
+        }
+        record.bundle_file_identity = identity;
+    }
+
     return Result<WorkerFingerprintRecord>::success(std::move(record));
 }
 
@@ -475,6 +540,34 @@ Result<std::vector<WorkerFingerprintRecord>> WorkerBindingStore::list() const {
     }
     return Result<std::vector<WorkerFingerprintRecord>>::success(
         std::move(records));
+}
+
+Result<bool> WorkerBindingStore::amend_bundle_identity(
+    const product::Uuid& profile_id,
+    const BundleFileIdentity& bundle_file_identity) {
+    // Read, change one field, write.  Deliberately *not* a general read-modify-write:
+    // the only field this can touch is the bundle identity, so a status observed after
+    // a launch cannot overwrite the pid that makes the process attributable -- which is
+    // the failure a caller with a stale status would otherwise cause.
+    auto existing = find(profile_id);
+    if (!existing.ok()) {
+        return Result<bool>::failure(existing.error());
+    }
+    if (!existing.value().has_value()) {
+        // No record to amend.  A status can arrive for a profile whose launch this
+        // service never recorded, and inventing a fingerprint from it would produce a
+        // record with no process identity -- one that attributes nothing while looking
+        // like it attributes something.
+        return Result<bool>::success(false);
+    }
+
+    auto amended = *existing.value();
+    amended.bundle_file_identity = bundle_file_identity;
+    auto written = record(amended);
+    if (!written.ok()) {
+        return Result<bool>::failure(written.error());
+    }
+    return Result<bool>::success(true);
 }
 
 } // namespace myrd::management

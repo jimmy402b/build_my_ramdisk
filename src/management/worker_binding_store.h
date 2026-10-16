@@ -44,6 +44,14 @@
 namespace myrd::management {
 
 // One profile's recorded fingerprint.
+//
+// Field order is load-bearing for this struct because it is aggregate-initialized
+// positionally throughout the tests: `bundle_file_identity` is **last** so the four
+// fields that existed before it keep their positions, and an initializer that names
+// only those four keeps its meaning.  Inserting it earlier silently reinterpreted
+// every such initializer -- which is exactly the kind of change the project's
+// "appended so existing aggregate initialization keeps its meaning" convention exists
+// to prevent.
 struct WorkerFingerprintRecord final {
     product::Uuid profile_id;
     // The worker process this profile was last observed running, and the creation
@@ -53,6 +61,20 @@ struct WorkerFingerprintRecord final {
     // The generation the worker stood at when it was recorded, so a later reader
     // can say what the profile was doing.
     std::uint64_t generation{};
+    // The bundle directory's own identity, and the field that decides whether a
+    // leftover volume may be reclaimed at all.
+    //
+    // It cannot be filled in at launch: the worker learns it when it opens and
+    // verifies the bundle, and reports it in its *status*.  So a record written at
+    // launch is legitimately incomplete here, and
+    // `ObservedResourceIdentity::complete()` turns that into "do not reclaim" --
+    // which is why `amend_bundle_identity` exists, to fill it in once the worker has
+    // said what the identity is.
+    //
+    // NOT back-filled from the profile record, because the profile record does not
+    // have it: the identity travels with the bundle registration evidence, and the
+    // only place it is durable today is a removal tombstone.
+    std::optional<BundleFileIdentity> bundle_file_identity;
 
     bool operator==(const WorkerFingerprintRecord&) const noexcept = default;
 };
@@ -100,6 +122,22 @@ public:
     // Records what was observed.  Replaces any earlier record for the profile --
     // the fingerprint is "the last worker this profile had", not a history.
     [[nodiscard]] Result<void> record(const WorkerFingerprintRecord& entry);
+
+    // The bundle directory's identity, as the worker reported it.
+    //
+    // A separate call from `record` because the two facts arrive at different times:
+    // the process at launch, the bundle identity only once the worker has opened and
+    // verified it.  Amending rather than replacing, so a status observed after launch
+    // cannot erase the pid that makes the process attributable.
+    //
+    // Returns whether there *was* a record to amend.  A worker's status can arrive for
+    // a profile whose launch this service never recorded -- after a restart, or for a
+    // profile another session created -- and inventing a record from a status would
+    // produce a fingerprint with no process identity, which attributes nothing and
+    // looks like it attributes something.
+    [[nodiscard]] Result<bool> amend_bundle_identity(
+        const product::Uuid& profile_id,
+        const BundleFileIdentity& bundle_file_identity);
 
     // Removes one profile's fingerprint.  Called when a profile is removed or
     // forgotten: a stale fingerprint would attribute a *later*, unrelated process

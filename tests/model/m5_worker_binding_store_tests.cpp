@@ -303,8 +303,183 @@ TEST_CASE(m5_fingerprint_under_a_foreign_name_is_not_this_profiles_record) {
     REQUIRE(!read.value().has_value());
 }
 
-TEST_CASE(m5_fingerprint_listing_failure_is_reported) {
-    // A directory that cannot be listed must not look like a profile set of zero,
+// ---------------------------------------------------------------------------
+// The bundle identity, which is what decides whether a leftover may be reclaimed.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+BundleFileIdentity bundle_identity(const std::uint64_t serial,
+                                   const unsigned int first_byte) {
+    BundleFileIdentity identity{};
+    identity.volume_serial = serial;
+    identity.file_id[0] = static_cast<std::byte>(first_byte);
+    identity.file_id[15] = std::byte{0x7F};
+    return identity;
+}
+
+} // namespace
+
+TEST_CASE(m5_fingerprint_carries_the_bundle_identity) {
+    // The field that makes a leftover reclaimable.  It has to survive the file, not
+    // just the struct: a store that dropped it would make every profile unprovable and
+    // the reclamation would never act -- which is the state before this field existed.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    WorkerFingerprintRecord written{profile_a(), 4242, 133'700'000'000'000ULL, 7};
+    written.bundle_file_identity = bundle_identity(0xDEAD, 0x11);
+    REQUIRE(store.record(written).ok());
+
+    auto read = store.find(profile_a());
+    REQUIRE(read.ok());
+    REQUIRE(read.value().has_value());
+    REQUIRE(*read.value() == written);
+    REQUIRE(read.value()->bundle_file_identity.has_value());
+    REQUIRE_EQ(read.value()->bundle_file_identity->volume_serial, 0xDEADU);
+    REQUIRE_EQ(read.value()->bundle_file_identity->file_id[15],
+               std::byte{0x7F});
+}
+
+TEST_CASE(m5_fingerprint_without_a_bundle_identity_round_trips_as_absent) {
+    // A record written at launch legitimately has no bundle identity yet -- the worker
+    // has not opened the bundle.  Absent must read back as absent rather than as a
+    // zero identity: a zero identity would be *present* and would therefore pass
+    // `complete()`, authorising a reclamation against an identity nobody established.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    const WorkerFingerprintRecord written{profile_a(), 1, 2, 3};
+    REQUIRE(written.bundle_file_identity == std::nullopt);
+    REQUIRE(store.record(written).ok());
+
+    auto read = store.find(profile_a());
+    REQUIRE(read.ok());
+    REQUIRE(read.value().has_value());
+    REQUIRE(read.value()->bundle_file_identity == std::nullopt);
+}
+
+TEST_CASE(m5_fingerprint_amends_only_the_bundle_identity) {
+    // The two facts arrive at different times: the process at launch, the bundle
+    // identity once the worker reports it.  Amending must keep the pid and creation
+    // time, because those are what make the *process* attributable -- a status that
+    // overwrote them would silently detach the fingerprint from its worker.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    REQUIRE(store.record(WorkerFingerprintRecord{profile_a(), 4242, 99, 7}).ok());
+    const auto amended =
+        store.amend_bundle_identity(profile_a(), bundle_identity(0x1234, 0xAB));
+    REQUIRE(amended.ok());
+    REQUIRE(amended.value());
+
+    auto read = store.find(profile_a());
+    REQUIRE(read.ok());
+    REQUIRE(read.value().has_value());
+    REQUIRE_EQ(read.value()->worker_pid, 4242U);
+    REQUIRE_EQ(read.value()->worker_process_creation_time, 99U);
+    REQUIRE_EQ(read.value()->generation, 7U);
+    REQUIRE(read.value()->bundle_file_identity.has_value());
+    REQUIRE_EQ(read.value()->bundle_file_identity->volume_serial, 0x1234U);
+}
+
+TEST_CASE(m5_fingerprint_amend_without_a_record_reports_so_rather_than_inventing_one) {
+    // A worker's status can arrive for a profile whose launch this service never
+    // recorded -- after a restart, or for a profile another session created.  Inventing
+    // a fingerprint from that status would produce a record with no process identity:
+    // one that attributes nothing while looking like it attributes something.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto* raw = directory.get();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    const auto amended =
+        store.amend_bundle_identity(profile_a(), bundle_identity(1, 2));
+    REQUIRE(amended.ok());
+    REQUIRE(!amended.value());
+    // And nothing was written.
+    REQUIRE_EQ(raw->files.size(), 0U);
+}
+
+TEST_CASE(m5_fingerprint_reads_a_record_without_the_bundle_field) {
+    // This store writes the bundle field from now on, but a record can legitimately
+    // lack it for two reasons: it was written at *launch*, before any worker had
+    // opened the bundle, or it was written by a version of this format that had no
+    // such field.  Both mean the same thing -- no identity observed -- so both must
+    // read as absent.
+    //
+    // An earlier version of the decoder rejected the missing field, which would have
+    // made **every record this store writes at launch unreadable**.  It is kept as a
+    // case because that is exactly the kind of change that looks like added strictness
+    // and is actually a regression.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto* raw = directory.get();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    const std::string no_bundle_field =
+        "profile=aaaaaaaa-1111-2222-3333-444444444444 pid=7 created=8 "
+        "generation=9\n";
+    std::vector<std::byte> bytes;
+    for (const char value : no_bundle_field) {
+        bytes.push_back(static_cast<std::byte>(value));
+    }
+    raw->files[L"aaaaaaaa111122223333444444444444.workers"] =
+        std::move(bytes);
+
+    auto read = store.find(profile_a());
+    REQUIRE(read.ok());
+    REQUIRE(read.value().has_value());
+    REQUIRE(read.value()->bundle_file_identity == std::nullopt);
+    // The other fields still came through, so the record is usable for attribution.
+    REQUIRE_EQ(read.value()->worker_pid, 7U);
+    REQUIRE_EQ(read.value()->worker_process_creation_time, 8U);
+}
+
+TEST_CASE(m5_fingerprint_refuses_a_malformed_bundle_identity) {
+    // An unparseable identity is an error rather than being read as absent: a corrupt
+    // identity silently treated as missing is a device nobody will ever reclaim **or**
+    // report.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto* raw = directory.get();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    const std::string malformed =
+        "profile=aaaaaaaa-1111-2222-3333-444444444444 pid=7 created=8 "
+        "generation=9 bundle=notanumber:1,2,3,\n";
+    std::vector<std::byte> bytes;
+    for (const char value : malformed) {
+        bytes.push_back(static_cast<std::byte>(value));
+    }
+    raw->files[L"aaaaaaaa111122223333444444444444.workers"] =
+        std::move(bytes);
+
+    auto read = store.find(profile_a());
+    REQUIRE(!read.ok());
+    REQUIRE(read.error().operation == L"worker_binding.decode");
+}
+
+TEST_CASE(m5_fingerprint_refuses_a_truncated_file_id) {
+    // Sixteen bytes is the identity.  A short one is not a weaker identity, it is no
+    // identity -- the same rule `WorkerVolumeIdentity::complete` enforces a layer up.
+    auto directory = std::make_unique<MemoryDirectory>();
+    auto* raw = directory.get();
+    auto store = WorkerBindingStore::over_directory(std::move(directory));
+
+    const std::string truncated =
+        "profile=aaaaaaaa-1111-2222-3333-444444444444 pid=7 created=8 "
+        "generation=9 bundle=5:1,2,3,\n";
+    std::vector<std::byte> bytes;
+    for (const char value : truncated) {
+        bytes.push_back(static_cast<std::byte>(value));
+    }
+    raw->files[L"aaaaaaaa111122223333444444444444.workers"] =
+        std::move(bytes);
+
+    auto read = store.find(profile_a());
+    REQUIRE(!read.ok());
+    REQUIRE(read.error().operation == L"worker_binding.decode");
+}
+
+TEST_CASE(m5_fingerprint_listing_failure_is_reported) {    // A directory that cannot be listed must not look like a profile set of zero,
     // because the sweep would then treat every live worker as a stranger.
     auto directory = std::make_unique<MemoryDirectory>();
     auto* raw = directory.get();
