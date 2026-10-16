@@ -1107,7 +1107,42 @@ worker 主流程的每一阶段（进程起来、读到 launch spec、打开 run
 （`Win32VolumeAdapter::dismount` / `ProductVolume::dismount`，
 很可能还有卷锁释放 / `FSCTL_DISMOUNT_VOLUME` / `IOCTL` 这类**同步且无超时**的调用），
 **极可能是第三个（或第四个）同类无限阻塞点**——与 part 23 是同一个修法方向：
-**给调用加界并使其可取消**，而不是继续绕。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**给调用加界并使其可取消**，而不是继续绕。
+
+#### 4.15.17 **`dismount` 是第四个同类无限阻塞点，而且这已经是系统性问题**（part 35，本轮）
+
+`LockedVolume::dismount()`（`windows_volume.cpp:641`）就是那个调用：
+
+```cpp
+if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr))
+```
+
+**同步 `DeviceIoControl`、`lpOverlapped = nullptr`、没有任何界**——
+**与 part 23 在 SRB 传输里修掉的是同一个缺陷形状。**
+
+**本增量至今遇到的四个无限阻塞点，都是同一类**：
+
+| # | 位置 | 形状 | 状态 |
+|---|---|---|---|
+| 1 | `windows_srb_transport.cpp` | 同步 `DeviceIoControl`，`timeout` 只写进 SRB 帧 | **✅ part 23 已修**（overlapped + `CancelIoEx`） |
+| 2 | `CM_Reenumerate_DevNode`（PnP） | 同步、API 无 timeout 形参 | 已被 A' **绕开**（不重新枚举） |
+| 3 | `Win32VolumeAdapter::flush` | 曾怀疑；**实测 2 ms，清白** | 不需要修 |
+| **4** | **`FSCTL_DISMOUNT_VOLUME`** | **同步 `DeviceIoControl`、无界** | **本轮定位，未修** |
+
+**这是一条值得写进结论的系统性事实**（而不只是四个 bug）：
+
+> **本项目的设备路径大量使用同步、无界的 `DeviceIoControl` / PnP 调用。
+> 只要驱动或 PnP 在一个不该慢的状态下不回应，调用方就没有任何办法放弃。**
+> part 23 已经把其中一个变成有界可取消的；**剩下的是同一件事再做一些**，
+> 而不是"再多绕一个"。
+
+**修法方向（与 part 23 一致，且已证明可行）**：把 `FSCTL_DISMOUNT_VOLUME`
+改成 **overlapped + `CancelIoEx`**，超时后取消并等待完成。
+**前提**：`LockedVolume` 的句柄必须是以 `FILE_FLAG_OVERLAPPED` 打开的——
+这一点**未确认**，是本改动第一步要查的（若没有，需要在取锁时就带上）。
+
+**本轮到此为止**（上下文预算见底）：**定位完成，修法方向明确且与已成功的 part 23 同型**，
+**但未实施、未取读数，故不作任何"已修好"的声明，T1-03 仍不得标 PASSED。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
