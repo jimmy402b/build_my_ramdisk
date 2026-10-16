@@ -2748,3 +2748,50 @@ Result<ProductVolume> ProductionRuntimeAdapter::find(const wchar_t letter) {
    **两条路现在都回到同一个设计问题上，而且这次有实测支撑"它绕不过去"。**
 
 **T1-03 不得标 PASSED。****本轮净改动为零**（实施 → 客机读数 → 回退）。
+
+#### 4.15.53 **回退已验证有效；而且读数比之前更一致——问题就是枚举本身**（part 73，本轮）
+
+**回退后重跑 `-Repeat 5`（请求 `95c40c81ec3e4b499791f70d1332f16d`），两件事同时确立**：
+
+**（1）回退确实把行为恢复了**：不再出现我自己那条
+`this runtime did not locate a physical drive (reclaim does not)`，
+而是回到**改动之前**的失败形态。
+⇒ **回退是干净的**（这一点必须验证，因为"回退了但仍坏"会污染后续所有读数）。
+
+**（2）读数比之前更一致，指向更明确**：
+
+| 读数 | 逐次结果 |
+|---|---|
+| 回退前（part 58/60 时期） | `16 / 16 / 3` —— **不一致**，两次成功一次失败 |
+| **回退后（本轮）** | **`3 / 3 / 3 / 3 / 3`** —— **五次数值完全一致** |
+
+**失败原因五次逐字相同**：
+
+```
+residue cleanup failed: op=enumerate_disk_candidates
+  msg=enumerating the disk interfaces did not finish within its bound
+  native=0 code=258
+```
+
+⇒ **这台客机现在处于"枚举必然超时"的稳定状态**。
+**这反而是一件好事（对定位而言）**：
+之前 16/16/3 的混合读数让人怀疑"是不是时序偶发"，
+**现在它稳定复现，意味着"枚举负载下阻塞"是**必然**而不是**偶发**，
+因此**可以用一次仪表化的运行就拿到分步耗时**。
+
+**（3）同时它也说明客机在退化**：
+`-Repeat 20` 全部 20 次、`-Repeat 5` 全部 5 次都是 3 条 PASS，
+而更早的读数是 16 条。**"跑得越多越差"这个现象本身也在被再次确认**
+（与 §8 第 6 项记录的套件退化一致）。
+
+**因此下一步是确定的，而且条件比之前好**：
+**在 `enumerate_disk_candidates_unbounded` 内部逐步打点**
+（`SetupDiGetClassDevsW` / `SetupDiEnumDeviceInterfaces` /
+`SetupDiGetDeviceInterfaceDetailW` / `CreateFileW` /
+`IOCTL_SCSI_GET_ADDRESS` / `IOCTL_STORAGE_GET_DEVICE_NUMBER` 各一条，带耗时），
+**并让这些打点写在"独立的一次性文件"里、每次调用前 flush**——
+**这样即使该线程被放弃，已经写下的行仍然可读**，
+从而回答"负载下到底是哪一步不返回"。
+
+**这是本轮唯一剩下的、且已具备稳定复现条件的工作。**
+**T1-03 不得标 PASSED。****本轮净改动为零**（回退 + 验证读数）。
