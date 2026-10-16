@@ -1,4 +1,5 @@
 #include "src/common/diagnostic_trace.h"
+#include "src/common/unique_handle.h"
 #include "src/run/windows_volume.h"
 
 #include <algorithm>
@@ -632,14 +633,60 @@ Result<void> LockedVolume::flush() const {
 #endif
 }
 
+// How long a dismantle is given before it is abandoned.
+//
+// Ten seconds rather than a larger number on purpose: this is a *refusal budget*, not a
+// performance target.  A dismount that takes longer than this is one this machine is not going to
+// complete, and the engine's response to an uncompleted dismantle is to keep the volume and
+// report it -- which is the outcome we want, and one an unbounded wait can never reach.
+inline constexpr DWORD kDismountTimeoutMs = 10'000;
 Result<void> LockedVolume::dismount() const {
 #ifdef _WIN32
     if (!valid()) return Result<void>::failure(failure(VolumeError::platform_error, L"dismount", L"invalid locked volume handle"));
     auto identity = verify_native_volume_identity(handle_, identity_, L"dismount");
     if (!identity.ok()) return identity;
+
+    // **Bounded, because the synchronous form was measured blocking forever.**
+    //
+    // `FSCTL_DISMOUNT_VOLUME` issued with a null `OVERLAPPED` does not return when the driver
+    // does not answer -- which is exactly the state a killed worker leaves its volume in, and
+    // exactly the state a reclaim exists to clean up.  It blocked past every deadline above it
+    // and the caller had no way to give up, so a dismantle that could not proceed also could not
+    // report that it could not proceed.
+    //
+    // The handle is opened `FILE_FLAG_OVERLAPPED` (see `Win32VolumeAdapter::lock`), which is what
+    // makes cancellation possible at all.  A timeout **cancels and then waits for the completion**:
+    // returning while the request is outstanding would leave the volume with an I/O nobody owns.
+    myrd::diagnostic_trace("LockedVolume::dismount: FSCTL_DISMOUNT_VOLUME");
+    UniqueHandle ready(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!ready) {
+        return Result<void>::failure(failure(VolumeError::platform_error, L"dismount",
+            L"could not create the dismount completion event", GetLastError()));
+    }
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = ready.get();
     DWORD ignored{};
-    if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr))
-        return Result<void>::failure(failure(VolumeError::cleanup_failed, L"dismount", L"FSCTL_DISMOUNT_VOLUME failed", GetLastError()));
+    if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ignored, &overlapped)) {
+        const DWORD start_error = GetLastError();
+        if (start_error != ERROR_IO_PENDING) {
+            return Result<void>::failure(failure(VolumeError::cleanup_failed, L"dismount",
+                L"FSCTL_DISMOUNT_VOLUME failed", start_error));
+        }
+        const DWORD waited = WaitForSingleObject(ready.get(), kDismountTimeoutMs);
+        if (waited != WAIT_OBJECT_0) {
+            static_cast<void>(CancelIoEx(handle_, &overlapped));
+            static_cast<void>(GetOverlappedResult(handle_, &overlapped, &ignored, TRUE));
+            // A refusal, not a crash: the caller keeps the volume and retries, which is what the
+            // engine already does with a dismantle it could not complete.
+            return Result<void>::failure(failure(VolumeError::cleanup_failed, L"dismount",
+                L"FSCTL_DISMOUNT_VOLUME did not complete within its timeout", waited));
+        }
+        if (GetOverlappedResult(handle_, &overlapped, &ignored, FALSE) == FALSE) {
+            return Result<void>::failure(failure(VolumeError::cleanup_failed, L"dismount",
+                L"FSCTL_DISMOUNT_VOLUME completed with an error", GetLastError()));
+        }
+    }
+    myrd::diagnostic_trace("LockedVolume::dismount: done");
     return Result<void>::success();
 #else
     return Result<void>::failure(failure(VolumeError::platform_error, L"dismount", L"Win32 volume adapter unavailable"));
@@ -819,8 +866,19 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
     };
     HANDLE handle = INVALID_HANDLE_VALUE;
     for (;;) {
+        // **`FILE_FLAG_OVERLAPPED` is here so the lock's own teardown can be abandoned.**
+        //
+        // `dismount` issues `FSCTL_DISMOUNT_VOLUME`, and a driver that does not answer in the
+        // state a killed worker leaves behind blocks that synchronous call past every deadline
+        // above it -- measured, not hypothesized.  `CancelIoEx` only works on a handle opened for
+        // overlapped I/O, so the flag has to be set where the handle is obtained.
+        //
+        // **It changes no locking or sharing semantics.**  Exclusivity is the share mode, and
+        // that is still `0`; `FILE_FLAG_OVERLAPPED` affects only how *I/O completion* is
+        // reported.  A caller that never uses an `OVERLAPPED` on this handle sees exactly the
+        // previous behaviour, which is why this is safe to add without reworking M4's lock path.
         handle = CreateFileW(device.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-            nullptr, OPEN_EXISTING, 0, nullptr);
+            nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (handle != INVALID_HANDLE_VALUE) break;
         const DWORD error = GetLastError();
         if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION
