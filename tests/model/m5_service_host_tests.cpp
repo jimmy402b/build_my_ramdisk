@@ -18,6 +18,7 @@
 
 #include "src/service/service_host.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -74,6 +75,35 @@ public:
 
     std::uint64_t unix{1'700'000'000'000ULL};
     std::uint64_t monotonic{5'000};
+};
+
+// The start-up sweep, recorded in the same event log as the scheduler so a case
+// can assert the *order* rather than only that both happened.  That order is the
+// reason the sweep is a host step at all: it has to sit between the recovery and
+// the first claim, and a host that ran it after starting the scheduler would race
+// the scheduler for the operation belonging to the worker being swept.
+class FakeSweep final : public IStartupSweep {
+public:
+    explicit FakeSweep(std::vector<std::string>& log) noexcept : log_(log) {}
+
+    Result<void> run_sweep() override {
+        log_.push_back("sweep.run");
+        ++runs;
+        if (fail) {
+            return Result<void>::failure(
+                {ErrorDomain::internal, 9, L"startup_sweep", L"injected", 0});
+        }
+        return Result<void>::success();
+    }
+
+    bool needs_attention() const noexcept override { return attention; }
+
+    int runs{};
+    bool fail{};
+    bool attention{};
+
+private:
+    std::vector<std::string>& log_;
 };
 
 } // namespace
@@ -326,4 +356,146 @@ TEST_CASE(service_host_preshutdown_is_a_stop_and_keeps_the_same_budget) {
     // And the machine going away is answered again rather than refused.
     REQUIRE(host.preshutdown().ok());
     REQUIRE_EQ(scheduler.stop_deadlines.size(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// The start-up sweep's place in the sequence.
+// ---------------------------------------------------------------------------
+
+TEST_CASE(m5_host_sweeps_between_the_recovery_and_the_first_claim) {
+    // The ordering is the correctness, not a preference.  After the recovery,
+    // because the recovery says which non-terminal operations are still owned --
+    // sweeping first would judge a worker against a binding the recovery is about
+    // to rewrite.  Before the scheduler, because the scheduler's first act is to
+    // claim one of those operations, and it may belong to the worker being swept.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    FakeSweep sweep(scheduler.events);
+
+    ServiceHostOptions options{};
+    ServiceHost host(clock, core, scheduler, options, &sweep);
+    REQUIRE(host.start().ok());
+
+    // The scheduler's own log carries the sweep, so the relative order is
+    // asserted rather than assumed: recovery is recorded by the fixtures, the
+    // sweep and the scheduler start are both in this one vector.
+    const auto sweep_at = std::find(scheduler.events.begin(),
+                                    scheduler.events.end(), "sweep.run");
+    const auto start_at = std::find(scheduler.events.begin(),
+                                   scheduler.events.end(), "scheduler.start");
+    REQUIRE(sweep_at != scheduler.events.end());
+    REQUIRE(start_at != scheduler.events.end());
+    REQUIRE(sweep_at < start_at);
+    REQUIRE_EQ(sweep.runs, 1);
+    REQUIRE_EQ(host.state(), ServiceHostState::running);
+    REQUIRE(!host.diagnostics().sweep_needs_attention);
+}
+
+TEST_CASE(m5_host_fails_the_start_when_the_sweep_cannot_run) {
+    // Unlike a sweep that merely *found* something, one that could not run leaves
+    // the service admitting work while a predecessor's worker may still hold a
+    // device -- which is the state the sweep exists to prevent.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    FakeSweep sweep(scheduler.events);
+    sweep.fail = true;
+
+    ServiceHostOptions options{};
+    ServiceHost host(clock, core, scheduler, options, &sweep);
+    const auto started = host.start();
+    REQUIRE(!started.ok());
+    REQUIRE(started.error().operation == L"startup_sweep");
+    REQUIRE_EQ(host.state(), ServiceHostState::failed);
+    // And the scheduler was never started, so nothing can be admitted over a
+    // sweep that did not happen.
+    REQUIRE_EQ(scheduler.events.size(), 1U);
+    REQUIRE_EQ(scheduler.events[0], std::string("sweep.run"));
+    REQUIRE(!scheduler.running);
+}
+
+TEST_CASE(m5_host_starts_anyway_when_the_sweep_needs_attention) {
+    // The default, and it is a choice: a machine whose leftover worker will not die
+    // still has other disks the operator wants served, and refusing to start turns
+    // one stuck orphan into a service that is down.  The condition is *reported*
+    // instead, which is the part that must not be lost.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    FakeSweep sweep(scheduler.events);
+    sweep.attention = true;
+
+    ServiceHostOptions options{};
+    ServiceHost host(clock, core, scheduler, options, &sweep);
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.state(), ServiceHostState::running);
+    // Visible, not silent.
+    REQUIRE(host.diagnostics().sweep_needs_attention);
+}
+
+TEST_CASE(m5_host_can_be_configured_to_refuse_a_start_over_the_sweep) {
+    // The other side of the same choice, available for a deployment that would
+    // rather be down than serve alongside an orphan it cannot account for.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    FakeSweep sweep(scheduler.events);
+    sweep.attention = true;
+
+    ServiceHostOptions options{};
+    options.fail_start_when_sweep_needs_attention = true;
+    ServiceHost host(clock, core, scheduler, options, &sweep);
+    const auto started = host.start();
+    REQUIRE(!started.ok());
+    REQUIRE_EQ(host.state(), ServiceHostState::failed);
+    REQUIRE(host.diagnostics().sweep_needs_attention);
+}
+
+TEST_CASE(m5_host_without_a_sweep_still_starts) {
+    // A host with nothing to sweep is a legitimate configuration, and its
+    // diagnostics must read as "nothing to report" rather than as "unknown".
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    ServiceHostOptions options{};
+    ServiceHost host(clock, core, scheduler, options);
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.state(), ServiceHostState::running);
+    REQUIRE(!host.diagnostics().sweep_needs_attention);
 }

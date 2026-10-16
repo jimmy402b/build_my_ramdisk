@@ -35,6 +35,42 @@ struct ServiceHostOptions final {
     // under; the wrapper passes what it was granted, and the default is the
     // 120-second figure the SCM allows for a preshutdown.
     std::uint32_t stop_budget_ms{120'000};
+    // Whether a start that had to escalate against an orphan it could not
+    // attribute still reports success.
+    //
+    // The default is to start anyway, and that is a deliberate choice rather than
+    // an oversight: a machine whose leftover worker will not die still has other
+    // disks the operator wants served, and refusing to start would turn one stuck
+    // orphan into a service that is down.  The condition is reported instead --
+    // through `ServiceHostDiagnostics::sweep_needs_attention` and the log -- so it
+    // is visible rather than silent.
+    bool fail_start_when_sweep_needs_attention{false};
+};
+
+// The start-up sweep, as the host sees it.
+//
+// An interface so the host can be tested without a job object and a live orphan,
+// and so the host does not acquire a dependency on the worker-process layer.  The
+// production implementation is `management::run_worker_sweep`.
+class IStartupSweep {
+public:
+    virtual ~IStartupSweep() noexcept = default;
+
+    // Runs once, before the scheduler admits any work.
+    //
+    // Before the scheduler, and that ordering is the whole reason this is not
+    // simply part of the composition root: the scheduler's first act is to claim a
+    // non-terminal operation, and one of those operations may belong to a worker
+    // this sweep is about to terminate.  Sweeping afterwards would race the
+    // scheduler for it.
+    [[nodiscard]] virtual Result<void> run_sweep() = 0;
+
+    // Whether the last sweep found something a human has to look at: an orphan it
+    // could not attribute, or one that would not die.  Separate from the `Result`
+    // above because "the sweep ran and reports a condition" is not a failure of
+    // the sweep, and a caller that conflated them would report a stuck orphan as a
+    // broken service.
+    [[nodiscard]] virtual bool needs_attention() const noexcept = 0;
 };
 
 // What the last start recovered, for evidence and for the operator.
@@ -47,6 +83,10 @@ struct ServiceHostDiagnostics final {
     ServiceHostState state{ServiceHostState::constructed};
     std::size_t recovered_operations{};
     bool scheduler_running{};
+    // Whether the start-up sweep found a condition for a human.  Defaults to
+    // false so a host with no sweep configured -- every test that does not care
+    // about orphans -- reads as "nothing to report" rather than as "unknown".
+    bool sweep_needs_attention{};
     std::optional<Error> last_error;
 };
 
@@ -77,7 +117,8 @@ class ServiceHost final {
 public:
     ServiceHost(management::IServiceClock& clock, management::ServiceCore& core,
                 management::IExecutionScheduler& scheduler,
-                ServiceHostOptions options = {}) noexcept;
+                ServiceHostOptions options = {},
+                IStartupSweep* sweep = nullptr) noexcept;
 
     ServiceHost(const ServiceHost&) = delete;
     ServiceHost& operator=(const ServiceHost&) = delete;
@@ -139,10 +180,15 @@ private:
     management::ServiceCore& core_;
     management::IExecutionScheduler& scheduler_;
     ServiceHostOptions options_{};
+    // Borrowed, and may be null: a host with nothing to sweep is a legitimate
+    // configuration (a test, or a service whose worker layer is not composed), and
+    // requiring one would force every such caller to build a stand-in.
+    IStartupSweep* sweep_{};
 
     mutable std::mutex mutex_;
     ServiceHostState state_{ServiceHostState::constructed};
     std::size_t recovered_operations_{};
+    bool sweep_needs_attention_{};
     std::optional<Error> last_error_;
 };
 

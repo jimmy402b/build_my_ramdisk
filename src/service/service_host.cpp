@@ -32,14 +32,16 @@ const char* to_string(const ServiceHostState state) noexcept {
 ServiceHost::ServiceHost(management::IServiceClock& clock,
                          management::ServiceCore& core,
                          management::IExecutionScheduler& scheduler,
-                         ServiceHostOptions options) noexcept
+                         ServiceHostOptions options,
+                         IStartupSweep* sweep) noexcept
     : clock_(clock), core_(core), scheduler_(scheduler),
-      options_(options) {}
+      options_(options), sweep_(sweep) {}
 
 ServiceHost::ServiceHost(ServiceHost&& other) noexcept
     : clock_(other.clock_), core_(other.core_), scheduler_(other.scheduler_),
-      options_(other.options_), state_(other.state_),
+      options_(other.options_), sweep_(other.sweep_), state_(other.state_),
       recovered_operations_(other.recovered_operations_),
+      sweep_needs_attention_(other.sweep_needs_attention_),
       last_error_(std::move(other.last_error_)) {
     // The mutex is not moved: an unlocked one is what a moved-to object must
     // have.  The state fields are read without holding it, which is sound because
@@ -63,6 +65,38 @@ Result<void> ServiceHost::start() {
         return Result<void>::failure(recovered.error());
     }
     recovered_operations_ = recovered.value().size();
+
+    // The sweep, between the recovery and the scheduler, and both neighbours are
+    // deliberate.  After the recovery, because the recovery is what says which
+    // non-terminal operations are still owned -- sweeping first would judge a
+    // worker against a binding the recovery is about to rewrite.  Before the
+    // scheduler, because the scheduler's first act is to claim one of those
+    // operations, and it may belong to a worker this sweep is about to terminate.
+    sweep_needs_attention_ = false;
+    if (sweep_ != nullptr) {
+        auto swept = sweep_->run_sweep();
+        if (!swept.ok()) {
+            // A sweep that could not run at all is a failed start, unlike one that
+            // merely found something.  Continuing would mean admitting work while
+            // a predecessor's worker still holds a device, which is the state the
+            // sweep exists to prevent.
+            last_error_ = swept.error();
+            state_ = ServiceHostState::failed;
+            return Result<void>::failure(swept.error());
+        }
+        sweep_needs_attention_ = sweep_->needs_attention();
+        if (sweep_needs_attention_
+            && options_.fail_start_when_sweep_needs_attention) {
+            const Error refused{ErrorDomain::internal, 1, L"startup_sweep",
+                                L"the start-up sweep found a condition that needs "
+                                L"attention and this service is configured to "
+                                L"refuse to start over it",
+                                0};
+            last_error_ = refused;
+            state_ = ServiceHostState::failed;
+            return Result<void>::failure(refused);
+        }
+    }
 
     auto started = scheduler_.start();
     if (!started.ok()) {
@@ -138,6 +172,7 @@ ServiceHostDiagnostics ServiceHost::diagnostics() const {
     diagnostics.state = state_;
     diagnostics.recovered_operations = recovered_operations_;
     diagnostics.scheduler_running = scheduler_.is_running();
+    diagnostics.sweep_needs_attention = sweep_needs_attention_;
     diagnostics.last_error = last_error_;
     return diagnostics;
 }
