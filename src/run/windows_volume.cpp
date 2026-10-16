@@ -905,9 +905,50 @@ Result<VolumeLockAttempt> Win32VolumeAdapter::lock(
             return Result<VolumeLockAttempt>::success({false, true, std::nullopt, error});
         return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock", L"opening volume failed", error));
     }
+    // **Bounded, because the synchronous form was measured blocking forever.**
+    //
+    // `FSCTL_LOCK_VOLUME` has to wait while another handle is open on the volume, and the handle
+    // that keeps it waiting belongs to a worker that was killed -- so it waits for something that
+    // will never happen.  The retry budget above cannot help: it bounds the *loop*, and this call
+    // is inside one iteration of it.  That is why a reclaim was measured exceeding every deadline
+    // while reporting no refusals at all.
+    //
+    // Cancelling is possible because the handle is opened `FILE_FLAG_OVERLAPPED`.  A timeout
+    // reports **`busy`**, which this function's own contract already describes as "an expected
+    // observation, not an API failure: callers may keep the runtime alive and retry" -- a strictly
+    // better answer than waiting forever, and the one the caller already knows how to handle.
+    myrd::diagnostic_trace("Win32VolumeAdapter::lock: FSCTL_LOCK_VOLUME");
+    UniqueHandle locked(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!locked) {
+        CloseHandle(handle);
+        return Result<VolumeLockAttempt>::failure(failure(VolumeError::platform_error, L"lock",
+            L"could not create the volume lock completion event", GetLastError()));
+    }
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = locked.get();
     DWORD ignored = 0;
-    const BOOL ok = DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr);
-    const DWORD error = GetLastError();
+    BOOL ok = DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &ignored, &overlapped);
+    DWORD error = GetLastError();
+    if (!ok && error == ERROR_IO_PENDING) {
+        const DWORD waited = WaitForSingleObject(locked.get(),
+                                                 timeout_ms == 0 ? 1 : timeout_ms);
+        if (waited != WAIT_OBJECT_0) {
+            static_cast<void>(CancelIoEx(handle, &overlapped));
+            static_cast<void>(GetOverlappedResult(handle, &overlapped, &ignored, TRUE));
+            CloseHandle(handle);
+            myrd::diagnostic_trace("Win32VolumeAdapter::lock: FSCTL_LOCK_VOLUME timed out");
+            return Result<VolumeLockAttempt>::success(
+                {false, true, std::nullopt, static_cast<DWORD>(WAIT_TIMEOUT)});
+        }
+        if (GetOverlappedResult(handle, &overlapped, &ignored, FALSE) == FALSE) {
+            ok = FALSE;
+            error = GetLastError();
+        } else {
+            ok = TRUE;
+        }
+    }
+    myrd::diagnostic_trace(ok ? "Win32VolumeAdapter::lock: volume locked"
+                              : "Win32VolumeAdapter::lock: FSCTL_LOCK_VOLUME refused");
     if (ok) {
         auto identity = verify_native_volume_identity(handle, owned, L"lock");
         if (!identity.ok()) {
