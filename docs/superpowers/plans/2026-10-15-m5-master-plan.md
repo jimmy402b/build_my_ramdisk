@@ -278,7 +278,25 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 | 2b | worker 侧：`WorkerVolumeMode::reclaim_existing`（**追加**，wire 值）+ `reclaim_leftover` 处理器 | **✅ part 15** |
 | 3a | 服务侧驾驶：`ActionKind::reclaim_leftover` + `ServiceWorkerControl::reclaim_leftover`（**覆盖 launch 模式为 `reclaim_existing`**）+ session client | **✅ part 16** |
 | 3b | `IResourceReclaimer` 的生产实现：`LeftoverReclaimer` | **✅ part 17** |
-| 4 | `ServiceRuntime` 接线（换掉 `DeferredResourceReclaimer`） | 待做 |
+| 4 | `ServiceRuntime` 接线（换掉 `DeferredResourceReclaimer`） | **✅ part 18** |
+| 5 | 验收用例 `m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created` | **✅ part 18**（读数见下） |
+
+**part 18 的关键点**：
+
+- 验收**另开一个用例而不是改第一个**，因为**残留必须活过产生它的作用域**：
+  复用已死 worker 的 session 去拆，等于**穿过被强杀作废的那个 session** 动手，
+  这不是崩溃留下的局面；生产是重启后**全新**到达的，所以用例用**新的 control 和新的 job**；
+- 用例在 reclaim **之前先断言残留存在**，这样"其实没什么可拆"的用例**不可能靠什么都没做而通过**
+  —— 这正是本增量反复出现的那个危险；
+- `reclaim_leftover` 在 `ServiceWorkerControl` 上现在是 **public**，
+  因为 sweep **直接**够到它：它作用的 profile **不受任何 plan 管理**，
+  没有哪个 command 的 action list 会带上它。
+
+**验收读数**：见 `docs/validation/m5-t1-03-worker-job.md`（part 18 一节）。
+**未验证**：完整的"身份不匹配 ⇒ 不清且报 needs-attention"**负例**尚未落地——
+它需要 `IServiceProfileStore` 与 `IWorkerControl` 的 fake（接口较大，自成一片）；
+`LeftoverReclaimer` 的"identity 不带盘符 ⇒ 拒绝"分支覆盖了同一类危险
+（**不该拆的时候不拆**），但**不覆盖 store 读取失败那一支**。
 
 **part 17 的关键点**：
 
