@@ -467,7 +467,42 @@ backed by disk_number and mounted at drive_letter"**——
 覆盖两个方向（缺 operation id 的 **reply** 被拒、**request** 也被拒），
 协议套件 **39/39**；五套 M5 逻辑测试全绿；干净构建 0 error 0 warning。
 
-### 4.14 尚未接线（T1-03 最后两件，均有界）
+### 4.14 part 13–17：reclaimer 的四件（**三件半完成**）
+
+| # | 件 | 状态 |
+|---|---|---|
+| 1 | 协议动词 `reclaim_leftover = 16` | ✅ part 13（协议 39/39） |
+| 2a | `DiskRuntimeMode::reclaim`（**不分配盘符**）+ `drive_letter_present_` 修正 | ✅ part 14 |
+| 2b | `WorkerVolumeMode::reclaim_existing`（**追加**）+ worker 处理器 | ✅ part 15 |
+| 3a | `ActionKind` + `ServiceWorkerControl::reclaim_leftover`（**覆盖 launch 模式**）+ session client | ✅ part 16 |
+| 3b | `LeftoverReclaimer`（生产 `IResourceReclaimer`） | ✅ part 17 |
+| 4 | `ServiceRuntime` 接线 | **待做** |
+
+**验收状态**：`m5_backend_a_killed_worker_leaves_no_process_mount_or_device`
+**现在仍断言残留存在**（part 12 刻意如此）。接线完成后要把那两条断言改成"已清除"，
+并补**否例**（身份不匹配时不清且报 needs-attention），读数**至少 `-Repeat 20`**。
+
+**本增量反复出现的同一形状的失败（值得单独记下来）**：
+**一个检查回答了与关键问题相邻的另一个问题，然后"成功地"什么也没做。**
+出现 **四次**：
+
+1. `terminate_process` 没要 `PROCESS_QUERY_LIMITED_INFORMATION`
+   ⇒ **100% 的终止失败，却表现为安全检查在工作**；
+2. 拆卸挂在 `drive_letter_assigned_` 上 ⇒ reclaim 会**什么都不删却报成功**；
+3. `reclaim_leftover` 缺 `started_` 前置 ⇒ 会把**还挂着的残留记成已拆**；
+4. dispatch `switch` 的 `default: return unrealized(...)` ⇒ 新 action kind
+   **静默落进 default**，残留永不被拆，而**所有不针对它的测试照旧全绿**。
+
+**结论**：本增量的危险不是"做错动作"，而是**看起来合理的空操作**。
+因此每一处新路径的验收都要问一句"**它失败时会不会报成功**"。
+
+**读数**：干净构建 0 error 0 warning；**28 套件 / 5 失败，5 个全是既有基线**
+（`m5.production_execution_backend` 与 `m5.startup_sweep` 为 VM-only，
+后者按设计以 exit 2 走 guest guard；另加 `m5.service_operation_store`、
+`m5.execution_scheduler`、`unit.m4.profile_store`）。
+本改动可能影响的六套 **6/6 绿**，含 `unit.m4.disk_runtime`。
+
+### 4.15 尚未接线（T1-03 最后一件）
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
