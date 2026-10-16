@@ -895,7 +895,47 @@ candidate 0   size=67108864 sector=512 path=...myrd-m1-d332e262792f35296e1cfc266
    接管路径需要**按 device id 直接定位**，而不是靠 baseline 的差集。
 
 开发机：干净构建 0/0、**33 套 M3/driver/transport 全绿**。
-**本改动的客机读数未取、不作断言。****强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**本改动的客机读数未取、不作断言。**
+
+#### 4.15.11 剩余片的两个后果都修完后，**验收用例仍然 0/1——但这次原因完全不同**（part 29）
+
+**已实施**：`wait_for_present_physical_drive`（attach 模式按 device 身份定位，
+而不是靠 baseline 差集；`match_created_disk` 会跳过 `existed_before` 的候选，
+对"接管一个本来就在的盘"恰好是错的）。开发机：干净构建 0/0、**33 套全绿**。
+
+**顺带确认的一件既有事实**：`unit.m2.windows_acceptance` 在本机**本来就失败**
+（`m2_windows_acceptance_tests.cpp:88`）。**已在 HEAD 上用"先撤改动再跑"验证过它同样失败**
+⇒ **属既有开发机失败，与本改动无关**（这条不是假设，是量过的）。
+
+**读数**（请求 `3596cc32053f411394aec6da16be6e36`，0/1）：
+
+```
+myrd-test: reclaim-case create failed: op=provision_new_volume
+           msg=provisioning helper failed native=1 code=21001
+FAIL ...m5_production_execution_backend_tests.cpp:744: created.ok()
+```
+
+**这一次失败在"我这条用例自己的第一阶段（create）"**，而不是 reclaim；
+而且**trace 文件不存在** ⇒ **reclaim 代码根本没被执行**。
+客机当时是**干净的**（`disks: 0 / letters: C`），四个邻居全绿。
+
+**根因是一个用例间级联**：紧邻的 `m5_backend_a_killed_worker_leaves_no_process_mount_or_device`
+**按设计会留下残留**（它断言残留存在），而**两条用例的虚拟大小相同（64 MiB）**；
+于是下一条用例的 create 在 provision 阶段失败（`21001`）。
+
+**因此有一件事必须写清楚**：**目前这两条设备类用例不能在同一个客机会话里相继运行**，
+除非中间清场。这正是 part 12 记录过的"残留会累积并破坏后续运行"，
+现在确认它**就在同一套件内部发生**，不只是跨运行。
+
+**要做的修法（不是打补丁，需按项目规则处理）**：
+让这两条用例**各自在自己的会话里自清**
+（例如断言残留之后**自己把它 reclaim 掉**再结束），
+而不是依赖"跑之前硬重启客机"。这条改动**同时验证 reclaimer 本身**，
+是最值得做的下一步——但**它超出本轮的预算**，故记录在此。
+
+**另一条应当固化的纪律**：`REQUIRE(result.ok())` 一律**先打印 error 再断言**
+（本轮又是这样才拿到 `op=provision_new_volume`）。**同一用例里的下一个断言也要一起加**，
+否则只是把下一次盲猜往后挪一格——本轮正是如此。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
