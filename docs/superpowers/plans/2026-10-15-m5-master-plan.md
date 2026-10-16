@@ -320,6 +320,25 @@ start_aim: begin → 此后无输出                    ← **卡在这里**
 **先确认/移除遗留的 AIM 设备**；若 M3/AIM 层没有这样的能力，
 那是**需要新增的设计能力，必须记录并请示**，不得自行发明。
 
+**part 23–24：裁决 A 已实施，但 `start_aim` 仍卡，阻塞点更早**
+
+- **裁决 A**（用户选定）：让驱动调用真的可超时。已实施（`9b19ec8`）：
+  `WindowsSrbTransport::transact` → **overlapped + `CancelIoEx`**，
+  超时后**取消并等待完成**，`timeout_seconds == 0` 改为**拒绝**。
+  开发机：干净构建 0/0、**33 套 M3/driver/transport 全绿**。
+  **这移除了一个真实的无限阻塞**（原来那个 30 秒只写进 SRB 帧，不约束 IOCTL 本身）；
+- **但客机仍 0/1**（请求 `1607fc07ec0842829cb1d3da319d86cd`），trace **与之前完全一致**
+  ⇒ 阻塞点在 `create_proxy_disk` **之前**：`M3Provider::open` / `provider_->start` /
+  `discover_aim_adapter` / `snapshot_physical_drive_numbers` 之一。
+  **不是同一个原因的重复，而是同一序列里更早的第二个阻塞点**；
+- `src/driver` 与 `src/m3` 里**只有两处** `DeviceIoControl`，另一处
+  （`physical_drive_locator.cpp`）不在这条路径上。
+
+**下一步（有边界的工作）**：把 trace 从 worker 的私有函数提升为
+**common 层的、由环境变量开启的诊断设施**，然后在 `M3AimRuntime::start()`
+**每个子步骤之间打点**；跑一次即可定位具体子步骤。
+（直接从 `src/m3` 调 worker 的私有 trace 会跨层并造成依赖倒挂，所以要先提升它。）
+
 **part 18 的关键点**：
 
 - 验收**另开一个用例而不是改第一个**，因为**残留必须活过产生它的作用域**：
@@ -858,7 +877,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–22。全部实现 ✅，端到端验收 **⚠ 0/1**，但**根因已由步骤 trace 确定**：卡在 `start_aim`（`acquire_bundle_lock` 2 ms、`recover_complete_image` 116 ms 均成功 ⇒ **M3 恢复无责，不上升不变量 4**）；机制是**被杀 worker 的 AIM 设备仍在**而 `KILL_ON_JOB_CLOSE` 刻意不设，新 AIM runtime 与之冲突永不返回。**剩余：reclaim 在 `start_aim` 前先确认/移除遗留 AIM 设备**；若 M3/AIM 无此能力则为**需请示的设计新增**。Trace 设施已就位（`MYRD_RECLAIM_TRACE`）。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
+| T1-03 | **IN_PROGRESS** | part 1–24。全部实现 ✅，端到端验收 **⚠ 0/1**。步骤 trace 已确定卡在 `start_aim`（前两步 2 ms / 96 ms 成功 ⇒ **M3 恢复无责**）。**裁决 A 已实施**（`transact` → overlapped + `CancelIoEx`，移除了一个真实的无限阻塞；33 套 M3/driver 绿），**但 `start_aim` 仍卡且 trace 不变** ⇒ 阻塞点在 `create_proxy_disk` **之前**（provider open/start、adapter 发现、baseline 快照之一）。**下一步：把 trace 提升到 common 层，给 `M3AimRuntime::start()` 逐子步骤打点**。证据 `docs/validation/m5-t1-03-worker-job.md` §4.15 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
