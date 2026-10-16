@@ -141,13 +141,49 @@ bool device_vanished(const DWORD error) noexcept {
         error == ERROR_NO_SUCH_DEVICE;
 }
 
+// **Reports each step of the enumeration with its duration, because that is the one question left.**
+//
+// The whole path was measured at about 2.5 ms on an idle guest and its first turn consumed the entire
+// ten-second bound under load, so the block is real and load-dependent.  A bound on the caller side can
+// only report that a turn overran; it cannot say which call inside failed to return, because the
+// abandoned thread is still in the kernel and its stack is unreachable.  A line written *before* each
+// call survives that, since `diagnostic_trace` flushes to the device on every call -- which is exactly
+// why that flush exists.
+//
+// Measurements, not a permanent shape: this answers one question and can be removed once it is answered,
+// but knowing which step blocks is worth the file writes.
+class StepTimer final {
+public:
+    explicit StepTimer(const char* name) : name_(name), started_(std::chrono::steady_clock::now()) {}
+
+    ~StepTimer() {
+        char line[192]{};
+        (void)_snprintf_s(line, _TRUNCATE, "enumerate_disk_candidates: %s took %lld ms", name_,
+                          static_cast<long long>(
+                              std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - started_)
+                                  .count()));
+        diagnostic_trace(line);
+    }
+
+    StepTimer(const StepTimer&) = delete;
+    StepTimer& operator=(const StepTimer&) = delete;
+
+private:
+    const char* name_;
+    std::chrono::steady_clock::time_point started_;
+};
+
 Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
     static const GUID kDiskGuid = GUID_DEVINTERFACE_DISK;
     std::vector<DiskCandidate> candidates;
 
-    const HDEVINFO raw_device_info = SetupDiGetClassDevsW(
-        &kDiskGuid, nullptr, nullptr,
-        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    diagnostic_trace("enumerate_disk_candidates: begin");
+    const HDEVINFO raw_device_info = [&] {
+        StepTimer step("SetupDiGetClassDevsW");
+        return SetupDiGetClassDevsW(&kDiskGuid, nullptr, nullptr,
+                                    DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    }();
     if (raw_device_info == INVALID_HANDLE_VALUE) {
         return Result<std::vector<DiskCandidate>>::failure(
             {ErrorDomain::win32,
@@ -159,15 +195,23 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
 
     SP_DEVICE_INTERFACE_DATA iface{sizeof(SP_DEVICE_INTERFACE_DATA)};
     for (DWORD idx = 0;; ++idx) {
-        if (!SetupDiEnumDeviceInterfaces(
-                di.get(), nullptr, &kDiskGuid, idx, &iface)) {
-            const DWORD error = GetLastError();
-            if (error == ERROR_NO_MORE_ITEMS) break;
-            return Result<std::vector<DiskCandidate>>::failure(
-                {ErrorDomain::win32,
-                 static_cast<std::uint32_t>(error),
-                 L"SetupDiEnumDeviceInterfaces(disk)",
-                 L"disk interface enumeration failed"});
+        {
+            // Named per index, because the first call and later ones are different situations: the first
+            // has to touch the device tree, the rest walk what it already returned.
+            char label[128]{};
+            (void)_snprintf_s(label, _TRUNCATE,
+                              "SetupDiEnumDeviceInterfaces[%lu]", static_cast<unsigned long>(idx));
+            StepTimer step(label);
+            if (!SetupDiEnumDeviceInterfaces(
+                    di.get(), nullptr, &kDiskGuid, idx, &iface)) {
+                const DWORD error = GetLastError();
+                if (error == ERROR_NO_MORE_ITEMS) break;
+                return Result<std::vector<DiskCandidate>>::failure(
+                    {ErrorDomain::win32,
+                     static_cast<std::uint32_t>(error),
+                     L"SetupDiEnumDeviceInterfaces(disk)",
+                     L"disk interface enumeration failed"});
+            }
         }
 
         DWORD req = 0;
@@ -187,19 +231,26 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
         auto* detail = reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(
             dbuf.data());
         detail->cbSize = sizeof(*detail);
-        if (!SetupDiGetDeviceInterfaceDetailW(di.get(), &iface, detail,
-                req, nullptr, nullptr)) {
-            return Result<std::vector<DiskCandidate>>::failure(
-                {ErrorDomain::win32,
-                 static_cast<std::uint32_t>(GetLastError()),
-                 L"SetupDiGetDeviceInterfaceDetailW(disk)",
-                 L"failed to read disk interface detail"});
+        {
+            StepTimer step("SetupDiGetDeviceInterfaceDetailW");
+            if (!SetupDiGetDeviceInterfaceDetailW(di.get(), &iface, detail,
+                    req, nullptr, nullptr)) {
+                return Result<std::vector<DiskCandidate>>::failure(
+                    {ErrorDomain::win32,
+                     static_cast<std::uint32_t>(GetLastError()),
+                     L"SetupDiGetDeviceInterfaceDetailW(disk)",
+                     L"failed to read disk interface detail"});
+            }
         }
 
-        HANDLE h = CreateFileW(detail->DevicePath,
-            disk_candidate_open_access(),
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        diagnostic_trace("enumerate_disk_candidates: opening the candidate");
+        HANDLE h = [&] {
+            StepTimer step("CreateFileW");
+            return CreateFileW(detail->DevicePath,
+                disk_candidate_open_access(),
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        }();
         if (h == INVALID_HANDLE_VALUE) {
             const DWORD error = GetLastError();
             if (device_vanished(error)) continue; // retired under this scan
@@ -215,8 +266,12 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
         // SCSI address
         SCSI_ADDRESS scsi_addr{};
         DWORD br = 0;
-        if (!DeviceIoControl(h, IOCTL_SCSI_GET_ADDRESS, nullptr, 0,
-                &scsi_addr, sizeof(scsi_addr), &br, nullptr)) {
+        const BOOL scsi_ok = [&] {
+            StepTimer step("IOCTL_SCSI_GET_ADDRESS");
+            return DeviceIoControl(h, IOCTL_SCSI_GET_ADDRESS, nullptr, 0,
+                &scsi_addr, sizeof(scsi_addr), &br, nullptr);
+        }();
+        if (!scsi_ok) {
             const DWORD error = GetLastError();
             CloseHandle(h);
             if (device_vanished(error)) continue;
@@ -232,8 +287,12 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
 
         // Device number
         STORAGE_DEVICE_NUMBER dev_num{};
-        if (!DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER, nullptr, 0,
-                &dev_num, sizeof(dev_num), &br, nullptr)) {
+        const BOOL number_ok = [&] {
+            StepTimer step("IOCTL_STORAGE_GET_DEVICE_NUMBER");
+            return DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER, nullptr, 0,
+                &dev_num, sizeof(dev_num), &br, nullptr);
+        }();
+        if (!number_ok) {
             const DWORD error = GetLastError();
             CloseHandle(h);
             if (device_vanished(error)) continue;
@@ -262,6 +321,13 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
 
         CloseHandle(h);
         candidates.push_back(c);
+    }
+    {
+        char line[192]{};
+        (void)_snprintf_s(line, _TRUNCATE,
+                          "enumerate_disk_candidates: end, %zu candidates, all steps returned",
+                          candidates.size());
+        diagnostic_trace(line);
     }
     return Result<std::vector<DiskCandidate>>::success(candidates);
 }
