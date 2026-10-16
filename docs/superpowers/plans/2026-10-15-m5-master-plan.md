@@ -152,26 +152,39 @@ T1-09 ─→ T4-02 ─→ T4-03 ─→ T4-04
 
 | 字段 | 内容 |
 |---|---|
-| **状态** | **IN_PROGRESS**（part 1 已完成：决策核心 + 10 用例） |
+| **状态** | **IN_PROGRESS**（part 1 决策核心 + part 2 job object/verdict，合计 **18 用例通过**） |
 | **依赖** | T1-02 |
 | **工作量** | L |
 | **目标** | G3、G4 |
 
-**已完成（part 1，`8bb2b36`）**：`src/management/worker_sweep_policy.{h,cpp}` +
-`tests/model/m5_worker_sweep_policy_tests.cpp`（**10/10 通过**，开发机纯逻辑，不建进程）。
-把两个安全问题变成**纯函数决策**并逐条钉住：**pid 不是身份**（creation time 不匹配 ⇒
-`pid_recycled`，既不杀也不收养）、**只比身份不比名字**、**身份不完整 ⇒ 不回收**（`nullopt`）、
+**已完成 part 1（`8bb2b36`）**：`worker_sweep_policy.{h,cpp}`——两个纯函数决策：
+**pid 不是身份**（creation time 不匹配 ⇒ `pid_recycled`）、**身份不完整 ⇒ 不回收**（`nullopt`）、
 **"判不了"不是许可**（零 pid / 缺 creation time ⇒ `indeterminate`）、generation 0 是真实 generation。
-先做这一块的理由：sweep 的每一次危险失败都是**决策失败**，而不是读 job object 读错。
 
-**剩余（part 2，下一步）**：
+**已完成 part 2（`2daeae5`）**：`windows_worker_job.{h,cpp}` + `worker_process_source.{h,cpp}`：
 
-1. **命名 job object** `Global\MyRamDisk.M5.Workers`；**不设** `KILL_ON_JOB_CLOSE`；
-   **保留进程句柄**（现在被 `close_launched_worker` 丢弃）。
-2. **协作优先 + 有界升级**：私有 `shutdown` → 等退出 → 超时 `TerminateProcess`
-   （**按 profile 粒度**）→ 记 needs-attention。
-3. **活 worker 注册表**（sweep 要枚举它；`WindowsWorkerSessionProvider::attach` 也等它）。
-4. **持久化"最后观测身份"**，喂给上面的决策核心。
+- **命名 job** `Global\MyRamDisk.M5.Workers`（`CreateJobObjectW` 会打开已存在的 job ⇒ 重启能找到前任的 worker）；
+- **不设 `KILL_ON_JOB_CLOSE`**（设了 = 服务死则 worker 死 ⇒ 跑不到有序拆卸）；
+  `SILENT_BREAKAWAY_OK` 让 worker 自己 spawn 的 provisioning helper 不加入本 job；
+- **只有按进程终止**：`IWorkerProcessSource` 没有 job 级对应物，
+  并用 **compile-time 断言**钉住"加了 job 级终止就编译失败"（比等到两块盘才暴露早得多）；
+- **`sweep_verdicts`**（纯函数）：`adopt` / `terminate_cooperatively` / `terminate_forced` / `leave_alone`，
+  输入是"job 报的进程" + "durable 记录里的绑定"——job 知道哪些进程在里面，**不可能知道各自服务哪个 profile**；
+- `terminate_process` 在**终止前重读 creation time**，pid 已不再指向观测到的进程就拒绝
+  （verdict 基于的观测到执行时可能已经过期）。
+
+**诚实记录**：对**上一个服务会话**的孤儿 worker，**协作退出无法送达**——私有通道需要那个会话的
+startup secret，而它随父进程死了。所以这条路径报明确失败而不是伪造成功；孤儿能被执行的是"被终止"，
+它留下的 durable 记录由恢复路径对账（**那是 T1-06 的题目**）。
+
+**剩余 part 3（下一步）**：
+
+1. `WindowsWorkerSessionProvider::launch` **保留句柄**（不再由 `close_launched_worker` 丢弃）、
+   把每次 launch **指派进 job**、并在注册表登记 pid + creation time；
+2. **持久化"最后观测身份"**（喂给 part 1 的决策核心）；
+3. **服务启动时跑 sweep**（读 durable 绑定 → `sweep_verdicts` → 执行）。
+4. **VM 验收**：强杀服务 → worker 自行有序拆卸；强杀 worker → 下次启动 sweep 回收不留设备/盘符；
+   无法证明归属 → 不清且报 needs-attention。**至少 `-Repeat 20`**。
 
 **做什么**（设计 §5）：
 
@@ -653,7 +666,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1（决策核心 10/10）无独立证据文档，读数见本卡片 |
+| T1-03 | **IN_PROGRESS** | part 1（决策核心）+ part 2（job object/verdict）：`m5.worker_sweep_policy` **18/18**，开发机纯逻辑 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
