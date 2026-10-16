@@ -945,7 +945,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（验收未通过：间歇性，根因已定位）** | part 1–54。实现全部完成，**两条用例在多数运行里 PASS**；`-Repeat 3` 显示 **约 1/3 失败**，卡在该增量自己那条 cleanup 的 reclaim（`:756`，4107）。**根因已找到**：`start_aim` 每次都调 `snapshot_physical_drive_numbers()` → **`SetupDiGetClassDevsW` 全机器枚举磁盘接口、无超时（第六个无界阻塞点）**；套件每条用例都建/拆卷 ⇒ 接口集增长 ⇒ 枚举变慢直到卡住（这同时解释了 18/20 迭代连第 3 条都过不去）。**已裁决：不再每次启动取全机器 baseline（选项 A）**，实施路径见证据文档 §4.15.37。**不得标 PASSED。** |
+| T1-03 | **IN_PROGRESS（未通过；失败原因已明确且可修）** | part 1–58。实现全部完成。**两条用例在"能跑到它们"的迭代里 PASS**，但 `-Repeat 5` 显示迭代 3–5 仍失败。**经过**：① part 53 曾把根因归给 `SetupDiGetClassDevsW`，part 55 去掉启动 baseline 后**预测被证伪**（失败一模一样）——**part 56 按迭代分离 trace 才抓到真正现场**：卡在 `wait_for_present_physical_drive`，而**预算只在循环外检查一次，管不住单次枚举**；② part 58 **给枚举加了界**（detached 线程 + 10 s，`std::async` 的 future 析构会等待、**看起来生效实际无效**，已在代码注释里记下这个坑）。**现在失败很快且自述原因**：`op=enumerate_disk_candidates ... did not finish within its bound`（258，10 s 内），而**以前是挂死 80+ 秒 + 不透明 4107**。**剩余**：**本客机上"枚举磁盘接口"确实会卡住**，而 reclaim 路径仍依赖枚举 ⇒ **必须让它在不枚举的前提下找到那块盘**。**驱动报不出盘号**（`DeviceConfiguration.DeviceNumber` 是 AIM 自己的设备号），故候选为：**用 `created` 的 SCSI 地址拼设备接口路径直接打开**，或**扩展 AIM 查询能力**——**两者都需设计判断，待请示**。**不得标 PASSED。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |

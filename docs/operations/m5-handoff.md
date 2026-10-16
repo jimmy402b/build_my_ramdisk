@@ -316,6 +316,37 @@ REQUIRE(x.ok());
 ② 失败那条用例本身（隔离跑 1/1 通过）。
 **因此这是套件级的资源/时序问题**，**不要**据此判断 T1-03 的成败。
 
+### 7.0.6 **给一个无界的同步调用加"界"时：`std::async` 的 future 不能用来放弃**（2026-10-16，本轮踩坑）
+
+**背景**：`enumerate_disk_candidates()`（`src/driver/physical_drive_locator.cpp`）
+是**同步、无 overlapped 形式、不可取消**的 SetupAPI + IOCTL 序列，
+实测会在客机上**挂死 80+ 秒**。给它加界的**唯一**办法是**把调用放出去、自己不等**。
+
+**踩的坑**：第一版写成
+
+```cpp
+auto work = std::async(std::launch::async, []{ return enumerate_disk_candidates(); });
+if (work.wait_for(timeout) != std::future_status::ready) { return timeout_error; }   // ← 没用
+```
+
+**`std::async` 返回的 future 在析构时会等待任务完成**，
+所以"等超时 → 返回"**仍然会等那个要放弃的东西**：
+**界读起来是对的，实际什么都没改变**（`-Repeat 5` 与改动前完全一样，
+仍是那个不透明的 4107）。**这是最危险的一类"看起来生效"的改动。**
+
+**正确做法**：**detached 线程 + 堆上的共享状态**（`std::make_shared`，线程持有其副本），
+超时即返回错误、**不 join**。
+
+**另有一个我自己在同一处犯的 UB**：第一版修正里**移动了一个仍被锁住的 `std::mutex`**。
+**规则**：要跨作用域共享同步原语，就**一开始放在堆上**，
+不要在返回路径上"搬"它。
+
+**适用条件（写清楚，免得被误用到不该用的地方）**：
+**放弃一个线程只在"被放弃的工作是只读的"时候才安全**（这里是列接口、查地址、查长度）。
+**放弃一个正在拆卸/写入的调用是不安全的**——
+那种情况要用 `CancelIoEx` 之类**真正取消**（本项目的 part 23/36/39 就是这么做的），
+**不是**丢下不管。
+
 ### 7.0.4 reclaim 用例首次运行**挂住**：多于 30 分钟无结果且 SSH 停止响应（2026-10-16）
 
 **现象**：`-Run -Filter '^m5\.production_execution_backend$' -Repeat 1 -MinTimeoutSeconds 900`
