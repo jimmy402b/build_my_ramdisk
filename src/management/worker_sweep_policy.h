@@ -30,6 +30,7 @@
 #include "src/common/result.h"
 #include "src/management/service_core.h"
 #include "src/persistence/image_inspector.h"
+#include "src/profile/profile_types.h"
 #include "src/product/uuid.h"
 
 #include <cstdint>
@@ -52,7 +53,7 @@ struct ObservedResourceIdentity final {
     std::optional<persistence::ImageUuid> bundle_image_id;
     std::optional<BundleFileIdentity> bundle_file_identity;
     // The mounted volume, by GPT identities.  Empty means the worker never
-    // reported them, which — see below — is "cannot prove ownership".
+    // reported them, which ??see below ??is "cannot prove ownership".
     std::string volume_guid;
     // The mount this profile was given.  Kept because a residual drive letter is
     // the one leftover that is user-visible: a letter that stays assigned after
@@ -65,7 +66,7 @@ struct ObservedResourceIdentity final {
 
     // Whether these observations are enough to justify a cleanup.  All three
     // identity classes must be present: a partial identity is not a weaker
-    // proof, it is no proof — the same rule `WorkerVolumeIdentity::complete`
+    // proof, it is no proof ??the same rule `WorkerVolumeIdentity::complete`
     // and `VolumePersistentIdentity::complete` already enforce one layer up.
     [[nodiscard]] bool complete() const noexcept {
         return bundle_image_id.has_value() && bundle_file_identity.has_value()
@@ -97,7 +98,7 @@ enum class OrphanDisposition : std::uint8_t {
     // reason about, it is something to remove.
     foreign = 0,
     // Our worker, for a profile we know, and no longer wanted.  Cooperatively
-    // terminated so it can run its ordered teardown — which is the whole reason
+    // terminated so it can run its ordered teardown ??which is the whole reason
     // the job does not set `KILL_ON_JOB_CLOSE`.
     ordered_teardown,
     // Our worker, for a profile we know, and it is *not* the process the binding
@@ -106,7 +107,7 @@ enum class OrphanDisposition : std::uint8_t {
     // Terminating it would be killing a stranger, and adopting it would be
     // trusting one.
     pid_recycled,
-    // Cannot be classified at all — a zero pid, or a binding with no creation
+    // Cannot be classified at all ??a zero pid, or a binding with no creation
     // time to compare against.  Left alone and reported: "I cannot tell" is not
     // a licence to terminate, and a sweep that guessed here would eventually
     // guess wrong about a process it does not own.
@@ -125,5 +126,31 @@ enum class OrphanDisposition : std::uint8_t {
 // treat "unknown" as "nothing to do" -- the type makes it choose.
 [[nodiscard]] std::optional<ObservedResourceIdentity> reclaimable_resources(
     const std::optional<ObservedResourceIdentity>& observed) noexcept;
+
+// The same identity, assembled from what the service already persists.
+//
+// Design section 5.5 asks for the last-observed identity to be persisted so a
+// sweep can reclaim only what it can prove is its own.  Most of it turns out to be
+// durable already, in the profile record the registration store owns:
+// `gpt_disk_guid`, `partition_guid`, `volume_guid` and `mount_target` are all there,
+// written when the volume was assigned.  Nothing is added for those -- a second copy
+// would be a second thing that can disagree with the record that is authoritative.
+//
+// Two inputs are *not* in that record and are therefore parameters:
+//
+//   * `bundle_file_identity`, which lives with the bundle registration evidence
+//     rather than in the profile record, and is absent until the worker has
+//     reported it;
+//   * `generation`, which is the checkpoint state rather than the profile's.
+//
+// The returned identity is **not** filtered through `reclaimable_resources` here.
+// Building it and deciding about it are separate steps on purpose: a projection that
+// silently returned `nullopt` for an incomplete input would make "the record is
+// short" indistinguishable from "the record is absent", and those two lead to
+// different reports.
+[[nodiscard]] ObservedResourceIdentity project_observed_identity(
+    const profile::ProfileRecord& record,
+    const std::optional<BundleFileIdentity>& bundle_file_identity,
+    std::uint64_t generation) noexcept;
 
 } // namespace myrd::management

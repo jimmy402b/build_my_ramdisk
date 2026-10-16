@@ -63,4 +63,66 @@ std::optional<ObservedResourceIdentity> reclaimable_resources(
     return observed;
 }
 
+ObservedResourceIdentity project_observed_identity(
+    const profile::ProfileRecord& record,
+    const std::optional<BundleFileIdentity>& bundle_file_identity,
+    const std::uint64_t generation) noexcept {
+    ObservedResourceIdentity identity{};
+
+    // The bundle, from the two places it is actually recorded.  The image uuid is
+    // on the profile record; the directory's own file identity is not, and is
+    // absent until a worker has reported it -- which is a real state, not a
+    // failure, and `complete()` is what turns it into "do not reclaim".
+    //
+    // The record holds the product uuid and this field wants the persistence
+    // layer's sixteen raw bytes.  They are the same sixteen in the same order, so
+    // this is a copy rather than a conversion -- the same reasoning
+    // `WindowsWorkerSessionProvider` already documents for the reverse direction,
+    // and going through text would be a parse that can only fail.
+    {
+        persistence::ImageUuid image{};
+        const auto bytes = record.profile.image_uuid.bytes();
+        static_cast<void>(
+            std::memcpy(image.bytes.data(), bytes.data(), image.bytes.size()));
+        identity.bundle_image_id = image;
+    }
+    identity.bundle_file_identity = bundle_file_identity;
+
+    // The volume, by GPT identities.  The durable record carries the *product*
+    // uuid form and the worker reports the canonical text form; they are the same
+    // identity written two ways, so the record's form is converted rather than a
+    // second copy being stored.  Empty when the record has none, which is the
+    // "never had a volume" state.
+    if (record.profile.volume_guid.has_value()) {
+        identity.volume_guid = record.profile.volume_guid->to_string();
+    }
+
+    // The mount, and this is the field where the two types disagree in *shape*.
+    //
+    // `ObservedResourceIdentity::mount_target` is a single `wchar_t` because the
+    // reclamation it authorises is "clear this drive letter".  A profile record's
+    // `mount_target` is a string, and it can legitimately be a directory (a mount
+    // point rather than a letter) -- which cannot be expressed as one character and
+    // must therefore NOT be silently truncated to its first one.  Taking `R` out of
+    // `R:` would work by accident for letters and would invent a letter for a
+    // directory mount, so the conversion accepts only an exact letter form and
+    // leaves the field unset otherwise.  Unset means `complete()` is false, which
+    // means nothing is reclaimed -- the safe answer for a mount we cannot name.
+    if (record.profile.mount_kind == profile::MountKind::drive_letter
+        && record.profile.mount_target.size() == 2
+        && record.profile.mount_target[1] == L':') {
+        const wchar_t letter = record.profile.mount_target[0];
+        const bool is_letter = (letter >= L'A' && letter <= L'Z')
+            || (letter >= L'a' && letter <= L'z');
+        if (is_letter) {
+            identity.mount_target =
+                (letter >= L'a') ? static_cast<wchar_t>(letter - L'a' + L'A')
+                                 : letter;
+        }
+    }
+
+    identity.generation = generation;
+    return identity;
+}
+
 } // namespace myrd::management

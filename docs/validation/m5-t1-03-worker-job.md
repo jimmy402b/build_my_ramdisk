@@ -147,9 +147,10 @@ part 1/2 见 `docs/superpowers/plans/2026-10-15-m5-master-plan.md` 的 T1-03 卡
 
 ### 4.3 已接线（part 6，本轮）：sweep 现在会真的动手
 
-**读数（本轮，虚拟机）**：`m5.startup_sweep` **`-Repeat 20` = 20/20 通过**
-（请求 `d70ee7af65d246eeb3aabd79ea7e4a61`；此前 `-Repeat 5` 也 5/5）。
-这是**功能与重复性**读数，量测范围就是这一条用例在客机上的 20 次运行。
+**读数（part 7 复验，虚拟机）**：`m5.startup_sweep` **`-Repeat 20` = 20/20 通过**
+（请求 `d94e45f6d6f84f77aca22de6db29e8c1`），**且在守卫生效之后**——
+即开发机上这条用例会 `exit 2` 拒绝运行，只有客机才测量它。
+（part 6 的首轮读数是 `-Repeat 20` 20/20，请求 `d70ee7af65d246eeb3aabd79ea7e4a61`。）
 
 | 交付 | 内容 |
 |---|---|
@@ -198,7 +199,36 @@ job 报出的进程**没有 profile**时，它不是"无法归属"，而是**被
 最终改为**用 .NET 静态调用数文件**（`[System.IO.Directory]::GetFiles(...).Length`），
 **没有 cmdlet 名字可被污染**，把脆弱性去掉而不是绕过。
 
-### 4.5 尚未接线（T1-03 最后一步）
+### 4.5 本轮（part 7）：资源身份投影
+
+设计 §5.5 说"持久化最后观测身份"，做的时候发现**大部分本来就已经是持久的**——
+durable `Profile` 记录里已经有 `volume_guid`、`gpt_disk_guid`、`partition_guid`、`mount_target`。
+所以**没有为它们新增存储**（第二份副本只会是第二个可能和权威记录不一致的东西），
+而是新增一个**纯投影** `project_observed_identity(record, bundle_file_identity, generation)`：
+
+- 卷身份与 GPT 身份从 profile 记录读；
+- `bundle_file_identity` 是参数（它在 bundle registration evidence 里，不在 profile 记录里）；
+- `generation` 是参数（它属于 checkpoint 状态，不属于 profile）。
+
+**投影不自己做决定**：它返回**构造出来的**身份，由 `reclaimable_resources` 判断是否完整。
+理由是：一个"不完整就返回空"的投影会让**"记录不全"和"没有记录"变得无法区分**，
+而这两者要导向不同的报告。
+
+**这轮的点睛用例是 mount 形状陷阱**：
+
+> `ObservedResourceIdentity::mount_target` 是**单个 `wchar_t`**（它授权的回收动作是"清掉这个盘符"），
+> 而 profile 记录的 `mount_target` 是**字符串**，而且可以是**目录挂载点**。
+> 直接取首字符对 `R:` 会**碰巧**正确，对目录挂载则会**凭空造出一个盘符**。
+> 所以转换**只接受恰好 `X:` 的形状**（大小写归一），否则**留空** ⇒ `complete()` 为假 ⇒ 不回收。
+
+读数是 `m5.worker_sweep_policy` **25/25**（新增 7 个用例：完整投影、不自己决定、
+拒绝目录挂载、小写归一、畸形盘符、缺 bundle 身份、generation 0）。
+
+**这轮同时修了一个我自己的违规**：`m5.startup_sweep` 会创建真实进程，
+却在开发机 `ctest` 里跑了 60 秒。现在它自带守卫（见交接文档 §7.0），
+开发机 exit 2、客机通过。
+
+### 4.6 尚未接线（T1-03 最后一步）
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——

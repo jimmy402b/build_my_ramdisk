@@ -223,6 +223,162 @@ TEST_CASE(m5_sweep_identity_completeness_is_exactly_the_rule) {
 }
 
 // ---------------------------------------------------------------------------
+// Assembling the identity from what is already durable.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A profile record as the registration store would hand it back: a volume that was
+// assigned, mounted at R:, with a bundle image.
+//
+// Built as an aggregate and then filled in, because `product::Uuid` has no default
+// constructor -- the same constraint that shaped `ExpectedWorkerBinding`'s helper
+// above and that recurs everywhere these records are constructed in tests.  Only the
+// fields this projection reads are set; the rest keep their declared defaults, so a
+// case that starts needing another field has to say so.
+profile::ProfileRecord durable_record() {
+    profile::ProfileRecord record{
+        4,
+        profile::Profile{profile_a(),
+                         L"S-1-5-18",
+                         L"a",
+                         0,
+                         profile::ProfileLifecycle::ready,
+                         L"C:\\bundles\\a",
+                         {},
+                         uuid("eeeeeeee-1111-2222-3333-444444444444")}};
+    record.profile.gpt_disk_guid = uuid("11112222-3333-4444-5555-666677778888");
+    record.profile.partition_guid = uuid("99998888-7777-6666-5555-444433332222");
+    record.profile.volume_guid = uuid("aaaabbbb-cccc-dddd-eeee-ffff00001111");
+    record.profile.mount_kind = profile::MountKind::drive_letter;
+    record.profile.mount_target = L"R:";
+    return record;
+}
+
+BundleFileIdentity file_identity() {
+    BundleFileIdentity identity{};
+    identity.volume_serial = 0xABCD;
+    identity.file_id[0] = std::byte{0x42};
+    return identity;
+}
+
+} // namespace
+
+TEST_CASE(m5_identity_projects_a_complete_durable_record) {
+    // The ordinary reclaimable case: everything the reclamation needs is either on
+    // the profile record or supplied beside it, and the projection turns it into
+    // something `reclaimable_resources` accepts.
+    const auto record = durable_record();
+    const auto identity =
+        project_observed_identity(record, file_identity(), 9);
+
+    REQUIRE(identity.complete());
+    REQUIRE(identity.bundle_image_id.has_value());
+    REQUIRE(identity.bundle_file_identity.has_value());
+    REQUIRE_EQ(identity.volume_guid,
+               record.profile.volume_guid->to_string());
+    REQUIRE_EQ(identity.mount_target, L'R');
+    REQUIRE_EQ(identity.generation, 9U);
+
+    // And the decision accepts it, which is the whole reason to build it.
+    REQUIRE(reclaimable_resources(identity).has_value());
+}
+
+TEST_CASE(m5_identity_projection_does_not_decide_by_itself) {
+    // Building the identity and judging it are separate steps on purpose.  A
+    // projection that returned "nothing" for an incomplete record would make "the
+    // record is short" indistinguishable from "there is no record", and those lead
+    // to different reports -- so an incomplete projection is *returned*, and it is
+    // `reclaimable_resources` that refuses it.
+    auto record = durable_record();
+    record.profile.volume_guid.reset();
+
+    const auto identity =
+        project_observed_identity(record, file_identity(), 1);
+    REQUIRE(!identity.complete());
+    REQUIRE(!reclaimable_resources(identity).has_value());
+
+    // The projection still produced what it could, which is what lets a caller say
+    // *which* part is missing rather than only that something is.
+    REQUIRE(identity.bundle_image_id.has_value());
+    REQUIRE(identity.bundle_file_identity.has_value());
+    REQUIRE(identity.volume_guid.empty());
+}
+
+TEST_CASE(m5_identity_refuses_to_invent_a_letter_from_a_directory_mount) {
+    // The shape trap, and the reason this case exists.
+    //
+    // `ObservedResourceIdentity::mount_target` is one `wchar_t` -- the reclamation
+    // it authorises is "clear this drive letter".  A profile record's mount target
+    // is a *string* and can legitimately be a directory, so taking its first
+    // character would work by accident for `R:` and would invent a letter for
+    // anything else.  A directory mount must therefore project to *no* mount, which
+    // makes the identity incomplete and the reclamation refuse.
+    auto record = durable_record();
+    record.profile.mount_kind = profile::MountKind::directory;
+    record.profile.mount_target = L"C:\\mounts\\disk-a";
+
+    const auto identity =
+        project_observed_identity(record, file_identity(), 1);
+    REQUIRE_EQ(identity.mount_target, L'\0');
+    REQUIRE(!identity.complete());
+    REQUIRE(!reclaimable_resources(identity).has_value());
+}
+
+TEST_CASE(m5_identity_normalizes_a_lowercase_letter) {
+    // Windows accepts `r:` and the volume is the same volume.  Two spellings of one
+    // identity must not become two identities, or a sweep could fail to match the
+    // very resource it recorded.
+    auto record = durable_record();
+    record.profile.mount_target = L"r:";
+    const auto identity =
+        project_observed_identity(record, file_identity(), 1);
+    REQUIRE_EQ(identity.mount_target, L'R');
+}
+
+TEST_CASE(m5_identity_rejects_a_malformed_mount_target) {
+    // A drive-letter mount that is not exactly `X:` is not something to guess at.
+    auto record = durable_record();
+    record.profile.mount_target = L"R";
+    REQUIRE_EQ(project_observed_identity(record, file_identity(), 1).mount_target,
+               L'\0');
+
+    record.profile.mount_target = L"CD:";
+    REQUIRE_EQ(project_observed_identity(record, file_identity(), 1).mount_target,
+               L'\0');
+
+    record.profile.mount_target = L"1:";
+    REQUIRE_EQ(project_observed_identity(record, file_identity(), 1).mount_target,
+               L'\0');
+}
+
+TEST_CASE(m5_identity_without_a_bundle_file_identity_is_incomplete) {
+    // The bundle's directory identity arrives with the worker's evidence and can be
+    // genuinely absent -- a worker that died before reporting it.  Absent must make
+    // the identity incomplete rather than being ignored, because reclaiming against
+    // a bundle whose identity was never established is reclaiming on a guess.
+    const auto record = durable_record();
+    const auto identity =
+        project_observed_identity(record, std::nullopt, 3);
+    REQUIRE(!identity.complete());
+    REQUIRE(!reclaimable_resources(identity).has_value());
+    // The volume half is still there, which is what lets the report say what *is*
+    // known.
+    REQUIRE(!identity.volume_guid.empty());
+}
+
+TEST_CASE(m5_identity_generation_zero_is_a_real_generation) {
+    // Consistent with `ObservedResourceIdentity::complete` and with the rest of the
+    // sweep: generation zero is a freshly created bundle, not an absent value.
+    const auto record = durable_record();
+    const auto identity =
+        project_observed_identity(record, file_identity(), 0);
+    REQUIRE(identity.complete());
+    REQUIRE_EQ(identity.generation, 0U);
+    REQUIRE(reclaimable_resources(identity).has_value());
+}
+
+// ---------------------------------------------------------------------------
 // The job-wide verdicts: what to do with each process found in the worker job.
 //
 // The job object can say which processes are in it; it cannot say which profile

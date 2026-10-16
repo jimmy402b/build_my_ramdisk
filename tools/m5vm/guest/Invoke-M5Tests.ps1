@@ -194,7 +194,14 @@ foreach ($t in $runs) {
         #
         # cmd is used because ProcessStartInfo cannot redirect to a file.  The
         # `/c ""...""` form is the one that survives a quoted program path.
-        $inner = (Quote-Arg $exe)
+        #
+        # The guest marker is set *inside* this cmd shell rather than through
+        # `ProcessStartInfo.EnvironmentVariables`, and that is a correction: the
+        # environment form was measured not to reach the test through the `cmd /c`
+        # wrapper, so a case that refuses to run off the guest refused on the guest
+        # too and the acceptance became unmeasurable.  Setting it in the shell that
+        # spawns the test is inheritance the wrapper cannot lose.
+        $inner = 'set MYRD_M5VM_GUEST=1&& ' + (Quote-Arg $exe)
         if ($argv.Count -gt 0) {
             $inner += ' ' + (($argv | ForEach-Object { Quote-Arg ([string]$_) }) -join ' ')
         }
@@ -210,6 +217,12 @@ foreach ($t in $runs) {
         $runCwd = if ($t.workingDirectory) { [string]$t.workingDirectory } else { Split-Path -Parent $exe }
         $psi.WorkingDirectory = $runCwd
         if ($TraceTestCases) { $psi.EnvironmentVariables['MYRD_TEST_TRACE'] = '1' }
+        # Tells a test that creates real processes that it is on the guest, which is
+        # the only place it may run (`AGENTS.md` section 4).  Cases that need real
+        # processes refuse to start without it, deliberately loudly rather than by
+        # skipping -- a silently skipped case leaves an acceptance unmeasured while
+        # the suite reports success.
+        $psi.EnvironmentVariables['MYRD_M5VM_GUEST'] = '1'
 
         $proc = [System.Diagnostics.Process]::Start($psi)
 

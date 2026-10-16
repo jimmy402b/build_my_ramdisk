@@ -36,6 +36,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -53,6 +54,44 @@ product::Uuid sweep_profile() {
     REQUIRE(parsed.ok());
     return parsed.value();
 }
+
+// This file creates real processes and terminates them, so by `AGENTS.md` section 4
+// it may only run on the guest.
+//
+// Registered like every other test so it is selectable by name on the VM -- but
+// guarded, because the first version was not and it *did* run here: a
+// `ctest -R "m5\."` on the development machine spent 60 seconds launching and
+// killing `cmd.exe` children.  Nothing was left behind, but that is luck rather than
+// design, and the same mistake with an AIM device would not have been.
+//
+// The marker is an environment variable the *guest runner sets inside the cmd shell
+// it spawns the test from*.  Not a path, and not `ProcessStartInfo.EnvironmentVariables`:
+// both were tried and both were wrong.  A path cannot distinguish the guest from the
+// development machine, because staging mirrors the development layout (that is the
+// whole point of the mirroring), so the first path-based version let the test run
+// here -- the exact thing the guard exists to prevent.  The process-environment form
+// is lost in the `cmd /c` wrapper, so it refused on the guest too.
+//
+// Refusing *loudly* is deliberate: a silently skipped test would leave the
+// acceptance unmeasured while the suite reported success.
+[[nodiscard]] bool guest_environment() {
+    wchar_t marker[8]{};
+    return GetEnvironmentVariableW(L"MYRD_M5VM_GUEST", marker, 8) != 0;
+}
+
+struct GuestGuard final {
+    GuestGuard() {
+        if (guest_environment()) return;
+        std::fprintf(stderr,
+                     "m5.startup_sweep creates real worker processes and may only "
+                     "run on the guest (AGENTS.md section 4).  Use "
+                     "tools/m5vm/Invoke-M5Vm.ps1 -Run -Filter '^m5\\.startup_sweep$' "
+                     "rather than ctest on the development machine.\n");
+        std::_Exit(2);
+    }
+};
+
+const GuestGuard kGuestGuard{};
 
 std::unique_ptr<WindowsWorkerProcessSource> open_sweep_job() {
     auto opened = WindowsWorkerProcessSource::create();
