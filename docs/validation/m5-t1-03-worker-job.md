@@ -1240,7 +1240,48 @@ if (!DeviceIoControl(handle_, FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0, &ig
 可由 **`CancelSynchronousIo`（对发起线程）或改成 overlapped 打开**来放弃。
 **注意**：`lock` 的句柄**已经是 `FILE_FLAG_OVERLAPPED`**（part 36 加的），
 所以这里**很可能可以直接用"overlapped 打开 + 超时 + `CancelIoEx`"**——
-**但这一点必须先确认（未经实测，不得当作结论）**。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+**但这一点必须先确认（未经实测，不得当作结论）**。
+
+#### 4.15.20 **真正的那个调用是 `FSCTL_LOCK_VOLUME`——第五个无界调用**（part 38，本轮）
+
+上一节把范围压到 `lock` 内部之后，**直接读代码就找到了那一句**（`windows_volume.cpp:909`）：
+
+```cpp
+DWORD ignored = 0;
+const BOOL ok = DeviceIoControl(handle, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0, &ignored, nullptr);
+```
+
+**同步 `DeviceIoControl`、`lpOverlapped = nullptr`、没有任何界** ——
+**与 part 23（SRB 传输）、part 36（`FSCTL_DISMOUNT_VOLUME`）是同一个缺陷形状。**
+
+**语义上也完全对得上**：`FSCTL_LOCK_VOLUME` 就是"把这卷锁起来"，
+**当卷上已经有一个别人打开的句柄时，它必须等待**——
+而那个句柄属于**被强杀的 worker**，**永远不会关**。
+所以它**永远等下去**，`timeout_ms` 那 30 s 只约束重试循环、管不到这一句。
+
+**这与本轮读数完全一致**：`open refused, retrying` **0 次**（说明 `CreateFileW` 成功了，
+独占打开**没有**被拒），随后 `opened exclusively` 之后就该是这一句，
+**而它没有返回**。
+
+**五个无界阻塞点的完整清单（全部有实测或代码依据）**：
+
+| # | 位置 | 状态 |
+|---|---|---|
+| 1 | `windows_srb_transport.cpp` 的 `DeviceIoControl` | **✅ part 23 已修**（overlapped + `CancelIoEx`） |
+| 2 | `CM_Reenumerate_DevNode`（PnP） | 已被 A' **绕开** |
+| 3 | `Win32VolumeAdapter::flush` | 实测 2 ms，**清白** |
+| 4 | `FSCTL_DISMOUNT_VOLUME` | **✅ part 36 已修** |
+| **5** | **`FSCTL_LOCK_VOLUME`** | **本轮定位，未修** |
+
+**修法**：与 part 36 **完全同型**，而且**前提已经满足**——
+`lock` 拿到的句柄**已经是 `FILE_FLAG_OVERLAPPED`**（part 36 加的那个 flag 正好是这里需要的）：
+把它改成 **overlapped + `CancelIoEx` + 界**，超时即**返回 `busy`**
+（`busy` 在既有语义里就是"预期中的观察，调用方可以保留 runtime 并重试"，
+**比"永久挂住"好得多**）。
+
+**本轮到此为止**（上下文预算见底）：**定位完成、修法明确、前提已具备，
+但未实施、未取读数——故不作任何"已修好"的声明，T1-03 仍不得标 PASSED。**
+**下一轮第一件事**：按 part 36 的成例把 `FSCTL_LOCK_VOLUME` 变成有界可取消的。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
