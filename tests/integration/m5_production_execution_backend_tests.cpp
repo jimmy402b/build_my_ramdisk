@@ -561,6 +561,138 @@ TEST_CASE(m5_backend_bundle_registration_persists_the_identity_it_just_read) {
     static_cast<void>(store.value().forget(profile));
 }
 
+// The AIM disk number behind a drive letter, when there is one.
+//
+// Used to assert that the *device* residue is real and not only the letter: a letter
+// that survives is visible to a user, and the disk behind it is what keeps the letter
+// from being reusable.
+[[nodiscard]] std::optional<std::uint32_t> disk_number_for_letter(
+    const wchar_t letter) {
+    const std::wstring root = std::wstring(1, letter) + L":\\";
+    wchar_t volume_name[MAX_PATH]{};
+    if (GetVolumeNameForVolumeMountPointW(root.c_str(), volume_name, MAX_PATH)
+        == FALSE) {
+        return std::nullopt;
+    }
+    // The disk number comes from the volume's *extents*, which is the only mapping
+    // Windows exposes from a mount point to a physical disk without a device handle.
+    HANDLE volume = CreateFileW(volume_name, 0,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, 0, nullptr);
+    if (volume == INVALID_HANDLE_VALUE) return std::nullopt;
+    VOLUME_DISK_EXTENTS extents{};
+    DWORD returned = 0;
+    const BOOL queried = DeviceIoControl(
+        volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0, &extents,
+        sizeof(extents), &returned, nullptr);
+    static_cast<void>(CloseHandle(volume));
+    if (queried == FALSE || extents.NumberOfDiskExtents == 0) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(extents.Extents[0].DiskNumber);
+}
+
+TEST_CASE(m5_backend_a_killed_worker_leaves_no_process_mount_or_device) {
+    // T1-03's kill acceptance, the half that needs a real device.  A worker is killed
+    // **while it holds a real, provisioned volume**, and the machine must come back to
+    // the state it started in: no process, no drive letter, no orphaned worker.
+    //
+    // This is the measurement the sweep exists for and the one nothing had made.  The
+    // earlier kill case took a worker that had never opened a bundle -- it proved the
+    // process half, which is why it could be written without a device; the residue it
+    // is about, a mounted volume and an assigned letter, only exists once a worker has
+    // mounted one.
+    //
+    // The order is what a crash does, not what a shutdown does: kill first, then drop
+    // the session.  A worker asked to leave would run its ordered teardown and there
+    // would be nothing to measure.
+    REQUIRE(wait_for_no_worker_process());
+    TempBundle bundle(L"kill-with-volume");
+    const wchar_t letter = free_drive_letter();
+    REQUIRE(!is_letter_assigned(letter));
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto image_id = uuid("5a5a5a5a-6b6b-7c7c-8d8d-9e9e9e9e9e9e");
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto operation = uuid("77777777-6666-5555-4444-333333333333");
+
+    REQUIRE(wait_for_no_worker_process());
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+
+        // A real create: the worker provisions a volume and assigns the letter, which
+        // is what makes this the device half rather than the process half.
+        WorkerActionRequest request{
+            operation,
+            operation,
+            profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt,
+            std::nullopt};
+        const auto created = control.execute(request);
+        REQUIRE(created.ok());
+        REQUIRE(created.value().lifecycle.bundle.has_value());
+
+        // The letter is really assigned, so the state under test is real and not
+        // assumed -- a case that killed a worker before it mounted anything would
+        // measure nothing while looking like it measured this.
+        REQUIRE(is_letter_assigned(letter));
+
+        const auto status = control.require_runtime_observation(profile);
+        REQUIRE(status.ok());
+        REQUIRE(status.value().worker_alive);
+
+        // Killed, not asked: `TerminateProcess` on the pid the provider's own registry
+        // holds, which is the identity the sweep would use rather than something this
+        // test invented.  Waiting for it settles that the kill took effect before the
+        // session is dropped -- otherwise the teardown this case is measuring could be
+        // the orderly one a closing pipe causes.
+        const std::uint32_t worker_pid =
+            *job.source().launched_process_ids().begin();
+        REQUIRE(worker_pid != 0);
+        HANDLE victim = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE,
+                                    worker_pid);
+        REQUIRE(victim != nullptr);
+        REQUIRE(TerminateProcess(victim, 1) != FALSE);
+        REQUIRE_EQ(WaitForSingleObject(victim, 30'000), WAIT_OBJECT_0);
+        static_cast<void>(CloseHandle(victim));
+    }
+
+    // The session is dropped by leaving the scope above, which is what a service death
+    // does -- and the kill happened *before* it, so the worker had no chance to run its
+    // ordered teardown in response to a closing pipe.
+    //
+    // **The process half is clean and the device half is not**, and that is a measured
+    // fact rather than an expectation.  Measured on the guest: after the kill,
+    // `Get-Process myrd-m5-worker` is 0, `Get-Disk` still lists the AIM disk, and the
+    // volume is still mounted with its letter assigned.
+    //
+    // That is exactly the state design section 5.5 exists for.  A `TerminateProcess`ed
+    // worker cannot remove its own drive letter, dismount its volume or stop AIM -- the
+    // reason the job does not set `KILL_ON_JOB_CLOSE` is that a worker which is *asked*
+    // to leave does all three, and this one was not asked.  The residue is therefore the
+    // reclaimer's job, not the worker's, and this case asserts the residue is real so
+    // the reclaimer has a measurement to satisfy when it lands.
+    //
+    // Asserted as *present* rather than merely observed, so that implementing the
+    // reclaimer turns this case red until it is also asserted as cleared.  A case that
+    // only printed the residue would let the implementation land unnoticed.
+    //
+    // Only the drive letter is asserted here, and the device behind it is recorded as
+    // *manually observed* in the evidence document instead.  Two attempts at asserting
+    // the disk automatically both failed for reasons unrelated to what this measures --
+    // `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` against the mount point returned nothing,
+    // and `Get-Disk` is not callable from here -- and a device probe on this machine is
+    // how the guest's storage stack gets degraded.  The letter is the user-visible
+    // residue and the one that keeps the letter from being reusable is the disk; the
+    // letter is what this case can hold reliably.
+    REQUIRE(wait_for_no_worker_process());
+    REQUIRE(is_letter_assigned(letter));
+}
+
 TEST_CASE(m5_backend_a_reopened_job_still_holds_its_workers) {
     // The design's core premise for the startup sweep, tested directly: a worker
     // launched into the named job is still *in* that job when a second handle

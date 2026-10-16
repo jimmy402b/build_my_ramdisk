@@ -168,6 +168,17 @@ Result<bool> WindowsWorkerProcessSource::wait_for_exit(
         GetLastError()));
 }
 
+std::vector<std::uint32_t>
+WindowsWorkerProcessSource::launched_process_ids() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    std::vector<std::uint32_t> ids;
+    ids.reserve(launched_.size());
+    for (const auto& entry : launched_) {
+        ids.push_back(entry.first);
+    }
+    return ids;
+}
+
 Result<std::vector<OrphanedProcess>>
 WindowsWorkerProcessSource::observe_orphans() const {
     if (job_ == nullptr) {

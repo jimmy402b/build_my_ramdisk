@@ -68,6 +68,15 @@ public:
     [[nodiscard]] Result<bool> wait_for_exit(std::uint32_t process_id,
                                              std::uint32_t timeout_ms);
 
+    // The processes this session launched, by pid.
+    //
+    // For a caller that needs to act on *this session's* worker rather than on an
+    // orphan -- a test that wants to kill one, and a future teardown that wants to walk
+    // the profiles it owns.  It is deliberately only the pids: the handles stay private,
+    // because a caller that could close one would leave a worker observable and
+    // un-waitable, which is the state `retain_launched` exists to make impossible.
+    [[nodiscard]] std::vector<std::uint32_t> launched_process_ids() const;
+
     [[nodiscard]] Result<std::vector<OrphanedProcess>> observe_orphans()
         const override;
     [[nodiscard]] Result<void> request_cooperative_exit(
