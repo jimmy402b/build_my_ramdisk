@@ -820,7 +820,46 @@ const CONFIGRET status = CM_Reenumerate_DevNode(
 1. **先确认客机干净**（`workers: 0 / disks: 0 / letters: C`）——脏客机连 create 都过不去；
 2. **先删掉 `C:\tmp\m5-reclaim-trace.txt`**，否则会读到上一次的陈旧内容并误判；
 3. 取读数**先只读 stderr 第一行**（能区分"死在 fixture create"与"死在 reclaim"），
-   再决定是否读 trace。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
+   再决定是否读 trace。
+
+#### 4.15.9 **A' 的读数拿到了：attach 跑了，但没匹配上**（part 27，本轮）
+
+**本轮按新规则严格执行**：先确认客机干净（`workers: 0 / disks: 0 / letters: C`）→
+**删掉陈旧 trace** → 再跑。**另发现一件对以后很重要的工具事实**：
+`tools/m5vm` 会把 `results.json` 与 `response.txt` **落到本机 `C:\tmp\m5-vm\`**，
+但**只记录客机端路径**；当客机 SSH 再次挂住时，
+**可以用 `scp` 直接取**（本轮就是这么拿到 stderr 与 trace 的，`scp` 与挂住的 SSH 执行器是两条通道）。
+
+**读数**（请求 `1b33bb7ada3c4408af2efc5290e2dfd8`，`-Repeat 1`，客机已确认干净）：
+
+```
+13:45:34.733Z start_aim: begin
+13:45:34.857Z M3AimRuntime::start: look for an existing device   ← 新代码跑了
+13:45:34.871Z M3AimRuntime::start: create proxy disk             ← 但**没接管**
+13:45:34.876Z M3AimRuntime::start: rescan adapter                ← 于是仍去重新枚举 → 卡住
+```
+
+stderr：`pipe transfer exceeded its bounded wait`（4107，deadline 到期）。
+
+**结论：attach 路径被执行了、`list_devices()` 也返回了（14 ms），但没有匹配到设备**，
+于是走了原路（create + rescan）并**再次卡在 `CM_Reenumerate_DevNode`**。
+
+**一个很可能的、需要下一轮验证的原因（本轮不作断言）**：
+匹配条件里的 `native_object_path` 来自 `names.driver_path`，而它是**由 session id 派生的**：
+
+```cpp
+// src/proxy/object_names.cpp:61,69
+std::wstring base = prefix + std::wstring(session_id);
+names.driver_path = std::wstring(L"\\BaseNamedObjects\\") + base;
+```
+
+**如果两个 worker 派生出不同的 session id，`driver_path` 就不同，残留设备就永远匹配不上**——
+那样 **A' 就按现在的身份判据不成立**，需要改成
+"用**能从 durable 数据导出**的判据去认领残留设备"（这正是本增量 part 11 为 bundle 身份做过的事）。
+
+**下一步（下一轮第一件事）**：把 create worker 与 reclaim worker 各自算出的
+`session_id` / `driver_path` 打进 trace 对比一次——**一次运行即可判定**是不是这个原因。
+若是，则修法是让判据不依赖 session id（或让 session id 从 profile/bundle 派生）。**强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——
 后者要等 `reclaimable_resources` 的消费者接上（设计 §5.5 的资源回收），
 而那需要 worker 报告 bundle/volume 身份并被持久化。**这部分没做，也没有宣称。**
