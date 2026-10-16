@@ -117,7 +117,9 @@ private:
     std::optional<aim::AdapterHandle> adapter_handle_;
     std::unique_ptr<aim::WindowsSrbTransport> transport_;
     std::unique_ptr<aim::DirectAimAdapter> adapter_;
-    std::optional<std::vector<std::uint32_t>> physical_baseline_;
+    // `physical_baseline_` is gone with the whole-machine enumeration that filled it.  Keeping a
+    // member nothing writes would be worse than removing it: the next reader would reasonably assume
+    // something still maintains it.
     std::optional<aim::DeviceId> owned_device_;
     M3AimRuntimeInfo info_{};
     bool started_{};

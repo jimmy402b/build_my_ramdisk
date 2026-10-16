@@ -253,13 +253,25 @@ Result<void> M3AimRuntime::start() {
         adapter_handle_->handle.get());
     adapter_ = std::make_unique<aim::DirectAimAdapter>(*transport_);
 
-    diagnostic_trace("M3AimRuntime::start: physical baseline");
-    auto baseline = aim::snapshot_physical_drive_numbers();
-    if (!baseline) {
-        (void)stop_provider();
-        return Result<void>::failure(baseline.error());
-    }
-    physical_baseline_ = baseline.move_value();
+    // **No whole-machine baseline is taken, and that removal is a fix rather than a simplification.**
+    //
+    // This step enumerated every disk interface on the machine through `SetupDiGetClassDevsW`, which is
+    // a synchronous kernel enumeration with **no timeout** -- measured blocking forever, and the sixth
+    // unbounded call this project has had to remove.  It is taken on *every* worker start, so a test
+    // suite in which every case really creates and tears down a volume grows the interface set as it
+    // runs, and the enumeration work grows with it until it stops returning.  That is what made a
+    // reclaim intermittently time out, and what left eighteen of twenty suite iterations unable to get
+    // past their third case.
+    //
+    // **Nothing is lost by not having it.**  The baseline was only ever used to skip candidates that
+    // already existed, and the match that identifies a disk does not depend on it: `match_created_disk`
+    // compares the device's SCSI **path, target and LUN** plus its expected length, which is the disk's
+    // identity.  `existed_before` was an additional *filter* on top of that identity, never a
+    // substitute for it -- so dropping it keeps every pre-existing rejection and, if anything, makes a
+    // disk that appeared concurrently more likely to be noticed rather than less.
+    //
+    // The adopt path has used exactly this shape since part 29 (`wait_for_present_physical_drive`, an
+    // empty baseline) and it is measured working on the guest.
 
     const auto geometry = provider_->geometry();
     const auto names = provider_->names();
@@ -350,19 +362,14 @@ Result<void> M3AimRuntime::start() {
     }
 
     diagnostic_trace("M3AimRuntime::start: wait for physical drive");
-    // **Two ways to find the disk, because the two cases are genuinely different.**
+    // **One way now, because the baseline is gone and the identity was always what did the work.**
     //
-    // A device this runtime created is new to the machine, so the create wait finds it by
-    // differencing against the baseline -- which also serves as a check that the disk we act on
-    // is the one we just brought up.  An **adopted** device's disk is already in that baseline,
-    // and the create wait skips anything marked pre-existing, so it would wait out its whole
-    // timeout and fail.  The present-wait matches on the device's own identity instead.
-    auto located = adopting_existing
-        ? aim::wait_for_present_physical_drive(
-              *owned_device_, geometry.virtual_bytes, device_timeout_)
-        : aim::wait_for_created_physical_drive(
-              *owned_device_, *physical_baseline_, geometry.virtual_bytes,
-              device_timeout_);
+    // The two waits differed only in whether candidates that already existed were skipped, and that
+    // filter needed a baseline -- the whole-machine enumeration removed just above.  The identity the
+    // match actually turns on is the device's SCSI path, target and LUN plus its expected length, and
+    // that is the same for a device this runtime created and one it adopted.  So both cases use it.
+    auto located = aim::wait_for_present_physical_drive(
+        *owned_device_, geometry.virtual_bytes, device_timeout_);
     if (!located) {
         (void)remove_owned_device();
         (void)stop_provider();
