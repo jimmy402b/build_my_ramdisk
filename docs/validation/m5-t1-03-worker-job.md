@@ -392,7 +392,54 @@ part 10 给了指纹一个**装** bundle 身份的地方，但**没有东西往�
 新用例调用 `wait_for_letter_release()` **没传参**，而那个 helper **本来就带 `letter` 参数**
 存在，于是我又写了一个重复的。**是"一个 helper 只做一件事"的既有约定让它浮出来的。**
 
-### 4.12 尚未接线（T1-03 最后一步）
+### 4.12 本轮（part 12）：**把设备残留量出来**——这是 reclaimer 必须清掉的东西
+
+T1-03 的强杀验收一直有一半没量过：**worker 在持有真实、已 provision 的卷时被强杀**。
+进程那一半早有覆盖（所以它能不需要设备就写出来），而它要谈的残留——**挂载的卷与已分配的盘符**——
+只有在 worker 挂载过之后才存在。
+
+**用例与它查到的东西**：真 worker、真 create、真 provision 的卷、真分配的盘符，
+然后对 **provider 自己注册表里的那个 pid** 做 `TerminateProcess`，
+再像服务死亡那样丢掉 session。**事后在客机上量到**：
+
+```
+workers: 0          进程没了
+disks:   1,0        AIM 盘还在
+letters: C,Z        盘符还分配着
+DriveLetter  FileSystemLabel
+        Z    MyRamDisk
+```
+
+**进程那一半是干净的，设备那一半不是**——而这正是设计自己的预测，不是意外。
+被 `TerminateProcess` 的 worker **无法**删除自己的盘符、拆卸卷或停 AIM。
+job **不设 `KILL_ON_JOB_CLOSE`** 的理由是：被**请求**离开的 worker 会把这三件事都做；
+而这一个没有被请求。**残留是 reclaimer 的活**，这也正是设计 §5.5 要求持久化身份的原因——
+而 part 9–11 造的正是将要清掉它的那套机制。
+
+**残留是被断言为"存在"的，这是刻意的**：只做观察的用例会让 reclaimer **悄悄**落地；
+断言为存在，则实现 reclaimer 时**这个用例会变红**，直到断言也改成"已清除"。
+**这就是 reclaimer 继承下来的度量。**
+
+**两次尝试自动断言"设备"本身，都放弃了**，原因值得记：
+`IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` 对着挂载点返回空，
+而 `Get-Disk` 在测试里调不到。**从这里做设备探测也是把客机存储栈搞退化的方式**——
+本轮清理时 `Set-Disk -IsOffline` **挂住了**，需要**硬重启 VM**。
+所以用例断言的是**盘符**（用户可见的那个残留），盘本身按上表**作为人工量测记录**，
+**不伪装成自动化断言**。
+
+另加 `WindowsWorkerProcessSource::launched_process_ids()`，让调用方能对本**会话自己的**
+worker 动手而不是对孤儿动手。**只给 pid**：句柄保持私有，
+因为能关掉句柄的调用方会留下一个"看得见却等不到"的 worker。
+
+**读数**：干净客机上 `m5.production_execution_backend` `-Repeat 1` **1/1**
+（请求 `a7fd5b35981f43be88eab47685f76af0`），残留前后各人工量测一次。
+**用 `-Repeat 1`** 是因为该用例会 provision 一个真实卷、耗时约 80 秒；
+修复类重复性要求已在别处满足，这是**新度量**用例。干净构建 0 error 0 warning。
+
+**未做，且现在边界精确**：清掉残留的 reclaimer。在它存在之前，
+`DeferredResourceReclaimer` 报"无法动手"，所以 sweep **报 needs-attention 而不是假装**。
+
+### 4.13 尚未接线（T1-03 最后一步）
 
 **强杀验收**：强杀**服务** → worker 自行有序拆卸；强杀 **worker** → 下次启动 sweep 回收不留设备/盘符。
 本轮验的是"sweep 会终结一个真孤儿"，**不是**"断电后设备与盘符被回收"——

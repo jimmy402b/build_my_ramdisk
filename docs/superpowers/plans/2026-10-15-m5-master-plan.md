@@ -686,7 +686,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS** | part 1–11：逻辑 `m5.worker_sweep_policy` 25/25、`m5.worker_binding_store` **17/17**、`m5.worker_sweep` **14/14**、`m5.service_host` 14/14（开发机）；VM `m5.startup_sweep` **`-Repeat 20` 20/20**（part 8）、`m5.production_execution_backend` **`-Repeat 3` 3/3**（part 11，含"bundle 身份真的落盘"端到端）。证据 `docs/validation/m5-t1-03-worker-job.md`。**剩余：设备/盘符强杀验收（唯一还需要真实 AIM 设备的部分）** |
+| T1-03 | **IN_PROGRESS** | part 1–12：逻辑 `m5.worker_sweep_policy` 25/25、`m5.worker_binding_store` 17/17、`m5.worker_sweep` 14/14、`m5.service_host` 14/14（开发机）；VM `m5.startup_sweep` **`-Repeat 20` 20/20**（part 8）、`m5.production_execution_backend` **`-Repeat 3` 3/3**（part 11）、**`-Repeat 1` 1/1**（part 12，强杀持卷 worker **量到设备残留**：盘符 `Z:` 与 AIM 盘都在，进程已消失）。证据 `docs/validation/m5-t1-03-worker-job.md`。**剩余：实现真正的 reclaimer 去清掉该残留**（现在 `DeferredResourceReclaimer` 如实报"无法动手"） |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
