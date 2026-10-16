@@ -2795,3 +2795,64 @@ residue cleanup failed: op=enumerate_disk_candidates
 
 **这是本轮唯一剩下的、且已具备稳定复现条件的工作。**
 **T1-03 不得标 PASSED。****本轮净改动为零**（回退 + 验证读数）。
+
+#### 4.15.54 **逐步打点推翻了"枚举被阻塞"这个前提：枚举每次都快且都返回**（part 74，本轮）
+
+**已实施逐步打点**（每个枚举步骤一条 trace，带耗时；`diagnostic_trace` 每次调用都
+`FlushFileBuffers`，所以被放弃的线程写下的行仍然可读——这正是那个 flush 存在的理由）。
+**跑 `-Repeat 2`（请求 `23f2679f00b148fa84890774eebdca68`），读数如下**：
+
+```
+21:09:29.622Z enumerate_disk_candidates: begin
+21:09:29.635Z enumerate_disk_candidates: end, 2 candidates, all steps returned      ← 13 ms
+21:09:36.732Z enumerate_disk_candidates: begin
+21:09:36.745Z enumerate_disk_candidates: end, 1 candidates, all steps returned      ← 13 ms
+21:09:36.836Z enumerate_disk_candidates: begin
+21:09:36.851Z enumerate_disk_candidates: end, 2 candidates, all steps returned      ← 15 ms
+21:09:36.851Z wait_for_physical_drive: turn 1 saw 2 candidates in 14 ms (total 14 ms)
+```
+
+分步耗时（同一段里）全部是个位数毫秒：
+
+```
+SetupDiGetClassDevsW took 1 ms
+SetupDiEnumDeviceInterfaces[0] took 0 ms
+SetupDiGetDeviceInterfaceDetailW took 0 ms
+CreateFileW took 1–4 ms
+IOCTL_SCSI_GET_ADDRESS took 0 ms
+IOCTL_STORAGE_GET_DEVICE_NUMBER took 0 ms
+```
+
+**⇒ 每次都打印 `all steps returned`。这就是关键：枚举的每一个组成部分都返回了，
+而且每次都很快。** "枚举被阻塞"这个前提**被直接推翻了**。
+
+**那么 10 秒界为什么会响？** 现在只能说到这一步，但方向**完全变了**：
+既然**每次调用都返回**，而等待循环**又确实超过了自己的预算**，
+那么剩下的解释**不在枚举内部**，而在**等待循环本身**——
+
+- **它可能在反复轮询而匹配始终不成立**（枚举很快 ⇒ 循环转得很快 ⇒ 在预算内转很多圈），
+  而**某一次（或若干次）调用之后，等待的总时长超过了界**；
+- 或者**在枚举之外、循环之内的某一处**（`mark_existed_before`、
+  `match_created_disk`、`wait_for_confirmation`、`sleep_for`）耗时超出预期；
+- **注意 "turn 1" 出现了两次（21:09:36.851 与 21:09:43.786）**，
+  说明**这个等待被调用了多次**（每次调用各自从 turn 1 开始），
+  而**两次之间隔了约 7 秒**——**那 7 秒花在哪里，是新的问题**。
+
+**必须如实记录的方法论结果**：
+**这是本项目第三次被自己的机制猜测证伪**（幽灵盘 → 打开/IOCTL → 枚举阻塞），
+**而这一次是"能稳定复现 + 逐步打点"之后仍然证伪**。
+**因此"枚举慢/卡"这个说法从本轮起必须从所有文档中撤回**——
+**枚举是快的，而且每次返回。**
+
+**下一步（方向已变，且必须先把旧的错误结论清理掉）**：
+1. **把"枚举阻塞"这个结论从 §8 第 6/8 项与 handoff §7.0.7 里更正掉**
+   （否则下一位会照着错的根因去修）；
+2. **查那 7 秒的间隔**：两次 `turn 1` 之间发生了什么——
+   需要给**等待循环的入口/出口**与**每次调用**打时间戳，
+   这已经**部分存在**（`wait_for_physical_drive: turn N saw ... total ... ms`），
+   需要补的是**循环退出时的原因与总耗时**；
+3. **同时给 `match_created_disk` 的匹配失败原因打点**——
+   若"2 个候选里从来没有一个匹配上"，那么**问题可能根本不在超时，而在身份匹配**
+   （**这会把它从"性能问题"变成"正确性问题"，是更严重的一类**）。
+
+**T1-03 不得标 PASSED。****本轮净改动**：只有逐步打点（测试性仪表），产品逻辑未动。
