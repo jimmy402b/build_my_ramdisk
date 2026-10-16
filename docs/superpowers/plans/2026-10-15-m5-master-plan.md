@@ -248,13 +248,13 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 1. ~~**协议**：新增一个 `WorkerCommand`~~ —— **✅ 本轮完成**（`reclaim_leftover = 16`，
    追加而非插入；request/reply 都是 operation-scoped + bare status，
    测试 `m5_worker_protocol_reclaim_leftover_is_operation_scoped`，协议套件 39/39）；
-2. **worker 运行时**：实现该动词。**本轮确认它可做，靠的是既有接缝**——
-   `Win32VolumeAdapter::find_recovered_volume(disk_number, drive_letter, owner_token)`
-   （`windows_volume.h:187`）的注释就是 **"attach-only: enumerate existing volumes and
-   adopt exactly one candidate backed by disk_number and mounted at drive_letter"**，
-   即**接管一个已经挂载的卷**，正是残留的状态；随后
-   `remove_drive_letter(owned)` + `ProductVolume::dismount()` 完成拆卸。
-   **不需要挂载**，因此不需要新的 M3 能力；
+2. **worker 运行时**：实现该动词。
+   **本轮发现一个比预想更深的约束（见下"未决"）**：`DiskRuntime::recover` 的契约
+   （`disk_runtime.h:198-200`）明确写着 **"then assigns the requested drive letter"** ——
+   **它一定会分配盘符**，而残留的盘符**已经分配着，且正是它要请求的那个**。
+   所以 `recover` + `start` **无法**用于残留：它会在自己身上撞车。
+   `find_recovered_volume`（attach-only，接管已挂载卷，**不分配**）是对的底层调用，
+   但**run 层没有一条不分配盘符的路径**；
 3. **服务侧 reclaimer**：实现 `IResourceReclaimer::reclaim`，
    用**已证明的** `ObservedResourceIdentity`（卷 GUID + 盘符 + bundle 身份）去请求拆卸，
    并且**只有**在身份匹配时才动手；
@@ -271,6 +271,41 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 
 **边界**：不得改 M3 的 bundle / journal / manifest 布局（不变量 4）；
 不得按进程名 / AIM 编号 / 显示名清理（设计 §5.5）。
+
+---
+
+#### ⚠ 未决：reclaimer 需要在 run 层加一条**不分配盘符**的路径（**需要人裁决**）
+
+**事实（已由代码契约确认，非推测）**：
+
+| 层 | 现状 |
+|---|---|
+| `Win32VolumeAdapter::find_recovered_volume` | **attach-only**，接管已挂载的卷，**不分配盘符** —— 正是残留需要的语义 |
+| `Win32VolumeAdapter::remove_drive_letter` / `ProductVolume::dismount` | 拆卸所需的两步，都在 |
+| **`DiskRuntime::recover`** | 契约写明 **"then assigns the requested drive letter"** ⇒ **一定分配盘符** |
+| 结果 | 残留的盘符**已经分配、且正是请求的那个** ⇒ `recover` + `start` 会**自己撞自己** |
+
+**所以缺的不是 M3 能力，而是 run 层的"拆卸模式"**：
+一条用 `find_recovered_volume` 接管、**跳过 `assign_drive_letter`**、然后走既有
+`remove_drive_letter` → `dismount` → `stop_aim` 拆卸的路径。
+
+**为什么需要裁决**：这要**动 M4 的 run 层**。设计 §3 / 不变量 4 写的是"不改 M4 前台
+单阶段 checkpoint 行为"，而 `DiskRuntime::start()` 正是 M4 的路径。加一个模式
+**可以**做到不改既有行为（新分支、既有分支逐字不动），但它属于
+**"需要重写某一层并重挣 M3/M4 证据"**这一类，按 goal 的规则**必须停下来问**：
+
+- **选项 A（推荐）**：给 `DiskRuntime` 加一个**显式的 reclaim 模式**，
+  既有 `create`/`recover` 分支**逐字不动**，并用**既有 M4 套件全绿**来证明未受影响
+  （而不是只声明没影响）。风险：M4 套件的读数需要重跑一遍作为证据。
+- **选项 B**：把拆卸路径放到 worker 侧**绕过 `DiskRuntime`**，直接用
+  `WindowsVolumeAdapter` 的三步。风险：绕过 run 层意味着**第二套拆卸实现**，
+  与"不新增第二套状态机/执行核心"的项目铁律冲突。
+- **选项 C**：**推迟**到 M5 之后 / 单独一片，先在 `DeferredResourceReclaimer` 下
+  如实报 needs-attention（当前状态），把设备残留交给人工。
+
+**我倾向 A**，理由：它不绕过任何层、把"必须不分配盘符"这件事变成一个**显式模式**
+而不是散落的特例，并且用既有 M4 套件全绿来证明既有行为未变 —— 这正是
+"要动就拿出证据"而不是"声明一下"。
 
 **一个必须一起处理的前提（本轮发现）**：reclaimer 的数据来源是
 `ProfileResourceIdentities`，它读的是 **durable profile 记录**；
