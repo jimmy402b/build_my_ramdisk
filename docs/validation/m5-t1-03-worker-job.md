@@ -1850,6 +1850,76 @@ part 41 我把 `lock` 的打开方式从 **`share = 0`（独占打开）**
 **因此先确认那两道闸在真实路径上是否真的生效**（trace 里应出现"没有 flush_volume/flush 行"），
 再决定是闸没生效、还是另有第三个阻塞点。
 
+#### 4.15.36 **找到了 T1-03 间歇性失败的根因：`SetupDiGetClassDevsW` 无界枚举**（part 53，本轮）
+
+**读法（很便宜，且立刻定位）**：上一次 `-Repeat 3` 里**迭代 3 只走到 3 条**，
+说明它**卡在强杀那条用例的 cleanup reclaim**；
+而该迭代**确实跑到过 reclaim**，所以客机上的 trace 就是现场。
+把 `C:\tmp\m5-reclaim-trace.txt` 取回来的**最后一段**是：
+
+```
+19:05:04.850Z worker: launch spec read, connecting
+19:05:04.852Z worker: pipe connected, authenticating
+19:05:04.852Z worker: handshaken, opening the bundle
+19:05:04.854Z worker: runtime open, serving
+19:05:04.856Z acquire_bundle_lock: begin → ok
+19:05:04.856Z recover_complete_image: begin → 19:05:04.952Z ok
+19:05:04.952Z start_aim: begin
+19:05:04.954Z M3AimRuntime::start: provider open
+19:05:05.050Z M3AimRuntime::start: provider start
+19:05:05.052Z M3AimRuntime::start: discover adapter
+19:05:05.057Z M3AimRuntime::start: physical baseline      ← 此后没有任何输出
+```
+
+⇒ **卡在 `snapshot_physical_drive_numbers()`，也就是 `physical baseline` 那一步**，
+**在 `look for an existing device` 之前**（我此前只给后面那步加了点，所以看不到）。
+
+**它为什么无界**：`snapshot_physical_drive_numbers` → `enumerate_disk_candidates`
+（`physical_drive_locator.cpp:144`）第一句就是
+
+```cpp
+const HDEVINFO raw_device_info = SetupDiGetClassDevsW(
+    &kDiskGuid, nullptr, nullptr,
+    DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+```
+
+**`SetupDiGetClassDevsW` 是同步的 PnP 设备枚举，没有超时参数**——
+**这是本增量的第六个无界阻塞点**，而且它**不在 AIM 或卷的路径上，而在"数一下机器上有哪些盘"这件小事上**。
+
+**为什么这解释了一切（包括间歇性与套件不稳定）**：
+`start_aim` 每次都要先取 baseline ⇒ **每一次 worker 启动都会枚举一遍全套磁盘接口**；
+而这一套件**每条用例都真的建卷拆卷**，
+**设备接口树里越积越多**，枚举所需的 PnP 工作随运行次数增长，
+**于是从"很快"变成"卡住"**——这与观测完全一致：
+**迭代 1、2 走到 16 条，迭代 3 停在 3 条；以及 18/20 次连第 3 条用例都过不去**。
+
+**当前六个无界阻塞点的完整清单**：
+
+| # | 位置 | 状态 |
+|---|---|---|
+| 1 | SRB 传输 `DeviceIoControl` | ✅ part 23 已修（overlapped + `CancelIoEx`） |
+| 2 | `CM_Reenumerate_DevNode` | 已被 A' 绕开 |
+| 3 | `Win32VolumeAdapter::flush` | 实测 2 ms，清白 |
+| 4 | `FSCTL_DISMOUNT_VOLUME` | ✅ part 36 已修 |
+| 5 | `FSCTL_LOCK_VOLUME` | ✅ part 39 已修（有界 + 返回 `busy`） |
+| **6** | **`SetupDiGetClassDevsW`（磁盘接口枚举）** | **本轮定位，未修** |
+
+**修法方向（下一轮第一件事，且要请示取舍）**：
+这是**第六个同形状**的问题，而**前两个已证明"overlapped + 取消"可行**——
+但 **`SetupDiGetClassDevsW` 是 CfgMgr32/SetupAPI 的调用，没有 overlapped 形式**
+（与 part 23/36/39 不同），所以要么：
+1. **把整个枚举丢进可放弃的线程并带上限**（较脏，但可行）；
+2. **换一个可加界的枚举方式**（例如直接用 `CM_Get_Device_Interface_List` 或
+   只枚举**已知的** AIM 盘号区间，而不是全机器枚举）；
+3. **干脆不要每次启动都取 baseline**：baseline 只用于"找出**新出现**的盘"，
+   而**接管（A'）路径与新建路径都不该依赖全机器枚举**——
+   这一条最符合本增量已经确立的方向（**不要做不需要做的事**）。
+
+**倾向 3**，因为它同时减少**每次 worker 启动**的 PnP 负担，
+而这正是间歇性随运行次数恶化的原因；**但它属于设计取舍，故记下来请示，不自行发明。**
+
+**T1-03 仍不得标 PASSED。**
+
 **已实施**（`dc56a57`）：**reclaim 也不 flush**。理由与"不 dismount"同源，
 而且这一条有**代码依据**：`remove_owned_device` 发的是 `kRemoveDevice` 给 AIM 驱动、
 **从不碰卷**（`direct_aim_adapter.cpp`），所以**驱动侧移除本来就不需要卷**——
