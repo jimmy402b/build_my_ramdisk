@@ -277,8 +277,21 @@ startup secret，而它随父进程死了。所以这条路径报明确失败而
 | 2a | `DiskRuntimeMode::reclaim` + `DiskRuntime::reclaim` + **不分配盘符** | **✅ part 14** |
 | 2b | worker 侧：`WorkerVolumeMode::reclaim_existing`（**追加**，wire 值）+ `reclaim_leftover` 处理器 | **✅ part 15** |
 | 3a | 服务侧驾驶：`ActionKind::reclaim_leftover` + `ServiceWorkerControl::reclaim_leftover`（**覆盖 launch 模式为 `reclaim_existing`**）+ session client | **✅ part 16** |
-| 3b | `IResourceReclaimer` 的生产实现 | 待做 |
+| 3b | `IResourceReclaimer` 的生产实现：`LeftoverReclaimer` | **✅ part 17** |
 | 4 | `ServiceRuntime` 接线（换掉 `DeferredResourceReclaimer`） | 待做 |
+
+**part 17 的关键点**：
+
+- **重读 durable profile，而不是只信传进来的 identity**——这是安全属性而非冗余：
+  identity 是 sweep **证明过**的东西；worker 需要的 launch 事实来自同一批记录，
+  **重读**意味着 reclaim 作用于**现在**的 profile。按陈旧 identity 动手，
+  就是把"已经变成另一块盘的东西"拆掉；
+- **identity 不带盘符时拒绝**：worker 是**按那个盘符找卷**的，
+  没有盘符就只能猜着拆——设计明令禁止的无身份清理；
+- **接口方法默认实现为"失败"，而不是纯虚**——方向才是重点：改成纯虚会**打断 11 个测试 fake**，
+  而满足它最省事的写法就是 `return success`；**默认失败**才是调用方不会误认成真实现的那个。
+  sweep 把失败的 reclaim 变成"该 profile 继续留在 needs-attention 里"，
+  而**成功会把残留记成已清除**，留给运维一个比盘活得还久的盘符。
 
 **part 16 的两个关键点**：
 
