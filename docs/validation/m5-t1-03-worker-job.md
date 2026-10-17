@@ -3208,3 +3208,30 @@ all=[#1/GPT/67108864/boot=False/sys=False  #0/GPT/68719476736/boot=True/sys=True
 `myrd-m5-worker.exe` 与 `myrd.exe`，才上客机）。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.62 **澄清：8 MiB 不是盘的容量，是代理协议的数据窗口**（part 81 续，本轮）
+
+上一节把"SHM 映射 8 MiB 而盘 64 MiB"列为候选原因。**本轮读代码后撤回这个怀疑**：
+
+`request_processor.cpp` 里 `kDataAreaSize` 的用法是
+
+```cpp
+if (length == 0 || length > kDataAreaSize || offset > device_size || ...)   // 单次请求长度上限
+auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);               // 读写载荷缓冲区
+```
+
+⇒ **`kDataAreaSize`（8 MiB）是"一次代理请求的载荷上限"，不是磁盘容量。**
+**盘内容并不放在那个映射里**：AIM 的 SHM proxy 是**传输通道**，
+真正的数据由本项目的 `request_processor` 按请求从 M3 存储取出后回给它。
+
+**所以"映射太小撑不住 64 MiB 盘"这个怀疑不成立**——两者本来不是一回事。
+
+**这条澄清的价值**：关掉了一个看起来最像根因的方向，免得下一轮改映射大小而白费功夫。
+
+**于是"新建的盘为什么已有 GPT"只剩一个方向**：
+**盘上的字节是我们的 `request_processor` 回出去的**，
+所以 GPT 只可能来自 **M3 存储对 generation-zero 那些块的回答**——
+要么"未提交块"没有按零返回，要么那块 bundle 不是真的新建的（例如临时目录被复用）。
+**这是下一轮取读数的位置**，而不是驱动、也不是映射大小。
+
+**T1-03 不得标 PASSED。**
