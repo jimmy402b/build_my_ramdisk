@@ -16,6 +16,7 @@
 #define MYRD_CHECKPOINT_FIXTURE_ONLY
 #include "m4_checkpoint_operation_tests.cpp"
 
+#include "src/control/public_pipe_client.h"
 #include "src/service/service_host.h"
 
 #include <algorithm>
@@ -498,4 +499,60 @@ TEST_CASE(m5_host_without_a_sweep_still_starts) {
     REQUIRE(host.start().ok());
     REQUIRE_EQ(host.state(), ServiceHostState::running);
     REQUIRE(!host.diagnostics().sweep_needs_attention);
+}
+
+// **The step a client needs before it can be a client, tested where it can be tested.**
+//
+// Building a request frame from a command is the join between the codec and the frame, and it did not exist --
+// which is why the service's whole command surface had no client and `public_pipe_client` was compiled but
+// unused.  A real client cannot be verified without a real service, but this join can: build a frame from a
+// command, encode it to bytes, decode it back, and recover the command.  If any of the three disagree the round
+// trip fails here rather than as an unexplained protocol error later.
+//
+// `disk list` is the command used, because it is the one the read/write separation acceptance needs, and because
+// it carries no arguments -- so a payload mismatch would show up as a mismatch rather than as a field difference
+// with two possible readings.
+TEST_CASE(service_host_builds_a_request_frame_that_round_trips) {
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::DiskListCommand{}, request_id.value());
+    REQUIRE(frame.ok());
+    REQUIRE(frame.value().message_type == ipc::MessageType::request);
+    REQUIRE(frame.value().request_id == request_id.value());
+    REQUIRE(frame.value().flags == 0);
+    REQUIRE_EQ(frame.value().command_id,
+               static_cast<std::uint32_t>(ipc::CommandId::disk_list));
+
+    // Through the wire format and back: the exact pair the client and the service exchange, so a disagreement
+    // here is the one that would otherwise surface as a malformed frame at run time.
+    auto bytes = ipc::encode_frame(frame.value());
+    REQUIRE(bytes.ok());
+    auto decoded = ipc::decode_frame(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().request_id == request_id.value());
+    REQUIRE_EQ(decoded.value().command_id, frame.value().command_id);
+
+    // And the command itself, which is what the service will execute.
+    auto command = ipc::decode_command_payload(
+        static_cast<ipc::CommandId>(decoded.value().command_id),
+        decoded.value().payload, decoded.value().protocol_minor);
+    REQUIRE(command.ok());
+    REQUIRE(std::holds_alternative<control::DiskListCommand>(command.value()));
+}
+
+TEST_CASE(service_host_carries_the_control_flags_and_claims_no_operation) {
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::StatusCommand{}, request_id.value(), true, false);
+    REQUIRE(frame.ok());
+    REQUIRE((frame.value().flags & ipc::kFrameFlagNoWait) != 0);
+    REQUIRE((frame.value().flags & ipc::kFrameFlagDryRun) == 0);
+
+    // A client owns no operation, so the frame must not claim one.  Asserted against a nil UUID rather than as
+    // "not equal to something", because the service reads a non-nil operation id as one it has already admitted.
+    const auto nil = product::Uuid::parse("00000000-0000-0000-0000-000000000000");
+    REQUIRE(nil.ok());
+    REQUIRE(frame.value().operation_id == nil.value());
 }

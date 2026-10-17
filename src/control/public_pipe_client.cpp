@@ -15,6 +15,48 @@ Result<T> client_error(const wchar_t* message) {
         L"public_pipe_client.request", message});
 }
 
+// **One command in, one frame out -- the step that did not exist, and that nothing could work without.**
+//
+// The pieces were all present but never joined: the codec turns a command into a command id plus a payload,
+// and a frame carries a command id plus a payload, so a client needed exactly one assignment between them and
+// nothing performed it.  Every other client concern -- connecting, sending, decoding the answer, mapping
+// errors to exit codes -- is work on top of this, and none of it was reachable without it.
+//
+// Three properties are worth stating because the assignment alone does not convey them.
+//
+// The `request_id` is supplied by the caller rather than minted here.  A client that retried would need the
+// same id twice to be recognised as the same request, and a builder that generated its own would make that
+// impossible without reaching back into the frame.
+//
+// The control bits come only from the two flags, because the service rejects any other bit.
+//
+// `operation_id` stays nil on purpose.  An operation id belongs to an operation the service has already
+// admitted, so a client has none -- and a non-nil value would be claiming something the client does not own.
+Result<Frame> build_command_request_impl(const control::Command& command,
+                                         const product::Uuid& request_id,
+                                         bool no_wait, bool dry_run) {
+    auto encoded = encode_command_payload(command);
+    if (!encoded) return Result<Frame>::failure(encoded.error());
+    // A nil operation id, obtained the only way the type allows: `Uuid` keeps its default constructor private
+    // and offers only parse and random, so "no operation" is expressed explicitly rather than by leaving a
+    // field unset.  That is the type enforcing the claim made above -- a client cannot accidentally ship a
+    // made-up operation id, and it cannot ship an uninitialised one either.
+    auto no_operation = product::Uuid::parse("00000000-0000-0000-0000-000000000000");
+    if (!no_operation) return Result<Frame>::failure(no_operation.error());
+    std::uint32_t flags = 0;
+    if (no_wait) flags |= kFrameFlagNoWait;
+    if (dry_run) flags |= kFrameFlagDryRun;
+    Frame frame{kProtocolMajor,
+                kProtocolMinor,
+                MessageType::request,
+                flags,
+                request_id,
+                no_operation.value(),
+                static_cast<std::uint32_t>(encoded.value().command_id),
+                std::move(encoded.value().payload)};
+    return Result<Frame>::success(std::move(frame));
+}
+
 class GateCompletion final {
 public:
     explicit GateCompletion(InFlightGate& gate) noexcept : gate_(gate) {}
@@ -29,6 +71,12 @@ private:
 PublicPipeClient::PublicPipeClient(
     std::unique_ptr<PipeTransport> transport) noexcept
     : transport_(std::move(transport)) {}
+
+Result<Frame> PublicPipeClient::build_command_request(const control::Command& command,
+                                                      const product::Uuid& request_id,
+                                                      bool no_wait, bool dry_run) {
+    return build_command_request_impl(command, request_id, no_wait, dry_run);
+}
 
 Result<std::unique_ptr<PublicPipeClient>> PublicPipeClient::connect(
     const OperationContext& context,
