@@ -185,21 +185,24 @@ public:
     // Recovery is attach-only: enumerate existing volumes and adopt exactly
     // one candidate mounted at drive_letter.
     //
-    // **`disk_number` is optional, and absent is the normal case now.**  It used to be
-    // required, which forced every recovery and reclaim to learn which physical drive the
-    // AIM device had become -- and the only way to learn that was to open every candidate
-    // disk, which blocks for about eleven seconds when a device is retiring.
+    // **`expected_guid` is the durable identity, and it is what actually disambiguates.**
     //
-    // Passing `nullopt` drops that one filter and keeps every other one: foreign mounts and
-    // occupied letters are still skipped, the letter must match, the volume must be mounted
-    // (for the recovery call), its GUID must be non-empty and it must have exactly one extent.
-    // Owning the volume is established afterwards by `verify_volume`, which compares the GUID
-    // against the durable profile -- a stronger identity than a drive number, which Windows
-    // reuses.  So the drive-number filter was redundant belt-and-braces, and it was the
-    // expensive strap.
+    // Two defects made it necessary.  `enumerate_native_volumes` stamps every volume with the
+    // *requested* drive letter, so the letter filter in `select_volume_for_disk` rejects nothing; and
+    // `verify_volume` compares the volume against the GUID `find` just returned, which came off the same
+    // volume, so it never consults the durable record.  Together they meant the physical-disk number was
+    // the only real discriminator, and that number is what we removed.
+    //
+    // A GUID is the right replacement: Windows reuses drive numbers, it does not reuse volume GUIDs, and
+    // unlike a letter it survives the volume being unmounted -- which recovery after power loss must
+    // handle.
+    //
+    // Absent means "not known here" -- the foreground `myrd run` path has no durable profile.  Then the
+    // previous behaviour stands and the caller accepts that ambiguity is possible.
     [[nodiscard]] Result<ProductVolume> find_recovered_volume(
         std::optional<std::uint32_t> disk_number, wchar_t drive_letter,
-        std::wstring owner_token) const;
+        std::wstring owner_token,
+        std::optional<std::wstring> expected_guid = std::nullopt) const;
     [[nodiscard]] Result<VolumeObservation> observe(const ProductVolume& expected) const;
     [[nodiscard]] Result<void> flush(const ProductVolume& owned) const;
     [[nodiscard]] Result<VolumeLockAttempt> lock(

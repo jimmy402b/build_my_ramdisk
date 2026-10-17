@@ -605,17 +605,45 @@ Result<ProductVolume> Win32VolumeAdapter::provision_and_adopt_volume(
 
 Result<ProductVolume> Win32VolumeAdapter::find_recovered_volume(
     std::optional<std::uint32_t> disk_number, wchar_t drive_letter,
-    std::wstring owner_token) const {
+    std::wstring owner_token,
+    std::optional<std::wstring> expected_guid) const {
 #ifdef _WIN32
     auto volumes = enumerate_native_volumes(drive_letter);
     if (!volumes.ok()) return Result<ProductVolume>::failure(volumes.error());
+    // **Filter by the durable GUID before selecting, because the letter filter cannot.**
+    //
+    // `enumerate_native_volumes` stamps every volume with the requested letter, so at this point the
+    // list contains every volume on the machine and all of them claim this letter.  Narrowing by GUID
+    // first is what makes the choice unambiguous without asking for a physical drive number.
+    if (expected_guid.has_value() && !expected_guid->empty()) {
+        auto same_guid = [](std::wstring left, const std::wstring& right) {
+            while (!left.empty() && left.back() == L'\\') left.pop_back();
+            std::wstring expected = right;
+            while (!expected.empty() && expected.back() == L'\\') expected.pop_back();
+            return _wcsicmp(left.c_str(), expected.c_str()) == 0;
+        };
+        std::vector<VolumeObservation> matched;
+        for (auto& observation : volumes.value()) {
+            if (same_guid(observation.volume.volume_guid, *expected_guid))
+                matched.push_back(std::move(observation));
+        }
+        if (matched.empty()) {
+            return Result<ProductVolume>::failure(
+                failure(VolumeError::not_found, L"find_recovered_volume",
+                        L"no volume carries the recorded identity",
+                        ERROR_NOT_FOUND));
+        }
+        // No disk filter either: the GUID has already decided.
+        return select_volume_for_disk(matched, std::nullopt, drive_letter,
+                                      std::move(owner_token), false);
+    }
     // Recovery may observe the volume unmounted after a crash or power loss.
     // The caller owns the subsequent drive-letter assignment; requiring a
     // pre-existing mount here would make valid recovery impossible.
     return select_volume_for_disk(volumes.value(), disk_number, drive_letter,
                                   std::move(owner_token), false);
 #else
-    (void)disk_number; (void)drive_letter; (void)owner_token;
+    (void)disk_number; (void)drive_letter; (void)owner_token; (void)expected_guid;
     return Result<ProductVolume>::failure(failure(VolumeError::platform_error,
         L"find_recovered_volume", L"Win32 volume adapter unavailable"));
 #endif

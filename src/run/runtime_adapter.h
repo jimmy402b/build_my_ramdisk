@@ -159,6 +159,21 @@ public:
         //
         // Declared last, like `image_uuid` above, so existing aggregate initializers keep their meaning.
         bool attach_only{};
+
+        // **The durable volume identity, when the caller has one.**
+        //
+        // The M5 worker launches from a durable profile that records the volume this bundle belongs to;
+        // the foreground `myrd run` path has no such record and leaves this empty.
+        //
+        // It exists because two defects made the alternatives unusable.  `enumerate_native_volumes`
+        // stamps every volume with the requested drive letter, so selecting by letter rejects nothing;
+        // and comparing against the GUID that `find` just returned only proves the volume was not swapped
+        // in between, because that GUID came off the same volume.  The physical-disk number was therefore
+        // the only real discriminator, and it was removed because obtaining it blocks for eleven seconds.
+        //
+        // A GUID is the right replacement: Windows reuses drive numbers and does not reuse volume GUIDs,
+        // and it survives the volume being unmounted, which recovery after power loss must handle.
+        std::optional<std::wstring> expected_volume_guid;
     };
 
     explicit ProductionRuntimeAdapter(Config config);

@@ -412,8 +412,10 @@ Result<ProductVolume> ProductionRuntimeAdapter::find(const wchar_t letter) {
     // `verify_volume` immediately afterwards compares the volume's GUID against the durable profile -- a
     // stronger identity than a drive number, which Windows reuses.  Passing `nullopt` keeps every other
     // filter in `select_volume_for_disk` and drops only the one that was expensive to satisfy.
+    // The durable identity, when this adapter has one, is what narrows the candidates: see the field's
+    // declaration for why the letter filter does not.
     return impl_->volume_adapter.find_recovered_volume(
-        std::nullopt, letter, impl_->owner_token);
+        std::nullopt, letter, impl_->owner_token, config_.expected_volume_guid);
 }
 
 Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
@@ -431,7 +433,16 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
         return value;
     };
     const auto actual_guid = normalized_guid(actual.volume_guid);
-    const auto expected_guid = normalized_guid(volume.volume_guid);
+    // **Against the durable record when there is one, against the adopted volume otherwise.**
+    //
+    // The second case is weaker and says so: the adopted volume's GUID came off the same volume during
+    // enumeration, so comparing against it only proves the volume was not swapped between find and
+    // verify.  The first case is the real identity check -- it asks whether this is the volume the
+    // profile recorded, which is the question that matters after a power loss.
+    const auto expected_guid = normalized_guid(
+        config_.expected_volume_guid.has_value() && !config_.expected_volume_guid->empty()
+            ? *config_.expected_volume_guid
+            : volume.volume_guid);
     const auto extent_bytes =
         actual.extents.empty() ? 0ULL : actual.extents.front().length_bytes;
     constexpr std::uint64_t kPartitionOverheadAllowance = 2ULL * 1024ULL * 1024ULL;
