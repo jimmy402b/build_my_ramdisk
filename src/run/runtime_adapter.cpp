@@ -306,8 +306,22 @@ Result<std::uint32_t> ProductionRuntimeAdapter::aim_disk_number(
         return Result<std::uint32_t>::failure(adapter_error(
             ErrorDomain::internal, 1, operation, L"M3 runtime is unavailable"));
     }
+    // **Refuses rather than reporting a zero, and the only caller is the create path.**
+    //
+    // An attach-only runtime never locates the disk, so it has no number to give.  Returning the
+    // default-constructed value would announce "physical drive 0" -- wrong, and indistinguishable from
+    // the truth on a single-disk machine, which is the worst property for a number that decides where a
+    // volume gets provisioned.
+    //
+    // Reaching this with no disk means a create was wired up as attach-only, which is a composition bug
+    // and should say so rather than provision on the wrong disk.
+    if (!impl_->aim_runtime->info().disk.has_value()) {
+        return Result<std::uint32_t>::failure(adapter_error(
+            ErrorDomain::internal, 2, operation,
+            L"the runtime did not locate a physical drive, so it cannot name the disk to act on"));
+    }
     return Result<std::uint32_t>::success(
-        impl_->aim_runtime->info().disk.physical_drive_number);
+        impl_->aim_runtime->info().disk->physical_drive_number);
 }
 
 Result<void> ProductionRuntimeAdapter::create_generation_zero(
@@ -349,6 +363,9 @@ Result<void> ProductionRuntimeAdapter::start() {
         persistence::production_persistence_limits(config_.virtual_bytes);
     factory.provider.store = store_options_for(impl_->ram_limit_bytes);
     factory.provider.request_timeout = std::chrono::seconds(30);
+    // Attach-only runtimes do not locate the physical drive: see the field's declaration for why that
+    // is the fix for the eleven-second block rather than an optimization.
+    factory.attach_only = config_.attach_only;
 
     auto created = m3::M3AimRuntime::create(std::move(factory));
     if (!created.ok()) return Result<void>::failure(created.error());
@@ -385,10 +402,18 @@ Result<ProductVolume> ProductionRuntimeAdapter::provision(const std::uint64_t,
 }
 
 Result<ProductVolume> ProductionRuntimeAdapter::find(const wchar_t letter) {
-    const auto disk = aim_disk_number(L"find_recovered_volume");
-    if (!disk.ok()) return Result<ProductVolume>::failure(disk.error());
-    return impl_->volume_adapter.find_recovered_volume(disk.value(), letter,
-                                                       impl_->owner_token);
+    // **No drive number is obtained, and that is the fix rather than an omission.**
+    //
+    // This used to call `aim_disk_number`, which reached the physical-drive locator, which opened every
+    // candidate disk to read its SCSI address and device number.  Measured: one of those opens took 11017
+    // ms while a device was retiring -- the eleven-second block that made reclaim fail.
+    //
+    // The number was never this call's identity check.  It only filtered which volume to adopt, and
+    // `verify_volume` immediately afterwards compares the volume's GUID against the durable profile -- a
+    // stronger identity than a drive number, which Windows reuses.  Passing `nullopt` keeps every other
+    // filter in `select_volume_for_disk` and drops only the one that was expensive to satisfy.
+    return impl_->volume_adapter.find_recovered_volume(
+        std::nullopt, letter, impl_->owner_token);
 }
 
 Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
@@ -410,18 +435,26 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
     const auto extent_bytes =
         actual.extents.empty() ? 0ULL : actual.extents.front().length_bytes;
     constexpr std::uint64_t kPartitionOverheadAllowance = 2ULL * 1024ULL * 1024ULL;
+    // **The physical-disk clause is gone, and the GUID clause is what makes that sound.**
+    //
+    // It compared the volume's disk number against the AIM device's, which required knowing which
+    // physical drive the device had become -- the value whose only source is opening every candidate
+    // disk, measured blocking for 11 seconds while a device retires.
+    //
+    // What it was standing in for is already here twice: `actual_guid` must equal the GUID carried by
+    // the `ProductVolume` this runtime adopted, and that GUID came from the durable profile.  A GUID is
+    // a stronger identifier than a drive number, which Windows reuses after a disk is removed.  The
+    // extent and ownership clauses are unchanged, so a volume that is not ours still fails -- it simply
+    // fails on the identity that cannot collide instead of the one that can.
     if (!actual.operation_owned ||
         actual.extents.size() != 1 ||
         extent_bytes == 0 || extent_bytes > expected_bytes ||
         expected_bytes - extent_bytes > kPartitionOverheadAllowance ||
-        actual.extents.front().disk_number !=
-            impl_->aim_runtime->info().disk.physical_drive_number ||
         _wcsicmp(actual_guid.c_str(), expected_guid.c_str()) != 0 ||
         actual.extents != volume.extents) {
         std::wcerr << L"Diagnostic verify_volume: volume_guid="
-                   << actual.volume_guid << L" aim_disk="
-                   << impl_->aim_runtime->info().disk.physical_drive_number
-                   << L" actual_disk="
+                   << actual.volume_guid << L" expected_guid="
+                   << volume.volume_guid << L" actual_disk="
                    << (actual.extents.empty() ? 0xFFFFFFFFu :
                        actual.extents.front().disk_number)
                    << L" expected_disk="
@@ -429,7 +462,7 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
                        volume.extents.front().disk_number) << L"\n";
         return Result<void>::failure(adapter_error(
             ErrorDomain::evidence, 1, L"verify_volume",
-            L"Windows volume identity does not match the AIM disk"));
+            L"Windows volume identity does not match the adopted volume"));
     }
     return Result<void>::success();
 }

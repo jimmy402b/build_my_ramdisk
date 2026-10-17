@@ -604,7 +604,7 @@ Result<ProductVolume> Win32VolumeAdapter::provision_and_adopt_volume(
 }
 
 Result<ProductVolume> Win32VolumeAdapter::find_recovered_volume(
-    std::uint32_t disk_number, wchar_t drive_letter,
+    std::optional<std::uint32_t> disk_number, wchar_t drive_letter,
     std::wstring owner_token) const {
 #ifdef _WIN32
     auto volumes = enumerate_native_volumes(drive_letter);
@@ -1099,7 +1099,7 @@ Result<ProductVolume> find_recovered_volume(
 
 Result<ProductVolume> select_volume_for_disk(
     std::span<const VolumeObservation> observations,
-    std::uint32_t disk_number, wchar_t drive_letter,
+    std::optional<std::uint32_t> disk_number, wchar_t drive_letter,
     std::wstring owner_token, bool require_mounted) {
     if (!valid_letter(drive_letter)) {
         return Result<ProductVolume>::failure(
@@ -1113,13 +1113,22 @@ Result<ProductVolume> select_volume_for_disk(
             continue;
         if (candidate.drive_letter != drive_letter ||
             (require_mounted && !candidate.mounted) || candidate.volume_guid.empty() ||
-            candidate.extents.size() != 1 ||
-            candidate.extents.front().disk_number != disk_number)
+            candidate.extents.size() != 1)
+            continue;
+        // **The physical-disk filter is skipped when no disk number is given.**
+        //
+        // Recovery and reclaim pass `nullopt`, because obtaining the number meant opening every
+        // candidate disk -- measured blocking for 11 seconds while a device was retiring.  What still
+        // identifies the volume is everything above plus `verify_volume`'s GUID comparison against the
+        // durable profile, which is the stronger check anyway: Windows reuses a drive number, and does
+        // not reuse a volume GUID.
+        if (disk_number.has_value() &&
+            candidate.extents.front().disk_number != *disk_number)
             continue;
         if (selected.has_value()) {
             return Result<ProductVolume>::failure(
                 failure(VolumeError::ownership_mismatch, L"select_volume_for_disk",
-                        L"multiple volumes match the requested physical disk"));
+                        L"multiple volumes match the requested drive letter"));
         }
         ProductVolume adopted = candidate;
         adopted.owner_token = owner_token;

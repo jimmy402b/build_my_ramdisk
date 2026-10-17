@@ -148,6 +148,17 @@ public:
         // existing aggregate initializer keeps its meaning; the foreground M4
         // path leaves it absent and keeps generating a random one.
         std::optional<persistence::ImageUuid> image_uuid;
+
+        // **True when this adapter will attach to an existing volume rather than create one.**
+        //
+        // Set for `recover` and `reclaim`, left false for `create`.  It decides whether the M3 runtime
+        // locates the physical drive at all, and that decision is what removes an eleven-second block:
+        // locating the drive opens every candidate disk, and one such open was measured at 11017 ms while
+        // a device was retiring.  A create still needs the drive number, because it provisions the volume
+        // on that disk; an attach-only runtime finds the volume by letter and proves ownership by GUID.
+        //
+        // Declared last, like `image_uuid` above, so existing aggregate initializers keep their meaning.
+        bool attach_only{};
     };
 
     explicit ProductionRuntimeAdapter(Config config);

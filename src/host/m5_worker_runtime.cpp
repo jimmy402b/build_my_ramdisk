@@ -310,7 +310,10 @@ Result<void> DiskWorkerRuntime::start() {
         ProductionRuntimeAdapter::Config{
             impl.config.bundle, impl.config.virtual_bytes,
             impl.config.drive_letter, impl.config.owner_token, 0,
-            impl.config.image_id});
+            impl.config.image_id,
+            // Only a provision creates a volume.  Recover and reclaim attach to one that already exists,
+            // so neither needs the physical drive located -- and locating it is what blocked.
+            impl.config.volume_mode != WorkerVolumeMode::provision_new});
     RuntimeAdapterDependencies dependencies{
         impl.config.bundle,
         impl.config.virtual_bytes,

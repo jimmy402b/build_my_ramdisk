@@ -25,6 +25,17 @@ DynamicBlockStoreOptions production_store_options() noexcept;
 struct M3AimProviderFactoryConfig final {
     OperationContext context{};
     M3ProviderConfig provider{};
+
+    // **Set when this runtime attaches to a volume that already exists rather than creating one.**
+    //
+    // True for `recover` and `reclaim`, false for `create`.  It exists because those two do not need to
+    // know which physical drive the AIM device became, and obtaining that knowledge is what blocked:
+    // `wait_for_present_physical_drive` opened every candidate disk, and one of those opens took 11017 ms
+    // while a device was retiring.
+    //
+    // A create still needs the number -- it provisions the volume on that disk -- so the flag only
+    // governs the attach-only case.
+    bool attach_only{};
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     M3ProviderFactories test_factories{};
 #endif
@@ -45,7 +56,16 @@ private:
 
 struct M3AimRuntimeInfo final {
     aim::DeviceId device_id{};
-    aim::LocatedDisk disk{};
+    // **Optional because an attach-only runtime never locates the disk.**
+    //
+    // `recover` and `reclaim` skip the physical-drive wait: it only produced this value, and after the
+    // drive-number checks were removed from find and verify, nothing on those paths consumes it.  A
+    // default-constructed `LocatedDisk` would mean *physical drive 0*, which is a real disk and a false
+    // claim, so absence is expressed rather than defaulted.
+    //
+    // Callers that need the number -- only the create path, which provisions the volume on that disk --
+    // must handle its absence instead of reading a zero.
+    std::optional<aim::LocatedDisk> disk{};
     std::uint64_t virtual_bytes{};
     std::uint32_t sector_size{};
     std::wstring native_object_path;

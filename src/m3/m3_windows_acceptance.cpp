@@ -361,22 +361,30 @@ Result<void> M3AimRuntime::start() {
             L"AIM QUERY_DEVICE identity did not match M3 provider"});
     }
 
-    diagnostic_trace("M3AimRuntime::start: wait for physical drive");
-    // **One way now, because the baseline is gone and the identity was always what did the work.**
+    // **Attach-only runtimes skip this wait, and skipping it is what removes the eleven-second block.**
     //
-    // The two waits differed only in whether candidates that already existed were skipped, and that
-    // filter needed a baseline -- the whole-machine enumeration removed just above.  The identity the
-    // match actually turns on is the device's SCSI path, target and LUN plus its expected length, and
-    // that is the same for a device this runtime created and one it adopted.  So both cases use it.
-    auto located = aim::wait_for_present_physical_drive(
-        *owned_device_, geometry.virtual_bytes, device_timeout_);
-    if (!located) {
-        (void)remove_owned_device();
-        (void)stop_provider();
-        return Result<void>::failure(located.error());
+    // The wait exists to learn which physical drive this AIM device became, so `info_.disk` can carry it.
+    // It does that by opening every candidate disk, and one of those opens was measured at 11017 ms while
+    // a device was retiring -- precisely the situation a reclaim is in.
+    //
+    // A create genuinely needs the number: it provisions the volume on that disk.  But `recover` and
+    // `reclaim` attach to a volume that already exists, find it by drive letter, and establish ownership
+    // by comparing its GUID against the durable profile.  None of that needs a drive number, so none of it
+    // should pay for one.
+    //
+    // `info_.disk` therefore stays empty on those paths, which is why it is an optional.
+    if (!config_.attach_only) {
+        diagnostic_trace("M3AimRuntime::start: wait for physical drive");
+        auto located = aim::wait_for_present_physical_drive(
+            *owned_device_, geometry.virtual_bytes, device_timeout_);
+        if (!located) {
+            (void)remove_owned_device();
+            (void)stop_provider();
+            return Result<void>::failure(located.error());
+        }
+        info_.disk = located.move_value();
     }
     info_.device_id = *owned_device_;
-    info_.disk = located.move_value();
     info_.virtual_bytes = geometry.virtual_bytes;
     info_.sector_size = geometry.logical_sector_size;
     info_.native_object_path = queried.value().native_object_path;

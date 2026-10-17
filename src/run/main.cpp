@@ -125,7 +125,14 @@ int run_product(const RunOptions& options) {
     ProductionRuntimeAdapter adapter(ProductionRuntimeAdapter::Config{
         options.bundle, options.virtual_bytes, options.drive_letter,
         L"myrd:" + std::to_wstring(GetCurrentProcessId()),
-        options.ram_limit_bytes});
+        options.ram_limit_bytes,
+        // The foreground path derives its identity as before.
+        std::nullopt,
+        // A non-empty bundle is recovered, never provisioned, so it attaches to the volume that already
+        // exists.  Stating that here is what lets the M3 runtime skip locating the physical drive -- which
+        // it would otherwise do by opening every candidate disk, measured blocking for 11 seconds while a
+        // device retires.  An empty bundle is a create and still needs the drive number.
+        bundle_kind.value() != DiskBundleKind::empty});
     RuntimeAdapterDependencies dependencies{
         options.bundle,
         options.virtual_bytes,

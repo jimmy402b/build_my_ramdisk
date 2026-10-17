@@ -183,9 +183,22 @@ public:
         std::uint32_t disk_number, wchar_t drive_letter,
         std::wstring owner_token, std::uint32_t timeout_ms) const;
     // Recovery is attach-only: enumerate existing volumes and adopt exactly
-    // one candidate backed by disk_number and mounted at drive_letter.
+    // one candidate mounted at drive_letter.
+    //
+    // **`disk_number` is optional, and absent is the normal case now.**  It used to be
+    // required, which forced every recovery and reclaim to learn which physical drive the
+    // AIM device had become -- and the only way to learn that was to open every candidate
+    // disk, which blocks for about eleven seconds when a device is retiring.
+    //
+    // Passing `nullopt` drops that one filter and keeps every other one: foreign mounts and
+    // occupied letters are still skipped, the letter must match, the volume must be mounted
+    // (for the recovery call), its GUID must be non-empty and it must have exactly one extent.
+    // Owning the volume is established afterwards by `verify_volume`, which compares the GUID
+    // against the durable profile -- a stronger identity than a drive number, which Windows
+    // reuses.  So the drive-number filter was redundant belt-and-braces, and it was the
+    // expensive strap.
     [[nodiscard]] Result<ProductVolume> find_recovered_volume(
-        std::uint32_t disk_number, wchar_t drive_letter,
+        std::optional<std::uint32_t> disk_number, wchar_t drive_letter,
         std::wstring owner_token) const;
     [[nodiscard]] Result<VolumeObservation> observe(const ProductVolume& expected) const;
     [[nodiscard]] Result<void> flush(const ProductVolume& owned) const;
@@ -216,11 +229,16 @@ Result<ProductVolume> find_recovered_volume(
     const ProductVolume& expected);
 
 // Deterministic selection seam for the native bridge.  Candidates must have
-// one exact extent on disk_number and the requested drive-letter ownership;
-// zero or ambiguous candidates fail closed.
+// one exact extent on disk_number -- when one is given -- and the requested
+// drive-letter ownership; zero or ambiguous candidates fail closed.
+//
+// `nullopt` for `disk_number` means "do not filter by physical disk", which is
+// what recovery and reclaim now pass: see `find_recovered_volume` above for why
+// the drive number is no longer worth obtaining, and what still identifies the
+// volume without it.
 Result<ProductVolume> select_volume_for_disk(
     std::span<const VolumeObservation> observations,
-    std::uint32_t disk_number, wchar_t drive_letter,
+    std::optional<std::uint32_t> disk_number, wchar_t drive_letter,
     std::wstring owner_token, bool require_mounted);
 
 Result<void> flush_volume(
