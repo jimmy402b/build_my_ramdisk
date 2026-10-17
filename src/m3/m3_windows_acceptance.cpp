@@ -457,6 +457,85 @@ Result<void> M3AimRuntime::start() {
             return Result<void>::failure(located.error());
         }
         info_.disk = located.move_value();
+        // **Read the disk's head, so a later provisioning failure can say who wrote what is on it.**
+        //
+        // This exists to settle one question with a reading instead of an argument: a freshly created proxy
+        // disk is measurably not empty, it carries a real MBR and an EFI PART signature, and every attempt to
+        // explain that from outside has been refuted -- the device is new, nothing was present before creation,
+        // the located disk is the created one, the bundle is new and the shared memory is zeroed on creation.
+        //
+        // Comparing this read for a create that provisions successfully against one that fails says whether
+        // the difference is in what the medium returned or in what happened afterwards.  Read-only, bounded,
+        // and it only opens the disk this runtime just created.
+        {
+            wchar_t path[64]{};
+            (void)_snwprintf_s(path, _TRUNCATE, L"\\\\.\\PhysicalDrive%u",
+                               info_.disk->physical_drive_number);
+            HANDLE head = CreateFileW(path, GENERIC_READ,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                      OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+            char head_line[256]{};
+            if (head == INVALID_HANDLE_VALUE) {
+                (void)_snprintf_s(head_line, _TRUNCATE,
+                                  "M3AimRuntime::start: disk head unreadable, error %lu",
+                                  GetLastError());
+            } else {
+                std::array<std::byte, 1024> buffer{};
+                // Overlapped with an explicit wait, not a bare synchronous read and not a fire-and-forget
+                // one.  A synchronous read here could block on a disk that is not answering -- which is the
+                // very failure being investigated -- and a read whose completion nobody waits for would
+                // report whatever happened to be in the buffer, which would be worse than no reading at all.
+                HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                OVERLAPPED overlapped{};
+                overlapped.Offset = 0;
+                overlapped.OffsetHigh = 0;
+                overlapped.hEvent = done;
+                DWORD read = 0;
+                BOOL ok = ReadFile(head, buffer.data(),
+                                   static_cast<DWORD>(buffer.size()), &read,
+                                   &overlapped);
+                DWORD read_error = 0;
+                if (!ok && GetLastError() == ERROR_IO_PENDING) {
+                    if (done != nullptr &&
+                        WaitForSingleObject(done, 5000) == WAIT_OBJECT_0)
+                        ok = GetOverlappedResult(head, &overlapped, &read, FALSE);
+                    else
+                        read_error = ERROR_TIMEOUT;
+                }
+                if (!ok && read_error == 0) read_error = GetLastError();
+                if (done != nullptr) CloseHandle(done);
+                CloseHandle(head);
+                if (!ok) {
+                    (void)_snprintf_s(head_line, _TRUNCATE,
+                                      "M3AimRuntime::start: disk head read failed, error %lu",
+                                      read_error);
+                } else {
+                    std::size_t used = 0;
+                    for (std::size_t at = 0; at < 8 && at < read; ++at) {
+                        const int written = _snprintf_s(
+                            head_line + used, sizeof(head_line) - used, _TRUNCATE, "%02x",
+                            static_cast<unsigned>(
+                                std::to_integer<unsigned>(buffer[at])));
+                        if (written <= 0) break;
+                        used += static_cast<std::size_t>(written);
+                    }
+                    bool nonzero = false;
+                    for (std::size_t at = 0; at < read; ++at) {
+                        if (buffer[at] != std::byte{0}) { nonzero = true; break; }
+                    }
+                    (void)_snprintf_s(head_line + used, sizeof(head_line) - used, _TRUNCATE,
+                                      " nonzero=%s read=%lu", nonzero ? "yes" : "no",
+                                      static_cast<unsigned long>(read));
+                    char full[320]{};
+                    (void)_snprintf_s(full, _TRUNCATE,
+                                      "M3AimRuntime::start: disk #%u head=%s",
+                                      info_.disk->physical_drive_number, head_line);
+                    diagnostic_trace(full);
+                    head_line[0] = '\0';
+                }
+            }
+            if (head_line[0] != '\0') diagnostic_trace(head_line);
+        }
     }
     info_.device_id = *owned_device_;
     info_.virtual_bytes = geometry.virtual_bytes;
