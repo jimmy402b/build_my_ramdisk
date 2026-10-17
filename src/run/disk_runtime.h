@@ -125,6 +125,35 @@ struct DiskRuntimeOptions final {
 // T06 deliberately exposes callbacks instead of production objects.  This
 // keeps lifecycle tests deterministic and lets T07 adapt the already accepted
 // M3 and Windows-volume implementations without changing their contracts.
+//
+// ── What every implementer owes this contract ────────────────────────────────
+//
+// **Each callback must be answerable to three questions, and until now none of them was written down:**
+//
+//   1. **What does it cost, at worst?**  Milliseconds, or unbounded?
+//   2. **When may it be called?**  Is there a state the machine must not be in?
+//   3. **What does the runtime do with the failure?**  Retry, park, or tear down?
+//
+// **This is not documentation for its own sake.**  The worst defect this increment produced was a callback
+// that answered (1) with "about 2500 microseconds" on an idle machine and with "over eleven seconds" while a
+// device was retiring -- and nothing in the contract said a caller had to care.  The same read also showed
+// that a bound placed by the caller is useless when the callee can block inside a single call: the budget
+// bounded how many times a loop turned, not how long one turn took.
+//
+// So the convention is:
+//
+//   - **Bounded** callbacks may be called from any lifecycle step; their cost is expected to be small and
+//     independent of machine state.
+//   - **Unbounded** callbacks may block indefinitely and must be documented as such.  A caller that has a
+//     deadline must not assume it can enforce one, and a caller in a teardown path must prefer an
+//     alternative that does not require them.
+//   - **State-sensitive** callbacks are only sound in a particular state -- typically "no device is being
+//     removed" -- and the caller is responsible for arranging that.
+//   - **Ownership** is stated explicitly: which callback establishes it, and which callbacks may destroy
+//     what without it.
+//
+// Comments below mark the callbacks where one of these is not obvious.  The ones left unmarked are bounded,
+// state-insensitive and do not touch a device.
 struct DiskRuntimeOperations final {
     std::function<Result<void>()> preflight;
     std::function<Result<DiskBundleKind>(const std::filesystem::path&)>
@@ -134,11 +163,35 @@ struct DiskRuntimeOperations final {
 
     std::function<Result<void>(std::uint64_t)> create_generation_zero_image;
     std::function<Result<void>(std::uint64_t)> recover_complete_image;
+    // **UNBOUNDED and STATE-SENSITIVE historically; now bounded only because the caller arranged it.**
+    //
+    // Bringing AIM up used to locate the physical drive the new device became, by opening every candidate
+    // disk.  Measured: about 2500 microseconds while the machine was idle, and one open at 11017 ms while a
+    // device was retiring.  That is the difference between "fast" and "cannot be given up", and it is why the
+    // attach-only paths now skip the lookup entirely rather than trusting a deadline.
+    //
+    // Contract for implementers: if locating a disk is unavoidable, say so here, and state what machine
+    // state makes it unsafe.  A caller with a deadline cannot enforce one against a call that blocks inside.
     std::function<Result<void>()> start_aim;
     std::function<Result<void>()> stop_aim;
 
     std::function<Result<ProductVolume>(std::uint64_t, wchar_t)>
         provision_new_volume;
+    // **Selects a volume for adoption.  Bounded, but the selection must be identity-based.**
+    //
+    // Two things about it were learned the hard way and belong in the contract rather than in one
+    // implementation's head:
+    //
+    //   1. **A drive letter is not an identity.**  The enumerator stamps every volume with the letter it was
+    //      asked about, so a letter test alone rejects nothing and a caller can end up choosing among volumes
+    //      that merely exist.  Selection has to narrow on something that cannot collide -- a recorded volume
+    //      GUID, or the fact that the volume is actually mounted at that letter.
+    //   2. **The durable record, when one exists, must be the expectation.**  Comparing the found volume
+    //      against itself proves only that it did not change in between, which is not the question that
+    //      matters after a power loss.
+    //
+    // Implementations must therefore accept an expected identity when the caller has one, and must fail
+    // closed when several candidates match and nothing distinguishes them.
     std::function<Result<ProductVolume>(wchar_t)> find_recovered_volume;
     std::function<Result<void>(const ProductVolume&, std::uint64_t)>
         verify_volume;
