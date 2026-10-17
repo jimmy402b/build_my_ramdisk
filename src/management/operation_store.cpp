@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string_view>
 
 namespace myrd::management {
@@ -788,9 +789,9 @@ Result<void> persistence_error(const Error& source) {
         source.native_code});
 }
 
-std::shared_ptr<std::mutex> shared_operation_gate(std::wstring key) {
+std::shared_ptr<std::shared_mutex> shared_operation_gate(std::wstring key) {
     static std::mutex registry_mutex;
-    static std::map<std::wstring, std::weak_ptr<std::mutex>, std::less<>> registry;
+    static std::map<std::wstring, std::weak_ptr<std::shared_mutex>, std::less<>> registry;
     std::transform(key.begin(), key.end(), key.begin(), [](wchar_t value) {
         return static_cast<wchar_t>(std::towlower(value));
     });
@@ -799,7 +800,7 @@ std::shared_ptr<std::mutex> shared_operation_gate(std::wstring key) {
         if (auto existing = found->second.lock()) return existing;
         registry.erase(found);
     }
-    auto created = std::make_shared<std::mutex>();
+    auto created = std::make_shared<std::shared_mutex>();
     registry.emplace(std::move(key), created);
     for (auto iterator = registry.begin(); iterator != registry.end();) {
         if (iterator->second.expired()) {
@@ -816,14 +817,14 @@ std::shared_ptr<std::mutex> shared_operation_gate(std::wstring key) {
 struct OperationStore::Impl final {
     Impl(std::unique_ptr<profile::IAtomicFileDirectory> directory_value,
          OperationStorePaths paths_value,
-         std::shared_ptr<std::mutex> gate_value)
+         std::shared_ptr<std::shared_mutex> gate_value)
         : directory(std::move(directory_value)),
           paths(std::move(paths_value)),
           gate(std::move(gate_value)) {}
 
     std::unique_ptr<profile::IAtomicFileDirectory> directory;
     OperationStorePaths paths;
-    std::shared_ptr<std::mutex> gate;
+    std::shared_ptr<std::shared_mutex> gate;
     std::map<std::wstring, product::Uuid, std::less<>> request_index;
 };
 
@@ -962,7 +963,9 @@ const OperationStorePaths& OperationStore::paths() const noexcept {
 Result<OperationRecord> OperationStore::load_record(
     const product::Uuid& operation_id) {
     try {
-        std::scoped_lock lock(*impl_->gate);
+        // A query: shared, so it does not queue behind another query and only waits for a writer that is
+        // actually in progress.  See `shared_operation_gate` for why the gate is a reader-writer one.
+        std::shared_lock lock(*impl_->gate);
         return load_record_locked(operation_id);
     } catch (...) {
         return operation_error<OperationRecord>(
@@ -1173,7 +1176,12 @@ Result<std::vector<OperationRecord>> OperationStore::list_records_locked() {
 
 Result<std::vector<OperationRecord>> OperationStore::list_records() {
     try {
-        std::scoped_lock lock(*impl_->gate);
+        // **The query the read/write separation requirement is really about.**
+        //
+        // Listing has to answer in about a second even while a create is in progress, so it must not hold the
+        // gate the way a mutation does.  Taken shared, it proceeds alongside other queries and waits only for
+        // a writer that is mid-record, which is bounded by construction.
+        std::shared_lock lock(*impl_->gate);
         return list_records_locked();
     } catch (...) {
         return operation_error<std::vector<OperationRecord>>(
@@ -1269,7 +1277,9 @@ Result<std::optional<OperationRecord>> OperationStore::find_request(
                 L"operation_store.find_request",
                 L"Operation request is invalid");
         }
-        std::scoped_lock lock(*impl_->gate);
+        // A query like `list_records`, and shared for the same reason: idempotency lookups must not queue
+        // behind a mutation that happens to be in progress on the same profile.
+        std::shared_lock lock(*impl_->gate);
         return find_request_locked(request);
     } catch (...) {
         return operation_error<std::optional<OperationRecord>>(
