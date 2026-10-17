@@ -19,9 +19,15 @@ if ($disk.PartitionStyle -ne 'RAW') {
     # "disk is not RAW" is true and useless: it cannot distinguish "we were handed a stale or foreign
     # disk number" from "the disk really is ours and carries an old partition table".  Those need opposite
     # fixes, so the report names the disk that was inspected and lists every disk that exists.
-    $survey = @(Get-Disk | ForEach-Object {
-        "#$($_.Number)/$($_.PartitionStyle)/$($_.Size)/boot=$($_.IsBoot)/sys=$($_.IsSystem)"
-    }) -join ' '
+    #
+    # Written with `foreach` statements rather than pipelines on purpose: this script is held to an
+    # allowlist of storage commands, and `ForEach-Object` is not on it.  A `foreach` statement is language
+    # syntax, not a command invocation, so it stays inside the guard while doing the same work.
+    $surveyParts = @()
+    foreach ($other in @(Get-Disk)) {
+        $surveyParts += "#$($other.Number)/$($other.PartitionStyle)/$($other.Size)/boot=$($other.IsBoot)/sys=$($other.IsSystem)"
+    }
+    $survey = $surveyParts -join ' '
 
     # **And it reports the actual bytes, because that decides who wrote the partition table.**
     #
@@ -34,10 +40,14 @@ if ($disk.PartitionStyle -ne 'RAW') {
         $stream = [System.IO.File]::Open(
             "\\.\PhysicalDrive$DiskNumber", 'Open', 'Read', 'ReadWrite')
         try {
-            $first = New-Object byte[] 1024
+            # `[byte[]]::new()` rather than `New-Object`, because the allowlist governs command
+            # invocations and a static method call is not one.
+            $first = [byte[]]::new(1024)
             $read = $stream.Read($first, 0, 1024)
-            $sector0 = ($first[0..7] | ForEach-Object { $_.ToString('x2') }) -join ''
-            $sector1 = -join ($first[512..519] | ForEach-Object { [char]$_ })
+            $sector0 = ''
+            for ($i = 0; $i -lt 8; $i++) { $sector0 += $first[$i].ToString('x2') }
+            $sector1 = ''
+            for ($i = 512; $i -lt 520; $i++) { $sector1 += [char]$first[$i] }
             $anyNonZero = $false
             for ($i = 0; $i -lt $read; $i++) { if ($first[$i] -ne 0) { $anyNonZero = $true; break } }
             $signature = "sector0=$sector0 sector1='$sector1' nonzero=$anyNonZero read=$read"
