@@ -446,18 +446,99 @@ Result<void> M3AimRuntime::start() {
         // holds a disk of the same size, the address is the only thing left -- so a reused address is
         // indistinguishable from a fresh one.  An empty baseline keeps the previous behaviour, which is
         // what an adopt did all along.
-        auto located = baseline.empty()
-            ? aim::wait_for_present_physical_drive(
-                  *owned_device_, geometry.virtual_bytes, device_timeout_)
-            : aim::wait_for_created_physical_drive(
-                  *owned_device_, baseline, geometry.virtual_bytes, device_timeout_);
+        // **Reads a located disk's first kilobyte, so "is this really the disk I just made?" can be answered
+        // by its contents instead of by the machine's disk list.**
+        //
+        // A freshly created proxy disk is backed by zeroed shared memory, so its head must read as zeros.
+        // Measured: six creates in one run locate disk #1 and read all zeros, and a seventh locates the same
+        // number and reads a real MBR -- written by an earlier provisioning.  The disk list cannot tell those
+        // apart, because the enumeration is a snapshot of a moving target and can miss a device that is
+        // transiently unavailable, which leaves a stale disk looking like a newly created one.
+        //
+        // Read-only, bounded, and it answers the question the disk list cannot.
+        auto head_is_zero = [](std::uint32_t number, bool& readable) {
+            readable = false;
+            wchar_t path[64]{};
+            (void)_snwprintf_s(path, _TRUNCATE, L"\\\\.\\PhysicalDrive%u", number);
+            HANDLE head = CreateFileW(path, GENERIC_READ,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                      OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+            if (head == INVALID_HANDLE_VALUE) return false;
+            std::array<std::byte, 1024> buffer{};
+            HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            OVERLAPPED overlapped{};
+            overlapped.hEvent = done;
+            DWORD read = 0;
+            BOOL ok = ReadFile(head, buffer.data(), static_cast<DWORD>(buffer.size()),
+                               &read, &overlapped);
+            if (!ok && GetLastError() == ERROR_IO_PENDING) {
+                ok = done != nullptr && WaitForSingleObject(done, 5000) == WAIT_OBJECT_0 &&
+                     GetOverlappedResult(head, &overlapped, &read, FALSE);
+            }
+            if (done != nullptr) CloseHandle(done);
+            CloseHandle(head);
+            if (!ok || read == 0) return false;
+            readable = true;
+            for (std::size_t at = 0; at < read; ++at) {
+                if (buffer[at] != std::byte{0}) return false;
+            }
+            return true;
+        };
+
+        auto locate = [&]() -> Result<aim::LocatedDisk> {
+            return baseline.empty()
+                ? aim::wait_for_present_physical_drive(
+                      *owned_device_, geometry.virtual_bytes, device_timeout_)
+                : aim::wait_for_created_physical_drive(
+                      *owned_device_, baseline, geometry.virtual_bytes, device_timeout_);
+        };
+
+        auto located = locate();
         if (!located) {
             (void)remove_owned_device();
             (void)stop_provider();
             return Result<void>::failure(located.error());
         }
+        // **A located disk that is not empty is not the disk this create just made.**
+        //
+        // One bounded retry, because the disk list is a snapshot and the real device may simply not have
+        // settled.  After that, refusing is the right outcome and the important one: provisioning a disk that
+        // is not ours would destroy whatever is on it, and this runtime has no proof that it is.
+        {
+            bool readable = false;
+            if (!head_is_zero(located.value().physical_drive_number, readable) && readable) {
+                char line[192]{};
+                (void)_snprintf_s(line, _TRUNCATE,
+                                  "M3AimRuntime::start: disk #%u is not empty; retrying the locate",
+                                  located.value().physical_drive_number);
+                diagnostic_trace(line);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                auto again = locate();
+                if (!again) {
+                    (void)remove_owned_device();
+                    (void)stop_provider();
+                    return Result<void>::failure(again.error());
+                }
+                bool readable_again = false;
+                if (!head_is_zero(again.value().physical_drive_number, readable_again) &&
+                    readable_again) {
+                    (void)remove_owned_device();
+                    (void)stop_provider();
+                    return Result<void>::failure({
+                        ErrorDomain::evidence, 0, L"M3AimRuntime::start",
+                        L"located a disk that is not empty, so it is not the disk this "
+                        L"runtime just created"});
+                }
+                located = Result<aim::LocatedDisk>::success(again.move_value());
+            }
+        }
         info_.disk = located.move_value();
-        // **Read the disk's head, so a later provisioning failure can say who wrote what is on it.**
+        // **And log what is on it, because the check above only acts on the answer.**
+        //
+        // `head_is_zero` decides whether to accept the located disk; this records the bytes behind that
+        // decision, so a later failure can say what was actually there rather than only that a check refused.
+        // The reading it produced is what isolated this defect: six creates finding zeros and a seventh
+        // finding a real MBR, on the same disk number.
         //
         // This exists to settle one question with a reading instead of an argument: a freshly created proxy
         // disk is measurably not empty, it carries a real MBR and an EFI PART signature, and every attempt to
