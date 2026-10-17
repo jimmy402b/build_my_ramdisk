@@ -150,3 +150,31 @@ FAIL: list_records is a query but takes the gate exclusive; it must be shared
 
 **⇒ 新增的结构性测试没有引入回归。**
 
+### 7.3 客机读数，以及我又踩了一次 Stage 坑
+
+**第一次在客机上跑它时，只选中了 1 条 —— 因为我把 `-Stage` 忘了。**
+
+```
+filter: '^structural\.m5\.read_write_separation$|^m5\.service_operation_store$'
+       : 1 of 151 cases selected        ← 我的新测试根本不在客机的 tests.json 里
+```
+
+**客机的测试清单来自 `ctest --show-only=json-v1` 的抓取，只在 `-Stage` 时刷新。**
+**我加了测试、跑了 `-Run`、没跑 `-Stage`** ⇒ 客机上还是旧的 151 条。
+
+**补跑 `-Stage` 后**：
+
+```
+staged 152 tests -> C:\tmp\m5-vm\stage
+filter '^structural\.m5\.read_write_separation$': 1 of 152 cases selected
+[1/3] … [3/3]  structural.m5.read_write_separation#1..#3
+3 of 3 passed
+```
+
+**测试矩阵从 151 变成 152。**
+
+**这条教训与 handoff §7.0.9 的"陈旧二进制"是同一族，但位置不同**：
+**不是二进制旧了，而是测试清单旧了。判据是总数**——
+**"151" 而不是 "152" 就说明清单没刷新。**
+
+
