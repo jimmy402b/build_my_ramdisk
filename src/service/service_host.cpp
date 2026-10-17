@@ -33,13 +33,15 @@ ServiceHost::ServiceHost(management::IServiceClock& clock,
                          management::ServiceCore& core,
                          management::IExecutionScheduler& scheduler,
                          ServiceHostOptions options,
-                         IStartupSweep* sweep) noexcept
+                         IStartupSweep* sweep,
+                         IPublicCommandSurface* surface) noexcept
     : clock_(clock), core_(core), scheduler_(scheduler),
-      options_(options), sweep_(sweep) {}
+      options_(options), sweep_(sweep), surface_(surface) {}
 
 ServiceHost::ServiceHost(ServiceHost&& other) noexcept
     : clock_(other.clock_), core_(other.core_), scheduler_(other.scheduler_),
-      options_(other.options_), sweep_(other.sweep_), state_(other.state_),
+      options_(other.options_), sweep_(other.sweep_), surface_(other.surface_),
+      state_(other.state_),
       recovered_operations_(other.recovered_operations_),
       sweep_needs_attention_(other.sweep_needs_attention_),
       last_error_(std::move(other.last_error_)) {
@@ -110,6 +112,25 @@ Result<void> ServiceHost::start() {
 
     state_ = ServiceHostState::running;
     last_error_.reset();
+
+    // The public surface last, and the ordering is the same argument the sweep's is:
+    // a request answered before the executor is running would be admitted and then
+    // never executed, and a request answered before the recovery would read durable
+    // state that is about to be rewritten.  Opening it here means the first accepted
+    // command already has a service that can carry it out.
+    if (surface_ != nullptr) {
+        auto opened = surface_->open();
+        if (!opened.ok()) {
+            // A service that cannot be commanded is not a running service: closing the
+            // scheduler again is what keeps the reported state and the reachable state
+            // the same thing.
+            last_error_ = opened.error();
+            state_ = ServiceHostState::failed;
+            static_cast<void>(scheduler_.stop(deadline_after(
+                clock_.monotonic_time_ms(), options_.stop_budget_ms)));
+            return Result<void>::failure(opened.error());
+        }
+    }
     return Result<void>::success();
 }
 
@@ -135,6 +156,20 @@ Result<void> ServiceHost::stop_locked() {
     }
 
     state_ = ServiceHostState::stopping;
+    // The pipe first (design spec 搂9: close admission, remove the pipe, stop the
+    // scheduler).  A command admitted after the scheduler stopped would be a durable
+    // record nobody runs -- the exact state the next start has to reconcile -- so the
+    // surface is closed before the executor is asked to retire.
+    //
+    // A failure to close is reported and remembered, but the shutdown continues: the
+    // scheduler must still be stopped, and a pipe that would not close has already
+    // been asked to.  The host reports itself failed afterwards rather than claiming a
+    // clean stop over a surface it could not close.
+    std::optional<Error> surface_error;
+    if (surface_ != nullptr) {
+        auto closed = surface_->close();
+        if (!closed.ok()) surface_error = closed.error();
+    }
     // The scheduler is stopped before anything it calls into is destroyed, and
     // the deadline is absolute because that is what the seam takes.  `stop` is
     // idempotent on the scheduler, so a second stop through this host is
@@ -150,6 +185,13 @@ Result<void> ServiceHost::stop_locked() {
         last_error_ = stopped.error();
         state_ = ServiceHostState::failed;
         return Result<void>::failure(stopped.error());
+    }
+    if (surface_error.has_value()) {
+        // The executor is down, so the service is not running; what failed is the
+        // promise that it stopped cleanly.  Reported rather than swallowed.
+        last_error_ = surface_error.value();
+        state_ = ServiceHostState::failed;
+        return Result<void>::failure(surface_error.value());
     }
 
     state_ = ServiceHostState::stopped;

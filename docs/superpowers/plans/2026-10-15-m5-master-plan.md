@@ -63,7 +63,25 @@
 |---|---|
 | M0 / M1 / M2 / M3 | 已验收（**证据取自开发机**；VM 上只有间接覆盖） |
 | M4 | 已验收（VM 战役只跑了**聚焦 9 项**，不是完整套件） |
-| M5 | T1-01 与 T1-11 完成；T1-02 完成；其余未开始 |
+| M5 | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 完成；T1-05 PARTIAL（响应侧 + CLI 完成，客机 e2e 被一个 create 执行失败挡住）；其余未开始 |
+
+**2026-10-17 晚新增（T1-05 响应侧 + CLI 这一轮）**：
+
+- **T1-04 收敛为 PASSED**：客机 `integration.m5.cli_e2e` 三次独立运行、每次 20 次
+  `disk list` 采样，**60/60 样本都在 create 进行中**（每次采样前先读 operation 状态），
+  最大时延 **111 / 35 / 26 ms**（限值 1000 ms）。证据：
+  [`docs/validation/m5-t1-05-cli.md`](../../validation/m5-t1-05-cli.md) §5.1。
+- **`public pipe → ServiceCore` 这条链路首次被接上**（此前两端都只被测试用过）。
+- **两个真缺陷，都有读数**：
+  1. **调度器在退役途中仍会 claim 并执行一个 operation**：`m5.execution_scheduler`
+     `--clean-first` 后 **10/10 失败**（master-plan §8 第 1 项"已关闭"的理由——陈旧二进制——
+     被实测推翻）；取到 gate 后再判一次 stop 即修，**修后 10/10 通过**。
+  2. **`profiles` 根是共享根，注册读取器只认自己的条目**：`WorkerBindingStore` 把指纹放在
+     `profiles\workers`，而 `list_profiles()` 判定其为"未知条目" ⇒ **第一次启动创建它、此后每次启动
+     都失败**。按名字承认该共位者即修；客机服务恢复 `RUNNING`，`disk list` 正常。
+- **T1-05 阻塞点（新发现的产品缺口）**：`disk create` 被准入后执行失败，而**失败原因取不到**——
+  durable 记录只存标记串、`ServiceLogEvent` 无 message、响应投影只带 state。
+  **下一步先补这三处可达性，再定位失败点**；在那之前 T1-05 只能 PARTIAL。
 
 **已完成的实质修复（全部有量测）**：
 
@@ -73,6 +91,8 @@
 | T1-11 stop 路径补写冻结（三层） | `-Repeat 20` **20/20**（修前 5/20 失败） |
 | `integration.m1.shm` 契约违约 | 整套 ×3 Sweep **432/438**，该用例 **3/3**（修前 1/3 失败） |
 | T1-02 组合根 + SCM 骨架 | `sc create`/`start`/`query`/`stop` 全通，无残留 |
+| 调度器退役途中仍 claim 执行（§3.1，本轮） | `--clean-first` 后 **10/10 失败 → 10/10 通过** |
+| `profiles` 共享根被判为"未知条目"（§3.2，本轮） | 服务每次重启必失败 → **`RUNNING` + `disk list` 正常** |
 
 **当前整套基线**：VM 上 **144/146**，连跑三遍逐项一致；唯二失败是客机无 Visual Studio 的两个
 structural 用例（已知环境受限）。

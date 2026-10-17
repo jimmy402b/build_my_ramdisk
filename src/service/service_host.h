@@ -73,6 +73,30 @@ public:
     [[nodiscard]] virtual bool needs_attention() const noexcept = 0;
 };
 
+// The public command surface, as the host sees it: something that can be opened for
+// business and closed again.
+//
+// An interface for the same reason the sweep is one -- the ordering below is the
+// property, and it can be measured with a recorder instead of a pipe -- and because
+// the host must not know how a pipe's security descriptor is built.  The production
+// implementation is `PublicPipeSurface`, over `PublicPipeServer` and
+// `PublicCommandEndpoint`.
+class IPublicCommandSurface {
+public:
+    virtual ~IPublicCommandSurface() noexcept = default;
+
+    // Accept requests.  Called last in `start`, so a client never reaches a service
+    // whose durable state has not been reconciled or whose executor is not running:
+    // a command answered before the scheduler is up would be admitted and never run.
+    [[nodiscard]] virtual Result<void> open() = 0;
+
+    // Refuse new requests, and stop accepting connections.  Called first in `stop`,
+    // which is the design's own order (搂9: close admission, remove the pipe, then
+    // stop the scheduler): a command admitted after the scheduler stopped would be a
+    // durable record that the next start has to reconcile.
+    [[nodiscard]] virtual Result<void> close() = 0;
+};
+
 // What the last start recovered, for evidence and for the operator.
 //
 // Kept as its own type rather than logged and dropped: "the service started and
@@ -118,7 +142,8 @@ public:
     ServiceHost(management::IServiceClock& clock, management::ServiceCore& core,
                 management::IExecutionScheduler& scheduler,
                 ServiceHostOptions options = {},
-                IStartupSweep* sweep = nullptr) noexcept;
+                IStartupSweep* sweep = nullptr,
+                IPublicCommandSurface* surface = nullptr) noexcept;
 
     ServiceHost(const ServiceHost&) = delete;
     ServiceHost& operator=(const ServiceHost&) = delete;
@@ -184,6 +209,12 @@ private:
     // configuration (a test, or a service whose worker layer is not composed), and
     // requiring one would force every such caller to build a stand-in.
     IStartupSweep* sweep_{};
+    // Borrowed, and may be null for the same reason: a host with no public surface is
+    // a host nothing can command, which is the right shape for a test whose subject is
+    // the durable ordering rather than the protocol.  When it is present the host owns
+    // the *ordering* of opening and closing it, which is the part that must not be
+    // duplicated in an executable.
+    IPublicCommandSurface* surface_{};
 
     mutable std::mutex mutex_;
     ServiceHostState state_{ServiceHostState::constructed};

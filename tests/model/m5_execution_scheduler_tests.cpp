@@ -1,4 +1,4 @@
-#include "tests/support/test_framework.h"
+﻿#include "tests/support/test_framework.h"
 
 // The M4 checkpoint fixture, for its durable stores, clock, ids and worker
 // double.  Including it with the guard defined gives the fixture without its
@@ -184,7 +184,7 @@ TEST_CASE(m5_scheduler_takes_nothing_from_an_empty_queue) {
     ServiceCore core(
         fixture.clock, fixture.profiles, fixture.operations, fixture.worker,
         fixture.logger, fixture.ids, fixture.memory);
-    std::mutex gate;
+    std::timed_mutex gate;
 
     auto empty = core.claim_next_pending_operation();
     REQUIRE(empty.ok());
@@ -230,7 +230,7 @@ TEST_CASE(m5_admission_is_durable_before_anything_executes_it) {
 
     // And it is still there to be picked up: a scheduler that finds it is
     // reading durable work, not a queue entry it had to be present for.
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{1, 5, 1000});
     REQUIRE(scheduler.start().ok());
@@ -265,7 +265,7 @@ TEST_CASE(m5_a_client_wait_timeout_never_cancels_admitted_work) {
     REQUIRE(!record_is_terminal(fixture, operation_id));
     REQUIRE_EQ(fixture.worker.calls.size(), 0U);
 
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{1, 5, 1000});
     REQUIRE(scheduler.start().ok());
@@ -321,7 +321,7 @@ TEST_CASE(m5_scheduler_executes_admitted_work_through_the_core) {
     REQUIRE(admitted.ok());
     const auto operation_id = admitted.value().operation_id.value();
 
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{2, 5, 1000});
     REQUIRE(scheduler.start().ok());
@@ -370,7 +370,7 @@ TEST_CASE(m5_scheduler_never_runs_two_operations_at_once) {
     const auto operation_b = admitted_b.value().operation_id.value();
     REQUIRE(operation_a != operation_b);
 
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{4, 2, 1000});
     REQUIRE(scheduler.start().ok());
@@ -404,7 +404,7 @@ TEST_CASE(m5_scheduler_waits_for_the_gate_the_command_path_holds) {
     REQUIRE(admitted.ok());
     const auto operation_id = admitted.value().operation_id.value();
 
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{2, 2, 1000});
     {
@@ -428,7 +428,7 @@ TEST_CASE(m5_scheduler_stop_reports_a_deadline_it_could_not_meet) {
     REQUIRE(admitted.ok());
     const auto operation_id = admitted.value().operation_id.value();
 
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{2, 2, 1000});
     {
@@ -467,7 +467,7 @@ TEST_CASE(m5_scheduler_contains_a_worker_exception) {
     REQUIRE(admitted.ok());
     const auto operation_id = admitted.value().operation_id.value();
 
-    std::mutex gate;
+    std::timed_mutex gate;
     ServiceExecutionScheduler scheduler(
         core, fixture.clock, gate, ExecutionSchedulerConfig{2, 2, 1000});
     REQUIRE(scheduler.start().ok());

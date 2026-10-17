@@ -106,6 +106,16 @@ Result<control::Command> decode_command_payload(
     std::span<const std::byte> payload,
     std::uint16_t negotiated_minor);
 
+// The protocol's own UTF conversions, shared rather than reimplemented.
+//
+// The response codec (`src/management/service_response_wire.h`) carries wide
+// strings -- an `Error`'s operation and message -- and needs the same strict,
+// locale-independent conversion the command codec uses.  A second implementation
+// would be a second place for a lone surrogate to be accepted, so this is the one
+// that is exported: strict on invalid input, and never a lossy replace-and-continue.
+Result<std::string> utf16_to_utf8(std::wstring_view value);
+Result<std::wstring> utf8_to_utf16(std::span<const std::byte> value);
+
 class InFlightGate final {
 public:
     Result<void> begin() noexcept;

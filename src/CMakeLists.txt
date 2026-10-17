@@ -350,6 +350,7 @@ add_library(myrd_management STATIC
     management/profile_registration_store.cpp management/profile_registration_store.h
     management/service_core.cpp management/service_core.h
     management/service_operation_store.cpp management/service_operation_store.h
+    management/service_response_wire.cpp management/service_response_wire.h
     management/service_worker_control.cpp management/service_worker_control.h
     management/service_worker_session.cpp management/service_worker_session.h
     management/state_machine.cpp management/state_machine.h
@@ -381,6 +382,8 @@ myrd_assert_execution_boundary(myrd_management)
 # it, so this target is ordinary linkable code and its start/stop paths are
 # measured by ordinary tests rather than only by installing a service.
 add_library(myrd_service STATIC
+    service/public_command_endpoint.cpp service/public_command_endpoint.h
+    service/public_pipe_surface.cpp service/public_pipe_surface.h
     service/service_host.cpp service/service_host.h
     service/service_runtime.cpp service/service_runtime.h
     service/service_system.cpp service/service_system.h
@@ -401,6 +404,37 @@ target_include_directories(myrd-service PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-service PRIVATE myrd_service Advapi32)
 myrd_enable_warnings(myrd-service)
 myrd_assert_execution_boundary(myrd-service)
+
+# ---- M5 CLI (Task T1-05) ------------------------------------------------------
+# The client side of the public pipe: parse a command line into the same typed
+# command the service decodes, send it, and render the typed answer.  It reaches the
+# runtime only through the pipe -- the boundary check below is what keeps that true as
+# the command surface grows, and it is why this target may link the contract and
+# management layers but never an execution one.
+#
+# `myrd_cli` is a library so the parser, the renderer and the exit-code mapping can be
+# tested on every build without a service or a device; `myrd-cli` is the thin
+# executable over it.
+add_library(myrd_cli STATIC
+    cli/cli_parser.cpp cli/cli_parser.h
+    cli/cli_renderer.cpp cli/cli_renderer.h
+)
+target_include_directories(myrd_cli PUBLIC "${CMAKE_SOURCE_DIR}")
+# `myrd_management` for the response wire codec, which is the one piece of the service
+# the client and the GUI are meant to share (design spec 搂10.2).  Splitting that codec
+# out of the management library is T3-01's job, not this one's: it needs the
+# projections moved first, and doing it here would be a half-split.
+target_link_libraries(myrd_cli PUBLIC myrd_product_ipc myrd_management)
+myrd_enable_warnings(myrd_cli)
+myrd_assert_execution_boundary(myrd_cli)
+
+add_executable(myrd-cli
+    cli/cli_main.cpp
+)
+target_include_directories(myrd-cli PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd-cli PRIVATE myrd_cli)
+myrd_enable_warnings(myrd-cli)
+myrd_assert_execution_boundary(myrd-cli)
 
 # ---- M5 private worker protocol and session (Task 5) -------------------------
 # The typed service <-> per-profile worker messages, their strict codec, the

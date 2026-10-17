@@ -1026,6 +1026,12 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
 
 Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover(
     const WorkerActionRequest& request) {
+    std::unique_lock lock(command_gate_);
+    return reclaim_leftover_locked(request);
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover_locked(
+    const WorkerActionRequest& request) {
     // The **durable profile** is the input, not the lifecycle intent, and the difference
     // matters: an intent is what a *command* carries before a profile exists, while a
     // leftover is by definition a profile that has already been published.  It also avoids
@@ -1089,6 +1095,7 @@ Result<WorkerActionResult> ServiceWorkerControl::reclaim_leftover(
 
 Result<WorkerActionResult> ServiceWorkerControl::execute(
     const WorkerActionRequest& request) {
+    std::unique_lock lock(command_gate_);
     switch (request.action) {
     case ActionKind::create_and_verify_bundle:
         return register_bundle(request, BundleEvidenceSource::created_and_verified);
@@ -1136,7 +1143,10 @@ Result<WorkerActionResult> ServiceWorkerControl::execute(
         // default answers `unrealized`, so a new action kind that reached it would be
         // reported as "no worker did this" and a leftover would never be dismantled --
         // silently, and while every test that does not exercise it still passed.
-        return reclaim_leftover(request);
+        // The gate is already held by `execute`, so the body is called directly: taking
+        // it again on this thread would deadlock, which is exactly why the body is its
+        // own method.
+        return reclaim_leftover_locked(request);
     default:
         return unrealized(request);
     }
@@ -1299,12 +1309,14 @@ Result<WorkerActionResult> ServiceWorkerControl::checkpoint_across_boundary(
 Result<WorkerActionResult> ServiceWorkerControl::execute_checkpoint(
     const WorkerActionRequest& request,
     const CheckpointCommitBoundaryHandler& boundary) {
+    std::unique_lock lock(command_gate_);
     return checkpoint_across_boundary(request, boundary);
 }
 
 Result<WorkerActionResult> ServiceWorkerControl::reconcile_checkpoint(
     const WorkerActionRequest& request,
     const CheckpointCommitBoundaryEvidence& correlation) {
+    std::unique_lock lock(command_gate_);
     // A correlation recorded before the manifest slot and the digest existed
     // cannot support a proof, and this is where that has to be said rather than
     // discovered.  It is not a match against zeroes: it is the absence of the
@@ -1413,6 +1425,7 @@ Result<void> ServiceWorkerControl::publish_checkpoint_epoch(
     const WorkerActionRequest& request,
     const CheckpointCommitBoundaryEvidence& correlation,
     const CheckpointEpochPublicationHandler& publish) {
+    std::unique_lock lock(command_gate_);
     // The fence runs *inside* the worker's own commit, around the publication
     // of the durable epoch, so that a service decision cannot land between the
     // bundle's snapshot and the record that names it.  Reproducing it here would
@@ -1438,6 +1451,7 @@ Result<void> ServiceWorkerControl::publish_checkpoint_epoch(
 
 Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(
     const product::Uuid& profile_id) {
+    std::unique_lock lock(command_gate_);
     auto session = require_session(profile_id, true);
     if (!session.ok()) {
         return Result<std::uint64_t>::failure(session.error());
@@ -1453,6 +1467,22 @@ Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(
 
 Result<std::optional<WorkerRuntimeObservation>>
 ServiceWorkerControl::observe_runtime(const product::Uuid& profile_id) {
+    // **Never waits for the channel.**  A worker's command pipe is one request/reply
+    // sequence, so a status query issued while a create is being executed would sit
+    // behind that create for as long as it runs -- minutes -- and `disk list` with it.
+    // T1-04's requirement is that a list answers inside a second during a create, so the
+    // gate is *tried*: if this adapter is mid-command, nothing is known about the runtime
+    // right now, and `nullopt` says so.
+    //
+    // `nullopt` is a weaker claim than an observation, not a wrong one: the read path
+    // reports the durable record and does not fail closed on it.  What it must never do is
+    // claim `worker_alive == false`, which is why this is not an empty observation -- an
+    // observation that says the worker is gone would fail a running disk closed.
+    std::unique_lock lock(command_gate_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return Result<std::optional<WorkerRuntimeObservation>>::success(
+            std::nullopt);
+    }
     auto* const session = find_session(profile_id);
     if (session == nullptr) {
         // No worker this authority can see is an observation -- "observed to be
@@ -1477,6 +1507,11 @@ ServiceWorkerControl::observe_runtime(const product::Uuid& profile_id) {
 
 Result<WorkerRuntimeObservation> ServiceWorkerControl::require_runtime_observation(
     const product::Uuid& profile_id) {
+    // Strict, so it *does* wait: a caller deciding whether a mutation is safe must not be
+    // told "could not ask" when the answer is "the channel is busy".  Queueing here is
+    // correct precisely because the caller is a mutation, and mutations are serialized by
+    // the execution gate anyway.
+    std::unique_lock lock(command_gate_);
     auto session = require_session(profile_id, true);
     if (!session.ok()) {
         return Result<WorkerRuntimeObservation>::failure(session.error());

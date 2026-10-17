@@ -25,6 +25,7 @@
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_sessions.h"
 #include "src/management/worker_binding_store.h"
+#include "src/service/public_pipe_surface.h"
 #include "src/service/service_host.h"
 #include "src/service/service_system.h"
 #include "src/service/startup_sweep.h"
@@ -64,6 +65,10 @@ struct ServiceRuntimeConfig final {
     management::ExecutionSchedulerConfig scheduler{};
     std::uint32_t worker_control_timeout_ms{
         management::kDefaultWorkerControlTimeoutMs};
+    // The public control pipe's name.  Empty means the documented production name;
+    // an end-to-end run passes a private one so it does not compete with an installed
+    // service, exactly as the client's `--pipe` does.
+    std::wstring pipe_name;
 };
 
 // Everything the service is made of, owned in one place.
@@ -155,7 +160,16 @@ private:
     // because the public pipe is T1-05; it is here now so the scheduler is built
     // against the gate it will actually be serialized by, rather than against a
     // temporary one it would have to be rebuilt with later.
-    std::unique_ptr<std::mutex> execution_gate_;
+    //
+    // Timed rather than plain, because the pipe takes it with a deadline: the
+    // scheduler holds it across a whole operation, and a command that arrives
+    // behind one must be answered with a timeout instead of being parked.
+    std::unique_ptr<std::timed_mutex> execution_gate_;
+    // The public command surface, over the core and the gate above.  Declared after
+    // both, which it borrows, and before the host that borrows it.  Emplaced in
+    // `create` rather than default-constructed because it borrows the core, which is
+    // itself emplaced late.
+    std::optional<PublicPipeSurface> surface_;
     std::optional<management::ServiceExecutionScheduler> scheduler_;
 };
 

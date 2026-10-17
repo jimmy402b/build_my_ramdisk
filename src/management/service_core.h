@@ -674,6 +674,16 @@ struct ServiceProfileProjection final {
     product::HealthState health{product::HealthState::healthy};
     AggregateStatus aggregate{AggregateStatus::stopped_configured};
     std::uint64_t confirmed_generation{};
+    // The mount target, in UTF-8, or absent when the profile has none (or when the
+    // stored value could not be expressed as UTF-8, which a real Windows path always
+    // can).  Appended with a default so every existing aggregate initializer keeps
+    // its meaning.
+    //
+    // It belongs here rather than only on the response because a *list* is useless
+    // without it: a user identifies a disk by its drive letter, and the projection is
+    // the only shape a client sees.  This is the mount target the user configured --
+    // never the bundle path, which is the thing the projection exists to withhold.
+    std::optional<std::string> mount_target;
     bool operator==(const ServiceProfileProjection&) const noexcept = default;
 };
 

@@ -17,6 +17,8 @@
 #include "m4_checkpoint_operation_tests.cpp"
 
 #include "src/control/public_pipe_client.h"
+#include "src/management/service_response_wire.h"
+#include "src/service/public_command_endpoint.h"
 #include "src/service/service_host.h"
 
 #include <algorithm>
@@ -555,4 +557,202 @@ TEST_CASE(service_host_carries_the_control_flags_and_claims_no_operation) {
     const auto nil = product::Uuid::parse("00000000-0000-0000-0000-000000000000");
     REQUIRE(nil.ok());
     REQUIRE(frame.value().operation_id == nil.value());
+}
+
+// ---------------------------------------------------------------------------
+// The endpoint: a request frame in, a response frame out.
+// ---------------------------------------------------------------------------
+//
+// This is the join the rest of the command surface was waiting for -- `PublicPipeServer` accepted connections and
+// called a handler nothing supplied, and `dispatch` took a request only tests ever built.  A pipe is not needed to
+// test it: the endpoint is one function over a core, so a frame can be handed to it directly and the answer decoded
+// exactly as a client would.  What remains for the VM is the pipe, the SCM and a real disk.
+//
+// The first case is also the T1-04 property in its purest form: with the execution gate held exclusively -- the
+// state a running create is in -- a `disk list` still answers.  If that failed, no amount of measuring on the VM
+// would help, because the code could not satisfy the requirement in any environment.
+TEST_CASE(m5_endpoint_answers_a_query_while_the_execution_gate_is_held) {
+    Fixture fixture(product::PersistenceState::clean);
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+                     fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+    std::timed_mutex gate;
+    PublicCommandEndpoint endpoint(core, gate);
+
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::DiskListCommand{}, request_id.value());
+    REQUIRE(frame.ok());
+
+    // The gate is held by "the scheduler", in this thread.  A query that took it would
+    // block here forever, which is the bug this asserts against.
+    std::unique_lock held(gate);
+    const OperationContext context{std::stop_token{},
+                                   std::chrono::steady_clock::now()
+                                       + std::chrono::seconds(5)};
+    auto answered = endpoint.handle(
+        context, caller(fixture.profiles.snapshot().record.profile.owner_sid),
+        frame.value());
+    held.unlock();
+    REQUIRE(answered.ok());
+    REQUIRE(answered.value().message_type == ipc::MessageType::response);
+    REQUIRE(answered.value().request_id == request_id.value());
+
+    auto decoded = management::decode_service_response(
+        answered.value().payload, answered.value().protocol_minor);
+    REQUIRE(decoded.ok());
+    REQUIRE_EQ(decoded.value().command, std::string("disk.list"));
+    REQUIRE_EQ(decoded.value().profiles.size(), 1ULL);
+    REQUIRE(decoded.value().profiles.front().mount_target.has_value());
+    REQUIRE_EQ(decoded.value().profiles.front().mount_target.value(),
+               std::string("R:"));
+}
+
+TEST_CASE(m5_endpoint_projects_a_disk_without_its_bundle_path) {
+    // The projection is where "what a client may know" is decided.  The fixture's profile
+    // names its bundle, so the encoded payload is searched for it: a path on the wire is
+    // the leak design spec 搂10.3 forbids, and it would be invisible in a decoded
+    // structure because the field simply would not exist there.
+    Fixture fixture(product::PersistenceState::clean);
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+                     fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+    std::timed_mutex gate;
+    PublicCommandEndpoint endpoint(core, gate);
+
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::DiskListCommand{}, request_id.value());
+    REQUIRE(frame.ok());
+    const OperationContext context{std::stop_token{},
+                                   std::chrono::steady_clock::now()
+                                       + std::chrono::seconds(5)};
+    auto answered = endpoint.handle(
+        context, caller(fixture.profiles.snapshot().record.profile.owner_sid),
+        frame.value());
+    REQUIRE(answered.ok());
+
+    std::string wire;
+    wire.reserve(answered.value().payload.size());
+    for (const auto byte : answered.value().payload) {
+        wire.push_back(static_cast<char>(static_cast<unsigned char>(byte)));
+    }
+    // The fixture's bundle is `D:\Images\work.myrd`.  Neither half of it may appear.
+    REQUIRE(wire.find("Images") == std::string::npos);
+    REQUIRE(wire.find("work.myrd") == std::string::npos);
+    // The mount target is the thing a user identifies the disk by, and it is present.
+    REQUIRE(wire.find("R:") != std::string::npos);
+}
+
+TEST_CASE(m5_endpoint_refuses_a_mutation_while_the_execution_gate_is_held) {
+    // The other half of the read/write separation: a mutation does take the gate, so with
+    // the gate held -- a create in progress -- it is *refused within its deadline* rather
+    // than parked.  The client is told, with a code it can classify, instead of waiting
+    // for an operation it never saw start.
+    Fixture fixture(product::PersistenceState::clean);
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+                     fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+    std::timed_mutex gate;
+    PublicCommandEndpoint endpoint(core, gate);
+
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::DiskStartCommand{L"work"}, request_id.value());
+    REQUIRE(frame.ok());
+
+    std::unique_lock held(gate);
+    const OperationContext context{std::stop_token{},
+                                   std::chrono::steady_clock::now()
+                                       + std::chrono::milliseconds(100)};
+    const auto started = std::chrono::steady_clock::now();
+    auto answered = endpoint.handle(
+        context, caller(fixture.profiles.snapshot().record.profile.owner_sid),
+        frame.value());
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    held.unlock();
+
+    // A response, not a broken connection: a client has to be able to tell this from an
+    // unreachable service.
+    REQUIRE(answered.ok());
+    auto decoded = management::decode_service_response(
+        answered.value().payload, answered.value().protocol_minor);
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().error.has_value());
+    REQUIRE_EQ(decoded.value().error->code, 0x2203U);
+    // Bounded by its own deadline, not by the gate's holder.
+    REQUIRE(elapsed < std::chrono::seconds(5));
+    // Nothing was admitted: no operation id was invented for a request that never
+    // reached the core.
+    REQUIRE(!decoded.value().operation_id.has_value());
+}
+
+TEST_CASE(m5_endpoint_answers_a_failed_command_with_the_service_error) {
+    // A refusal from the core is a *decoded response*, not a dropped connection: the
+    // service's own error code travels back so the client can pick the right exit code.
+    Fixture fixture(product::PersistenceState::clean);
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+                     fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+    std::timed_mutex gate;
+    PublicCommandEndpoint endpoint(core, gate);
+
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    // A disk that does not exist: the core refuses with `profile_not_found`.
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::DiskStartCommand{L"missing"}, request_id.value());
+    REQUIRE(frame.ok());
+    const OperationContext context{std::stop_token{},
+                                   std::chrono::steady_clock::now()
+                                       + std::chrono::seconds(5)};
+    auto answered = endpoint.handle(
+        context, caller(fixture.profiles.snapshot().record.profile.owner_sid),
+        frame.value());
+    REQUIRE(answered.ok());
+    auto decoded = management::decode_service_response(
+        answered.value().payload, answered.value().protocol_minor);
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().error.has_value());
+    REQUIRE_EQ(decoded.value().command, std::string("disk.start"));
+
+    // The code the client sees is the code the core produced, not one the endpoint
+    // invented on the way out.  Asserted against the core's own answer rather than against
+    // a literal, because the literal is what the core happens to classify a missing profile
+    // as, and that is the core's decision to change, not this layer's.
+    const auto owner = fixture.profiles.snapshot().record.profile.owner_sid;
+    auto direct = core.dispatch(ServiceCommandRequest{
+        request_id.value(), control::DiskStartCommand{L"missing"}, caller(owner),
+        false, false, std::nullopt, ClientWaitState::active});
+    REQUIRE(!direct.ok());
+    REQUIRE_EQ(decoded.value().error->code, direct.error().code);
+    REQUIRE(decoded.value().error->message == direct.error().message);
+}
+
+TEST_CASE(m5_endpoint_refuses_an_unknown_control_bit) {
+    // A client that set a bit believes it asked for something.  Ignoring it would do
+    // something other than what was asked, so the request is refused and says why.
+    Fixture fixture(product::PersistenceState::clean);
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+                     fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+    std::timed_mutex gate;
+    PublicCommandEndpoint endpoint(core, gate);
+
+    auto request_id = product::Uuid::random();
+    REQUIRE(request_id.ok());
+    auto frame = ipc::PublicPipeClient::build_command_request(
+        control::DiskListCommand{}, request_id.value());
+    REQUIRE(frame.ok());
+    frame.value().flags |= 0x8000U;
+    const OperationContext context{std::stop_token{},
+                                   std::chrono::steady_clock::now()
+                                       + std::chrono::seconds(5)};
+    auto answered = endpoint.handle(
+        context, caller(fixture.profiles.snapshot().record.profile.owner_sid),
+        frame.value());
+    REQUIRE(answered.ok());
+    auto decoded = management::decode_service_response(
+        answered.value().payload, answered.value().protocol_minor);
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().error.has_value());
+    REQUIRE_EQ(decoded.value().error->code, 0x2202U);
 }

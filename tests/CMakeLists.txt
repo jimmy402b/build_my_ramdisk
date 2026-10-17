@@ -681,6 +681,46 @@ add_test(NAME m5.service_host
     COMMAND myrd_m5_service_host_tests)
 set_tests_properties(m5.service_host PROPERTIES TIMEOUT 120)
 
+# ---- M5 client contract (T1-05) ----------------------------------------------
+# The response document, the command line, the rendering and the exit codes.  All of
+# it is a value in and a value out, so none of it needs a pipe, a service or a device
+# -- which is the whole point: an IPC client has to be verified *before* there is
+# something to talk to, or the first thing it talks to is a test subject.
+#
+# What this suite cannot prove is that a real service answers these frames, and what
+# a real disk needs a VM for.  That is `m5.cli`'s honest boundary.
+add_executable(myrd_m5_cli_tests
+    model/m5_cli_tests.cpp
+)
+target_link_libraries(myrd_m5_cli_tests PRIVATE
+    myrd_test_support myrd_cli myrd_product_ipc myrd_management)
+target_include_directories(myrd_m5_cli_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/model")
+myrd_enable_warnings(myrd_m5_cli_tests)
+add_test(NAME m5.cli
+    COMMAND myrd_m5_cli_tests)
+set_tests_properties(m5.cli PROPERTIES TIMEOUT 120)
+
+# ---- M5 CLI end to end (T1-04 + T1-05) ---------------------------------------
+# The one case that measures the acceptances as a user meets them: the shipped
+# `myrd-cli` against the installed service over the public pipe, with a real worker, a
+# real AIM disk and a real volume behind it.  Guest-only, and guarded (AGENTS.md section
+# 4): it exits 2 on the development machine rather than passing quietly.
+#
+# Two acceptances ride on it.  T1-04's "`disk list` returns within a second while a
+# create is running" is measured by timing the command repeatedly *during* a create and
+# recording the operation's state for every sample, so the samples that count are the
+# ones the run proves were taken during the create.  T1-05's command surface is the rest:
+# create, list, show, read/write, checkpoint, stop, remove, all through the CLI.
+add_test(
+    NAME integration.m5.cli_e2e
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-cli-e2e.ps1")
+set_tests_properties(integration.m5.cli_e2e PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
 # ---- M5 worker sweep policy (T1-03) -----------------------------------------
 # The startup sweep's *decisions*, with no job object and no processes in them:
 # which orphans are ours, which may be terminated, and which leftovers may be

@@ -23,7 +23,7 @@ Result<void> scheduler_error(ExecutionSchedulerError code,
 ServiceExecutionScheduler::ServiceExecutionScheduler(
     ServiceCore& core,
     IServiceClock& clock,
-    std::mutex& execution_gate,
+    std::timed_mutex& execution_gate,
     ExecutionSchedulerConfig config) noexcept
     : core_(core),
       clock_(clock),
@@ -158,16 +158,26 @@ void ServiceExecutionScheduler::run(std::stop_token token) noexcept {
             // which is the same work with a longer window in which the
             // operation is neither running nor available.
             std::scoped_lock lock(execution_gate_);
-            auto claimed = core_.claim_next_pending_operation();
-            if (claimed.ok() && claimed.value().has_value()) {
-                worked = true;
-                // The result is discarded deliberately.  The operation's own
-                // durable record is the authority on how it ended, and acting
-                // on this return value here would make the scheduler a second
-                // one.  What this call has to prove is only that the claim was
-                // discharged through the core's own execution path.
-                static_cast<void>(core_.execute_claimed_operation(
-                    claimed.value().value()));
+            // **The stop is re-checked after the gate, and that is not belt and
+            // braces.**  A worker parked here while a shutdown began used to claim
+            // and run one more operation as soon as the gate was released, so a stop
+            // that had interrupted nothing could still end up executing admitted work
+            // -- unbounded, past the deadline it had just reported, and with the
+            // operation marked succeeded by an executor that was on its way out.
+            // Nothing is lost by declining it: the record is durable, still queued,
+            // and the next start reconciles and runs it.
+            if (!token.stop_requested()) {
+                auto claimed = core_.claim_next_pending_operation();
+                if (claimed.ok() && claimed.value().has_value()) {
+                    worked = true;
+                    // The result is discarded deliberately.  The operation's own
+                    // durable record is the authority on how it ended, and acting
+                    // on this return value here would make the scheduler a second
+                    // one.  What this call has to prove is only that the claim was
+                    // discharged through the core's own execution path.
+                    static_cast<void>(core_.execute_claimed_operation(
+                        claimed.value().value()));
+                }
             }
         } catch (...) {
             // A worker action that throws costs this thread one poll interval,

@@ -253,7 +253,7 @@ Result<std::vector<ValidatedField>> validate_payload(
     return Result<std::vector<ValidatedField>>::success(std::move(result));
 }
 
-Result<std::string> utf16_to_utf8(std::wstring_view value) {
+Result<std::string> utf16_to_utf8_impl(std::wstring_view value) {
     if (value.empty() || value.size() > static_cast<std::size_t>(
             (std::numeric_limits<int>::max)())) {
         return codec_error<std::string>(L"Command string is empty or too large");
@@ -273,7 +273,7 @@ Result<std::string> utf16_to_utf8(std::wstring_view value) {
     return Result<std::string>::success(std::move(result));
 }
 
-Result<std::wstring> utf8_to_utf16(std::span<const std::byte> value) {
+Result<std::wstring> utf8_to_utf16_impl(std::span<const std::byte> value) {
     if (!is_valid_utf8(value)) {
         return codec_error<std::wstring>(L"Command string is invalid UTF-8");
     }
@@ -325,7 +325,7 @@ Result<void> append_string_field(std::vector<std::byte>& payload,
                                  std::uint32_t maximum,
                                  FieldRequirement requirement =
                                      FieldRequirement::required) {
-    auto utf8 = utf16_to_utf8(value);
+    auto utf8 = utf16_to_utf8_impl(value);
     if (!utf8.ok()) return Result<void>::failure(utf8.error());
     if (utf8.value().size() > maximum) {
         return Result<void>::failure(Error{
@@ -387,8 +387,8 @@ Result<void> append_pairs_field(
     std::vector<std::byte> value;
     append_u16(value, static_cast<std::uint16_t>(assignments.size()));
     for (const auto& assignment : assignments) {
-        auto key = utf16_to_utf8(assignment.key);
-        auto item_value = utf16_to_utf8(assignment.value);
+        auto key = utf16_to_utf8_impl(assignment.key);
+        auto item_value = utf16_to_utf8_impl(assignment.value);
         if (!key.ok() || !item_value.ok() || key.value().size() > 4096
             || item_value.value().size() > 4096) {
             return Result<void>::failure(Error{
@@ -408,7 +408,7 @@ Result<void> append_pairs_field(
 }
 
 Result<std::vector<std::byte>> encode_target(std::wstring_view target) {
-    auto utf8 = utf16_to_utf8(target);
+    auto utf8 = utf16_to_utf8_impl(target);
     if (!utf8.ok() || utf8.value().size() > 4096) {
         return codec_error<std::vector<std::byte>>(L"Command target is invalid");
     }
@@ -543,7 +543,7 @@ Result<std::wstring> decode_target(std::span<const std::byte> payload,
     if (!decoded.ok() || decoded.value().fields.size() != 1) {
         return codec_error<std::wstring>(L"Command target payload is invalid");
     }
-    return utf8_to_utf16(decoded.value().fields[0].value);
+    return utf8_to_utf16_impl(decoded.value().fields[0].value);
 }
 
 std::vector<std::byte> encode_uuid_payload(const product::Uuid& value) {
@@ -614,7 +614,7 @@ Result<std::wstring> string_from_field(const DecodedFieldSet& fields,
                                        std::uint16_t tag) {
     const auto* field = find_field(fields, tag);
     if (!field) return codec_error<std::wstring>(L"Required string field is missing");
-    return utf8_to_utf16(field->value);
+    return utf8_to_utf16_impl(field->value);
 }
 
 Result<bool> bool_from_field(const DecodedFieldSet& fields,
@@ -678,7 +678,7 @@ Result<std::vector<control::ConfigAssignment>> pairs_from_field(
                 L"Configuration assignments are malformed");
         }
         offset += 2;
-        auto key = utf8_to_utf16(bytes.subspan(offset, key_length));
+        auto key = utf8_to_utf16_impl(bytes.subspan(offset, key_length));
         offset += key_length;
         std::uint16_t value_length = 0;
         if (!read_u16(bytes, offset, value_length)) {
@@ -686,7 +686,7 @@ Result<std::vector<control::ConfigAssignment>> pairs_from_field(
                 L"Configuration assignments are malformed");
         }
         offset += 2;
-        auto value = utf8_to_utf16(bytes.subspan(offset, value_length));
+        auto value = utf8_to_utf16_impl(bytes.subspan(offset, value_length));
         offset += value_length;
         if (!key.ok() || !value.ok()) {
             return codec_error<std::vector<control::ConfigAssignment>>(
@@ -705,7 +705,7 @@ Result<std::optional<std::wstring>> optional_string_from_field(
     if (!field) {
         return Result<std::optional<std::wstring>>::success(std::nullopt);
     }
-    auto value = utf8_to_utf16(field->value);
+    auto value = utf8_to_utf16_impl(field->value);
     if (!value.ok()) {
         return Result<std::optional<std::wstring>>::failure(value.error());
     }
@@ -737,6 +737,17 @@ std::optional<std::uint32_t> optional_u32_from_field(
 }
 
 } // namespace
+
+// The conversions are part of the protocol surface, not of this translation unit:
+// the response codec carries an `Error`'s wide operation and message and must use
+// the same strict, locale-independent conversion rather than a second copy of it.
+Result<std::string> utf16_to_utf8(std::wstring_view value) {
+    return utf16_to_utf8_impl(value);
+}
+
+Result<std::wstring> utf8_to_utf16(std::span<const std::byte> value) {
+    return utf8_to_utf16_impl(value);
+}
 
 Result<DecodedFieldSet> decode_typed_payload(
     std::span<const std::byte> payload,

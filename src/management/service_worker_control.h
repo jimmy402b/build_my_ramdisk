@@ -145,6 +145,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -319,6 +320,13 @@ public:
         const product::Uuid& profile_id) override;
 
 private:
+    // The dismantling body, without the command gate.  `execute` reaches the same work
+    // for a plan whose action is a reclaim, and a gate taken twice on one thread would
+    // deadlock -- so the gate is taken by the public entry points and the body is
+    // shared.
+    Result<WorkerActionResult> reclaim_leftover_locked(
+        const WorkerActionRequest& request);
+
     // A candidate the volume flush cut and a checkpoint will publish.  It is
     // keyed by the operation that cut it so two profiles stopping at once can
     // never commit each other's snapshot.
@@ -438,6 +446,23 @@ private:
     // nowhere to record one, and a null sink is reported as "not recorded" rather than
     // silently pretending the identity was kept.
     IWorkerFingerprintSink* fingerprints_{};
+    // **The command gate, and why this class now has one.**
+    //
+    // Everything below is guarded by this mutex, because a worker's command channel is
+    // a strict request/reply sequence with no resynchronisation: two threads that both
+    // wrote to it would interleave a request and a reply and there is no way back.  Until
+    // the public pipe existed there was only one caller (the scheduler, behind the
+    // execution gate), so the guarantee was supplied from outside and the class did not
+    // state it.  T1-04 makes a *read* path that must run while a long command is in
+    // flight, so the guarantee has to live here.
+    //
+    // One mutex for the whole object rather than one per profile: per-profile
+    // serialization is T2-01's work, and a second granularity invented here would have to
+    // be undone there.  The cost is stated rather than hidden: while one profile's
+    // command runs, `observe_runtime` for another profile answers "not observed" instead
+    // of an observation.  That is a weaker answer, never a wrong one -- see
+    // `observe_runtime`.
+    mutable std::mutex command_gate_;
     std::vector<std::pair<product::Uuid, std::unique_ptr<ServiceWorkerSession>>>
         sessions_by_profile_;
     std::vector<HeldCandidate> held_candidates_;

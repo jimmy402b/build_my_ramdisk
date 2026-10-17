@@ -58,13 +58,19 @@ struct ExecutionSchedulerConfig final {
 // are not concurrent objects -- they hold mutable profile, operation,
 // registration and worker-session state that two callers would interleave --
 // and both say the production wiring supplies the serialization at the door
-// rather than inside each object.  That door is the single `std::mutex` inside
-// `serialize_pipe_handler`, which every pooled pipe thread passes and which is
-// held for a whole exchange.  A scheduler thread is not behind that door, so
-// this scheduler must be handed the same mutex and must hold it while it goes
-// into the core.  `worker_threads` therefore sizes the polling pool; it does
-// not make two operations execute at once, and it cannot, because the gate is
-// held across the execution.
+// rather than inside each object.  That door is this gate: it is handed to every
+// public request by `PublicCommandEndpoint` and to this scheduler, so no two of
+// them go into the core at once.  `worker_threads` therefore sizes the polling
+// pool; it does not make two operations execute at once, and it cannot, because
+// the gate is held across the execution.
+//
+// **The gate is timed, and the distinction is load-bearing for reads.**  It is
+// held across a *whole operation* here -- a create holds it for minutes -- so a
+// caller that entered the core through it could not answer while an operation ran.
+// A query therefore does not take it at all (`disk list` must return inside a
+// second during a create, which is T1-04's acceptance), and a mutation takes it
+// with a deadline, so a command arriving behind a long operation is answered with
+// a timeout rather than parked until the operation ends.
 //
 // The gate is not this object's to create.  Passing one in is how the wiring
 // states that the pipe and the scheduler are serialized against each other;
@@ -74,7 +80,7 @@ public:
     ServiceExecutionScheduler(
         ServiceCore& core,
         IServiceClock& clock,
-        std::mutex& execution_gate,
+        std::timed_mutex& execution_gate,
         ExecutionSchedulerConfig config) noexcept;
     ~ServiceExecutionScheduler() noexcept override;
 
@@ -98,7 +104,7 @@ private:
 
     ServiceCore& core_;
     IServiceClock& clock_;
-    std::mutex& execution_gate_;
+    std::timed_mutex& execution_gate_;
     ExecutionSchedulerConfig config_{};
     mutable std::mutex state_mutex_;
     std::condition_variable_any state_cv_;

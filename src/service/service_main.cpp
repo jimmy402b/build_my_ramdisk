@@ -19,12 +19,34 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace {
+
+// Set by the console control handler and read by the foreground loop.  Atomic because the
+// handler runs on a thread Windows owns: the shutdown itself must not run there, so the
+// handler's only job is to make this flag visible.
+std::atomic_bool console_stop_requested{false};
+
+BOOL WINAPI console_control_handler(const DWORD control) {
+    switch (control) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+    case CTRL_LOGOFF_EVENT:
+        console_stop_requested.store(true);
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
 
 using myrd::Result;
 using myrd::service::ServiceHost;
@@ -242,6 +264,15 @@ void WINAPI service_main(const DWORD, LPWSTR*) {
 // Interactive mode.  Drives the same host through the same calls, so this is a
 // way to exercise start and clean exit without installing anything -- not a
 // second implementation.
+//
+// **It serves until interrupted, because a foreground service that starts and
+// immediately stops cannot be diagnosed with.**  That shape was all this had, and it
+// made the one thing an operator most needs -- run it in front of you and watch it --
+// impossible: the only way to see a failure was to install the service, where the SCM
+// gives the process no stderr at all.  Waiting here for a stop is also what makes the
+// console mode usable as an end-to-end fixture: a script starts it, commands it over the
+// public pipe, and the log it writes is the same log the installed service would have
+// thrown away.
 int run_console(myrd::service::ServiceRuntime& runtime) {
     auto host = runtime.host();
     std::fprintf(stderr, "myrd-service: console mode, state=%s\n",
@@ -254,7 +285,20 @@ int run_console(myrd::service::ServiceRuntime& runtime) {
     std::fprintf(stderr, "myrd-service: started, state=%s recovered=%zu\n",
                  myrd::service::to_string(host.state()),
                  host.diagnostics().recovered_operations);
+    std::fprintf(stderr,
+                 "myrd-service: serving; press Ctrl+C to stop\n");
     std::fflush(stderr);
+
+    // A console control event is the only stop signal a foreground process has that a
+    // script can also send (CTRL_BREAK to the process group).  The handler only sets a
+    // flag: the shutdown must run on this thread, through the same `host.stop()` the SCM
+    // path uses, or the two stop paths would be two implementations.
+    ::SetConsoleCtrlHandler(&console_control_handler, TRUE);
+    while (!console_stop_requested.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ::SetConsoleCtrlHandler(&console_control_handler, FALSE);
+
     const auto stopped = host.stop();
     if (!stopped.ok()) {
         failure_exit_code("stop", stopped);

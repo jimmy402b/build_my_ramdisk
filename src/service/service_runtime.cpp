@@ -151,7 +151,7 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
     runtime->worker_.emplace(*runtime->sessions_,
                              runtime->config_.worker_control_timeout_ms,
                              &*runtime->bindings_);
-    runtime->execution_gate_ = std::make_unique<std::mutex>();
+    runtime->execution_gate_ = std::make_unique<std::timed_mutex>();
 
     // The sweep's two halves: the durable fingerprints as bindings, and the sweep
     // itself over the job.
@@ -192,6 +192,11 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
     runtime->scheduler_.emplace(*runtime->core_, runtime->clock_,
                                 *runtime->execution_gate_,
                                 runtime->config_.scheduler);
+    // The public surface last, because it borrows the core and the gate -- and because
+    // it is the thing the host opens last.  Emplaced here so the wiring is one
+    // expression in dependency order, like everything above it.
+    runtime->surface_.emplace(*runtime->core_, *runtime->execution_gate_,
+                              runtime->config_.pipe_name);
     return Result<std::unique_ptr<ServiceRuntime>>::success(std::move(runtime));
 }
 
@@ -202,7 +207,8 @@ ServiceRuntime::~ServiceRuntime() noexcept = default;
 
 ServiceHost ServiceRuntime::host() {
     return ServiceHost(clock_, *core_, *scheduler_, config_.host,
-                       startup_sweep_.has_value() ? &*startup_sweep_ : nullptr);
+                       startup_sweep_.has_value() ? &*startup_sweep_ : nullptr,
+                       surface_.has_value() ? &*surface_ : nullptr);
 }
 
 } // namespace myrd::service

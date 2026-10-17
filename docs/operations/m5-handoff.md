@@ -689,3 +689,38 @@ T1-05 真正开始时还得推翻。
 
 **顺序**：T1-05 建命令面 → 回来跑 T1-04 的验收 → 那时才标 PASSED。
 
+---
+
+### §9.6 2026-10-17 晚：T1-04 已 PASSED；T1-05 阻塞在一个"取不到失败原因"的缺口上
+
+**先读 [`docs/validation/m5-t1-05-cli.md`](../validation/m5-t1-05-cli.md)**，那里有本轮的
+全部读数。这里只留交班必须知道的三件事。
+
+**1. T1-04 的验收已经量到了**：客机 `integration.m5.cli_e2e` 三次独立运行、每次 20 次
+`disk list` 采样、**每条样本前先读 operation 状态**，60/60 都在 create 进行中，
+最大时延 **111 / 35 / 26 ms**（限值 1000 ms）。**T1-04 标 PASSED。**
+
+**2. 这条验收要成立，靠的是两处并发修正，不是"锁改对了"**（两处都不在 tasklist 里）：
+- 端点**查询不取 execution gate**：调度器**整台操作**持有它（create 可达分钟级），
+  查询若取（共享或独占）就必然等它；
+- `ServiceWorkerControl` 加**命令门**，且 `observe_runtime` **try_lock 失败即答"未观测"**：
+  worker 的命令通道是一次请求一次应答、无重同步，排队就等于排在 create 后面。
+
+**3. 下一步的第一件事不是查 create，是让"为什么失败"可达。**
+客机读数（已确认的事实）：服务 `RUNNING`、`disk list` 可用；`create` 被**准入**后**执行失败**
+（`kind=3 phase=terminal`）；失败后 **worker 进程数 0**；工作目录里**已出现 `bundle`**；
+日志里**没有 provisioning helper 的输出** ⇒ 失败在 helper 之前。
+而**原因取不到**：`OperationRecord` 只存标记串、`ServiceLogEvent` 没有 message 字段、
+响应投影只有 `operation.state`。**服务、日志、CLI 三处都说不清。**
+⇒ **先补这三处可达性**，再定位失败点；否则又是在"猜环境里有什么"。
+
+**顺带记下两个本轮修掉的真缺陷**（都有读数，别再当成"陈旧二进制"）：
+- `m5.execution_scheduler` 第 455 行那条**干净重编后 10/10 失败**（§8 第 1 项原先记"已关闭、
+  原因是陈旧二进制"——**实测推翻**）：根因是 `run()` 在**取 gate 之前**判 stop，
+  停在 gate 上的 worker 取到 gate 后会**再执行一个 operation**。修后 **10/10 通过**。
+- **`profiles` 是共享根**：`WorkerBindingStore` 在 `profiles\workers` 存指纹，
+  而 `ProfileRegistrationStore::list_profiles()` 把它判成"未知条目" ⇒
+  **第一次启动创建它、此后每次启动都失败**（客机上从 2026-10-17 起就是红的）。
+  按名字承认共位者即修。**这条属于 T1-09 的前置**：断电恢复的前提是服务能再启。
+
+

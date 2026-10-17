@@ -876,6 +876,22 @@ Result<ManagedProfileSnapshot> ProfileRegistrationStore::load(
 }
 
 bool allowed_root_metadata_leaf(std::wstring_view name) noexcept {
+    // **`workers` is a co-tenant of this root, and it has to be named here.**
+    //
+    // The worker-fingerprint store keeps its records in `profiles\workers`, by its own
+    // argument that they are the same class of state as profile records and should live
+    // behind the one protected root the installer creates.  That makes this directory a
+    // *shared* root, and this reader the one that has to know it: without this line,
+    // `disk list` and `recover_after_restart` both fail with "the protected profiles
+    // directory contains an unknown or invalid entry" from the second start onwards --
+    // the first start is what creates the leaf (measured on the guest: every start after
+    // a start that wrote a fingerprint failed this way).
+    //
+    // It stays an exact name rather than "ignore directories", because the point of the
+    // check is that an unexpected entry in a protected root is a corruption or an attack,
+    // and skipping directories wholesale would give up exactly that.  A new co-tenant
+    // must be added here by name, which is the moment somebody should have to justify it.
+    if (name == L"workers") return true;
     constexpr std::array<std::pair<std::wstring_view, std::wstring_view>, 3> forms{
         std::pair{L"lifecycle-", L".mylr"},
         std::pair{L"recovery-", L".myrr"},

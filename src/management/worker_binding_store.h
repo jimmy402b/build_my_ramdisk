@@ -82,12 +82,19 @@ struct WorkerFingerprintRecord final {
 
 class WorkerBindingStore final : public IWorkerFingerprintSink {
 public:
-    // Opens (or creates) `<root>\MyRamDisk\workers`.  Creation is deliberate here
-    // and is *not* a contradiction of the service's fail-closed rule for the
+    // Opens (or creates) `<root>\MyRamDisk\profiles\workers`.  Creation is deliberate
+    // here and is *not* a contradiction of the service's fail-closed rule for the
     // product root: that rule is about the durable roots the installer owns, and
     // this is a leaf the service owns inside them.  The installer creates the
     // parent, and a service that could not write its own fingerprints would be
     // unable to sweep at all.
+    //
+    // It lives under `profiles` rather than directly under `MyRamDisk` so the
+    // fingerprints share the one protected root the installer already creates, rather
+    // than a second root whose ACL would have to be kept in step.  The cost of that
+    // choice is stated where it is paid: `profiles` is then a *shared* root, and the
+    // profile-registration reader has to know this leaf's name -- it does, in
+    // `allowed_root_metadata_leaf`.
     [[nodiscard]] static Result<WorkerBindingStore> open(
         std::wstring_view trusted_program_data_root);
 
