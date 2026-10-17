@@ -932,38 +932,19 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    **做隔离实验时务必 `touch` 还原后的文件**，否则 CMake 会因时间戳未变而**静默跳过重编**
    （已踩过：会把"隔离版的旧二进制"误读成"完整套件通过"）。
    **可靠的判据是耗时**：完整套件约 **50–75 秒**，被裁剪过的约 **10 秒**。
-9. **`m5.production_execution_backend` 第 17 条在建卷时失败（未解决，已知）** ——
-   **完整移交记录见 [`docs/validation/m5-open-defect-create-disk.md`](../../validation/m5-open-defect-create-disk.md)**。
-   **那份文档是接手这一项的唯一入口**：包含现象、决定性读数、**六个已排除的假设**（每个都带读数）、
-   已确立的事实、已装上的安全守卫、**下一步该测什么（三步，每步都能独立证伪）**、
-   "不要重复做的事"，以及测量纪律上踩过的坑。
-   下面是摘要，**细节一律以那份文档为准**：
-   **`op=provision_new_volume msg=provisioning helper failed`，脚本报 `disk is not RAW`**，
-   而盘上有**真实的 MBR 引导码与 `EFI PART` 签名**（字节级读数，§4.15.63）。
-   **四个假设已被实测排除**：
-   ① 盘号错（读数显示 `#1`/64 MiB/非系统盘，正确）；
-   ② SHM 映射太小（`kDataAreaSize` 是**协议载荷窗口**，不是盘容量）；
-   ③ 旧设备被复用（**create 前驱动里 0 个设备**）；
-   ④ 定位错盘（**baseline 每次都是 `[0]`**，即创建前只有系统盘，`#1` 必是新建的）。
-   **目前唯一剩下的解释**：盘上的字节来自我们自己的 `request_processor`，
-   即 **M3 存储在 generation-zero 上对未提交块返回了非零内容**——
-   但**为什么前几次 create 是 RAW、第 6 次不是，尚未解释**。
-   **2026-10-17 更新（part 89–91，已大幅收窄）**：
-   - **决定性对比**：每次 create 在 provisioning 前读盘头 —— **前 6 次全零，第 7 次是 MBR**。
-     ⇒ **不是"存储总是错的"，而是"第 7 次定位到的不是刚建的盘"**。
-   - **已实施安全守卫**：create 定位后校验盘头必须为零，非零则重试一次、仍非零则**明确失败**。
-     **这从"会对无法证明归属的盘直接 format"变成"拒绝并说明理由"** —— 这是真正的安全改进。
-   - **重试无效**（500 ms 后仍非零）⇒ 那块盘是**稳定的**，不是"还没稳定"。
-   - **静止状态下客机只有系统盘**（`workers: 0`、`disks: #0`）⇒ **没有持久化残留**，
-     **那块非空的盘只在运行期间存在**。
-   **下一轮接手的第一步（明确，不需裁决）**：**确认"拆卸失败时盘符是否仍被移除"**。
-   读数里反复出现 `worker's resources could not be released (op=flush ...)`（拆卸失败），
-   而盘符移除排在 flush 之后 —— 若失败时盘符没被移除，
-   **每次失败都会留一个盘符，下一轮 create 就会命中它**，
-   这正好解释"前几次好、第六次坏"的累积形态。
-   **不阻塞其他增量。**
-   **不阻塞其他增量**；回来时的下一步很明确：
-   比较"provision 成功的那次"与"失败的那次"在**同一块盘上读出的前 1 KiB**。
+9. **`m5.production_execution_backend` 第 17 条在建卷时失败** —— **✅ 已解决（part 95）**。
+   完整记录见 [`docs/validation/m5-resolved-create-disk-adoption.md`](../../../validation/m5-resolved-create-disk-adoption.md)，
+   其中保留**六个被实测排除的假设**与"六个方向为什么全错"。
+   **根因**：**失败的那次 create 走的是"采纳"路径，采纳了另一个 profile 的设备**。
+   采纳的匹配在 `adopting_existing` 为真时**跳过了 backing name 比较，只比大小与扇区大小**；
+   其正当性论证是"本运行时持有 bundle 的独占写锁"，
+   **而这句话只覆盖"本 bundle 的并发持有者"，覆盖不了"另一个 bundle 的持有者"** ——
+   两个 profile 的盘都是 64 MiB，于是 B 采纳了 A 的设备，随后定位到 A 的盘（已格式化，非空）。
+   **修复**：**create 路径不再采纳**（创建就是造新设备；本 bundle 的残留归 sweep/reclaim 管），
+   **attach-only 路径仍然采纳**（`recover`/`reclaim` 必须找到已有设备）。
+   **读数**：`-Repeat 3` → **3/3 全绿、无一条 FAIL**；`-Repeat 20` 结果见证据文档。
+   **教训**：**"这次操作走了哪条分支"是最便宜也最常被跳过的一问**——
+   六个假设都在追问"环境里有什么"，而答案是"代码走了另一条路"。
 10. **改 `src/run/provision_volume.ps1` 后必须先在开发机跑 `unit.m4.provision_script`** ——
    它是那个脚本唯一守卫（AST 白名单，只允许固定的存储命令集），
    而且不需要真实设备。**已因漏跑而红过两次**（`ForEach-Object`、`New-Object` 都不在白名单里）。
@@ -1105,7 +1086,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（实现完成；两项验收用例通过；等 §8-9 解决后收尾）** | part 1–88。**范围调整 (a)(b)(c) 已全部完成并客机验证**：(a) attach-only 不再取盘号、卷身份改用 durable GUID + 挂载优先 + 诚实的盘符字段 ⇒ **11 秒阻塞与"多卷歧义"均消失**；(b) `DiskRuntimeOperations` 的代价/前提/所有权写入契约；(c) 拆卸的两处模式分支合并为单一 `TeardownPolicy`。**客机读数：16/18 × 3 次（多次重复），T1-03 的两条验收用例每次都通过。** 唯一的红是 §8 第 9 项那条**独立的** `disk is not RAW`（已排五个假设，未解决，不阻塞其他增量）。**因此不标 PASSED：门是整套件，我不放宽。** |
+| T1-03 | **✅ PASSED** | part 1–96。**三项验收全部落地且有客机读数**：被杀的 worker 不留进程/挂载/设备、reclaim 能拆掉击杀造成的残留、**整套件 `-Repeat 20` → 20/20 全绿**（请求 `826c5f3567c14e13ba9a7ff40f8cf621`）。**范围调整 (a)(b)(c) 全部完成**：(a) attach-only 不再取盘号、卷身份改用 durable GUID + 挂载优先 + 诚实的盘符字段；(b) `DiskRuntimeOperations` 的代价/前提/所有权写入契约；(c) 拆卸的模式分支合并为单一 `TeardownPolicy`。**关键根因**：**create 路径会"采纳"另一个 profile 的同尺寸设备**（采纳时跳过 backing name 校验，其正当性论证只覆盖本 bundle 的并发持有者）⇒ **create 路径不再采纳**。**教训：先问"走了哪条分支"，再问"环境里有什么"。** 证据：`docs/validation/m5-t1-03-worker-job.md` §4.15.1–76、`docs/validation/m5-resolved-create-disk-adoption.md`。 |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |

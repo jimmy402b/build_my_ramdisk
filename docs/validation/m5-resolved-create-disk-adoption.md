@@ -1,6 +1,77 @@
-# 未解决项：create 路径定位到一块非空的盘
+# 已解决：create 路径定位到一块非空的盘
+
+> **状态：已解决（2026-10-17，part 95）。**
+> 根因与六个被排除的假设**都不是一回事**，所以下面那份排查记录保留原样 ——
+> 它的价值在于说明"为什么六个看起来最像的方向全是错的"。
+> **根因见 §0，修复见 §0.2。** 下面的 §1–§8 是当时的排查记录。
+
+---
+
+## 0. 根因（一句话）
+
+**失败的 create 走的是"采纳"路径，而它采纳了另一个 profile 的设备。**
+
+**这不是"定位错盘"，而是"从一开始手上拿的就是别人的设备"。**
+
+### 0.1 决定性读数
+
+在 `create_generation_zero` 入口加打点，与 create 的其它打点对齐：
+
+```
+ADOPTING the existing device              ← 第一次（attach）
+create_generation_zero: entered
+create_generation_zero: wrote generation zero
+create proxy disk                          ← 六次正常 create
+（× 6）
+ADOPTING the existing device              ← ★ 失败的那次：采纳，不是创建
+disk #1 is not empty; retrying the locate
+```
+
+**根因代码**（`m3_windows_acceptance.cpp`）：
+
+```cpp
+const bool identity_ok =
+    queried.value().id == *owned_device_ &&
+    queried.value().size_bytes == geometry.virtual_bytes &&
+    queried.value().sector_size == geometry.logical_sector_size &&
+    (adopting_existing ||                                  // ← 采纳时这个条件被跳过
+     queried.value().native_object_path == names.driver_path);
+```
+
+**采纳时只比"大小 + 扇区大小"，不比身份。**
+
+代码里给出的理由是：*本运行时持有 bundle 的独占写锁，所以同尺寸的设备就是本 bundle 的。*
+**这条对"服务本 bundle 的设备"成立，对"服务别的 profile 的 bundle 的设备"什么也没说**
+——而那正是出事的场景：**两个 profile 的盘都是 64 MiB，bundle 锁排除不了另一个 bundle 的持有者。**
+
+**这一条解释了此前全部读数的每一个细节**：`baseline` 为空（采纳路径跳过 baseline）、
+驱动里 1 个设备（A 的）、只有一块 64 MiB 盘（A 的）、它的头是 MBR（A 已格式化）、
+前六次正常（那时台面上没有别人的设备）。
+
+### 0.2 修复
+
+**create 路径不再采纳。** 创建运行时的职责就是把新设备造出来；
+属于本 bundle 的残留是 sweep 与 reclaim 的事。
+**attach-only 路径仍然采纳**——找到"已经在服务本 bundle 的那个设备"正是
+`recover` 与 `reclaim` 必须做的事。
+
+**读数**：`-Repeat 3` → **3 / 3 全绿，一条 FAIL 都没有**。
+
+### 0.3 从这次排查里能带走的
+
+1. **"这次操作到底走了哪条分支"是最便宜、也最常被跳过的一问。**
+   六个假设全在追问"环境里有什么"，而答案是"代码走了另一条路"。
+2. **一个"因为 X 所以 Y 安全"的推理，必须问 X 是否覆盖了所有情况。**
+   这里 X（bundle 锁）只覆盖"本 bundle 的并发持有者"，
+   而威胁来自"另一个 bundle 的持有者"——**两者是不同的集合**。
+3. **错误信息指名对象**这条纪律直接换来了这次突破的前置条件（§4.15.61）。
+
+---
+
+## 附：当时的排查记录（保留，说明六个方向为什么全错）
 
 **状态**：未解决，**不阻塞其他增量**。
+
 **影响**：`m5.production_execution_backend` 第 17 条（`stopping_one_profile_does_not_require_the_other_gone`）
 在建卷时失败，因此整套件 16/18，**T1-03 无法收尾**。
 

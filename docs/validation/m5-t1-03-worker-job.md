@@ -3680,3 +3680,86 @@ vswhere.exe not found
 **M5 的其余部分（服务、调度、清扫、worker 绑定、检查点检查）在客机上都是通过的。**
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.75 **根因：失败的 create 走的是"采纳"，它采纳了另一个 profile 的设备**（part 95，本轮）
+
+**"这次 create 到底做了什么"这一问，一次就把案子破了。**
+在 `create_generation_zero` 入口加打点并与 create 的其它打点对齐：
+
+```
+ADOPTING the existing device              ← 第一次（attach）
+create_generation_zero: entered
+create_generation_zero: wrote generation zero
+create proxy disk                          ← 六次正常 create，都是这条
+（× 6）
+ADOPTING the existing device              ← ★ 失败的那次：它是"采纳"，不是"创建"
+disk #1 is not empty; retrying the locate
+```
+
+**⇒ 失败的那次 create 根本没有创建新设备，它"采纳"了一个已存在的设备，
+而那正是另一个 profile（A）的设备。**
+
+**根因代码**（`m3_windows_acceptance.cpp`）：
+
+```cpp
+const bool identity_ok =
+    queried.value().id == *owned_device_ &&
+    queried.value().size_bytes == geometry.virtual_bytes &&
+    queried.value().sector_size == geometry.logical_sector_size &&
+    (adopting_existing ||                                  // ← 采纳时这个条件被跳过
+     queried.value().native_object_path == names.driver_path);
+```
+
+**采纳时只比"大小 + 扇区大小"，不比身份。**
+
+**而代码里那段理由是这样写的**（原文注释）：
+> 这个运行时已持有 bundle 的独占写锁，没有别的 worker 可能在服务这个 bundle，
+> 所以一块尺寸正好等于本 bundle 虚拟大小的设备，就是本 bundle 的。
+
+**这段话对"服务本 bundle 的设备"成立，对"服务别的 profile 的 bundle 的设备"什么也没说**
+——而那正是出事的场景：**两个 profile 各自的盘都是 64 MiB，bundle 锁排除不了另一个 bundle 的持有者。**
+
+**这解释了此前全部的读数**：`baseline` 为空（采纳路径跳过 baseline）、驱动里 1 个设备（A 的）、
+只有一块 64 MiB 盘（A 的）、它的头是 MBR（A 已格式化）、前六次正常（那时台面上没有别人的设备）。
+
+**修法**：**create 路径不再采纳。**
+创建运行时的职责就是把新设备造出来；属于本 bundle 的残留是 sweep 与 reclaim 的事。
+**attach-only 路径仍然采纳**——找到"已经在服务本 bundle 的那个设备"正是
+`recover` 与 `reclaim` 必须做的事。把这条不对称写清楚，歧义就不存在了。
+
+**读数**：`-Repeat 3` → **3 / 3 全绿，一条 FAIL 都没有**（请求 `74329abb5cf540688728f4abf368c7da`）。
+
+**T1-03 不得标 PASSED。**（待 20 次读数确认后收尾）
+
+#### 4.15.76 **质量门通过：`-Repeat 20` → 20 / 20 全绿。T1-03 收尾。**（part 96，本轮）
+
+**读数（请求 `826c5f3567c14e13ba9a7ff40f8cf621`，`-Repeat 20`）**：
+
+```
+[1/20] … [20/20] 全部无 FAIL 行
+20 of 20 passed
+```
+
+**质量门（"修复类结论至少 `-Repeat 20`"）达成。**
+
+**于是 T1-03 的三项验收全部落地，且都有客机读数**：
+
+| 验收项 | 读数 |
+|---|---|
+| 被杀的 worker 不留下进程、挂载或设备 | 每次运行均 PASS（含 20 次连跑） |
+| reclaim 能拆掉击杀造成的残留 | 每次运行均 PASS（含 20 次连跑） |
+| 整套件稳定 | **20 / 20** |
+
+**T1-03 → ✅ PASSED。**
+
+**这次排查跨了约 30 个 part、六个被实测否掉的假设，最后靠的是一问**
+——**"这次操作到底走了哪条分支？"**
+
+**值得留下的判断**：六个假设全在追问"环境里有什么"（盘号、映射、残留设备、盘符、缓存），
+**而答案是"代码走了另一条路"**。
+**下一次遇到"这个操作看到了不该看到的东西"，第一问应当是"它走的是哪条分支、
+这条分支的准入条件是什么"，而不是"环境里多出了什么"。**
+
+**这也是那道安全守卫（§4.15.71）意外兑现的价值**：
+它把"对无法证明归属的盘直接 format"变成了"拒绝并说明理由"，
+**而那句"located a disk that is not empty"正是把排查引到 adopt 分支的线索。**
