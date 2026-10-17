@@ -20,6 +20,43 @@ Result<void> missing_void(const wchar_t* operation) {
         runtime_error(operation, L"required runtime operation is not configured"));
 }
 
+// **The one place that decides what teardown does differently for a disposing runtime.**
+//
+// Teardown used to branch on the mode in two separate places -- one skipping the flush, one skipping the
+// dismount -- so the same question ("what does a reclaim do differently?") had two answers in two spots,
+// each with its own rationale.  That is how a teardown grows two bugs instead of one: a change to one
+// branch does not show up in the other, and neither reads as a policy.
+//
+// The answer is now stated once.  A `reclaim` **disposes** a profile whose worker is dead; `create` and
+// `recover` **serve** a profile that is alive.  Disposal therefore does none of the work that only makes
+// sense for something alive:
+//
+//   - **no flush**, because flushing gets a live profile's writes onto the disk before its volume goes
+//     away, and nobody is preserving this volume's contents.  The attempt also *fails* here, because the
+//     killed worker's handle still holds the volume, and a recorded failure blocks the device removal that
+//     follows -- which is the only step that actually clears the machine.
+//   - **no dismount**, because dismantling a volume means taking it exclusively and that is exactly what the
+//     leftover handle prevents -- measured, the volume lock never returned while the residue held it.
+//
+// Both skips are backed by those measurements rather than by convenience.  What they cost is stated plainly:
+// a disposal leaves a volume mounted and unflushed, and is correct **only because the device backing it is
+// removed immediately afterwards**.  If a future change ever skipped that removal, these two flags would
+// become a silent leak -- which is why the reasoning lives here, next to the flags, instead of at the call
+// sites.
+struct TeardownPolicy final {
+    bool flush_before_teardown{true};
+    bool dismount_before_teardown{true};
+
+    [[nodiscard]] static TeardownPolicy for_mode(DiskRuntimeMode mode) noexcept {
+        TeardownPolicy policy{};
+        if (mode == DiskRuntimeMode::reclaim) {
+            policy.flush_before_teardown = false;
+            policy.dismount_before_teardown = false;
+        }
+        return policy;
+    }
+};
+
 } // namespace
 
 DiskRuntime::DiskRuntime(DiskRuntimeMode mode, DiskRuntimeOptions options,
@@ -371,6 +408,9 @@ Result<void> DiskRuntime::shutdown_clean() {
 }
 
 Result<void> DiskRuntime::shutdown_clean_locked() {
+    // Read once, at the top, so the whole teardown below asks the same question and cannot drift into two
+    // answers.  See `TeardownPolicy` for what a disposal skips and the measurements that justify it.
+    const auto policy = TeardownPolicy::for_mode(mode_);
     if (!started_) {
         // A failed start has already performed cleanup.  Calls before any
         // successful start are rejected and intentionally have no side effects.
@@ -414,7 +454,7 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
         // sends `kRemoveDevice` to the AIM driver and never touches the volume, so the removal path
         // has no use for a flush at all.  Guarded on the mode, because for a create or a recovery
         // the flush is exactly what makes a clean stop clean.
-        if (started_ && mode_ != DiskRuntimeMode::reclaim) {
+        if (started_ && policy.flush_before_teardown) {
             if (!operations_.flush_volume)
                 record(missing_void(L"flush_volume"));
             else
@@ -473,7 +513,7 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
             // Only for `reclaim`.  A create or a recovery dismantles a volume it owns with no
             // competing handle, and skipping the dismount there would leave the volume mounted --
             // which is a different bug entirely, so the mode is checked rather than assumed.
-            if (mode_ == DiskRuntimeMode::reclaim) {
+            if (!policy.dismount_before_teardown) {
                 volume_dismounted_ = true;
             } else if (!operations_.dismount_volume) {
                 record(missing_void(L"dismount_volume"));
