@@ -3017,3 +3017,46 @@ overlapped + `CancelIoEx` 确实能取消；**这里卡的是 create 本身。**
   且**它正是 part 67 早就记下的那个设计缺口**。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.58 **范围调整后首次实测：11 秒阻塞与 258 都消失了，换来一个更窄的真问题**（part 78，本轮）
+
+**用户裁定 G4 延后、执行 (a)(b)(c)**（见 AGENTS.md §2.1）。
+本轮完成 **(a) 去掉 attach-only 路径上的盘号查询**（提交 `8abb89e`），并上客机取读数
+（请求 `90aecf2cec384b5198c0c3ac6e663cc2`，`-Repeat 5`）。
+
+**读数（5 次，全部一致）**：
+
+```
+residue cleanup failed: op=select_volume_for_disk
+  msg=multiple volumes match the requested drive letter  code=20999
+FAIL ...m5_production_execution_backend_tests.cpp:756: reclaimed.ok()
+```
+
+**先确认最重要的那件事：**
+
+| 之前的失败 | 现在 |
+|---|---|
+| `op=enumerate_disk_candidates ... did not finish within its bound`（258，10 秒） | **不再出现** |
+| `CreateFileW took 11017 ms` | **不再出现** |
+
+⇒ **11 秒阻塞被从路径上去掉了。** 这是实质一步，而且**不是"加界"或"绕开"，
+是不再请求那个值**。
+
+**新失败更窄、更可诊断**：`select_volume_for_disk` 看到**多个候选匹配同一盘符**，按 fail-closed 报歧义。
+
+**这正是盘号过滤原来在解决的事**——我拿掉它时判断"GUID 核对足够"，
+**但那是身份核对（`verify_volume`），不是候选筛选（`select`）**。两件事必须分开看：
+- `verify_volume` 用 GUID 核对 → **我保留的论证成立**；
+- `select_volume_for_disk` 要在多个候选里**挑出一个** → **GUID 未参与筛选**，歧义没被消解。
+
+**因此正确修法是把"期望的 GUID"喂进筛选**，而不是退回盘号：
+`find_recovered_volume` 的契约现在只收盘符，而**期望的 GUID 本来就在 durable profile 里**
+（正是 `verify_volume` 用的那个）。用 GUID 筛选比盘号**更强**——盘号会被复用，GUID 不会。
+
+**待确认（下一轮第一步）**：那"多个候选"到底是什么。`enumerate_native_volumes` 用
+`FindFirstVolumeW` 逐个枚举，**理论上每个卷只出现一次**，所以同一盘符出现两条必有原因：
+可能是**残留盘上的卷（未挂载）与另一个卷共享了盘符**，也可能是
+`GetVolumePathNamesForVolumeNameW` 让 `drive_letter` 落到同一个字母上。
+**这一点未查清，不猜。**
+
+**T1-03 不得标 PASSED。** 但阻塞点已从"卡 11 秒"变成"一个明确的歧义错误"。
