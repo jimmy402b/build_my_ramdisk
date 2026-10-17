@@ -3763,3 +3763,22 @@ const bool identity_ok =
 **这也是那道安全守卫（§4.15.71）意外兑现的价值**：
 它把"对无法证明归属的盘直接 format"变成了"拒绝并说明理由"，
 **而那句"located a disk that is not empty"正是把排查引到 adopt 分支的线索。**
+
+#### 4.15.77 **全量确认：149 / 151，仅剩两条环境失败**（part 96 续，本轮）
+
+修复之后跑完整 151 条（请求 `f8e6d7f8e1b449f984914477c4f1d969`）：
+
+```
+149 of 151 passed
+  FAIL structural.m2.storage_independent_build (exit 1)
+  FAIL structural.m5.execution_boundary        (exit 1)
+```
+
+**两条都是同一个环境原因**（客机没装 Visual Studio，`vswhere.exe not found`），
+**不是产品缺陷**。
+
+**⇒ `m5.production_execution_backend` 已转绿，而这是此前唯一一条因产品缺陷而红的用例。**
+
+**⚠ 必须写明的量测范围**：这是**单次**全量运行（`-Repeat 1`）。
+其中 `m5.production_execution_backend` 另有 **`-Repeat 20` → 20/20** 的独立读数支撑。
+**其余 150 条本轮只跑了一次**，我不宣称它们"稳定"，只宣称它们**在这一次运行里通过**。
