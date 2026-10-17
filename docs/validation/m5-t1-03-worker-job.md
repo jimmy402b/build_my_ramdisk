@@ -3421,3 +3421,30 @@ M3AimRuntime::start: wait for physical drive
 不一致 ⇒ 中间还有一层。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.67 **我犯的流程错误：改嵌入脚本后没有先跑开发机测试**（part 86，本轮）
+
+修好 `disk is not RAW` 的字节诊断后，**我直接上了客机，没先跑开发机测试**。
+结果 `unit.m4.provision_script` 一直是红的，而我两次都没看到：
+
+```
+command is not in the safe provisioning allowlist: ForEach-Object
+（修掉后）command is not in the safe provisioning allowlist: New-Object
+```
+
+**这个测试正是为"有人改了嵌入脚本"而存在的守卫**——它解析脚本的 AST，
+只允许一组固定的存储命令，**而我的诊断用了两个不在白名单里的命令。**
+
+**已修**（两个都不再越界）：
+- 盘列表改用 `foreach` **语句**（语言结构），不再用 `ForEach-Object` 管道；
+- 十六进制改用下标循环；
+- 缓冲区用 `[byte[]]::new(1024)`，不再用 `New-Object`。
+
+**⇒ 45/45 M3/M4 套件恢复通过**（唯一失败是既有环境用例 `unit.m4.profile_store`）。
+
+**流程上的修正（必须记住）**：
+**任何对 `src/run/provision_volume.ps1` 的改动，在 stage 到客机之前，
+必须先跑 `unit.m4.provision_script`** —— 它是这类改动的唯一守卫，
+而且**只在开发机就能跑**（不需要真实设备）。**这一条我漏了两次。**
+
+**T1-03 不得标 PASSED。**
