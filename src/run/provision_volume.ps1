@@ -22,8 +22,31 @@ if ($disk.PartitionStyle -ne 'RAW') {
     $survey = @(Get-Disk | ForEach-Object {
         "#$($_.Number)/$($_.PartitionStyle)/$($_.Size)/boot=$($_.IsBoot)/sys=$($_.IsSystem)"
     }) -join ' '
+
+    # **And it reports the actual bytes, because that decides who wrote the partition table.**
+    #
+    # If sector 1 still holds the ASCII "EFI PART" signature, something wrote a real GPT and we are looking
+    # at our own storage answering with content it should not have.  If the sectors are zero while Windows
+    # still calls the disk GPT, then the table is not on the medium at all and the problem is above it --
+    # a cached or stale view.  Those are different defects and one read separates them.
+    $signature = 'unreadable'
+    try {
+        $stream = [System.IO.File]::Open(
+            "\\.\PhysicalDrive$DiskNumber", 'Open', 'Read', 'ReadWrite')
+        try {
+            $first = New-Object byte[] 1024
+            $read = $stream.Read($first, 0, 1024)
+            $sector0 = ($first[0..7] | ForEach-Object { $_.ToString('x2') }) -join ''
+            $sector1 = -join ($first[512..519] | ForEach-Object { [char]$_ })
+            $anyNonZero = $false
+            for ($i = 0; $i -lt $read; $i++) { if ($first[$i] -ne 0) { $anyNonZero = $true; break } }
+            $signature = "sector0=$sector0 sector1='$sector1' nonzero=$anyNonZero read=$read"
+        } finally { $stream.Close() }
+    } catch { $signature = "unreadable: $($_.Exception.Message)" }
+
     throw ("disk is not RAW [inspected #$DiskNumber style=$($disk.PartitionStyle) " +
-           "size=$($disk.Size) boot=$($disk.IsBoot) sys=$($disk.IsSystem)] all=[$survey]")
+           "size=$($disk.Size) boot=$($disk.IsBoot) sys=$($disk.IsSystem)] " +
+           "bytes=[$signature] all=[$survey]")
 }
 if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing boot/system disk' }
 $partitionResults = @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)

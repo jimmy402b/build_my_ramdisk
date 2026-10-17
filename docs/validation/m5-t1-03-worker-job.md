@@ -3235,3 +3235,97 @@ auto data_area = mapping.subspan(kHeaderSize, kDataAreaSize);               // �
 **这是下一轮取读数的位置**，而不是驱动、也不是映射大小。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.63 **字节级证据：那块"新盘"上有真实的 MBR+GPT，所以它更像是旧设备被复用**（part 82，本轮）
+
+脚本在失败瞬间读了盘的头部 1024 字节（请求 `f7c9c0962b1448dfbe49f026fc3d66e7`）：
+
+```
+disk is not RAW [inspected #1 style=GPT size=67108864 boot=False sys=False]
+bytes=[sector0=33c08ed0bc007c8e  sector1='EFI PART'  nonzero=True  read=1024]
+all=[#1/GPT/67108864  #0/GPT/68719476736/boot=True/sys=True]
+```
+
+**`33 c0 8e d0 bc 00 7c 8e` 是标准 Windows MBR 引导代码，`EFI PART` 是 GPT 签名。**
+⇒ **盘上确实有一份完整的、被写过的分区表**——不是缓存假象，也不是读失败。
+
+**这一读数把范围压到最后一层**：
+`TempBundle` 用纳秒时间戳命名（**已核实**，每次都是新目录）、
+生成零镜像、SHM 创建时 `memset` 清零（**已核实**）。
+**那么这份 MBR+GPT 只可能来自"这块盘不是这一轮新建的"。**
+
+**最可能的机制（标注为推断，非实测）**：
+**上一轮失败留下的 AIM 设备没有被移除，而 `create_proxy_disk` 用的 `kAutoDeviceNumber`
+把那个旧设备原样交回来**——于是"新建"的盘其实是旧设备，
+而它背后的旧 SHM 仍然活着（驱动持有句柄），里面还是上一轮写好的 MBR+GPT。
+
+**一条旁证（同样是推断）**：如果设备真在累积，跑了二十来次失败之后
+应该能看到很多块 64 MiB 盘；**而每次 survey 都只看到一块**。
+这与"驱动复用同一个设备"一致。
+
+**这同时把 part 55 那个回归连上了**：
+`match_created_disk` 的 `existed_before` 过滤现已永远不生效，
+于是 create 路径**分辨不出"我刚建的盘"与"早就存在的旧盘"**——
+**即使驱动交回旧设备，代码也会欣然接受。**
+
+**修法方向（下一轮）**：
+
+1. **create 之前清掉可证明是本项目残留的设备。**
+   身份**可证明**：`query_device` 能拿到设备的 backing name，
+   而本项目名字有固定前缀（`\BaseNamedObjects\Global\myrd-m1-`）。
+   **"前缀匹配 + 几何匹配"是可证明的归属**，符合项目
+   "身份必须来自驱动可查询的事实"的先例，**不违反"绝不按进程名/AIM 编号/显示名清理"**。
+2. **恢复 create 的"新/旧"判别**，让驱动交回旧设备时**报错而不是静默接受**，
+   把 21001 变成明确的"有旧设备占位"。
+
+**倾向 1**，因为它是根治：旧设备留着，后面每个 create 都会踩同一个坑。
+
+**T1-03 不得标 PASSED。**
+
+#### 4.15.64 **"旧设备被复用"被证伪：create 之前驱动里是 0 个设备**（part 83，本轮）
+
+在 `create_proxy_disk` 之前加了一次只读的 `list_devices()` 打点，读数
+（请求 `af685fa24dc44439a861e29f90d8cfe8`）：
+
+```
+M3AimRuntime::start: driver already holds 0 device(s) before create
+M3AimRuntime::start: create proxy disk
+（这样重复 6 次，每次都是 0）
+```
+
+⇒ **驱动里一个设备都没有，我们的设备确实是新建的。**
+**上一节"上一轮的旧设备被 `kAutoDeviceNumber` 交回来"这个推断，被直接推翻。**
+
+**这一条否掉的东西也有价值**：它同时否掉了"旧 SHM 还活着、里面还是上一轮写好的
+MBR+GPT"这条链，以及"应该去清掉旧设备"这个修法方向——**没有旧设备可清**。
+
+**于是三条事实必须同时成立，而它们互相矛盾**：
+
+| 事实 | 来源 |
+|---|---|
+| 设备是新建的（驱动里 0 个旧设备） | 本轮 trace |
+| bundle 是新建的（纳秒时间戳目录） | 代码核实 |
+| SHM 创建时 `memset` 清零 | 代码核实 |
+| **但盘上 `sector0` 是 Windows MBR 引导码、`sector1` 是 `EFI PART`** | 上一轮字节读数 |
+
+**矛盾的唯一出口**：**被检查的那块盘（`#1`）不是我们刚建的那块。**
+即 `wait_for_present_physical_drive` **定位错了盘**——
+它按"SCSI 地址 + 期望长度"匹配，而 survey 每次都只看到一块 64 MiB 盘，
+**所以那块盘要么是我们的、要么是 Windows 视图里遗留的幽灵盘。**
+
+**而恰好有一个已知机制能造成这种误配**：
+`match_created_disk` 本来靠 `existed_before` 跳过"创建之前就已存在"的候选，
+**part 55 移除 baseline 后这个标志永远不被设置**（见 §4.15.61）——
+**它无法区分"我新建的"与"Windows 还在显示的旧盘"。**
+**"驱动里 0 个设备"不等于"Windows 磁盘视图里没有旧盘"**：
+两者是不同层（驱动 vs `SetupDi`），而定位用的是后者。
+
+**因此下一轮的问题非常具体**：
+**定位到的那块盘，它的身份是不是本 worker 的？**
+做法：在 `start_aim` 里同时打出
+① `owned_device_` 与 `names.driver_path`（本会话的名字），
+② 定位到的盘的 `physical_drive_number` 与 SCSI 地址，
+③ 驱动里该 id 的 `query_device` 返回的 geometry/name。
+三者对照即可判定。**这是纯只读打点。**
+
+**T1-03 不得标 PASSED。**

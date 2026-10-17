@@ -306,6 +306,28 @@ Result<void> M3AimRuntime::start() {
         diagnostic_trace("M3AimRuntime::start: ADOPTING the existing device");
         owned_device_ = *existing.value();
     } else {
+        // **Survey what the driver already holds, before asking it for a new device.**
+        //
+        // A device left behind by an earlier run is the leading explanation for a "newly created" disk
+        // that already carries an MBR and a GPT: `kAutoDeviceNumber` may hand the existing device back
+        // rather than making a fresh one, and its old shared memory is still alive because the driver
+        // holds a handle to it.  Byte-level evidence from the guest supports that -- the inspected disk
+        // had both signatures on it -- but nothing has yet shown whether a leftover existed at that
+        // moment.  This trace answers exactly that, and it is read-only.
+        {
+            auto held = adapter_->list_devices();
+            if (held) {
+                char line[192]{};
+                (void)_snprintf_s(line, _TRUNCATE,
+                                  "M3AimRuntime::start: driver already holds %zu device(s) "
+                                  "before create",
+                                  held.value().size());
+                diagnostic_trace(line);
+            } else {
+                diagnostic_trace(
+                    "M3AimRuntime::start: could not survey existing devices");
+            }
+        }
         diagnostic_trace("M3AimRuntime::start: create proxy disk");
         auto created = adapter_->create_proxy_disk(spec);
         if (!created) {
