@@ -3060,3 +3060,55 @@ FAIL ...m5_production_execution_backend_tests.cpp:756: reclaimed.ok()
 **这一点未查清，不猜。**
 
 **T1-03 不得标 PASSED。** 但阻塞点已从"卡 11 秒"变成"一个明确的歧义错误"。
+
+#### 4.15.59 **歧义的根因：`enumerate_native_volumes` 给每个卷都盖上"请求的盘符"**（part 79，本轮）
+
+**查清了，而且不止一个缺陷。**
+
+**缺陷 1（歧义的直接原因）**：`windows_volume.cpp:461`
+
+```cpp
+volume.drive_letter = requested_letter;  volume.mounted = mounted;
+```
+
+**`enumerate_native_volumes(L'R')` 把机器上枚举到的每一个卷都标成"盘符 = R"**，
+只有 `mounted` 标志是如实计算的。
+于是 `select_volume_for_disk` 里的
+
+```cpp
+if (candidate.drive_letter != drive_letter || ...) continue;
+```
+
+**永远不成立、什么也过滤不掉**。而观测记录里的 `foreign_mount` / `drive_letter_occupied`
+**是两个硬编码的 `false`**（`result.push_back({std::move(volume), false, ...})`），
+也什么都不做。
+
+⇒ **盘号其实是当时唯一真正起作用的判别条件。**
+我上一轮说它"只是一层冗余的消歧"，**这个判断是错的**——
+不是它冗余，而是**别的过滤器本来就是空转**。
+
+**缺陷 2（更严重：身份核对是自我循环的）**：
+`DiskRuntime::start()` 里 `volume_ = found.move_value()`，随后
+`verify_volume(*volume_, ...)`；而 `ProductionRuntimeAdapter::verify` 里：
+
+```cpp
+const auto observed = impl_->volume_adapter.observe(volume);
+const auto expected_guid = normalized_guid(volume.volume_guid);   // ← 来自刚刚 find 出来的那个
+```
+
+⇒ **`expected_guid` 来自 `find` 的返回值，而那个 GUID 又是枚举时从同一个卷上读来的。**
+**所以 GUID 这一条只在验证"find 与 verify 之间卷没有被换掉"，从来没有跟 durable profile 核对过。**
+**"按身份核对"在这条路径上实际上没有发生。**
+
+**这两个缺陷有同一个修法：把 durable profile 里记录的卷 GUID 送进来。**
+
+- 作为**候选筛选**依据 → 消解歧义（比盘号更强：盘号会被 Windows 复用，GUID 不会）；
+- 作为**期望身份** → 让 `verify_volume` 的 GUID 那条真正有意义。
+
+**因此 (a) 的收尾不是"退回盘号"，而是补一条数据通路**：
+`DiskRuntimeOptions`（或等价的启动参数）携带 `expected_volume_guid`，
+`find_recovered_volume` 与 `verify_volume` 都用它。
+**这也是唯一能同时满足"recover 要在卷未挂载时也能找到卷"的方案**——
+按盘符筛选在未挂载时无解（无路径 ⇒ 无盘符），而 GUID 不依赖挂载状态。
+
+**T1-03 不得标 PASSED。** 下一步：(a) 实现 GUID 通路。
