@@ -522,6 +522,57 @@ Result<void> M3AimRuntime::start() {
                 bool readable_again = false;
                 if (!head_is_zero(again.value().physical_drive_number, readable_again) &&
                     readable_again) {
+                    // **Capture both views at the moment of failure, which is the one gap the readings have.**
+                    //
+                    // Every external-residue explanation has been checked and excluded, and every existing
+                    // trace looks either before the device is created or after the locate returns -- never in
+                    // between, which is exactly where the missing link is.  Two views settle it: if more than
+                    // one disk of our size exists at this instant then something was left behind, and if
+                    // exactly one exists then the disk is ours and the question becomes why it is not empty.
+                    // Those two outcomes need opposite repairs, so guessing between them is the expensive
+                    // mistake.
+                    {
+                        auto held = adapter_->list_devices();
+                        char driver_line[160]{};
+                        (void)_snprintf_s(driver_line, _TRUNCATE,
+                                          "M3AimRuntime::start: at failure the driver holds %zu "
+                                          "device(s)",
+                                          held ? held.value().size() : 0);
+                        diagnostic_trace(driver_line);
+                        auto candidates = aim::enumerate_present_physical_drives();
+                        if (candidates) {
+                            char peers[512]{};
+                            std::size_t used = 0;
+                            int of_size = 0;
+                            for (const auto& peer : candidates.value()) {
+                                if (peer.length_bytes != geometry.virtual_bytes) continue;
+                                ++of_size;
+                                const int written = _snprintf_s(
+                                    peers + used, sizeof(peers) - used, _TRUNCATE,
+                                    used == 0 ? "#%u(len=%llu,bus=%u,tgt=%u,lun=%u)"
+                                              : " #%u(len=%llu,bus=%u,tgt=%u,lun=%u)",
+                                    peer.physical_drive_number,
+                                    static_cast<unsigned long long>(peer.length_bytes),
+                                    static_cast<unsigned>(peer.path_id),
+                                    static_cast<unsigned>(peer.target_id),
+                                    static_cast<unsigned>(peer.lun));
+                                if (written <= 0) break;
+                                used += static_cast<std::size_t>(written);
+                            }
+                            char summary[640]{};
+                            (void)_snprintf_s(summary, _TRUNCATE,
+                                              "M3AimRuntime::start: at failure %d disk(s) of "
+                                              "size %llu exist: [%s]",
+                                              of_size,
+                                              static_cast<unsigned long long>(
+                                                  geometry.virtual_bytes),
+                                              used == 0 ? "" : peers);
+                            diagnostic_trace(summary);
+                        } else {
+                            diagnostic_trace(
+                                "M3AimRuntime::start: at failure the disk view was unreadable");
+                        }
+                    }
                     (void)remove_owned_device();
                     (void)stop_provider();
                     return Result<void>::failure({
