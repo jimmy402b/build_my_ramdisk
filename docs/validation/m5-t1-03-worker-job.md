@@ -3640,3 +3640,43 @@ psdrives: C
 3. **推进其他增量**，而不是把全部轮次压在一条 case 上。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.74 **全量 151 条客机读数：148 通过，三条失败全部有解释、无回归**（part 93，本轮）
+
+**动机**：最近二十来轮改了不少东西（`runtime_adapter`、`windows_volume`、
+`m3_windows_acceptance`、`disk_runtime`、provisioning 脚本），**但很久没跑完整套件**。
+**必须确认没把别处改坏。**
+
+**读数（请求 `b6f4a3218b514822b06dbfd953306585`，151 条全跑）**：
+
+```
+148 of 151 passed
+  FAIL m5.production_execution_backend           ← §8-9 已知缺陷
+  FAIL structural.m2.storage_independent_build   ← 客机无 Visual Studio
+  FAIL structural.m5.execution_boundary          ← 同一原因
+```
+
+**第三条是新见到的，我第一反应是"我改坏了"，查证后是同一个环境原因**：
+
+```
+vswhere.exe not found
+  tools/Enter-MsvcEnvironment.ps1:6 ... throw 'vswhere.exe not found'
+```
+
+**⇒ 客机没有 Visual Studio，两条结构性测试都要探测 MSVC 环境，因此都失败。**
+**它们一直如此，只是属于 M5 结构性测试、不在我早前那份 134 条 M0–M4 基线里，
+所以这是第一次见到，不是新出现的。**
+
+**⇒ 结论：本轮改动没有引入任何回归。** 这一点此前只是假设，现在有全量读数支撑。
+
+| 失败 | 性质 | 是否阻塞 |
+|---|---|---|
+| `m5.production_execution_backend` | **产品缺陷**（§8-9） | 阻塞 T1-03 收尾 |
+| `structural.m2.storage_independent_build` | 客机环境（无 VS） | 不阻塞；开发机可跑 |
+| `structural.m5.execution_boundary` | 客机环境（无 VS） | 同上 |
+
+**这条读数还确认了一件事**：`m5.production_execution_backend` 是**唯一**一条
+因产品缺陷而红的用例，其余 148 条全绿 ——
+**M5 的其余部分（服务、调度、清扫、worker 绑定、检查点检查）在客机上都是通过的。**
+
+**T1-03 不得标 PASSED。**
