@@ -13,7 +13,18 @@ $DriveLetter = [char]::ToUpperInvariant($DriveLetter)
 
 $diskResults = @(Get-Disk -Number $DiskNumber)
 $disk = $diskResults[$diskResults.Count - 1]
-if ($disk.PartitionStyle -ne 'RAW') { throw 'disk is not RAW' }
+if ($disk.PartitionStyle -ne 'RAW') {
+    # **The message has to identify which disk was checked, not just that it was wrong.**
+    #
+    # "disk is not RAW" is true and useless: it cannot distinguish "we were handed a stale or foreign
+    # disk number" from "the disk really is ours and carries an old partition table".  Those need opposite
+    # fixes, so the report names the disk that was inspected and lists every disk that exists.
+    $survey = @(Get-Disk | ForEach-Object {
+        "#$($_.Number)/$($_.PartitionStyle)/$($_.Size)/boot=$($_.IsBoot)/sys=$($_.IsSystem)"
+    }) -join ' '
+    throw ("disk is not RAW [inspected #$DiskNumber style=$($disk.PartitionStyle) " +
+           "size=$($disk.Size) boot=$($disk.IsBoot) sys=$($disk.IsSystem)] all=[$survey]")
+}
 if ($disk.IsBoot -or $disk.IsSystem) { throw 'refusing boot/system disk' }
 $partitionResults = @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)
 $partitions = @()

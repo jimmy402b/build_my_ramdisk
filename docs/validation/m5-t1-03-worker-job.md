@@ -3165,3 +3165,46 @@ FAIL ...m5_production_execution_backend_tests.cpp:1248: created.ok()
 再决定是"清理分区表"还是"确保设备号是新的"。
 
 **T1-03 的两条验收用例已 5/5 通过，但整个套件仍 16/18，所以不得标 PASSED。**
+
+#### 4.15.61 **`disk is not RAW` 的读数：盘号是对的，但"新建"的盘上已经有 GPT**（part 81，本轮）
+
+给脚本加了诊断（报被检查的盘号、样式、大小，以及全机器盘列表），读数
+（请求 `1e4f6866b8cd42d5b2519542bedba2f0`）：
+
+```
+disk is not RAW [inspected #1 style=GPT size=67108864 boot=False sys=False]
+all=[#1/GPT/67108864/boot=False/sys=False  #0/GPT/68719476736/boot=True/sys=True]
+```
+
+**⇒ 盘号不是错的**（H1 被证伪）：`#1`、64 MiB、非 boot/非 system，正是我们的代理盘；
+系统盘是 `#0`、64 GiB。**所以传进去的盘号是对的。**
+
+**⇒ 但这块"新建"的盘 `PartitionStyle` 已经是 GPT。** 即它的内容不是空的。
+
+**两个已核实的代码事实（不是猜测）**：
+
+1. **`match_created_disk` 仍然有 `if (c.existed_before) continue;`（`physical_drive_locator.cpp:62`）**，
+   但 **part 55 移除整机 baseline 之后，再也没有任何东西设置 `existed_before`**
+   ⇒ **这条过滤永远不会生效**，create 路径**无法区分"我刚建的盘"与"同地址同大小的旧盘"**。
+   **这是我引入的**（part 55 为了移除一次整机枚举而删掉了 baseline）。
+
+2. **SHM 映射只有 `4096 + 8 MiB`（约 8 MiB），而磁盘是 64 MiB**
+   （`imdproxy_protocol.h`：`kHeaderSize=4096`、`kDataAreaSize=8 MiB`）。
+   **尺寸不匹配这件事本身需要解释**——它可能是"盘内容不是空的"的来源，**但本轮未验证**。
+
+**因此下一步有两个候选方向，都必须先取读数**：
+
+- **(A) 恢复 create 路径的"新/旧"判别**：baseline 移除是为了避免整机枚举，
+  但 create 只需要"我创建之前这个地址上有没有盘"。**可能可以只查目标地址**，
+  而不是枚举全机。若能，则既恢复正确性又不付那次开销。
+- **(B) 查清 8 MiB 映射与 64 MiB 盘的关系**：若驱动只映射 8 MiB，
+  那么 64 MiB 盘的读取行为本身就要重新确认。
+
+**本轮未改产品逻辑**，只把脚本的错误信息改成可诊断的。
+**新增的一个操作性事实（值得写进 handoff）**：脚本通过
+`src/run/run_resources.rc` 以 `RCDATA` 嵌入，
+**改 `.ps1` 不会触发重新编译**——必须 `touch` 那个 `.rc` 才会重建资源，
+否则客机上跑的还是旧脚本。本轮就是这么验的（改后先确认新串真的进了
+`myrd-m5-worker.exe` 与 `myrd.exe`，才上客机）。
+
+**T1-03 不得标 PASSED。**
