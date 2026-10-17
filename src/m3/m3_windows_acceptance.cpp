@@ -299,6 +299,37 @@ Result<void> M3AimRuntime::start() {
     }
 
     const bool adopting_existing = existing.value().has_value();
+    // **A baseline taken once, on the create path only, before the device exists.**
+    //
+    // `match_created_disk` skips candidates flagged `existed_before`, which is what distinguishes the disk
+    // this runtime just brought up from one that was already there.  Nothing has set that flag since the
+    // whole-machine baseline was removed, and the consequence shows up in the two-profile case: with two
+    // 64 MiB disks on the machine, the locate step can accept the other profile's disk as this one's new
+    // disk.  Sixteen single-disk cases pass and the two-profile case fails, which is exactly that shape.
+    //
+    // The removal was not wrong about the cost, only about where.  It ran on every start including the
+    // attach-only paths, putting a whole-machine enumeration inside a device-retirement window where it was
+    // measured blocking for eleven seconds.  Here it runs once, only when a device is about to be created,
+    // and before creation -- so nothing is retiring yet.  Attach-only paths skip it entirely, as they skip
+    // the wait.
+    std::vector<std::uint32_t> baseline;
+    if (!adopting_existing && !config_.attach_only) {
+        auto snapshot = aim::snapshot_physical_drive_numbers();
+        if (snapshot) {
+            baseline = snapshot.move_value();
+            char line[192]{};
+            (void)_snprintf_s(line, _TRUNCATE,
+                              "M3AimRuntime::start: baseline of %zu present drive(s) "
+                              "before create",
+                              baseline.size());
+            diagnostic_trace(line);
+        } else {
+            // Without a baseline the wait falls back to matching on identity alone, which is what it did
+            // before this.  Recorded rather than fatal: a missing snapshot is not a reason to refuse a
+            // create, but it is a reason to expect the ambiguity to return.
+            diagnostic_trace("M3AimRuntime::start: baseline snapshot failed");
+        }
+    }
     if (adopting_existing) {
         // Taken ownership *before* anything else can fail, so the failure paths below remove
         // exactly the device this runtime decided it owns -- the same rule the create path
@@ -397,8 +428,18 @@ Result<void> M3AimRuntime::start() {
     // `info_.disk` therefore stays empty on those paths, which is why it is an optional.
     if (!config_.attach_only) {
         diagnostic_trace("M3AimRuntime::start: wait for physical drive");
-        auto located = aim::wait_for_present_physical_drive(
-            *owned_device_, geometry.virtual_bytes, device_timeout_);
+        // **The baseline, when there is one, is what makes this wait find the disk we just made.**
+        //
+        // It tells `match_created_disk` which disks already existed, and every candidate on that list is
+        // skipped.  Without it the wait matches on SCSI address and length alone, and when another profile
+        // holds a disk of the same size, the address is the only thing left -- so a reused address is
+        // indistinguishable from a fresh one.  An empty baseline keeps the previous behaviour, which is
+        // what an adopt did all along.
+        auto located = baseline.empty()
+            ? aim::wait_for_present_physical_drive(
+                  *owned_device_, geometry.virtual_bytes, device_timeout_)
+            : aim::wait_for_created_physical_drive(
+                  *owned_device_, baseline, geometry.virtual_bytes, device_timeout_);
         if (!located) {
             (void)remove_owned_device();
             (void)stop_provider();

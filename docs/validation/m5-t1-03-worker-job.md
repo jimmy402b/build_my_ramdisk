@@ -3374,3 +3374,50 @@ wait_for_physical_drive: turn 1 saw 2 candidates in 14 ms
 **可检验的假设**：若第 17 条随之通过，则第 17 条与本增量其余部分都归位。
 
 **T1-03 不得标 PASSED。**
+
+#### 4.15.66 **baseline 已实施，读数不变；"定位错盘"因此也被证伪**（part 85，本轮）
+
+**已实施**：只在 create 路径、且在创建**之前**取一次 baseline
+（`snapshot_physical_drive_numbers`），创建后用
+`wait_for_created_physical_drive(baseline, …)`，让 `match_created_disk` 的
+`existed_before` 过滤**重新生效**。attach-only 路径完全不受影响（它本来就不做这次等待）。
+
+**读数（`-Repeat 3`，请求 `b0adcd46071f4a339b87723bb3632c0f`，重启客机后）：
+16 / 16 / 16，失败原因与之前逐字相同。**
+
+**打点证明 baseline 确实生效**：
+
+```
+M3AimRuntime::start: baseline of 1 present drive(s) before create
+M3AimRuntime::start: create proxy disk
+M3AimRuntime::start: wait for physical drive
+（每次 create 都是 1，即只有系统盘 #0）
+```
+
+**⇒ 创建之前台面上只有 1 块盘，创建出来的 `#1` 不可能与"已存在的盘"混淆。**
+**⇒ "两个同尺寸盘导致定位错盘"这个假设，被读数证伪。**
+
+**这是连续第四个被证伪的假设**（盘号错 ✗、映射太小 ✗、旧设备复用 ✗、定位错盘 ✗），
+**每一条都是被实测推翻的，不是被论证推翻的。**
+
+**剩下的事实很干净，只剩一种解释**：
+
+- 设备是新建的（驱动里 0 个旧设备）
+- 创建前只有系统盘一块（baseline 读数）
+- 定位到的 `#1` 就是刚创建的那块（baseline 排除法）
+- bundle 是新建的（纳秒时间戳目录）
+- SHM 创建时 `memset` 清零
+- **但那块盘上有真实的 MBR 引导码与 `EFI PART` 签名**
+
+⇒ **盘上的字节只能来自我们自己的 `request_processor` 对读取的回答**，
+即 **M3 存储在 generation-zero 上对"未提交块"返回了非零内容**。
+
+**这个改动保留**，理由与"是否修好第 17 条"无关：
+它**恢复了一个被 part 55 弄丢的语义**（`existed_before` 过滤），
+而读数显示**不带来回归**（16/16/16）。**但我不宣称它修好了任何东西。**
+
+**下一步**：在 provisioning 之前对磁盘句柄读 1 KiB 并把十六进制写进 trace，
+**同时**对 M3 存储问同一块（若 API 可达）。两者一致 ⇒ 确认是存储在供数；
+不一致 ⇒ 中间还有一层。
+
+**T1-03 不得标 PASSED。**
