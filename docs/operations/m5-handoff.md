@@ -615,3 +615,66 @@ vmrun 的第一个参数**，否则 `-gu/-gp` 被忽略。
 
 T1-11 完成后按 tasklist 顺序继续 T1-02 → T4-04。
 ```
+
+---
+
+## §9 2026-10-17 交班补充（M5 进行中，T1-01/02/03/11 PASSED、T1-04 PARTIAL）
+
+### §9.1 当前客机读数（最新）
+
+**完整 152 条 → 150 通过**，唯二失败是 **`vswhere.exe not found`**
+（客机没装 Visual Studio）：`structural.m2.storage_independent_build`、
+`structural.m5.execution_boundary`。**两者都不是产品缺陷。**
+
+**产品面在客机上全绿**，包括 `m5.production_execution_backend`（`-Repeat 20 → 20/20`）。
+
+### §9.2 两条新的操作性陷阱（都属于"陈旧产物"这一族，但位置不同）
+
+1. **测试清单也会陈旧。** 客机的 `tests.json` 由 `ctest --show-only=json-v1` 抓取，
+   **只在 `-Stage` 时刷新**。**加了测试却只跑 `-Run`，客机上就没有那条测试。**
+   **判据是总数**：`staged 152 tests` 与 `1 of 152 cases selected`——
+   **看到 151 就说明清单没刷新。**
+2. **嵌入脚本的 `.rc` 陷阱依然有效**：改 `src/run/provision_volume.ps1`
+   不会触发重编，**必须 `touch` `src/run/run_resources.rc`**；
+   且在 stage 之前**必须先在开发机跑 `unit.m4.provision_script`**
+   （它是那个脚本的 AST 白名单守卫，`ForEach-Object` 与 `New-Object` 都不在白名单里）。
+
+### §9.3 一条代价很高的排查教训（值得单独读）
+
+`m5.production_execution_backend` 的第 17 条曾长期失败，**六个假设全被实测推翻**：
+盘号错 / 映射太小 / 旧设备复用 / 定位错盘 / 清盘 / 残留盘符。
+
+**真正的根因是：失败的那次 create 走的是"采纳"（adopt）路径，它采纳了另一个 profile 的设备。**
+采纳的匹配在 `adopting_existing` 为真时**跳过了 backing name 校验，只比大小与扇区大小**。
+其正当性论证写的是"本运行时持有 bundle 的独占写锁"，
+**而这句话只覆盖"本 bundle 的并发持有者"，覆盖不了"另一个 bundle 的持有者"**。
+
+**⇒ 六个假设都在追问"环境里有什么"，而答案是"代码走了另一条路"。**
+
+**遇到"这个操作看到了不该看到的东西"，第一问应当是：**
+**"它走的是哪条分支？这条分支的准入条件是什么？"**
+
+完整记录（含每个假设的读数与位置）见
+[`docs/validation/m5-resolved-create-disk-adoption.md`](../validation/m5-resolved-create-disk-adoption.md)
+与 `docs/validation/m5-t1-03-worker-job.md` §4.15.1–77。
+
+### §9.4 范围调整 (a)(b)(c) 已完成
+
+- **(a)** attach-only 路径不再取盘号（去掉那次 11 秒阻塞）；卷身份改用 durable GUID +
+  挂载优先 + **诚实的盘符字段**（此前每个卷都被盖上"被问的那个盘符"，是个真 bug）。
+- **(b)** `DiskRuntimeOperations` 每个 callback 的**代价 / 前提 / 所有权**已写入契约。
+- **(c)** 拆卸的两处模式分支合并为单一 `TeardownPolicy`（**行为等价**，只是收敛成一个审查点）。
+- **(d)** 拆分 `DiskRuntime` 职责 —— 按裁定**延后**到将来做多盘时再考虑。
+
+### §9.5 下一步（T1-04 PARTIAL 的原因，需要一次裁决）
+
+**T1-04 的验收"create 进行中 `disk list` 1 秒内返回"目前无法执行**：
+**命令面里没有 `list`**，`disk list` 属于 **T1-05**。
+**tasklist 里 T1-04 只声明依赖 T1-02，这条依赖是错的**（已在表里标注）。
+
+**已做**：把 `OperationStore` 的门改成 `shared_mutex`、三个纯查询取共享锁，
+并新增 `structural.m5.read_write_separation` 断言这条纪律（正例与负例都验过）。
+
+**待裁决**：把 T1-04 的验收下移到 `list_records()` 层面（在 create 进行中测它的时延），
+还是补上 T1-05 依赖。**在此之前 T1-04 只能标 PARTIAL。**
+
