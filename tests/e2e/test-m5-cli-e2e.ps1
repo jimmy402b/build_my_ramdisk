@@ -200,8 +200,28 @@ try {
     }
     Write-Host "  service pid $($serviceProcess.Id) is answering: $($listed.output.Trim())"
 
+    # The letter must be free by the *product's* test, not by `Test-Path`.  The product's
+    # refusal is `provision_new_volume / code=20994 / "requested drive letter is occupied"`,
+    # which looks at the volume and device namespace; `Test-Path` and `disk list` do not see
+    # a leftover volume that is present but not mounted at a path.  Measured cost of using
+    # the weaker test: a create failed with exactly that refusal while this script believed
+    # the letter was free.
+    #
+    # So the letters are taken from the same namespace the product answers from -- the
+    # volumes Windows reports -- and a letter the product then refuses is a *hard failure*
+    # with the product's own reason, never a silent retry with the next candidate.
+    $occupied = @()
+    foreach ($volume in (Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop)) {
+        if ($volume.DriveLetter) { $occupied += $volume.DriveLetter.ToUpper() }
+    }
+    foreach ($disk in (Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop)) {
+        if ($disk.DeviceID) { $occupied += $disk.DeviceID.ToUpper() }
+    }
+    $occupied = @($occupied | Sort-Object -Unique)
+    Write-Host "  drive letters the product's namespace reports as taken: $($occupied -join ' ')"
+
     foreach ($letter in @('T:', 'U:', 'V:', 'W:', 'X:', 'Y:', 'Z:')) {
-        if (Test-Path -LiteralPath ($letter + '\')) { continue }
+        if ($occupied -contains $letter) { continue }
         if ($listed.output -match [regex]::Escape($letter)) { continue }
         $mount = $letter
         break

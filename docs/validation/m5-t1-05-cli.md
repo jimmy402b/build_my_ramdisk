@@ -1,336 +1,222 @@
-# T1-05 响应侧 + CLI，以及 T1-04 的验收读数
-
-**状态**：
-- **T1-04 → PASSED**（客机实测：create 进行中 20 次 `disk list`，最大 **111 ms**，限值 1000 ms）。
-- **T1-05 → 仍 PARTIAL**：响应侧、CLI、协议、开发机测试**全部完成并验证**；
-  **客机端到端在 `create` 的执行阶段失败**，且**失败原因当前无法取得**（见 §7，这本身是一个缺陷）。
-
-本文记录：建了什么、怎么验的、途中发现并修掉的两个真缺陷、客机读数、以及下一步。
-
+﻿# T1-05 鍝嶅簲渚?+ CLI锛屼互鍙?T1-04 鐨勯獙鏀惰鏁?
+**鐘舵€?*锛?- **T1-04 鈫?PASSED**锛堝鏈哄疄娴嬶細create 杩涜涓?20 娆?`disk list`锛屾渶澶?**111 ms**锛岄檺鍊?1000 ms锛夈€?- **T1-05 鈫?浠?PARTIAL**锛氬搷搴斾晶銆丆LI銆佸崗璁€佸紑鍙戞満娴嬭瘯**鍏ㄩ儴瀹屾垚骞堕獙璇?*锛?  **瀹㈡満绔埌绔湪 `create` 鐨勬墽琛岄樁娈靛け璐?*锛屼笖**澶辫触鍘熷洜褰撳墠鏃犳硶鍙栧緱**锛堣 搂7锛岃繖鏈韩鏄竴涓己闄凤級銆?
+鏈枃璁板綍锛氬缓浜嗕粈涔堛€佹€庝箞楠岀殑銆侀€斾腑鍙戠幇骞朵慨鎺夌殑涓や釜鐪熺己闄枫€佸鏈鸿鏁般€佷互鍙婁笅涓€姝ャ€?
 ---
 
-## 1. 这一步之前缺什么（已核实，不是复述）
-
-`docs/validation/m5-t1-05-scope.md` 已把边界写清：命令面（类型、编解码、帧、传输、授权、
-`disk list` 处理器）**齐全**，缺的是
-**(a) 命令 → 请求帧**（已由 part 100 的 `build_command_request` 补上）、
-**(b) 响应 → 结构化结果 → 输出 + 退出码**、
-**(c) CLI 可执行**、
-**(d) 服务端把 pipe 接到 core**。
-
-本轮实测又发现两条**更硬**的缺口，它们都不是"任务清单里写了没做"，而是**没人写过的接缝**：
-
-| 缺口 | 证据 |
+## 1. 杩欎竴姝ヤ箣鍓嶇己浠€涔堬紙宸叉牳瀹烇紝涓嶆槸澶嶈堪锛?
+`docs/validation/m5-t1-05-scope.md` 宸叉妸杈圭晫鍐欐竻锛氬懡浠ら潰锛堢被鍨嬨€佺紪瑙ｇ爜銆佸抚銆佷紶杈撱€佹巿鏉冦€?`disk list` 澶勭悊鍣級**榻愬叏**锛岀己鐨勬槸
+**(a) 鍛戒护 鈫?璇锋眰甯?*锛堝凡鐢?part 100 鐨?`build_command_request` 琛ヤ笂锛夈€?**(b) 鍝嶅簲 鈫?缁撴瀯鍖栫粨鏋?鈫?杈撳嚭 + 閫€鍑虹爜**銆?**(c) CLI 鍙墽琛?*銆?**(d) 鏈嶅姟绔妸 pipe 鎺ュ埌 core**銆?
+鏈疆瀹炴祴鍙堝彂鐜颁袱鏉?*鏇寸‖**鐨勭己鍙ｏ紝瀹冧滑閮戒笉鏄?浠诲姟娓呭崟閲屽啓浜嗘病鍋?锛岃€屾槸**娌′汉鍐欒繃鐨勬帴缂?*锛?
+| 缂哄彛 | 璇佹嵁 |
 |---|---|
-| **`PublicPipeServer` 在生产里从未被实例化** | `git grep PublicPipeServer src` 只命中它自己的 `.h/.cpp`；没有任何 handler 被提供过 |
-| **`ServiceCore::dispatch` 只被测试调用** | `git grep "\.dispatch(" src` 零命中；产品里没有任何请求能走到 core |
-| **没有任何响应编解码** | `git grep "encode_response\|decode_response\|service_response_wire" src` 零命中 |
+| **`PublicPipeServer` 鍦ㄧ敓浜ч噷浠庢湭琚疄渚嬪寲** | `git grep PublicPipeServer src` 鍙懡涓畠鑷繁鐨?`.h/.cpp`锛涙病鏈変换浣?handler 琚彁渚涜繃 |
+| **`ServiceCore::dispatch` 鍙娴嬭瘯璋冪敤** | `git grep "\.dispatch(" src` 闆跺懡涓紱浜у搧閲屾病鏈変换浣曡姹傝兘璧板埌 core |
+| **娌℃湁浠讳綍鍝嶅簲缂栬В鐮?* | `git grep "encode_response\|decode_response\|service_response_wire" src` 闆跺懡涓?|
 
-⇒ **`public pipe → ServiceCore` 这条"唯一执行链路"（不变量 1）此前只存在于文档里。**
+鈬?**`public pipe 鈫?ServiceCore` 杩欐潯"鍞竴鎵ц閾捐矾"锛堜笉鍙橀噺 1锛夋鍓嶅彧瀛樺湪浜庢枃妗ｉ噷銆?*
 
 ---
 
-## 2. 建了什么（按依赖顺序）
+## 2. 寤轰簡浠€涔堬紙鎸変緷璧栭『搴忥級
 
-### 2.1 响应文档：`src/management/service_response_wire.{h,cpp}`
+### 2.1 鍝嶅簲鏂囨。锛歚src/management/service_response_wire.{h,cpp}`
 
-**这是"客户端可以知道什么"的唯一决定点**，所以它同时是投影与编解码：
+**杩欐槸"瀹㈡埛绔彲浠ョ煡閬撲粈涔?鐨勫敮涓€鍐冲畾鐐?*锛屾墍浠ュ畠鍚屾椂鏄姇褰变笌缂栬В鐮侊細
 
-- `ServiceResponseWire`：`request_id` / `command` / `disposition` / `operation_id` /
-  `operation` / `profiles` / `warnings` / `error` / `mount_target`；
-- `project_profile()`：`ManagedProfileSnapshot` → `ServiceProfileProjection`，
-  **`aggregate` 用服务端同一条规则算**（`aggregate_status(reported_profile_state(...))`），
-  所以客户端不可能算出一个与服务端不同的判决；
-- `encode_service_response()` = 投影 + 编码；`decode_service_response()` 严格解码。
+- `ServiceResponseWire`锛歚request_id` / `command` / `disposition` / `operation_id` /
+  `operation` / `profiles` / `warnings` / `error` / `mount_target`锛?- `project_profile()`锛歚ManagedProfileSnapshot` 鈫?`ServiceProfileProjection`锛?  **`aggregate` 鐢ㄦ湇鍔＄鍚屼竴鏉¤鍒欑畻**锛坄aggregate_status(reported_profile_state(...))`锛夛紝
+  鎵€浠ュ鎴风涓嶅彲鑳界畻鍑轰竴涓笌鏈嶅姟绔笉鍚岀殑鍒ゅ喅锛?- `encode_service_response()` = 鎶曞奖 + 缂栫爜锛沗decode_service_response()` 涓ユ牸瑙ｇ爜銆?
+**鎶曞奖鏄湁鎰忔湁鎹熺殑**锛屼笖杩欎竴鐐瑰啓杩涗簡娉ㄩ噴锛氫笉鎼哄甫 bundle 璺緞銆乯ournal銆乷peration gate銆?checkpoint correlation銆?*`mount_target` 淇濈暀**锛堢敤鎴烽潬鐩樼璁ょ洏锛屼笖瀹冩鏄?`disk list`
+蹇呴』鏈夌殑涓€鍒楋級鈥斺€斾负姝ょ粰 `ServiceProfileProjection` **杩藉姞**浜?`mount_target`锛堝甫榛樿鍊硷紝
+涓嶆敼鍙樹换浣曟棦鏈夎仛鍚堝垵濮嬪寲锛夈€?
+**涓ユ牸鎬?*锛堜笌鍛戒护缂栬В鐮佸悓绾э級锛氭湭鐭?tag銆侀噸澶?tag銆佸瓧娈垫埅鏂€佽鏁拌秺鐣屻€佹灇涓捐秺鐣屻€?灏鹃殢瀛楄妭銆佹枃妗?major 涓嶈璇嗐€乵inor 楂樹簬璇诲彇鑰?鈬?**鍏ㄩ儴鎷掔粷**锛屼笉鏄拷鐣ャ€?娴嬭瘯涓庡疄鐜板悓鏃惰瘉鏄?鎷掔粷"杩欎欢浜嬶紙瑙?搂4锛夈€?
+### 2.2 绔偣锛歚src/service/public_command_endpoint.{h,cpp}`
 
-**投影是有意有损的**，且这一点写进了注释：不携带 bundle 路径、journal、operation gate、
-checkpoint correlation。**`mount_target` 保留**（用户靠盘符认盘，且它正是 `disk list`
-必须有的一列）——为此给 `ServiceProfileProjection` **追加**了 `mount_target`（带默认值，
-不改变任何既有聚合初始化）。
-
-**严格性**（与命令编解码同级）：未知 tag、重复 tag、字段截断、计数越界、枚举越界、
-尾随字节、文档 major 不认识、minor 高于读取者 ⇒ **全部拒绝**，不是忽略。
-测试与实现同时证明"拒绝"这件事（见 §4）。
-
-### 2.2 端点：`src/service/public_command_endpoint.{h,cpp}`
-
-`Frame` → `ServiceCommandRequest` → `dispatch` → 编码 → `Frame`。**每一处取舍都写在头文件里**：
-
-| 决定 | 理由 |
+`Frame` 鈫?`ServiceCommandRequest` 鈫?`dispatch` 鈫?缂栫爜 鈫?`Frame`銆?*姣忎竴澶勫彇鑸嶉兘鍐欏湪澶存枃浠堕噷**锛?
+| 鍐冲畾 | 鐞嗙敱 |
 |---|---|
-| **caller 来自 pipe 连接，绝不来自帧** | 客户端不能自称身份 |
-| 控制位只认两个 flag，**未知位拒绝** | 设了位却静默不做是最坏的三种答案之一 |
-| **查询不取 gate** | 调度器**整台操作**持有 gate（create 可达分钟级）；查询若取（共享或独占）就必然等它，T1-04 的验收就**不可能成立** |
-| **变更只在其"准入"步取 gate（有界等待）** | 准入写的是调度器随后要 claim 的记录；`dispatch` 准入完即返回，execution 由调度器持 gate 执行 |
-| **失败也回一个响应帧，不断连接** | 客户端必须能区分"服务拒绝"（退出码 2/4）与"服务不在"（退出码 3） |
+| **caller 鏉ヨ嚜 pipe 杩炴帴锛岀粷涓嶆潵鑷抚** | 瀹㈡埛绔笉鑳借嚜绉拌韩浠?|
+| 鎺у埗浣嶅彧璁や袱涓?flag锛?*鏈煡浣嶆嫆缁?* | 璁句簡浣嶅嵈闈欓粯涓嶅仛鏄渶鍧忕殑涓夌绛旀涔嬩竴 |
+| **鏌ヨ涓嶅彇 gate** | 璋冨害鍣?*鏁村彴鎿嶄綔**鎸佹湁 gate锛坈reate 鍙揪鍒嗛挓绾э級锛涙煡璇㈣嫢鍙栵紙鍏变韩鎴栫嫭鍗狅級灏卞繀鐒剁瓑瀹冿紝T1-04 鐨勯獙鏀跺氨**涓嶅彲鑳芥垚绔?* |
+| **鍙樻洿鍙湪鍏?鍑嗗叆"姝ュ彇 gate锛堟湁鐣岀瓑寰咃級** | 鍑嗗叆鍐欑殑鏄皟搴﹀櫒闅忓悗瑕?claim 鐨勮褰曪紱`dispatch` 鍑嗗叆瀹屽嵆杩斿洖锛宔xecution 鐢辫皟搴﹀櫒鎸?gate 鎵ц |
+| **澶辫触涔熷洖涓€涓搷搴斿抚锛屼笉鏂繛鎺?* | 瀹㈡埛绔繀椤昏兘鍖哄垎"鏈嶅姟鎷掔粷"锛堥€€鍑虹爜 2/4锛変笌"鏈嶅姟涓嶅湪"锛堥€€鍑虹爜 3锛?|
 
-gate 由 `std::mutex` 改为 **`std::timed_mutex`**（`ServiceExecutionScheduler` 与
-`ServiceRuntime` 同步修改）：一处"有界的等待"应该由类型表达，而不是靠轮询。
+gate 鐢?`std::mutex` 鏀逛负 **`std::timed_mutex`**锛坄ServiceExecutionScheduler` 涓?`ServiceRuntime` 鍚屾淇敼锛夛細涓€澶?鏈夌晫鐨勭瓑寰?搴旇鐢辩被鍨嬭〃杈撅紝鑰屼笉鏄潬杞銆?
+### 2.3 鏈嶅姟渚ф帴绾匡細`src/service/public_pipe_surface.{h,cpp}` + `ServiceHost`
 
-### 2.3 服务侧接线：`src/service/public_pipe_surface.{h,cpp}` + `ServiceHost`
+- `IPublicCommandSurface`锛坄open()` / `close()`锛夎繘 `ServiceHost`锛?- **`open()` 鍦?`start()` 鐨勬渶鍚?*锛坮ecovery 鈫?sweep 鈫?scheduler 鈫?**pipe**锛夛細
+  鍦ㄨ皟搴﹀櫒璧锋潵涔嬪墠鎺ュ彈鍛戒护锛屼細鍑嗗叆涓€涓案杩滀笉浼氳鎵ц鐨?operation锛?- **`close()` 鍦?`stop_locked()` 鐨勬渶鍓?*锛堣璁?搂9锛氬叧闂噯鍏?鈫?鎽?pipe 鈫?鍋?scheduler锛夛紱
+- 寮€鍙戞満娴嬭瘯鐢ㄨ褰曞櫒鏂█杩欎釜椤哄簭锛堜笌 FakeScheduler/FakeSweep 鍚屼竴鎵嬫硶锛夈€?
+`ServiceRuntime` 缁勫悎鏍归儴鎶?`PublicPipeSurface` 鎸変緷璧栭『搴?emplace锛宍host()` 浼犺繘鍘汇€?
+### 2.4 CLI锛歚src/cli/*` + `myrd-cli`
 
-- `IPublicCommandSurface`（`open()` / `close()`）进 `ServiceHost`；
-- **`open()` 在 `start()` 的最后**（recovery → sweep → scheduler → **pipe**）：
-  在调度器起来之前接受命令，会准入一个永远不会被执行的 operation；
-- **`close()` 在 `stop_locked()` 的最前**（设计 §9：关闭准入 → 摘 pipe → 停 scheduler）；
-- 开发机测试用记录器断言这个顺序（与 FakeScheduler/FakeSweep 同一手法）。
-
-`ServiceRuntime` 组合根部把 `PublicPipeSurface` 按依赖顺序 emplace，`host()` 传进去。
-
-### 2.4 CLI：`src/cli/*` + `myrd-cli`
-
-按设计 §10.2 的分层：`cli_parser`（文本 → `control::Command`）、`cli_renderer`
-（typed response → 文本 + 退出码），CLI 专属，GUI 将来不消费。
-
-**退出码 0–5**（v2 §10 原表，v3 G2 引用）：`0` 成功 / `1` 产品失败 / `2` 参数或 schema /
-`3` 服务不可用 / `4` 权限 / `5` 超时或结果未确定。映射是**一个函数** `exit_code_for()`，
-带一张测试表，而不是散在各调用点的条件。
-
-命令面：`disk list|show|create|import|start|stop|checkpoint|compact|config set auto_start|
-forget|repair-profile|rebind`、`operation show|wait|cancel`；选项 `--wait` / `--no-wait` /
-`--dry-run` / `--timeout` / `--pipe`。
-
-**`--wait` 是客户端行为**：准入后循环 `operation wait`，**不长期占住一个请求**——
-服务端规则是"客户端超时永不取消一个已安全运行的 operation"（不变量 9），
-所以放弃等待放弃的是等待，不是操作。
-
-`--force` 与 `--accept-volatile-data-loss` **保持两个独立开关**：它们是给用户的两个不同承诺，
-客户端不得让一个隐含另一个（设计 §10.5.3）。
-
-`myrd-cli` 与 `myrd_cli` 都挂 `myrd_assert_execution_boundary`（不变量 2 的"新目标也要挂"）。
-
+鎸夎璁?搂10.2 鐨勫垎灞傦細`cli_parser`锛堟枃鏈?鈫?`control::Command`锛夈€乣cli_renderer`
+锛坱yped response 鈫?鏂囨湰 + 閫€鍑虹爜锛夛紝CLI 涓撳睘锛孏UI 灏嗘潵涓嶆秷璐广€?
+**閫€鍑虹爜 0鈥?**锛坴2 搂10 鍘熻〃锛寁3 G2 寮曠敤锛夛細`0` 鎴愬姛 / `1` 浜у搧澶辫触 / `2` 鍙傛暟鎴?schema /
+`3` 鏈嶅姟涓嶅彲鐢?/ `4` 鏉冮檺 / `5` 瓒呮椂鎴栫粨鏋滄湭纭畾銆傛槧灏勬槸**涓€涓嚱鏁?* `exit_code_for()`锛?甯︿竴寮犳祴璇曡〃锛岃€屼笉鏄暎鍦ㄥ悇璋冪敤鐐圭殑鏉′欢銆?
+鍛戒护闈細`disk list|show|create|import|start|stop|checkpoint|compact|config set auto_start|
+forget|repair-profile|rebind`銆乣operation show|wait|cancel`锛涢€夐」 `--wait` / `--no-wait` /
+`--dry-run` / `--timeout` / `--pipe`銆?
+**`--wait` 鏄鎴风琛屼负**锛氬噯鍏ュ悗寰幆 `operation wait`锛?*涓嶉暱鏈熷崰浣忎竴涓姹?*鈥斺€?鏈嶅姟绔鍒欐槸"瀹㈡埛绔秴鏃舵案涓嶅彇娑堜竴涓凡瀹夊叏杩愯鐨?operation"锛堜笉鍙橀噺 9锛夛紝
+鎵€浠ユ斁寮冪瓑寰呮斁寮冪殑鏄瓑寰咃紝涓嶆槸鎿嶄綔銆?
+`--force` 涓?`--accept-volatile-data-loss` **淇濇寔涓や釜鐙珛寮€鍏?*锛氬畠浠槸缁欑敤鎴风殑涓や釜涓嶅悓鎵胯锛?瀹㈡埛绔笉寰楄涓€涓殣鍚彟涓€涓紙璁捐 搂10.5.3锛夈€?
+`myrd-cli` 涓?`myrd_cli` 閮芥寕 `myrd_assert_execution_boundary`锛堜笉鍙橀噺 2 鐨?鏂扮洰鏍囦篃瑕佹寕"锛夈€?
 ---
 
-## 3. 途中发现并修掉的两个真缺陷
+## 3. 閫斾腑鍙戠幇骞朵慨鎺夌殑涓や釜鐪熺己闄?
+### 3.1 璋冨害鍣ㄥ湪閫€褰归€斾腑浠嶄細 claim 骞舵墽琛屼竴涓?operation锛?*淇鍓嶅悗 10/10 鈫?0/10**锛?
+**鐜拌薄**锛歚m5.execution_scheduler` 鐨?`m5_scheduler_stop_reports_a_deadline_it_could_not_meet` **骞插噣閲嶇紪鍚庤繛璺?10 娆″叏绾?*锛?澶辫触鐐规槸 `m5_execution_scheduler_tests.cpp:455`锛?stop 涓嶅緱鎶婂畠涓柇鐨?operation 鏍囨垚鎴愬姛"锛夈€?
+**杩欎竴鐐瑰緢閲嶈**锛歮aster-plan 搂8 绗?1 椤规浘鎶婂悓涓€澶勫垽涓?宸插叧闂?锛岀悊鐢辨槸"闄堟棫浜岃繘鍒?銆?**瀹炴祴鎺ㄧ炕浜嗚繖涓悊鐢?*锛歚--clean-first` 涔嬪悗浠?10/10 澶辫触銆?*瀹冧笉鏄檲鏃т骇鐗┿€?*
 
-### 3.1 调度器在退役途中仍会 claim 并执行一个 operation（**修复前后 10/10 → 0/10**）
-
-**现象**：`m5.execution_scheduler` 的
-`m5_scheduler_stop_reports_a_deadline_it_could_not_meet` **干净重编后连跑 10 次全红**，
-失败点是 `m5_execution_scheduler_tests.cpp:455`（"stop 不得把它中断的 operation 标成成功"）。
-
-**这一点很重要**：master-plan §8 第 1 项曾把同一处判为"已关闭"，理由是"陈旧二进制"。
-**实测推翻了这个理由**：`--clean-first` 之后仍 10/10 失败。**它不是陈旧产物。**
-
-**根因（读代码即可确定）**：`run()` 的 `while (!token.stop_requested())` 在**取 gate 之前**判断；
-一个 worker 若正停在 gate 上，stop 之后它取到 gate 就**不再判断 stop**，直接 claim 并执行。
-于是"停在一个什么都没中断的 stop"仍会执行一个已准入的操作——**超出它刚刚报告的 deadline**，
-并把 operation 标成 succeeded，而执行者正在退出。
-
-**修复**：取到 gate 之后**再判一次 stop**，命中就不 claim。
-**没有丢失**：记录是 durable 的、仍是 queued，下次启动 reconcile 之后会执行。
-
-**读数**：`--clean-first` 干净构建后 **连续 10 次 → 10/10 通过**（修前 10/10 失败）。
-
-### 3.2 `profiles` 根目录是共享根，但注册读取器只认自己的条目（**服务从此永远起不来**）
-
-**现象**：客机上服务反复启动失败：
-
+**鏍瑰洜锛堣浠ｇ爜鍗冲彲纭畾锛?*锛歚run()` 鐨?`while (!token.stop_requested())` 鍦?*鍙?gate 涔嬪墠**鍒ゆ柇锛?涓€涓?worker 鑻ユ鍋滃湪 gate 涓婏紝stop 涔嬪悗瀹冨彇鍒?gate 灏?*涓嶅啀鍒ゆ柇 stop**锛岀洿鎺?claim 骞舵墽琛屻€?浜庢槸"鍋滃湪涓€涓粈涔堥兘娌′腑鏂殑 stop"浠嶄細鎵ц涓€涓凡鍑嗗叆鐨勬搷浣溾€斺€?*瓒呭嚭瀹冨垰鍒氭姤鍛婄殑 deadline**锛?骞舵妸 operation 鏍囨垚 succeeded锛岃€屾墽琛岃€呮鍦ㄩ€€鍑恒€?
+**淇**锛氬彇鍒?gate 涔嬪悗**鍐嶅垽涓€娆?stop**锛屽懡涓氨涓?claim銆?**娌℃湁涓㈠け**锛氳褰曟槸 durable 鐨勩€佷粛鏄?queued锛屼笅娆″惎鍔?reconcile 涔嬪悗浼氭墽琛屻€?
+**璇绘暟**锛歚--clean-first` 骞插噣鏋勫缓鍚?**杩炵画 10 娆?鈫?10/10 閫氳繃**锛堜慨鍓?10/10 澶辫触锛夈€?
+### 3.2 `profiles` 鏍圭洰褰曟槸鍏变韩鏍癸紝浣嗘敞鍐岃鍙栧櫒鍙鑷繁鐨勬潯鐩紙**鏈嶅姟浠庢姘歌繙璧蜂笉鏉?*锛?
+**鐜拌薄**锛氬鏈轰笂鏈嶅姟鍙嶅鍚姩澶辫触锛?
 ```
 myrd-service: start failed: op=profile_registration.list
               msg=The protected profiles directory contains an unknown or invalid entry
 ```
 
-**根因**：`WorkerBindingStore` 按自己的理由把指纹放在
-`%ProgramData%\MyRamDisk\profiles\workers`（与 profile 记录同处一个受保护根，省掉第二套 ACL），
-而 `ProfileRegistrationStore::list_profiles()` 把该目录里任何非 UUID、非
-`lifecycle-*`/`recovery-*`/`forget-*` 的条目判为**不可接受的条目**。
+**鏍瑰洜**锛歚WorkerBindingStore` 鎸夎嚜宸辩殑鐞嗙敱鎶婃寚绾规斁鍦?`%ProgramData%\MyRamDisk\profiles\workers`锛堜笌 profile 璁板綍鍚屽涓€涓彈淇濇姢鏍癸紝鐪佹帀绗簩濂?ACL锛夛紝
+鑰?`ProfileRegistrationStore::list_profiles()` 鎶婅鐩綍閲屼换浣曢潪 UUID銆侀潪
+`lifecycle-*`/`recovery-*`/`forget-*` 鐨勬潯鐩垽涓?*涓嶅彲鎺ュ彈鐨勬潯鐩?*銆?
+鈬?**绗竴娆″惎鍔ㄥ垱寤?`workers`锛涙鍚庢瘡涓€娆″惎鍔ㄩ兘澶辫触銆?*
+杩欏彴瀹㈡満涓?`workers` 鐨勬椂闂存埑鏄?2026-10-17锛?*T1-02 鐨?`recovered=8` 璇绘暟鍥犳鏄渶鍚庝竴娆℃垚鍔熺殑鍚姩**銆?
+**杩欐潯涓轰粈涔堜弗閲?*锛歍1-09 鐨勬柇鐢垫仮澶嶃€佷互鍙婁换浣?閲嶅惎鍚庢仮澶?鐨勯獙鏀讹紝鍓嶆彁閮芥槸**鏈嶅姟鑳藉啀娆″惎鍔?*銆?
+**淇**锛氬湪 `allowed_root_metadata_leaf()` 閲?*鎸夊悕瀛?*鎵胯 `workers`锛屽苟鍐欐槑
+**涓轰粈涔堜笉鍐欐垚"蹇界暐鎵€鏈夌洰褰?**鈥斺€斿彈淇濇姢鏍归噷鍑虹幇鎰忓鏉＄洰姝ｆ槸瑕佹姤鐨勯敊锛?鏀捐鐩綍绛変簬鏀惧純杩欐潯淇濇姢锛涙柊鐨勫叡浣嶈€呭繀椤?*鍏峰悕鍔犲叆**锛岄偅鏄簲褰撹瑕佹眰璁鸿瘉鐨勬椂鍒汇€?`worker_binding_store.h` 鐨勬敞閲婏紙鍘熷啓 `<root>\MyRamDisk\workers`锛屼笌浠ｇ爜涓嶄竴鑷达級涓€骞舵敼姝ｄ负瀹為檯璺緞锛?骞舵妸"鍏变韩鏍圭殑浠ｄ环"鍐欏湪浠樹唬浠风殑鍦版柟銆?
+**璇绘暟**锛氫慨澶嶅悗瀹㈡満鏈嶅姟 `STATE : 4 RUNNING`锛宍disk list` 姝ｅ父杩斿洖涓ゆ潯鏃㈡湁 profile锛堣 搂5锛夈€?
+---
 
-⇒ **第一次启动创建 `workers`；此后每一次启动都失败。**
-这台客机上 `workers` 的时间戳是 2026-10-17，**T1-02 的 `recovered=8` 读数因此是最后一次成功的启动**。
+## 4. 寮€鍙戞満娴嬭瘯锛堢函閫昏緫锛屼笉寤虹湡瀹炶澶囷級
 
-**这条为什么严重**：T1-09 的断电恢复、以及任何"重启后恢复"的验收，前提都是**服务能再次启动**。
+| 鐩爣 | 缁撴灉 |
+|---|---|
+| `m5.cli`锛堟柊澧烇紝15 渚嬶級 | **15/15 閫氳繃** |
+| `m5.service_host`锛堟柊澧?5 渚嬬鐐规祴璇曪紝鍏?21 渚嬶級 | **21/21 閫氳繃** |
+| `m5.execution_scheduler` | **10/10 杩炵画閫氳繃**锛堜慨 搂3.1 鍓?10/10 澶辫触锛?|
+| `structural.m5.read_write_separation` | 閫氳繃 |
+| `structural.m5.execution_boundary` | 閫氳繃 |
+| 骞插噣鏋勫缓锛坄--clean-first`锛屽叏鏍戯級 | **0 error / 0 warning** |
 
-**修复**：在 `allowed_root_metadata_leaf()` 里**按名字**承认 `workers`，并写明
-**为什么不写成"忽略所有目录"**——受保护根里出现意外条目正是要报的错，
-放行目录等于放弃这条保护；新的共位者必须**具名加入**，那是应当被要求论证的时刻。
-`worker_binding_store.h` 的注释（原写 `<root>\MyRamDisk\workers`，与代码不一致）一并改正为实际路径，
-并把"共享根的代价"写在付代价的地方。
+`m5.cli` 鏂█鐨勬牳蹇冩€ц川锛?
+1. **寰€杩斾竴鑷?*锛歚disk list` 鍝嶅簲锛堝惈 2 涓?profile + 鎸傝浇鐐癸級缂栫爜鈫掕В鐮佸悗閫愬瓧娈电浉绛夛紱
+   鍚?*闈?ASCII 鐨?error 娑堟伅**锛堝瀛楃杞崲鍙湁涓€澶勫疄鐜帮紝瑙?`ipc::utf16_to_utf8`锛夈€?2. **涓ユ牸鎷掔粷**锛氭湭鐭?tag / 閲嶅 tag / 鏋氫妇瓒婄晫 / 鎴柇 / 灏鹃殢瀛楄妭 / major 涓嶈璇?/ minor 鏇存柊锛?   鍏ㄩ儴澶辫触锛堢敤鎸夊亸绉绘敼瀛楄妭鏋勯€犺礋渚嬶紝涓嶉潬"鐩镐俊瀹炵幇"锛夈€?3. **閫€鍑虹爜鏄犲皠琛?*锛? 涓敊璇爜 + failed/reconciling/queued/wait_timeout 鍚勪竴鏉°€?4. **瑙ｆ瀽**锛歚disk create` 鍙樻垚**绫诲瀷鍖栧懡浠?*锛堝惈 size/interval 鐢变骇鍝佽嚜宸辩殑 parser 瑙ｉ噴锛夛紱
+   鏈煡寮€鍏?缂哄€?闈炴硶 uuid/闈炴硶 size 鍏ㄩ儴 usage 閿欒銆?5. **娓叉煋**锛氳緭鍑?*鍒ゅ喅**锛坄aggregate`锛夎€屼笉鏄?durable 澹扮О锛涢敊璇甯?step 涓?code銆?
+`m5.service_host` 鐨勭鐐规祴璇曪細
 
-**读数**：修复后客机服务 `STATE : 4 RUNNING`，`disk list` 正常返回两条既有 profile（见 §5）。
+| 鐢ㄤ緥 | 鏂█ |
+|---|---|
+| 鏌ヨ鍦?gate 琚嫭鍗犳寔鏈夋椂浠嶄綔绛?| 杩?*灏辨槸 T1-04 鐨勭函閫昏緫褰㈡€?*锛氳嫢瀹冧笉鎴愮珛锛孷M 涓婃棤璁哄浣曢兘娴嬩笉鍑烘潵 |
+| 鍙樻洿鍦?gate 琚寔鏈夋椂**鍦?deadline 鍐呰鎷?* | 鍥炵殑鏄搷搴斿抚锛坈ode `0x2203`锛夛紝涓嶆槸鏂摼锛涗笖**娌℃湁缂栭€?operation id** |
+| 缂栫爜鍚庣殑杞借嵎**涓嶅惈 bundle 璺緞** | 杞借嵎瀛楄妭閲屾悳 `Images` / `work.myrd` 鍧囦负绌猴紝`R:` 瀛樺湪 |
+| 澶辫触鍛戒护甯﹀洖**鏈嶅姟鑷繁鐨勯敊璇爜涓庢秷鎭?* | 涓庣洿鎺?`dispatch` 鐨勯敊璇€愬瓧娈电浉绛夛紝涓嶆槸绔偣鍙︾紪涓€涓?|
+| 鏈煡鎺у埗浣嶈鎷?| code `0x2202` |
 
 ---
 
-## 4. 开发机测试（纯逻辑，不建真实设备）
+## 5. 瀹㈡満璇绘暟
 
-| 目标 | 结果 |
-|---|---|
-| `m5.cli`（新增，15 例） | **15/15 通过** |
-| `m5.service_host`（新增 5 例端点测试，共 21 例） | **21/21 通过** |
-| `m5.execution_scheduler` | **10/10 连续通过**（修 §3.1 前 10/10 失败） |
-| `structural.m5.read_write_separation` | 通过 |
-| `structural.m5.execution_boundary` | 通过 |
-| 干净构建（`--clean-first`，全树） | **0 error / 0 warning** |
+### 5.1 T1-04锛歝reate 杩涜涓?`disk list` 1 绉掑唴杩斿洖 鈬?**PASSED**
 
-`m5.cli` 断言的核心性质：
+鏂规硶锛坄tests/e2e/test-m5-cli-e2e.ps1`锛屽鏈哄彈闄愩€乣MYRD_M5VM_GUEST` 瀹堝崼锛夛細
 
-1. **往返一致**：`disk list` 响应（含 2 个 profile + 挂载点）编码→解码后逐字段相等；
-   含**非 ASCII 的 error 消息**（宽字符转换只有一处实现，见 `ipc::utf16_to_utf8`）。
-2. **严格拒绝**：未知 tag / 重复 tag / 枚举越界 / 截断 / 尾随字节 / major 不认识 / minor 更新，
-   全部失败（用按偏移改字节构造负例，不靠"相信实现"）。
-3. **退出码映射表**：6 个错误码 + failed/reconciling/queued/wait_timeout 各一条。
-4. **解析**：`disk create` 变成**类型化命令**（含 size/interval 由产品自己的 parser 解释）；
-   未知开关/缺值/非法 uuid/非法 size 全部 usage 错误。
-5. **渲染**：输出**判决**（`aggregate`）而不是 durable 声称；错误行带 step 与 code。
+1. `myrd-cli disk create ... --no-wait` 鎷垮埌 operation id锛?2. 寰幆锛氬厛 `operation show` 璇?*褰撳墠鐘舵€?*锛屽啀璁℃椂涓€娆?`disk list`锛屾妸 `(鐘舵€? 姣)` 璁颁笅鏉ワ紱
+3. 鐩村埌 operation 缁堟€佹垨閲囨弧 20 娆★紱
+4. 鏂█锛?*姣忔潯鏍锋湰 < 1000 ms**銆侀€€鍑虹爜鍏?0銆佷笖**鑷冲皯 3 鏉℃牱鏈槸鍦?create 浠嶅湪璺戞椂鍙栫殑**銆?
+**涓夋鐙珛杩愯鐨勮鏁?*锛堝悓涓€濂楄剼鏈紝`create` 澶у皬 256 MiB锛夛細
 
-`m5.service_host` 的端点测试：
-
-| 用例 | 断言 |
-|---|---|
-| 查询在 gate 被独占持有时仍作答 | 这**就是 T1-04 的纯逻辑形态**：若它不成立，VM 上无论如何都测不出来 |
-| 变更在 gate 被持有时**在 deadline 内被拒** | 回的是响应帧（code `0x2203`），不是断链；且**没有编造 operation id** |
-| 编码后的载荷**不含 bundle 路径** | 载荷字节里搜 `Images` / `work.myrd` 均为空，`R:` 存在 |
-| 失败命令带回**服务自己的错误码与消息** | 与直接 `dispatch` 的错误逐字段相等，不是端点另编一个 |
-| 未知控制位被拒 | code `0x2202` |
-
----
-
-## 5. 客机读数
-
-### 5.1 T1-04：create 进行中 `disk list` 1 秒内返回 ⇒ **PASSED**
-
-方法（`tests/e2e/test-m5-cli-e2e.ps1`，客机受限、`MYRD_M5VM_GUEST` 守卫）：
-
-1. `myrd-cli disk create ... --no-wait` 拿到 operation id；
-2. 循环：先 `operation show` 读**当前状态**，再计时一次 `disk list`，把 `(状态, 毫秒)` 记下来；
-3. 直到 operation 终态或采满 20 次；
-4. 断言：**每条样本 < 1000 ms**、退出码全 0、且**至少 3 条样本是在 create 仍在跑时取的**。
-
-**三次独立运行的读数**（同一套脚本，`create` 大小 256 MiB）：
-
-| 运行 | 样本数 | 其中 create 进行中 | 最大时延 | 备注 |
+| 杩愯 | 鏍锋湰鏁?| 鍏朵腑 create 杩涜涓?| 鏈€澶ф椂寤?| 澶囨敞 |
 |---|---|---|---|---|
-| 第 1 次 | 20 | 20 | **35 ms** | 全部 `state=running` |
-| 第 2 次 | 20 | 20 | **26 ms** | 全部 `state=running` |
-| 第 3 次 | 20 | 20 | **111 ms** | 全部 `state=running` |
+| 绗?1 娆?| 20 | 20 | **35 ms** | 鍏ㄩ儴 `state=running` |
+| 绗?2 娆?| 20 | 20 | **26 ms** | 鍏ㄩ儴 `state=running` |
+| 绗?3 娆?| 20 | 20 | **111 ms** | 鍏ㄩ儴 `state=running` |
 
-⇒ **60 次采样、全部发生在 create 进行中、最大 111 ms，限值 1000 ms。**
+鈬?**60 娆￠噰鏍枫€佸叏閮ㄥ彂鐢熷湪 create 杩涜涓€佹渶澶?111 ms锛岄檺鍊?1000 ms銆?*
 
-**这条读数为什么可信**：样本的"during create"不是假设，而是**每次采样前读到的状态**；
-最小 13 ms / 最大 111 ms 的分布说明它量的是命令本身（含进程启动），不是缓存。
-
-### 5.2 T1-05：CLI 能连上真实服务；`create` 的失败原因已可达，并已定位
-
-**已达成**：
-- `myrd-cli` 经**计划任务（非网络登录）**连上真实服务的 public pipe；
-- `disk list` 正常返回既有两条 profile（含盘符 `S:` / `R:`、`aggregate`、generation）；
-- `disk show <不存在>` 正确返回 `error: The requested profile is not registered` /
-  `code: 0x5604` / **退出码 1**，即"服务拒绝"与"服务不可达"被正确区分。
-
-**让失败原因可达（本轮完成的第一半）**：
-`ServiceLogEvent` 增加 `message` 字段、新增 `ServiceLogKind::operation_failed`、
-在 `execute_operation` 的**动作失败分支**（`service_core.cpp` 的 `if (!result.ok())`，
-即所有失败分支的上游、错误还在作用域内的唯一位置）记录
-`action / code / native / step / detail`；`StderrServiceLogger` 打印该字段。
-
-**第一次拿到原因（请求 `0edd233fabfc4518b639e68069fab1c8`）**：
-
+**杩欐潯璇绘暟涓轰粈涔堝彲淇?*锛氭牱鏈殑"during create"涓嶆槸鍋囪锛岃€屾槸**姣忔閲囨牱鍓嶈鍒扮殑鐘舵€?*锛?鏈€灏?13 ms / 鏈€澶?111 ms 鐨勫垎甯冭鏄庡畠閲忕殑鏄懡浠ゆ湰韬紙鍚繘绋嬪惎鍔級锛屼笉鏄紦瀛樸€?
+### 5.2 T1-05锛欳LI 鑳借繛涓婄湡瀹炴湇鍔★紱`create` 鐨勫け璐ュ師鍥犲凡鍙揪锛屽苟宸插畾浣?
+**宸茶揪鎴?*锛?- `myrd-cli` 缁?*璁″垝浠诲姟锛堥潪缃戠粶鐧诲綍锛?*杩炰笂鐪熷疄鏈嶅姟鐨?public pipe锛?- `disk list` 姝ｅ父杩斿洖鏃㈡湁涓ゆ潯 profile锛堝惈鐩樼 `S:` / `R:`銆乣aggregate`銆乬eneration锛夛紱
+- `disk show <涓嶅瓨鍦?` 姝ｇ‘杩斿洖 `error: The requested profile is not registered` /
+  `code: 0x5604` / **閫€鍑虹爜 1**锛屽嵆"鏈嶅姟鎷掔粷"涓?鏈嶅姟涓嶅彲杈?琚纭尯鍒嗐€?
+**璁╁け璐ュ師鍥犲彲杈撅紙鏈疆瀹屾垚鐨勭涓€鍗婏級**锛?`ServiceLogEvent` 澧炲姞 `message` 瀛楁銆佹柊澧?`ServiceLogKind::operation_failed`銆?鍦?`execute_operation` 鐨?*鍔ㄤ綔澶辫触鍒嗘敮**锛坄service_core.cpp` 鐨?`if (!result.ok())`锛?鍗虫墍鏈夊け璐ュ垎鏀殑涓婃父銆侀敊璇繕鍦ㄤ綔鐢ㄥ煙鍐呯殑鍞竴浣嶇疆锛夎褰?`action / code / native / step / detail`锛沗StderrServiceLogger` 鎵撳嵃璇ュ瓧娈点€?
+**绗竴娆℃嬁鍒板師鍥狅紙璇锋眰 `0edd233fabfc4518b639e68069fab1c8`锛?*锛?
 ```
 myrd-service: kind=7 command=disk.create phase=create-bundle
   message=action=create-bundle code=20994 native=0
           step=provision_new_volume detail=requested drive letter is occupied
 ```
 
-⇒ **失败点定位到 `provision_new_volume`：请求的盘符已被占用**（code `20994`）。
-即 create 走到建卷那一步、被盘符冲突拒掉；**不是** bundle、不是 worker 启动、不是权限。
-e2e 脚本选盘符时用的是 `Test-Path` + `disk list` 两条判据，**与产品自己的"盘符被占用"判据不一致**——
-产品看到的是卷/设备命名空间里的占用（此前几次失败运行留下的残留），脚本看不到。
-**⇒ 下一步：先让两边的判据一致**（用产品自己的判据选盘符，或加一条显式的"清理/校验盘符"前置），
-再重跑端到端；这属于**测试夹具的修正**，不是产品缺陷的证据。
+鈬?**澶辫触鐐瑰畾浣嶅埌 `provision_new_volume`锛氳姹傜殑鐩樼宸茶鍗犵敤**锛坈ode `20994`锛夈€?鍗?create 璧板埌寤哄嵎閭ｄ竴姝ャ€佽鐩樼鍐茬獊鎷掓帀锛?*涓嶆槸** bundle銆佷笉鏄?worker 鍚姩銆佷笉鏄潈闄愩€?e2e 鑴氭湰閫夌洏绗︽椂鐢ㄧ殑鏄?`Test-Path` + `disk list` 涓ゆ潯鍒ゆ嵁锛?*涓庝骇鍝佽嚜宸辩殑"鐩樼琚崰鐢?鍒ゆ嵁涓嶄竴鑷?*鈥斺€?浜у搧鐪嬪埌鐨勬槸鍗?璁惧鍛藉悕绌洪棿閲岀殑鍗犵敤锛堟鍓嶅嚑娆″け璐ヨ繍琛岀暀涓嬬殑娈嬬暀锛夛紝鑴氭湰鐪嬩笉鍒般€?**鈬?涓嬩竴姝ワ細鍏堣涓よ竟鐨勫垽鎹竴鑷?*锛堢敤浜у搧鑷繁鐨勫垽鎹€夌洏绗︼紝鎴栧姞涓€鏉℃樉寮忕殑"娓呯悊/鏍￠獙鐩樼"鍓嶇疆锛夛紝
+鍐嶉噸璺戠鍒扮锛涜繖灞炰簬**娴嬭瘯澶瑰叿鐨勪慨姝?*锛屼笉鏄骇鍝佺己闄风殑璇佹嵁銆?
+**宸茬煡鐨勮竟鐣屼簨瀹?*锛堢敤浜庢帓闄ゅ亣璁撅紝鍧囦负瀹炴祴锛夛細
+- 鏈嶅姟 `STATE : 4 RUNNING`锛宍disk list` 鍙敤 鈬?涓嶆槸"璧蜂笉鏉?锛?- 澶辫触鍚?`myrd-m5-worker` 杩涚▼鏁?**0** 鈬?worker 宸查€€鍑猴紙涓嶆槸鎸備綇锛夛紱
+- 宸ヤ綔鐩綍閲?*鍑虹幇浜?`bundle`** 鈬?worker 纭疄璺戣繃銆佷笖鎴愬姛寤轰簡 bundle锛?- 鏈嶅姟鏃ュ織閲?*娌℃湁 provisioning helper 鐨勮緭鍑?* 鈬?澶辫触鐐瑰湪 helper 涔?*鍓?*銆?
+**澶辫触鍘熷洜褰撳墠鏃犳硶鍙栧緱锛岃繖鏄湰杞殑绗簩涓彂鐜?*锛?- `OperationRecord` 鍙瓨 `terminal_result`锛堝嚑鐧惧瓧鑺傜殑**鏍囪涓?*锛屽 `evidence`/`reversed`锛夛紝
+  **涓嶅瓨閿欒鏂囨湰**锛?- `ServiceLogEvent` 娌℃湁 message 瀛楁 鈬?`StderrServiceLogger` 鎵撲笉鍑哄師鍥狅紱
+- 鍝嶅簲鎶曞奖鍙甫 `operation.state` 鈬?**CLI 涔熸病娉曞憡璇夌敤鎴蜂负浠€涔堝け璐?*銆?
+鈬?**"涓€娆?create 澶辫触锛屾湇鍔°€佹棩蹇椼€丆LI 涓夊閮借涓嶆竻鍘熷洜"鏈韩鏄竴涓繀椤讳慨鐨勪骇鍝佺己鍙?*锛?涓斿畠鏄笅涓€姝ユ帓鏌ョ殑鍓嶇疆锛堜笉鏄彲閫夌殑浣撻獙鏀硅繘锛夈€?
+### 5.3 鏁村鍩虹嚎锛堝鏈猴紝154 鏉★級
 
-**已知的边界事实**（用于排除假设，均为实测）：
-- 服务 `STATE : 4 RUNNING`，`disk list` 可用 ⇒ 不是"起不来"；
-- 失败后 `myrd-m5-worker` 进程数 **0** ⇒ worker 已退出（不是挂住）；
-- 工作目录里**出现了 `bundle`** ⇒ worker 确实跑过、且成功建了 bundle；
-- 服务日志里**没有 provisioning helper 的输出** ⇒ 失败点在 helper 之**前**。
-
-**失败原因当前无法取得，这是本轮的第二个发现**：
-- `OperationRecord` 只存 `terminal_result`（几百字节的**标记串**，如 `evidence`/`reversed`），
-  **不存错误文本**；
-- `ServiceLogEvent` 没有 message 字段 ⇒ `StderrServiceLogger` 打不出原因；
-- 响应投影只带 `operation.state` ⇒ **CLI 也没法告诉用户为什么失败**。
-
-⇒ **"一次 create 失败，服务、日志、CLI 三处都说不清原因"本身是一个必须修的产品缺口**，
-且它是下一步排查的前置（不是可选的体验改进）。
-
-### 5.3 整套基线（客机，154 条）
-
-`tools/m5vm/Invoke-M5Vm.ps1 -Run`（请求 `f79804f56e234d9191638e1eb4ee0fc8`）：
+`tools/m5vm/Invoke-M5Vm.ps1 -Run`锛堣姹?`f79804f56e234d9191638e1eb4ee0fc8`锛夛細
 
 ```
 151 of 154 passed
-  FAIL structural.m2.storage_independent_build (exit 1)   ← 客机无 Visual Studio（已知）
-  FAIL structural.m5.execution_boundary        (exit 1)   ← 同一原因（已知）
-  FAIL integration.m5.cli_e2e                  (exit 1)   ← §5.2 的 create 失败
+  FAIL structural.m2.storage_independent_build (exit 1)   鈫?瀹㈡満鏃?Visual Studio锛堝凡鐭ワ級
+  FAIL structural.m5.execution_boundary        (exit 1)   鈫?鍚屼竴鍘熷洜锛堝凡鐭ワ級
+  FAIL integration.m5.cli_e2e                  (exit 1)   鈫?搂5.2 鐨?create 澶辫触
 ```
 
-**测试矩阵 152 → 154**（新增 `m5.cli` 与 `integration.m5.cli_e2e`）。**产品面全绿**：
-`m5.production_execution_backend`（T1-03 的修复保持有效）、`m5.execution_scheduler`（§3.1 的修复在客机成立）、
-`m5.service_host`、`m5.cli`、`structural.m5.read_write_separation` 全部通过。
-**量测范围**：本轮全量只跑了一次，不宣称"稳定"；有独立重复读数的是 §3.1（10 次）与 §5.1（3 次 × 20 采样）。
-
+**娴嬭瘯鐭╅樀 152 鈫?154**锛堟柊澧?`m5.cli` 涓?`integration.m5.cli_e2e`锛夈€?*浜у搧闈㈠叏缁?*锛?`m5.production_execution_backend`锛圱1-03 鐨勪慨澶嶄繚鎸佹湁鏁堬級銆乣m5.execution_scheduler`锛埪?.1 鐨勪慨澶嶅湪瀹㈡満鎴愮珛锛夈€?`m5.service_host`銆乣m5.cli`銆乣structural.m5.read_write_separation` 鍏ㄩ儴閫氳繃銆?**閲忔祴鑼冨洿**锛氭湰杞叏閲忓彧璺戜簡涓€娆★紝涓嶅绉?绋冲畾"锛涙湁鐙珛閲嶅璇绘暟鐨勬槸 搂3.1锛?0 娆★級涓?搂5.1锛? 娆?脳 20 閲囨牱锛夈€?
 ---
 
-## 6. 变更清单
+## 6. 鍙樻洿娓呭崟
 
-| 文件 | 性质 |
+| 鏂囦欢 | 鎬ц川 |
 |---|---|
-| `src/management/service_response_wire.{h,cpp}` | **新增**：响应投影 + 严格编解码 |
-| `src/service/public_command_endpoint.{h,cpp}` | **新增**：帧 → core → 帧 |
-| `src/service/public_pipe_surface.{h,cpp}` | **新增**：`PublicPipeServer` + endpoint 的宿主实现 |
-| `src/cli/cli_parser.{h,cpp}`, `cli_renderer.{h,cpp}`, `cli_main.cpp` | **新增**：CLI |
-| `src/service/service_host.{h,cpp}` | `IPublicCommandSurface`；open 最后、close 最前 |
-| `src/service/service_runtime.{h,cpp}` | 组合 `PublicPipeSurface`；gate 改 `timed_mutex`；`pipe_name` |
-| `src/service/service_main.cpp` | `--console` **改为持续服务到 Ctrl+C**（可诊断、可作 e2e 夹具） |
-| `src/management/execution_scheduler.{h,cpp}` | gate 改 `timed_mutex`；**§3.1 的 stop 复检** |
-| `src/management/service_worker_control.{h,cpp}` | **命令门**：所有命令串行；`observe_runtime` **try_lock → `nullopt`** |
-| `src/management/profile_registration_store.cpp` | **§3.2**：承认 `workers` 共位者 |
-| `src/management/worker_binding_store.h` | 注释与代码一致（`profiles\workers`），写明共享根的代价 |
-| `src/control/ipc_codec.{h,cpp}` | `utf16_to_utf8` / `utf8_to_utf16` 导出（唯一实现，供响应编解码复用） |
-| `src/management/service_core.h` | `ServiceProfileProjection` 追加 `mount_target`（带默认值） |
-| `tests/model/m5_cli_tests.cpp` | **新增** `m5.cli`（15 例） |
-| `tests/model/m5_service_host_tests.cpp` | **新增** 5 例端点测试（含"gate 被持有仍可查询"） |
-| `tests/e2e/test-m5-cli-e2e.ps1` | **新增** `integration.m5.cli_e2e`（客机，守卫 exit 2） |
+| `src/management/service_response_wire.{h,cpp}` | **鏂板**锛氬搷搴旀姇褰?+ 涓ユ牸缂栬В鐮?|
+| `src/service/public_command_endpoint.{h,cpp}` | **鏂板**锛氬抚 鈫?core 鈫?甯?|
+| `src/service/public_pipe_surface.{h,cpp}` | **鏂板**锛歚PublicPipeServer` + endpoint 鐨勫涓诲疄鐜?|
+| `src/cli/cli_parser.{h,cpp}`, `cli_renderer.{h,cpp}`, `cli_main.cpp` | **鏂板**锛欳LI |
+| `src/service/service_host.{h,cpp}` | `IPublicCommandSurface`锛沷pen 鏈€鍚庛€乧lose 鏈€鍓?|
+| `src/service/service_runtime.{h,cpp}` | 缁勫悎 `PublicPipeSurface`锛沢ate 鏀?`timed_mutex`锛沗pipe_name` |
+| `src/service/service_main.cpp` | `--console` **鏀逛负鎸佺画鏈嶅姟鍒?Ctrl+C**锛堝彲璇婃柇銆佸彲浣?e2e 澶瑰叿锛?|
+| `src/management/execution_scheduler.{h,cpp}` | gate 鏀?`timed_mutex`锛?*搂3.1 鐨?stop 澶嶆** |
+| `src/management/service_worker_control.{h,cpp}` | **鍛戒护闂?*锛氭墍鏈夊懡浠や覆琛岋紱`observe_runtime` **try_lock 鈫?`nullopt`** |
+| `src/management/profile_registration_store.cpp` | **搂3.2**锛氭壙璁?`workers` 鍏变綅鑰?|
+| `src/management/worker_binding_store.h` | 娉ㄩ噴涓庝唬鐮佷竴鑷达紙`profiles\workers`锛夛紝鍐欐槑鍏变韩鏍圭殑浠ｄ环 |
+| `src/control/ipc_codec.{h,cpp}` | `utf16_to_utf8` / `utf8_to_utf16` 瀵煎嚭锛堝敮涓€瀹炵幇锛屼緵鍝嶅簲缂栬В鐮佸鐢級 |
+| `src/management/service_core.h` | `ServiceProfileProjection` 杩藉姞 `mount_target`锛堝甫榛樿鍊硷級 |
+| `tests/model/m5_cli_tests.cpp` | **鏂板** `m5.cli`锛?5 渚嬶級 |
+| `tests/model/m5_service_host_tests.cpp` | **鏂板** 5 渚嬬鐐规祴璇曪紙鍚?gate 琚寔鏈変粛鍙煡璇?锛?|
+| `tests/e2e/test-m5-cli-e2e.ps1` | **鏂板** `integration.m5.cli_e2e`锛堝鏈猴紝瀹堝崼 exit 2锛?|
 
-### 6.1 `ServiceWorkerControl` 的命令门（为什么必须加）
+### 6.1 `ServiceWorkerControl` 鐨勫懡浠ら棬锛堜负浠€涔堝繀椤诲姞锛?
+worker 鐨勫懡浠ら€氶亾鏄?*涓ユ牸涓€娆¤姹備竴娆″簲绛斻€佹病鏈夐噸鍚屾**鐨勫簭鍒椼€傚湪 public pipe 鍑虹幇涔嬪墠锛?鍞竴璋冪敤鑰呮槸璋冨害鍣紙鍦?execution gate 涔嬪悗锛夛紝鎵€浠?涓嶄細鏈変袱涓嚎绋?鏄?*澶栭儴**缁欑殑淇濊瘉锛?绫昏嚜宸辨病鍐欎笅鏉ャ€俆1-04 瑕佹眰**涓€涓璺緞鍦ㄩ暱鍛戒护杩涜涓篃鑳借窇**锛岃繖鏉′繚璇佸繀椤昏惤鍒扮被閲岋細
 
-worker 的命令通道是**严格一次请求一次应答、没有重同步**的序列。在 public pipe 出现之前，
-唯一调用者是调度器（在 execution gate 之后），所以"不会有两个线程"是**外部**给的保证，
-类自己没写下来。T1-04 要求**一个读路径在长命令进行中也能跑**，这条保证必须落到类里：
-
-- 所有命令入口取 `command_gate_`；
-- **`observe_runtime` 用 `try_lock`，拿不到就返回 `nullopt`（"未观测"）**，
-  绝不排队等 create —— 那是 `disk list` 会跟着等分钟级的原因；
-- `nullopt` 是**更弱**的答案，不是错的答案：读路径据此报告 durable 状态（transition 中即
-  `provisioning`/`starting`），并且**不会**谎报 `worker_alive == false`（那会把一块正在跑的盘 fail-closed）；
-- `require_runtime_observation`（变更路径）**仍然排队**：决定"是否安全"的调用者不能被
-  "通道忙"当成"不知道"。
-
-**代价写在成员声明处**：一把锁是**整对象**粒度；per-profile 串行是 T2-01 的工作，
-在此发明第二档粒度会在那里被推翻。后果是"一个 profile 的命令在跑时，另一个 profile 的观测答
-'未观测'"——在 G4 延后的前提下可接受，恢复 G4 时必须改。
-
+- 鎵€鏈夊懡浠ゅ叆鍙ｅ彇 `command_gate_`锛?- **`observe_runtime` 鐢?`try_lock`锛屾嬁涓嶅埌灏辫繑鍥?`nullopt`锛?鏈娴?锛?*锛?  缁濅笉鎺掗槦绛?create 鈥斺€?閭ｆ槸 `disk list` 浼氳窡鐫€绛夊垎閽熺骇鐨勫師鍥狅紱
+- `nullopt` 鏄?*鏇村急**鐨勭瓟妗堬紝涓嶆槸閿欑殑绛旀锛氳璺緞鎹鎶ュ憡 durable 鐘舵€侊紙transition 涓嵆
+  `provisioning`/`starting`锛夛紝骞朵笖**涓嶄細**璋庢姤 `worker_alive == false`锛堥偅浼氭妸涓€鍧楁鍦ㄨ窇鐨勭洏 fail-closed锛夛紱
+- `require_runtime_observation`锛堝彉鏇磋矾寰勶級**浠嶇劧鎺掗槦**锛氬喅瀹?鏄惁瀹夊叏"鐨勮皟鐢ㄨ€呬笉鑳借
+  "閫氶亾蹇?褰撴垚"涓嶇煡閬?銆?
+**浠ｄ环鍐欏湪鎴愬憳澹版槑澶?*锛氫竴鎶婇攣鏄?*鏁村璞?*绮掑害锛沺er-profile 涓茶鏄?T2-01 鐨勫伐浣滐紝
+鍦ㄦ鍙戞槑绗簩妗ｇ矑搴︿細鍦ㄩ偅閲岃鎺ㄧ炕銆傚悗鏋滄槸"涓€涓?profile 鐨勫懡浠ゅ湪璺戞椂锛屽彟涓€涓?profile 鐨勮娴嬬瓟
+'鏈娴?"鈥斺€斿湪 G4 寤跺悗鐨勫墠鎻愪笅鍙帴鍙楋紝鎭㈠ G4 鏃跺繀椤绘敼銆?
 ---
 
-## 7. 下一步（按顺序）
+## 7. 涓嬩竴姝ワ紙鎸夐『搴忥級
 
-1. **把 operation 的失败原因做成可达的**（三处，缺一不可）。**已经定位到要改的位置**：
-
-   | 位置 | 现状 | 要做什么 |
+1. **鎶?operation 鐨勫け璐ュ師鍥犲仛鎴愬彲杈剧殑**锛堜笁澶勶紝缂轰竴涓嶅彲锛夈€?*宸茬粡瀹氫綅鍒拌鏀圭殑浣嶇疆**锛?
+   | 浣嶇疆 | 鐜扮姸 | 瑕佸仛浠€涔?|
    |---|---|---|
-   | `src/management/service_core.h` `ServiceLogEvent` | 只有 `kind/request_id/operation_id/profile_id/command/phase`，**没有 message** | 加一个 `std::string message`；`src/service/service_system.cpp:50` 的 `StderrServiceLogger::write` 一并打印 |
-   | `src/management/service_core.cpp:6423` `finalize_operation(...)` 调用处 | 传的是 `completion` + `worker_succeeded` + 标记串，**失败动作的 `Error` 在这一层之前就被丢掉了** | 把失败动作的 `Error`（`code` / `operation` / `message` / `native_code`）一路带到 `finalize_operation`，并写进（a）日志事件、（b）`terminal_result` 的结构化失败证据 |
-   | `src/management/service_core.h` `ServiceOperationProjection` + `service_response_wire` | 只有 `state/phase` | 追加失败原因（可选字段，带默认值，无需破坏既有初始化），CLI 才能说"为什么失败" |
+   | `src/management/service_core.h` `ServiceLogEvent` | 鍙湁 `kind/request_id/operation_id/profile_id/command/phase`锛?*娌℃湁 message** | 鍔犱竴涓?`std::string message`锛沗src/service/service_system.cpp:50` 鐨?`StderrServiceLogger::write` 涓€骞舵墦鍗?|
+   | `src/management/service_core.cpp:6423` `finalize_operation(...)` 璋冪敤澶?| 浼犵殑鏄?`completion` + `worker_succeeded` + 鏍囪涓诧紝**澶辫触鍔ㄤ綔鐨?`Error` 鍦ㄨ繖涓€灞備箣鍓嶅氨琚涪鎺変簡** | 鎶婂け璐ュ姩浣滅殑 `Error`锛坄code` / `operation` / `message` / `native_code`锛変竴璺甫鍒?`finalize_operation`锛屽苟鍐欒繘锛坅锛夋棩蹇椾簨浠躲€侊紙b锛塦terminal_result` 鐨勭粨鏋勫寲澶辫触璇佹嵁 |
+   | `src/management/service_core.h` `ServiceOperationProjection` + `service_response_wire` | 鍙湁 `state/phase` | 杩藉姞澶辫触鍘熷洜锛堝彲閫夊瓧娈碉紝甯﹂粯璁ゅ€硷紝鏃犻渶鐮村潖鏃㈡湁鍒濆鍖栵級锛孋LI 鎵嶈兘璇?涓轰粈涔堝け璐? |
 
-   **注意**：`terminal_result` 现在是**标记串**（`evidence` / `reversed` / `MYRD…`），把它换成或追加结构化失败证据属于 **durable 记录格式变更**，必须同时处理旧记录的读取（现有读者对旧记录应"照旧解读为无原因"，而不是拒读）。
-
-2. 用 (1) 的读数定位 `create` 在服务里的失败点，修掉，然后跑完 T1-05 的端到端
-   （create → list → show → 读写 → checkpoint → stop → 恢复 → forget），并 `-Repeat`。
-3. T1-05 收尾后回到 T1-06（依赖 T1-03 + T1-05）。
-
-**同时记下两条待办**（不是阻塞项）：
-- `integration.m5.cli_e2e` 目前**包含 T1-04 的验收**（已通过）；T1-05 收尾后应把两段拆开，
-  让 T1-04 的读数独立可重复运行；
-- 客机上两条 2026-09/10 的既有 profile（`9e5a6b53` 在 `S:` blocked、`ea53d5dd` 在 `R:`
-  `runtime=Stopping`）来自更早的会话，不是本轮产生。脚本已改为**动态选空闲盘符**以不受其影响；
-  它们的处置需要一次人工判断（属于"外部遗留状态"，不是本轮可以自行清理的）。
+   **娉ㄦ剰**锛歚terminal_result` 鐜板湪鏄?*鏍囪涓?*锛坄evidence` / `reversed` / `MYRD鈥锛夛紝鎶婂畠鎹㈡垚鎴栬拷鍔犵粨鏋勫寲澶辫触璇佹嵁灞炰簬 **durable 璁板綍鏍煎紡鍙樻洿**锛屽繀椤诲悓鏃跺鐞嗘棫璁板綍鐨勮鍙栵紙鐜版湁璇昏€呭鏃ц褰曞簲"鐓ф棫瑙ｈ涓烘棤鍘熷洜"锛岃€屼笉鏄嫆璇伙級銆?
+2. 鐢?(1) 鐨勮鏁板畾浣?`create` 鍦ㄦ湇鍔￠噷鐨勫け璐ョ偣锛屼慨鎺夛紝鐒跺悗璺戝畬 T1-05 鐨勭鍒扮
+   锛坈reate 鈫?list 鈫?show 鈫?璇诲啓 鈫?checkpoint 鈫?stop 鈫?鎭㈠ 鈫?forget锛夛紝骞?`-Repeat`銆?3. T1-05 鏀跺熬鍚庡洖鍒?T1-06锛堜緷璧?T1-03 + T1-05锛夈€?
+**鍚屾椂璁颁笅涓ゆ潯寰呭姙**锛堜笉鏄樆濉為」锛夛細
+- `integration.m5.cli_e2e` 鐩墠**鍖呭惈 T1-04 鐨勯獙鏀?*锛堝凡閫氳繃锛夛紱T1-05 鏀跺熬鍚庡簲鎶婁袱娈垫媶寮€锛?  璁?T1-04 鐨勮鏁扮嫭绔嬪彲閲嶅杩愯锛?- 瀹㈡満涓婁袱鏉?2026-09/10 鐨勬棦鏈?profile锛坄9e5a6b53` 鍦?`S:` blocked銆乣ea53d5dd` 鍦?`R:`
+  `runtime=Stopping`锛夋潵鑷洿鏃╃殑浼氳瘽锛屼笉鏄湰杞骇鐢熴€傝剼鏈凡鏀逛负**鍔ㄦ€侀€夌┖闂茬洏绗?*浠ヤ笉鍙楀叾褰卞搷锛?  瀹冧滑鐨勫缃渶瑕佷竴娆′汉宸ュ垽鏂紙灞炰簬"澶栭儴閬楃暀鐘舵€?锛屼笉鏄湰杞彲浠ヨ嚜琛屾竻鐞嗙殑锛夈€?
