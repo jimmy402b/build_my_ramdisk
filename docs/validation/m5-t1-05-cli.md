@@ -303,10 +303,16 @@ worker 的命令通道是**严格一次请求一次应答、没有重同步**的
 
 ## 7. 下一步（按顺序）
 
-1. **把 operation 的失败原因做成可达的**（三个位置，缺一不可）：
-   durable 记录里的失败证据（code + message + step）、`ServiceLogEvent` 的 message 字段、
-   以及响应投影里的 operation 失败原因。**没有它，下一步的排查只能靠猜**——而"六个假设全错"
-   的教训正是这么来的。
+1. **把 operation 的失败原因做成可达的**（三处，缺一不可）。**已经定位到要改的位置**：
+
+   | 位置 | 现状 | 要做什么 |
+   |---|---|---|
+   | `src/management/service_core.h` `ServiceLogEvent` | 只有 `kind/request_id/operation_id/profile_id/command/phase`，**没有 message** | 加一个 `std::string message`；`src/service/service_system.cpp:50` 的 `StderrServiceLogger::write` 一并打印 |
+   | `src/management/service_core.cpp:6423` `finalize_operation(...)` 调用处 | 传的是 `completion` + `worker_succeeded` + 标记串，**失败动作的 `Error` 在这一层之前就被丢掉了** | 把失败动作的 `Error`（`code` / `operation` / `message` / `native_code`）一路带到 `finalize_operation`，并写进（a）日志事件、（b）`terminal_result` 的结构化失败证据 |
+   | `src/management/service_core.h` `ServiceOperationProjection` + `service_response_wire` | 只有 `state/phase` | 追加失败原因（可选字段，带默认值，无需破坏既有初始化），CLI 才能说"为什么失败" |
+
+   **注意**：`terminal_result` 现在是**标记串**（`evidence` / `reversed` / `MYRD…`），把它换成或追加结构化失败证据属于 **durable 记录格式变更**，必须同时处理旧记录的读取（现有读者对旧记录应"照旧解读为无原因"，而不是拒读）。
+
 2. 用 (1) 的读数定位 `create` 在服务里的失败点，修掉，然后跑完 T1-05 的端到端
    （create → list → show → 读写 → checkpoint → stop → 恢复 → forget），并 `-Repeat`。
 3. T1-05 收尾后回到 T1-06（依赖 T1-03 + T1-05）。
