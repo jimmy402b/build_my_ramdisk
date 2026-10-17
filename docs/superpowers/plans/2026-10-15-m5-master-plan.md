@@ -1086,7 +1086,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
 | T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
 | T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **IN_PROGRESS（实现完成；阻塞点已确证）** | part 1–77。**两条关键用例在能跑到它们的运行里 PASS**，但整套 `m5.production_execution_backend` 间歇失败。**根因（本轮确证，有逐步计时证据）**：`enumerate_disk_candidates` 里**打开候选盘的 `CreateFileW` 在"目标设备正被退役"的窗口内会阻塞 ~11 秒**（实测 11017 ms），而该函数其它每一步都是 0–1 ms。**`FILE_FLAG_OVERLAPPED` 试过、无效**（原因：它只让对已打开句柄的 I/O 可取消，**create IRP 必须同步完成**；part 36/41 的卷句柄先例不适用）。**剩余唯一既合设计又绕开真实阻塞的路**：**不再靠"打开候选"取盘号**——即 part 67 记录的设计缺口（按 SCSI 地址构造设备路径，或扩展 AIM 查询）。**跳过枚举不可行**（part 72 实测 `find_recovered_volume` 需要盘号）。**不得标 PASSED。** |
+| T1-03 | **IN_PROGRESS（实现完成；两项验收用例通过；等 §8-9 解决后收尾）** | part 1–88。**范围调整 (a)(b)(c) 已全部完成并客机验证**：(a) attach-only 不再取盘号、卷身份改用 durable GUID + 挂载优先 + 诚实的盘符字段 ⇒ **11 秒阻塞与"多卷歧义"均消失**；(b) `DiskRuntimeOperations` 的代价/前提/所有权写入契约；(c) 拆卸的两处模式分支合并为单一 `TeardownPolicy`。**客机读数：16/18 × 3 次（多次重复），T1-03 的两条验收用例每次都通过。** 唯一的红是 §8 第 9 项那条**独立的** `disk is not RAW`（已排五个假设，未解决，不阻塞其他增量）。**因此不标 PASSED：门是整套件，我不放宽。** |
 | T1-04 | TODO | — |
 | T1-05 | TODO | — |
 | T1-06 | TODO | — |
