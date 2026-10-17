@@ -450,15 +450,31 @@ Result<std::vector<VolumeObservation>> enumerate_native_volumes(
                             static_cast<std::uint64_t>(ext->Extents[i].ExtentLength.QuadPart)});
                     std::array<wchar_t, 4096> paths{}; DWORD needed{};
                     bool mounted = false;
+                    // **The volume's own letter, not the letter that was asked about.**
+                    //
+                    // This used to be `volume.drive_letter = requested_letter`, which stamped *every*
+                    // volume on the machine with the requested letter.  The consequence stayed invisible
+                    // while selection filtered on a physical disk number, and became an ambiguity the
+                    // moment that filter was removed: `C:` and every other volume looked like a candidate
+                    // for the requested letter.
+                    //
+                    // Recorded honestly, the field means what its name says and the letter test in
+                    // `select_volume_for_disk` finally rejects something.  A volume with no mount point at
+                    // all gets 0 -- which is exactly why a volume that has lost its letter needs the
+                    // durable GUID to be found again, and why recovery still needs that path.
+                    wchar_t own_letter = 0;
                     if (GetVolumePathNamesForVolumeNameW(guid.c_str(), paths.data(),
                                                          static_cast<DWORD>(paths.size()), &needed)) {
                         for (std::size_t at = 0; at < paths.size() && paths[at]; ) {
                             std::wstring_view path(paths.data() + at);
-                            if (path.size() >= 2 && towupper(path[0]) == towupper(requested_letter) && path[1] == L':') mounted = true;
+                            if (path.size() >= 2 && path[1] == L':') {
+                                if (towupper(path[0]) == towupper(requested_letter)) mounted = true;
+                                if (own_letter == 0) own_letter = path[0];
+                            }
                             at += path.size() + 1;
                         }
                     }
-                    volume.drive_letter = requested_letter; volume.mounted = mounted;
+                    volume.drive_letter = own_letter; volume.mounted = mounted;
                     volume.operation_owned = false;
                     fill_persistent_identity(volume, handle, guid);
                     result.push_back({std::move(volume), false,
