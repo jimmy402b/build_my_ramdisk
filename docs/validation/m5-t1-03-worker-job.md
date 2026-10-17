@@ -3112,3 +3112,56 @@ const auto expected_guid = normalized_guid(volume.volume_guid);   // ← 来自�
 按盘符筛选在未挂载时无解（无路径 ⇒ 无盘符），而 GUID 不依赖挂载状态。
 
 **T1-03 不得标 PASSED。** 下一步：(a) 实现 GUID 通路。
+
+#### 4.15.60 **T1-03 的两条验收用例恢复了：16/18，5 次一致**（part 80，本轮）
+
+**连续三次改动后的读数**（`-Repeat 5`，请求 `3fe9e78a813741749784f51a49dba1f6`）：
+
+```
+[1/5] 16 PASS   [2/5] 16 PASS   [3/5] 16 PASS   [4/5] 16 PASS   [5/5] 16 PASS
+```
+
+**PASS 列表里包含 T1-03 的两条**（逐条核对过）：
+
+```
+PASS m5_backend_a_killed_worker_leaves_no_process_mount_or_device
+PASS m5_backend_a_reclaim_dismantles_the_leftover_a_kill_created
+PASS m5_backend_checkpoint_crosses_the_boundary_and_commits
+PASS m5_backend_stop_walks_quiesce_flush_commit_remove
+... 共 16 条
+```
+
+**⇒ 那个困扰了十几轮的阻塞消失了**，而且不是靠加界：
+- `enumerate_disk_candidates` 的 258 超时：**不再出现**
+- `CreateFileW took 11017 ms`：**不再出现**
+- `select_volume_for_disk` 的歧义：**不再出现**（先"挂载优先"，再"记录卷自己的盘符"）
+
+**三个改动各自的作用**（都有实测支撑）：
+1. `8abb89e` 去掉 attach-only 路径的盘号查询 → **11 秒阻塞消失**；
+2. `54ab9db` 挂载优先 → 歧义从"多个卷"缩窄为"多个**未挂载**卷"；
+3. `55742e7` 记录每个卷**自己的**盘符（而不是被问的那个）→ **歧义消失**，
+   因为 `C:` 之类的系统卷不再冒充候选。
+
+**剩下的唯一失败，第一次有了真正的原因**——而且是我早前那个"把 helper 输出打出来"的修复
+**立刻兑现了价值**：
+
+```
+myrd-test: provisioning helper stderr: disk is not RAW
+    + if ($disk.PartitionStyle -ne 'RAW') { throw 'disk is not RAW' }
+myrd-test: create failed: op=provision_new_volume msg=provisioning helper failed native=1 code=21001
+FAIL ...m5_production_execution_backend_tests.cpp:1248: created.ok()
+```
+
+**第 17 条用例建新卷时，AIM 代理盘的 `PartitionStyle` 不是 `RAW`**——
+即**那块"新建"的盘上已经有分区表**，所以 provisioning 脚本拒绝格式化（这是**正确的**保护）。
+
+**这与 T1-03 无关**，是另一条独立缺陷：**"新建的 AIM 代理盘不一定真是空的"**。
+可能的原因（未查证，不猜）：
+- `kAutoDeviceNumber` 复用了设备号，Windows 保留了旧的分区表缓存；
+- 或 `create_generation_zero_image` 建出的镜像本身不是全零。
+
+**下一步**：查 `create_proxy_disk` 之后盘的 `PartitionStyle` 为何非 RAW；
+可用的手段是**在 provisioning 之前把盘的 `PartitionStyle` 打出来**（trace），
+再决定是"清理分区表"还是"确保设备号是新的"。
+
+**T1-03 的两条验收用例已 5/5 通过，但整个套件仍 16/18，所以不得标 PASSED。**
