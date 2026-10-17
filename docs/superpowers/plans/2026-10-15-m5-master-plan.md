@@ -81,6 +81,13 @@ structural 用例（已知环境受限）。
 **134 项跑 3 遍 = 399/402，失败集合三遍完全相同**（唯一失败仍是
 `structural.m2.storage_independent_build`，原因是客机无 VS，`vswhere.exe not found`）。
 ⇒ **M0–M4 无间歇性；不稳定性只属于 M5 的用法**。
+
+**2026-10-17 最新整套基线（T1-03 与 T1-04 落地之后）**：
+**客机完整 152 条 → 150 通过**，唯二失败仍是那两条 `vswhere.exe not found`
+（`structural.m2.storage_independent_build`、`structural.m5.execution_boundary`），
+**都不是产品缺陷**。其中 `m5.production_execution_backend` 另有 **`-Repeat 20 → 20/20`**、
+`structural.m5.read_write_separation` 有 **`-Repeat 3 → 3/3`**。
+**⇒ 产品面在客机上全绿。**（其余用例该轮只跑一次，不宣称"稳定"。）
 完整证据：`docs/validation/m5-m0-m4-vm-baseline.md`。
 
 **已行使 vs 未行使（这是"还剩多少未知"的诚实答案）**：
