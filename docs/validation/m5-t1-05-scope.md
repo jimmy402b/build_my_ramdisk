@@ -80,6 +80,31 @@
 
 ---
 
+## 4.1 ✅ 第 1 步已完成（part 100）
+
+**`PublicPipeClient::build_command_request(command, request_id, no_wait, dry_run)` 已实现**，
+位置 `src/control/public_pipe_client.{h,cpp}`（**零 CMake 改动**——它已同时 include 了编解码与帧）。
+
+| 性质 | 如何被保证 |
+|---|---|
+| `request_id` 由调用者给 | 参数，不在此生成——重试需要同一个 id 两次 |
+| 控制位只来自两个 flag | 服务端拒绝其它位，所以这里**无法**设置别的位 |
+| `operation_id` 为 nil | **`Uuid` 默认构造私有、只有 `parse`/`random`**，所以"没有操作"必须显式写出来；**类型不允许**编造或未初始化 |
+
+**测试**（在 `tests/model/m5_service_host_tests.cpp`，`m5.service_host` 已跑通）：
+
+- `service_host_builds_a_request_frame_that_round_trips` ——
+  用 `disk list` 经 `encode_frame` → `decode_frame` → `decode_command_payload` 往返，还原成同一命令
+- `service_host_carries_the_control_flags_and_claims_no_operation` ——
+  no-wait 位被带出、dry-run 位不被误设、`operation_id` 为 nil
+
+**⇒ 第 2–5 步（响应解码与呈现、CLI 可执行、十条命令、客机端到端）仍未做。**
+**接下来要写的是第 2 步：`Frame` → 结构化结果 → 人类可读输出 + 退出码**，
+它与第 1 步对称，但**必须对着真实服务验证**，所以要先有客机上的服务实例。
+
+
+---
+
 ## 5. 顺带修掉的一个循环依赖
 
 **tasklist 原先写着 `T1-05` 依赖 `T1-04`，而 `T1-04` 的验收又需要 `T1-05` 的 CLI。**
