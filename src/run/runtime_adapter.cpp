@@ -326,6 +326,15 @@ Result<std::uint32_t> ProductionRuntimeAdapter::aim_disk_number(
 
 Result<void> ProductionRuntimeAdapter::create_generation_zero(
     const std::uint64_t bytes) {
+    // **Trace that generation zero actually ran, because "did it run?" is now the open question.**
+    //
+    // The seventh create in a run located a disk of its own that was not empty, while the first six located
+    // their own disks and found zeros.  Every external explanation has been excluded -- one device in the
+    // driver, one disk of our size, no named shared memory under M2 -- so the difference has to be in what
+    // that create did rather than in what the machine held.  The first thing to establish is therefore
+    // whether the bundle was freshly created at all, and a line here answers it by its presence or absence
+    // next to the create's other traces.
+    diagnostic_trace("M4Adapter::create_generation_zero: entered");
     if (bytes != config_.virtual_bytes) {
         return Result<void>::failure(adapter_error(
             ErrorDomain::usage, 1, L"create_generation_zero_image",
@@ -335,6 +344,7 @@ Result<void> ProductionRuntimeAdapter::create_generation_zero(
     if (!directory.ok()) return directory;
     const auto created = impl_->persistence.create_generation_zero(impl_->context);
     if (!created.ok()) return Result<void>::failure(created.error());
+    diagnostic_trace("M4Adapter::create_generation_zero: wrote generation zero");
     return Result<void>::success();
 }
 

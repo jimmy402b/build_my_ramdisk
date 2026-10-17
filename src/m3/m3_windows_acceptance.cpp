@@ -292,7 +292,26 @@ Result<void> M3AimRuntime::start() {
     // file is not adopted -- so a leftover of some *other* profile cannot be taken over by
     // accident, which is the one way this could do harm.
     diagnostic_trace("M3AimRuntime::start: look for an existing device");
-    auto existing = find_existing_device(spec);
+    // **An attach-only runtime looks for a device to adopt.  A creating runtime does not.**
+    //
+    // Adoption matches on geometry, because the driver-visible name is random per worker and cannot be
+    // compared.  The justification for trusting geometry was that this runtime holds the bundle's exclusive
+    // writer lock, so no concurrent owner could exist -- and that reasoning holds only for devices serving
+    // *this* bundle.  It says nothing about a device serving a different profile's bundle, which is exactly
+    // the situation that fails: a two-profile case creates profile B while profile A's device is alive, both
+    // are the same virtual size, and B adopted A's.  B then located A's disk, found a partition table on it,
+    // and had no way to tell that the disk was not its own.
+    //
+    // Measured: the failing create is an adopt, not a create.  The first six creates in the run each read
+    // their own disk and found zeros; the seventh adopted and read an MBR.
+    //
+    // A creating runtime has no need to adopt.  Its job is to bring a new device into being, and a residue
+    // belonging to this bundle is what the sweep and reclaim exist for.  So it does not look, and the
+    // ambiguity cannot arise.  Attach-only runtimes still look, because finding the device that already
+    // serves the bundle is precisely what `recover` and `reclaim` have to do.
+    auto existing = config_.attach_only
+        ? find_existing_device(spec)
+        : Result<std::optional<aim::DeviceId>>::success(std::nullopt);
     if (!existing.ok()) {
         (void)stop_provider();
         return Result<void>::failure(existing.error());
