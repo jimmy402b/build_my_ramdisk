@@ -177,4 +177,34 @@ filter '^structural\.m5\.read_write_separation$': 1 of 152 cases selected
 **不是二进制旧了，而是测试清单旧了。判据是总数**——
 **"151" 而不是 "152" 就说明清单没刷新。**
 
+---
+
+## 8. 全量确认：150 / 152，只有两条环境失败（part 98）
+
+锁改动与新结构性测试一起上客机跑**完整 152 条**（请求 `15bd10e68e964e039c0c31c5c8ca0578`）：
+
+```
+150 of 152 passed
+  FAIL structural.m2.storage_independent_build (exit 1)   ← 客机无 VS
+  FAIL structural.m5.execution_boundary        (exit 1)   ← 同一原因
+```
+
+**两条都是 `vswhere.exe not found`**，与产品无关。
+
+**关键三条都在这个读数里**：
+
+| 测试 | 位置 | 结果 |
+|---|---|---|
+| `m5.production_execution_backend` | #17 | **PASS**（T1-03 的修复保持有效） |
+| `structural.m5.read_write_separation` | #56 | **PASS**（新增的守卫在客机也成立） |
+| `m5.service_operation_store` | #45 | **PASS**（客机通过；开发机那条是环境问题） |
+
+**⇒ 产品面在客机上全绿，剩余的失败只与客机缺 Visual Studio 有关。**
+
+**量测范围**：这是**单次**全量运行。
+其中 `m5.production_execution_backend` 有独立的 `-Repeat 20 → 20/20` 支撑；
+`structural.m5.read_write_separation` 有 `-Repeat 3 → 3/3`。
+**其余用例本轮只跑了一次，我不宣称它们"稳定"。**
+
+
 
