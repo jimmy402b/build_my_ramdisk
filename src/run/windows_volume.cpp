@@ -1134,7 +1134,22 @@ Result<ProductVolume> select_volume_for_disk(
             failure(VolumeError::platform_error, L"select_volume_for_disk",
                     L"invalid drive letter"));
     }
+    // **A volume actually mounted at the requested letter wins over one that is merely a candidate.**
+    //
+    // Without the drive number this selection had nothing left to discriminate on, because
+    // `enumerate_native_volumes` stamps *every* volume with the requested letter -- so the letter test
+    // above passes for the whole machine.  `mounted` is the one field it computes honestly: it is set
+    // only when the volume really has a mount point at that letter, and two volumes cannot be mounted at
+    // the same letter.
+    //
+    // This is therefore the discriminator for the ordinary cases, and it is the right one: a reclaim is
+    // looking at a residue that still holds the letter, and a recovery is looking at a volume that was
+    // mounted before the crash.  The fallback to unmounted candidates stays, because recovery after a
+    // power loss may observe the volume unmounted, and refusing those would make valid recovery
+    // impossible.  When the durable GUID is known it is applied before this point and settles the
+    // remaining ambiguity.
     std::optional<ProductVolume> selected;
+    std::optional<ProductVolume> unmounted;
     for (const auto& observation : observations) {
         const auto& candidate = observation.volume;
         if (observation.foreign_mount || observation.drive_letter_occupied)
@@ -1145,29 +1160,39 @@ Result<ProductVolume> select_volume_for_disk(
             continue;
         // **The physical-disk filter is skipped when no disk number is given.**
         //
-        // Recovery and reclaim pass `nullopt`, because obtaining the number meant opening every
-        // candidate disk -- measured blocking for 11 seconds while a device was retiring.  What still
-        // identifies the volume is everything above plus `verify_volume`'s GUID comparison against the
-        // durable profile, which is the stronger check anyway: Windows reuses a drive number, and does
-        // not reuse a volume GUID.
+        // Obtaining that number meant opening every candidate disk -- measured blocking for 11 seconds
+        // while a device was retiring.  The mounted rule above and the durable GUID, when available, are
+        // what identify the volume instead; a drive number is reused by Windows, and a volume GUID is not.
         if (disk_number.has_value() &&
             candidate.extents.front().disk_number != *disk_number)
             continue;
-        if (selected.has_value()) {
-            return Result<ProductVolume>::failure(
-                failure(VolumeError::ownership_mismatch, L"select_volume_for_disk",
-                        L"multiple volumes match the requested drive letter"));
-        }
         ProductVolume adopted = candidate;
         adopted.owner_token = owner_token;
         adopted.drive_letter = drive_letter;
         adopted.operation_owned = true;
-        selected = std::move(adopted);
+        if (candidate.mounted) {
+            if (selected.has_value()) {
+                return Result<ProductVolume>::failure(
+                    failure(VolumeError::ownership_mismatch, L"select_volume_for_disk",
+                            L"more than one volume is mounted at the requested drive letter"));
+            }
+            selected = std::move(adopted);
+        } else {
+            if (unmounted.has_value()) {
+                // Two unmounted candidates and no durable identity: genuinely undecidable, so fail closed
+                // rather than guess which volume to dismantle.
+                return Result<ProductVolume>::failure(
+                    failure(VolumeError::ownership_mismatch, L"select_volume_for_disk",
+                            L"several unmounted volumes match and no identity distinguishes them"));
+            }
+            unmounted = std::move(adopted);
+        }
     }
+    if (!selected.has_value()) selected = std::move(unmounted);
     if (!selected.has_value()) {
         return Result<ProductVolume>::failure(
             failure(VolumeError::not_found, L"select_volume_for_disk",
-                    L"no volume matches the requested physical disk and drive letter"));
+                    L"no volume matches the requested drive letter"));
     }
     return Result<ProductVolume>::success(std::move(*selected));
 }
