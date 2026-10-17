@@ -806,6 +806,13 @@ enum class ServiceLogKind : std::uint8_t {
     wait_timeout,
     client_wait_cancelled,
     restart_reconcile,
+    // A worker action failed, and this event is where the *reason* is recorded.  Without
+    // it an operation that fails says only that it failed: the durable record holds a
+    // marker token rather than a cause, the terminal event never carried one, and the
+    // client projection cannot invent one.  Measured cost of not having it: a create that
+    // failed on the guest could not be diagnosed from the service log, the durable record
+    // or the CLI at all.
+    operation_failed,
 };
 
 struct ServiceLogEvent final {
@@ -815,6 +822,9 @@ struct ServiceLogEvent final {
     std::optional<product::Uuid> profile_id;
     std::string command;
     std::string phase;
+    // The reason, for the events that have one.  Appended with a default so every
+    // existing aggregate initializer keeps its meaning and its value.
+    std::string message;
 };
 
 class IServiceClock {

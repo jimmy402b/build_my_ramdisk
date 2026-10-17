@@ -52,8 +52,17 @@ void StderrServiceLogger::write(
     // Best effort by contract -- the interface is `noexcept` -- because a
     // service must not fail an operation over its own inability to describe it.
     const auto kind = static_cast<unsigned>(event.kind);
-    std::fprintf(stderr, "myrd-service: kind=%u command=%s phase=%s\n", kind,
-                 event.command.c_str(), event.phase.c_str());
+    if (event.message.empty()) {
+        std::fprintf(stderr, "myrd-service: kind=%u command=%s phase=%s\n", kind,
+                     event.command.c_str(), event.phase.c_str());
+    } else {
+        // Printed when there is one, because the question an operator (and a test) has
+        // about a failed operation is *why*, and a line that names only the phase answers
+        // everything except that.
+        std::fprintf(stderr, "myrd-service: kind=%u command=%s phase=%s message=%s\n",
+                     kind, event.command.c_str(), event.phase.c_str(),
+                     event.message.c_str());
+    }
     std::fflush(stderr);
 }
 

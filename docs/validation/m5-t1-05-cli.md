@@ -209,7 +209,7 @@ myrd-service: start failed: op=profile_registration.list
 **这条读数为什么可信**：样本的"during create"不是假设，而是**每次采样前读到的状态**；
 最小 13 ms / 最大 111 ms 的分布说明它量的是命令本身（含进程启动），不是缓存。
 
-### 5.2 T1-05：CLI 能连上真实服务，但 `create` 在执行阶段失败
+### 5.2 T1-05：CLI 能连上真实服务；`create` 的失败原因已可达，并已定位
 
 **已达成**：
 - `myrd-cli` 经**计划任务（非网络登录）**连上真实服务的 public pipe；
@@ -217,15 +217,26 @@ myrd-service: start failed: op=profile_registration.list
 - `disk show <不存在>` 正确返回 `error: The requested profile is not registered` /
   `code: 0x5604` / **退出码 1**，即"服务拒绝"与"服务不可达"被正确区分。
 
-**阻塞读数**：`disk create` 被**准入**（`operation queued`），随后**执行失败**：
+**让失败原因可达（本轮完成的第一半）**：
+`ServiceLogEvent` 增加 `message` 字段、新增 `ServiceLogKind::operation_failed`、
+在 `execute_operation` 的**动作失败分支**（`service_core.cpp` 的 `if (!result.ok())`，
+即所有失败分支的上游、错误还在作用域内的唯一位置）记录
+`action / code / native / step / detail`；`StderrServiceLogger` 打印该字段。
+
+**第一次拿到原因（请求 `0edd233fabfc4518b639e68069fab1c8`）**：
 
 ```
-myrd-cli: disk.create: operation queued
-          operation <id>: failed (phase terminal)     ← operation.wait 的读数
-myrd-service 日志：kind=1 command=disk.create phase=queued
-                  kind=2 command=disk.create phase=running
-                  kind=3 command=disk.create phase=terminal
+myrd-service: kind=7 command=disk.create phase=create-bundle
+  message=action=create-bundle code=20994 native=0
+          step=provision_new_volume detail=requested drive letter is occupied
 ```
+
+⇒ **失败点定位到 `provision_new_volume`：请求的盘符已被占用**（code `20994`）。
+即 create 走到建卷那一步、被盘符冲突拒掉；**不是** bundle、不是 worker 启动、不是权限。
+e2e 脚本选盘符时用的是 `Test-Path` + `disk list` 两条判据，**与产品自己的"盘符被占用"判据不一致**——
+产品看到的是卷/设备命名空间里的占用（此前几次失败运行留下的残留），脚本看不到。
+**⇒ 下一步：先让两边的判据一致**（用产品自己的判据选盘符，或加一条显式的"清理/校验盘符"前置），
+再重跑端到端；这属于**测试夹具的修正**，不是产品缺陷的证据。
 
 **已知的边界事实**（用于排除假设，均为实测）：
 - 服务 `STATE : 4 RUNNING`，`disk list` 可用 ⇒ 不是"起不来"；

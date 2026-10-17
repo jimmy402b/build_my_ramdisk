@@ -4656,6 +4656,32 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     }))
                 : worker_.execute(worker_request);
             if (!result.ok()) {
+                // **The one place the reason is recorded.**  Every branch below turns this
+                // failure into a durable *disposition* and a marker token, and none of them
+                // carries the cause; by the time the operation is terminal the error is
+                // gone.  So it is written here, where it still exists, naming the action
+                // and the step that refused.
+                {
+                    const auto& failed = result.error();
+                    auto operation_name = ipc::utf16_to_utf8(failed.operation);
+                    auto message = ipc::utf16_to_utf8(failed.message);
+                    std::string reason =
+                        "action=" + std::string(lifecycle_action_phase(action))
+                        + " code=" + std::to_string(failed.code)
+                        + " native=" + std::to_string(failed.native_code)
+                        + " step="
+                        + (operation_name.ok() ? operation_name.value() : "?")
+                        + " detail="
+                        + (message.ok() ? message.value() : "?");
+                    logger_.write(ServiceLogEvent{
+                        ServiceLogKind::operation_failed,
+                        current_operation.request_id,
+                        current_operation.operation_id,
+                        current_operation.profile_id,
+                        current_operation.command_scope,
+                        current_operation.phase,
+                        std::move(reason)});
+                }
                 if (stop_operation && current_profile.has_value()
                     && current_profile->stop.phase
                         >= StopDurablePhase::removal_boundary) {
