@@ -317,11 +317,22 @@ Result<void> M3AimRuntime::start() {
         auto snapshot = aim::snapshot_physical_drive_numbers();
         if (snapshot) {
             baseline = snapshot.move_value();
-            char line[192]{};
+            // The numbers, not just the count: whether another profile's disk is in this list is the whole
+            // question when two disks of the same size can be on the machine at once.
+            char numbers[128]{};
+            std::size_t used = 0;
+            for (const auto number : baseline) {
+                const int written = _snprintf_s(numbers + used,
+                                                sizeof(numbers) - used, _TRUNCATE,
+                                                used == 0 ? "%u" : ",%u", number);
+                if (written <= 0) break;
+                used += static_cast<std::size_t>(written);
+            }
+            char line[256]{};
             (void)_snprintf_s(line, _TRUNCATE,
-                              "M3AimRuntime::start: baseline of %zu present drive(s) "
+                              "M3AimRuntime::start: baseline of %zu present drive(s) [%s] "
                               "before create",
-                              baseline.size());
+                              baseline.size(), used == 0 ? "" : numbers);
             diagnostic_trace(line);
         } else {
             // Without a baseline the wait falls back to matching on identity alone, which is what it did

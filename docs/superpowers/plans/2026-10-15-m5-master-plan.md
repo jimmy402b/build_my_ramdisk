@@ -932,6 +932,24 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    **做隔离实验时务必 `touch` 还原后的文件**，否则 CMake 会因时间戳未变而**静默跳过重编**
    （已踩过：会把"隔离版的旧二进制"误读成"完整套件通过"）。
    **可靠的判据是耗时**：完整套件约 **50–75 秒**，被裁剪过的约 **10 秒**。
+9. **`m5.production_execution_backend` 第 17 条在建卷时失败（未解决，已知）** ——
+   **`op=provision_new_volume msg=provisioning helper failed`，脚本报 `disk is not RAW`**，
+   而盘上有**真实的 MBR 引导码与 `EFI PART` 签名**（字节级读数，§4.15.63）。
+   **四个假设已被实测排除**：
+   ① 盘号错（读数显示 `#1`/64 MiB/非系统盘，正确）；
+   ② SHM 映射太小（`kDataAreaSize` 是**协议载荷窗口**，不是盘容量）；
+   ③ 旧设备被复用（**create 前驱动里 0 个设备**）；
+   ④ 定位错盘（**baseline 每次都是 `[0]`**，即创建前只有系统盘，`#1` 必是新建的）。
+   **目前唯一剩下的解释**：盘上的字节来自我们自己的 `request_processor`，
+   即 **M3 存储在 generation-zero 上对未提交块返回了非零内容**——
+   但**为什么前几次 create 是 RAW、第 6 次不是，尚未解释**。
+   **不阻塞其他增量**；回来时的下一步很明确：
+   比较"provision 成功的那次"与"失败的那次"在**同一块盘上读出的前 1 KiB**。
+10. **改 `src/run/provision_volume.ps1` 后必须先在开发机跑 `unit.m4.provision_script`** ——
+   它是那个脚本唯一守卫（AST 白名单，只允许固定的存储命令集），
+   而且不需要真实设备。**已因漏跑而红过两次**（`ForEach-Object`、`New-Object` 都不在白名单里）。
+   另：该脚本通过 `src/run/run_resources.rc` 以 `RCDATA` 嵌入，
+   **改 `.ps1` 不会触发重编，必须 `touch` 那个 `.rc`**，否则客机上跑的还是旧脚本。
 
 ### T4-01 — 安装器
 
