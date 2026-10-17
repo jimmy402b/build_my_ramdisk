@@ -806,8 +806,8 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 
 ### 前置：本节开始前必须清掉的遗留
 
-1. **`m5.execution_scheduler`** —— **本轮（part 63）已复核：现在是绿的，此项可关，
-   且它不再是 T1-05/T1-06 的前置。**
+1. **`m5.execution_scheduler`** —— **✅ 已关闭**（part 63 复核绿；part 98 全量客机再确认通过）。
+   **它不再是 T1-05/T1-06 的前置。**
 
    **读数（明确写明次数与范围）**：直接运行测试 exe **连续 8 次，每次都是 9/9 passed**；
    用 **ctest 单独跑也是 Passed**；在 `-j 8` 的整套运行里同样通过。
@@ -856,7 +856,8 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    若要修，正确做法是 harness 文档里已写的那个——
    **让测试从环境变量/相对路径取夹具，而不是配置期烘入绝对路径**。
    **在 T4 之前不必做**；但**若将来要在任意机器上跑测试，则必须先做**。
-4. **ABI 陷阱未根治** —— **本轮（part 64）已用机制修掉，此项可关**。
+4. **ABI 陷阱未根治** —— **✅ 已关闭**（part 64 用机制修掉：`CMAKE_DEPENDS_USE_COMPILER TRUE`，
+   改为由 MSVC `/showIncludes` 提供依赖，不再依赖"记得加 `--clean-first`"这条纪律）。
    原先只靠"记得加 `--clean-first`"这条纪律。
    **已实施**：在 `CMakeLists.txt` 里设 **`CMAKE_DEPENDS_USE_COMPILER TRUE`**
    （位置在 `project()` 之后、配置之前），让 **MSVC 输出 `/showIncludes`、
@@ -890,8 +891,15 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    若要把这条**坐实**，只需一个**故意触发 terminate 的用例**
    （例如投掷一个逃出 `main` 的异常）并断言处理器确实被调用——
    **这是"证明处理器接线正确"，而不是"解释它为何没响"**，故列为可选，不再作为 T4 前置。
-6. **`m5.production_execution_backend` 整套在客机上不稳定** ——
-   **⚠ 本项在 part 75 被大幅更正，原有的"枚举阻塞/客机退化"结论已撤回。**
+6. **`m5.production_execution_backend` 整套在客机上不稳定** —— **✅ 已关闭（part 95–96）**。
+   **根因不是"不稳定"，是一个确定的功能缺陷**：create 路径会"采纳"另一个 profile 的同尺寸设备
+   （采纳时跳过 backing name 校验，其正当性论证只覆盖本 bundle 的并发持有者）。
+   **修复后 `-Repeat 20` → 20 / 20 全绿**（请求 `826c5f3567c14e13ba9a7ff40f8cf621`），
+   全量 152 条 → **150 通过**，唯二失败是客机缺 Visual Studio 的两条结构性测试。
+   **⇒ 原先"间歇性/客机退化"这两个说法都不成立，本条按"已解决"关闭。**
+   完整排查链（六个被实测推翻的假设）见
+   [`docs/validation/m5-resolved-create-disk-adoption.md`](../../validation/m5-resolved-create-disk-adoption.md)。
+   **下面是 part 75 当时的更正记录，保留作为过程证据：**
 
    **撤回的理由（有读数支撑）**：在**同一条命令、同一台客机**上：
 
