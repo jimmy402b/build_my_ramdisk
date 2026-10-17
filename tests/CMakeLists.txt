@@ -800,6 +800,19 @@ set_tests_properties(structural.m5.execution_boundary PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 120)
 
+# The operation store promises that mutations take its gate exclusively and that queries take it shared.
+# That was audited once by hand, which protects nothing against the next query somebody adds: copying the
+# nearest `std::scoped_lock` would restore the queueing silently, and no behavioural test would catch it,
+# because a query that waits still returns the right answer.  This asserts the discipline where it is written.
+add_test(
+    NAME structural.m5.read_write_separation
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/unit/test-m5-read-write-separation.ps1"
+            -SourceDirectory "${CMAKE_SOURCE_DIR}")
+set_tests_properties(structural.m5.read_write_separation PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 120)
+
 add_executable(myrd_m2_block_math_tests
     unit/block_math_tests.cpp
 )

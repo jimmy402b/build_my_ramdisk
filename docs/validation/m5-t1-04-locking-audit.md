@@ -103,3 +103,50 @@ FAIL tests/integration/m5_service_operation_store_tests.cpp:92: created || error
 已记入 master-plan §8，不擅自改。**
 
 **在那之前，本增量只能标 PARTIAL，不标 PASSED。**
+
+---
+
+## 7. 把审计变成可执行的守卫（part 97）
+
+**问题**：这次审计是**手做的**，而手做的东西对"下一个人加一个查询"毫无保护。
+**一个新的读路径只要复制最近的 `std::scoped_lock`，就会静默地把排队行为带回来**，
+**而且没有任何行为测试会发现**——**一个会等待的查询仍然返回正确答案**，
+只是慢。**"慢"不会让断言变红。**
+
+**因此新增结构性测试** `structural.m5.read_write_separation`
+（`tests/unit/test-m5-read-write-separation.ps1`），断言两件事：
+
+1. **门本身是读写原语**（`shared_ptr<std::shared_mutex>`），不是普通 mutex；
+2. **三个纯查询取共享、五个写入取独占**，逐函数按名字核对。
+
+**失败时会指名道姓**：
+
+```
+FAIL: list_records is a query but takes the gate exclusive; it must be shared
+```
+
+**这个失败形态比"在某台空闲机器上量一次时延"有用得多。**
+
+### 7.1 守卫的正例与负例都验过
+
+**一个不能失败的守卫等于没有守卫**，所以两种情形都实测：
+
+| 情形 | 结果 |
+|---|---|
+| 真实源码 | `read/write separation holds: 3 queries shared, 5 mutations exclusive`，**exit 0** |
+| **副本里把 `list_records` 的锁改回独占** | `FAIL: list_records is a query but takes the gate exclusive; it must be shared`，**exit 1** |
+
+负例是在 `C:\tmp\rwprobe` 的**源码副本**上做的，**没有改动真实文件**。
+
+### 7.2 回归读数
+
+`ctest -R "^unit\.m3\.|^unit\.m4|^integration\.m4|^m4\.|^structural\.|^m5\.service_operation_store|^m5\.service_orchestration|^m5\.execution_scheduler"`
+→ **49 / 51**，两条失败都是**开发机环境**：
+
+| 失败 | 原因 |
+|---|---|
+| `unit.m4.profile_store` | 既有已知开发机环境失败 |
+| `m5.service_operation_store` | `CreateDirectoryW` 断言，**客机 3/3 通过**（§5） |
+
+**⇒ 新增的结构性测试没有引入回归。**
+
