@@ -933,6 +933,11 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
    （已踩过：会把"隔离版的旧二进制"误读成"完整套件通过"）。
    **可靠的判据是耗时**：完整套件约 **50–75 秒**，被裁剪过的约 **10 秒**。
 9. **`m5.production_execution_backend` 第 17 条在建卷时失败（未解决，已知）** ——
+   **完整移交记录见 [`docs/validation/m5-open-defect-create-disk.md`](../../validation/m5-open-defect-create-disk.md)**。
+   **那份文档是接手这一项的唯一入口**：包含现象、决定性读数、**六个已排除的假设**（每个都带读数）、
+   已确立的事实、已装上的安全守卫、**下一步该测什么（三步，每步都能独立证伪）**、
+   "不要重复做的事"，以及测量纪律上踩过的坑。
+   下面是摘要，**细节一律以那份文档为准**：
    **`op=provision_new_volume msg=provisioning helper failed`，脚本报 `disk is not RAW`**，
    而盘上有**真实的 MBR 引导码与 `EFI PART` 签名**（字节级读数，§4.15.63）。
    **四个假设已被实测排除**：
