@@ -6127,6 +6127,25 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         std::byte{'r'}, std::byte{'e'}, std::byte{'g'},
                         std::byte{'i'}, std::byte{'s'}, std::byte{'t'},
                         std::byte{'e'}, std::byte{'r'}};
+                    // The marker alone says "registration refused"; it cannot say *which*
+                    // refusal, and the record keeps only the marker.  The error is logged here,
+                    // where it still exists -- measured need: a create reached this step and
+                    // ended `failed` with nothing but the word `register` in any log.
+                    const auto& refused = published.error();
+                    auto step = ipc::utf16_to_utf8(refused.operation);
+                    auto detail = ipc::utf16_to_utf8(refused.message);
+                    logger_.write(ServiceLogEvent{
+                        ServiceLogKind::operation_failed,
+                        current_operation.request_id,
+                        current_operation.operation_id,
+                        current_operation.profile_id,
+                        current_operation.command_scope,
+                        current_operation.phase,
+                        "publish_registration refused: code="
+                            + std::to_string(refused.code) + " native="
+                            + std::to_string(refused.native_code) + " step="
+                            + (step.ok() ? step.value() : "?") + " detail="
+                            + (detail.ok() ? detail.value() : "?")});
                     break;
                 }
                 auto applied = apply_registration_mutation(
@@ -6586,6 +6605,34 @@ Result<OperationRecord> ServiceCore::finalize_operation(
     terminal.terminal_result = nonempty_terminal_result(
         std::move(terminal_result),
         terminal_state == OperationState::succeeded);
+    // **A failure that ends here is logged here too.**
+    //
+    // The action-failure branch records its own reason, but not every failed operation passes
+    // through it: a create can provision successfully and still end `failed` while publishing
+    // its state, and then nothing anywhere says which step or which marker decided that.
+    // Measured on the guest: the create reached `publish-provisioning`, the helper reported
+    // disk/letter/GPT/NTFS success, the terminal state was `failed`, and no failure event
+    // existed -- so the question "which step failed" had no answer in any log.
+    //
+    // The marker is the disposition the core settled on (`worker`, `evidence`, `reversed`, ...),
+    // and it is printed as text because that is how it is written.
+    if (terminal_state == OperationState::failed) {
+        std::string marker;
+        for (const auto byte : terminal.terminal_result) {
+            if (marker.size() >= 48) break;
+            const auto value = static_cast<unsigned char>(byte);
+            marker.push_back(value >= 0x20 && value < 0x7f ? static_cast<char>(value)
+                                                           : '.');
+        }
+        logger_.write(ServiceLogEvent{
+            ServiceLogKind::operation_failed,
+            terminal.request_id,
+            terminal.operation_id,
+            terminal.profile_id,
+            terminal.command_scope,
+            terminal.phase,
+            "terminal failure without a worker-action error; marker=" + marker});
+    }
     auto terminal_write = operations_.write(current.revision, terminal);
     if (!terminal_write.ok()) {
         return Result<OperationRecord>::failure(terminal_write.error());

@@ -125,6 +125,27 @@ function Get-ServiceState {
     return $output
 }
 
+function Wait-ForTerminal([string]$operationId, [int]$seconds) {
+    # One `operation wait` is a *bounded* observation, not a promise that the operation is
+    # finished: the service answers with its current state after at most its own wait budget.
+    # A create that is still publishing when that budget expires is not a failure, so the
+    # caller loops until the state is terminal or its own deadline passes -- and a terminal
+    # `failed` is a product failure, so the loop stops there and reports it.
+    $until = (Get-Date).AddSeconds($seconds)
+    $state = 'unknown'
+    while ((Get-Date) -lt $until) {
+        $state = Get-OperationState $operationId
+        if (@('succeeded', 'failed', 'cancelled') -contains $state) { return $state }
+        $waited = Invoke-Cli @('operation', 'wait', $operationId)
+        $state = Get-OperationState $operationId
+        if (@('succeeded', 'failed', 'cancelled') -contains $state) { return $state }
+        if ($waited.exit -ne 0) {
+            Fail "operation wait $operationId failed: $($waited.output)"
+        }
+    }
+    Fail "the operation did not reach a terminal state within $seconds s (last state: $state)"
+}
+
 function Get-UuidFromText([string]$text) {
     $match = [regex]::Match($text, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
     if (-not $match.Success) { return $null }
@@ -217,7 +238,33 @@ try {
     foreach ($disk in (Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop)) {
         if ($disk.DeviceID) { $occupied += $disk.DeviceID.ToUpper() }
     }
-    $occupied = @($occupied | Sort-Object -Unique)
+    # **And the DOS-device namespace, which is the one that actually refuses.**
+    #
+    # A failed create can leave a drive letter *mapped* to a device that no longer exists.
+    # `Get-Volume` and `Win32_*` do not list it -- there is no volume to list -- but the name is
+    # still taken, so the preflight refuses with "requested drive letter is occupied" and
+    # `diskpart`'s `Set-Partition` refuses with "the requested access path is already in use".
+    # Measured on the guest: after one failed create `U:` answered `QueryDosDevice` with a device
+    # path while `Get-Volume` showed no `U:` at all, and the next run at `U:` failed in the
+    # helper.  Only a reboot clears such a ghost.
+    #
+    # So a letter counts as free only when nothing at all answers for it.
+    if (-not ([System.Management.Automation.PSTypeName]'Myrd.DosDevice').Type) {
+        Add-Type -Namespace Myrd -Name DosDevice -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+public static extern int QueryDosDevice(string name, System.Text.StringBuilder target, int max);
+'@
+    }
+    $mapped = @()
+    foreach ($candidate in @('T:', 'U:', 'V:', 'W:', 'X:', 'Y:', 'Z:')) {
+        $buffer = New-Object System.Text.StringBuilder 512
+        if ([Myrd.DosDevice]::QueryDosDevice($candidate, $buffer, 512) -ne 0) {
+            $mapped += $candidate
+            Write-Host ("  {0} is still mapped to {1} -- a previous run's remnant, not a volume" -f
+                $candidate, $buffer.ToString())
+        }
+    }
+    $occupied = @($occupied + $mapped | Sort-Object -Unique)
     Write-Host "  drive letters the product's namespace reports as taken: $($occupied -join ' ')"
 
     foreach ($letter in @('T:', 'U:', 'V:', 'W:', 'X:', 'Y:', 'Z:')) {
@@ -234,7 +281,7 @@ try {
     # -----------------------------------------------------------------------
     Write-Step 'T1-04: create, and time `disk list` while it is in progress'
     $create = Invoke-Cli @('disk', 'create', '--name', $profileName, '--bundle', $bundlePath,
-        '--size', '256MiB', '--mount', $mount, '--no-wait')
+        '--size', '64MiB', '--mount', $mount, '--no-wait')
     if ($create.exit -ne 0) { Fail "create failed: $($create.output)" }
     Write-Host "  $($create.output.Trim())"
     $operationId = Get-UuidFromText $create.output
@@ -278,20 +325,26 @@ try {
     # T1-05: the command surface, through the CLI.
     # -----------------------------------------------------------------------
     Write-Step 'T1-05: wait for the create, then list and show it'
+    # A create is longer than one `operation wait` budget: the operation is admitted, then the
+    # worker provisions and publishes, and the service answers a wait with whatever it knows at
+    # the time.  Measured: one wait returned while the phase was still `publish-provisioning`,
+    # which is a *running* operation, not a failed one -- so the loop waits for the state to
+    # become terminal and only then judges it.
+    $finalState = Wait-ForTerminal $operationId 600
     $waited = Invoke-Cli @('operation', 'wait', $operationId)
-    if ($waited.exit -ne 0) {
+    if ($finalState -ne 'succeeded') {
         # A failed operation is diagnosed from what the service will tell a client: the
         # disk's own state and the operation's phase -- and, because this run started the
         # service itself, from the service's own log, which an installed service would
         # have thrown away.
-        Write-Host "FAILED WAIT: $($waited.output.Trim())"
+        Write-Host "FAILED WAIT: terminal state $finalState`n$($waited.output.Trim())"
         Write-Host "  disk list: $((Invoke-Cli @('disk', 'list')).output.Trim())"
         Write-Host "  disk show: $((Invoke-Cli @('disk', 'show', $mount)).output.Trim())"
         Write-Host "  workers: $((@(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue)).Count)"
         Write-Host "  work root: $((Get-ChildItem -LiteralPath $workRoot -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ', ')"
         Write-Host "  service log:"
         Write-Host "$(Get-Content -LiteralPath $serviceLog -Raw)"
-        Fail "the create did not succeed: $($waited.output)"
+        Fail "the create did not succeed: $finalState"
     }
     Write-Host "  $($waited.output.Trim())"
 

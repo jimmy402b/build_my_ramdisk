@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <bcrypt.h>
 #include <cstring>
 #include <cwctype>
@@ -25,6 +26,14 @@ namespace {
 Error failure(VolumeError code, const wchar_t* operation, const wchar_t* message,
               std::uint32_t native_code = 0) {
     return {ErrorDomain::win32, static_cast<std::uint32_t>(code), operation, message, native_code};
+}
+
+// For a refusal that has to *name what it saw*.  A selection failing with "no volume matches"
+// and no observations leaves the next reader guessing which of five filters rejected the
+// volume -- the same cost as the six hypotheses that were all wrong in a previous round.
+Error failure(VolumeError code, const wchar_t* operation, const std::wstring& message,
+              std::uint32_t native_code = 0) {
+    return failure(code, operation, message.c_str(), native_code);
 }
 
 bool same_identity(const ProductVolume& actual, const ProductVolume& expected) noexcept {
@@ -251,27 +260,30 @@ Result<void> run_provisioning_helper(std::uint32_t disk_number,
     }
     const BOOL deleted = DeleteFileW(script_path.c_str());
     const DWORD delete_error = GetLastError();
+    // **Printed whether the helper succeeded or not.**
+    //
+    // On failure it is the whole diagnosis: the script is the only thing that knows why the
+    // volume could not be provisioned.  On success it is the only record of *what the script
+    // believed it did* -- and that matters because the next step, `provision_and_adopt_volume`,
+    // can then fail with "no volume matches the requested drive letter" on a create where the
+    // helper reported success.  Measured exactly that way on the guest: the failure named the
+    // selection step and carried no script evidence at all, because success printed nothing.
+    // Printing on success costs one line and turns that case into a reading.
+    {
+        std::lock_guard<std::mutex> guard(text_mutex);
+        // Printed with %hs since the captured bytes are narrow and the stream is wide.
+        if (!out_text.empty()) {
+            std::fwprintf(stderr, L"myrd-test: provisioning helper stdout: %hs\n",
+                          out_text.c_str());
+        }
+        if (!err_text.empty()) {
+            std::fwprintf(stderr, L"myrd-test: provisioning helper stderr: %hs\n",
+                          err_text.c_str());
+        }
+        std::fflush(stderr);
+    }
     if (!deleted || !exit_ok || output_overflow || pipe_error || terminate_failed ||
         wait != WAIT_OBJECT_0 || exit_code != 0) {
-        // **Print what the helper said before returning, because that is the whole diagnosis.**
-        //
-        // The script is the only thing that knows why the volume could not be provisioned -- which disk
-        // it could not find, which partition call refused, which letter was taken.  Reporting only the
-        // exit code is what made this failure take several rounds to even locate, since it looked like a
-        // storage fault rather than a script refusal.
-        {
-            std::lock_guard<std::mutex> guard(text_mutex);
-            // Printed with %hs since the captured bytes are narrow and the stream is wide.
-            if (!out_text.empty()) {
-                std::fwprintf(stderr, L"myrd-test: provisioning helper stdout: %hs\n",
-                              out_text.c_str());
-            }
-            if (!err_text.empty()) {
-                std::fwprintf(stderr, L"myrd-test: provisioning helper stderr: %hs\n",
-                              err_text.c_str());
-            }
-            std::fflush(stderr);
-        }
         return Result<void>::failure(failure(VolumeError::platform_error,
             L"provision_new_volume",
             output_overflow ? L"provisioning helper output exceeded 64 KiB" :
@@ -557,6 +569,14 @@ Result<void> Win32VolumeAdapter::provision_new_volume(
 #endif
 }
 
+// How long a freshly provisioned volume may take to become *observable* at its letter.
+//
+// The helper returns when `diskpart` has assigned the letter; the mount point reaches volume
+// enumeration a little later.  Ten seconds is far longer than the measured lag (the volume
+// appeared within one 250 ms retry in the reading that motivated this) and short enough that a
+// genuinely absent volume is still a refusal rather than a hang.
+inline constexpr std::uint32_t kPublishBudgetMs = 10'000;
+
 Result<ProductVolume> Win32VolumeAdapter::provision_and_adopt_volume(
     std::uint32_t disk_number, wchar_t drive_letter,
     std::wstring owner_token, std::uint32_t timeout_ms) const {
@@ -600,6 +620,37 @@ Result<ProductVolume> Win32VolumeAdapter::provision_and_adopt_volume(
     }
     auto selected = select_volume_for_disk(volumes.value(), disk_number, drive_letter,
                                           owner_token, true);
+    if (!selected.ok()) {
+        // **A freshly provisioned volume is not necessarily published yet.**
+        //
+        // The helper returns as soon as `diskpart` has assigned the letter, but the mount
+        // point becomes visible to enumeration a moment later.  Selecting exactly once made a
+        // create fail with "no volume matches the requested drive letter" on a helper that had
+        // just reported success for that very letter -- measured on the guest, with the
+        // helper's own record in the log:
+        //
+        //   provisioning helper stdout: {"disk_number":1,"drive_letter":"V",
+        //                                "partition_style":"GPT","filesystem":"NTFS",...}
+        //   ... code=21000 step=select_volume_for_disk
+        //       detail=no volume matches the requested drive letter
+        //
+        // So the selection is retried for a bounded time, re-enumerating each round.  This is
+        // the same shape as the enumeration retry above and it is bounded for the same reason:
+        // an unbounded wait here would be a create that can hang.  When the deadline passes the
+        // *original* selection error is returned, after a rollback, so the refusal still names
+        // the step that refused rather than a timeout.
+        const auto publish_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kPublishBudgetMs);
+        while (!selected.ok()
+               && std::chrono::steady_clock::now() < publish_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            auto refreshed = enumerate_native_volumes(drive_letter);
+            if (!refreshed.ok()) continue;
+            volumes.value() = refreshed.move_value();
+            selected = select_volume_for_disk(volumes.value(), disk_number,
+                                              drive_letter, owner_token, true);
+        }
+    }
     if (!selected.ok()) {
         rollback(volumes.value());
         return selected;
@@ -1166,8 +1217,23 @@ Result<ProductVolume> select_volume_for_disk(
     // remaining ambiguity.
     std::optional<ProductVolume> selected;
     std::optional<ProductVolume> unmounted;
+    // Counted rather than silently skipped: see the failure at the end of this function.
+    std::size_t seen = 0, foreign = 0, wrong_letter = 0, not_mounted = 0,
+                no_guid = 0, extents = 0, wrong_disk = 0;
+    const auto note = [&](const VolumeObservation& observation) {
+        const auto& candidate = observation.volume;
+        ++seen;
+        if (observation.foreign_mount || observation.drive_letter_occupied) { ++foreign; return; }
+        if (candidate.drive_letter != drive_letter) { ++wrong_letter; return; }
+        if (require_mounted && !candidate.mounted) { ++not_mounted; return; }
+        if (candidate.volume_guid.empty()) { ++no_guid; return; }
+        if (candidate.extents.size() != 1) { ++extents; return; }
+        if (disk_number.has_value()
+            && candidate.extents.front().disk_number != *disk_number) { ++wrong_disk; return; }
+    };
     for (const auto& observation : observations) {
         const auto& candidate = observation.volume;
+        note(observation);
         if (observation.foreign_mount || observation.drive_letter_occupied)
             continue;
         if (candidate.drive_letter != drive_letter ||
@@ -1206,9 +1272,21 @@ Result<ProductVolume> select_volume_for_disk(
     }
     if (!selected.has_value()) selected = std::move(unmounted);
     if (!selected.has_value()) {
+        // The reason, not just the verdict.  Every one of these counters is a filter that
+        // could have been the one to reject the volume, and without them the reader has to
+        // re-run with instrumentation to learn which -- the expensive way to answer it.
+        std::wstring summary =
+            L"no volume matches the requested drive letter " + std::wstring(1, drive_letter)
+            + L": observed=" + std::to_wstring(seen)
+            + L" foreign_or_letter_occupied=" + std::to_wstring(foreign)
+            + L" other_letter=" + std::to_wstring(wrong_letter)
+            + L" not_mounted=" + std::to_wstring(not_mounted)
+            + L" no_guid=" + std::to_wstring(no_guid)
+            + L" extents_not_one=" + std::to_wstring(extents)
+            + L" other_disk=" + std::to_wstring(wrong_disk)
+            + L" require_mounted=" + (require_mounted ? L"true" : L"false");
         return Result<ProductVolume>::failure(
-            failure(VolumeError::not_found, L"select_volume_for_disk",
-                    L"no volume matches the requested drive letter"));
+            failure(VolumeError::not_found, L"select_volume_for_disk", summary));
     }
     return Result<ProductVolume>::success(std::move(*selected));
 }

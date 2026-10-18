@@ -220,3 +220,25 @@ worker 鐨勫懡浠ら€氶亾鏄?*涓ユ牸涓€娆¤姹備竴娆″簲绛
 **鍚屾椂璁颁笅涓ゆ潯寰呭姙**锛堜笉鏄樆濉為」锛夛細
 - `integration.m5.cli_e2e` 鐩墠**鍖呭惈 T1-04 鐨勯獙鏀?*锛堝凡閫氳繃锛夛紱T1-05 鏀跺熬鍚庡簲鎶婁袱娈垫媶寮€锛?  璁?T1-04 鐨勮鏁扮嫭绔嬪彲閲嶅杩愯锛?- 瀹㈡満涓婁袱鏉?2026-09/10 鐨勬棦鏈?profile锛坄9e5a6b53` 鍦?`S:` blocked銆乣ea53d5dd` 鍦?`R:`
   `runtime=Stopping`锛夋潵鑷洿鏃╃殑浼氳瘽锛屼笉鏄湰杞骇鐢熴€傝剼鏈凡鏀逛负**鍔ㄦ€侀€夌┖闂茬洏绗?*浠ヤ笉鍙楀叾褰卞搷锛?  瀹冧滑鐨勫缃渶瑕佷竴娆′汉宸ュ垽鏂紙灞炰簬"澶栭儴閬楃暀鐘舵€?锛屼笉鏄湰杞彲浠ヨ嚜琛屾竻鐞嗙殑锛夈€?
+---
+
+## 8. 2026-10-18：把 create 一层层打通到的位置（每一步都是读数）
+
+**方法**：把"失败原因不可达"逐个补上（`ServiceLogEvent::message`、worker 动作失败分支、
+`finalize_operation` 的终态标记、`publish_registration` 的拒绝原因），再用客机 e2e 逐层推进。
+**没有一次是靠猜**；每次失败都带着 `action / code / step / detail`。
+
+| # | 读数 | 结论 / 处置 |
+|---|---|---|
+| 1 | `code=20994 step=provision_new_volume detail=requested drive letter is occupied` | 盘符占用；e2e 改为按**产品同一命名空间**选字母（`Win32_Volume`/`LogicalDisk`），产品拒绝即硬失败 |
+| 2 | 残留 `R:`/`U:`：`QueryDosDevice` 有映射、`Get-Volume` 无卷；`mountvol /D` 与 `DefineDosDevice` **都删不掉** | 属挂载管理器残留，**只有重启能清**（实测：重启后全部 `rc=0`）。e2e 现在把"任何 DOS 名有应答"的字母一律排除，并打印其目标 |
+| 3 | `code=21000 step=select_volume_for_disk detail=no volume matches ...` 且 helper 报成功 | 加了 10 s 有界重试（供给后卷的发布是异步的），并让拒绝**带计数**：`observed/foreign/other_letter/not_mounted/no_guid/extents/other_disk` |
+| 4 | `code=22024 step=profile_registration.publish detail=... unknown or invalid entry` | **`workers` 是目录共位者**，而 publish 的枚举对**目录**不查文件白名单 ⇒ 与 `disk list` 判据不一致。已按名字放行（`shared_root_directory_leaf`），并写明"不写成忽略目录"的理由 |
+| 5 | **`code=22022 step=service_core.checkpoint_boundary detail=The worker checkpoint correlation is invalid`**，终态标记 `worker` | **当前阻塞点**：create 的供给流程会做第一次 checkpoint，P4 correlation 校验失败。这是**产品缺陷候选**（不是环境），下一步从这里入手 |
+
+**e2e 同时修正了两个夹具缺陷**（都会造成假失败）：
+- `operation wait` 的一次调用是**有界观察**，不是"已完成"的承诺；脚本现在循环到终态（`Wait-ForTerminal`）；
+- create 的时长超过一次等待预算，之前的脚本把"仍在 running"当成失败。
+
+**量测范围**：T1-04 的读数在每一轮都复现（20 次采样全部落在 create 进行中，最大 26–135 ms）；
+**T1-05 端到端仍未绿**，因此 **T1-05 保持 PARTIAL**。

@@ -1303,6 +1303,16 @@ Result<void> ensure_profile_unique(
             return unexpected_profile_entry<void>(L"profile_registration.publish");
         }
         auto name = entry.path().filename().wstring();
+        // **`workers` is a directory co-tenant of this root**, and the file allowance above
+        // only covers files.  Without this line a create reached `publish-provisioning` and
+        // then failed with
+        //   code=22024 step=profile_registration.publish
+        //   detail=The protected profiles directory contains an unknown or invalid entry
+        // while `disk list` accepted the very same directory -- the two enumerations differ in
+        // exactly this spot.  Named precisely rather than "skip directories": an unexpected
+        // entry in a protected root is corruption or an attack, and giving that up to avoid
+        // naming one co-tenant would be the wrong trade.
+        if (name == L"workers") continue;
         auto id = exact_uuid_leaf(name);
         if (!id.has_value()) {
             return unexpected_profile_entry<void>(L"profile_registration.publish");
