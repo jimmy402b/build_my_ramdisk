@@ -4335,6 +4335,48 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             || !valid_checkpoint_boundary(
                                 evidence, worker_request,
                                 current_profile.value())) {
+                            // The refusal has seven conjuncts and says nothing about which one
+                            // failed; the caller then has to re-run with instrumentation to
+                            // find out.  So the facts are recorded here, where they exist.
+                            {
+                                std::string facts =
+                                    "profile=" + std::to_string(
+                                        current_profile.has_value() ? 1 : 0)
+                                    + " op_match=" + std::to_string(
+                                        evidence.product_operation_id
+                                            == worker_request.operation_id)
+                                    + " profile_match=" + std::to_string(
+                                        current_profile.has_value()
+                                        && evidence.profile_id
+                                            == worker_request.profile_id
+                                        && evidence.profile_id
+                                            == current_profile->record.profile.profile_uuid)
+                                    + " image_match=" + std::to_string(
+                                        current_profile.has_value()
+                                        && evidence.image_id
+                                            == current_profile->record.profile.image_uuid)
+                                    + " pid=" + std::to_string(evidence.worker_pid)
+                                    + " created=" + std::to_string(
+                                        evidence.worker_process_creation_time)
+                                    + " session_gen=" + std::to_string(
+                                        evidence.worker_session_generation)
+                                    + " prior=" + std::to_string(
+                                        evidence.prior_generation)
+                                    + " confirmed=" + std::to_string(
+                                        current_profile.has_value()
+                                            ? current_profile->checkpoint
+                                                  .confirmed_generation : 0)
+                                    + " candidate=" + std::to_string(
+                                        evidence.candidate_generation);
+                                logger_.write(ServiceLogEvent{
+                                    ServiceLogKind::operation_failed,
+                                    current_operation.request_id,
+                                    current_operation.operation_id,
+                                    current_operation.profile_id,
+                                    current_operation.command_scope,
+                                    current_operation.phase,
+                                    "checkpoint boundary refused: " + facts});
+                            }
                             return Result<
                                 CheckpointCommitBoundaryDecision>::failure(
                                 service_error(

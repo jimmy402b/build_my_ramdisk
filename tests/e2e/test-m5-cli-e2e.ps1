@@ -1,4 +1,4 @@
-# integration.m5.cli_e2e -- the public command surface, end to end, through the CLI.
+﻿# integration.m5.cli_e2e -- the public command surface, end to end, through the CLI.
 #
 # Two acceptances live here:
 #
@@ -70,7 +70,7 @@ $bundlePath = Join-Path $workRoot 'bundle'
 # measured: profiles claiming `R:` and `S:` -- so a fixed letter would collide with one of
 # them and the create would be refused for a reason that has nothing to do with this test.
 $mount = $null
-$profileName = 'e2e'
+$profileName = 'e2e-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 
 # The command surface is reached as a *user* would reach it: a fresh process per command,
 # and nothing but its exit code and its text.

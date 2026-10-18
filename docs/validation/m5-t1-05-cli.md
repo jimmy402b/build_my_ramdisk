@@ -242,3 +242,36 @@ worker 鐨勫懡浠ら€氶亾鏄?*涓ユ牸涓€娆¤姹備竴娆″簲绛
 
 **量测范围**：T1-04 的读数在每一轮都复现（20 次采样全部落在 create 进行中，最大 26–135 ms）；
 **T1-05 端到端仍未绿**，因此 **T1-05 保持 PARTIAL**。
+
+### 8.1 当前阻塞点已精确到数值：create 的供给 checkpoint 的 P4 correlation
+
+**读数（请求 `fc977fd68ca743fdb312cf03d138c402`，客机）**：
+
+```
+checkpoint boundary refused: profile=1 op_match=1 profile_match=1 image_match=1
+  pid=5928 created=134367921189870409 session_gen=1
+  prior=1 confirmed=0 candidate=2
+```
+
+`valid_checkpoint_boundary` 的七个合取项里，**唯一不成立的是**
+`evidence.prior_generation == profile.checkpoint.confirmed_generation`：
+**worker 说它要把 generation 1 推进到 2，而 durable 记录里 confirmed 是 0。**
+
+**这说明什么（不是猜测，是等式）**：新建 bundle 在**供给完成之后**已经带有一个已落盘的 generation
+（worker 打开时看到 prior=1），而服务侧这条 profile 的 `checkpoint.confirmed_generation`
+还停在 0（本服务从未提交过 checkpoint）。**两侧对"当前是第几代"的认识差 1**，
+而这条校验正是为捕捉这种跨层不一致而存在的——所以它拒绝得对，**问题在别处**。
+
+**下一步的两条候选（必须先判定哪条对，不能猜）**：
+1. **创建路径应在供给之后采纳 bundle 的当前 generation**（把它写进 durable profile），
+   使首次 checkpoint 的 `prior` 与 `confirmed` 相等；或
+2. **首次供给 checkpoint 的校验应允许 `prior == confirmed + 1`**，并写明理由（供给本身落了一代）。
+   注意这**不是**放松校验：pid/creation/session/前几项仍然必须相等。
+
+**判定依据应当来自 M3 的 generation 规则**（供给写没写第 0/1 代、谁拥有第一次提交），
+不能用"让它过去"来选。**这也是它没有在本轮被改掉的原因**：
+改动会落在 M3/M4 的既有证据上（T1-11 的 `-Repeat 20` 就在这条链上）。
+
+**其余读数**：T1-04 在每一轮都复现（20/20 采样落在 create 进行中，最大 76 ms）；
+e2e 本轮又修掉两个夹具缺陷（唯一 profile 名，避免历次失败留下的注册冲突；
+"任何 DOS 名有应答"的盘符一律排除）。
