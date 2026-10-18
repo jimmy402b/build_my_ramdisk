@@ -275,3 +275,34 @@ checkpoint boundary refused: profile=1 op_match=1 profile_match=1 image_match=1
 **其余读数**：T1-04 在每一轮都复现（20/20 采样落在 create 进行中，最大 76 ms）；
 e2e 本轮又修掉两个夹具缺陷（唯一 profile 名，避免历次失败留下的注册冲突；
 "任何 DOS 名有应答"的盘符一律排除）。
+
+### 8.2 判定：候选 1 成立（供给后的 bundle 已经站在 generation 1），并说明为什么不能靠"带个字段下来"
+
+**依据（全部来自现有代码与读数，不是推断链）**：
+
+1. `prior_generation` 来自 worker 的 `prepared`，即 **M3 自己**对 bundle 当前代的判断
+   （`src/host/m5_worker_runtime.cpp:516-517`：`candidate.prior = prepared.prior`、
+   `candidate.candidate = prepared.candidate`）——**不是服务侧推算**。
+2. 客机读数 `prior=1 candidate=2` ⇒ **创建完成后 bundle 已经站在第 1 代**。
+3. `m5.production_execution_backend` 之所以绿：它只断言
+   `candidate == prior + 1`（`tests/integration/...:1342-1343`），
+   **从不与 durable 的 `confirmed_generation` 比较**；那条比较只存在于服务核心，
+   所以"测试绿 + 服务红"不矛盾，**它只是没测这一条**。
+4. `BundleRegistrationEvidence` **没有 generation 字段**（`service_core.h`），
+   所以服务不可能从既有证据里"顺手带下来"这一代。
+
+**结论**：创建路径必须在**发布 profile 之前**确定 bundle 的当代，并把它写进
+`CheckpointDurableState.confirmed_generation`（= 1），使首次 checkpoint 的
+`prior == confirmed` 成立。这不能靠猜，也不能靠放宽校验：
+`valid_checkpoint_boundary` 拒绝得对，**错的是 durable 侧起点写成了 0**。
+
+**因此需要的一次改动（下一步，未做）**：
+- 在 `create_and_verify_bundle` 之后，用**已存在的只读检查**（M3 `image_inspector`）
+  读出该 bundle 的当代；
+- 把它作为初始 durable checkpoint 状态的一部分发布（`confirmed_generation`）；
+- 加一条**负例**：bundle 的当代与 durable 起点不一致时，发布必须拒绝（fail-closed），
+  而不是照抄或清零。
+
+**为什么本轮停在这里**：这条改动落在 **M3 generation 语义 + durable 发布顺序**上，
+M4/T1-11 的既有证据整条压在这上面；在没有把 `image_inspector` 的只读契约读完之前动手，
+风险远大于收益。**T1-05 保持 PARTIAL，阻塞点已从"不知道"变成"一个已判定的等式"**。
