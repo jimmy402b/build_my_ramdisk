@@ -306,3 +306,24 @@ e2e 本轮又修掉两个夹具缺陷（唯一 profile 名，避免历次失败�
 **为什么本轮停在这里**：这条改动落在 **M3 generation 语义 + durable 发布顺序**上，
 M4/T1-11 的既有证据整条压在这上面；在没有把 `image_inspector` 的只读契约读完之前动手，
 风险远大于收益。**T1-05 保持 PARTIAL，阻塞点已从"不知道"变成"一个已判定的等式"**。
+
+### 8.3 具体改动清单（下一轮照此执行，不必重新定位）
+
+**约束**：服务侧**不能**自己读 bundle（执行边界：`myrd_management` 不得链接 M3/persistence）。
+所以这一代必须**由 worker 报上来**，而 worker 已经有这个数：`WorkerRuntimeStatus.committed_generation`
+（`src/host/m5_worker_protocol.h:345`，写在协议 310/612）。**不需要新增 IPC 消息。**
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `src/management/service_core.h` | `BundleRegistrationEvidence` **追加** `std::uint64_t committed_generation{}`（带默认值，不改变既有聚合初始化） |
+| 2 | `src/management/service_worker_control.cpp` `register_bundle` | 建 `BundleRegistrationEvidence` 时填入该代：优先取 create 回复里的字段；回复没有就调 `session.require_runtime_observation(context())`（它已返回 `committed_generation`） |
+| 3 | `src/management/service_core.cpp`（create 发布初始 durable 状态处） | 初始 `CheckpointDurableState.confirmed_generation` 由 `evidence.bundle->committed_generation` 决定，**不再是 0** |
+| 4 | `tests/model/…`（`m5.service_orchestration` / `m5.cli` 所在模型层） | 正例：新 profile 的初始 `confirmed_generation` 等于证据里的一代；**负例**：证据代与既有 durable 记录不一致时发布被拒（fail-closed），既不清零也不照抄 |
+| 5 | 客机 | `integration.m5.cli_e2e` 跑通后 `-Repeat 20`；`m5.production_execution_backend` 与 `integration.m5.cli_e2e` 都要在读数里 |
+
+**验收判据**：create 的首次 checkpoint 走到 `valid_checkpoint_boundary` 时
+`prior == confirmed`（不再差 1），并且 T1-05 的整链（create → list → show → 读写 →
+checkpoint → stop → **重启恢复** → forget）全绿；断电恢复属 T1-09，本轮不冒充。
+
+**风险**：第 3 步改变的是新建 profile 的 durable 起点，落在 M4/T1-11 证据链上。
+因此第 4 步的**负例**是必须的——它证明"不一致就拒绝"，而不是把起点写成一个方便的值。
