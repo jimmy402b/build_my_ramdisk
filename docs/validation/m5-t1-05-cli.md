@@ -327,3 +327,32 @@ checkpoint → stop → **重启恢复** → forget）全绿；断电恢复属 T
 
 **风险**：第 3 步改变的是新建 profile 的 durable 起点，落在 M4/T1-11 证据链上。
 因此第 4 步的**负例**是必须的——它证明"不一致就拒绝"，而不是把起点写成一个方便的值。
+
+### 8.4 §8.3 已实施（步骤 1–3），create 前进到"durable 状态发布"
+
+**改动**：`IServiceRegistrationStore::publish_registration` 两个重载各追加
+`std::uint64_t bundle_generation = 0`；`ProfileRegistrationStore` 用它填
+`CheckpointDurableState.confirmed_generation`（原来是 `CheckpointDurableState{}` 即 0）；
+`ServiceCore` 在发布前用 `worker_.require_runtime_observation(...)` **严格**取该代
+（取不到就不发布、记 `register` 标记与原因），并记一行
+`publishing with bundle_generation=N`。
+
+**读数（请求 `f7ea08f6284b4b04a84ee892a6ab6a27`）**：
+
+```
+kind=2 command=disk.create phase=publish-provisioning message=publishing with bundle_generation=1
+kind=7 ... phase=terminal-indeterminate message=terminal failure without a worker-action error; marker=register
+```
+
+⇒ **取代正确（1）**，`valid_checkpoint_boundary` 那一条不再被触发；
+create 现在停在**下一个**位置：`publish_registration` 返回
+`RegistrationCommitDisposition::indeterminate`（不是 error，因此没有拒绝日志），
+即 store 内部 **`publish_state_bytes` 失败**（`profile_registration_store.cpp` 里那条
+`return {indeterminate, nullopt}`）。
+
+**下一步（已定位，未做）**：查 `publish_state_bytes` 对**新建 profile** 的失败原因
+（怀疑顺序：`write_next(0, ...)` 之后状态文件尚不存在，而 `publish_state_bytes` 需要既有记录做 revision 握手），
+拿到它的具体错误后再改；同时补 §8.3 步骤 4 的**正例与负例**——目前
+`ProfileRegistrationStore` 在测试里**零覆盖**，这正是这条缺陷能一路潜伏的原因。
+
+**量测范围**：T1-04 本轮仍复现（20/20 采样，最大 44 ms）。**T1-05 保持 PARTIAL。**

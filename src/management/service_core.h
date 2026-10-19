@@ -916,12 +916,24 @@ public:
     virtual Result<LifecycleRegistrationReservation> update_reservation(
         const LifecycleRegistrationReservation& expected,
         const LifecycleRegistrationReservation& proposed) = 0;
+    // `bundle_generation` is **the generation the bundle already stands at when it is
+    // published**, reported by the worker that created or inspected it.  It is a parameter
+    // rather than something the store derives because the service must not read a bundle at
+    // all (execution boundary), while the worker has the number for free.
+    //
+    // It is not cosmetic: a create's first checkpoint asks to advance from the bundle's
+    // current generation, and the boundary check compares that against the durable
+    // `confirmed_generation`.  Publishing 0 for a bundle that stands at 1 leaves the two
+    // sides permanently one apart, so every create fails at exactly that comparison --
+    // measured on the guest as `prior=1 confirmed=0 candidate=2` with the other six terms
+    // satisfied.
     virtual Result<RegistrationMutationResult> publish_registration(
         const LifecycleOperationIntent& intent,
         const profile::ProfileRecord& proposed,
         const BundleRegistrationEvidence& bundle,
         const ProfileState& state,
-        const OperationGateState& gate) = 0;
+        const OperationGateState& gate,
+        std::uint64_t bundle_generation = 0) = 0;
     // Extended M5 publication boundary.  The default preserves the M4
     // interface for existing test/adaptor implementations; production stores
     // may bind volume identity at the same atomic registration boundary.
@@ -931,9 +943,11 @@ public:
         const BundleRegistrationEvidence& bundle,
         const std::optional<VolumeRegistrationEvidence>& volume,
         const ProfileState& state,
-        const OperationGateState& gate) {
+        const OperationGateState& gate,
+        std::uint64_t bundle_generation = 0) {
         (void)volume;
-        return publish_registration(intent, proposed, bundle, state, gate);
+        return publish_registration(intent, proposed, bundle, state, gate,
+                                    bundle_generation);
     }
     virtual Result<RegistrationMutationResult> update_registration(
         const ManagedProfileSnapshot& expected,

@@ -1858,8 +1858,10 @@ Result<RegistrationMutationResult> ProfileRegistrationStore::publish_registratio
     const profile::ProfileRecord& proposed,
     const BundleRegistrationEvidence& bundle,
     const ProfileState& state,
-    const OperationGateState& gate) {
-    return publish_registration(intent, proposed, bundle, std::nullopt, state, gate);
+    const OperationGateState& gate,
+    const std::uint64_t bundle_generation) {
+    return publish_registration(intent, proposed, bundle, std::nullopt, state,
+                                gate, bundle_generation);
 }
 
 Result<RegistrationMutationResult> ProfileRegistrationStore::publish_registration(
@@ -1868,7 +1870,8 @@ Result<RegistrationMutationResult> ProfileRegistrationStore::publish_registratio
     const BundleRegistrationEvidence& bundle,
     const std::optional<VolumeRegistrationEvidence>& volume,
     const ProfileState& state,
-    const OperationGateState& gate) {
+    const OperationGateState& gate,
+    const std::uint64_t bundle_generation) {
     std::scoped_lock lock(*impl_->gate);
     auto observed_identity = inspect_bundle_identity(intent.bundle_path);
     if (!observed_identity.ok() || observed_identity.value() != bundle.file_identity) {
@@ -1913,8 +1916,21 @@ Result<RegistrationMutationResult> ProfileRegistrationStore::publish_registratio
     if (!store.ok()) return Result<RegistrationMutationResult>::failure(store.error());
     auto written = store.value().write_next(0, proposed, false);
     if (!written.ok()) return Result<RegistrationMutationResult>::failure(written.error());
+    // **The durable generation starts where the bundle already is**, not at zero.
+    //
+    // A bundle that has just been created already stands at a committed generation (measured
+    // on the guest: 1).  Publishing 0 here makes the create's first checkpoint ask to advance
+    // 1 -> 2 while the record says confirmed = 0, which `valid_checkpoint_boundary` correctly
+    // refuses -- so every create failed one step after provisioning, with the refusal naming a
+    // correlation rather than a generation.
+    //
+    // The number comes from the worker (the only layer allowed to read a bundle) and is passed
+    // in; a caller that does not know it passes 0, which is what a brand-new empty bundle
+    // legitimately stands at.
+    CheckpointDurableState initial_checkpoint{};
+    initial_checkpoint.confirmed_generation = bundle_generation;
     DurableProfileStateRecord durable{
-        1, state, gate, CheckpointDurableState{},
+        1, state, gate, initial_checkpoint,
         CompactionDurableState{}, StopDurableState{}};
     auto published = publish_state_bytes(
         impl_->trusted_root, intent.profile_id, durable);

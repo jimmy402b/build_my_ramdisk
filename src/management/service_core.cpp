@@ -6148,6 +6148,54 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     record.value(),
                     pending_plan.admitted,
                     publication_gate};
+                // **The generation the bundle already stands at**, asked of the only layer
+                // allowed to read a bundle.  A create's first checkpoint advances from this
+                // number and `valid_checkpoint_boundary` compares it against the durable
+                // `confirmed_generation`, so publishing without it leaves the two sides one
+                // apart and every create fails at that comparison (measured: prior=1,
+                // confirmed=0, candidate=2, the other six terms satisfied).
+                //
+                // Strict on purpose: if the worker cannot report its generation the
+                // publication does not happen.  Guessing 0 here is the same defect in a
+                // different disguise.
+                std::uint64_t bundle_generation = 0;
+                {
+                    auto runtime_observed = worker_.require_runtime_observation(
+                        intent.profile_id);
+                    if (!runtime_observed.ok()) {
+                        worker_succeeded = false;
+                        completion = CompletionOutcome::transient_failure;
+                        terminal_result = {
+                            std::byte{'r'}, std::byte{'e'}, std::byte{'g'},
+                            std::byte{'i'}, std::byte{'s'}, std::byte{'t'},
+                            std::byte{'e'}, std::byte{'r'}};
+                        auto detail = ipc::utf16_to_utf8(
+                            observed.error().message);
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_failed,
+                            current_operation.request_id,
+                            current_operation.operation_id,
+                            current_operation.profile_id,
+                            current_operation.command_scope,
+                            current_operation.phase,
+                            "bundle generation could not be observed before "
+                            "publication: code="
+                                + std::to_string(runtime_observed.error().code)
+                                + " detail="
+                                + (detail.ok() ? detail.value() : "?")});
+                        break;
+                    }
+                    bundle_generation = runtime_observed.value().committed_generation;
+                    logger_.write(ServiceLogEvent{
+                        ServiceLogKind::operation_running,
+                        current_operation.request_id,
+                        current_operation.operation_id,
+                        current_operation.profile_id,
+                        current_operation.command_scope,
+                        current_operation.phase,
+                        "publishing with bundle_generation="
+                            + std::to_string(bundle_generation)});
+                }
                 auto published = volume_evidence.has_value()
                     ? registrations_->publish_registration(
                         intent,
@@ -6155,13 +6203,15 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         bundle_evidence.value(),
                         volume_evidence,
                         pending_plan.admitted,
-                        publication_gate)
+                        publication_gate,
+                        bundle_generation)
                     : registrations_->publish_registration(
                         intent,
                         record.value(),
                         bundle_evidence.value(),
                         pending_plan.admitted,
-                        publication_gate);
+                        publication_gate,
+                        bundle_generation);
                 if (!published.ok()) {
                     worker_succeeded = false;
                     completion = CompletionOutcome::transient_failure;

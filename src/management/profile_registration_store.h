@@ -98,14 +98,16 @@ public:
         const profile::ProfileRecord& proposed,
         const BundleRegistrationEvidence& bundle,
         const ProfileState& state,
-        const OperationGateState& gate) override;
+        const OperationGateState& gate,
+        std::uint64_t bundle_generation = 0) override;
     Result<RegistrationMutationResult> publish_registration(
         const LifecycleOperationIntent& intent,
         const profile::ProfileRecord& proposed,
         const BundleRegistrationEvidence& bundle,
         const std::optional<VolumeRegistrationEvidence>& volume,
         const ProfileState& state,
-        const OperationGateState& gate) override;
+        const OperationGateState& gate,
+        std::uint64_t bundle_generation = 0) override;
     Result<RegistrationMutationResult> update_registration(
         const ManagedProfileSnapshot& expected,
         const profile::ProfileRecord& proposed,
