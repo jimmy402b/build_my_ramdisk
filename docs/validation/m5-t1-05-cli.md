@@ -435,3 +435,33 @@ detail=bundle kind does not match runtime mode`；现在因为注册已通、流
 风险是把一条已经绿的 M4 路径改坏。
 
 **T1-05 仍 PARTIAL**；阻塞点现在是一个**契约冲突**，不是未知。
+
+### 8.7 判据取到了：M4 的规则是"**模式跟着 `classify_bundle` 走**"，不是跟着 lifecycle 走
+
+`src/run/main.cpp:154-156`：
+
+```cpp
+auto runtime = bundle_kind.value() == DiskBundleKind::empty
+    ? DiskRuntime::create(...)     // 空 bundle ⇒ create：写 generation-zero image 并供给
+    : DiskRuntime::recover(...);   // 非空 ⇒ recover：采纳已有卷
+```
+
+即：**空 bundle 才允许 create**；bundle 一旦有 manifest，正确模式就是 recover（采纳）。
+而 M5 的 `make_launch_request` 是按 **lifecycle** 选的（provisioning ⇒ `provision_new` ⇒ create 模式），
+**这正是与 M4 规则的偏离点**。
+
+**因此 §8.6 的两条候选里，候选 2 与 M4 语义冲突**（它会给"非空 bundle"发明一个供给模式）。
+真正一致的做法只有一条路：**让 bundle 在 create 模式下由 runtime 自己写出来**——
+也就是 `create_and_verify_bundle` 只能建目录/校验，不能写镜像。
+
+**但这又碰到第二个结**：计划第 2 步 `publish_provisioning_profile` 在 runtime 之前，
+而注册需要 bundle evidence（image id / manifest / 容量）——镜像还不存在时它无从得来。
+
+⇒ **这是 creation bootstrap 的顺序问题，必须做一次设计裁定**（三条可能的顺序，各有代价）：
+1. 先注册"占位 profile"（无 image id）→ runtime 创建 → 用 worker 回报的 evidence 更新注册；
+2. 先由 worker 在**未注册**的情况下创建镜像与卷 → 再注册（注册即事实，但失败回滚面更大）；
+3. 保留现状，但把 `create` 模式放宽为"空或仅 generation-zero image"，并为 `provision_new`
+   增加一个明确的"已有镜像、尚无卷"状态（等于改 M4 的模式定义）。
+
+**这三条都会改动 M4/M5 的既有语义与证据链，属于需要人裁定的范围**（也正是 AGENTS/mater-plan
+规定应当停下来问的那类事项）。**T1-05 保持 PARTIAL**，阻塞点已从"未知"收敛为"一个需要裁定的顺序问题"。
