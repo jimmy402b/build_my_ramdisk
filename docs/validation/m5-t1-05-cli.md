@@ -356,3 +356,38 @@ create 现在停在**下一个**位置：`publish_registration` 返回
 `ProfileRegistrationStore` 在测试里**零覆盖**，这正是这条缺陷能一路潜伏的原因。
 
 **量测范围**：T1-04 本轮仍复现（20/20 采样，最大 44 ms）。**T1-05 保持 PARTIAL。**
+
+### 8.5 generation 起点已修好并验证；create 现在卡在注册之后的下一步
+
+**已修**：`publish_registration` 传入 `bundle_generation`；store 用它种
+`CheckpointDurableState.confirmed_generation`；`ServiceCore` 里 `intended` 快照
+**用同一个种子重建**（否则 store 组合出的快照与 `intended` 不等，一次**成功的提交**会被判成
+`ambiguous`——这一条已由日志确认：`publish_registration disposition=0`（committed）
+紧跟 `registration applied; continuing the plan`）。
+
+**客机读数（请求 `c52f516882c6410585d126bfb9b137ee`，日志保留在 `C:\m5\last-service.log`）**：
+
+```
+kind=1 command=disk.create phase=queued
+kind=2 command=disk.create phase=running
+kind=2 ... phase=publish-provisioning message=publishing with bundle_generation=1
+kind=7 ... phase=publish-provisioning message=publish_registration disposition=0 (the store reported no cause)
+kind=2 ... phase=publish-provisioning message=registration applied; continuing the plan
+（此后 600 s 内没有任何 lifecycle 事件，只有 operation.show 查询）
+```
+
+⇒ **注册这一步通了**（此前两步缺陷都已消除：起点 0 与 intended 快照不一致），
+create 现在**卡在注册之后的计划步骤**（`create_runtime_and_worker` / checkpoint），
+**不是失败，是挂住**。
+
+**旁证**：同一台机器的旧日志里有一条
+`action=create-runtime code=1 step=classify_bundle detail=bundle kind does not match runtime mode`
+—— 说明"注册之后再起 runtime"这一步本就会因为**bundle 已经存在**而被模式判定拒绝；
+现在表现成挂住（很可能是 worker 启动/等待的有界超时在重试）。
+
+**下一步（已定位到函数）**：
+1. `bind_worker` 的 launch 模式判定：`classify_bundle` 认为 bundle kind 与 runtime mode 不符；
+   创建路径在注册之后应该用**采纳**模式而不是"新建"，或按 bundle 已存在的事实选模式；
+2. 若是挂住而非拒绝，先把该处的等待预算与重试次数记进日志，再决定是"拒绝得更早"还是"允许采纳"。
+
+**量测范围**：T1-04 每轮复现（20/20 采样，最大 86 ms）。**T1-05 仍 PARTIAL。**

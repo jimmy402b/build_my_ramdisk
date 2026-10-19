@@ -1,4 +1,4 @@
-#include "src/management/service_core.h"
+﻿#include "src/management/service_core.h"
 
 #include "src/common/sha256.h"
 #include "src/control/ipc_codec.h"
@@ -6144,10 +6144,11 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     }
                     publication_gate = noncancellable.after;
                 }
-                const ManagedProfileSnapshot intended{
-                    record.value(),
-                    pending_plan.admitted,
-                    publication_gate};
+                // `intended` is constructed *below*, after the bundle's generation is known:
+                // the snapshot the store composes carries the seeded checkpoint state, and a
+                // snapshot built without it compares unequal and turns a clean commit into
+                // `ambiguous` (measured: publish succeeded, disposition `committed`, and the
+                // operation still ended indeterminate because of exactly this difference).
                 // **The generation the bundle already stands at**, asked of the only layer
                 // allowed to read a bundle.  A create's first checkpoint advances from this
                 // number and `valid_checkpoint_boundary` compares it against the durable
@@ -6196,6 +6197,19 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         "publishing with bundle_generation="
                             + std::to_string(bundle_generation)});
                 }
+                // The snapshot the publication must produce, built with the same seeded
+                // checkpoint state the store writes.  It is the value `apply_registration_mutation`
+                // compares against, so anything the store adds here and this does not would make a
+                // successful commit look ambiguous.
+                CheckpointDurableState initial_checkpoint{};
+                initial_checkpoint.confirmed_generation = bundle_generation;
+                const ManagedProfileSnapshot intended{
+                    record.value(),
+                    pending_plan.admitted,
+                    publication_gate,
+                    initial_checkpoint,
+                    CompactionDurableState{},
+                    StopDurableState{}};
                 auto published = volume_evidence.has_value()
                     ? registrations_->publish_registration(
                         intent,
@@ -6240,6 +6254,38 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             + (detail.ok() ? detail.value() : "?")});
                     break;
                 }
+                // The commit's own verdict, with its cause when the store has one.  Without
+                // this the branch below records only "the registration did not clearly land",
+                // which leaves the reader unable to tell a failed write from a racing writer.
+                {
+                    auto mutation = published.value();
+                    if (true) {
+                        std::string reason =
+                            "publish_registration disposition="
+                            + std::to_string(static_cast<unsigned>(
+                                mutation.disposition));
+                        if (mutation.error.has_value()) {
+                            auto detail = ipc::utf16_to_utf8(
+                                mutation.error->message);
+                            reason += " code="
+                                + std::to_string(mutation.error->code)
+                                + " native="
+                                + std::to_string(mutation.error->native_code)
+                                + " detail="
+                                + (detail.ok() ? detail.value() : "?");
+                        } else {
+                            reason += " (the store reported no cause)";
+                        }
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_failed,
+                            current_operation.request_id,
+                            current_operation.operation_id,
+                            current_operation.profile_id,
+                            current_operation.command_scope,
+                            current_operation.phase,
+                            reason});
+                    }
+                }
                 auto applied = apply_registration_mutation(
                     *registrations_, operation_id, intended,
                     published.move_value());
@@ -6263,6 +6309,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     break;
                 }
                 current_profile = applied.value().snapshot;
+                logger_.write(ServiceLogEvent{
+                    ServiceLogKind::operation_running,
+                    current_operation.request_id,
+                    current_operation.operation_id,
+                    current_operation.profile_id,
+                    current_operation.command_scope,
+                    current_operation.phase,
+                    "registration applied; continuing the plan"});
                 auto proposed_reservation = lifecycle_reservation.value();
                 proposed_reservation.phase =
                     LifecycleReservationPhase::profile_published;

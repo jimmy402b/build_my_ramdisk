@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "src/common/result.h"
 #include "src/common/sha256.h"
@@ -623,6 +623,12 @@ struct RegistrationMutationResult final {
     RegistrationCommitDisposition disposition{
         RegistrationCommitDisposition::not_committed};
     std::optional<ManagedProfileSnapshot> snapshot;
+    // Why a commit is *not* known to have landed, when the store knows.  Appended with a
+    // default so every existing aggregate initializer keeps its meaning.  Without it an
+    // indeterminate disposition is a verdict with no cause anywhere: measured on the
+    // guest as a create ending ailed (phase=terminal-indeterminate) with only the word
+    // egister in the log, and no layer able to say which write failed.
+    std::optional<Error> error;
 };
 
 enum class RegistrationResolutionDisposition : std::uint8_t {

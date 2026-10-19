@@ -1935,8 +1935,12 @@ Result<RegistrationMutationResult> ProfileRegistrationStore::publish_registratio
     auto published = publish_state_bytes(
         impl_->trusted_root, intent.profile_id, durable);
     if (!published.ok()) {
-        return Result<RegistrationMutationResult>::success({
-            RegistrationCommitDisposition::indeterminate, std::nullopt});
+        // The cause travels with the verdict.  `indeterminate` alone told whoever read the
+        // log that the durable state *might* have landed, and nothing about which write or
+        // why -- which is exactly the question a create that fails here leaves open.
+        return Result<RegistrationMutationResult>::success(
+            {RegistrationCommitDisposition::indeterminate, std::nullopt,
+             published.error()});
     }
     auto snapshot = compose_snapshot(
         proposed,
