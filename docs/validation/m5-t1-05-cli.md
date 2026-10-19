@@ -391,3 +391,47 @@ create 现在**卡在注册之后的计划步骤**（`create_runtime_and_worker`
 2. 若是挂住而非拒绝，先把该处的等待预算与重试次数记进日志，再决定是"拒绝得更早"还是"允许采纳"。
 
 **量测范围**：T1-04 每轮复现（20/20 采样，最大 86 ms）。**T1-05 仍 PARTIAL。**
+
+### 8.6 根因：create 的计划与 runtime 模式**自相矛盾**（这是本轮最有价值的读数）
+
+`append_start_actions(plan, provisioning=true)` 给出的创建序列是：
+
+```
+1  create_and_verify_bundle      ← 这一步就把 bundle 落成"非空"（有 manifest）
+2  publish_provisioning_profile
+3  prove_new_uninitialized
+4  create_runtime_and_worker     ← 这一步要求 bundle 是**空的**
+...
+```
+
+而 `DiskRuntime::start`（`src/run/disk_runtime.cpp:132-138`）的准入是：
+
+```cpp
+if ((mode_ == DiskRuntimeMode::create && kind != DiskBundleKind::empty) ||
+    (mode_ != DiskRuntimeMode::create && kind != DiskBundleKind::manifest)) { 拒绝 }
+```
+
+`make_launch_request`（`service_worker_control.cpp`）在 lifecycle=provisioning 时选
+`WorkerVolumeMode::provision_new`，它映射到 **`DiskRuntimeMode::create`** ⇒ **要求空 bundle**。
+但第 1 步已经写了 manifest ⇒ **第 4 步必然被拒**。
+
+**这与本轮所有读数一致**：先前那次 `action=create-runtime code=1 step=classify_bundle
+detail=bundle kind does not match runtime mode`；现在因为注册已通、流程更靠后，同一处表现为挂住
+（等待/重试），而不是立刻拒绝。
+
+**⇒ 结论：这不是环境问题，也不是 generation 问题，而是"创建计划的第 1 步与第 4 步的契约冲突"。**
+两条可能的修法（需要一次设计判断，不是随手改）：
+1. **第 1 步只创建目录、不写镜像**，让 runtime 在 `create` 模式下写 generation-zero image
+   （与 `disk_runtime.cpp:141-143` 的 `create_generation_zero_image` 一致）；
+2. **第 4 步改用"采纳已存在 bundle"的模式**（`adopt_existing`/provision-existing），
+   即承认"bundle 先建、runtime 后起"是产品意图，并让 `classify_bundle` 允许
+   `create`-之后的 provisioning 用 `manifest` 类型。
+
+判据：M4 的 `myrd create` 走的是哪条——`src/run/main.cpp:96` 先 `classify_bundle` 再决定模式，
+那里的行为就是"创建"的正确定义。
+
+**为什么本轮不动它**：这会改变创建的产品语义（谁写第一张镜像），
+并且必须在客机上反复验证（单轮 10 分钟以上）；在把 M4 的 create 契约读清楚之前动手，
+风险是把一条已经绿的 M4 路径改坏。
+
+**T1-05 仍 PARTIAL**；阻塞点现在是一个**契约冲突**，不是未知。
