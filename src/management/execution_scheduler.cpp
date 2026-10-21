@@ -1,3 +1,10 @@
+﻿#include "src/common/diagnostic_trace.h"
+
+#include <cstdio>
+
+namespace {
+char trace_buffer[128]{};
+}
 #include "src/management/execution_scheduler.h"
 
 #include <chrono>
@@ -175,11 +182,28 @@ void ServiceExecutionScheduler::run(std::stop_token token) noexcept {
                     // on this return value here would make the scheduler a second
                     // one.  What this call has to prove is only that the claim was
                     // discharged through the core's own execution path.
-                    static_cast<void>(core_.execute_claimed_operation(
-                        claimed.value().value()));
+                    myrd::diagnostic_trace("scheduler: executing a claimed operation");
+                    const auto executed =
+                        core_.execute_claimed_operation(
+                            claimed.value().value());
+                    // **A discarded failure is an operation that stops without saying so.**
+                    // execute_operation returns an error for states it cannot resolve, and this
+                    // call site used to throw it away -- leaving the operation non-terminal, the
+                    // scheduler idle, and the client waiting for a create that would never finish.
+                    // The error is named here so the next reader does not have to find it again.
+                    if (!executed.ok()) {
+                        static_cast<void>(std::snprintf(
+                            trace_buffer, sizeof(trace_buffer),
+                            "scheduler: execute FAILED code=%u",
+                            executed.error().code));
+                        myrd::diagnostic_trace(trace_buffer);
+                    } else {
+                        myrd::diagnostic_trace("scheduler: execute returned");
+                    }
                 }
             }
         } catch (...) {
+            myrd::diagnostic_trace("scheduler: EXCEPTION while executing a claimed operation");
             // A worker action that throws costs this thread one poll interval,
             // not the process.  The operation stays non-terminal and durable --
             // the state a restart reconciles from -- and nothing is reported as

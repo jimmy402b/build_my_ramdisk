@@ -209,6 +209,9 @@ try {
     # command is blind.  Console mode runs the same composition root, the same host and the
     # same public pipe, and its log survives.  The installed path is exercised further down,
     # where the claim being made is about the SCM rather than about diagnostics.
+    # A step trace the service and the worker both append to (see diagnostic_trace): it is the
+    # only record that survives a step which never returns.
+    $env:MYRD_TRACE_FILE = Join-Path $workRoot 'trace.log'
     $serviceLog = Join-Path $workRoot 'service.log'
     $serviceOutLog = Join-Path $workRoot 'service.out.log'
     $serviceProcess = Start-Process -FilePath $serviceExe -ArgumentList '--console' `
@@ -436,6 +439,13 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Write-Step 'cleanup'
     # The service log is the only record of what the service was doing when a command stopped
     # working, and the work root is about to be deleted -- so it is copied out first.
+    foreach ($preserve in @('trace.log', 'service.log')) {
+        $source = Join-Path $workRoot $preserve
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination ('C:\m5\last-' + $preserve) -Force -ErrorAction SilentlyContinue
+            Write-Host ('preserved ' + $source + ' as C:\m5\last-' + $preserve)
+        }
+    }
     if (Test-Path -LiteralPath (Join-Path $workRoot 'service.log')) {
         Copy-Item -LiteralPath (Join-Path $workRoot 'service.log') -Destination 'C:\m5\last-service.log' -Force -ErrorAction SilentlyContinue
         Write-Host 'service log preserved at C:\m5\last-service.log'

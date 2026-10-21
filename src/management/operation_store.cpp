@@ -1,3 +1,4 @@
+﻿#include "src/common/diagnostic_trace.h"
 #include "src/management/operation_store.h"
 
 #include "src/common/sha256.h"
@@ -1013,8 +1014,12 @@ Result<void> OperationStore::write_record(
     std::uint64_t expected_revision,
     const OperationRecord& proposed) {
     try {
+        myrd::diagnostic_trace("opstore.write: waiting for gate");
         std::scoped_lock lock(*impl_->gate);
-        return write_record_locked(expected_revision, proposed);
+        myrd::diagnostic_trace("opstore.write: gate held");
+        auto written = write_record_locked(expected_revision, proposed);
+        myrd::diagnostic_trace("opstore.write: done");
+        return written;
     } catch (...) {
         return operation_error<void>(
             OperationStoreError::io_failure,

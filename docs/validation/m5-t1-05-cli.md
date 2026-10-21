@@ -465,3 +465,70 @@ auto runtime = bundle_kind.value() == DiskBundleKind::empty
 
 **这三条都会改动 M4/M5 的既有语义与证据链，属于需要人裁定的范围**（也正是 AGENTS/mater-plan
 规定应当停下来问的那类事项）。**T1-05 保持 PARTIAL**，阻塞点已从"未知"收敛为"一个需要裁定的顺序问题"。
+
+---
+
+## 9. 2026-10-21：create 全链推进到 checkpoint 之后，根因已命名
+
+**方法**：`diagnostic_trace`（`MYRD_TRACE_FILE`，本来就存在、默认关闭）逐层打点，
+加上两处"失败不再被吞"的改动。**每一次都拿到读数**，没有一次靠猜。
+
+### 9.1 走到的位置
+
+创建计划现在**完整跑到 checkpoint 并完成**（客机读数）：
+
+```
+action-start: create-and-verify-bundle / publish-provisioning / prove-uninitialized
+              create-runtime / recover-bundle / start-proxy / create-device
+              locate-physical-drive / provision-gpt-ntfs / record-volume / flush-volume
+              checkpoint  → action-result: checkpoint completed
+```
+
+即 generation 起点、注册、供给、flush 全部通过；**卡的是 checkpoint 之后的提交收尾**。
+
+### 9.2 根因（有名字，不是"挂住"）
+
+调度器把 `execute_operation` 的失败**丢掉了**（`static_cast<void>(...)`），
+于是 operation 既不是成功也不是失败，客户端永远看到 `running`。
+本轮把这条失败**说出来**之后，两次运行分别给出：
+
+```
+execute_operation failed: code=22022 step=service_core.checkpoint_epoch
+  detail=The worker dirty epoch regressed or changed identity
+execute_operation failed: code=22022 step=service_core.stop_removal_boundary
+  detail=The pre-existing noncancellable stop boundary is contradictory
+```
+
+**当前主阻塞是第一条**：commit 之后服务做 epoch 发布/校验，worker 报的 dirty epoch
+**比 durable 记录里的更小**，被判为"regression"。
+
+### 9.3 为什么这条判据在 create 上必然失败（与既有注释自相矛盾）
+
+`valid_checkpoint_boundary` 里已经写明：
+
+> the cut epoch is deliberately NOT compared against the durable `current_dirty_epoch` …
+> a re-baseline, not a regression
+
+而 P5 之后这一步**正是**一次 re-baseline：**提交成功会把 dirty epoch 归零**。
+durable 记录此时保存的是**提交前**的 cut epoch（P5 从 evidence 写入），
+于是"提交后 epoch 更小"是**必然且正确**的，却被判成回归。
+
+⇒ 修法与 P4 处那条规则一致：**提交边界上的 epoch 回退不是 regression**；
+真正必须严格的是 worker 身份（pid / creation time / session generation）与 commit disposition。
+这条判据应当与 `valid_checkpoint_boundary` 的注释同源，而不是各写一套。
+
+### 9.4 顺带修掉的两个"失败被吞"（都已实测）
+
+1. **调度器丢弃 `execute_claimed_operation` 的返回值**：现在失败会写入服务日志
+   （`execute_operation failed: code/step/detail`），并且 `diagnostic_trace` 记一行。
+   **这是"挂住"这个说法的真正来源**——不是死锁，是失败没人说。
+2. **`ServiceLogEvent` 的 `message` 在无命令上下文时为空**：补齐 uuid/命令字段的初始化。
+
+### 9.5 下一步（已收敛到一条判据）
+
+在 checkpoint epoch 校验处采纳"提交即 re-baseline"：
+- worker 身份（pid/creation/session）不一致 **仍然拒绝**；
+- epoch 仅在**同一提交边界内**要求单调，跨提交允许回到 0；
+- 加一条负例：**identity 变了但 epoch 也变了**时必须拒绝（证明不是把校验整体放宽）。
+
+**T1-05 仍 PARTIAL**：链路已推进到 checkpoint 之后，卡点是一条可命名的判据错误。

@@ -1,3 +1,4 @@
+﻿#include "src/common/diagnostic_trace.h"
 #include "src/profile/profile_store.h"
 #include "src/profile/profile_codec.h"
 #include "src/profile/profile_types.h"
@@ -546,7 +547,9 @@ Result<void> publish_atomically_with_previous(
                 L"Existing profile bytes are outside the publication bound");
         }
 
+        myrd::diagnostic_trace("atomic_publish: staging next");
         auto next = stage_verified_temp(directory, L"next", new_bytes);
+        myrd::diagnostic_trace("atomic_publish: next staged");
         if (!next.ok()) return Result<void>::failure(next.error());
         TempGuard next_guard(directory, next.value());
 
@@ -555,8 +558,10 @@ Result<void> publish_atomically_with_previous(
                 directory, L"previous", current.value());
             if (!previous.ok()) return Result<void>::failure(previous.error());
             TempGuard previous_guard(directory, previous.value());
+            myrd::diagnostic_trace("atomic_publish: publishing previous");
             auto published_previous = directory.publish_temp(
                 previous.value(), previous_name, true);
+            myrd::diagnostic_trace("atomic_publish: previous published");
             if (!published_previous.ok()) {
                 return Result<void>::failure(published_previous.error());
             }
@@ -564,8 +569,10 @@ Result<void> publish_atomically_with_previous(
         }
 
         current_publication_attempted = true;
+        myrd::diagnostic_trace("atomic_publish: publishing current");
         auto published_current = directory.publish_temp(
             next.value(), current_name, current_exists);
+        myrd::diagnostic_trace("atomic_publish: current published");
         if (!published_current.ok()) {
             return commit_indeterminate(published_current.error());
         }

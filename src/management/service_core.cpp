@@ -1,6 +1,7 @@
 ﻿#include "src/management/service_core.h"
 
 #include "src/common/sha256.h"
+#include "src/common/diagnostic_trace.h"
 #include "src/control/ipc_codec.h"
 #include "src/profile/profile_validation.h"
 
@@ -2880,7 +2881,28 @@ Result<OperationRecord> ServiceCore::execute_claimed_operation(
                 L"The operation was not claimed from this core"));
         }
     }
-    return execute_operation(operation_id);
+    auto executed = execute_operation(operation_id);
+    if (!executed.ok()) {
+        // **A failed execution names itself here.**  The scheduler used to discard this result,
+        // so an operation could stop mid-plan with nothing anywhere saying why: measured on the
+        // guest as a create that stayed unning forever after its checkpoint, while the only
+        // trace was a numeric code in a diagnostics file that is off by default.
+        auto step = ipc::utf16_to_utf8(executed.error().operation);
+        auto detail = ipc::utf16_to_utf8(executed.error().message);
+        logger_.write(ServiceLogEvent{
+            ServiceLogKind::operation_failed,
+            product::Uuid::parse("00000000-0000-0000-0000-000000000000").value(),
+            operation_id,
+            std::nullopt,
+            std::string{},
+            std::string{},
+            "execute_operation failed: code="
+                + std::to_string(executed.error().code) + " native="
+                + std::to_string(executed.error().native_code) + " step="
+                + (step.ok() ? step.value() : "?") + " detail="
+                + (detail.ok() ? detail.value() : "?")});
+    }
+    return executed;
 }
 
 Result<OperationRecord> ServiceCore::execute_operation(
@@ -4110,6 +4132,20 @@ Result<OperationRecord> ServiceCore::execute_operation(
         }
     }
     for (const auto action : execution_actions) {
+        // **Which action is running, before it runs.**
+        //
+        // Without this the only event a hung operation leaves is the one before the hang, and
+        // "it stopped somewhere after publishing" is not an answer.  Measured need: a create
+        // sat for 600 s with nothing in the log after its registration, so the step could not be
+        // named at all.  One line per action makes the last line the answer.
+        logger_.write(ServiceLogEvent{
+            ServiceLogKind::operation_running,
+            current_operation.request_id,
+            current_operation.operation_id,
+            current_operation.profile_id,
+            current_operation.command_scope,
+            lifecycle_action_phase(action),
+            std::string("action-start: ") + lifecycle_action_phase(action)});
         const bool service_publishes_action =
             action == ActionKind::publish_provisioning_profile
             || action == ActionKind::publish_imported_ready_profile
@@ -4446,6 +4482,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                                 CheckpointCommitBoundaryDecision>::failure(
                                 boundary_written.error());
                         }
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_running,
+                            current_operation.request_id,
+                            current_operation.operation_id,
+                            current_operation.profile_id,
+                            current_operation.command_scope,
+                            current_operation.phase,
+                            "checkpoint boundary: operation marked noncancellable"});
                         const auto noncancellable =
                             mark_operation_noncancellable(
                                 current_profile->operation_gate,
@@ -4466,6 +4510,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         checkpoint_state.disposition.reset();
                         checkpoint_state.failure.reset();
                         checkpoint_state.reconciliation_failure.reset();
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_running,
+                            current_operation.request_id,
+                            current_operation.operation_id,
+                            current_operation.profile_id,
+                            current_operation.command_scope,
+                            current_operation.phase,
+                            "checkpoint boundary: publishing profile checkpoint"});
                         auto boundary_profile =
                             profiles_.publish_checkpoint(
                                 current_profile.value(),
@@ -4568,6 +4620,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                                 CompactionMutationBoundaryDecision>::failure(
                                 boundary_written.error());
                         }
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_running,
+                            current_operation.request_id,
+                            current_operation.operation_id,
+                            current_operation.profile_id,
+                            current_operation.command_scope,
+                            current_operation.phase,
+                            "checkpoint boundary: operation marked noncancellable"});
                         const auto noncancellable =
                             mark_operation_noncancellable(
                                 current_profile->operation_gate,
@@ -4697,6 +4757,17 @@ Result<OperationRecord> ServiceCore::execute_operation(
                              current_profile->record.revision});
                     }))
                 : worker_.execute(worker_request);
+            // The action's own verdict, whatever it was.  A checkpoint that never returns is
+            // then distinguishable from one that returned and was judged.
+            logger_.write(ServiceLogEvent{
+                ServiceLogKind::operation_running,
+                current_operation.request_id,
+                current_operation.operation_id,
+                current_operation.profile_id,
+                current_operation.command_scope,
+                current_operation.phase,
+                std::string("action-result: ") + lifecycle_action_phase(action)
+                    + (result.ok() ? " completed" : " failed")});
             if (!result.ok()) {
                 // **The one place the reason is recorded.**  Every branch below turns this
                 // failure into a durable *disposition* and a marker token, and none of them
@@ -5340,6 +5411,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         durable_checkpoint_failure(evidence))
                     : std::nullopt;
                 checkpoint_state.reconciliation_failure.reset();
+                logger_.write(ServiceLogEvent{
+                    ServiceLogKind::operation_running,
+                    current_operation.request_id,
+                    current_operation.operation_id,
+                    current_operation.profile_id,
+                    current_operation.command_scope,
+                    current_operation.phase,
+                    "checkpoint: publishing evidence-recorded profile state"});
                 auto evidence_profile = profiles_.publish_checkpoint(
                     current_profile.value(), current_profile->state,
                     current_profile->operation_gate, checkpoint_state);
@@ -5349,14 +5428,25 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 }
                 current_profile = evidence_profile.move_value();
 
+                myrd::diagnostic_trace("p5: evidence profile state published");
+                logger_.write(ServiceLogEvent{
+                    ServiceLogKind::operation_running,
+                    current_operation.request_id,
+                    current_operation.operation_id,
+                    current_operation.profile_id,
+                    current_operation.command_scope,
+                    current_operation.phase,
+                    "checkpoint: evidence-recorded profile state published"});
                 auto evidence_operation = current_operation;
                 ++evidence_operation.revision;
                 evidence_operation.phase = "checkpoint-evidence";
                 evidence_operation.updated_unix_ms = (std::max)(
                     evidence_operation.updated_unix_ms,
                     clock_.unix_time_ms());
+                myrd::diagnostic_trace("p5: operations_.write begin");
                 auto evidence_written = operations_.write(
                     current_operation.revision, evidence_operation);
+                myrd::diagnostic_trace("p5: operations_.write done");
                 if (!evidence_written.ok()) {
                     return Result<OperationRecord>::failure(
                         evidence_written.error());

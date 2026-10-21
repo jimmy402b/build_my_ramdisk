@@ -1,4 +1,4 @@
-#include "src/management/service_worker_control.h"
+﻿#include "src/management/service_worker_control.h"
 
 #include "src/management/windows_worker_observation.h"
 
@@ -404,7 +404,7 @@ Result<WorkerActionResult> ServiceWorkerControl::verify_startup_step(
         // image-verified.  Departure worth stating plainly: the historical
         // adapter *also* checked device geometry per step (extent length, port,
         // lun).  The M5 status carries no geometry, so those checks are gone --
-        // a coarser proof boundary, chosen deliberately (manifest §7 item 19).
+        // a coarser proof boundary, chosen deliberately (manifest 搂7 item 19).
         return Result<WorkerActionResult>::success(std::move(result));
 
     case ActionKind::record_volume_identity: {
@@ -830,7 +830,7 @@ Result<WorkerActionResult> ServiceWorkerControl::remove_mount(
     // when its start() took the writer lock, matched the device and re-read the
     // bundle uuid -- and the private channel authenticates that this is that
     // worker.  The service names the operation, the profile and the image it
-    // verified; it does not assert proofs it did not obtain (manifest §7
+    // verified; it does not assert proofs it did not obtain (manifest 搂7
     // item 21).
     m5::WorkerRemovalAuthorization authorization{request.operation_id,
                                                  request.profile_id};

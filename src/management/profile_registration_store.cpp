@@ -1,3 +1,4 @@
+#include "src/common/diagnostic_trace.h"
 #include "src/management/profile_registration_store.h"
 
 #include "src/management/profile_registration_codec.h"
@@ -406,6 +407,7 @@ Result<void> publish_state_bytes(
     std::wstring_view root,
     const product::Uuid& profile_id,
     const DurableProfileStateRecord& proposed) {
+    myrd::diagnostic_trace("regstore.publish_state_bytes: enter");
     if (!validate_durable_profile_state_record(proposed)) {
         return store_error<void>(
             L"profile_registration.publish_state",
@@ -413,17 +415,21 @@ Result<void> publish_state_bytes(
     }
     auto encoded = encode_profile_state_record(proposed);
     if (!encoded.ok()) return Result<void>::failure(encoded.error());
+    myrd::diagnostic_trace("regstore.publish_state_bytes: opening profile directory");
     auto directory = open_profile_directory(root, profile_id);
+    myrd::diagnostic_trace("regstore.publish_state_bytes: profile directory open");
     if (!directory.ok()) return Result<void>::failure(directory.error());
     const auto decode = [](std::span<const std::byte> bytes) {
         return decode_profile_state_record(bytes);
     };
     auto current = read_decoded_durable_file<DurableProfileStateRecord>(
         directory.value(), kStateCurrent, decode);
+    myrd::diagnostic_trace("regstore.publish_state_bytes: current read returned");
     if (!current.ok()) return Result<void>::failure(current.error());
     bool discard_current = current.value().corruption.has_value();
     auto previous = read_decoded_durable_file<DurableProfileStateRecord>(
         directory.value(), kStatePrevious, decode);
+    myrd::diagnostic_trace("regstore.publish_state_bytes: previous read returned");
     if (discard_current) {
         if (!previous.ok()) return Result<void>::failure(previous.error());
         if (!previous.value().value.has_value()
