@@ -1,4 +1,4 @@
-﻿#include "src/management/service_core.h"
+#include "src/management/service_core.h"
 
 #include "src/common/sha256.h"
 #include "src/common/diagnostic_trace.h"
@@ -5720,14 +5720,26 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     evidence.correlation,
                     [&](const CheckpointEpochObservation& observation)
                         -> Result<void> {
-                        if (observation.correlation
-                                != evidence.correlation
-                            || observation.live_dirty_epoch
-                                < evidence.correlation.cut_dirty_epoch) {
+                        // **Only the identity is ordered here; the epoch is not.**
+                        //
+                        // A successful commit resets the dirty epoch, so the value observed
+                        // after it is *smaller* than the one this checkpoint cut -- that is a
+                        // re-baseline, exactly as `valid_checkpoint_boundary` already says
+                        // about the cut epoch ("a re-baseline, not a regression").  Requiring
+                        // `live >= cut` here made every first checkpoint of a volume that had
+                        // been written to before the cut fail, which is every provisioned
+                        // volume: measured as a create that completed its checkpoint and then
+                        // died with "The worker dirty epoch regressed or changed identity".
+                        //
+                        // What must stay strict is *whose* epoch it is: the correlation
+                        // carries the worker's pid, creation time, session generation and the
+                        // generations around the cut, so a different worker or a different
+                        // checkpoint is still refused.
+                        if (observation.correlation != evidence.correlation) {
                             return Result<void>::failure(service_error(
                                 ServiceCoreError::operation_invalid,
                                 L"service_core.checkpoint_epoch",
-                                L"The worker dirty epoch regressed or changed identity"));
+                                L"The worker dirty epoch changed identity"));
                         }
                         // No comparison against the durable `current_dirty_epoch`
                         // is made here: that value may come from a previous

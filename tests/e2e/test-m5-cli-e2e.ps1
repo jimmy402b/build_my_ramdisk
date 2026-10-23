@@ -344,7 +344,7 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         # have thrown away.
         Write-Host "FAILED WAIT: terminal state $finalState`n$($waited.output.Trim())"
         Write-Host "  disk list: $((Invoke-Cli @('disk', 'list')).output.Trim())"
-        Write-Host "  disk show: $((Invoke-Cli @('disk', 'show', $mount)).output.Trim())"
+        Write-Host "  disk show: $((Invoke-Cli @('disk', 'show', $profileName)).output.Trim())"
         Write-Host "  workers: $((@(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue)).Count)"
         Write-Host "  work root: $((Get-ChildItem -LiteralPath $workRoot -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ', ')"
         Write-Host "  service log:"
@@ -362,7 +362,7 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         Fail "disk list did not report the mount target $mount"
     }
 
-    $show = Invoke-Cli @('disk', 'show', $mount)
+    $show = Invoke-Cli @('disk', 'show', $profileName)
     if ($show.exit -ne 0) { Fail "disk show $mount failed: $($show.output)" }
     Write-Host "  $($show.output.Trim())"
 
@@ -375,14 +375,14 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Write-Host "  wrote and read back $((Get-Item $probeFile).Length) bytes on $mount"
 
     Write-Step 'T1-05: checkpoint, then stop'
-    $checkpoint = Invoke-Cli @('disk', 'checkpoint', $mount, '--wait')
+    $checkpoint = Invoke-Cli @('disk', 'checkpoint', $profileName, '--wait')
     if ($checkpoint.exit -ne 0) { Fail "disk checkpoint failed: $($checkpoint.output)" }
     Write-Host "  $($checkpoint.output.Trim())"
 
     Remove-Item -LiteralPath $probeFile -Force
     Set-Content -LiteralPath (Join-Path $mount '\m5-cli-e2e-after.txt') -Value 'after checkpoint' -Encoding utf8
 
-    $stop = Invoke-Cli @('disk', 'stop', $mount, '--wait')
+    $stop = Invoke-Cli @('disk', 'stop', $profileName, '--wait')
     if ($stop.exit -ne 0) { Fail "disk stop failed: $($stop.output)" }
     Write-Host "  $($stop.output.Trim())"
     if (Test-Path -LiteralPath ($mount + '\')) {

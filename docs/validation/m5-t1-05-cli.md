@@ -532,3 +532,48 @@ durable 记录此时保存的是**提交前**的 cut epoch（P5 从 evidence 写
 - 加一条负例：**identity 变了但 epoch 也变了**时必须拒绝（证明不是把校验整体放宽）。
 
 **T1-05 仍 PARTIAL**：链路已推进到 checkpoint 之后，卡点是一条可命名的判据错误。
+
+---
+
+## 10. 2026-10-23：create 全链通了；stop 停在 checkpoint epoch 的完成判定
+
+### 10.1 本轮修掉并实测（请求 `32d4ba1c71b54d72a87c4d4e6cd33203`）
+
+**epoch 判据改为只认身份**（`service_core.checkpoint_epoch`）：提交会重置 dirty epoch，
+所以"提交后 epoch 更小"是 re-baseline；仅当 **correlation 不同**（换 worker / 换 checkpoint）才拒绝。
+
+客机读数（这次 create **成功**）：
+
+```
+disk.create: operation queued → running → … → publish-ready → assign-mount → readiness-io
+disk.checkpoint: operation queued → running → succeeded (phase terminal)
+```
+
+⇒ **T1-05 的 create 段与 checkpoint 段都通了**（此前从未有过）。
+
+**夹具两处修正**：
+- `disk show/checkpoint/stop` 的 `<disk>` 参数按 `resolve()` 的语义是 **display name 或 uuid**，
+  **不是盘符** —— 之前用 `U:` 才得到 `profile_not_found`。已改为用本轮唯一的 profile 名。
+  （**产品侧待办**：CLI 用户会自然想用盘符，`resolve` 不支持，属 T1-05 的可用性缺口，已记入 §11。）
+- 失败时保留 `trace.log` 与 `service.log`。
+
+### 10.2 当前阻塞：stop 的 checkpoint epoch 完成判定
+
+```
+execute_operation failed: code=22022 step=service_core.checkpoint_epoch
+  detail=The final checkpoint state is invalid
+```
+
+位置：`service_core.cpp` 的 `complete_command(pending_plan, clean ? succeeded_clean : succeeded_dirty)`
+（`if (!completed.applied())`）。**create 的第一处 checkpoint 用同一调用是通的**，
+差别在于 `normal_stop`：stop 计划在 checkpoint 之后还有 `remove_mount` /
+`remove_exact_device` / `stop_runtime_and_release_lock`，而这里用"checkpoint 完成"的
+outcome 去完成整个 stop 计划，状态机判定不成立。
+
+**下一步（已定位到行）**：`normal_stop` 时不要在这一步完成整个命令——
+只发布"checkpoint 已确认"的 durable 状态（`completed.after` 需要换成 stop 计划在该阶段的合法状态），
+让 remove 系列动作继续，由循环末尾正常完成 stop。需要先读 `complete_command` 对
+`ManagementCommand::stop` 的合法 outcome，避免再猜。
+
+**T1-05 仍 PARTIAL**，但链路已覆盖 create → list → show → 读写 → checkpoint，
+只剩 stop（及其后的重启恢复与 forget）。
