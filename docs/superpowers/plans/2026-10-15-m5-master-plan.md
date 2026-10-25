@@ -57,68 +57,29 @@
 
 ---
 
-## 2. 当前位置（截至本文建立）
+## 2. 当前位置
 
-| 层 | 状态 |
-|---|---|
-| M0 / M1 / M2 / M3 | 已验收（**证据取自开发机**；VM 上只有间接覆盖） |
-| M4 | 已验收（VM 战役只跑了**聚焦 9 项**，不是完整套件） |
-| M5 | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 完成；T1-05 PARTIAL（响应侧 + CLI 完成，客机 e2e 被一个 create 执行失败挡住）；其余未开始 |
+**本节不再记录状态。** 唯一的状态来源是
+[`2026-10-14-m5-v3-tasklist.md`](2026-10-14-m5-v3-tasklist.md)（每个增量一行），
+"现在在哪、下一步做什么"在 [`docs/operations/m5-handoff.md`](../../operations/m5-handoff.md)。
+本节只保留**基线读数**——它们改得很慢，而且是"还剩多少未知"的诚实答案。
 
-**2026-10-17 晚新增（T1-05 响应侧 + CLI 这一轮）**：
+**基线读数（客机）**：
 
-- **T1-04 收敛为 PASSED**：客机 `integration.m5.cli_e2e` 三次独立运行、每次 20 次
-  `disk list` 采样，**60/60 样本都在 create 进行中**（每次采样前先读 operation 状态），
-  最大时延 **111 / 35 / 26 ms**（限值 1000 ms）。证据：
-  [`docs/validation/m5-t1-05-cli.md`](../../validation/m5-t1-05-cli.md) §5.1。
-- **`public pipe → ServiceCore` 这条链路首次被接上**（此前两端都只被测试用过）。
-- **两个真缺陷，都有读数**：
-  1. **调度器在退役途中仍会 claim 并执行一个 operation**：`m5.execution_scheduler`
-     `--clean-first` 后 **10/10 失败**（master-plan §8 第 1 项"已关闭"的理由——陈旧二进制——
-     被实测推翻）；取到 gate 后再判一次 stop 即修，**修后 10/10 通过**。
-  2. **`profiles` 根是共享根，注册读取器只认自己的条目**：`WorkerBindingStore` 把指纹放在
-     `profiles\workers`，而 `list_profiles()` 判定其为"未知条目" ⇒ **第一次启动创建它、此后每次启动
-     都失败**。按名字承认该共位者即修；客机服务恢复 `RUNNING`，`disk list` 正常。
-- **T1-05 阻塞点（新发现的产品缺口）**：`disk create` 被准入后执行失败，而**失败原因取不到**——
-  durable 记录只存标记串、`ServiceLogEvent` 无 message、响应投影只带 state。
-  **下一步先补这三处可达性，再定位失败点**；在那之前 T1-05 只能 PARTIAL。
+| 读数 | 值 | 说明 |
+|---|---|---|
+| 完整套件 | **152 条 → 150 通过** | 唯二失败是客机无 Visual Studio 的两条 structural（`vswhere.exe not found`），非产品缺陷 |
+| M0–M4 单独 | **134 项 × 3 = 399/402** | 失败集合三遍完全相同 ⇒ **M0–M4 无间歇性** |
+| `m5.production_execution_backend` | `-Repeat 20 → 20/20` | 产品面在客机上全绿 |
+| `structural.m5.read_write_separation` | `-Repeat 3 → 3/3` | 守卫用例 |
 
-**已完成的实质修复（全部有量测）**：
+**已行使 vs 未行使**：已跑过的路径包括 worker 启停与握手、create_bundle、checkpoint 两阶段、
+stop（含冻结）、job object 与崩溃回收、启动 sweep、读/写分离、public pipe + CLI 的
+create / list / show / 读写 / checkpoint。**尚未跑过**：CLI 的 stop → 重启恢复 → forget、
+中断提交判定、内存可见性与 UNMAP 端到端、suspend / 内存压力 checkpoint、断电恢复、GUI。
 
-| 修复 | 读数 |
-|---|---|
-| M2 `backing_generation` 测试钩子冒充生产不变量 | 修前 ~50% 崩溃 → **20/20** |
-| T1-11 stop 路径补写冻结（三层） | `-Repeat 20` **20/20**（修前 5/20 失败） |
-| `integration.m1.shm` 契约违约 | 整套 ×3 Sweep **432/438**，该用例 **3/3**（修前 1/3 失败） |
-| T1-02 组合根 + SCM 骨架 | `sc create`/`start`/`query`/`stop` 全通，无残留 |
-| 调度器退役途中仍 claim 执行（§3.1，本轮） | `--clean-first` 后 **10/10 失败 → 10/10 通过** |
-| `profiles` 共享根被判为"未知条目"（§3.2，本轮） | 服务每次重启必失败 → **`RUNNING` + `disk list` 正常** |
-
-**当前整套基线**：VM 上 **144/146**，连跑三遍逐项一致；唯二失败是客机无 Visual Studio 的两个
-structural 用例（已知环境受限）。
-
-**2026-10-17 新增读数（M0–M4 单独测，排除 M5 的 17 项）**：
-**134 项跑 3 遍 = 399/402，失败集合三遍完全相同**（唯一失败仍是
-`structural.m2.storage_independent_build`，原因是客机无 VS，`vswhere.exe not found`）。
-⇒ **M0–M4 无间歇性；不稳定性只属于 M5 的用法**。
-
-**2026-10-17 最新整套基线（T1-03 与 T1-04 落地之后）**：
-**客机完整 152 条 → 150 通过**，唯二失败仍是那两条 `vswhere.exe not found`
-（`structural.m2.storage_independent_build`、`structural.m5.execution_boundary`），
-**都不是产品缺陷**。其中 `m5.production_execution_backend` 另有 **`-Repeat 20 → 20/20`**、
-`structural.m5.read_write_separation` 有 **`-Repeat 3 → 3/3`**。
-**⇒ 产品面在客机上全绿。**（其余用例该轮只跑一次，不宣称"稳定"。）
-完整证据：`docs/validation/m5-m0-m4-vm-baseline.md`。
-
-**已行使 vs 未行使（这是"还剩多少未知"的诚实答案）**：
-
-- 已真正跑过的路径：worker 启停与握手、create_bundle、checkpoint 两阶段、stop（含冻结）、
-  多盘同时存活与单盘停止、服务 SCM 生命周期。
-- **从未跑过的路径**：job object 与崩溃回收、启动 sweep、读/写分离、public pipe 与 CLI 全命令面、
-  中断提交判定（P4/P5 之间的崩溃恢复）、内存可见性与 UNMAP 端到端、
-  suspend/内存压力 checkpoint、断电恢复、GUI。
-- **经验规律（四次验证过）**：每首次行使一条新路径，掉出 1–2 个真缺陷。
-  **因此 T1-03 → T4-04 期间仍应预期若干缺陷**，这不是悲观，是已经量测到的命中率。
+**经验规律（四次验证过）**：每首次行使一条新路径，掉出 1–2 个真缺陷。
+**因此 T1-05 → T4-04 期间仍应预期若干缺陷**，这不是悲观，是已经量测到的命中率。
 
 ---
 
@@ -157,20 +118,24 @@ structural 用例（已知环境受限）。
 ## 4. 执行顺序（依赖图）
 
 ```text
-T1-01 ✅ ─→ T1-02 ✅ ─┬─→ T1-03 ─→ T1-06 ─┐
-                     ├─→ T1-04 ─→ T1-05 ─┼─→ T1-09 ─→ T1-10
+T1-01 ✅ ─→ T1-02 ✅ ─┬─→ T1-03 ✅ ─→ T1-06 ─┐
+                      ├─→ T1-05 ◐ ─→ T1-04 ✅ ┼─→ T1-09 ─→ T1-10
 T1-11 ✅ ────────────┘        │         │
                               └→ T1-07 ─┤
                               └→ T1-08 ─┘
-T1-09 ─→ T2-01 ─→ T2-02 ─→ T2-03
-T2-02 ─→ T3-01 ─→ T3-02 ─→ T3-03 ─→ T3-04 ─→ T3-05
-T3-05 ─→ T4-01
+T1-09 ─→ T3-01 ─→ T3-02 ─→ T3-03 ─→ T3-04 ─→ T3-05 ─→ T4-01
 T1-09 ─→ T4-02 ─→ T4-03 ─→ T4-04
 ```
 
-**关键路径**：`T1-03 → T1-06 → T1-09 → T2-01 → T2-02 → T3-01…T3-05 → T4-01 → … → T4-04`。
-`T1-05` 体量最大但不在关键路径上；**`T1-06` 是关键路径上最容易低估的一步**
+`T2-01 ─→ T2-02 ─→ T2-03` **⏸ 整章延后（2026-10-17 裁定）**，因此不出现在图中。
+
+**关键路径**：`T1-05 → T1-06 → T1-09 → T3-01…T3-05 → T4-01 → … → T4-04`。
+`T1-05` 是当前唯一未收尾的单盘增量；**`T1-06` 是关键路径上最容易低估的一步**
 （设计 §14.3 有七条用例，且现在 `reconcile_checkpoint` 正面路径零测试）。
+
+**T3 的依赖已改（2026-10-25）**：原文 T3-01 依赖 `T2-02`。G4 整章延后而 G1 仍在完成口径内
+⇒ T3-01 改依赖 `T1-09`。这是从既有裁定推导的，不是新裁定；恢复 G4 时不必回改
+（多盘只是 GUI 的一个视图，不是前置）。
 
 ---
 
@@ -194,7 +159,7 @@ T1-09 ─→ T4-02 ─→ T4-03 ─→ T4-04
 
 | 字段 | 内容 |
 |---|---|
-| **状态** | **IN_PROGRESS**（part 1 决策核心 + part 2 job object/verdict，合计 **18 用例通过**） |
+| **状态** | **✅ PASSED**（part 1–96；客机读数与证据见 §13 与 `docs/validation/m5-t1-03-worker-job.md`） |
 | **依赖** | T1-02 |
 | **工作量** | L |
 | **目标** | G3、G4 |
@@ -511,8 +476,8 @@ M4 套件 10/11（唯一失败是既有环境用例）来满足。
 
 | 字段 | 内容 |
 |---|---|
-| **状态** | TODO |
-| **依赖** | T1-02 |
+| **状态** | **✅ PASSED**（客机 `integration.m5.cli_e2e`：60/60 采样落在 create 进行中，最大时延 111 / 35 / 26 ms；证据 `m5-t1-05-cli.md` §5.1） |
+| **依赖** | T1-02（实现）、T1-05（验收需要 `disk list`） |
 | **工作量** | M |
 | **目标** | G1（解 GUI 假死）、G4（延迟隔离的一半） |
 
@@ -536,8 +501,8 @@ M4 套件 10/11（唯一失败是既有环境用例）来满足。
 
 | 字段 | 内容 |
 |---|---|
-| **状态** | TODO |
-| **依赖** | T1-04 |
+| **状态** | **◐ PARTIAL**（create / list / show / 读写 / checkpoint 已在客机跑通；只剩 `stop` 完成判定 → 重启恢复 → `forget`） |
+| **依赖** | T1-02 |
 | **工作量** | L |
 | **目标** | G2 |
 
@@ -738,7 +703,7 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 | 字段 | 内容 |
 |---|---|
 | **状态** | TODO |
-| **依赖** | T2-02 |
+| **依赖** | T1-09（原文 T2-02；G4 延后后由此推导，见 §4） |
 | **工作量** | M |
 | **目标** | G1 |
 
@@ -1114,35 +1079,22 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 
 ## 13. 进度追踪
 
-状态只改这里（并同步 tasklist）：
+状态只改 tasklist；下表是同步副本，只用于从本文件一眼看到顺序与完成度。
 
 | 增量 | 状态 | 证据 |
 |---|---|---|
-| T1-01 | ✅ DONE | `docs/validation/m5-current-state.md` |
-| T1-02 | ✅ DONE | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
-| T1-11 | ✅ DONE | `docs/validation/m5-t1-11-stop-write-freeze.md` |
-| T1-03 | **✅ PASSED** | part 1–96。**三项验收全部落地且有客机读数**：被杀的 worker 不留进程/挂载/设备、reclaim 能拆掉击杀造成的残留、**整套件 `-Repeat 20` → 20/20 全绿**（请求 `826c5f3567c14e13ba9a7ff40f8cf621`）。**范围调整 (a)(b)(c) 全部完成**：(a) attach-only 不再取盘号、卷身份改用 durable GUID + 挂载优先 + 诚实的盘符字段；(b) `DiskRuntimeOperations` 的代价/前提/所有权写入契约；(c) 拆卸的模式分支合并为单一 `TeardownPolicy`。**关键根因**：**create 路径会"采纳"另一个 profile 的同尺寸设备**（采纳时跳过 backing name 校验，其正当性论证只覆盖本 bundle 的并发持有者）⇒ **create 路径不再采纳**。**教训：先问"走了哪条分支"，再问"环境里有什么"。** 证据：`docs/validation/m5-t1-03-worker-job.md` §4.15.1–76、`docs/validation/m5-resolved-create-disk-adoption.md`。 |
-| T1-04 | TODO | — |
-| T1-05 | TODO | — |
-| T1-06 | TODO | — |
-| T1-07 | TODO | — |
-| T1-08 | TODO | — |
-| T1-09 | TODO | — |
-| T1-10 | TODO | — |
-| T2-01 | ⏸ 延后（G4 暂不做） | — |
-| T2-02 | ⏸ 延后（G4 暂不做） | — |
-| T2-03 | ⏸ 延后（G4 暂不做） | — |
-| T3-01 | TODO | — |
-| T3-02 | TODO | — |
-| T3-03 | TODO | — |
-| T3-04 | TODO | — |
-| T3-05 | TODO | — |
-| T4-01 | TODO | — |
-| T4-02 | TODO | — |
-| T4-03 | TODO | — |
-| T4-04 | TODO | — |
+| T1-01 | ✅ PASSED | 144/146 + 稳定性普查 718/730（`docs/validation/m5-m0-m4-vm-baseline.md`） |
+| T1-02 | ✅ PASSED | `docs/validation/m5-t1-02-service-skeleton.md`（+ `-service-host.md`） |
+| T1-03 | ✅ PASSED | `docs/validation/m5-t1-03-worker-job.md`、`m5-resolved-create-disk-adoption.md` |
+| T1-04 | ✅ PASSED | `docs/validation/m5-t1-05-cli.md` §5.1（60/60 采样，111 / 35 / 26 ms） |
+| T1-05 | ◐ PARTIAL | `docs/validation/m5-t1-05-cli.md` §10.2（create / checkpoint 通，stop 卡在完成判定） |
+| T1-11 | ✅ PASSED | `docs/validation/m5-t1-11-stop-write-freeze.md`（20/20） |
+| T1-06 … T1-10 | TODO | 见 tasklist |
+| T2-01 … T2-03 | ⏸ 延后（G4 暂不做） | 2026-10-17 裁定 |
+| T3-01 … T3-05 | TODO | — |
+| T4-01 … T4-04 | TODO | — |
 
-**已完成增量**：3 / 23。
+**已完成 5 / 20**（另 T1-05 部分完成）。20 = T1(11) + T3(5) + T4(4)；T2 三项延后不计。
 
 ---
 
@@ -1152,5 +1104,5 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 |---|---|---|
 | 1 | **Primo "Mini Tools" 的定义** | 未定义 ⇒ **不列入范围**。定义清楚了才发现它可能是"加几个 CLI 子命令"这种小事，或者是一整块新功能 |
 | 2 | **T4-02 单文件 VHDX 导出** | 设计 §16 #4 已裁决**保留**，我按保留执行。若你要改，现在说 |
-| 3 | **完成口径** | 我按"G1–G4 全通过 + T4-04 manifest 冻结"当项目完成。若你希望更早收（例如只到 G2+G3，GUI 后置），现在说，因为那会**改变关键路径和 T3 的取舍** |
+| 3 | ~~完成口径~~ | **已于 2026-10-17 裁定**：G1 + G2 + G3 全部验收通过 + T4-04 manifest 冻结 + §8 遗留清空；G4 延后。不再询问 |
 | 4 | **VM 是否长期可用** | T1-03 起到 T4 每一步都依赖它。若它有时不可用，我需要把"可开发机完成的纯逻辑部分"和"必须上 VM 的验收"分开排，避免再次出现"对着污染状态测半天" |

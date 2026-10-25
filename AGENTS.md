@@ -3,8 +3,10 @@
 以下约束对执行 M5 实现计划的 agent 具有**最高优先级**，覆盖 plan 内任何相反建议。
 
 设计：`docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md`
-任务清单：`docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md`
+任务清单：`docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md`（**唯一状态来源**）
 基线：`cb3df08`（clean M4），实现分支 `feature/m5-lifecycle`
+交接入口：`docs/operations/m5-handoff.md`（现在在哪、下一步做什么）
+已付学费：`docs/operations/m5-lessons.md`（动手前扫一遍）
 
 > v3 取代 `2026-09-30` 的 spec / plan / tasklist。旧文本里与 v3 冲突的条目以 v3 为准；
 > v2 → v3 的变更清单见设计文档 §0。

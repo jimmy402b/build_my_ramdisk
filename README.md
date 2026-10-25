@@ -72,16 +72,30 @@ myrd run --bundle E:\myrd\disk-b --size 64M --drive-letter S:
 
 ## 当前状态
 
-- M0：driver-only 可行性验证，机器范围内 GO。
-- M1：Shared Memory Proxy 产品化里程碑，机器范围内 GO。
-- M2/M2.1：动态按块分配、首次访问加载和一致性快照基础已完成。
-- M3：VHDX + journal + 双槽 manifest 持久化里程碑已通过最终验收（证据冻结提交 `4ece675`）；Task41 真实 AIM+NTFS、Task42 崩溃矩阵、Task43 Formal 和 Task44 漂移审计均为 GO。
+| 里程碑 | 状态 |
+|---|---|
+| M0 | driver-only 可行性验证：GO |
+| M1 | Shared Memory Proxy 产品化：GO |
+| M2 | 动态按块分配、首次访问加载、一致性快照基础：已完成 |
+| M3 | VHDX + journal + 双槽 manifest 持久化：**已最终验收**（证据冻结提交 `4ece675`） |
+| M4 | 前台单盘运行时 `DiskRuntime`：**已验收**（VM 真实设备） |
+| **M5** | **进行中**：Windows 服务 + 每 profile worker + typed IPC + CLI；GUI 与产品化在后 |
+
+**M5 的进度、下一步与全部读数不在本文件。** 入口是
+[`docs/operations/m5-handoff.md`](docs/operations/m5-handoff.md)，
+状态以 [`docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md`](docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md) 为准。
+下手之前先扫一遍 [`docs/operations/m5-lessons.md`](docs/operations/m5-lessons.md)。
+
+`main` 是冻结的 M4 基线；M5 的全部工作在同仓库的工作树 `.worktrees/m5-lifecycle`（分支
+`feature/m5-lifecycle`）。
 
 M1 已能直接调用内核驱动创建 64 MiB RAM disk，并通过 Windows 原始磁盘路径完成真实 READ、WRITE、ZERO、UNMAP、flush 和精确删除。Release 可执行文件已连续完成 20/20 次实机生命周期；完整证据见 `docs/validation/m1-proxy-acceptance.md`。
 
 M3 可以创建和重开镜像 bundle，在第一次访问块时从已提交的 journal/VHDX 按需加载，手动执行 checkpoint 和 compaction，并在异常退出或断电后恢复最近一次完整、已确认提交的 checkpoint。最终真实 AIM + NTFS、Windows 原生 VHDX、8 次进程终止、2 次受控断电和 100-seed Formal soak 证据见 `docs/validation/m3-persistence-acceptance.md` 与 `docs/validation/m3-final-audit.md`。
 
-M3 仍不是最终桌面产品：定时 checkpoint、Windows 服务、开机自动恢复、关机策略、自动压缩、GUI 和多磁盘策略属于 M4。普通写入进入 RAM 后即可完成；只有成功发布的 checkpoint 才有断电恢复承诺。
+普通写入进入 RAM 后即可完成；**只有成功发布的 checkpoint 才有断电恢复承诺**。
+定时 checkpoint、Windows 服务、开机自动恢复、关机策略、GUI 与多盘策略属于 M4/M5——
+M4 已验收，M5 进行中（进度入口见上方）。
 
 ## 环境要求
 
