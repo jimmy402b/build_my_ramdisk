@@ -2,7 +2,11 @@
 
 状态：已整理（v2：锁定「worker 复用 `DiskRuntime`」决策；第 4 节为保留/替换清单）
 日期：2026-09-30
-前置：`main` = 干净 M4 基线（`cb3df08`）；M5 工作完整保留在
+> **历史文档（2026-09-30 的范围决策）。** 文中对 `feature/m5-unified-integration` 的引用已过时：
+> 该线已被 v3 取代，工作树与分支于 2026-10-25 删除，仅以 tag `archive/m5-unified-integration`
+> 保留历史。**当前唯一活动线是 `feature/m5-lifecycle`**，状态见 tasklist。
+
+前置：`main` = 干净 M4 基线（`cb3df08`）；当时的 M5 工作完整保留在
 `feature/m5-unified-integration`（含 F10/F11/F12 修复与 Blocker A–D 处置）。
 
 ---

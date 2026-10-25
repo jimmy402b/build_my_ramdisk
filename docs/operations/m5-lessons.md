@@ -59,7 +59,7 @@ REQUIRE(x.ok());
 
 | # | 规则 | 为什么 |
 |---|---|---|
-| 4.1 | **改文本文件一律用 `edit` 工具；不要用 `Set-Content`** | PS 7 的 `-Encoding ASCII` **真的按 ASCII 写**，把整份中文文档变成 `???`（368 处）。**已犯三次，属纪律问题** |
+| 4.1 | **改文本文件一律用 `edit` 工具；不要用 `Set-Content`** | PS 7 的 `-Encoding ASCII` **真的按 ASCII 写**，每个非 ASCII 字符都变成半角问号（实测一次毁掉 368 处）。**已犯三次，属纪律问题**。第二个实例：`m5-t1-05-cli.md` 在 `8a22bbb` 被写成 **UTF-8 → GBK 的双重编码**（336 行正文塌成 222 行、685 处错字），§1–§7 直到 2026-10-25 才从 `87c62f1` 的干净副本恢复 |
 | 4.2 | 确需写文件时只能 `utf8NoBOM`（PS7）或 `utf8`（5.1）；改完查有没有出现**连续三个半角问号**（编码被破坏的典型痕迹）与 `git diff --stat` 比例 | 小改动不该有 409/658 那种比例 |
 | 4.3 | **仓库脚本 ASCII-only** | PowerShell 5.1 把无 BOM UTF-8 当 ANSI，注释会把解析搞坏 |
 | 4.4 | **经 SSH 跑 PowerShell 用 `-EncodedCommand`** | `ssh host "<cmd>"` 走 `cmd.exe`，引号会被反复吃掉 |

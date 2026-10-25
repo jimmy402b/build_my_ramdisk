@@ -8,7 +8,7 @@
 
 | 项 | 值 |
 |---|---|
-| **唯一活动线** | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`，HEAD `dbb25a3` |
+| **唯一活动线** | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`（HEAD 以 `git log` 为准，本文不钉 SHA） |
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | 单盘（G2/G3） | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**；**T1-05 PARTIAL** |
 | 多盘（G4） | T2-01…T2-03 **整章延后**（2026-10-17 用户裁定） |
