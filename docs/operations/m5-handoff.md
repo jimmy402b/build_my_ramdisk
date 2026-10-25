@@ -30,6 +30,7 @@ T2 在 G4 恢复前不动。
 | 设计与不变量 | `docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md` |
 | 某个增量凭什么算通过 | `docs/validation/`（按增量名对号） |
 | **已经付过学费的坑** | `docs/operations/m5-lessons.md`（**动手前扫一遍**） |
+| 2026-10-26 那次评审的结论与修法 | `docs/operations/m5-review-2026-10-26.md`（时点快照，写时固定） |
 | VM 回路的三条通道与一次性配置 | `docs/operations/m5-vm-harness.md` |
 | 引擎层（M3/M4）怎么跑 | `docs/operations/m3-persistence.md`、`docs/testing/m3-e2e.md` |
 
@@ -73,12 +74,16 @@ execute_operation failed: code=22022 step=service_core.checkpoint_epoch
 
 ### 3.3 下一步（按顺序，不要跳）
 
-1. **先查清 `clean` 为什么是假。** 判据是
-   `observation.live_dirty_epoch == evidence.correlation.cut_dirty_epoch`。
-   **提交会重置 dirty epoch**——这正是 `dbb25a3` 刚在"顺序"上修过的那一类问题。
-   ⇒ 要么这个相等判据在"提交之后"根本不成立（那么 stop 永远拿到 `succeeded_dirty`），
-   要么 stop 的最终 checkpoint 真的留下了 cut 之后的写（那就是写冻结有漏）。
-   **两种解释对应完全不同的修法，先用读数区分，不要猜。**
+1. **根因已查明（2026-10-26）：dirty epoch 是一条两端都空着的管道，不是判据写错。**
+   - worker 侧的 `cut_dirty_epoch` 取的是 `maintenance_stats().generation`
+     （backing generation，`m5_worker_runtime.cpp:519`）；
+   - service 侧的 `live_dirty_epoch` 是**写死的 0**（`service_worker_control.cpp` 的
+     `publish_checkpoint_epoch`）；
+   - `WorkerRuntimeStatus.dirty_epoch` 全仓**没有生产者**，恒为 0。
+   ⇒ `clean = (0 == generation)`：generation 0 时成立（create 的第一处 checkpoint），
+   之后永不成立（stop）。**这是确定性的，不是间发。**
+   完整证据链与五步修法见 [`m5-review-2026-10-26.md`](m5-review-2026-10-26.md) §1。
+   **不要再往"比较顺序"上调参**——`dbb25a3` 已经证明那条路只能让 create 看起来好转。
 2. **`normal_stop` 时不要在这一步 `complete_command`**：只发布"checkpoint 已确认"的
    durable 状态（`phase = stable`、`disposition = committed`、
    `confirmed_generation`、`current_dirty_epoch`），让 remove 系列继续，
