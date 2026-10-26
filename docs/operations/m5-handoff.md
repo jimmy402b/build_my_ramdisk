@@ -1540,3 +1540,19 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
    让我们的启动停 120 秒。这条应记入 T4 的遗留清单（属于"产品在恶劣设备环境下的健壮性"）。
 
 **验证方法（便宜）**：客机重启 → `Reset` → 单独跑 `cli_e2e`；若通过，则确认根因是残留设备而非代码。
+### 3.56 2026-10-27 07:15：**`cli_e2e` 通过（72 s）——"回归"撤回，根因是残留 AIM 设备**
+
+- 客机：硬重启 → `Reset-M5Guest` → 单独跑 `cli_e2e` ⇒ **1 of 1 passed，72 s**（请求 `2f749544…`）。
+- ⇒ **3.51 里"产品回归"的怀疑正式撤回**：今天的改动没有破坏 e2e。
+- 真正的因果链（现在完整）：
+  1. 上一次 e2e 留下**半死的 AIM 代理设备**；
+  2. 下一次 e2e 的 worker 在 `enumerate_disk_candidates: opening the candidate` 上**阻塞 120 秒**；
+  3. 服务的 `create-bundle` 等到管道超时（`pipe transfer exceeded its bounded wait`），判失败并留下 worker；
+  4. 该 worker 又让客机变慢/不可交互，**看起来像产品卡死**。
+- **⇒ e2e 的硬前置：每次 e2e 之前必须"干净启动"**（硬重启 + `Reset-M5Guest`）。
+  这也解释了本会话反复出现的"跑几轮之后就不行了"。
+- **待办（T4 遗留清单）**：`enumerate_disk_candidates` 对每个候选盘的开盘加**有界超时**（如 2 s），
+  超时记为"跳过"——第三方坏设备不该让启动停 120 秒。这条与 G4 延后的理由是同一个根。
+
+**当前可信基线（客机，干净启动）**：`unit 96/96`、`model/m5 12/13`、`integration.m5.cli_e2e PASS 72 s`。
+`integration` 其余 4 例仍待跑（每次跑前重启+Reset）。
