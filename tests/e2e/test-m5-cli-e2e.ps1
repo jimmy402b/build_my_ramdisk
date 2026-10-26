@@ -145,7 +145,15 @@ function Wait-ForTerminal([string]$operationId, [int]$seconds) {
         if (@('succeeded', 'failed', 'cancelled') -contains $state) { return $state }
         Start-Sleep -Milliseconds 500
     }
-    Fail "the operation did not reach a terminal state within $seconds s (last state: $state)"
+    # **The service log is part of the failure.**  `reconciling` is a terminal state
+    # shared by three different failures (a dirty final checkpoint, an unconfirmed
+    # commit, a failed resume), and the operation record only carries the state.
+    # Without the last lines the reading is "it hung", which is not actionable.
+    $tail = ''
+    if (Test-Path -LiteralPath $serviceLog) {
+        $tail = ($(Get-Content -LiteralPath $serviceLog -Tail 12) -join "`n")
+    }
+    Fail "the operation did not reach a terminal state within $seconds s (last state: $state)`n$tail"
 }
 
 function Get-UuidFromText([string]$text) {
