@@ -630,10 +630,33 @@ WER）拿崩溃模块与偏移，再决定是修代码还是修环境。`service
 新行，说明服务**在这次开机里连一条日志都没写**——它很可能在 `ServiceHost::start()` 之前
 （或刚开始）就死了，这一点与"崩溃"比与"逻辑卡住"更吻合。
 
-**下一次要查的顺序**：
-0. **`Get-WinEvent -LogName Application -MaxEvents 40 | ? { $_.ProviderName -match 'Application Error|Windows Error Reporting' }`**
-   —— 先拿崩溃模块与偏移；
-1. `sc query` 的 PID 与 `Get-Process` 的 myrd-service 是否同一个；`Get-Process -Id <pid>` 的
+**2026-10-27 01:00 再追加（证据互相矛盾，必须按时间戳重测，不要再猜）**
+
+同一台客机、几分钟之内：
+
+| 时刻 | 观察 |
+|---|---|
+| 00:52 | `myrd-cli disk list` → exit 3「service is not available」，30 s；`sc query` → **RUNNING** |
+| 00:55 | 没有 `myrd-service` 进程、没有任何 `myrd*` 管道；`service.log` 最后一行 **00:46:32**（断电前） |
+| 01:00 | `sc query` → **1060 服务不存在**（`service.log` 仍是 00:46:32） |
+
+三条观察不能同时为真：RUNNING 的服务不能既没有进程、又没有管道，更不能在没有人删它的情况下
+变成"不存在"。可能的解释有三类，**都必须用带时间戳的重测来区分**：
+(a) 我读到的 RUNNING 是**上一次准备阶段**的输出（命令输出串了）；
+(b) 客机在两次检查之间**重启过**（例如我加的 boot 重试或客机自己复位），服务因此回到
+    "未安装"（`C:\ProgramData` 里的 profile 目录还在，说明不是快照回滚）；
+(c) 服务装在一个**每次开机都会消失的位置**（例如 binPath 指向 staging 目录而被清理）。
+
+**下一次的做法（写成清单，照做）**：
+1. 干净客机 → `Test-M5PowerLoss.ps1` 只跑到 prepare（`-ResumeVerify` 之前手动停）；
+2. **立刻**记录：`sc qc`（binPath/start 类型）+ `sc query` + `Get-Process myrd-service` +
+   `\\.\pipe\` 过滤 + `service.log` 行数 + `Get-Date`，作为**基线快照**；
+3. 断电 → 开机 → **每 15 秒**采一次同样的快照，连采 3 分钟并带时间戳输出；
+4. 用快照序列判断上面 (a)/(b)/(c) 哪一类，再动代码。
+
+**下一步（新会话从这里开始）**：
+
+
    `StartTime` 是不是这次开机；
 2. `C:\ProgramData\MyRamDisk\logs\service.log` 里这次开机的最后几行——**有没有** `auto-start`
    与 subsequent 的 action 行（如果日志停在 `auto-start: …retired…` 之后，说明 start() 卡在
