@@ -6990,6 +6990,50 @@ Result<std::vector<OperationRecord>> ServiceCore::recover_after_restart() {
                         && tombstone.value()->retained_bundle_identity.has_value()
                         && nonzero_file_identity(
                             tombstone.value()->retained_bundle_identity.value());
+                    if (!expected_absent_forget) {
+                        // **Name the condition, not just the verdict.**  The bare
+                        // profile error said "the requested profile is not
+                        // registered", which is true of every way this check can
+                        // fail and therefore says nothing about which one it was.
+                        // Diagnosing it cost a full start/read cycle per guess.
+                        std::wstring detail =
+                            L"A completed forget's tombstone does not prove the "
+                            L"profile was removed [found=";
+                        detail += tombstone.value().has_value() ? L"1" : L"0";
+                        if (tombstone.value().has_value()) {
+                            detail += L" phase=";
+                            detail += std::to_wstring(static_cast<int>(
+                                tombstone.value()->phase));
+                            detail += L" ids_match=";
+                            const bool ids_match =
+                                tombstone.value()->operation_id
+                                    == record.operation_id
+                                && tombstone.value()->request_id
+                                    == record.request_id
+                                && tombstone.value()->profile_id
+                                    == record.profile_id;
+                            detail += ids_match ? L"1" : L"0";
+                            detail += L" owner_set=";
+                            detail += tombstone.value()
+                                            ->authorization_owner_sid.empty()
+                                ? L"0"
+                                : L"1";
+                            detail += L" identity_set=";
+                            const bool identity_ok =
+                                tombstone.value()
+                                        ->retained_bundle_identity.has_value()
+                                && nonzero_file_identity(
+                                    tombstone.value()
+                                        ->retained_bundle_identity.value());
+                            detail += identity_ok ? L"1" : L"0";
+                        }
+                        detail += L"]";
+                        return Result<std::vector<OperationRecord>>::failure(
+                            service_error(
+                                ServiceCoreError::operation_invalid,
+                                L"service_core.recover_absent_profile",
+                                detail.c_str()));
+                    }
                 }
                 if (record.command_scope != "disk.create"
                     && record.command_scope != "disk.import"
