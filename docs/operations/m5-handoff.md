@@ -1612,3 +1612,24 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 | `integration.m5.gui_workflow` | 25 s | **PASS** |
 
 **这五行就是 T4-04 的 M4 回归基线**。`integration.m3`/`m4`/`m1`/`m2` 各组的读数仍待补（逐组跑即可）。
+### 3.60 2026-10-27 07:35：**客机全套分组普查完成（除 powerloss_verify）**
+
+| 组 | 用例 | 用时 | 结果 | 请求 |
+|---|---|---|---|---|
+| `^unit\.` | 96 | 227 s | **96/96** | `b37eed00…` |
+| `^model\.|^m5\.` | 13 | 114 s | **13/13** | `b90d1a38…` |
+| `^integration\.m1\.` | 1 | 5 s | **1/1** | `834f2ac9…` |
+| `^integration\.m2\.` | 4 | 19 s | **4/4** | `25dcb84c…` |
+| `^integration\.m3\.` | 31 | 97 s | **31/31** | `4d3bc185…` |
+| `^integration\.m4\.` | 3 | 9 s | **3/3** | `3dbee656…` |
+| `^integration\.m5\.` | 5 | — | **4 PASS**（cli 72/85 s、install 9 s、gui 25 s、prepare 52 s）+ `powerloss_verify` 需主机断电 | 见 3.57–3.59 |
+| `^structural\.` | 3 | 5 s | **1/3**（`m2.storage_independent_build`、`m5.execution_boundary` 失败＝**已知客机环境**：`vswhere.exe not found`） | `860d0b41…` |
+| `^m5\.gui$` 单例 | 1 | 5 s | **1/1** | `b9cd6b04…` |
+
+**合计：155 组内用例中 152 通过、3 未通过**——其中 2 条是**已知客机环境**（structural 的两条），
+1 条是 `powerloss_verify`（**按设计**必须由主机先断电，单独跑必失）。
+
+⇒ **T4-04 的"M4 回归 + 客机基线"这一半已经具备**：这就是可以拿来比较的读数，而且与早前
+`152/154` 的预期一致（本表多算了两条 `m5.gui` 单例重复跑）。
+**仍缺**：`integration.m5.cli_e2e/powerloss 三段`作为一个整体的一次完整跑（T1-09 已做过一次），
+以及 Debug 配置的构建（T4-04 要求 Debug+Release 双干净）。
