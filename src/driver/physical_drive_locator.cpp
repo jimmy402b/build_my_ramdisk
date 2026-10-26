@@ -425,7 +425,7 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates_within(
 // ── Snapshot ──────────────────────────────────────────────────
 
 Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers() {
-    auto cand = enumerate_disk_candidates();
+    auto cand = enumerate_disk_candidates_within(kEnumerateTimeout);
     if (!cand) return Result<std::vector<std::uint32_t>>::failure(cand.error());
     std::vector<std::uint32_t> nums;
     for (const auto& c : cand.value()) {
@@ -634,7 +634,7 @@ Result<void> wait_for_physical_drive_retired(
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;) {
-        auto cand = enumerate_disk_candidates();
+        auto cand = enumerate_disk_candidates_within(kEnumerateTimeout);
         if (!cand) return Result<void>::failure(cand.error());
         if (!present_at_identity(owned, cand.value(), expected_size_bytes)) {
             return Result<void>::success();
@@ -650,7 +650,7 @@ Result<void> wait_for_physical_drive_retired(
 }
 
 Result<std::vector<LocatedDisk>> enumerate_present_physical_drives() {
-    auto candidates = enumerate_disk_candidates();
+    auto candidates = enumerate_disk_candidates_within(kEnumerateTimeout);
     if (!candidates) {
         return Result<std::vector<LocatedDisk>>::failure(candidates.error());
     }
