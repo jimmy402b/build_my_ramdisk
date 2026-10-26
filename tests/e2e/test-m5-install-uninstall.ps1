@@ -1,4 +1,4 @@
-# T4-01: install, run, and uninstall, on the guest.
+﻿# T4-01: install, run, and uninstall, on the guest.
 #
 # What this proves is the shipped path rather than the test harness's own `sc create`: the installer
 # copies a release, checks the driver instead of installing it, gives the durable directories an
@@ -80,6 +80,12 @@ try {
     }
     if ($acl -notmatch 'BUILTIN\\Administrators' -and $acl -notmatch 'S-1-5-32-544') {
         Fail "the data directory does not grant Administrators:`n$acl"
+    }
+    # The profile store refuses a directory a user can even read (measured:
+    # 'A management ACL entry lacks required access'), so the installer must not grant it.
+    $profilesAcl = & icacls.exe (Join-Path $dataDir 'profiles') 2>&1 | Out-String
+    if ($profilesAcl -match 'BUILTIN\\Users' -or $profilesAcl -match 'S-1-5-32-545') {
+        Fail "the profiles directory is readable by Users, which the store refuses:`n$profilesAcl"
     }
 
     Step 'the installed service serves its own client'

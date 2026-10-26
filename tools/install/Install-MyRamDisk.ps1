@@ -1,4 +1,4 @@
-# Installs MyRamDisk: binaries, the service, its durable directories, and the one prerequisite it
+﻿# Installs MyRamDisk: binaries, the service, its durable directories, and the one prerequisite it
 # refuses to install for you.
 #
 # **`phdskmnt` is checked, never installed.**  It is the AIM driver that presents the volumes, it
@@ -63,20 +63,50 @@ foreach ($child in @('profiles', 'operations', 'logs')) {
     $path = Join-Path $DataDirectory $child
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
-# SYSTEM and Administrators full control, Users read: a user has to be able to see why a disk is
-# blocked, and must not be able to rewrite the record of it.
-$acl = @(
-    '*S-1-5-18:(OI)(CI)F',      # SYSTEM
-    '*S-1-5-32-544:(OI)(CI)F',  # Administrators
-    '*S-1-5-32-545:(OI)(CI)RX'  # Users
-)
-& icacls.exe $DataDirectory /inheritance:r /grant:r @acl | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail "icacls failed on $DataDirectory ($LASTEXITCODE)" }
-foreach ($child in @('profiles', 'operations', 'logs')) {
-    & icacls.exe (Join-Path $DataDirectory $child) /inheritance:r /grant:r @acl | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "icacls failed on $child ($LASTEXITCODE)" }
+# **The durable directories are for the service alone, and their DACL must be *protected*.**
+#
+# The profile store refuses to operate on a directory whose ACL has any entry that is not SYSTEM or
+# Administrators with FILE_ALL_ACCESS, and it also refuses a DACL that is still inheriting.  Both
+# were measured: a `Users: RX` grant produced "A management ACL entry lacks required access", and a
+# directory whose inheritance had only been disabled in place produced "A profile directory ACL is
+# not protected".  `icacls` cannot express "protected" reliably, so the ACL is built with
+# `SetAccessRuleProtection($true, $false)` -- protection on, inherited rules removed -- and applied
+# with `Set-Acl`.  A record anyone can read, or whose permissions can change by moving its parent, is
+# a record whose disclosure cannot be controlled.
+function Set-ManagementAcl([string]$path, [bool]$readableByUsers) {
+    $security = New-Object System.Security.AccessControl.DirectorySecurity
+    $security.SetAccessRuleProtection($true, $false)
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $propagation = [System.Security.AccessControl.PropagationFlags]::None
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+    foreach ($sidText in @('S-1-5-18', 'S-1-5-32-544')) {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidText)
+        $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $sid, $full, $inheritance, $propagation, $allow)))
+    }
+    if ($readableByUsers) {
+        $users = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+        $read = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+        $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $users, $read, $inheritance, $propagation, $allow)))
+    }
+    Set-Acl -LiteralPath $path -AclObject $security
 }
-Write-Host "  DACL: SYSTEM/Administrators full, Users read"
+
+# **The data root is checked too.**  Measured: with profiles/operations/logs protected but the
+# MyRamDisk root still inheriting, the service refused to build its state ("A profile directory ACL
+# is not protected"); protecting the root as well is what let it start.  So the root carries the same
+# protected management-only ACL as the two record directories.
+Set-ManagementAcl $DataDirectory $false
+foreach ($child in @('profiles', 'operations')) {
+    Set-ManagementAcl (Join-Path $DataDirectory $child) $false
+}
+# The log directory is different on purpose: an operator has to be able to read why something failed
+# without being able to rewrite the record of it, and the store does not police this one.
+Set-ManagementAcl (Join-Path $DataDirectory 'logs') $true
+Write-Host "  DACL: profiles/operations service-only; logs readable by Users"
 
 Step "register the service $ServiceName"
 $existing = & sc.exe query $ServiceName 2>&1 | Out-String
