@@ -170,6 +170,38 @@ myrd-service: start failed: op=profile_registration.load
 
 ---
 
+
+### 3.7 2026-10-26 晚：cli_e2e 首次整套通过；重复 20 次暴露"第 5 次开始卡在 reconciling"
+
+**单次通过（第一次）**：`integration.m5.cli_e2e` → **1 of 1 passed**，请求
+`25e8077d130d42fdbe8c12d8e6b40509`。覆盖 create → list/show → 读写 → checkpoint →
+stop → 注册仍在 → forget → installed service（SCM 安装/应答/停止/删除）。
+
+**`-Repeat 20`：4/20**（请求 `8446da51fcaf43c0a36c0d0e240f73cf`）。前 4 次通过，
+从第 5 次起全部失败，失败读数一致：
+
+```text
+FAIL: the operation did not reach a terminal state within 300 s (last state: reconciling)
+WARNING: 1 worker process(es) survived the run
+```
+
+即 **stop 进入 reconciling 后 300 s 没有出来**，并且留下一个 worker 进程；此后每次运行都被
+这个残留状态挡住。这是**累积型缺陷**，单次通过并不能代表稳定。
+
+**已经修掉的测试侧缺陷**（这些曾把产品缺陷伪装成测试失败，或反之）：
+1. 安装服务前未停前台实例（管道冲突，SCM 7024）；
+2. stop 用 `--wait`（走已知坏掉的 `operation wait`）；
+3. 用 `disk list` 里**第一个 UUID** 当作本轮 profile（在有残留时打错盘）。
+
+**已经修掉的产品缺陷**：孤儿 profile 拖死 create（`2e8cf32`）、启动期终态操作缺 profile 即致命
+（`6d70940`，按 profile 豁免）、forget 完成时拒绝"bundle 已不存在"（`c11f6d2`）、
+forget 本身未实现（`c1ac06f`）。
+
+**下一步**：查第 5 次那份 `last-service.log`/`last-trace.log` 里 stop 为什么停在 reconciling、
+那个 worker 为什么没退（很可能是设备退役窗口内的阻塞，或 reconciliation 的判定条件永远不满足）。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
