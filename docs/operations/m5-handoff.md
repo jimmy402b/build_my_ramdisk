@@ -135,6 +135,8 @@ worker_protocol/common（`src/CMakeLists.txt:372`），拿不到 writer lock（p
 AIM 设备（driver）。proof 的五项里有两项必须由 worker 来答 ⇒ 要么加一个 worker 命令，
 要么先做 T1-06 的只读检查 worker。
 
+**stop 的重复读数（2026-10-26 晚）**：`m5.production_execution_backend`（含 stop 路径）`-Repeat 20` → **20/20 通过**，请求 `a21cf2191a9d4b10bab4727e43a7737a`。这是 stop 修复的稳定证据；`cli_e2e` 整体仍卡在 forget。
+
 **下一步（按顺序）**：① 给 worker 协议加一个只读的 forget 证明命令（bundle 存在 + file identity、
 writer lock 可取、匹配设备不存在）；② 服务侧实现 `prove_forget_safe` 并接到 tombstone 校验；
 ③ 客机跑 `-Repeat 20`。
