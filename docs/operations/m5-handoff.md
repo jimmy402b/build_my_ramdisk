@@ -1431,3 +1431,23 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
   每例跑完先 `Reset-M5Guest`。**`powerloss_verify` 永远单独看**（需要主机断电）。
 - **注意**：`cli_e2e` 在 05:17 那次 3 秒失败时，客机上有残留盘（已解释）；现在干净机上它是"卡住"还是
   "失败"未知——**先单独跑它**，并用 `C:\m5\runs\<work-root>.*.log` 与服务日志判断卡在哪一步。
+### 3.51 2026-10-27 06:45：**`cli_e2e` 单独跑也卡住 —— 这是回归，不是客机问题**
+
+- 客机：硬重启 → `Reset-M5Guest` → `RESET`（`mounted volumes: C:`），staging 成功，然后
+  请求 `b4c523cc…`（**只跑 `cli_e2e` 一例**）**15 分钟未完成**；它的基线是 **6 分钟**，
+  最近一次通过是 04:20 前后的 `gui_workflow`/其它 e2e。
+- **时间线**（今天最后几小时的改动，全部只有 unit/model 覆盖，没有 e2e 覆盖）：
+  1. 卷序列号纵切（`WorkerRuntimeObservation` / 两个投影 / 线格式 / renderer）；
+  2. `Uuid()` **默认构造改为 public**（为了让线格式结构可逐字段构造）；
+  3. `kProfileFixedBytes` +8；
+  4. 两个测试文件的修正（黄金样本、校验前提）——纯测试。
+- **最可疑的是第 2 条**：把一个"构造必须有身份"的类型放宽成可默认构造，**nil uuid 现在可以流进
+  任何逐字段构造的结构**（例如请求 id、profile id）。若某处现在发的是 nil，服务的等待/寻址行为会
+  与之前不同——这与"卡住而不是报错"的表现相符。
+- **下一步（按成本）**：
+  1. 在 `cli_e2e` 的失败点看服务日志：`C:\m5\runs\<work-root>.service.log`（每次迭代都会归档）；
+     若最后一行停在某个 `action-start` 或 `checkpoint` 前，就能直接定位；
+  2. 若确认与 nil uuid 有关：给 `Uuid` 加一个 `bool is_nil()` 并在**发出请求前**断言非 nil
+     （或在 `build_command_request` 里拒绝 nil request id），把"可默认构造"的放宽重新收窄；
+  3. 若与序列号字段有关：把该字段临时改回不发送，重跑 `cli_e2e` 二分。
+- **纪律重复一次**：**unit/model 全绿不能替代一次 e2e**——这次改动都有单元覆盖，但 e2e 卡住了。
