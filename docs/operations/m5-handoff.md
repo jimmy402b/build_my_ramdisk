@@ -1360,3 +1360,18 @@ Get-ChildItem C:\m5\control -Filter '*.request.ps1' | Remove-Item -Force
 - **下一步**：收这条结果；若卡住，把 integration 组再细分
   （`^integration\.m5\.`、`^integration\.m3\.`、`^integration\.m4\.`、其余），逐组计时——
   这正是 T4-04 "M4 回归"要用的分组口径。
+### 3.47 2026-10-27 05:20：integration 组**卡住**（30+ 分钟），按计划细分
+
+- 请求 `6f8fe429…`（`^integration\.`，51 例）自 04:52 起 **30 分钟未完成**，主机侧两次收集都超时。
+- 期望时间约 12 分钟（`cli_e2e` ≈6、`powerloss_prepare` ≈1、`powerloss_verify` ≤3、`install_uninstall` ≈1、
+  `gui_workflow` ≈0.5），所以这是**卡住**而不是慢。
+- **下一步（照 3.46 的计划细分，逐组计时）**：
+  ```powershell
+  -Filter '^integration\.m5\.'      # 5 例，含 cli_e2e / powerloss / install / gui
+  -Filter '^integration\.m3\.'
+  -Filter '^integration\.m4\.'
+  -Filter '^integration\.m1\.|^integration\.m2\.'
+  ```
+  卡在哪一组就单独跑那一条，并用它的 `C:\m5\control\run-<id>\*.stdout.txt` 与 `C:\m5\runs` 的日志定位。
+- **注意**：`integration.m5.powerloss_verify` **单独跑必然失败**（它需要主机先断电），
+  所以 m5 组的"预期"是 4 过 1 失败，不是全绿；这一点要写进 T4-04 的基线口径，否则会被误判为红。
