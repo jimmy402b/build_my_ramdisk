@@ -1515,3 +1515,28 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
   4. 若与今天的改动相关：**最先怀疑 `Uuid()` 默认构造放宽**（nil uuid 流进 worker 命令 → worker 拒绝/挂），
      验证方法是把该放宽**临时收回**（给需要默认构造的三个线格式结构改用 `std::optional<Uuid>`）
      再跑 `cli_e2e`。
+### 3.55 2026-10-27 07:10：`create-bundle` 超时的**根因在 worker 的候选盘枚举**
+
+`C:\m5\last-trace.log` 尾部（时间戳是同一台客机上的连续事件）：
+
+```text
+22:48:17.249Z enumerate_disk_candidates: opening the candidate
+22:50:17.137Z opstore.write: waiting for gate          ← 正好 120 s 之后
+```
+
+⇒ worker 在 **`enumerate_disk_candidates` 打开某个候选盘时阻塞了整整 120 秒**（正好是那个
+`pipe transfer exceeded its bounded wait` 的预算），期间不响应 `create-bundle`，于是服务判超时、
+留下 1 个 worker。
+
+这不是新现象：`m5-lessons.md` 里记过"打开每一个候选盘去问盘号，在设备正在退役的窗口里会阻塞约
+11 秒"（G4 延后的理由之一）。**这次是 120 秒**，因为客机上还有**上一次 `cli_e2e` 留下的 AIM 代理设备**
+——一个已经半死、又没被移除的设备会让 `CreateFile` 长时间挂住。
+
+**两条路，建议都做**：
+1. **客机侧（立即）**：`Reset-M5Guest.ps1` 增加"移除残留 AIM 设备"的能力（或在 e2e 前重启客机）。
+   目前它只清 profile/operation 记录与进程，**设备还在**。
+2. **产品侧（T4 应有）**：`enumerate_disk_candidates` 对**每个候选**的开盘操作加**有界超时**
+   （例如 2 s），并把超时的候选记为"跳过"而不是让整个枚举挂住——一个第三方的坏设备**不应该**
+   让我们的启动停 120 秒。这条应记入 T4 的遗留清单（属于"产品在恶劣设备环境下的健壮性"）。
+
+**验证方法（便宜）**：客机重启 → `Reset` → 单独跑 `cli_e2e`；若通过，则确认根因是残留设备而非代码。
