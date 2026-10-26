@@ -474,9 +474,18 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
         expected_bytes - extent_bytes > kPartitionOverheadAllowance ||
         _wcsicmp(actual_guid.c_str(), expected_guid.c_str()) != 0 ||
         actual.extents != volume.extents) {
-        std::wcerr << L"Diagnostic verify_volume: volume_guid="
-                   << actual.volume_guid << L" expected_guid="
-                   << volume.volume_guid << L" actual_disk="
+        // **Which clause refused, not just that one did.**  The guid and disk
+        // number matched when this last fired, so the reader was left with five
+        // possible reasons and no way to tell them apart.
+        std::wcerr << L"Diagnostic verify_volume: owned=" << actual.operation_owned
+                   << L" extents=" << actual.extents.size()
+                   << L" extents_equal=" << (actual.extents == volume.extents)
+                   << L" extent_bytes=" << extent_bytes
+                   << L" expected_bytes=" << expected_bytes
+                   << L" overhead_allowance=" << kPartitionOverheadAllowance
+                   << L" volume_guid=" << actual.volume_guid
+                   << L" expected_guid=" << volume.volume_guid
+                   << L" actual_disk="
                    << (actual.extents.empty() ? 0xFFFFFFFFu :
                        actual.extents.front().disk_number)
                    << L" expected_disk="
