@@ -1,4 +1,4 @@
-#include "src/cli/cli_renderer.h"
+﻿#include "src/cli/cli_renderer.h"
 
 #include "src/product/product_state.h"
 
@@ -10,14 +10,14 @@ namespace myrd::cli {
 namespace {
 
 std::string_view disposition_name(
-    const management::ServiceResponseDisposition disposition) noexcept {
+    const product::ServiceDisposition disposition) noexcept {
     switch (disposition) {
-    case management::ServiceResponseDisposition::completed: return "completed";
-    case management::ServiceResponseDisposition::operation_queued:
+    case product::ServiceDisposition::completed: return "completed";
+    case product::ServiceDisposition::operation_queued:
         return "operation queued";
-    case management::ServiceResponseDisposition::dry_run: return "dry run";
-    case management::ServiceResponseDisposition::wait_timeout: return "wait timed out";
-    case management::ServiceResponseDisposition::client_wait_cancelled:
+    case product::ServiceDisposition::dry_run: return "dry run";
+    case product::ServiceDisposition::wait_timeout: return "wait timed out";
+    case product::ServiceDisposition::client_wait_cancelled:
         return "wait cancelled";
     }
     return "unknown";
@@ -31,36 +31,36 @@ std::string_view lifecycle_name(const profile::ProfileLifecycle lifecycle) noexc
     return "unknown";
 }
 
-std::string operation_line(const management::ServiceOperationProjection& operation) {
+std::string operation_line(const product::ServiceOperationView& operation) {
     std::ostringstream text;
     text << "operation " << operation.operation_id.to_string() << ": ";
     switch (operation.state) {
-    case management::OperationState::queued: text << "queued"; break;
-    case management::OperationState::running: text << "running"; break;
-    case management::OperationState::reconciling: text << "reconciling"; break;
-    case management::OperationState::succeeded: text << "succeeded"; break;
-    case management::OperationState::failed: text << "failed"; break;
-    case management::OperationState::cancelled: text << "cancelled"; break;
+    case product::ServiceOperationState::queued: text << "queued"; break;
+    case product::ServiceOperationState::running: text << "running"; break;
+    case product::ServiceOperationState::reconciling: text << "reconciling"; break;
+    case product::ServiceOperationState::succeeded: text << "succeeded"; break;
+    case product::ServiceOperationState::failed: text << "failed"; break;
+    case product::ServiceOperationState::cancelled: text << "cancelled"; break;
     }
     if (!operation.phase.empty()) text << " (phase " << operation.phase << ')';
     if (operation.cancel_requested) text << " [cancel requested]";
     return text.str();
 }
 
-std::string profile_line(const management::ServiceProfileProjection& profile) {
+std::string profile_line(const product::ServiceDiskView& profile) {
     std::ostringstream text;
     text << profile.profile_id.to_string() << "  "
          << (profile.mount_target.has_value() ? profile.mount_target.value()
                                               : std::string("(no mount)"))
-         << "  " << lifecycle_name(profile.lifecycle) << "  "
+         << "  " << product::to_string(profile.lifecycle) << "  "
          // The verdict, not the durable claim: see the header.
-         << management::to_string(profile.aggregate) << "  runtime="
+         << product::to_string(profile.aggregate) << "  runtime="
          << product::to_string(profile.runtime) << "  activity="
          << product::to_string(profile.activity) << "  persistence="
          << product::to_string(profile.persistence) << "  health="
          << product::to_string(profile.health) << "  generation="
          << profile.confirmed_generation
-         // M5 §7: the memory the user came for.  `resident` is RAM the runtime holds,
+         // M5 搂7: the memory the user came for.  `resident` is RAM the runtime holds,
          // `budget` is what it was opened with; both are the worker's own gauges, and
          // both are zero for a disk that is not running.
          << "  mem=" << profile.resident_bytes << '/' << profile.budget_bytes;
@@ -156,25 +156,25 @@ CliExitCode exit_code_for(const management::ServiceResponseWire& response) {
 
     if (response.operation.has_value()) {
         switch (response.operation->state) {
-        case management::OperationState::failed:
-        case management::OperationState::cancelled:
+        case product::ServiceOperationState::failed:
+        case product::ServiceOperationState::cancelled:
             // An operation that ended badly is a product failure, whether the client
             // waited for it or asked afterwards.
             return CliExitCode::failure;
-        case management::OperationState::reconciling:
+        case product::ServiceOperationState::reconciling:
             // The service is still deciding whether a commit landed.  Saying
             // "succeeded" would claim something nobody knows yet, which is exactly the
             // rule "only a confirmed commit may be reported as success".
             return CliExitCode::indeterminate;
-        case management::OperationState::queued:
-        case management::OperationState::running:
-        case management::OperationState::succeeded:
+        case product::ServiceOperationState::queued:
+        case product::ServiceOperationState::running:
+        case product::ServiceOperationState::succeeded:
             break;
         }
     }
-    if (response.disposition == management::ServiceResponseDisposition::wait_timeout
+    if (response.disposition == product::ServiceDisposition::wait_timeout
         || response.disposition
-            == management::ServiceResponseDisposition::client_wait_cancelled) {
+            == product::ServiceDisposition::client_wait_cancelled) {
         return CliExitCode::indeterminate;
     }
     return CliExitCode::success;

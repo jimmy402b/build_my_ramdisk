@@ -328,6 +328,20 @@ target_link_libraries(myrd_product_ipc PUBLIC myrd_product_contracts myrd_common
 myrd_enable_warnings(myrd_product_ipc)
 myrd_assert_execution_boundary(myrd_product_ipc)
 
+# ---- The client half of the public protocol (Task T3-01) ---------------------
+# The wire shape a client reads, and the strict codec for it.  It depends on the contracts
+# and on the IPC framing -- never on `myrd_management`, `myrd_persistence`, the AIM proxy or
+# the driver -- because the GUI links this library and must not carry the service's execution
+# stack into a user's session.  The server-side projection (durable snapshot -> wire) stays in
+# the management library, which links this one.
+add_library(myrd_product_client STATIC
+    client/response_view.cpp client/response_view.h
+)
+target_include_directories(myrd_product_client PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_product_client PUBLIC myrd_product_ipc myrd_product_contracts)
+myrd_enable_warnings(myrd_product_client)
+myrd_assert_execution_boundary(myrd_product_client)
+
 # Binary MYRDPRF profile: codec, strict validation, atomic durable store.
 add_library(myrd_profile STATIC
     profile/profile_codec.cpp profile/profile_codec.h
@@ -373,7 +387,7 @@ target_include_directories(myrd_management PUBLIC "${CMAKE_SOURCE_DIR}")
 # speak to a worker at all without regaining the execution coupling the boundary
 # check exists to prevent.
 target_link_libraries(myrd_management PUBLIC
-    myrd_profile myrd_product_ipc myrd_product_contracts
+    myrd_profile myrd_product_ipc myrd_product_client myrd_product_contracts
     myrd_m5_worker_protocol myrd_common)
 myrd_enable_warnings(myrd_management)
 myrd_assert_execution_boundary(myrd_management)

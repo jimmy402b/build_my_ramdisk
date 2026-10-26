@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // **What a client is allowed to know, in a vocabulary that is not the service's.**
 //
@@ -27,6 +27,7 @@
 #include "src/product/uuid.h"
 
 #include <cstdint>
+#include <string_view>
 #include <optional>
 #include <string>
 
@@ -39,10 +40,12 @@ namespace myrd::product {
 // buy a state the strict decoder never produces (it rejects unknown enumerators rather than
 // inventing one).  Identical values mean the split can happen without touching a single byte
 // on the wire, which is the only way it can happen safely.
+// Two values, because a profile's durable lifecycle has two: it is provisioning until the disk
+// exists, and ready afterwards.  A third value here would be a client state the service can
+// never produce.
 enum class ServiceLifecycle : std::uint8_t {
     provisioning = 0,
     ready,
-    failed,
 };
 
 enum class ServiceRuntime : std::uint8_t {
@@ -104,6 +107,91 @@ enum class ServiceDisposition : std::uint8_t {
     client_wait_cancelled,
 };
 
+// The spellings a client shows.  Identical to the service's own (`product::to_string` over its
+// states), because a client that spells a state differently from the service is two products
+// wearing one name -- and the CLI's output is what the tests read.
+inline std::string_view to_string(ServiceAggregate value) noexcept {
+    switch (value) {
+    case ServiceAggregate::stopped_configured: return "stopped/configured";
+    case ServiceAggregate::running: return "running";
+    case ServiceAggregate::blocked_needs_attention: return "blocked/needs-attention";
+    case ServiceAggregate::failed: return "failed";
+    }
+    return "failed";
+}
+inline std::string_view to_string(ServiceRuntime value) noexcept {
+    switch (value) {
+    case ServiceRuntime::stopped: return "Stopped";
+    case ServiceRuntime::starting: return "Starting";
+    case ServiceRuntime::running: return "Running";
+    case ServiceRuntime::stopping: return "Stopping";
+    case ServiceRuntime::orphaned: return "Orphaned";
+    }
+    return "Stopped";
+}
+
+inline std::string_view to_string(ServiceActivity value) noexcept {
+    switch (value) {
+    case ServiceActivity::idle: return "Idle";
+    case ServiceActivity::provisioning: return "Provisioning";
+    case ServiceActivity::recovering: return "Recovering";
+    case ServiceActivity::checkpointing: return "Checkpointing";
+    case ServiceActivity::compacting: return "Compacting";
+    case ServiceActivity::resolving_commit: return "ResolvingCommit";
+    }
+    return "Idle";
+}
+
+inline std::string_view to_string(ServicePersistence value) noexcept {
+    switch (value) {
+    case ServicePersistence::clean: return "Clean";
+    case ServicePersistence::dirty: return "Dirty";
+    case ServicePersistence::persistence_blocked: return "PersistenceBlocked";
+    case ServicePersistence::commit_indeterminate: return "CommitIndeterminate";
+    }
+    return "PersistenceBlocked";
+}
+
+inline std::string_view to_string(ServiceHealth value) noexcept {
+    switch (value) {
+    case ServiceHealth::healthy: return "Healthy";
+    case ServiceHealth::degraded: return "Degraded";
+    case ServiceHealth::needs_attention: return "NeedsAttention";
+    case ServiceHealth::fatal: return "Fatal";
+    }
+    return "NeedsAttention";
+}
+
+inline std::string_view to_string(ServiceLifecycle value) noexcept {
+    switch (value) {
+    case ServiceLifecycle::provisioning: return "Provisioning";
+    case ServiceLifecycle::ready: return "Ready";
+    }
+    return "Provisioning";
+}
+
+inline std::string_view to_string(ServiceOperationState value) noexcept {
+    switch (value) {
+    case ServiceOperationState::queued: return "queued";
+    case ServiceOperationState::running: return "running";
+    case ServiceOperationState::reconciling: return "reconciling";
+    case ServiceOperationState::succeeded: return "succeeded";
+    case ServiceOperationState::failed: return "failed";
+    case ServiceOperationState::cancelled: return "cancelled";
+    }
+    return "failed";
+}
+
+inline std::string_view to_string(ServiceDisposition value) noexcept {
+    switch (value) {
+    case ServiceDisposition::completed: return "completed";
+    case ServiceDisposition::operation_queued: return "operation queued";
+    case ServiceDisposition::dry_run: return "dry run";
+    case ServiceDisposition::wait_timeout: return "wait timed out";
+    case ServiceDisposition::client_wait_cancelled: return "client wait cancelled";
+    }
+    return "completed";
+}
 // One disk, as a client sees it.  No bundle path, no journal, no owner, no host address --
 // the fields the design's section 10.3 names, plus the mount target, which is what a user
 // recognises a disk by.

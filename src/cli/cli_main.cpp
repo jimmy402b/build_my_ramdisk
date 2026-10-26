@@ -1,4 +1,4 @@
-#include "src/cli/cli_parser.h"
+﻿#include "src/cli/cli_parser.h"
 #include "src/cli/cli_renderer.h"
 
 #include "src/common/operation_context.h"
@@ -70,10 +70,10 @@ Exchange exchange(ipc::PublicPipeClient& client, const control::Command& command
     return result;
 }
 
-bool is_terminal(const management::OperationState state) noexcept {
-    return state == management::OperationState::succeeded
-        || state == management::OperationState::failed
-        || state == management::OperationState::cancelled;
+bool is_terminal(const product::ServiceOperationState state) noexcept {
+    return state == product::ServiceOperationState::succeeded
+        || state == product::ServiceOperationState::failed
+        || state == product::ServiceOperationState::cancelled;
 }
 
 // Waits for an admitted operation to reach a terminal state, or for the budget to run
@@ -106,7 +106,7 @@ int wait_for_operation(ipc::PublicPipeClient& client, const product::Uuid& opera
         // The wait's own timeout is not the operation's outcome; the loop asks again
         // until the caller's budget expires.
         if (response.disposition
-            == management::ServiceResponseDisposition::wait_timeout) {
+            == product::ServiceDisposition::wait_timeout) {
             continue;
         }
     }

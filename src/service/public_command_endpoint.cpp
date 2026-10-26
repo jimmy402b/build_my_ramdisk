@@ -1,4 +1,4 @@
-#include "src/service/public_command_endpoint.h"
+﻿#include "src/service/public_command_endpoint.h"
 
 #include "src/common/operation_context.h"
 #include "src/control/ipc_codec.h"
@@ -27,7 +27,7 @@ Result<ipc::Frame> refused(const ipc::Frame& request, const std::string& command
         management::ServiceResponseWire{
             request.request_id,
             command,
-            management::ServiceResponseDisposition::completed,
+            product::ServiceDisposition::completed,
             std::nullopt,
             std::nullopt,
             {},

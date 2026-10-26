@@ -1,4 +1,4 @@
-// The client half of the public protocol: the response document, the command line,
+﻿// The client half of the public protocol: the response document, the command line,
 // the rendering, and the exit codes.
 //
 // T1-05's acceptance has two halves.  What a device is needed for -- create, start,
@@ -34,20 +34,20 @@ product::Uuid uuid(const char* text) {
     return product::Uuid::parse(text).value();
 }
 
-management::ServiceProfileProjection profile(const char* id,
+product::ServiceDiskView profile(const char* id,
                                              const char* mount,
-                                             const management::AggregateStatus
+                                             const product::AggregateStatus
                                                  aggregate,
                                              const std::uint64_t resident = 0,
                                              const std::uint64_t budget = 0) {
-    auto projection = management::ServiceProfileProjection{
+    auto projection = product::ServiceDiskView{
         uuid(id),
-        profile::ProfileLifecycle::ready,
-        product::RuntimeState::running,
-        product::ActivityState::idle,
-        product::PersistenceState::clean,
-        product::HealthState::healthy,
-        aggregate,
+        product::ServiceLifecycle::ready,
+        product::ServiceRuntime::running,
+        product::ServiceActivity::idle,
+        product::ServicePersistence::clean,
+        product::ServiceHealth::healthy,
+        static_cast<product::ServiceAggregate>(aggregate),
         3,
         std::optional<std::string>(mount)};
     projection.resident_bytes = resident;
@@ -59,7 +59,7 @@ management::ServiceResponseWire list_response() {
     management::ServiceResponseWire wire{
         uuid("11111111-1111-4111-8111-111111111111"),
         "disk.list",
-        management::ServiceResponseDisposition::completed,
+        product::ServiceDisposition::completed,
         std::nullopt,
         std::nullopt,
         {profile("22222222-2222-4222-8222-222222222222", "X:",
@@ -100,7 +100,7 @@ TEST_CASE(cli_wire_round_trips_a_list_response) {
     REQUIRE(decoded.value().request_id == wire.request_id);
     REQUIRE_EQ(decoded.value().command, std::string("disk.list"));
     REQUIRE(decoded.value().disposition
-            == management::ServiceResponseDisposition::completed);
+            == product::ServiceDisposition::completed);
     REQUIRE_EQ(decoded.value().profiles.size(), 2ULL);
     REQUIRE(decoded.value().profiles.front().profile_id
             == wire.profiles.front().profile_id);
@@ -108,16 +108,16 @@ TEST_CASE(cli_wire_round_trips_a_list_response) {
     REQUIRE_EQ(decoded.value().profiles.front().mount_target.value(),
                std::string("X:"));
     REQUIRE(decoded.value().profiles.front().aggregate
-            == management::AggregateStatus::running);
+            == product::ServiceAggregate::running);
     REQUIRE_EQ(decoded.value().profiles.front().confirmed_generation, 3ULL);
-    // M5 §7: the memory gauges are part of the projection a client renders, so they
+    // M5 搂7: the memory gauges are part of the projection a client renders, so they
     // have to survive the codec.  The figures are the ones a measured run reported.
     REQUIRE_EQ(decoded.value().profiles.front().resident_bytes, 19'660'800ULL);
     REQUIRE_EQ(decoded.value().profiles.front().budget_bytes, 1'073'741'824ULL);
     // The second profile's verdict is what a client renders; a projection that lost it
     // would show a blocked disk as a healthy one.
     REQUIRE(decoded.value().profiles.back().aggregate
-            == management::AggregateStatus::blocked_needs_attention);
+            == product::ServiceAggregate::blocked_needs_attention);
 }
 
 TEST_CASE(cli_wire_round_trips_an_error_response_with_a_wide_message) {
@@ -128,7 +128,7 @@ TEST_CASE(cli_wire_round_trips_an_error_response_with_a_wide_message) {
     management::ServiceResponseWire wire{
         uuid("11111111-1111-4111-8111-111111111111"),
         "disk.create",
-        management::ServiceResponseDisposition::completed,
+        product::ServiceDisposition::completed,
         std::nullopt,
         std::nullopt,
         {},
@@ -343,7 +343,7 @@ TEST_CASE(cli_maps_responses_to_the_documented_exit_codes) {
         management::ServiceResponseWire wire{
             uuid("11111111-1111-4111-8111-111111111111"),
             "disk.start",
-            management::ServiceResponseDisposition::completed,
+            product::ServiceDisposition::completed,
             std::nullopt,
             std::nullopt,
             {},
@@ -369,10 +369,10 @@ TEST_CASE(cli_maps_responses_to_the_documented_exit_codes) {
 
     // An operation that ended badly is a failure even though the request succeeded.
     auto failed = list_response();
-    failed.operation = management::ServiceOperationProjection{
+    failed.operation = product::ServiceOperationView{
         uuid("44444444-4444-4444-8444-444444444444"),
         uuid("22222222-2222-4222-8222-222222222222"),
-        management::OperationState::failed,
+        product::ServiceOperationState::failed,
         "terminal",
         1,
         2,
@@ -383,19 +383,19 @@ TEST_CASE(cli_maps_responses_to_the_documented_exit_codes) {
     // Still deciding whether a commit landed: reporting success would claim something
     // nobody knows yet.
     auto reconciling = failed;
-    reconciling.operation->state = management::OperationState::reconciling;
+    reconciling.operation->state = product::ServiceOperationState::reconciling;
     REQUIRE(cli::exit_code_for(reconciling) == cli::CliExitCode::indeterminate);
 
     // A wait that timed out did not fail; it just did not finish.
     auto waiting = list_response();
-    waiting.disposition = management::ServiceResponseDisposition::wait_timeout;
+    waiting.disposition = product::ServiceDisposition::wait_timeout;
     REQUIRE(cli::exit_code_for(waiting) == cli::CliExitCode::indeterminate);
 
     // A queued operation is a success: the command was admitted and is running.
     auto queued = list_response();
-    queued.disposition = management::ServiceResponseDisposition::operation_queued;
+    queued.disposition = product::ServiceDisposition::operation_queued;
     queued.operation = failed.operation;
-    queued.operation->state = management::OperationState::running;
+    queued.operation->state = product::ServiceOperationState::running;
     REQUIRE(cli::exit_code_for(queued) == cli::CliExitCode::success);
 }
 
@@ -403,7 +403,7 @@ TEST_CASE(cli_renders_an_error_with_its_step_and_code) {
     management::ServiceResponseWire wire{
         uuid("11111111-1111-4111-8111-111111111111"),
         "disk.start",
-        management::ServiceResponseDisposition::completed,
+        product::ServiceDisposition::completed,
         std::nullopt,
         std::nullopt,
         {},
