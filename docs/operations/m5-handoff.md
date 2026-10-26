@@ -1821,3 +1821,24 @@ kind=7 disk.start phase=running  action=create-runtime code=21001 native=87
       .\tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^...$'
 断电: .\tools\m5vm\Test-M5PowerLoss.ps1 -SkipStage
 ```
+### 3.71 2026-10-27 08:45：**缺陷的确切位置找到了**（`service_worker_control.cpp` 的 GUID 比对）
+
+```cpp
+// src/management/service_worker_control.cpp 附近
+expected_volume = profile.volume_guid.value().to_string();     // ← 记录里的旧 GUID
+if (status.value().volume->volume_guid != expected_volume) break;   // ← 不一致就"放弃等待"
+```
+
+这解释了 3.69 的现象：断电容留后卷被**重建**，worker 报的是**新 GUID**；
+这段比对发现"不一致"就 `break`，于是后续流程**用记录里的旧 GUID**去
+`SetVolumeMountPointW` ⇒ **87（参数无效，因为那个卷 GUID 路径已不存在）**。
+
+**所以修复不是"重试挂载"，而是在这里承认"活动卷才是真相"**：
+1. 不一致时**不要 break**，把 `status.value().volume->volume_guid`（以及 disk_guid）**采纳**为活动身份；
+2. 把它**写回 profile 记录**（`volume_guid`、如需要还有 `gpt_disk_guid`）——否则每次恢复都重演；
+3. `disk_guid`（磁盘 GUID）在同一处比较里也有同样的问题，一并采纳；
+4. 采纳动作要落一条日志（`volume identity adopted after recovery: recorded=… live=…`），
+   这样下一次审计能看出"身份换过"。
+
+**验收**：`Reset` → `Test-M5PowerLoss.ps1 -SkipStage`，要求 `runtime=Running`、generation ≥ 提交值、
+标记字节一致、worker 恰好 1 个。
