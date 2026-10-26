@@ -1592,3 +1592,23 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 
 这三行就是 T4-04 "M4 回归"比较用的基线；`integration` 其余 4 例仍待逐例跑（`powerloss_verify` 单独必失，
 需主机断电，属预期）。
+### 3.59 2026-10-27 07:30：`install_uninstall` **9 s PASS**、`gui_workflow` **25 s PASS**
+
+- `^integration\.m5\.install_uninstall$`：请求 `ef240fb9…`，**9 s，1 of 1 passed**（比早前 37 s 更快：
+  干净客机 + 枚举加界）。
+- `^integration\.m5\.gui_workflow$`：请求 `ae6eb78d…`，**25 s，1 of 1 passed**。
+- ⇒ **`integration.m5` 组四例已各有通过读数**（`cli_e2e` 72/85 s、`install_uninstall` 9 s、
+  `gui_workflow` 25 s、`powerloss_prepare` 早前 52 s），只剩 `powerloss_verify`——它**必须由主机先断电**，
+  属于 T1-09 三段流程的一部分，单独跑必失，不计入红。
+
+**客机基线汇总（Release，干净启动）**：
+
+| 组/用例 | 用时 | 结果 |
+|---|---|---|
+| `^unit\.`（96） | 227 s | **96/96** |
+| `^model\.|^m5\.`（13） | 114 s | **13/13** |
+| `integration.m5.cli_e2e` | 72 s / 85 s | **PASS ×2（不重启）** |
+| `integration.m5.install_uninstall` | 9 s | **PASS** |
+| `integration.m5.gui_workflow` | 25 s | **PASS** |
+
+**这五行就是 T4-04 的 M4 回归基线**。`integration.m3`/`m4`/`m1`/`m2` 各组的读数仍待补（逐组跑即可）。
