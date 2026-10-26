@@ -354,6 +354,36 @@ ownership 判据（attach-only 不再要求 owned）、恢复路径先分配盘�
 
 ---
 
+### 3.13 当前真实位置（2026-10-26 晚，接 §3.12）
+
+**restart 已打通**：一次运行的服务日志显示 `disk.start` 的八个动作全部
+`action-result: completed` 并到达 terminal：
+
+```text
+create-runtime → recover-bundle → start-proxy → create-device →
+locate-physical-drive → verify-volume → assign-mount → readiness-io → terminal
+```
+
+**剩下的失败**：紧接着的**第二次 stop** 以终态失败结束（快速，不再挂 300 秒）：
+
+```text
+kind=7 command=disk.stop phase=terminal
+  message=terminal failure without a worker-action error; marker=flush
+```
+
+`marker` 是 `finalize_operation` 收到的终止标记，内容恰好是**动作名** `flush`——即这次
+stop 失败在 `flush` 这个动作上，且**不是 worker 动作返回的错误**（`action-start: flush`
+甚至没有写出来，说明失败发生在动作启动阶段，例如 runtime 未绑定）。
+
+**§3.12 的结论已被取代**：不再是 `remove_mount` 拒绝 dirty（`278d63e` 的
+flush-before-refusal 让那条不再触发），现在前移到 flush 本身。
+
+**下一步**：查 `service_core.cpp` 里"用动作名当 marker"的那个 finalize 调用点，
+确认第二次 stop 在 flush 阶段失败的具体原因（runtime 是否已绑定、卷锁是否在手），
+修完再单次 → `-Repeat 20`。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
