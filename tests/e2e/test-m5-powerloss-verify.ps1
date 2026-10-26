@@ -37,12 +37,29 @@ $statePath = 'C:\m5\powerloss-state.txt'
 if (-not (Test-Path -LiteralPath $statePath)) {
     Fail "no power-loss state at $statePath -- the prepare half did not run"
 }
-$state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-foreach ($key in @('profile_id', 'mount', 'generation', 'marker_payload')) {
-    if ($null -eq $state.$key) { Fail "the power-loss state has no $key" }
+# **Read tolerantly.**  Three attempts to carry this state across a power cut were defeated
+# by the file, not by the recovery: a BOM made the first key unreadable, and then
+# `ConvertFrom-Json` refused the same content it had written.  The values are four plain
+# strings and a number, so they are extracted with one regex that does not care whether the
+# file is JSON, key=value, UTF-8 with a BOM or UTF-16.
+$raw = Get-Content -LiteralPath $statePath -Raw
+$readState = {
+    param([string]$key)
+    $match = [regex]::Match($raw, '"' + $key + '"\s*:\s*"?([^",\r\n}]*)')
+    if ($match.Success) { return $match.Groups[1].Value.Trim() }
+    $match = [regex]::Match($raw, '(?m)^' + $key + '=(.*)$')
+    if ($match.Success) { return $match.Groups[1].Value.Trim() }
+    return $null
 }
-$mount = $state.mount
-$expectedGeneration = [uint64]$state.generation
+$profileId = & $readState 'profile_id'
+$mount = & $readState 'mount'
+$expectedGenerationText = & $readState 'generation'
+$markerPayload = & $readState 'marker_payload'
+if ($null -eq $profileId -or $null -eq $mount -or $null -eq $expectedGenerationText -or
+    $null -eq $markerPayload) {
+    Fail ("the power-loss state is unreadable; it contains:`n$raw")
+}
+$expectedGeneration = [uint64]$expectedGenerationText
 
 Write-Step 'the service came up without being started by this script'
 $answered = Wait-ForService 180
@@ -75,13 +92,13 @@ if ($generation -lt $expectedGeneration) {
 Write-Host "  recovered generation: $generation (last committed before the cut: $expectedGeneration)"
 
 Write-Step 'the committed bytes are intact'
-$marker = Join-Path $mount ($state.marker_path)
+$marker = Join-Path $mount (powerloss-marker.txt)
 if (-not (Test-Path -LiteralPath $marker)) {
     Fail "the committed marker file is gone: $marker"
 }
 $payload = Get-Content -LiteralPath $marker -Raw
-if ($payload -ne $state.marker_payload) {
-    Fail ("the committed marker contents changed:`n  expected: $($state.marker_payload)`n  found:    $payload")
+if ($payload -ne $markerPayload) {
+    Fail ("the committed marker contents changed:`n  expected: $($markerPayload)`n  found:    $payload")
 }
 Write-Host "  marker bytes match the pre-cut record ($($payload.Length) chars)"
 
@@ -105,14 +122,14 @@ $disks = @(Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction Stop |
 Write-Host "  workers: $($workers.Count); aim-backed disks: $($disks.Count)"
 
 Write-Step 'cleanup: stop and forget the disk, remove the service'
-$stop = Invoke-Cli @('disk', 'stop', $state.profile_id)
+$stop = Invoke-Cli @('disk', 'stop', $profileId)
 if ($stop.exit -ne 0) { Fail "disk stop failed: $($stop.output)" }
 $stopId = Get-UuidFromText $stop.output
 if ($null -eq $stopId) { Fail 'the stop carried no operation id' }
 $stopState = Wait-ForTerminal $stopId 300
 if ($stopState -ne 'succeeded') { Fail "the stop ended $stopState" }
 
-$profileId = $state.profile_id
+$profileId = $profileId
 $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId)
 if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
 $forgetId = Get-UuidFromText $forget.output
@@ -121,7 +138,7 @@ $forgetState = Wait-ForTerminal $forgetId 300
 if ($forgetState -ne 'succeeded') { Fail "the forget ended $forgetState" }
 Remove-ScService
 Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $state.bundle -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath  -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host 'PASS T1-09: the disk came back by itself at the committed generation'
 exit 0

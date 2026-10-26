@@ -595,6 +595,25 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
   判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
 - CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
 
+**2026-10-27 00:35 第四次读数（prepare 稳定通过，断电后客机本身有概率起不来）**
+
+- `prepare` 在干净客机上**连续两次通过**（请求 `d0667c91…` 50 s、`8eae57a7…` 52 s）：
+  装 auto-start 服务 → 建 30 s 间隔的盘 → `auto_start` → 写标记 → 等自动提交 → 落状态。
+- 状态文件改 JSON 后 `verify` 仍报 `invalid JSON primitive`（写读两端对编码的处理仍不一致），
+  于是**改成不依赖 JSON 的容错读取**（一条正则同时接受 JSON 与 `key=value`，失败时打印全文）。
+- **硬断电之后客机有概率起不来**：这次 600 s 内 SSH 无响应（累计第二次）。主机侧
+  `vmrun stop hard` + `start nogui` 之后 15 s 就好了，说明是**客机启动偶发挂死**，不是网络配置。
+  ⇒ 编排器需要：boot 等待超时后**自动断电重试一次**，并且提供 `-ResumeVerify`
+  （prepare 与断电都已完成、状态文件仍在时，只跑 verify，不重跑前两段）。
+- 断电后的那次 start 已经走完整真实序列（`6177380` 的修复），所以下一轮要看的只剩
+  **verify 的三条断言**能否读到正确的状态文件。
+
+**下一步（新会话从这里开始）**：
+1. 给编排器加 `-ResumeVerify`（跳过 prepare 与断电，直接 verify）与 boot 失败自动重试一次；
+2. 干净客机跑一次完整三段；verify 通过即 T1-09 完成（读数写进
+   `docs/validation/m5-t1-09-power-loss.md`，tasklist T1-09 → PASSED）；
+3. 然后进 T1-10。
+
 **2026-10-27 00:05 第三次读数（harness 已能判绿，客机会在两处卡死）**
 
 - harness 的判定修好了，两处都是**量出来的**：
