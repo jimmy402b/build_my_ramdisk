@@ -1935,3 +1935,23 @@ detail=set-mount failed first=87 second=87 guid=\\?\Volume{87792e03-9150-4130-ad
 读数要求 `runtime=Running`、generation ≥ 提交值、标记字节一致、worker 恰好 1 个。
 **若一次不到位**：先只做"第 1-2 步 + 日志"，因为**挂上**是阻塞项，"写回记录"可以随后再做
 （下次恢复会再采纳一次，那只影响日志噪声，不影响正确性）。
+### 3.77 2026-10-27 09:15：**T1-09 恢复通过**——用活动卷身份挂载
+
+```text
+prepare 1 of 1 passed (52 s, request f176d457…)
+hard cut
+verify  1 of 1 passed ( 5 s, request 4458cf90…)
+PASS integration.m5.powerloss: the disk came back by itself after a hard power cut
+```
+
+**修复**（`windows_volume.cpp` 的 `assign_drive_letter`）：两次 `SetVolumeMountPointW` 失败后，
+按 **extents**（跨重建仍然不变的身份）在活动卷里找候选；若**恰好一个**匹配且其卷名与记录不同，
+用**活动卷名**再 Set 一次 ⇒ 成功。
+
+**三层证据链**（本会话最后三小时）：
+1. 记录里的 `\\?\Volume{…}\` **格式合法**（3.75 的短诊断打出来了），所以 87 不是格式问题；
+2. `DeleteVolumeMountPointW` + 重试**无效**（3.69），所以不是盘符被占；
+3. 同一设备、同一 extents 上**存在一个不同 GUID 的活动卷** ⇒ 恢复时卷被重建，记录身份过期。
+
+**未做（记录在案）**：把采纳到的活动身份**写回 profile 记录**——目前每次恢复都会再采纳一次，
+只多一行日志，不影响正确性；写回是后续项。
