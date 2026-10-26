@@ -2125,3 +2125,18 @@ size=515
 **本轮已回退**：构建干净、22 用例全绿、工作树 0 改动、临时文件已删。
 
 **方法论（第三次同一个教训）**：**一个与源码矛盾的读数，先当作测量问题处理**。
+### 3.88 2026-10-27 10:30：两个常量澄清了算术，但 506 仍然对不上
+
+```text
+profile_types.h:18  inline constexpr std::uint32_t kProfileHeaderBytes     = 72;
+profile_types.h:20  inline constexpr std::uint32_t kProfileKnownFieldCount = 35;   ← 独立常量，**不派生**自 kLastKnownTag
+```
+
+- ⇒ 正常记录 = **72 字节头 + 115 字节 payload = 187**（与黄金样本一致）。
+- ⇒ 但"只改 `kLastKnownTag` 就变 506"**仍然无法用源码解释**：`kProfileKnownFieldCount` 是独立的 35，
+  编码器不读 `kLastKnownTag`，payload 里也不该出现 36 号字段。
+- **唯一还没排除的解释**：`probe.txt` 被**别的调用**写入（例如同一测试二进制里另一条用例也会编码 profile，
+  或我在多次实验间复用了同名文件）。**下一次用 `probe-<GUID>.txt` 并只写 `payload.size()`**（在编码器里临时打印），
+  与 `encoded.value().size()` 对照；**两者必须满足 `encoded = 72 + payload`**，否则说明我读的不是同一个对象。
+- **状态**：回退后构建干净、22 用例全绿、工作树 0 改动。**卷标编解码就此暂停**，
+  直到这个算术自洽——把一个 506 字节的样本冻成契约，是这一整段最不该做的事。
