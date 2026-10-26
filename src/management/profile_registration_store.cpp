@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cwctype>
 #include <filesystem>
 #include <limits>
@@ -175,12 +176,55 @@ Result<BundleFileIdentity> inspect_bundle_identity(
         FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
         nullptr);
     if (raw == INVALID_HANDLE_VALUE) {
+        // **Everything below is captured before anything else runs**, because
+        // `GetLastError` is thread-local and a single allocation between the call
+        // and the read can replace it with an unrelated code.
+        const DWORD open_error = GetLastError();
+        // A second, identical attempt separates "transient" from "invisible to
+        // this process".  The caller has just been told the bundle was created, so
+        // "not found" has to be explained by the path or by this process, and the
+        // retry is the cheapest way to tell which.
+        const HANDLE retry = CreateFileW(
+            terminated.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr);
+        const DWORD retry_error = GetLastError();
+        if (retry != INVALID_HANDLE_VALUE) static_cast<void>(CloseHandle(retry));
+        const DWORD attributes = GetFileAttributesW(terminated.c_str());
+        const DWORD attributes_error = GetLastError();
+
+        std::wstring detail =
+            L"The registered bundle cannot be opened for identity inspection: ";
+        detail += terminated;
+        if (detail.size() > 300) {
+            detail.resize(300);
+            detail += L"...";
+        }
+        detail += L" [pid=";
+        detail += std::to_wstring(GetCurrentProcessId());
+        detail += L" open_err=";
+        detail += std::to_wstring(open_error);
+        detail += L" retry_err=";
+        detail += std::to_wstring(retry_error);
+        detail += L" attr=0x";
+        {
+            wchar_t hex[16]{};
+            static_cast<void>(_snwprintf_s(
+                hex, _TRUNCATE, L"%08X",
+                static_cast<unsigned>(attributes)));
+            detail += hex;
+        }
+        detail += L" attr_err=";
+        detail += std::to_wstring(attributes_error);
+        detail += L"]";
         return Result<BundleFileIdentity>::failure(Error{
             ErrorDomain::win32,
             static_cast<std::uint32_t>(ServiceCoreError::dependency_failure),
             L"profile_registration.bundle_identity",
-            L"The registered bundle cannot be opened for identity inspection",
-            GetLastError()});
+            detail,
+            open_error});
     }
     struct HandleGuard final {
         HANDLE value;
@@ -1342,7 +1386,21 @@ Result<void> ensure_profile_unique(
                 L"The profile name, image, or bundle is already registered");
         }
         auto identity = inspect_bundle_identity(record.value().profile.bundle_path);
-        if (!identity.ok()) return Result<void>::failure(identity.error());
+        if (!identity.ok()) {
+            // **An unrelated profile's missing bundle must not block this one.**
+            // Identity equality needs both bundles open, so a path that cannot be
+            // opened cannot be the bundle being registered -- and the four checks
+            // above (name, image, path, mount target) already covered every way
+            // the two could actually collide.
+            //
+            // This used to propagate the raw error, which made one orphaned
+            // registration poison the whole service: measured on the guest, a
+            // profile left behind with a deleted bundle made every later
+            // `disk create` fail with `profile_registration.bundle_identity`
+            // naming *the new* bundle, while the missing path belonged to the old
+            // profile.
+            continue;
+        }
         if (identity.value() == bundle.file_identity)
             return store_error<void>(L"profile_registration.publish",
                 L"The bundle file identity is already registered");
