@@ -1375,3 +1375,31 @@ Get-ChildItem C:\m5\control -Filter '*.request.ps1' | Remove-Item -Force
   卡在哪一组就单独跑那一条，并用它的 `C:\m5\control\run-<id>\*.stdout.txt` 与 `C:\m5\runs` 的日志定位。
 - **注意**：`integration.m5.powerloss_verify` **单独跑必然失败**（它需要主机先断电），
   所以 m5 组的"预期"是 4 过 1 失败，不是全绿；这一点要写进 T4-04 的基线口径，否则会被误判为红。
+### 3.48 2026-10-27 05:50：integration 组卡住的真因是**客机残留**，不是产品
+
+`cli_e2e` 本次只跑了 3 秒，它的 stdout 说明了一切：
+
+```text
+service pid 3584 is answering: disk.list: completed
+b4e5bd61-d856-4e67-85bc-50f7fd8380fa  T:  Ready  stopped/configured
+        runtime=Stopped  activity=Idle  persistence=Dirty  health=Healthy
+        generation=31  mem=0/0
+1 disk(s)
+```
+
+客机上**留着一块之前运行没清掉的盘**（`T:`、generation 31、`persistence=Dirty`），
+并且还有一个 **03:54 启动的 `myrd-m5-worker` 孤儿进程**仍在。于是 e2e 在"已经有盘"的机器上建盘、
+做预检、等待终态，行为和干净机上完全不同——`powerloss_prepare` 迟了 30 分钟才开始，也是同一台机器
+被这些残留拖住的表现。
+
+**⇒ integration 组（以及任何 e2e）的前置条件必须写成脚本，不能靠"上次跑完应该清了"**：
+```powershell
+# 客机上，EncodedCommand
+Get-Process myrd* -ErrorAction SilentlyContinue | Stop-Process -Force
+foreach ($d in 'C:\ProgramData\MyRamDisk\profiles','C:\ProgramData\MyRamDisk\operations') {
+  if (Test-Path $d) { Get-ChildItem -Force $d | Remove-Item -Recurse -Force }
+}
+sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe stop MyRamDiskService; sc.exe delete MyRamDiskService }
+```
+**下一步**：把这段做成 `tools/m5vm/Reset-M5Guest.ps1`（或 `Invoke-M5Vm.ps1 -Reset`），
+**每次跑 e2e 组之前自动执行**，然后再跑 `^integration\.m5\.`。这样 integration 组的读数才有意义。
