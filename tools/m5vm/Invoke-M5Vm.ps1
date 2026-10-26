@@ -448,6 +448,12 @@ if ($Stage) {
     # BOM on the *second* line of another call and broke that one instead.  A static
     # .NET call has no cmdlet name to corrupt, so the fragility is removed rather
     # than worked around.
+    # **Create the directory before counting it.**  Measured: when the guest's worktree has no
+    # `out\` at all -- which happens after an archive extraction replaces it -- the count below
+    # throws DirectoryNotFoundException instead of answering zero, and staging fails with a
+    # message that looks like a build problem rather than a missing directory.  Creating it first
+    # makes the count mean what it says: "how many landed".
+    $null = Invoke-Remote -Script ("New-Item -ItemType Directory -Force -Path '$guestExeDir' | Out-Null; 'ready'")
     $countScript = "[System.IO.Directory]::GetFiles('$guestExeDir', '*.exe').Length"
     $guestExeLines = @(Invoke-Remote -Script $countScript)
     $guestExeCount = -1
