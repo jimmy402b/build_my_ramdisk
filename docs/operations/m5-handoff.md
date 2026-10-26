@@ -2231,3 +2231,28 @@ cmake --build out/build/msvc --config Release --clean-first
 - **状态**：回退后构建干净、22 用例全绿、工作树 0 改动、探针文件已删。
 - **卷标下一刀**：用 `edit` 工具（而不是 `.Replace`）落地，写完立刻 `Select-String` 验证，
   再构建——本轮之前那次 515 就是用 `edit` 打出来的，说明**工具可靠、方法差别在于是否验证**。
+### 3.94 2026-10-27 11:05：`payload_before=434` ——**与 187 字节的黄金无法共存**，怀疑链接了陈旧的 profile 库
+
+本轮探针（用 `edit` 工具落地、并用 `Select-String` 验证过）在**同一个**记录上给出：
+
+```text
+LABELPROBE label_bytes=1 payload_before=434
+LABELPROBE payload_after=443        ← 只发生了一次编码（枚举后只有一组值）
+```
+
+⇒ 我的标签字段只加了 **9 字节**（443-434），**编码器本身是正常的**；
+但 `payload_before=434` 意味着**不含标签时 payload 就是 434**，加 72 头 = **506**，
+而**提交态的黄金是 187 字节且测试 22/22 绿**。**两者不可能同时为真**。
+
+⇒ 最可信的解释：**测试可执行文件链接的 `myrd_profile` 库与我在改的源码不是同一份**
+（陈旧静态库/另一份构建树）。这与本会话反复出现的"陈旧产物"同源，但这次发生在**链接层**。
+
+**下一步（一条命令即可证实）**：
+```powershell
+# 显式重建库，再确认时间戳/哈希，然后才重建测试
+cmake --build out/build/msvc --config Release --target myrd_profile
+Get-ChildItem out/build/msvc/src/**/myrd_profile*  | Select-Object FullName,LastWriteTime
+```
+若库的时间戳早于 `profile_codec.cpp`，就是链接了旧库；`--clean-first` 全量构建后再测。
+
+**状态**：全部回退——构建干净、22 用例全绿、工作树 0 改动、探针文件已删。
