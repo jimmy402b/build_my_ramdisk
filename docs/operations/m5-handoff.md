@@ -295,6 +295,33 @@ installed service（SCM 安装/应答/停止/删除）。
 
 ---
 
+### 3.11 2026-10-26 收尾：restart 的现状（交接用，未完成）
+
+**已做完并提交**
+- `798b0d1` / `99ff704`：`volume_guid` 从 durable profile 一路传到 worker 的
+  `expected_volume_guid`（6 处接线，格式 `\\?\Volume{...}\`）。
+- 客机**正面证据**：`verify_volume` 打出的 `volume_guid` 与 `expected_guid` 一致、
+  `actual_disk=1 expected_disk=1` —— 卷是**按身份**认出来的，不再靠盘符。
+- `stp`：stop 在 checkpoint 未解决时改为**具名终态失败**，不 park（另一处 `resolving`
+  早前已改）；`verify_volume` 的诊断改为逐条列出每个可拒绝条件。
+- `8b8e8fa`：e2e 增加 restart 校验（start → 同盘符 → 读回 stop 前写的文件 → 再 stop）。
+
+**未验证 / 未解决**
+- restart **通过过一次**（运行 `efbf62fe`，其后第二次 stop 卡在 `reconciling`），
+  但之后两次在 `create-runtime` 又失败；最近一次（干净客机 `2bbffea`）仍失败且耗时
+  约 5 分钟，指向又一次 300 s 等待。**结论：restart 不稳定，未达到 T1-05 的验收线。**
+- 300 s 的 `reconciling` 等待仍会出现，说明还有 `park` 落点没改成终态失败
+  （`service_core.cpp:3950` 的回滚路径尚未处理）。
+
+**下一步（建议新会话开头就做）**
+1. 硬重启 + 清 `ProgramData\MyRamDisk\{profiles,operations}`；
+2. 单次运行并**完整**读该 run 的 `stderr`（不是 tail），确认失败是 `create-runtime` 还是
+   `reconciling`；
+3. 若是 3950 的 park → 同样改为具名终态失败；若是 `create-runtime` → 读
+   `Diagnostic verify_volume` 的逐条输出定位。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
