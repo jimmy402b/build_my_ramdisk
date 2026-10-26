@@ -1213,3 +1213,16 @@ SetVolumeLabel / volume_label / cluster_size / FMIFS / FormatEx / IOCTL_DISK_FOR
   3. 若某条 e2e 卡住，用它的 `run-<id>/*.stdout.txt` 与 `C:\m5\runs` 下的日志定位。
 - **注意**：`-Run -RequestId` 收结果这条路径本身是好的（本次它正确识别"已提交，不重复触发"），
   问题在客机。
+### 3.39 2026-10-27 03:20：staging 现在**跳过载荷拷贝**（不是失败），已加一道诚实的守卫
+
+- 客机硬重启后 `echo up` 15 s、`Get-Date` 1.3 s——**客机本身是好的**，之前的"变慢"是整套 160 例的
+  长运行期间出现的，分组跑之前不再整跑。
+- 但 `-Stage` 现在**不拷贝载荷**：本地打印 `staged 160 tests` 之后，**没有**出现以往那句
+  `staged to usr@myrd-vm:…`，客机侧 `out\build\msvc\tests\Release` 里 **0 个 exe**。
+  ⇒ 不是拷贝失败，是**拷贝那一步被跳过**了。
+- 我已加一道守卫（`tools/m5vm/Invoke-M5Vm.ps1`）：**拷贝前先在客机建好 tests 目录**，
+  这样"计数"这一步不会再抛 `DirectoryNotFound`（那会把问题伪装成编译失败），而是如实报
+  "0 个落地"。本次它如实报了，这正是我们要的行为。
+- **下一步**：读 `Invoke-M5Vm.ps1` 里"本地 staging → git metadata 拷贝"之间的那段，
+  找出本该执行载荷拷贝的分支为什么没走（可能是某个条件/开关在上次改动后不再成立）。
+  这条不修，任何客机测量都跑不起来。
