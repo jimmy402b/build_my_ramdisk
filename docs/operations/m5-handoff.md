@@ -1000,3 +1000,20 @@ CLI → control → wire → intent → profile → worker/卷 的完整纵切�
 **验收口径**（每件都要客机读数）：卷标/簇大小在 `disk show` 与 `fsutil fsinfo` 里一致；易失盘
 断电后**没有** checkpoint 可恢复（这是它的定义）；Load Only 成功的盘 `disk list` 显示只读且
 worker 只为读启动；导出的 VHDX 能被 `Mount-DiskImage` 挂上且根目录可读。
+### 3.27 2026-10-27 02:05：T4-02 第 1 步的实测勘察（比 3.26 的估计多一层）
+
+想把**卷序列号**显示出来，实际要动三层（`grep` 确认）：
+
+1. `WorkerRuntimeObservation`（`service_core.h`）**没有** `volume_serial` —— worker 协议里
+   **有**（`m5_worker_protocol.cpp:344/655` 的 `status.bundle->volume_serial`，来自
+   `m5_worker_runtime.cpp:258` 的 `evidence.volume_serial`），但**观测结构本身没带上来**；
+   ⇒ 追加字段并在 `windows_worker_observation` 里从 status 填；
+2. `product::ServiceDiskView`（`service_view.h`）没有该字段 ⇒ 追加，并让
+   `src/client/response_view.cpp` 的 encode/decode 各写/读一个 tag；
+3. `project_profile`（`management/service_response_wire.cpp`）从 `snapshot.runtime_observation` 填，
+   CLI renderer 打出来，配一个模型用例 + 一个编解码往返断言。
+
+**关于协议版本**：客户端与服务**始终一起发布**（设计如此，没有版本协商常量），所以追加字段
+**不需要** minor 号——这一点写在这里，免得下一个人以为要先加版本号而把它拆成两次发布。
+
+**这一步之后**才是卷标/簇大小（真正要动 profile schema），再之后是易失盘、Load Only、VHDX 导出。
