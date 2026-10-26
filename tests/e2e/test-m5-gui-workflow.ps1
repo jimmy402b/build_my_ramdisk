@@ -1,4 +1,4 @@
-﻿# T3-05: the GUI as a thin client, accepted on the guest.
+# T3-05: the GUI as a thin client, accepted on the guest.
 #
 # A desktop test cannot read a ListView belonging to another process, so the acceptance is split
 # into the two things that can be observed:
@@ -46,10 +46,33 @@ if ($null -eq $mount) { Fail 'no free drive letter' }
 $bundle = 'C:\m5\gui-e2e-bundle'
 Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue
 
+# **A clean record before the service starts.**  Measured: a profile left behind by an earlier run
+# (a disk that was created and never stopped) makes the service's own start fail -- it recovers the
+# durable state, tries to bring that disk back, and reports STOPPED when it cannot.  That is the
+# product behaving as designed; a test that wants a clean start has to give it one.
+foreach ($directory in @('C:\ProgramData\MyRamDisk\profiles', 'C:\ProgramData\MyRamDisk\operations')) {
+    if (Test-Path -LiteralPath $directory) {
+        Get-ChildItem -LiteralPath $directory -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 Write-Step 'install and start the service'
 Remove-ScService
 Invoke-Sc @('create', $serviceName, 'binPath=', $serviceExe, 'type=', 'own', 'start=', 'demand')
-Invoke-Sc @('start', $serviceName)
+# **`sc start` may answer 1053 while the service is still starting.**  Measured on the guest: the SCM
+# gives a service thirty seconds to report RUNNING, and this one does recovery, the startup sweep and
+# its auto-starts first.  1053 there means "not yet", not "failed" -- `Wait-ForService` below is what
+# decides.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $null = & sc.exe start $serviceName 2>&1
+        $startExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($startExit -ne 0 -and $startExit -ne 1053) {
+        Fail "sc start failed ($startExit)"
+    }
 $answered = Wait-ForService 90
 if ($null -eq $answered) { Fail "the service never answered:`n$((Get-ServiceState))" }
 Write-Host "  service answering; disk will be mounted at $mount"
