@@ -17,7 +17,7 @@ namespace {
 constexpr std::size_t kHashOffset = 40;
 constexpr std::size_t kHashBytes = 32;
 constexpr std::uint16_t kLastKnownTag =
-    static_cast<std::uint16_t>(ProfileFieldTag::volume_label);
+    static_cast<std::uint16_t>(ProfileFieldTag::index_headroom_percent);
 
 template <class T>
 Result<T> codec_failure(ProfileCodecError code, const wchar_t* operation,
@@ -207,7 +207,6 @@ bool expected_kind_and_length(const FieldView& field) noexcept {
     case ProfileFieldTag::bundle_path:
     case ProfileFieldTag::manifest_name:
     case ProfileFieldTag::mount_target:
-    case ProfileFieldTag::volume_label:
         return field.kind == ProfileFieldKind::utf8;
     case ProfileFieldTag::created_unix_ms:
     case ProfileFieldTag::logical_capacity:
@@ -345,14 +344,6 @@ Result<std::vector<std::byte>> encode_profile(const ProfileRecord& record) {
                        owner.value());
     append_bytes_field(payload, ProfileFieldTag::display_name, ProfileFieldKind::utf8,
                        name.value());
-    // Optional, and only written when there is something to write: an absent label and an empty label both mean
-    // "leave the volume as it is", so writing an empty field would say the same thing with more bytes.
-    if (value.volume_label.has_value() && !value.volume_label->empty()) {
-        auto label = encode_utf8(*value.volume_label, 64);
-        if (!label.ok()) return Result<std::vector<std::byte>>::failure(label.error());
-        append_bytes_field(payload, ProfileFieldTag::volume_label, ProfileFieldKind::utf8,
-                           label.value());
-    }
     append_u64_field(payload, ProfileFieldTag::created_unix_ms, value.created_unix_ms);
     append_u8_field(payload, ProfileFieldTag::lifecycle, ProfileFieldKind::u8,
                     static_cast<std::uint8_t>(value.lifecycle));
@@ -641,13 +632,6 @@ Result<ProfileRecord> decode_profile(std::span<const std::byte> bytes) {
             read_u32(field(ProfileFieldTag::reclaimable_percent).value, 0),
             read_u32(field(ProfileFieldTag::checkpoint_count_threshold).value, 0),
             read_u32(field(ProfileFieldTag::index_headroom_percent).value, 0)}};
-    // A record written before this tag existed has no bytes here, which reads as "no label" -- the same meaning as
-    // a create that never asked for one.
-    std::optional<std::wstring> volume_label;
-    if (const auto& label_bytes = field(ProfileFieldTag::volume_label).value; !label_bytes.empty()) {
-        auto label = decode_utf8(label_bytes, 64);
-        if (label.ok() && !label.value().empty()) volume_label = label.move_value();
-    }
     return Result<ProfileRecord>::success(
         ProfileRecord{revision, std::move(decoded)});
 }
