@@ -2985,7 +2985,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
         && operation.value().command_scope == "disk.start") {
         auto queued_profile = profiles_.load(operation.value().profile_id);
         if (!queued_profile.ok()) {
-            return Result<OperationRecord>::failure(queued_profile.error());
+            // **Site is part of the finding.**  Every one of these recoveries
+            // reports the same bare "profile is not registered", so a reading
+            // that does not say which recovery it was cannot be acted on.
+            return Result<OperationRecord>::failure(service_error(
+                ServiceCoreError::operation_invalid,
+                L"service_core.recover_absent_profile",
+                L"A recovered operation names a profile that is not registered "
+                L"[site=queued-start]"));
         }
         const auto resumed_plan = plan_command(
             queued_profile.value().state, ManagementCommand::start);
@@ -3095,7 +3102,11 @@ Result<OperationRecord> ServiceCore::execute_operation(
             ? profiles_.load_repair_candidate(operation.value().profile_id)
             : profiles_.load(operation.value().profile_id);
         if (!profile.ok()) {
-            return Result<OperationRecord>::failure(profile.error());
+            return Result<OperationRecord>::failure(service_error(
+                ServiceCoreError::operation_invalid,
+                L"service_core.recover_absent_profile",
+                L"A recovered operation names a profile that is not registered "
+                L"[site=execute]"));
         }
         current_profile = profile.move_value();
     } else if (pending_execution->restart_recovered) {
