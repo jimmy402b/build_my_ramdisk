@@ -78,6 +78,12 @@ struct DiskCreateCommand {
     std::optional<std::uint64_t> memory_hard_limit_bytes;
     std::optional<product::CheckpointInterval> checkpoint_interval;
     std::optional<OptionalSize> dirty_threshold;
+    // The volume label written after the volume is mounted (T4-02).  Empty means "leave the default".
+    //
+    // It is a *create* option and not a profile field only for now: the create path is where a user names a disk,
+    // and the label has to be applied to the volume the worker just mounted -- not to a record that may describe a
+    // volume which no longer exists.
+    std::optional<std::wstring> volume_label;
 };
 
 using Command = std::variant<StatusCommand, DiskListCommand, DiskShowCommand,
