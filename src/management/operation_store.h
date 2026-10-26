@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "src/common/result.h"
 #include "src/profile/profile_store.h"
+#include "src/product/service_status.h"
 #include "src/product/uuid.h"
 
 #include <array>
@@ -30,14 +31,9 @@ inline constexpr std::uint64_t kOperationRetentionMilliseconds =
     7ULL * 24ULL * 60ULL * 60ULL * 1000ULL;
 inline constexpr std::size_t kOperationMaximumTerminalRecords = 10'000;
 
-enum class OperationState : std::uint8_t {
-    queued = 0,
-    running = 1,
-    reconciling = 2,
-    succeeded = 3,
-    failed = 4,
-    cancelled = 5,
-};
+// Moved to the contracts library in T3-01; `operation show` is a client command, so the state
+// it reports is not a service-internal notion.  Re-exported for existing call sites.
+using product::OperationState;
 
 enum class OperationStoreError : std::uint32_t {
     invalid_size = 0x5101,

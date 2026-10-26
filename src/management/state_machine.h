@@ -1,6 +1,7 @@
-#pragma once
+﻿#pragma once
 
 #include "src/product/product_state.h"
+#include "src/product/service_status.h"
 #include "src/profile/profile_types.h"
 
 #include <array>
@@ -116,15 +117,13 @@ struct ProfileState final {
 // Read-only service-facing projection.  ProfileState remains the sole
 // durable authority; this enum is deliberately derived and contains no
 // additional lifecycle state.
-enum class AggregateStatus : std::uint8_t {
-    stopped_configured = 0,
-    running,
-    blocked_needs_attention,
-    failed,
-};
+// Moved to the contracts library in T3-01: the verdict is what every client renders, so it
+// cannot live in a header a client is forbidden to include.  Re-exported here so nothing that
+// already names `management::AggregateStatus` had to change.
+using product::AggregateStatus;
+using product::to_string;
 
 AggregateStatus aggregate_status(const ProfileState& state) noexcept;
-std::string_view to_string(AggregateStatus status) noexcept;
 
 enum class TransitionDisposition : std::uint8_t {
     allowed = 0,

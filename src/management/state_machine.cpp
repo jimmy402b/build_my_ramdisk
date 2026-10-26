@@ -1,4 +1,4 @@
-#include "src/management/state_machine.h"
+﻿#include "src/management/state_machine.h"
 
 #include <algorithm>
 #include <array>
@@ -138,16 +138,6 @@ AggregateStatus aggregate_status(const ProfileState& state) noexcept {
     return AggregateStatus::stopped_configured;
 }
 
-std::string_view to_string(AggregateStatus status) noexcept {
-    switch (status) {
-    case AggregateStatus::stopped_configured: return "stopped/configured";
-    case AggregateStatus::running: return "running";
-    case AggregateStatus::blocked_needs_attention:
-        return "blocked/needs-attention";
-    case AggregateStatus::failed: return "failed";
-    }
-    return "failed";
-}
 
 bool is_valid(const ProfileState& state) noexcept {
     if (!product::is_valid(state.disk)) return false;

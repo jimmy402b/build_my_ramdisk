@@ -304,6 +304,7 @@ add_library(myrd_product_contracts STATIC
     product/product_state.cpp product/product_state.h
     product/product_version.h
     product/quantity_parser.cpp product/quantity_parser.h
+    product/service_status.h
     product/service_view.cpp product/service_view.h
     product/uuid.cpp product/uuid.h
 )
