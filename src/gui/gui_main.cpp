@@ -20,6 +20,8 @@
 #include "src/gui/gui_view_model.h"
 
 #include <chrono>
+#include <cstdio>
+#include <cwchar>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -380,9 +382,36 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 
 } // namespace
 
+// **`--self-check`: the same client and the same view model, without a window.**
+//
+// T3-05 asks the guest to accept the GUI as a thin client.  A desktop test cannot read a ListView
+// from another process, so the readable half is this mode: it asks the service for its disks
+// through `gui_client` and formats them through `gui_view_model`, exactly as the window does, and
+// prints what it got.  The window itself is then accepted by existing, being alive, and owning a
+// window with the product's title -- facts this mode cannot fake.
+int run_self_check() {
+    const auto snapshot = myrd::gui::load_disks(std::chrono::milliseconds{5000});
+    if (!snapshot.unavailable_reason.empty()) {
+        std::printf("self-check: unavailable: %s\n", snapshot.unavailable_reason.c_str());
+        std::fflush(stdout);
+        return 3;
+    }
+    const auto rows = myrd::gui::make_disk_rows(snapshot.disks);
+    std::printf("self-check: %zu disk(s)\n", rows.size());
+    for (const auto& row : rows) {
+        std::printf("  %s  %s  %s  %s  %s\n", row.mount.c_str(), row.verdict.c_str(),
+                    row.runtime.c_str(), row.generation.c_str(), row.memory.c_str());
+    }
+    std::printf("tray: %s\n", myrd::gui::tray_summary(rows).c_str());
+    std::fflush(stdout);
+    return 0;
+}
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     g_instance = instance;
-
+    // A GUI process started with `--self-check` prints and exits; everything else is the window.
+    if (std::wcsstr(GetCommandLineW(), L"--self-check") != nullptr) {
+        return run_self_check();
+    }
     INITCOMMONCONTROLSEX controls{};
     controls.dwSize = sizeof(controls);
     controls.dwICC = ICC_LISTVIEW_CLASSES;

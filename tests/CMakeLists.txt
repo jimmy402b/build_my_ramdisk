@@ -2117,3 +2117,14 @@ add_executable(myrd_m5_gui_tests
 target_link_libraries(myrd_m5_gui_tests PRIVATE myrd_gui_view_model)
 target_include_directories(myrd_m5_gui_tests PRIVATE "${CMAKE_SOURCE_DIR}")
 add_test(NAME m5.gui COMMAND myrd_m5_gui_tests)
+# ---- The GUI as a thin client, on the guest (Task T3-05) ---------------------
+# The window needs a desktop and the client needs the real service, so this is a guest case like
+# the CLI e2e.  It creates a disk, asks the GUI to report through the same code the window uses,
+# and then proves the window exists and stays up.
+add_test(
+    NAME integration.m5.gui_workflow
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-gui-workflow.ps1")
+set_tests_properties(integration.m5.gui_workflow PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 900)
