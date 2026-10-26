@@ -382,9 +382,19 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Remove-Item -LiteralPath $probeFile -Force
     Set-Content -LiteralPath (Join-Path $mount '\m5-cli-e2e-after.txt') -Value 'after checkpoint' -Encoding utf8
 
-    $stop = Invoke-Cli @('disk', 'stop', $profileName, '--wait')
+    # **Observed, not waited on.**  `--wait` goes through `operation wait`, which
+    # is the client-side defect `Wait-ForTerminal` already documents: about thirty
+    # seconds in it reports "the control pipe exchange failed" while the service
+    # log shows the stop completing (checkpoint published, execute returned).  The
+    # stop that "failed" here had in fact succeeded.  Same pattern as create: ask
+    # for the operation id, then poll the command that works.
+    $stop = Invoke-Cli @('disk', 'stop', $profileName)
     if ($stop.exit -ne 0) { Fail "disk stop failed: $($stop.output)" }
     Write-Host "  $($stop.output.Trim())"
+    $stopId = Get-UuidFromText $stop.output
+    if ($null -eq $stopId) { Fail 'the stop response carried no operation identifier' }
+    $stopState = Wait-ForTerminal $stopId 300
+    if ($stopState -ne 'succeeded') { Fail "the stop ended $stopState" }
     if (Test-Path -LiteralPath ($mount + '\')) {
         Fail "the volume is still mounted at $mount after a successful stop"
     }
