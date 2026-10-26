@@ -1073,3 +1073,14 @@ tag 与 length**，以及 `decode_profile` 收到 payload 的**首 8 字节十�
    `put_u64(out, profile.volume_serial);`（期望尾部 12 → **20**）；
 2. `decode_profile`：在 `budget_bytes` 之后声明并读 `volume_serial`（期望 payload 51 → **59**）；
 3. `ServiceDiskView`/`ServiceProfileProjection` 各加字段、`project_profile` 填、CLI 打 `serial=`。
+### 3.31 2026-10-27 02:45：卷序列号这条线**通了**（本机绿），客机读数欠一次干净机
+
+- `a0bd1e9`：序列号穿过观测/两个投影/线格式到 renderer，`disk list` 与 GUI 行都显示
+  `serial=A1B2-C3D4`（没有卷时**不显示**，GUI 自检显示 `serial=-`）；新增模型用例钉住往返与渲染；
+  `--clean-first` + 八套件全绿。
+- **元凶**：`kProfileFixedBytes` 这个**最小 payload 长度**守卫数的是旧布局（`6+8+16+1+8+8+2`），
+  常量注释里已写明它值两次失败。
+- **客机读数没拿到**：`integration.m5.gui_workflow` 3.5 秒失败——客机上还留着 T4-01 装的
+  `MyRamDiskService`，两个服务不能同时拥有公开管道。**先卸载/重启再跑**。
+- **下一步**：干净客机跑一次 `gui_workflow`（顺带就是序列号的客机读数），然后进 T4-02 第 2 步
+  （卷标 / 簇大小：intent → command → codec → CLI → profile 追加字段 → 卷格式化）。
