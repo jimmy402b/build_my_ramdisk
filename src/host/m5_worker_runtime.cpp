@@ -310,14 +310,19 @@ Result<void> DiskWorkerRuntime::start() {
             L"DiskWorkerRuntime::start",
             L"a new bundle cannot be created without the image it must hold"));
     }
-    impl.adapter = std::make_unique<ProductionRuntimeAdapter>(
-        ProductionRuntimeAdapter::Config{
+    ProductionRuntimeAdapter::Config adapter_config{
             impl.config.bundle, impl.config.virtual_bytes,
             impl.config.drive_letter, impl.config.owner_token, 0,
             impl.config.image_id,
             // Only a provision creates a volume.  Recover and reclaim attach to one that already exists,
             // so neither needs the physical drive located -- and locating it is what blocked.
-            impl.config.volume_mode != WorkerVolumeMode::provision_new});
+            impl.config.volume_mode != WorkerVolumeMode::provision_new};
+    // The durable identity, when the launch carried one, is what lets a restart
+    // recognise its unlettered volume; without it the letter filter decides.
+    if (!impl.config.volume_guid.empty()) {
+        adapter_config.expected_volume_guid = impl.config.volume_guid;
+    }
+    impl.adapter = std::make_unique<ProductionRuntimeAdapter>(std::move(adapter_config));
     RuntimeAdapterDependencies dependencies{
         impl.config.bundle,
         impl.config.virtual_bytes,

@@ -144,7 +144,14 @@ Result<WorkerLaunchRequest> make_launch_request(
         record.lifecycle == profile::ProfileLifecycle::provisioning
             ? m5::WorkerVolumeMode::provision_new
             : m5::WorkerVolumeMode::adopt_existing};
-    return Result<WorkerLaunchRequest>::success(std::move(request));
+    // `\\?\Volume{...}\` -- the shape `enumerate_native_volumes` produces.  The
+    // selection compares with `_wcsicmp` and strips only a trailing backslash, so a
+    // bare uuid matches nothing and falls back to the letter filter.
+    if (record.volume_guid.has_value()) {
+        const auto text = record.volume_guid->to_string();
+        request.volume_guid =
+            L"\\\\?\\Volume{" + std::wstring(text.begin(), text.end()) + L"}\\";
+    }    return Result<WorkerLaunchRequest>::success(std::move(request));
 }
 
 Result<WorkerLaunchRequest> make_launch_request(

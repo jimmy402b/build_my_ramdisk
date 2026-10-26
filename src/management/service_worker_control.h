@@ -225,6 +225,10 @@ struct WorkerLaunchRequest final {
     // asks for a new volume; every launch for an existing profile adopts the one
     // it has.  `inspect_bundle` runs neither.
     m5::WorkerVolumeMode volume_mode{m5::WorkerVolumeMode::adopt_existing};
+    // The volume the durable profile recorded.  A restart of a stopped disk has
+    // to recognise it with no drive letter, and the selection filters on the
+    // letter first, so this is what lets the durable identity decide.
+    std::wstring volume_guid;
 };
 
 // The two translations into a launch request.

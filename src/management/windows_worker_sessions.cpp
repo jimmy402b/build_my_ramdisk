@@ -57,6 +57,7 @@ WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
     }
 
     m5::WorkerLaunchSpec spec{request.profile_id, request.profile_revision};
+    spec.volume_guid = request.volume_guid;
     spec.bundle_path = request.bundle_path;
     // Absent for an import, and absent is a different instruction from a zero
     // uuid: the worker adopts whatever the bundle holds instead of refusing one

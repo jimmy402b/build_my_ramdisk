@@ -25,6 +25,7 @@
 namespace myrd::m5 {
 
 struct WorkerRuntimeConfig final {
+    std::wstring volume_guid;
     std::filesystem::path bundle;
     std::string manifest_name;
     // The image this bundle holds, or must be created to hold.
