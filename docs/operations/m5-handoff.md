@@ -1842,3 +1842,20 @@ if (status.value().volume->volume_guid != expected_volume) break;   // ← 不�
 
 **验收**：`Reset` → `Test-M5PowerLoss.ps1 -SkipStage`，要求 `runtime=Running`、generation ≥ 提交值、
 标记字节一致、worker 恰好 1 个。
+### 3.72 2026-10-27 08:50：3.71 的前提**可能不成立**，先查"GUID 文本形态"再动手
+
+复查代码后发现 3.71 的推断缺一步证据：服务日志里**没有**"身份不一致"那条，说明比对大概率**通过了**。
+于是真问题回到"87 到底是什么"，而最可能的是**传给 `SetVolumeMountPointW` 的卷名形态不对**：
+
+- `fill_persistent_identity()`（`windows_volume.cpp`）把卷身份存成**裸 GUID 文本**
+  （`\\?\Volume{xxxxxxxx-…}\` 里抽出中间那段，小写），用于**比较**；
+- 而 `SetVolumeMountPointW` 要的是**完整卷名** `\\?\Volume{xxxxxxxx-….}\`；
+- `assign_drive_letter()` 里那句 `GetVolumeNameForVolumeMountPointW` 拿到的是**完整名**，
+  与裸 GUID 比较（去掉尾部反斜杠）**永远不会相等**——除非 `Win32VolumeAdapter` 自己的
+  `ProductVolume::volume_guid`（`std::wstring`，与 identity 的那个 `std::string` 是**两个不同字段**）
+  里存的是完整名。
+
+**⇒ 第一件事是**：读 `Win32VolumeAdapter::ProductVolume` 的构造处，确认 `volume_guid` 到底是
+裸 GUID 还是 `\\?\Volume{…}\`。若是裸的，**修复就是把裸 GUID 包成完整卷名再传给
+`SetVolumeMountPointW`**（`L"\\\\?\\Volume{" + guid + L"}\\"`），而不是加超时或重试。
+`ERROR_INVALID_PARAMETER (87)` 正是"卷名格式非法"的返回值，与本假设一致。
