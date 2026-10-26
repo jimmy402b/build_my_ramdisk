@@ -4823,6 +4823,24 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 if (stop_operation && current_profile.has_value()
                     && current_profile->stop.phase
                         >= StopDurablePhase::removal_boundary) {
+                    // **A dirty final checkpoint can never dismantle.**
+                    //
+                    // `resolving` means the final checkpoint committed but left
+                    // writes behind; the removal guard refuses a dirty runtime,
+                    // and a parked operation only advances on the next service
+                    // start -- so it hung for the whole operation budget and left
+                    // a worker behind (measured: 2 of 20 repeats).  Ending in a
+                    // terminal failure with a name is what "needs attention"
+                    // means; parking is not.
+                    if (current_profile->stop.phase
+                        == StopDurablePhase::resolving) {
+                        return finalize_operation(
+                            current_operation, current_profile, pending_plan,
+                            CompletionOutcome::transient_failure,
+                            OperationState::failed,
+                            {std::byte{'d'}, std::byte{'i'}, std::byte{'r'},
+                             std::byte{'t'}, std::byte{'y'}});
+                    }
                     return park_stop_reconciliation();
                 }
                 if (action == ActionKind::checkpoint
