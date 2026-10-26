@@ -1878,3 +1878,15 @@ action=create-runtime code=21001 native=87 step=assign_drive_letter detail=SetVo
 
 **这一条比任何代码修改都优先**：本会话已经两次因为"以为跑的是新二进制"而误判
 （陈旧对象、`Select-Object -Last 1` 吞掉 staging 错误），第三次的代价是**改错地方**。
+### 3.74 2026-10-27 09:00：**新诊断字符串在 worker 里，但日志在 `T:\` 处被截断**
+
+- 已确认（`certutil` 对比）：客机 `myrd-m5-worker.exe` = 本地新构建（`91113590…`，07:24），
+  **不是旧二进制**；`myrd-service.exe` 里没有该字符串（符合预期——动作在 worker 侧执行）。
+- 但日志行仍是 `detail=SetVolumeMountPointW failed for T:\` 就结束，**没有 ` at <GUID> (first error N)`**。
+  我的 `detail` 是 `std::wstring` 拼接，不会被 `\0` 截断 ⇒ **是日志行被截断**（写日志的缓冲/长度上限），
+  恰好切在 `T:\` 之后。
+- **下一步（一行改动）**：把诊断**缩短**到能在同一行放下——只放 GUID 与错误码，不放 `T:\` 路径，
+  例如 `mount=T: guid=<短> first=<N>`；或让 logger 支持第二行。**然后在下次跑时读取 GUID 形态**，
+  立刻可判定 3.71/3.72 的两种假设（裸 GUID vs 完整卷名）哪一个成立。
+- **注意**：这次终于排除了"跑旧二进制"这个反复出现的干扰项（哈希对齐），
+  所以下一次的读数就是可信的产品读数。
