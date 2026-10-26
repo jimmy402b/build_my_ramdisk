@@ -1970,3 +1970,14 @@ PASS integration.m5.powerloss: the disk came back by itself after a hard power c
      `m4_profile_codec_tests.cpp` 的黄金样本更新——今天已付过这次学费）；
   4. worker 在 `readiness-io` 之后调 `SetVolumeLabelW`；失败**不**让 start 失败，但要记日志；
   5. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行。
+### 3.79 2026-10-27 09:35：卷标纵切再进一层（intent + 相等性），CLI 入口仍关闭
+
+- `src/control/command.h`：`DiskCreateCommand::volume_label`（3.78）。
+- `src/control/ipc_codec.cpp`：字段 11 双向编解码 + 边界校验（33 字符在边界被拒），描述符字段数 10 → 11。
+- `src/management/service_core.h`：`LifecycleOperationIntent::volume_label`，**声明在最后**，
+  使既有的按位置初始化全部保持原义。
+- `src/management/service_core.cpp`：`lifecycle_intent_equal` **比较该字段**——只差标签的两个 create
+  不是同一个请求，若被判相等，一个请求可能被另一个的操作结果回答。
+- **CLI 仍不接受 `--volume-label`**（3.78 的决定保持）：管线通了、门锁着，直到服务与 worker 能兑现。
+- **下一步**：`Profile` tag 36（记得同时更新 `m4_profile_codec_tests.cpp` 的黄金样本）→ worker 在
+  `readiness-io` 后 `SetVolumeLabelW` → 再把 CLI 选项加回 → 客机 `fsutil fsinfo volumeinfo` 读数。
