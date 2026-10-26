@@ -899,3 +899,16 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>
 
 **T3 验收口径**：GUI 在客机上能列出盘/内存/generation；创建/启动/停止/checkpoint 可用且长操作
 期间界面不假死；三处确认流分别出现；未提权时只读。
+---
+
+### 3.23 2026-10-27 01:40：T3-01…T3-04 完成，T3-05 待客机重跑
+
+- **T3-01 完成**：客户端边界（`myrd_product_client` + 闭包检查，已证明能失败）。
+- **T3-02 完成**：`myrd-gui.exe`（列表 + 托盘 + 3 秒刷新）；`aggregate` 是唯一判定（有测试）。
+- **T3-03/T3-04 完成**：命令在**独立线程**发出（界面不假死）、进度跟操作状态并在终态停止、
+  三处确认流（stop 仅在检查点未确认时、forget 需回显 uuid、权限拒绝给指令）。
+- **T3-05 进行中**：`integration.m5.gui_workflow`（客机）已注册（159 例）。首次运行：服务装好并
+  应答，但**建盘失败**（`the create ended failed`）——同一台客机跑了一整晚断电实验后的残留。
+  **下一步：硬重启客机再跑一次**；若仍失败，先看 `disk list` 与 `C:\ProgramData\MyRamDisk\logs\service.log`。
+
+**剩余**：T3-05 客机通过 → T4（安装/升级/卸载 + T4-04 release manifest 冻结）。
