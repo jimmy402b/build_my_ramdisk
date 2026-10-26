@@ -138,16 +138,27 @@ public:
     explicit Profiles(ManagedProfileSnapshot snapshot)
         : snapshot_(std::move(snapshot)) {}
 
+    // Production resolves a profile by its display name **or** its uuid -- the service's
+    // own policy actions address a profile by uuid, and so does anything a client names
+    // by identifier.  This double originally knew only the display name, which made
+    // every service-internal dispatch look like a request about an unknown profile.
+    static bool names_profile(const ManagedProfileSnapshot& snapshot,
+                              const std::wstring_view target) {
+        if (target == snapshot.record.profile.display_name) return true;
+        const auto uuid_text = snapshot.record.profile.profile_uuid.to_string();
+        return target.size() == uuid_text.size()
+            && std::equal(target.begin(), target.end(), uuid_text.begin());
+    }
+
     Result<ManagedProfileSnapshot> resolve(std::wstring_view target) override {
         if (forgotten) {
             return Result<ManagedProfileSnapshot>::failure(
                 error(L"profiles.resolve.forgotten"));
         }
-        if (target == snapshot_.record.profile.display_name) {
+        if (names_profile(snapshot_, target)) {
             return Result<ManagedProfileSnapshot>::success(snapshot_);
         }
-        if (secondary_.has_value()
-            && target == secondary_->record.profile.display_name) {
+        if (secondary_.has_value() && names_profile(secondary_.value(), target)) {
             return Result<ManagedProfileSnapshot>::success(
                 secondary_.value());
         }

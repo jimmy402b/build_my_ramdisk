@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "src/common/result.h"
 #include "src/management/execution_scheduler.h"
@@ -108,6 +108,14 @@ struct ServiceHostDiagnostics final {
     ServiceHostState state{ServiceHostState::constructed};
     std::size_t recovered_operations{};
     bool scheduler_running{};
+    // How many profiles this boot handed a start to, because their durable state said
+    // running and their policy asked to be brought back.  Stated rather than logged and
+    // dropped: "this boot restored two disks" and "this boot restored none" are
+    // different facts about it, and the second is the whole acceptance for a machine
+    // that had nothing running.
+    //
+    // Appended with a default so every existing aggregate keeps its meaning.
+    std::size_t auto_started_operations{};
     // Whether the start-up sweep found a condition for a human.  Defaults to
     // false so a host with no sweep configured -- every test that does not care
     // about orphans -- reads as "nothing to report" rather than as "unknown".
@@ -232,6 +240,7 @@ private:
     mutable std::mutex mutex_;
     ServiceHostState state_{ServiceHostState::constructed};
     std::size_t recovered_operations_{};
+    std::size_t auto_started_operations_{};
     bool sweep_needs_attention_{};
     std::optional<Error> last_error_;
 };

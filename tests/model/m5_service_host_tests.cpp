@@ -120,6 +120,17 @@ public:
     std::size_t handed{};
 };
 
+// Records what the service said, for the cases whose subject is a *decision* rather
+// than a state transition: "the policy refused" and "the policy did nothing" look the
+// same from the outside, and the log line is where the difference lives.
+class CapturingLogger final : public IServiceLogger {
+public:
+    void write(const ServiceLogEvent& event) noexcept override {
+        messages.push_back(event.message);
+    }
+    std::vector<std::string> messages;
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -576,6 +587,83 @@ TEST_CASE(m5_host_suspend_with_no_policy_is_a_no_op) {
     REQUIRE(host.stop().ok());
 }
 
+TEST_CASE(m5_host_auto_starts_the_profiles_that_were_running) {
+    // **The half of "a power cut loses at most one interval" that is not about bytes.**
+    //
+    // A disk that was up when the machine went away still has a durable record saying
+    // running, and a policy saying come back.  Nothing else in the service starts
+    // disks, so on the next boot that record is the only thing that can bring it back --
+    // without this, the bytes are recovered and the disk comes back stopped, waiting
+    // for a human.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    // `running_profile` deliberately builds an `auto_start == false` record -- the
+    // fixture is about the storage layer, where the flag is not the subject.  This case
+    // is about the flag, so it sets it.
+    auto durable = running_profile(product::PersistenceState::clean);
+    REQUIRE(durable.state.disk.runtime == product::RuntimeState::running);
+    durable.record.profile.auto_start = true;
+    Profiles profiles(durable);
+    Operations operations;
+    Worker worker;
+    // The read path asks the worker what it is running, and a profile that is supposed
+    // to be up with no answer is a conflict rather than a candidate for starting.  The
+    // fixture's worker fails every observation until one is supplied -- which is why the
+    // refusal below named the fixture and not the policy.
+    WorkerRuntimeObservation live{};
+    live.worker_alive = true;
+    live.committed_generation = 5;
+    worker.observation = live;
+    CapturingLogger logger;
+    Ids ids;
+    // The fixture's generator hands out a fixed list and fails when it runs dry; a boot
+    // consumes one per operation it admits, so it is stocked rather than counted.
+    for (std::uint32_t index = 0; index < 8; ++index) {
+        char text[40]{};
+        std::snprintf(text, sizeof(text),
+                      "44444444-4444-4444-8444-4444444400%02u", index);
+        ids.values.push_back(uuid(text));
+    }
+    Memory memory;
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    ServiceHost host(clock, core, scheduler);
+
+    REQUIRE(host.start().ok());
+    for (const auto& message : logger.messages) {
+        std::fprintf(stderr, "myrd-test: service said: %s\n", message.c_str());
+    }
+    REQUIRE_EQ(host.diagnostics().auto_started_operations, 1U);
+    // Admitted, not executed: the start is durable work handed to the executor.  A host
+    // that ran it inline would be a second executor.
+    REQUIRE(!operations.records.empty());
+    REQUIRE_EQ(operations.records.back().command_scope, std::string("disk.start"));
+    REQUIRE(host.stop().ok());
+}
+
+TEST_CASE(m5_host_does_not_auto_start_a_profile_that_asked_not_to_be) {
+    // The other side of the same policy: `auto_start == false` is a disk a human wants
+    // left alone across a reboot, and starting it anyway would be the service deciding
+    // for them.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    auto record = running_profile(product::PersistenceState::clean);
+    record.record.profile.auto_start = false;
+    Profiles profiles(record);
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    ids.values.push_back(uuid("44444444-4444-4444-8444-444444444444"));
+    Memory memory;
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    ServiceHost host(clock, core, scheduler);
+
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.diagnostics().auto_started_operations, 0U);
+    REQUIRE(operations.records.empty());
+    REQUIRE(host.stop().ok());
+}
+
 TEST_CASE(service_host_builds_a_request_frame_that_round_trips) {
     auto request_id = product::Uuid::random();
     REQUIRE(request_id.ok());
@@ -673,7 +761,7 @@ TEST_CASE(m5_endpoint_answers_a_query_while_the_execution_gate_is_held) {
 TEST_CASE(m5_endpoint_projects_a_disk_without_its_bundle_path) {
     // The projection is where "what a client may know" is decided.  The fixture's profile
     // names its bundle, so the encoded payload is searched for it: a path on the wire is
-    // the leak design spec 搂10.3 forbids, and it would be invisible in a decoded
+    // the leak design spec 闁?0.3 forbids, and it would be invisible in a decoded
     // structure because the field simply would not exist there.
     Fixture fixture(product::PersistenceState::clean);
     ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,

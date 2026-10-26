@@ -1,4 +1,4 @@
-#include "src/management/service_maintenance.h"
+﻿#include "src/management/service_maintenance.h"
 
 #include <algorithm>
 #include <chrono>
@@ -6,21 +6,10 @@
 namespace myrd::management {
 namespace {
 
-// The identity the service acts as when its own policy initiates work.  `S-1-5-18`
-// is LocalSystem, spelled out because the authorization path parses the SID: a
-// caller identity that could not be parsed would be refused as unauthorized, and the
-// failure would look like "the policy never fires" rather than like a credential
-// mistake.
-ipc::CallerIdentity service_caller() {
-    ipc::CallerIdentity caller{};
-    caller.primary_sid = L"S-1-5-18";
-    caller.authenticated = true;
-    caller.local_system = true;
-    caller.service_identity = true;
-    caller.administrator = true;
-    caller.elevated = true;
-    return caller;
-}
+// The service's own authority is defined once, in the management layer
+// (`service_caller_identity`), because two copies of "who the service is" is one copy
+// too many: the first that drifts becomes a policy that silently stops being
+// authorized.
 
 // **A request identity for events that have no client request behind them.**
 //
@@ -156,7 +145,7 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
 
     ServiceCommandRequest list_request{};
     list_request.command = control::DiskListCommand{};
-    list_request.caller = service_caller();
+    list_request.caller = service_caller_identity();
     auto listed = core_.dispatch(list_request);
     if (!listed.ok()) {
         logger_.write(ServiceLogEvent{
@@ -225,7 +214,7 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
         ServiceCommandRequest checkpoint_request{};
         checkpoint_request.command =
             control::DiskCheckpointCommand{candidate.target};
-        checkpoint_request.caller = service_caller();
+        checkpoint_request.caller = service_caller_identity();
         // Admitted, not awaited: the scheduler is the one executor, and a policy that
         // waited for its own work would hold the gate it needs to release.
         checkpoint_request.no_wait = true;

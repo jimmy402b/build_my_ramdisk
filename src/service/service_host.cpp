@@ -1,4 +1,4 @@
-﻿#include "src/service/service_host.h"
+#include "src/service/service_host.h"
 
 namespace myrd::service {
 namespace {
@@ -45,6 +45,7 @@ ServiceHost::ServiceHost(ServiceHost&& other) noexcept
       suspend_(other.suspend_),
       state_(other.state_),
       recovered_operations_(other.recovered_operations_),
+      auto_started_operations_(other.auto_started_operations_),
       sweep_needs_attention_(other.sweep_needs_attention_),
       last_error_(std::move(other.last_error_)) {
     // The mutex is not moved: an unlocked one is what a moved-to object must
@@ -114,6 +115,26 @@ Result<void> ServiceHost::start() {
 
     state_ = ServiceHostState::running;
     last_error_.reset();
+
+    // **The disks that were up come back up.**
+    //
+    // After the scheduler, because nothing executes an admitted start until it is
+    // polling; after the recovery, because the durable state this reads is the state
+    // the recovery just settled; after the sweep, because a leftover worker must be gone
+    // before a start tries to take the same bundle.  Before the surface opens, so the
+    // first command a client can send already sees the set of disks this boot decided
+    // to serve rather than a half-populated one.
+    auto auto_started = core_.admit_auto_starts();
+    if (!auto_started.ok()) {
+        // A service that cannot even ask which disks to bring back is not serving: the
+        // same rule the recovery and the sweep follow.
+        last_error_ = auto_started.error();
+        state_ = ServiceHostState::failed;
+        static_cast<void>(scheduler_.stop(deadline_after(
+            clock_.monotonic_time_ms(), options_.stop_budget_ms)));
+        return Result<void>::failure(auto_started.error());
+    }
+    auto_started_operations_ = auto_started.value().size();
 
     // The public surface last, and the ordering is the same argument the sweep's is:
     // a request answered before the executor is running would be admitted and then
@@ -230,6 +251,7 @@ ServiceHostDiagnostics ServiceHost::diagnostics() const {
     ServiceHostDiagnostics diagnostics{};
     diagnostics.state = state_;
     diagnostics.recovered_operations = recovered_operations_;
+    diagnostics.auto_started_operations = auto_started_operations_;
     diagnostics.scheduler_running = scheduler_.is_running();
     diagnostics.sweep_needs_attention = sweep_needs_attention_;
     diagnostics.last_error = last_error_;

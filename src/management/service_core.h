@@ -869,6 +869,15 @@ public:
     virtual std::uint64_t monotonic_time_ms() const noexcept = 0;
 };
 
+// The identity the service acts as when its own policy, rather than a client,
+// initiates work: maintenance checkpoints, auto-start on boot.  LocalSystem, spelled
+// out because the authorization path parses the SID.
+//
+// One definition, in the management layer, because two copies of "who the service is"
+// is one copy too many: the first one that drifts becomes a policy that silently stops
+// being authorized.
+[[nodiscard]] ipc::CallerIdentity service_caller_identity();
+
 class IServiceProfileStore {
 public:
     virtual ~IServiceProfileStore() noexcept = default;
@@ -1139,6 +1148,20 @@ public:
     Result<OperationRecord> execute_operation(
         const product::Uuid& operation_id);
     Result<std::vector<OperationRecord>> recover_after_restart();
+
+    // **Bring back the disks that were up when this service last had them.**
+    //
+    // A profile whose durable state says `running` and whose `auto_start` is true was
+    // serving a client when the machine went away or when the service was restarted --
+    // either way there is no worker for it now, because a worker is a child of this
+    // process.  Without this the promise "a power cut loses at most one interval" is
+    // only half kept: the bytes would be recovered, and the disk would come back
+    // stopped, waiting for a human to start it.
+    //
+    // Admission only, like every other policy-driven action here: the scheduler is the
+    // one executor.  A profile that is already running or mid-transition is skipped
+    // rather than raced.
+    Result<std::vector<product::Uuid>> admit_auto_starts();
 
     // Take the next piece of durable work, for the one executor the service
     // runs.  The claim is atomic against every other claim, and an operation is

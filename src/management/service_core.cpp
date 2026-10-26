@@ -618,6 +618,17 @@ std::wstring widen_ascii(std::string_view value) {
     return result;
 }
 
+// The other direction, for a log line.  The service speaks wide strings and the log is
+// narrow; a policy line is not worth a locale conversion.
+std::string narrow_ascii(const std::wstring& value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const auto unit : value) {
+        result.push_back(unit > 0 && unit < 0x80 ? static_cast<char>(unit) : '?');
+    }
+    return result;
+}
+
 bool known_checkpoint_disposition(
     const CheckpointCommitDisposition disposition) noexcept {
     switch (disposition) {
@@ -2885,7 +2896,7 @@ Result<OperationRecord> ServiceCore::execute_claimed_operation(
     if (!executed.ok()) {
         // **A failed execution names itself here.**  The scheduler used to discard this result,
         // so an operation could stop mid-plan with nothing anywhere saying why: measured on the
-        // guest as a create that stayed unning forever after its checkpoint, while the only
+        // guest as a create that stayed running forever after its checkpoint, while the only
         // trace was a numeric code in a diagnostics file that is off by default.
         auto step = ipc::utf16_to_utf8(executed.error().operation);
         auto detail = ipc::utf16_to_utf8(executed.error().message);
@@ -8408,6 +8419,67 @@ Result<std::vector<OperationRecord>> ServiceCore::recover_after_restart() {
             "restart-reconcile"});
     }
     return records;
+}
+
+ipc::CallerIdentity service_caller_identity() {
+    ipc::CallerIdentity caller{};
+    caller.primary_sid = L"S-1-5-18";
+    caller.authenticated = true;
+    caller.local_system = true;
+    caller.service_identity = true;
+    caller.administrator = true;
+    caller.elevated = true;
+    return caller;
+}
+
+Result<std::vector<product::Uuid>> ServiceCore::admit_auto_starts() {
+    auto listed = profiles_.list_profiles();
+    if (!listed.ok()) {
+        return Result<std::vector<product::Uuid>>::failure(listed.error());
+    }
+    std::vector<product::Uuid> admitted;
+    for (const auto& snapshot : listed.value()) {
+        const auto& profile = snapshot.record.profile;
+        // What "was up" means durably: the record said running and the profile asked to
+        // be brought back.  `starting` and `stopping` are windows a crash can leave
+        // behind, and acting inside one would race the reconciliation that owns them --
+        // so they are skipped rather than started, and the next boot will see a settled
+        // state.
+        if (!profile.auto_start
+            || snapshot.state.disk.runtime != product::RuntimeState::running) {
+            continue;
+        }
+        auto request_id = ids_.next();
+        if (!request_id.ok()) {
+            return Result<std::vector<product::Uuid>>::failure(
+                request_id.error());
+        }
+        // The handle is the profile uuid, as everywhere else the service addresses its
+        // own work: the store resolves a uuid or a display name, and a mount target is
+        // neither.
+        ServiceCommandRequest request{};
+        request.request_id = request_id.value();
+        request.command = control::DiskStartCommand{
+            widen_ascii(profile.profile_uuid.to_string())};
+        request.caller = service_caller_identity();
+        request.no_wait = true;
+        auto accepted = dispatch(request);
+        logger_.write(ServiceLogEvent{
+            accepted.ok() ? ServiceLogKind::operation_queued
+                          : ServiceLogKind::operation_failed,
+            request_id.value(),
+            accepted.ok() ? accepted.value().operation_id : std::nullopt,
+            profile.profile_uuid,
+            "disk.start",
+            "auto-start",
+            accepted.ok()
+                ? "auto-start: this profile was running when the service last had it"
+                : "auto-start refused: step="
+                      + narrow_ascii(accepted.error().operation)
+                      + " detail=" + narrow_ascii(accepted.error().message)});
+        if (accepted.ok()) admitted.push_back(profile.profile_uuid);
+    }
+    return Result<std::vector<product::Uuid>>::success(std::move(admitted));
 }
 
 } // namespace myrd::management
