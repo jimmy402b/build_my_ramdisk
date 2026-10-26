@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "src/product/uuid.h"
 
@@ -58,6 +58,7 @@ enum class ProfileFieldTag : std::uint16_t {
     reclaimable_percent = 33,
     checkpoint_count_threshold = 34,
     index_headroom_percent = 35,
+        volume_label = 36,
 };
 
 enum class ProfileLifecycle : std::uint8_t { provisioning = 0, ready = 1 };
@@ -129,6 +130,8 @@ struct Profile final {
     MemoryPolicy memory{};
     CheckpointPolicy checkpoint{};
     CompactionPolicy compaction{};
+    // The label the volume carries, as asked for at create time (T4-02).  Empty means the default.
+    std::optional<std::wstring> volume_label;
     bool operator==(const Profile&) const noexcept = default;
 };
 
