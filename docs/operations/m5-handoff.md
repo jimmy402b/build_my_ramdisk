@@ -912,3 +912,38 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>
   **下一步：硬重启客机再跑一次**；若仍失败，先看 `disk list` 与 `C:\ProgramData\MyRamDisk\logs\service.log`。
 
 **剩余**：T3-05 客机通过 → T4（安装/升级/卸载 + T4-04 release manifest 冻结）。
+---
+
+### 3.24 2026-10-27 01:50：T3 全部完成（GUI 五段）
+
+**T3-01**：客户端边界 —— `myrd_product_client`（线格式 + 编解码）只链 `myrd_product_ipc` +
+`myrd_product_contracts`；`myrd_cli` 与 `myrd-gui` 的**链接闭包**已写入构建目录并断言
+（`tools/check_client_link_closure.cmake`，**configure 期**，因为 `cmake -P` 没有 target 会空检查报绿），
+并**已证明能失败**（拿 `myrd_service` 当被试会拒绝）。
+
+**T3-02**：`myrd-gui.exe`（列表 + 托盘 + 3 秒刷新）。**`aggregate` 是唯一判定**，有测试钉住
+（runtime=running + aggregate=blocked 的盘必须显示 blocked）。内存列 resident/budget，未运行时
+显示 "not running" 而不是 0。
+
+**T3-03/T3-04**：命令在独立线程发出（界面不假死）、进度只跟操作状态并在终态停止并刷新；
+三处确认流（stop 仅在检查点未确认时、forget 需回显 uuid、`authorization_denied` 给指令）。
+
+**T3-05（客机，请求 `96bf7e5f…`，20 s）**：
+```text
+self-check: 1 disk(s)
+  T:  running  Running  generation 2  2.8 MiB / 1024.0 MiB
+tray: MyRamDisk: 1 disk
+window-check: created 0x370088, found 0x370088
+  process 3512 is alive after 6 s
+PASS T3-05
+```
+
+**顺带抓到的真实缺陷**：T1-10 的默认脏数据阈值 64 MiB **大于 32 MiB 盘的容量**，校验拒绝，
+`disk create` 以 `terminal failure without a worker-action error` 结束。修法：未显式指定时
+**钳到请求容量**（阈值大于容量没有意义）。
+
+**T4 计划（下一步从这里开始）**：
+- **T4-01** 安装器：打包 / SCM 注册 / ProgramData ACL / `phdskmnt` **只检查不安装**；卸载必须安全下盘；
+- **T4-02** Load Only 模式、导出单文件 VHDX（复用 compaction 的 fold writer）、易失盘模式、卷标/簇大小/卷序列号；
+- **T4-03** 在线 compaction（第二套 durable phase + reconciliation + 自动触发；journal 增长有界可观测）；
+- **T4-04** M5-E：干净 Debug/Release、M4 回归、冻结哈希、证据组校验工具（负例必须非零退出且**永不打印 PASS**）、release manifest。
