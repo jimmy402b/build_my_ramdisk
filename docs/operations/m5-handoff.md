@@ -1762,3 +1762,25 @@ kind=7 disk.start phase=terminal  message=terminal failure without a worker-acti
 2. 若删除后仍失败，把 `GetLastError` 与当时的盘符占用情况一起记进日志（现在只有 native=87，
    不足以区分"盘符被占"与"卷 GUID 路径无效"）；
 3. 客机验收：`Reset` → 断电三段；读数要求 `runtime=Running` 且 generation ≥ 提交值。
+### 3.69 2026-10-27 08:35：删陈旧映射**没解决**，但错误信息把原因指出来了
+
+修复后复跑（`prepare` 过 51 s，硬断电，`verify` 2.9 s 失败，请求 `05db028b…`）：
+
+```text
+2a2f1678-…  T:  Ready  stopped/configured  runtime=Stopped  persistence=Dirty  generation=3
+kind=7 disk.start phase=running  action=create-runtime code=21001 native=87
+       step=assign_drive_letter detail=SetVolumeMountPointW failed for T:\   ← 现在带了 GUID
+```
+
+**结论**：`DeleteVolumeMountPointW` + 重试**没有改变结果**，所以不是"陈旧映射占着盘符"。
+`SetVolumeMountPointW` 对 `T:\` 与一个**卷 GUID 路径**返回 87（ERROR_INVALID_PARAMETER），
+最可信的解释是**那个 GUID 路径此刻不存在**——即断电容留后、卷被重新创建，**GUID 变了**，
+而 `assign_drive_letter` 用的是**profile 记录里的旧 GUID**。
+
+**下一步（产品侧，具体）**：
+1. 在 `create-device` 之后**从活动卷重新取 GUID**（`GetVolumeNameForVolumeDeviceW` 或
+   `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` + 卷设备路径 → 卷 GUID），**用活动值**去
+   `SetVolumeMountPointW`，并把新 GUID 写回记录（否则每次恢复都会重演）；
+2. 如果取不到活动 GUID，就把"记录 GUID vs 活动卷设备路径"一起打进日志——现在日志已能区分，
+   只差活动值；
+3. 客机验收仍是断电三段：要求 `runtime=Running`、generation ≥ 提交值、标记字节一致。
