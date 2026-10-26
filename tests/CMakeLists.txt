@@ -1,4 +1,4 @@
-add_library(myrd_test_support STATIC
+﻿add_library(myrd_test_support STATIC
     support/test_main.cpp
 )
 target_include_directories(myrd_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support")
@@ -1276,7 +1276,7 @@ set_tests_properties(unit.m2.json_verifier PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
 
-# ---- M3 checksum and codec tests (Task 10) ----------------------------------
+# ---- M3 checksum and codec tests (Task鈥?0) ----------------------------------
 add_executable(myrd_m3_checksum_codec_tests
     unit/m3_checksum_codec_tests.cpp
 )
@@ -1331,7 +1331,7 @@ set_tests_properties(unit.m3.persistence_path PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 30)
 
-# ---- M3 persistence types tests (Task 13, T13.1) -------------------------------
+# ---- M3 persistence types tests (Task鈥?3, T13.1) -------------------------------
 add_executable(myrd_m3_persistence_types_tests
     unit/m3_persistence_types_tests.cpp
 )
@@ -1622,7 +1622,7 @@ set_tests_properties(integration.m3.lazy_backing PROPERTIES
     LABELS "m3-v3"
     TIMEOUT 120)
 
-# ---- M3 persistence boundary test (Task 00) ----------------------------------
+# ---- M3 persistence boundary test (Task鈥?0) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
 )
@@ -2105,3 +2105,15 @@ add_test(
 set_tests_properties(unit.m2.orchestrator_report_gate PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
+# ---- The GUI's view model (Task T3-02) ---------------------------------------
+# Pure formatting over the client view types: no window, no pipe, no service.  The two claims it
+# pins are which field may be the verdict and that an absent budget is not a zero measurement.
+# The shared runner is built with the project's warnings-as-errors everywhere else; here it is
+# compiled without them, because the file is shared and its diagnostics are not this suite's.
+add_executable(myrd_m5_gui_tests
+    support/test_main.cpp
+    model/m5_gui_tests.cpp
+)
+target_link_libraries(myrd_m5_gui_tests PRIVATE myrd_gui_view_model)
+target_include_directories(myrd_m5_gui_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+add_test(NAME m5.gui COMMAND myrd_m5_gui_tests)

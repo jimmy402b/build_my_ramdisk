@@ -505,9 +505,37 @@ target_link_libraries(myrd-m5-worker PRIVATE
     myrd_m5_worker_protocol myrd_m4_run myrd_m3_management)
 myrd_enable_warnings(myrd-m5-worker)
 
+
+# ---- The desktop client (Task T3-02) -----------------------------------------
+# A window, a list and a tray icon.  It links the same two libraries the CLI does and is checked by
+# the same closure assertion below, so a change that reaches for the execution stack is refused at
+# configure time rather than shipped in a user's session.
+add_executable(myrd-gui WIN32
+    gui/gui_client.cpp gui/gui_client.h
+    gui/gui_main.cpp
+    gui/gui_view_model.cpp gui/gui_view_model.h
+)
+target_include_directories(myrd-gui PRIVATE "${CMAKE_SOURCE_DIR}")
+# Wide-character Windows: without it IDI_APPLICATION, IDC_ARROW and the ListView macros all
+# resolve to their ANSI forms and every one of them is a type error against the W APIs.
+target_compile_definitions(myrd-gui PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_link_libraries(myrd-gui PRIVATE myrd_product_ipc myrd_product_client comctl32 shell32)
+myrd_enable_warnings(myrd-gui)
+
+# The view model is pure, so it is a library the model tests can link without a desktop.
+add_library(myrd_gui_view_model STATIC
+    gui/gui_view_model.cpp gui/gui_view_model.h
+)
+target_include_directories(myrd_gui_view_model PUBLIC "${CMAKE_SOURCE_DIR}")
+target_link_libraries(myrd_gui_view_model PUBLIC myrd_product_contracts)
+myrd_enable_warnings(myrd_gui_view_model)
+myrd_assert_execution_boundary(myrd_gui_view_model)
+
 # ---- The client boundary is checked, not asserted (Task T3-01) ---------------
-# At configure time, because that is where the targets exist: a `cmake -P` run has no targets and
-# therefore sees no closure, which is exactly how a check can pass while checking nothing.
+# Last in the file, because it must run after every client target exists.  At *configure* time,
+# because that is where the targets are: a `cmake -P` run has no targets and therefore sees no
+# closure, which is exactly how a check can pass while checking nothing.
 include("${CMAKE_SOURCE_DIR}/tools/check_client_link_closure.cmake")
 myrd_assert_client_closure(myrd_product_client)
 myrd_assert_client_closure(myrd_cli)
+myrd_assert_client_closure(myrd-gui)
