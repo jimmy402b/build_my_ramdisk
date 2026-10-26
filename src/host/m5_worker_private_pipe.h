@@ -88,6 +88,10 @@ struct WorkerLaunchSpec final {
     std::optional<persistence::ImageUuid> image_id;
     std::uint64_t logical_size_bytes{};
     std::wstring mount_target;
+    // The volume the durable profile recorded for this bundle.  A restart of a
+    // stopped disk has to recognise that volume with no drive letter, and the
+    // letter is the only thing select_volume_for_disk looks at first.
+    std::wstring volume_guid;
     // What the runtime does with the volume.  Declared here rather than beside
     // `image_id` so the fields the launch already had keep their encoded order.
     WorkerVolumeMode volume_mode{WorkerVolumeMode::adopt_existing};

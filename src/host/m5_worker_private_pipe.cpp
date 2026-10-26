@@ -243,6 +243,7 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     spec.volume_mode = static_cast<WorkerVolumeMode>(volume_mode);
     spec.logical_size_bytes = reader.u64();
     spec.mount_target = reader.text();
+    spec.volume_guid = reader.text();
     spec.session_generation = reader.u64();
     spec.private_pipe_name = reader.text();
     spec.session_nonce = reader.u64();
@@ -307,6 +308,7 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     writer.u8(static_cast<std::uint8_t>(spec.volume_mode));
     writer.u64(spec.logical_size_bytes);
     writer.text(spec.mount_target);
+    writer.text(spec.volume_guid);
     writer.u64(spec.session_generation);
     writer.text(spec.private_pipe_name);
     writer.u64(spec.session_nonce);
