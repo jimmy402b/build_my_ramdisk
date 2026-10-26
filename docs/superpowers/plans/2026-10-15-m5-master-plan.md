@@ -510,6 +510,14 @@ B 的 generation / 挂载点 / worker / operation gate / writer lock **全部不
 
 ## 8. T4 —— 产品化
 
+**本节开始前必须清掉的遗留（2026-10-27 追加一条）**：
+
+0. **镜像格式化能力**（原 T4-02 的"簇大小"）。全树搜索
+   `SetVolumeLabel / volume_label / cluster_size / FMIFS / FormatEx / IOCTL_DISK_FORMAT` **零命中**：
+   本产品从不格式化卷，文件系统随镜像而来。簇大小只能在格式化时确定，所以支持它等于新增
+   "按指定参数生成/格式化镜像"的能力（含失败与回滚语义），**不是 CLI 选项**。
+   卷标不同：卷已格式化时可用 `SetVolumeLabel` 设置，因此**留在 T4-02** 内。
+
 ### 前置：本节开始前必须清掉的遗留
 
 1. **`m5.execution_scheduler`** —— **✅ 已关闭**（part 63 复核绿；part 98 全量客机再确认通过）。
