@@ -1,4 +1,4 @@
-#include "tests/support/test_framework.h"
+﻿#include "tests/support/test_framework.h"
 
 #include "src/management/service_maintenance.h"
 
@@ -34,6 +34,18 @@ TEST_CASE(m5_maintenance_checkpoints_when_the_interval_has_elapsed) {
     REQUIRE(checkpoint_due_reason(input).empty());
     input.since_last_checkpoint_ms = 60'000;
     REQUIRE_EQ(checkpoint_due_reason(input), std::string("interval"));
+}
+
+TEST_CASE(m5_maintenance_defaults_promise_at_most_one_minute_of_loss) {
+    // **T1-10's defaults, pinned.**  The product promises that a crash loses at most one
+    // interval; with a five-minute default that promise was true and useless, and with the
+    // byte threshold off a disk that absorbed a gigabyte in ten seconds still waited out the
+    // rest of the minute.  A default is only a promise if something asserts it.
+    const profile::CheckpointPolicy defaults{};
+    REQUIRE_EQ(defaults.interval_enabled, true);
+    REQUIRE_EQ(defaults.interval_seconds, 60ULL);
+    REQUIRE_EQ(defaults.dirty_threshold_enabled, true);
+    REQUIRE_EQ(defaults.dirty_threshold_bytes, 64ULL * 1024ULL * 1024ULL);
 }
 
 TEST_CASE(m5_maintenance_interval_is_off_when_the_policy_says_so) {

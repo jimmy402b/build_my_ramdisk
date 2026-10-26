@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "src/product/uuid.h"
 
@@ -78,11 +78,20 @@ struct MemoryPolicy final {
     bool operator==(const MemoryPolicy&) const noexcept = default;
 };
 
+// **The defaults a profile gets when nobody says otherwise.**
+//
+// Tightened in T1-10, and the reasoning is the product's own promise: a crash may lose at
+// most one interval of writes.  A five-minute interval makes that promise true but useless --
+// five minutes of a ramdisk's contents is most of a working session -- so the interval is a
+// minute.  The byte threshold is the other half: a disk that absorbs 300 MB in ten seconds
+// should not wait out the remaining fifty, so a dirty budget of 64 MiB commits early.  Both
+// are policy, not mechanism: a profile may widen or disable either and the promise then
+// belongs to whoever configured it.
 struct CheckpointPolicy final {
     bool interval_enabled{true};
-    std::uint64_t interval_seconds{300};
-    bool dirty_threshold_enabled{};
-    std::uint64_t dirty_threshold_bytes{};
+    std::uint64_t interval_seconds{60};
+    bool dirty_threshold_enabled{true};
+    std::uint64_t dirty_threshold_bytes{64ULL * 1024ULL * 1024ULL};
     bool on_memory_pressure{true};
     BestEffortPolicy on_shutdown{BestEffortPolicy::best_effort};
     BestEffortPolicy on_suspend{BestEffortPolicy::best_effort};
