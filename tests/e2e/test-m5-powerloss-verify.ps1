@@ -1,4 +1,4 @@
-﻿# The second half of the power-cut acceptance (T1-09): after the machine was cut off
+# The second half of the power-cut acceptance (T1-09): after the machine was cut off
 # and booted again, prove that the disk came back **on its own**, at the last committed
 # generation, with the committed bytes intact and nothing left behind.
 #
@@ -62,7 +62,11 @@ if ($null -eq $profileId -or $null -eq $mount -or $null -eq $expectedGenerationT
 $expectedGeneration = [uint64]$expectedGenerationText
 
 Write-Step 'the service came up without being started by this script'
-$answered = Wait-ForService 180
+# **300 seconds, not 180.**  Measured: after a hard cut the service log showed state=running and 'serving'
+# while the client had not connected inside 180 s -- the public pipe becomes reachable later on that boot
+# (recovery plus a slower start), so the window has to cover it.  A wait that is too short turns a healthy
+# service into a failed acceptance, which is the most expensive kind of false negative.
+$answered = Wait-ForService 300
 if ($null -eq $answered) {
     Fail ("the installed service did not answer within 180 s of the boot.`n" +
         "$((Get-ServiceState))`n$((Get-Content -LiteralPath 'C:\m5\last-service.log' -Raw -ErrorAction SilentlyContinue))")
