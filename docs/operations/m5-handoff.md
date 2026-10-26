@@ -1915,3 +1915,23 @@ detail=set-mount failed first=87 second=87 guid=\\?\Volume{87792e03-9150-4130-ad
 
 **注意**：`assign_drive_letter` 里那句 `GetVolumeNameForVolumeMountPointW(mount)` 的比较也不可靠——
 它对 `T:\` 返回失败（因为 `T:\` 此刻是空的），于是走 Set，而不是走"已挂载同一卷"的快路径。
+### 3.76 2026-10-27 09:10：修复的**施工单**（下一轮照此一次做完）
+
+目标：断电恢复后 `disk start` 能挂上盘符——即**用活动卷的身份**，而不是记录里的旧身份。
+
+**改一处即可，位置：`src/run/windows_volume.cpp` 的 `Win32VolumeAdapter::assign_drive_letter`**
+（当前已在 `SetVolumeMountPointW` 失败时 `Delete` + 重试一次）：
+
+1. 在**两次 Set 都失败**之后，调用同文件里已有的卷枚举（约 1296 行的 `find_volumes` / 或
+   `enumerate` 路径），按**同一组 extents**匹配候选卷（`owned.extents` 已有）；
+2. 若**恰好一个**候选卷与 `owned.extents` 相同，取它的 `volume_guid`（完整 `\\?\Volume{…}\`），
+   **再 Set 一次**；成功则返回 success，并**把该卷名写回**调用方能写回的地方
+   （`ProductVolume` 是 const 传入，所以写回要么改签名、要么由调用方在 success 后重新枚举一次记录；
+   最小改法：新增一个 `assign_drive_letter(ProductVolume& owned, ...)` 重载或在成功时把
+   adopted name 记入日志，**同时**让 `runtime_adapter` 在下一次 `find` 时自然更新记录）；
+3. 无论成功失败，日志写：`mounted with adopted guid=… recorded=…` —— 这是"身份换过"的审计证据。
+
+**验收（必须）**：`Reset-M5Guest` → `Test-M5PowerLoss.ps1 -SkipStage` ⇒ `verify` 通过，
+读数要求 `runtime=Running`、generation ≥ 提交值、标记字节一致、worker 恰好 1 个。
+**若一次不到位**：先只做"第 1-2 步 + 日志"，因为**挂上**是阻塞项，"写回记录"可以随后再做
+（下次恢复会再采纳一次，那只影响日志噪声，不影响正确性）。
