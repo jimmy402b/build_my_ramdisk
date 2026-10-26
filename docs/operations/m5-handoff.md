@@ -1684,3 +1684,19 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
      ⇒ 改为"manifest + 其中引用的 readings，至少 3 条"。
 - **冻结仍未做**：等 T4-02/T4-03 完成后的最后一次构建。当前 `frozen_at` 只是"工具能跑"的时间戳，
   **不是发布冻结**。
+### 3.65 2026-10-27 08:10：断电复跑：prepare 过，verify 在 `Wait-ForService` 失败（**服务日志显示它其实起来了**）
+
+- 三段流程（`Test-M5PowerLoss.ps1`）：`prepare` **1 of 1 passed**（49 s，请求 `c519a95d…`）→ 硬断电 → 开机 →
+  `verify` **0 of 1**（187 s = `Wait-ForService 180` 超时，请求 `4598f66e…`）。
+- **但 verify 的 stderr 里带出的服务日志显示服务确实起来了**：`console mode, state=constructed` →
+  `started, state=running recovered=0` → `serving; press Ctrl+C to stop`，并且此后有 `disk.create`
+  的动作序列（`create-bundle → … → terminal`）。⇒ **服务在跑，是"CLI 没在 180 s 内连上那一次"**。
+- **最可能的解释**：断电重启后这一轮的**公开管道可用时刻晚于 180 s**（开机慢 + 服务自身 recovery），
+  而 verify 的等待窗口是固定的 180 s。这不是恢复逻辑的回归——但**在拿到证据前不这么断言**。
+- **下一步**：
+  1. 把 `verify` 的 `Wait-ForService` 从 180 s 提到 **300 s**（并打印每次探测的时刻），
+     若通过即确认是窗口问题；
+  2. 若 300 s 仍不通过而服务日志正常，则问题在**管道就绪**（服务绑定 vs CLI 连接），
+     届时看 `\\.\pipe\` 与服务的 `surface open` 日志顺序；
+  3. **T1-09 之前的通过读数（请求 `1eb2ca27…`）仍然有效**，但需要在改动后再确认一次，
+     因为今天改过枚举/序列号/默认值。
