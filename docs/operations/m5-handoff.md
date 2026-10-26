@@ -1084,3 +1084,25 @@ tag 与 length**，以及 `decode_profile` 收到 payload 的**首 8 字节十�
   `MyRamDiskService`，两个服务不能同时拥有公开管道。**先卸载/重启再跑**。
 - **下一步**：干净客机跑一次 `gui_workflow`（顺带就是序列号的客机读数），然后进 T4-02 第 2 步
   （卷标 / 簇大小：intent → command → codec → CLI → profile 追加字段 → 卷格式化）。
+### 3.32 2026-10-27 02:55：GUI 用例失败的真因找到（缺数据目录），改造半途回退
+
+**真因**（客机 `--console` 探针一次拿到）：
+```text
+myrd-service: build_state failed: op=profile_store.open_directory
+              msg=Failed to open a required profile directory native=2
+```
+`native=2` = 文件不存在。T4-01 的用例用 `-PurgeData` 把 `C:\ProgramData\MyRamDisk` **整个删掉**了，
+而 `gui_workflow` 用的是**裸 `sc create`**，从不创建那些目录 ⇒ 服务启动即失败（exit 0、无日志、
+`sc start` 还可能回 1053）。**不是产品缺陷**：store 的 fail-closed 行为是正确的，缺的是用例的前置条件。
+
+**正确改法（已试，但本轮没收尾，已回退）**：让 `gui_workflow` **走发布的安装器**
+（`tools/install/Install-MyRamDisk.ps1`，它建目录并给 protected DACL），二进制改从
+`C:\Program Files\MyRamDisk` 取；清理也改走卸载器。**回退原因**：那串替换把一个 `}` 弄没了，
+脚本语法错误——这类多块替换必须一次只改一处并用 `Parser::ParseFile` 逐步验证，
+不要在一次命令里叠三处。
+
+**下一步**（按顺序，每步都跑 Parser 验证）：
+1. 在用例里加 `$installDir` 并让三个二进制路径指向它（改一处，验证）；
+2. 用安装器替换"裸 sc create + 启动"整块（改一处，验证）；
+3. 清理改走卸载器（改一处，验证）；
+4. 客机跑一次——这一次同时给出**卷序列号的客机读数**（自检现在会打 `serial=`）。
