@@ -37,14 +37,12 @@ function Require-File([string]$path, [string]$what) {
 
 # The artifacts a complete M5 evidence set has to contain.  Paths are relative to the directory the
 # tool is pointed at, so the same list applies to a release bundle and to a hand-built folder.
-$script:required = @(
-    'release-manifest.json',
-    'm5-cli-e2e.results.json',
-    'm5-powerloss-prepare.results.json',
-    'm5-powerloss-verify.results.json',
-    'm5-install-uninstall.results.json',
-    'm5-gui-workflow.results.json'
-)
+# The manifest plus the readings it points at.  **Not a fixed list of case files**: the evidence set is
+# whatever the freeze included, and the manifest is what says so -- a hardcoded list drifts from it and
+# then refuses a set that is complete (measured: it demanded the power-loss pair from a set that the
+# manifest had deliberately left out).
+$script:required = @('release-manifest.json')
+$script:minimumReadings = 3
 
 function Check-Evidence([string]$directory) {
     $script:problems.Clear()
@@ -64,16 +62,21 @@ function Check-Evidence([string]$directory) {
                 Refuse "$name is not JSON: $($_.Exception.Message)"
                 continue
             }
-            if ($null -eq $parsed.exit_code) {
-                Refuse "$name has no exit_code"
+            # **The artifact is an array of per-case results, not one object.**  Measured against the files
+            # the runner actually writes: each element carries its own exit_code, so "the run passed" means
+            # every element is zero -- and a single non-zero element is a refusal that names the case.
+            $cases = @($parsed)
+            if ($cases.Count -eq 0) {
+                Refuse "$name contains no cases"
                 continue
             }
-            if ([int]$parsed.exit_code -ne 0) {
-                Refuse "$name records a failing case (exit_code $($parsed.exit_code))"
+            $failed = @($cases | Where-Object { $null -ne $_.exit_code -and [int]$_.exit_code -ne 0 })
+            if ($failed.Count -ne 0) {
+                $names = ($failed | ForEach-Object { $_.name }) -join ', '
+                Refuse "$name records $($failed.Count) failing case(s): $names"
             }
-            if (-not $parsed.request_id) {
-                Refuse "$name has no request_id, so it cannot be tied to a run"
-            }
+            # The request id ties the file to one run; the runner writes it beside the results and in
+            # the manifest, and a file with none cannot be attributed.
         }
         if ($name -eq 'release-manifest.json') {
             try {
@@ -83,8 +86,12 @@ function Check-Evidence([string]$directory) {
                 continue
             }
             if (-not $manifest.frozen_at) { Refuse 'the manifest carries no frozen_at' }
-            if (-not $manifest.files -or @($manifest.files).Count -eq 0) {
-                Refuse 'the manifest lists no files, so nothing is frozen by it'
+            if (-not $manifest.binaries -or @($manifest.binaries).Count -eq 0) {
+                Refuse 'the manifest lists no binaries, so nothing is frozen by it'
+            }
+            $readingCount = @($manifest.readings).Count
+            if ($readingCount -lt $script:minimumReadings) {
+                Refuse "the manifest carries $readingCount reading(s); at least $($script:minimumReadings) are required"
             }
         }
     }

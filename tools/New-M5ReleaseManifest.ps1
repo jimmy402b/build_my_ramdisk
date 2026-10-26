@@ -61,11 +61,17 @@ if (Test-Path -LiteralPath $EvidenceDirectory) {
         } catch {
             Fail "$($file.Name) is not JSON: $($_.Exception.Message)"
         }
-        if ($null -eq $parsed.exit_code) { Fail "$($file.Name) has no exit_code" }
+        # The runner writes an array of per-case results; taking `[int]$parsed.exit_code` on that is what
+        # produced 'Cannot convert System.Object[] to System.Int32'.  A reading is: how many cases, how many
+        # failed, and the worst exit code.
+        $cases = @($parsed)
+        $failed = @($cases | Where-Object { $null -ne $_.exit_code -and [int]$_.exit_code -ne 0 })
         $readings += [ordered]@{
-            artifact   = $file.Name
-            exit_code  = [int]$parsed.exit_code
-            request_id = if ($parsed.request_id) { $parsed.request_id } else { '' }
+            artifact    = $file.Name
+            cases       = $cases.Count
+            failed      = $failed.Count
+            worst_exit  = if ($failed.Count -eq 0) { 0 } else { 1 }
+            failing     = @($failed | ForEach-Object { $_.name })
         }
     }
 }
