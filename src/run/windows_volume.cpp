@@ -1191,6 +1191,31 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
     // **Short, because the log line is truncated.**  Measured: the previous detail ended at "T:\\" and lost the
     // GUID entirely -- the writer caps the line, so a longer message is the same as no message.  GUID and error
     // codes only; the drive letter is already in the step.
+    // **The live volume may be a different volume than the recorded one.**
+    //
+    // Measured after a hard power cut: the recorded GUID path is well formed and SetVolumeMountPointW still
+    // returns 87 for both attempts, because the volume was re-created during recovery and that GUID no
+    // longer names anything.  The extents are the identity that survives a re-create, so the candidates are
+    // matched by them, and exactly one match is the volume to mount.
+    if (auto live = enumerate_native_volumes(L'\0'); live.ok()) {
+        const auto same_extent = [](const VolumeExtent& left, const VolumeExtent& right) {
+            return left.disk_number == right.disk_number && left.starting_offset == right.starting_offset
+                && left.length_bytes == right.length_bytes;
+        };
+        for (const auto& observation : live.value()) {
+            const auto& candidate = observation.volume;
+            if (candidate.extents.size() != owned.extents.size()) continue;
+            bool same = true;
+            for (std::size_t index = 0; index < candidate.extents.size(); ++index) {
+                if (!same_extent(candidate.extents[index], owned.extents[index])) { same = false; break; }
+            }
+            if (!same || candidate.volume_guid == owned.volume_guid) continue;
+            DeleteVolumeMountPointW(mount.c_str());
+            if (SetVolumeMountPointW(mount.c_str(), candidate.volume_guid.c_str())) {
+                return Result<void>::success();
+            }
+        }
+    }
     std::wstring guid_text = owned.volume_guid;
     if (guid_text.size() > 44) guid_text = guid_text.substr(0, 44);
     const std::wstring detail = std::wstring(L"set-mount failed first=") +
