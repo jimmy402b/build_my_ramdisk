@@ -1106,3 +1106,21 @@ myrd-service: build_state failed: op=profile_store.open_directory
 2. 用安装器替换"裸 sc create + 启动"整块（改一处，验证）；
 3. 清理改走卸载器（改一处，验证）；
 4. 客机跑一次——这一次同时给出**卷序列号的客机读数**（自检现在会打 `serial=`）。
+### 3.33 2026-10-27 03:05：GUI 用例恢复绿，**卷序列号拿到客机读数**
+
+```text
+install through the shipped installer
+self-check: 1 disk(s)
+  T:  running  Running  generation 2  2.8 MiB / 1024.0 MiB  serial=5A42-9D28
+UNINSTALLED
+PASS T3-05
+```
+（请求 `1e26484b…`，22 s）
+
+- 之前的失败真因已确认：用例用裸 `sc create`，**数据目录不存在** ⇒ 服务 fail-closed
+  （`profile_store.open_directory`, native 2；exit 0 且无日志，所以像崩溃）。改走**发布安装器**后一次通过。
+- **卷序列号 = T4-02 第 1 步完成**（客机读数 `serial=5A42-9D28`）。它来自 worker 自己的 bundle 序列号，
+  经观测/两个投影/线格式到渲染，按 `vol` 的样式显示；`kProfileFixedBytes` 守卫已随之 +8（注释里写明它值两次失败）。
+
+**下一步**：T4-02 第 2 步——**卷标 / 簇大小**（intent → command → ipc_codec → CLI
+`--volume-label` / `--cluster-size` → profile 追加两字段 → `m3_provider` 卷格式化带上它们）。
