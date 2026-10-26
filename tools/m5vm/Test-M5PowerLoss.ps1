@@ -31,9 +31,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $VmHost) { throw 'M5VM_HOST / -VmHost is required' }
 if (-not $VmUser) { throw 'M5VM_USER / -VmUser is required' }
 if (-not $KeyFile) { throw 'M5VM_KEY / -KeyFile is required' }
-if (-not $Vmx) {
-    throw 'M5VM_VMX / -Vmx is required: the .vmx path of the guest on this host'
-}
+if (-not $Vmx) { throw 'M5VM_VMX / -Vmx is required: the .vmx path of the guest on this host' }
 if (-not $VmPassword) {
     throw 'M5VM_PASSWORD / -VmPassword is required: the encrypted-VM password for vmrun'
 }
@@ -42,33 +40,32 @@ $vmrun = 'C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe'
 if (-not (Test-Path -LiteralPath $vmrun)) { throw "vmrun not found at $vmrun" }
 if (-not (Test-Path -LiteralPath $Vmx)) { throw "the .vmx was not found: $Vmx" }
 
-function Invoke-Harness {
-    # A **hashtable** splat, not an array one: an array splat passes positional
-    # arguments, so `-Run` arrives as a string and the harness asks for a positional
-    # parameter that does not exist.  Measured.
-    param([hashtable]$Arguments)
-    Write-Host ("=== Invoke-M5Vm.ps1 {0}" -f (($Arguments.GetEnumerator() | ForEach-Object { "-$($_.Key) $($_.Value)" }) -join ' '))
-    $output = & (Join-Path $PSScriptRoot 'Invoke-M5Vm.ps1') @Arguments 2>&1 | Out-String
-    Write-Host $output
-    return [pscustomobject]@{ exit = $LASTEXITCODE; output = $output }
-}
+$harness = Join-Path $PSScriptRoot 'Invoke-M5Vm.ps1'
 
-# **The harness exits 0 even when a case fails.**  Its exit code reports the request,
-# not the verdict -- measured: two failing cases and `MYRD_VM_EXIT=0`.  So the verdict is
-# read from its own summary line, and a summary that cannot be found is a failure too:
-# "could not tell" must never read as "passed".
-function Assert-CasePassed {
-    param($Result, [string]$What)
-    $match = [regex]::Match($Result.output, '(\d+) of (\d+) passed')
+# **Run one harness phase and judge it by its own summary line.**
+#
+# The harness exits 0 even when the case fails -- measured twice, `MYRD_VM_EXIT=0` over two
+# failing cases -- so its exit code says the request was delivered, not that anything
+# passed.  The verdict is read from `N of M passed`, and a summary that cannot be found is
+# a failure: "could not tell" must never read as "passed".  The call is inline rather than
+# through a helper because a helper returning the captured text kept arriving empty here,
+# and a two-minute guest round trip is not the place to debug a wrapper.
+function Invoke-Phase {
+    param([string]$What, [hashtable]$Arguments)
+    Write-Host ("=== {0}: Invoke-M5Vm.ps1 {1}" -f $What,
+        (($Arguments.GetEnumerator() | ForEach-Object { "-$($_.Key) $($_.Value)" }) -join ' '))
+    $text = & $harness @Arguments 2>&1 | Out-String
+    Write-Host $text
+    $match = [regex]::Match([string]$text, '(\d+) of (\d+) passed')
     if (-not $match.Success) {
-        throw ("the {0} half produced no verdict line (exit {1})" -f $What, $Result.exit)
+        throw ("the {0} phase produced no verdict line" -f $What)
     }
     $passed = [int]$match.Groups[1].Value
     $total = [int]$match.Groups[2].Value
     if ($total -eq 0 -or $passed -ne $total) {
-        throw ("the {0} half failed: {1} of {2} passed" -f $What, $passed, $total)
+        throw ("the {0} phase failed: {1} of {2} passed" -f $What, $passed, $total)
     }
-    Write-Host ("  {0} half: {1} of {2} passed" -f $What, $passed, $total)
+    Write-Host ("  {0} phase: {1} of {2} passed" -f $What, $passed, $total)
 }
 
 function Wait-ForSsh([int]$seconds) {
@@ -89,18 +86,15 @@ function Wait-ForSsh([int]$seconds) {
 }
 
 if (-not $SkipStage) {
-    $stage = Invoke-Harness -Arguments @{ Stage = $true; Configuration = $Configuration }
-    if ($stage.exit -ne 0) { throw "staging failed ($($stage.exit))" }
+    Invoke-Phase -What 'stage' -Arguments @{ Stage = $true; Configuration = $Configuration }
 }
 
 # ---- phase 1: leave a disk that the cut will interrupt -------------------------
-$prepare = Invoke-Harness -Arguments @{ Run = $true;
-    Filter = '^integration\.m5\.powerloss_prepare$';
-    MinTimeoutSeconds = 600; TimeoutSeconds = 1200 }
-try {
-    Assert-CasePassed -Result $prepare -What 'prepare'
-} catch {
-    throw "$($_.Exception.Message); the power cut was not attempted"
+Invoke-Phase -What 'prepare' -Arguments @{
+    Run = $true
+    Filter = '^integration\.m5\.powerloss_prepare$'
+    MinTimeoutSeconds = 600
+    TimeoutSeconds = 1200
 }
 
 # ---- phase 2: the cut ---------------------------------------------------------
@@ -116,15 +110,17 @@ if (-not (Wait-ForSsh $BootTimeoutSeconds)) {
     throw "the guest did not answer ssh within $BootTimeoutSeconds s of the reboot"
 }
 Write-Host '  ssh is up; waiting for the boot to settle'
-# The service is started by the SCM partway through the boot, and the verify half waits
-# for it, so this is only to let the network and the SCM report settle.
+# The service is started by the SCM partway through the boot and the verify phase waits for
+# it, so this is only to let the network and the SCM report settle.
 Start-Sleep -Seconds 20
 
 # ---- phase 3: look, do not touch ----------------------------------------------
-$verify = Invoke-Harness -Arguments @{ Run = $true;
-    Filter = '^integration\.m5\.powerloss_verify$';
-    MinTimeoutSeconds = 900; TimeoutSeconds = 1800 }
-Assert-CasePassed -Result $verify -What 'verify'
+Invoke-Phase -What 'verify' -Arguments @{
+    Run = $true
+    Filter = '^integration\.m5\.powerloss_verify$'
+    MinTimeoutSeconds = 900
+    TimeoutSeconds = 1800
+}
 
 Write-Host 'PASS integration.m5.powerloss: the disk came back by itself after a hard power cut'
 exit 0

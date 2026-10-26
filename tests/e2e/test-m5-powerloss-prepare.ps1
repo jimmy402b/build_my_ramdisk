@@ -1,4 +1,4 @@
-# The first half of the power-cut acceptance (T1-09): leave a disk that a hard
+﻿# The first half of the power-cut acceptance (T1-09): leave a disk that a hard
 # power-off will interrupt, with everything the second half needs written down.
 #
 # It deliberately leaves the **installed** service running with `start= auto`: after a
@@ -94,8 +94,14 @@ Write-Host "  list: $($list.output.Trim())"
 $line = ($list.output -split "`n") | Where-Object { $_ -match [regex]::Escape($mount) } |
     Select-Object -First 1
 if ($null -eq $line) { Fail "disk list did not report ${mount}: $($list.output)" }
-$profileId = Get-UuidFromText $line
-if ($null -eq $profileId) { Fail 'disk list did not report the profile uuid' }
+# Parsed here, not through the shared helper: the helper returned null on a line that
+# plainly carries a uuid (measured: `e68f6af3-... T: ready running ...`), and a failure
+# that prints the line it could not read is worth more than a shared function whose
+# behaviour has to be debugged on the guest.
+$uuidMatch = [regex]::Match([string]$line,
+    '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+if (-not $uuidMatch.Success) { Fail "disk list line carries no profile uuid: [$line]" }
+$profileId = $uuidMatch.Value
 Write-Host "  profile $profileId"
 
 $autoStart = Invoke-Cli @('disk', 'config', 'set', 'auto_start', 'true', $profileId)
