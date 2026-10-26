@@ -2128,3 +2128,13 @@ add_test(
 set_tests_properties(integration.m5.gui_workflow PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 900)
+# ---- The shipped install path (Task T4-01) -----------------------------------
+# Copies a release, checks the driver instead of installing it, gives the durable directories an
+# explicit DACL, registers the service, and then removes all of it while keeping the record.
+add_test(
+    NAME integration.m5.install_uninstall
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-install-uninstall.ps1")
+set_tests_properties(integration.m5.install_uninstall PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 900)
