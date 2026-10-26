@@ -31,13 +31,16 @@ function Fail([string]$message) {
 
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $bin = Join-Path $repo "out/build/msvc/src/$Configuration"
-$cliExe = Join-Path $bin 'myrd-cli.exe'
-$guiExe = Join-Path $bin 'myrd-gui.exe'
-$serviceExe = Join-Path $bin 'myrd-service.exe'
+# The binaries this case *runs* are the installed ones: it drives the shipped installer, so it takes
+# the path a user takes and the service finds the durable directories it requires.
+$installDir = 'C:\Program Files\MyRamDisk'
+$cliExe = Join-Path $installDir 'myrd-cli.exe'
+$guiExe = Join-Path $installDir 'myrd-gui.exe'
+$serviceExe = Join-Path $installDir 'myrd-service.exe'
 $serviceName = 'MyRamDiskGuiE2E'
 . (Join-Path $PSScriptRoot 'm5-e2e-common.ps1')
 
-foreach ($path in @($cliExe, $guiExe, $serviceExe)) {
+foreach ($path in @((Join-Path $bin 'myrd-cli.exe'), (Join-Path $bin 'myrd-gui.exe'), (Join-Path $bin 'myrd-service.exe'))) {
     if (-not (Test-Path -LiteralPath $path)) { Fail "missing binary: $path" }
 }
 
@@ -55,24 +58,23 @@ foreach ($directory in @('C:\ProgramData\MyRamDisk\profiles', 'C:\ProgramData\My
         Get-ChildItem -LiteralPath $directory -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-Write-Step 'install and start the service'
-Remove-ScService
-Invoke-Sc @('create', $serviceName, 'binPath=', $serviceExe, 'type=', 'own', 'start=', 'demand')
-# **`sc start` may answer 1053 while the service is still starting.**  Measured on the guest: the SCM
-# gives a service thirty seconds to report RUNNING, and this one does recovery, the startup sweep and
-# its auto-starts first.  1053 there means "not yet", not "failed" -- `Wait-ForService` below is what
-# decides.
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $null = & sc.exe start $serviceName 2>&1
-        $startExit = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previous
-    }
-    if ($startExit -ne 0 -and $startExit -ne 1053) {
-        Fail "sc start failed ($startExit)"
-    }
+# **The shipped installer, not a hand-rolled `sc create`.**  Measured: the service refuses to start
+# when its data directories are missing (`profile_store.open_directory`, native 2), and the profile
+# store refuses directories whose DACL is not protected -- a test that creates neither gets a service
+# that stops with exit code 0 and no log line.  Driving the installer also exercises the path a user
+# takes, and it tolerates the SCM's thirty-second start budget itself.
+Write-Step 'install through the shipped installer'
+$installer = Join-Path $repo 'tools/install/Install-MyRamDisk.ps1'
+$previous = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $installOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer `
+        -SourceDirectory $bin -ServiceName $serviceName 2>&1 | Out-String
+    $installExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previous
+}
+if ($installExit -ne 0) { Fail "the installer failed ($installExit)`n$installOutput" }
 $answered = Wait-ForService 90
 if ($null -eq $answered) { Fail "the service never answered:`n$((Get-ServiceState))" }
 Write-Host "  service answering; disk will be mounted at $mount"
@@ -160,7 +162,18 @@ finally {
             if ($null -ne $forgetId) { $null = Wait-ForTerminal $forgetId 300 }
         }
     }
-    Remove-ScService
+    # The uninstaller takes any disk down first, then removes the service and the files; the durable
+    # record is left alone unless purged, which is the product's own rule and not worth bypassing here.
+    $uninstaller = Join-Path $repo 'tools/install/Uninstall-MyRamDisk.ps1'
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $uninstallOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $uninstaller `
+            -ServiceName $serviceName -AcceptVolatileDataLoss 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    Write-Host "  $($uninstallOutput.Trim())"
     Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue
 }
 
