@@ -401,35 +401,22 @@ if ($Stage) {
     }
     # Then recreate the path (with its parents) before copying into it.
     Invoke-Remote -Script "New-Item -ItemType Directory -Force -Path '$($guestRepoWin -replace '\\','/')' | Out-Null; 'ok'" | Out-Null
-
-    # Copied one item at a time.  A wildcard would not be expanded on the way
-    # from PowerShell to a native program, and letting scp glob it on its own
-    # produces a different result than intended.
-    #
-    # The stage tree is ENUMERATED rather than listed: a hardcoded list silently
-    # stopped copying `src`, `cmake`, the root files and `.git` when each was
-    # added, and the symptom was a test failure on the guest rather than a
-    # staging error.
-    $guestRepoScp = $guestRepoWin -replace '\\', '/'
+    # **One tar, not one scp per entry.**  Three measured failures sent this here: `scp -r local\out into
+    # an existing remote\out` creates remote\out\out, so the staged binaries land where the runner does
+    # not look; the `\.`-contents form is not supported by Windows OpenSSH's scp and fails to create the
+    # nested directories ("dest open ... Failure", which reads like a permission problem); and removing
+    # the target first did not stop the nesting either.  A tar stream sidesteps scp's directory
+    # semantics entirely, and it is how the git metadata already travels successfully.
+    $guestRepoScp = $guestRepoWin -replace '\\\\', '/'
     Copy-ToRemote -Local (Join-Path $stageDir 'tests.json') -Remote "$RemoteRoot/tests.json"
-    foreach ($entry in (Get-ChildItem -LiteralPath $stageDir -Force | Where-Object { $_.Name -ne 'tests.json' })) {
-        # **A directory's contents, not the directory.**  Measured: `scp -r local\out remote\out` into a
-        # target that already exists creates `remote\out\out`, and the staged binaries then sit where the
-        # runner does not look -- the run reports "0 test executables" while 122 were staged, and the
-        # count check (which exists for exactly this) refuses.  `\.` copies the contents, so the result is
-        # the same whether the target exists or not.
-        $remoteTarget = "$guestRepoScp/$($entry.Name)"
-        if ($entry.PSIsContainer) {
-            # **Remove the target, then copy the directory itself.**  Two measured failures led here:
-            # copying `local\out` into an existing `remote\out` creates `remote\out\out`, and the
-            # `\.`-contents trick does not work with Windows OpenSSH's scp -- it fails to create the
-            # nested directories and reports "dest open ... Failure", which reads like a permission
-            # problem.  Deleting first makes the plain copy land where the runner looks.
-            $null = Invoke-Remote -Script ("Remove-Item -LiteralPath '$remoteTarget' -Recurse -Force -ErrorAction SilentlyContinue; 'ok'")
-        }
-        Copy-ToRemote -Local $entry.FullName -Remote $remoteTarget
-    }
-
+    $payloadTar = Join-Path $OutDir 'payload.tgz'
+    Remove-Item -LiteralPath $payloadTar -Force -ErrorAction SilentlyContinue
+    & tar.exe -czf $payloadTar -C $stageDir .
+    if ($LASTEXITCODE -ne 0) { throw "tar failed to build the payload ($LASTEXITCODE)" }
+    Copy-ToRemote -Local $payloadTar -Remote "$guestRepoScp/.m5-payload.tgz"
+    $extractPayload = "& 'C:\Windows\system32\tar.exe' -xzf '$guestRepoScp/.m5-payload.tgz' -C '$guestRepoScp'; " +
+        "Remove-Item '$guestRepoScp/.m5-payload.tgz' -Force -ErrorAction SilentlyContinue; 'payload extracted'"
+    Invoke-Remote -Script $extractPayload | Out-Null
     # The main repository's git metadata goes to its own mirrored path, because
     # that is where the worktree's .git pointer sends git.
     $gitMetaTar = Join-Path $OutDir 'git-meta.tgz'
