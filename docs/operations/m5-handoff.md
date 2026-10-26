@@ -2140,3 +2140,25 @@ profile_types.h:20  inline constexpr std::uint32_t kProfileKnownFieldCount = 35;
   与 `encoded.value().size()` 对照；**两者必须满足 `encoded = 72 + payload`**，否则说明我读的不是同一个对象。
 - **状态**：回退后构建干净、22 用例全绿、工作树 0 改动。**卷标编解码就此暂停**，
   直到这个算术自洽——把一个 506 字节的样本冻成契约，是这一整段最不该做的事。
+### 3.89 2026-10-27 10:35：**506 的解释找到了——头文件改动必须 `--clean-first`**
+
+`kLastKnownTag`（和 `kProfileKnownFieldCount`、`kProfileHeaderBytes`）都定义在 **`profile_types.h`**，
+而项目根 `AGENTS.md` 与 transfer manifest §7 item 17 都写着：
+**任何头文件改动之后、测量之前，必须 `cmake --build … --clean-first`**，
+否则增量构建不会重编所有包含该头文件的 TU，得到的是**假读数**（历史上表现为 `0xC0000005` 假崩溃）。
+
+**我这一整段（3.81–3.88）所有"506/515/187"的测量都是在增量构建下取的**，因此：
+- 编码器源码里**根本没有**对 `kLastKnownTag` 的依赖（3.87 已逐行确认：297–442 行是平的 append 列表）；
+- 那么"只改常量、size 从 187 变 506"**只可能是陈旧对象/陈旧的测试可执行文件**造成的，
+  而不是编码逻辑——这正是 AGENTS.md 警告的那类事故，只是这次表现为"尺寸变了"而不是崩溃。
+
+**⇒ 下次做卷标编解码的唯一正确顺序**：
+```powershell
+# 1) 改 codec + 测试（tag 36 为必需字段 + 控制字符哨兵）
+# 2) 头文件改了 ⇒ 必须干净重建
+cmake --build out/build/msvc --config Release --clean-first
+# 3) 再量 size，并用测试自己写文件（fopen/ofstream）。预期：72 头 + ~123 payload ≈ 195
+# 4) 若 size 不是 ~195，才谈"编码器多写了什么"；若是 195，直接把该字节串写进黄金样本
+```
+**教训（第 4 次、也是最贵的一次）**：**头文件一改，之前的读数全部作废**。
+本会话在客机上用哈希对齐解决过同类问题（旧 worker），在开发机上却忘了同一条规则。
