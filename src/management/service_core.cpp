@@ -8440,15 +8440,41 @@ Result<std::vector<product::Uuid>> ServiceCore::admit_auto_starts() {
     std::vector<product::Uuid> admitted;
     for (const auto& snapshot : listed.value()) {
         const auto& profile = snapshot.record.profile;
-        // What "was up" means durably: the record said running and the profile asked to
-        // be brought back.  `starting` and `stopping` are windows a crash can leave
-        // behind, and acting inside one would race the reconciliation that owns them --
-        // so they are skipped rather than started, and the next boot will see a settled
-        // state.
-        if (!profile.auto_start
-            || snapshot.state.disk.runtime != product::RuntimeState::running) {
+        if (snapshot.state.disk.runtime != product::RuntimeState::running) {
             continue;
         }
+        // **A durable `running` with no worker is stale, and it has to be retired first.**
+        //
+        // A worker is a child of this process, so a profile whose record says running at
+        // *this* moment is describing the previous process.  Dispatching `disk start`
+        // straight away was measured to do nothing at all: the state machine reads
+        // start-on-running as an idempotent no-op, the operation reached `terminal` with
+        // no action ever started, and the disk went on looking running while no worker
+        // held the volume -- `PersistenceBlocked`, `mem=0/0`, no drive letter, after a
+        // hard power cut.  Publishing `stopped` first is what turns the start below into
+        // a real start.
+        auto rebased = snapshot;
+        rebased.state.disk.runtime = product::RuntimeState::stopped;
+        rebased.state.disk.activity = product::ActivityState::idle;
+        auto published = profiles_.publish_runtime(
+            snapshot, rebased.state, snapshot.operation_gate);
+        if (!published.ok()) {
+            return Result<std::vector<product::Uuid>>::failure(
+                published.error());
+        }
+        auto rebase_id = ids_.next();
+        if (rebase_id.ok()) {
+            logger_.write(ServiceLogEvent{
+                ServiceLogKind::restart_reconcile,
+                rebase_id.value(),
+                std::nullopt,
+                profile.profile_uuid,
+                "disk.start",
+                "auto-start",
+                "auto-start: the durable running state had no worker, so it was retired "
+                "before the disk was started"});
+        }
+        if (!profile.auto_start) continue;
         auto request_id = ids_.next();
         if (!request_id.ok()) {
             return Result<std::vector<product::Uuid>>::failure(
