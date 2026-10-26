@@ -1,4 +1,4 @@
-﻿#include "src/management/service_core.h"
+#include "src/management/service_core.h"
 
 #include "src/common/sha256.h"
 #include "src/common/diagnostic_trace.h"
@@ -238,7 +238,10 @@ bool lifecycle_intent_equal(
             == right.physical_memory.total_bytes
         && left.physical_memory.available_bytes
             == right.physical_memory.available_bytes
-        && left.created_unix_ms == right.created_unix_ms;
+        && left.created_unix_ms == right.created_unix_ms
+        // The label is part of the intent's identity: two creates that differ only by label are not the
+        // same request, and treating them as equal would let one be answered by the other's operation.
+        && left.volume_label == right.volume_label;
 }
 
 bool reservation_equal(

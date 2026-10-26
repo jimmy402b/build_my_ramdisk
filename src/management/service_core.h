@@ -536,6 +536,8 @@ struct LifecycleOperationIntent final {
     std::optional<control::OptionalSize> dirty_threshold;
     PhysicalMemorySnapshot physical_memory;
     std::uint64_t created_unix_ms{};
+    // Declared last so every existing positional initializer keeps meaning what it meant (T4-02).
+    std::optional<std::wstring> volume_label;
 };
 
 enum class RecoveryOperationKind : std::uint8_t {
