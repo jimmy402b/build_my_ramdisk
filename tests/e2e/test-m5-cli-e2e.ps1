@@ -431,6 +431,38 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         Fail 'the stopped disk disappeared from the list instead of being reported as stopped'
     }
 
+    # **Restart, and prove the bytes are still there.**  Until this step the test
+    # stopped and then forgot: "recovery after a restart" was never exercised, so a
+    # stop that lost the last checkpoint would have passed.  The file written after
+    # the explicit checkpoint is the one the stop's final checkpoint had to persist.
+    Write-Step 'T1-05: restart it -- the bytes written before the stop must survive'
+    $start = Invoke-Cli @('disk', 'start', $profileName)
+    if ($start.exit -ne 0) { Fail "disk start failed: $($start.output)" }
+    Write-Host "  $($start.output.Trim())"
+    $startId = Get-UuidFromText $start.output
+    if ($null -eq $startId) { Fail 'the start response carried no operation identifier' }
+    $startState = Wait-ForTerminal $startId 300
+    if ($startState -ne 'succeeded') { Fail "the restart ended $startState" }
+    $afterRestart = Join-Path $mount 'm5-cli-e2e-after.txt'
+    if (-not (Test-Path -LiteralPath $afterRestart)) {
+        Fail "the volume was not remounted at ${mount}: the profile started but no volume appeared"
+    }
+    $restored = Get-Content -LiteralPath $afterRestart -Raw
+    if ($restored.Trim() -ne 'after checkpoint') {
+        Fail "the bytes written before the stop did not survive the restart: '$($restored.Trim())'"
+    }
+    Write-Host "  restarted on ${mount}; the file written before the stop is intact"
+
+    Write-Step 'T1-05: stop it again before removing it'
+    $stop2 = Invoke-Cli @('disk', 'stop', $profileName)
+    if ($stop2.exit -ne 0) { Fail "the second stop failed: $($stop2.output)" }
+    $stop2Id = Get-UuidFromText $stop2.output
+    if ($null -eq $stop2Id) { Fail 'the second stop carried no operation identifier' }
+    $stop2State = Wait-ForTerminal $stop2Id 300
+    if ($stop2State -ne 'succeeded') { Fail "the second stop ended $stop2State" }
+    if (Test-Path -LiteralPath ($mount + '\')) {
+        Fail "the volume is still mounted at $mount after the second stop"
+    }
     Write-Step 'T1-05: remove it (fail-closed forget, confirmation is the profile identifier)'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
