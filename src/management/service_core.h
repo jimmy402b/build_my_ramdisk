@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "src/common/result.h"
 #include "src/common/sha256.h"
@@ -777,6 +777,14 @@ struct CheckpointCommitBoundaryDecision final {
 struct CheckpointEpochObservation final {
     CheckpointCommitBoundaryEvidence correlation;
     std::uint64_t live_dirty_epoch{};
+    // Whether the worker still holds writes the commit did not persist.
+    //
+    // This is the fact the stop decision needs, and it is a *block-level*
+    // question, not an ordering one: a successful commit resets the dirty epoch,
+    // so comparing the live epoch against the checkpoint's cut epoch was false
+    // after every real commit.  `live_dirty_epoch` stays for the durable record;
+    // it must not decide cleanliness.
+    bool post_commit_dirty{};
 };
 
 using CheckpointCommitBoundaryHandler = std::function<

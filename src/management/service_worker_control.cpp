@@ -1472,8 +1472,6 @@ Result<void> ServiceWorkerControl::publish_checkpoint_epoch(
     // decides whether this service accepts the commit the worker already made.
     // A fence that refuses turns a landed commit into one this service will not
     // record, which is the reconciliation path rather than a silent acceptance.
-    static_cast<void>(request);
-    static_cast<void>(correlation);
     if (!publish) {
         // No fence wired is not a licence to skip it: an unwired publication
         // boundary means the caller cannot be told the epoch moved.
@@ -1482,7 +1480,21 @@ Result<void> ServiceWorkerControl::publish_checkpoint_epoch(
             L"service_worker_control.publish_checkpoint_epoch",
             L"The dirty-epoch fence was not supplied"));
     }
-    return publish(CheckpointEpochObservation{correlation, 0});
+    // **Cleanliness is a fact about the worker's blocks, not an ordering.**
+    // A successful commit resets the dirty epoch, so `live == cut` was false
+    // after every real commit -- which is why every `stop` was classified dirty
+    // and could never complete.  The worker that just committed is asked what it
+    // still holds; "could not ask" is a failure here, never "clean".
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<void>::failure(session.error());
+    }
+    auto status = session.value()->require_runtime_observation(context());
+    if (!status.ok()) {
+        return Result<void>::failure(status.error());
+    }
+    return publish(CheckpointEpochObservation{
+        correlation, status.value().dirty_epoch, status.value().dirty});
 }
 
 Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(

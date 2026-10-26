@@ -191,6 +191,30 @@ TEST_CASE(m5_checkpoint_dispositions_preserve_safe_truth) {
         == AggregateStatus::blocked_needs_attention);
 }
 
+// A stop's final state is decided at `finalize_operation`, not by the mid-plan
+// checkpoint step, and its two answers are not symmetric: a clean stop is a
+// success, a dirty one is not.  The write freeze runs *before* the final
+// checkpoint, so "still dirty after the commit" means the freeze let writes
+// through -- reporting that as done would hide a data-loss defect.  This case
+// exists because the first version of the fix was going to accept dirty.
+TEST_CASE(m5_stop_completes_clean_and_refuses_a_dirty_final_checkpoint) {
+    const auto before = state(product::RuntimeState::running,
+        product::ActivityState::idle, product::PersistenceState::dirty);
+    const auto plan = plan_command(before, ManagementCommand::stop);
+    REQUIRE(plan.accepted());
+
+    const auto clean = complete_command(
+        plan, CompletionOutcome::succeeded_clean);
+    REQUIRE(clean.applied());
+    REQUIRE(clean.after.disk.runtime == product::RuntimeState::stopped);
+    REQUIRE(clean.after.disk.activity == product::ActivityState::idle);
+    REQUIRE(clean.after.disk.persistence == product::PersistenceState::clean);
+
+    const auto dirty = complete_command(
+        plan, CompletionOutcome::succeeded_dirty);
+    REQUIRE(!dirty.applied());
+}
+
 TEST_CASE(m5_independent_profile_gates_can_progress_in_parallel) {
     const auto operation_a = id("33333333-3333-4333-8333-333333333333");
     const auto operation_b = id("44444444-4444-4444-8444-444444444444");

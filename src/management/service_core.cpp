@@ -5747,19 +5747,44 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         // is only meaningful within one session.  The live epoch
                         // was already checked against this checkpoint's own cut
                         // above, which is the comparison that has an order.
-                        const auto clean =
-                            observation.live_dirty_epoch
-                            == evidence.correlation.cut_dirty_epoch;
-                        const auto completed = complete_command(
-                            pending_plan,
-                            clean
-                                ? CompletionOutcome::succeeded_clean
-                                : CompletionOutcome::succeeded_dirty);
-                        if (!completed.applied()) {
-                            return Result<void>::failure(service_error(
-                                ServiceCoreError::operation_invalid,
-                                L"service_core.checkpoint_epoch",
-                                L"The final checkpoint state is invalid"));
+                        // **Cleanliness is a fact about the worker's blocks, not
+                        // about an epoch ordering.**  A successful commit resets
+                        // the dirty epoch, so `live == cut` was false after every
+                        // real commit: `create` passed only because its first cut
+                        // was generation zero, and every `stop` failed right
+                        // here with 22022.
+                        //
+                        // The non-stop path is deliberately left on the old
+                        // expression for now.  It compares a stubbed epoch that is
+                        // always zero, which for a create is indistinguishable
+                        // from "clean"; correcting the epoch pipeline is T1-06 /
+                        // T1-07 work, and folding it into this stop fix would
+                        // change create's published persistence by accident.
+                        const auto clean = normal_stop
+                            ? !observation.post_commit_dirty
+                            : observation.live_dirty_epoch
+                                == evidence.correlation.cut_dirty_epoch;
+                        // A stop must not "complete" here.  This is one step of a
+                        // seven-step plan and `stop` has three steps left (remove
+                        // the mount, remove the device, stop the runtime), so the
+                        // command-level table has no honest answer for this
+                        // moment.  Its completion is decided by
+                        // `finalize_operation`; what this step owes is the durable
+                        // checkpoint truth published below.
+                        auto completed_state = current_profile->state;
+                        if (!normal_stop) {
+                            const auto completed = complete_command(
+                                pending_plan,
+                                clean
+                                    ? CompletionOutcome::succeeded_clean
+                                    : CompletionOutcome::succeeded_dirty);
+                            if (!completed.applied()) {
+                                return Result<void>::failure(service_error(
+                                    ServiceCoreError::operation_invalid,
+                                    L"service_core.checkpoint_epoch",
+                                    L"The final checkpoint state is invalid"));
+                            }
+                            completed_state = completed.after;
                         }
                         auto final_checkpoint =
                             current_profile->checkpoint;
@@ -5817,7 +5842,6 @@ Result<OperationRecord> ServiceCore::execute_operation(
                                 .prerequisite_checkpoint_disposition =
                                 CheckpointCommitDisposition::committed;
                         }
-                        auto completed_state = completed.after;
                         // The first checkpoint establishes durable volume
                         // truth while the profile record is still
                         // provisioning.  publish_ready_profile is the only
