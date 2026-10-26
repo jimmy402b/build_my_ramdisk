@@ -1981,3 +1981,18 @@ PASS integration.m5.powerloss: the disk came back by itself after a hard power c
 - **CLI 仍不接受 `--volume-label`**（3.78 的决定保持）：管线通了、门锁着，直到服务与 worker 能兑现。
 - **下一步**：`Profile` tag 36（记得同时更新 `m4_profile_codec_tests.cpp` 的黄金样本）→ worker 在
   `readiness-io` 后 `SetVolumeLabelW` → 再把 CLI 选项加回 → 客机 `fsutil fsinfo volumeinfo` 读数。
+### 3.80 2026-10-27 09:45：profile 编解码**回退**——`kLastKnownTag` 不是"最高可识别"，而是"必须存在的范围"
+
+- 现象：把 `kLastKnownTag` 从 `index_headroom_percent`(35) 提到 `volume_label`(36) 后，
+  **黄金样本解码失败**（`decoded.ok()` 为假）。⇒ 这个解码器把 `kLastKnownTag` 当作
+  **必需字段上界**，不是"认得的最高 tag"。少了 36 的记录会被判非法。
+- 于是回退 `profile_codec.cpp`（22 个编解码用例恢复全绿），**保留** `profile_types.h` 的
+  tag 36 + `Profile::volume_label` 字段。
+- **下次的正确入口**：先看这个文件怎么表达"可选 vs 必需"（例如是否存在按 tag 的
+  `FieldRequirement`/位图，或 `decode_typed_payload` 的 required 列表），**再**决定
+  36 是可选还是"v1 必需、缺省即视为无标签"。
+  两条可行路线：
+  1. **可选**：给 36 一个"缺失即空"的规则（最像 `volume_guid` 这类 optional 字段的处理）；
+  2. **必需**：那就必须**同时**把黄金样本更新为含 36 的新字节（今天已走过一次这条路，
+     且会更动所有既有 profile 的兼容性假设——**不推荐**）。
+- **教训**：`kLastKnownTag` 这种常量的语义必须**从使用点反推**，不能从名字推。
