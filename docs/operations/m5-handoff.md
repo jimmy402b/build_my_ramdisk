@@ -968,3 +968,35 @@ PASS T3-05
 
 **T4 剩余**：T4-02（Load Only / 单文件 VHDX 导出 / 易失盘模式 / 卷标·簇大小·卷序列号）→
 T4-03（在线 compaction）→ T4-04（M5-E + release manifest 冻结）。
+---
+
+### 3.26 2026-10-27 02:00：T4-02 的施工图（已勘察，未开工）
+
+T4-02 一句话：**Load Only 模式、单文件 VHDX 导出、易失盘模式、卷标/簇大小/卷序列号**。
+勘察结果（`grep` 过一遍代码，不是凭印象）：**四件里没有一件是"加个开关"**——每件都是一条
+CLI → control → wire → intent → profile → worker/卷 的完整纵切，而 profile 字段还有版本与校验成本。
+
+**已有可复用的东西**：
+- VHDX / fold 机制在 `src/persistence/compaction_coordinator.{h,cpp}`（`CompactionArtifactBuildRequest`
+  已经在造"单文件产物"）与 `src/m3/m3_provider.cpp`（15 处 VHDX 相关）；
+- 卷序列号已经采到：`m5_worker_runtime.cpp:258` 的 `evidence.volume_serial =
+  identity.value().volume_serial_number`，并且已经在 worker 协议里传输
+  （`m5_worker_protocol.cpp:344/655`）——**这条只差在 `disk show` 里显示出来**，是全组里最便宜的一件。
+
+**按成本从低到高排的施工顺序**（建议照这个顺序，每步都能单独绿）：
+1. **卷序列号可见**：`disk show` 增加一行（视图字段已有 `volume_serial`），改 CLI renderer + 一个模型用例；
+2. **卷标 / 簇大小**：`LifecycleOperationIntent` 加两个字段（`std::wstring volume_label`、
+   `std::uint32_t cluster_size_bytes`）→ `control::DiskCreateCommand` + `ipc_codec` →
+   CLI `--volume-label` / `--cluster-size` → `profile::Profile` 追加两个字段（**追加到末尾并更新
+   codec/validation/`kFields`**，注意 `profile_types.h` 的字段 tag 已经用到 26）→
+   `m3_provider.cpp` 的卷格式化调用带上它们；
+3. **易失盘模式**：`Profile` 加 `bool volatile_mode`；语义写清楚（**不做检查点、停止即弃**），
+   在 `profile_validation` 里与 checkpoint 策略互斥校验，`disk create --volatile` 传下来；
+4. **Load Only**：`M3Provider::start` 增加只读选项（store 以只读打开，执行器拒绝 checkpoint/
+   compaction/带写停止），`disk start --load-only`；`disk list` 的 `activity` 要能表示这个状态；
+5. **VHDX 导出**：`disk export --to <file.vhdx>`，复用 compaction 的 fold writer 产出折叠镜像，
+   再套上 `m3_provider.cpp` 既有的 VHDX 头；导出必须**在只读快照上做**，不能影响正在运行的盘。
+
+**验收口径**（每件都要客机读数）：卷标/簇大小在 `disk show` 与 `fsutil fsinfo` 里一致；易失盘
+断电后**没有** checkpoint 可恢复（这是它的定义）；Load Only 成功的盘 `disk list` 显示只读且
+worker 只为读启动；导出的 VHDX 能被 `Mount-DiskImage` 挂上且根目录可读。
