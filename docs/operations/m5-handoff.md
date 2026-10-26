@@ -228,6 +228,26 @@ forget 本身未实现（`c1ac06f`）。
 
 ---
 
+### 3.9 2026-10-26：`cli_e2e -Repeat 20 → 20/20`（第一次）
+
+```text
+integration.m5.cli_e2e  -Repeat 20  →  20 of 20 passed
+请求 6d8dd60cf5064f6d85a21a3ef7065112
+```
+
+覆盖：create → list/show → 读写 → checkpoint → stop → 注册仍在 → forget →
+installed service（SCM 安装/应答/停止/删除）。
+
+**注意**：此前两轮是 18/20（#2/#16 之类，停在 `reconciling`），所以这一次 20/20
+**还不能单独作为稳定性结论**——项目规则是"单次绿是弱证据"。第二次 20 次正在跑，
+两次都 20/20 才算。
+
+**这轮没有新的产品改动**，只给 `Wait-ForTerminal` 加了"失败时打印服务日志尾部"
+（`reconciling` 被三种失败共用，不打印就只能说"它挂了"）。也就是说：18/20 → 20/20
+之间没有代码变化，**这个间发缺陷仍未根治**，只是这次没出现。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
