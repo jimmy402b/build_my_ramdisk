@@ -1262,3 +1262,19 @@ Invoke-Remote "& 'C:\Windows\system32\tar.exe' -xzf '$guestRepoScp/.m5-payload.t
 
 **在当前状态**：staging 会被计数守卫拒绝（这是好事，不会让客机跑出误导性失败）；
 `out\out` 残留需在客机上 `rmdir /s /q ...\out` 清一次。
+### 3.42 2026-10-27 03:45：staging 修好了，但**agent 不接请求**
+
+- `eb04118`：载荷改为**单个 tar**（本地打包 → 传一个文件 → 客机 `tar -xzf`），staging 立刻恢复：
+  `staged to usr@myrd-vm:…` 这行只在客机计数与本地一致后才打印。三条 scp 语义坑的经验已写进代码注释。
+- 但用 `-Run -Filter '^unit\.'`（请求 `b8c62798…`）后 **10 分钟没有结果**。客机侧用 cmd 查到：
+  - `C:\m5\control` 里**有** `b8c62798….request.ps1`（请求已提交）；
+  - `cmd /c echo probe-ok` **秒回**（客机、ssh、cmd 都正常）；
+  ⇒ **计划任务里的 agent 没去取这个请求**。最可能是之前那次 42 分钟的整套运行留下的 agent 实例
+    还占着（它的锁/互斥），或者任务的触发器坏了。
+- **下一步**：
+  1. 用**单行、不含空格参数**的 cmd 查任务：`schtasks /query /fo csv` 再本地过滤（不要在同一条 ssh 里塞
+     `findstr "a b"`，Windows 会把引号吃掉）；
+  2. 看 `C:\m5\agent` 下 agent 自己的日志（它在里面写执行记录）；
+  3. 若确认卡住：`schtasks /end /tn <任务名>` 再 `/run`，或直接重启客机（本会话多次证明 15 s 可恢复）。
+- **纪律**：Windows 的 ssh 命令里**引号与空格会被吞**，多参数一律改用 `-EncodedCommand`；
+  这次连 `tasklist /fi "..."` 都被拆坏，浪费了两轮。
