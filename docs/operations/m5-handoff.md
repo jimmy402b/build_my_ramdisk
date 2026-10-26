@@ -1955,3 +1955,18 @@ PASS integration.m5.powerloss: the disk came back by itself after a hard power c
 
 **未做（记录在案）**：把采纳到的活动身份**写回 profile 记录**——目前每次恢复都会再采纳一次，
 只多一行日志，不影响正确性；写回是后续项。
+### 3.78 2026-10-27 09:25：卷标纵切**第一层已落**（只加字段，未开任何入口）
+
+- `src/control/command.h` 的 `DiskCreateCommand` 末尾新增
+  `std::optional<std::wstring> volume_label;`，注释写明：**它是创建选项而不是 profile 字段**的理由
+  （要打在 worker 刚挂载的那块卷上，而不是"可能已不存在的卷"的记录上）。
+- **故意只做这一层**：解析器还不接受 `--volume-label`，所以**没有任何路径能传一个"悄悄不生效"的标签**。
+- **剩余步骤（位置已定位，按序做）**：
+  1. `src/cli/cli_parser.cpp` 的 `verb == L"create"` 分支（约 260 行，`--owner` 之后）加
+     `--volume-label`：取值 → 长度 ≤ 32 → 非法字符拒绝；同时在约 21 行的用法里补一行；
+  2. 命令编解码（`src/control/ipc_codec.cpp`）：新 tag + 写 + 读，两侧同时改（客户机与服务一起发版，
+     **追加字段不需要协议次版本号**——这是已记录的决定）；
+  3. `LifecycleOperationIntent` 携带它；`profile::Profile` 加 tag 36（**同时**要把
+     `m4_profile_codec_tests.cpp` 的黄金样本更新——今天已付过这次学费）；
+  4. worker 在 `readiness-io` 之后调 `SetVolumeLabelW`；失败**不**让 start 失败，但要记日志；
+  5. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行。
