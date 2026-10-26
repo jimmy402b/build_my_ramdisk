@@ -1146,3 +1146,17 @@ PASS T3-05
 **纪律提醒（这轮踩过的两个坑，别再踩）**：
 - 改 `profile_types.h`（头文件）后**必须 `--clean-first`**，否则会出现"半套改动"的假失败；
 - **一次命令只做一处块替换**，每步都跑 `Parser::ParseFile` / 编译验证——上一轮三处叠加丢了一个 `}`。
+### 3.35 2026-10-27 03:25：3.34 清单的两处修正（勘察结果，别再走弯路）
+
+1. **字段 tag 号已经有了确定值**：`ProfileFieldTag` 目前用到 35（compaction 那组），所以卷标与簇大小
+   用 **36 / 37**，追加在 `automatic_compaction` 之后；`profile_codec` 的写/读与字段计数按现有风格同步。
+2. **卷格式化不在 `m3_provider.cpp`**：该文件里只有 `journal_format.h` 与错误码，**没有** volume create /
+   label / cluster 的调用点。卷的创建走 **AIM 代理层**（`src/proxy/`）与 worker 侧，
+   所以 3.34 第 6 步应改成：**在 worker 的卷创建路径（AIM format 请求）里带上卷标与簇大小**，
+   对应 `src/proxy/*` + `src/host/m5_worker_runtime.cpp` 的 create-device 动作。
+   ⇒ 这一步比 3.34 估计的更靠下，**需要先确认 AIM 的 format 请求结构里是否有这两个字段**（如果没有，
+   卷标只能在格式化后用 `SetVolumeLabel` 设置，簇大小则必须先确认再格式化——这决定了 CLI 选项是
+   "创建时"还是"创建前"语义）。
+
+**结论**：第 2 步真正的第一件事是**读 AIM 的 format 请求结构**，不是先改 profile——
+否则会做出一个存得下、却改不了卷的字段。
