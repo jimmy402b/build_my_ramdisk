@@ -654,7 +654,32 @@ WER）拿崩溃模块与偏移，再决定是修代码还是修环境。`service
 3. 断电 → 开机 → **每 15 秒**采一次同样的快照，连采 3 分钟并带时间戳输出；
 4. 用快照序列判断上面 (a)/(b)/(c) 哪一类，再动代码。
 
-**下一步（新会话从这里开始）**：
+**2026-10-27 01:05 结论：上一轮的"矛盾"是测量通道的问题，不是产品的**
+
+用**带时间戳的快照**（`C:\m5\snap.ps1`，客机本地跑）在断电重启后 31 秒采到：
+
+```text
+01:03:38 state=RUNNING pid=3164 start=01:03:07 pipes=0 loglen=8605
+sc qc → START_TYPE: 2 AUTO_START
+        BINARY_PATH: …\out\build\msvc\src\Release\myrd-service.exe
+```
+
+而同一时刻服务自己的日志已经写到 `disk.start … terminal`——**断电后的那次 start 走完了全部
+动作**（`start-proxy → create-device → locate-physical-drive → verify-volume → assign-mount →
+readiness-io → terminal`）。
+
+于是三条"矛盾"观察的解释是：**普通 ssh 会话不是提权会话**（AGENTS §5：SSH 是网络登录、不提权），
+所以
+- `\\.\pipe\` 枚举可能被拒 → 我看到的 `pipes=0` **不是**"没有管道"；
+- 非提权的 `myrd-cli disk list` 拿不到公开管道 → 我看到的 `service is not available` **不是**
+  "服务没起来"。
+
+**教训（写进 lessons）**：**凡是要碰公开管道、进程、服务的测量，只能走 harness 的提权通道
+（ctest 用例 + scheduled task），不能用普通 ssh 会话下结论。** 我上一轮据此写下的
+"服务进程死了""服务不存在"两条都要收回。
+
+**下一步**：把快照做成一个 ctest 用例（提权通道），在 verify 之前打印一次；然后用它替代
+我这几轮的手工 ssh 判断，重跑一次三段。verify 的 `Wait-ForService` 若仍超时，那才是真问题。
 
 
    `StartTime` 是不是这次开机；
