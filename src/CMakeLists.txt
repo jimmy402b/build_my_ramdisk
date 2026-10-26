@@ -1,4 +1,4 @@
-# Source directory ??targets added in later tasks.
+﻿# Source directory ??targets added in later tasks.
 
 add_library(myrd_m4_run STATIC
     run/cli.cpp run/cli.h
@@ -304,6 +304,7 @@ add_library(myrd_product_contracts STATIC
     product/product_state.cpp product/product_state.h
     product/product_version.h
     product/quantity_parser.cpp product/quantity_parser.h
+    product/service_view.cpp product/service_view.h
     product/uuid.cpp product/uuid.h
 )
 target_include_directories(myrd_product_contracts PUBLIC "${CMAKE_SOURCE_DIR}")
@@ -422,7 +423,7 @@ add_library(myrd_cli STATIC
 )
 target_include_directories(myrd_cli PUBLIC "${CMAKE_SOURCE_DIR}")
 # `myrd_management` for the response wire codec, which is the one piece of the service
-# the client and the GUI are meant to share (design spec 搂10.2).  Splitting that codec
+# the client and the GUI are meant to share (design spec 鎼?0.2).  Splitting that codec
 # out of the management library is T3-01's job, not this one's: it needs the
 # projections moved first, and doing it here would be a half-split.
 target_link_libraries(myrd_cli PUBLIC myrd_product_ipc myrd_management)
