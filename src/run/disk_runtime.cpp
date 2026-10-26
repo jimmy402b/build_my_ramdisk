@@ -187,6 +187,20 @@ Result<void> DiskRuntime::start() {
         volume_ = found.move_value();
     }
 
+    // **The letter comes before the identity check, for a recovery.**
+    //
+    // The ownership token lives on the filesystem, so it cannot be read until the
+    // volume has a mount point.  A restart of a cleanly stopped disk finds its
+    // volume unmounted, and the old order rejected it there: measured as
+    // `owned=0` with the volume GUID, disk number and extents all equal.
+    if (mode_ == DiskRuntimeMode::recover) {
+        if (!operations_.assign_drive_letter)
+            return fail(missing_void(L"assign_drive_letter"));
+        result = operations_.assign_drive_letter(*volume_, options_.drive_letter);
+        if (!result.ok()) return fail(result);
+        drive_letter_assigned_ = true;
+        drive_letter_present_ = true;
+    }
     if (!operations_.verify_volume)
         return fail(missing_void(L"verify_volume"));
     result = operations_.verify_volume(*volume_, options_.virtual_bytes);
@@ -208,14 +222,8 @@ Result<void> DiskRuntime::start() {
             (void)shutdown_clean_locked();
             return not_committed;
         }
-    } else if (mode_ == DiskRuntimeMode::recover) {
-        if (!operations_.assign_drive_letter)
-            return fail(missing_void(L"assign_drive_letter"));
-        result = operations_.assign_drive_letter(*volume_, options_.drive_letter);
-        if (!result.ok()) return fail(result);
-        drive_letter_assigned_ = true;
-        drive_letter_present_ = true;
     } else {
+
         // `reclaim`.  The volume was found *by* the recorded letter, so a letter **is**
         // mounted on it -- adopted rather than assigned -- and teardown must remove it.
         // Recording that here is what makes the difference between a reclaim that works
