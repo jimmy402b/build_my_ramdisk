@@ -1662,3 +1662,12 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 
 **注意**：冻结必须在**最后一次代码改动之后**做；T4-02/T4-03 的功能改动仍会改变产物，
 所以冻结步骤放在这两项完成之后，而不是现在。
+### 3.63 2026-10-27 07:50：manifest 生成器就绪（**工具**，不是冻结）
+
+- `tools/New-M5ReleaseManifest.ps1`：对四个 Release 产物算 SHA-256、收集证据目录里的 results 摘要
+  （只记 name/exit_code/request_id，**不复制内容**——结果文件本身才是证据）、缺文件或坏 JSON 就拒绝。
+- 实测：`manifest: wrote …release-manifest.json (4 binaries, 0 readings)`，哈希例如
+  `myrd-service.exe 1110016 B / 20b273df…`、`myrd-cli.exe 185344 B / 6fc50e44…`。
+- 文件里写明了两条自我约束：① `$PSScriptRoot` 不能用在 param 默认值里（实测报"empty string"），
+  已在 body 里解析；② manifest 明确列出**它不主张什么**——它不证明客机跑过，那是 results 里的 request id 的职责。
+- **冻结仍未发生**：要等 T4-02/T4-03 完成后的最后一次构建，再跑这个脚本 + `Verify-M5Evidence.ps1`。
