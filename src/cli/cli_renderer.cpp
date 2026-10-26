@@ -69,7 +69,7 @@ std::string profile_line(const product::ServiceDiskView& profile) {
 
 } // namespace
 
-std::string render_response(const management::ServiceResponseWire& response) {
+std::string render_response(const client::ServiceResponseWire& response) {
     std::ostringstream text;
     if (response.error.has_value()) {
         const auto& error = response.error.value();
@@ -115,24 +115,24 @@ std::string render_response(const management::ServiceResponseWire& response) {
     return text.str();
 }
 
-CliExitCode exit_code_for(const management::ServiceResponseWire& response) {
+CliExitCode exit_code_for(const client::ServiceResponseWire& response) {
     if (response.error.has_value()) {
         const auto& error = response.error.value();
         const auto code = error.code;
         // The service's own classifications first, because they are the ones the
         // service chose deliberately; the domain is the fallback for anything that
         // did not come through `ServiceCore`.
-        switch (static_cast<management::ServiceCoreError>(code)) {
-        case management::ServiceCoreError::invalid_request:
-        case management::ServiceCoreError::unsupported_command:
-        case management::ServiceCoreError::wait_protocol_invalid:
+        switch (static_cast<product::ServiceCoreError>(code)) {
+        case product::ServiceCoreError::invalid_request:
+        case product::ServiceCoreError::unsupported_command:
+        case product::ServiceCoreError::wait_protocol_invalid:
             return CliExitCode::usage;
-        case management::ServiceCoreError::authorization_denied:
+        case product::ServiceCoreError::authorization_denied:
             return CliExitCode::permission;
-        case management::ServiceCoreError::profile_not_found:
-        case management::ServiceCoreError::state_rejected:
-        case management::ServiceCoreError::operation_invalid:
-        case management::ServiceCoreError::dependency_failure:
+        case product::ServiceCoreError::profile_not_found:
+        case product::ServiceCoreError::state_rejected:
+        case product::ServiceCoreError::operation_invalid:
+        case product::ServiceCoreError::dependency_failure:
             return CliExitCode::failure;
         }
         switch (static_cast<OperationErrorCode>(code)) {

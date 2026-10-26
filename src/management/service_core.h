@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "src/common/result.h"
 #include "src/common/sha256.h"
@@ -21,16 +21,9 @@
 
 namespace myrd::management {
 
-enum class ServiceCoreError : std::uint32_t {
-    invalid_request = 0x5601,
-    unsupported_command,
-    authorization_denied,
-    profile_not_found,
-    state_rejected,
-    operation_invalid,
-    wait_protocol_invalid,
-    dependency_failure,
-};
+// Moved to the contracts library in T3-01: these codes travel to clients, which have to map
+// them to exit codes and sentences.  Re-exported for every existing call site.
+using product::ServiceCoreError;
 
 enum class ClientWaitState : std::uint8_t { active = 0, cancelled };
 
@@ -401,7 +394,7 @@ struct WorkerRuntimeObservation final {
     std::uint64_t dirty_epoch{};
     std::optional<product::Uuid> active_operation_id{};
     std::uint32_t active_operation_phase{};
-    // **Memory visibility (M5 §7).**  RAM this profile's runtime holds, and the budget
+    // **Memory visibility (M5 搂7).**  RAM this profile's runtime holds, and the budget
     // it was opened with.  Both are read from the worker's own storage gauges; zero
     // means zero, and they are meaningless when `worker_alive` is false.
     //
@@ -700,7 +693,7 @@ struct ServiceProfileProjection final {
     // the only shape a client sees.  This is the mount target the user configured --
     // never the bundle path, which is the thing the projection exists to withhold.
     std::optional<std::string> mount_target;
-    // **Memory visibility (M5 §7).**  The two numbers the CLI and the GUI show, and
+    // **Memory visibility (M5 搂7).**  The two numbers the CLI and the GUI show, and
     // the reason this projection carries them: "memory is under control" is only
     // checkable if a client can see how much RAM the disk holds against its budget.
     // Both come from the worker's own storage gauges through

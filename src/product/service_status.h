@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // **Two enumerations that were in the management library and belong to the contracts.**
 //
@@ -38,6 +38,21 @@ inline std::string_view to_string(AggregateStatus status) noexcept {
     return "failed";
 }
 
+// **The service's own error codes, which a client has to interpret.**
+//
+// They travel in a response's `native` field, and a client maps them to an exit code and to a
+// sentence.  That makes them part of the public contract rather than an internal detail: a
+// client that could not name them would have to hard-code numbers.
+enum class ServiceCoreError : std::uint32_t {
+    invalid_request = 0x5601,
+    unsupported_command,
+    authorization_denied,
+    profile_not_found,
+    state_rejected,
+    operation_invalid,
+    wait_protocol_invalid,
+    dependency_failure,
+};
 enum class OperationState : std::uint8_t {
     queued = 0,
     running = 1,

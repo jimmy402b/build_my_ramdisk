@@ -1,8 +1,8 @@
-#pragma once
+﻿#pragma once
 
 // **The CLI's own layer, and only its own layer.**
 //
-// Design spec 搂10.2 draws the line this file sits on: the typed command, the frame
+// Design spec 鎼?0.2 draws the line this file sits on: the typed command, the frame
 // and the pipe client are shared with the GUI and the tests; parsing a command line
 // and rendering a response as text are the CLI's alone.  Keeping them here is what
 // lets the GUI be written later without inheriting a text format, and what lets the
@@ -25,7 +25,7 @@
 
 namespace myrd::cli {
 
-// The exit codes, from design spec 搂10 (carried into v3 unchanged).
+// The exit codes, from design spec 鎼?0 (carried into v3 unchanged).
 //
 // They are the stable contract a script depends on, which is why they are named
 // rather than written as literals at each return: "1" must always mean the same

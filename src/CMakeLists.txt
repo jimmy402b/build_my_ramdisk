@@ -437,11 +437,10 @@ add_library(myrd_cli STATIC
     cli/cli_renderer.cpp cli/cli_renderer.h
 )
 target_include_directories(myrd_cli PUBLIC "${CMAKE_SOURCE_DIR}")
-# `myrd_management` for the response wire codec, which is the one piece of the service
-# the client and the GUI are meant to share (design spec 鎼?0.2).  Splitting that codec
-# out of the management library is T3-01's job, not this one's: it needs the
-# projections moved first, and doing it here would be a half-split.
-target_link_libraries(myrd_cli PUBLIC myrd_product_ipc myrd_management)
+# **The client library, not the service.**  The CLI is the first consumer of T3-01's boundary:
+# it shares the wire format with the GUI and needs nothing from the service's execution stack,
+# so it links exactly the libraries the GUI links.
+target_link_libraries(myrd_cli PUBLIC myrd_product_ipc myrd_product_client)
 myrd_enable_warnings(myrd_cli)
 myrd_assert_execution_boundary(myrd_cli)
 
@@ -505,3 +504,10 @@ target_include_directories(myrd-m5-worker PRIVATE "${CMAKE_SOURCE_DIR}")
 target_link_libraries(myrd-m5-worker PRIVATE
     myrd_m5_worker_protocol myrd_m4_run myrd_m3_management)
 myrd_enable_warnings(myrd-m5-worker)
+
+# ---- The client boundary is checked, not asserted (Task T3-01) ---------------
+# At configure time, because that is where the targets exist: a `cmake -P` run has no targets and
+# therefore sees no closure, which is exactly how a check can pass while checking nothing.
+include("${CMAKE_SOURCE_DIR}/tools/check_client_link_closure.cmake")
+myrd_assert_client_closure(myrd_product_client)
+myrd_assert_client_closure(myrd_cli)

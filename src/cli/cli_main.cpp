@@ -3,7 +3,7 @@
 
 #include "src/common/operation_context.h"
 #include "src/control/public_pipe_client.h"
-#include "src/management/service_response_wire.h"
+#include "src/client/response_view.h"
 #include "src/product/product_version.h"
 #include "src/product/uuid.h"
 
@@ -24,7 +24,7 @@ using namespace myrd;
 // conflated with a product refusal, which arrives as a *decoded* response and is
 // classified by the renderer.
 struct Exchange final {
-    std::optional<management::ServiceResponseWire> response;
+    std::optional<client::ServiceResponseWire> response;
     cli::CliExitCode failure{cli::CliExitCode::success};
     std::string message;
 };
@@ -59,7 +59,7 @@ Exchange exchange(ipc::PublicPipeClient& client, const control::Command& command
         result.message = "the control pipe exchange failed";
         return result;
     }
-    auto decoded = management::decode_service_response(
+    auto decoded = client::decode_service_response(
         response.value().payload, response.value().protocol_minor);
     if (!decoded.ok()) {
         result.failure = cli::CliExitCode::unavailable;
