@@ -1,4 +1,4 @@
-﻿// The server-side projection (T3-01).  The wire shape and its codec live in
+// The server-side projection (T3-01).  The wire shape and its codec live in
 // `src/client/response_view.cpp`; what is left here needs the durable snapshot, which is a
 // service concept, so it stays in the service library that links the client one.
 
@@ -36,7 +36,8 @@ product::ServiceDiskView view_of(const ServiceProfileProjection& projection) {
         projection.confirmed_generation,
         projection.mount_target,
         projection.resident_bytes,
-        projection.budget_bytes};
+        projection.budget_bytes,
+        projection.volume_serial};
 }
 
 product::ServiceOperationView view_of(const ServiceOperationProjection& projection) {
@@ -70,6 +71,7 @@ product::ServiceDiskView project_profile(const ManagedProfileSnapshot& snapshot)
     if (snapshot.runtime_observation.has_value()) {
         projection.resident_bytes = snapshot.runtime_observation->resident_bytes;
         projection.budget_bytes = snapshot.runtime_observation->budget_bytes;
+        projection.volume_serial = snapshot.runtime_observation->volume_serial;
     }
     return projection;
 }

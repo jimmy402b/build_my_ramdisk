@@ -404,6 +404,7 @@ struct WorkerRuntimeObservation final {
     // Bytes this runtime holds that have not reached the journal.  The checkpoint
     // policy's dirty threshold is a byte count, so the observation has to carry one.
     std::uint64_t dirty_bytes{};
+    std::uint64_t volume_serial{};
 
     bool operator==(const WorkerRuntimeObservation&) const noexcept = default;
 };
@@ -704,6 +705,7 @@ struct ServiceProfileProjection final {
     // meaning.  No path, no bundle, no host address travels with them.
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
+    std::uint64_t volume_serial{};
     bool operator==(const ServiceProfileProjection&) const noexcept = default;
 };
 

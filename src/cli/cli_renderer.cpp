@@ -1,7 +1,8 @@
-﻿#include "src/cli/cli_renderer.h"
+#include "src/cli/cli_renderer.h"
 
 #include "src/product/product_state.h"
 
+#include <iomanip>
 #include <sstream>
 #include <string_view>
 
@@ -64,6 +65,11 @@ std::string profile_line(const product::ServiceDiskView& profile) {
          // `budget` is what it was opened with; both are the worker's own gauges, and
          // both are zero for a disk that is not running.
          << "  mem=" << profile.resident_bytes << '/' << profile.budget_bytes;
+    if (profile.volume_serial != 0) {
+        text << "  serial=" << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+             << ((profile.volume_serial >> 16) & 0xFFFF) << '-' << std::setw(4)
+             << (profile.volume_serial & 0xFFFF) << std::dec;
+    }
     return text.str();
 }
 

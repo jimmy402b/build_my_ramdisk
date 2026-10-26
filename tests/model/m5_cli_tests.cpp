@@ -1,4 +1,4 @@
-﻿// The client half of the public protocol: the response document, the command line,
+// The client half of the public protocol: the response document, the command line,
 // the rendering, and the exit codes.
 //
 // T1-05's acceptance has two halves.  What a device is needed for -- create, start,
@@ -415,4 +415,20 @@ TEST_CASE(cli_renders_an_error_with_its_step_and_code) {
     REQUIRE(text.find("error:") != std::string::npos);
     REQUIRE(text.find("service_core.authorize_start") != std::string::npos);
     REQUIRE(text.find("0x5603") != std::string::npos);
+}
+TEST_CASE(cli_wire_carries_the_volume_serial_and_renders_it) {
+    // The serial is how a user matches a disk against `vol`; it travels through the same profile
+    // payload as the memory gauges, and the guard that refuses a too-short payload had to grow by
+    // eight bytes with it -- which is what the two failed attempts were about.
+    auto wire = list_response();
+    wire.profiles.front().volume_serial = 0xA1B2C3D4ULL;
+    auto bytes = management::encode_service_response_wire(wire);
+    REQUIRE(bytes.ok());
+    auto decoded = management::decode_service_response(bytes.value(), ipc::kProtocolMinor);
+    REQUIRE(decoded.ok());
+    REQUIRE_EQ(decoded.value().profiles.front().volume_serial, 0xA1B2C3D4ULL);
+    REQUIRE_EQ(decoded.value().profiles.back().volume_serial, 0ULL);
+
+    const auto text = cli::render_response(decoded.value());
+    REQUIRE(text.find("serial=A1B2-C3D4") != std::string::npos);
 }

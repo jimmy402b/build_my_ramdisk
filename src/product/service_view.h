@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // **What a client is allowed to know, in a vocabulary that is not the service's.**
 //
@@ -210,6 +210,7 @@ struct ServiceDiskView final {
     // its budget.  A stopped runtime reports zero for both, which is the truth.
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
+    std::uint64_t volume_serial{};
     bool operator==(const ServiceDiskView&) const noexcept = default;
 };
 
