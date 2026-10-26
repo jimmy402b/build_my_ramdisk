@@ -1451,3 +1451,28 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
      （或在 `build_command_request` 里拒绝 nil request id），把"可默认构造"的放宽重新收窄；
   3. 若与序列号字段有关：把该字段临时改回不发送，重跑 `cli_e2e` 二分。
 - **纪律重复一次**：**unit/model 全绿不能替代一次 e2e**——这次改动都有单元覆盖，但 e2e 卡住了。
+### 3.52 2026-10-27 06:50：**卡住的不是 e2e，是 agent 在"排空请求"里挂住**
+
+客机 `m5-agent.log` 尾部（本地时间 05:17 / 05:49 / 06:25 三次）：
+
+```text
+2026-10-26T21:17:48 agent start elevated=True drain=True once=False request=
+2026-10-26T21:49:55 agent start elevated=True drain=True once=False request=
+2026-10-26T22:25:00 agent start elevated=True drain=True once=False request=
+```
+**只有 "agent start"，没有任何 "request … finished" / "drain complete"**；而 `C:\m5\control` 里
+**三个请求文件都还在**（05:17、05:49、06:24）。跑目录 `run-b4c523cc…` **根本没被创建**。
+
+⇒ 这一小时所有"卡住"（含 `cli_e2e` 15 分钟）**不是 e2e 卡、也不是产品卡**，而是
+**agent 每次启动后在排空请求的过程中挂住**，请求因此永远不被执行。之前那些"integration 卡 30 分钟"
+很可能也是同一个原因（而不是我 3.48/3.51 里写的产品回归——**那两条结论要收回**）。
+
+**下一步（按成本）**：
+1. 手工在客机上跑一次 runner，看它第一步做什么、停在哪：
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\agent\Invoke-M5Tests.ps1 -Filter '^m5\.gui$'
+   ```
+   （它可能会先做 `ctest --show-only`、`git` 或枚举 `tests.json`；**git 是最可疑的**：
+   客机 worktree 的 `.git` 是**指向主仓的指针**，而这次 staging 重解了 git metadata）
+2. 若确认卡在 git：把 runner 里对 git 的调用去掉或加超时（测试运行不需要版本信息）；
+3. 修好后 `Reset-M5Guest` → 清 `C:\m5\control\*.request.ps1` → 再跑单例验证 <60 s。
