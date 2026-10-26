@@ -2256,3 +2256,33 @@ Get-ChildItem out/build/msvc/src/**/myrd_profile*  | Select-Object FullName,Last
 若库的时间戳早于 `profile_codec.cpp`，就是链接了旧库；`--clean-first` 全量构建后再测。
 
 **状态**：全部回退——构建干净、22 用例全绿、工作树 0 改动、探针文件已删。
+### 3.95 2026-10-27 11:10：陈旧库假设**被否定**——剩下的矛盾需要调试器，不是再读几行
+
+时间戳实测：
+
+```text
+src/profile/profile_codec.cpp            2026/10/27 7:58:20
+out/.../src/Release/myrd_profile.lib     2026/10/27 7:58:23   ← 晚于源码，是新的
+out/.../tests/Release/myrd_m4_profile_codec_tests.exe  7:58:24
+```
+
+⇒ **库不是陈旧的**，§3.94 的假设**被否定**。
+
+**当前仍然成立、但互相矛盾的两个事实**：
+1. 提交态下 `myrd_m4_profile_codec_tests` **22/22 绿**，即 `encode_profile(minimal_record())`
+   与 **187 字节**的 `minimal_golden()` **逐字节相等**；
+2. 我在编码器末尾加探针后，同一条用例里 `payload_before=434`（⇒ 总长 506）。
+
+**这两条只能由"探针测的不是同一个对象"来解释**，而唯一还没排除的可能：
+`minimal_record()` 在**加探针的那次构建**里与提交态不同（例如我改了测试文件里的辅助函数，
+或探针被插进了**另一个** `TEST_CASE`）。
+
+**接手的正确工具是调试器**（不是 grep）：
+1. 在 `encode_profile` 入口下断点，看 `record.profile.display_name` 与 `payload` 的最终大小；
+2. 在 `profile_v1_minimal_profile_matches_exact_golden_bytes` 里看 `encoded.value().size()`
+   —— **必须是 187**；若为 506，则说明这条用例拿到的 `minimal_record()` 与黄金样本不匹配，
+   问题在**测试夹具**而不是产品代码。
+
+**状态**：构建干净、22 用例全绿、工作树 0 改动。
+**本段（3.81–3.95）共 15 轮**，全部消耗在"测量工具不可靠 + 我不断相信自己的读数"上；
+产品代码**没有任何净改动**。这个结论本身值得记下来：**当读数互相矛盾时，先证明夹具，再改产品。**
