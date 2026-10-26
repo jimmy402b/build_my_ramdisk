@@ -252,6 +252,37 @@ installed service（SCM 安装/应答/停止/删除）。
 
 ---
 
+### 3.10 未完成：`disk start`（stop 之后重启）——剩下五处接线，照此做完
+
+**现象**：`disk.start → create-runtime` 失败，`code=21000 step=select_volume_for_disk`，
+`seen=[C?@0 -?@0 -?@1 -?@0]`——卷在磁盘 1 上、**没有盘符**，而该函数第一道过滤是盘符。
+
+**根因**：`find_recovered_volume` 的 GUID 分支（`windows_volume.cpp:685`）是对的，
+但**上游从来没喂过 GUID**，所以它永远是 skip。
+
+**已经做完的一层**（`798b0d1`）：`WorkerLaunchSpec` 有 `volume_guid` 字段 + 编解码，
+`unit.m5.worker_protocol` 通过。
+
+**还剩五处（按顺序）**：
+
+1. `src/host/m5_worker_runtime.h`：`WorkerRuntimeConfig` 加 `std::wstring volume_guid;`
+2. `src/host/m5_worker_main.cpp`（约 175-180 行，`config.bundle = …` 那一段）：
+   `config.volume_guid = spec.value().volume_guid;`
+3. `src/host/m5_worker_runtime.cpp`（约 313-320 行的 `ProductionRuntimeAdapter::Config{…}`）：
+   把 `volume_guid` 传到 `expected_volume_guid`。**注意这是聚合初始化，字段顺序敏感**。
+4. `src/management/service_worker_control.cpp` 的 `make_launch_request(const ProfileRecord&)`：
+   从 durable 记录填 `request.volume_guid`。记录里的字段是
+   `std::optional<product::Uuid> volume_guid`（`profile_types.h:116`），**只有大类
+   `{xxxxxxxx-…}`，没有前缀**。
+5. **格式陷阱（会白跑一轮，务必注意）**：`find_recovered_volume` 里的比较是
+   `_wcsicmp` + 只去掉尾部的 `\`，而枚举出来的 `volume.volume_guid` 形状是
+   `\\?\Volume{guid}\`。所以第 4 步必须把它拼成 **`\\?\Volume{<uuid>}\`** 再上线，
+   否则 GUID 分支会匹配到 0 个、退回按盘符找、症状与现在一模一样。
+
+**验收**：干净客机单次 `cli_e2e`（含 restart）→ `-Repeat 20`。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
