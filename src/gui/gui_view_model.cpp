@@ -1,4 +1,6 @@
-﻿#include "src/gui/gui_view_model.h"
+#include "src/gui/gui_view_model.h"
+
+#include <cstdio>
 
 #include "src/product/service_status.h"
 
@@ -38,6 +40,13 @@ DiskRow make_disk_row(const product::ServiceDiskView& disk) {
     row.persistence = std::string(product::to_string(disk.persistence));
     row.generation = "generation " + std::to_string(disk.confirmed_generation);
     row.memory = format_memory(disk.resident_bytes, disk.budget_bytes);
+    if (disk.volume_serial != 0) {
+        char text[16]{};
+        std::snprintf(text, sizeof(text), "%04X-%04X",
+                      static_cast<unsigned>((disk.volume_serial >> 16) & 0xFFFF),
+                      static_cast<unsigned>(disk.volume_serial & 0xFFFF));
+        row.serial = text;
+    }
     // Attention is the verdict's own answer.  `blocked_needs_attention` and `failed` are the two
     // verdicts that mean a human is needed; `degraded`-style states are not invented here because
     // the service does not have them.

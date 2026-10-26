@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // **The GUI's view model, with no Windows in it.**
 //
@@ -29,6 +29,8 @@ struct DiskRow final {
     std::string persistence;
     std::string generation;
     std::string memory;
+    // The volume's serial in the form ol prints it, or empty when no worker has a volume.
+    std::string serial;
     bool needs_attention{};
 };
 

@@ -1,4 +1,4 @@
-﻿// The GUI's shell: a window with one list, and a tray icon that says when to look at it.
+// The GUI's shell: a window with one list, and a tray icon that says when to look at it.
 //
 // Everything that decides *what a row says* is in `gui_view_model.cpp`, and everything that talks
 // to the service is in `gui_client.cpp`.  This file is the part that cannot be tested without a
@@ -399,8 +399,10 @@ int run_self_check() {
     const auto rows = myrd::gui::make_disk_rows(snapshot.disks);
     std::printf("self-check: %zu disk(s)\n", rows.size());
     for (const auto& row : rows) {
-        std::printf("  %s  %s  %s  %s  %s\n", row.mount.c_str(), row.verdict.c_str(),
-                    row.runtime.c_str(), row.generation.c_str(), row.memory.c_str());
+        std::printf("  %s  %s  %s  %s  %s  serial=%s\n", row.mount.c_str(),
+                    row.verdict.c_str(),
+                    row.runtime.c_str(), row.generation.c_str(), row.memory.c_str(),
+                    row.serial.empty() ? "-" : row.serial.c_str());
     }
     std::printf("tray: %s\n", myrd::gui::tray_summary(rows).c_str());
     std::fflush(stdout);
