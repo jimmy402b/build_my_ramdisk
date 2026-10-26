@@ -1737,3 +1737,28 @@ c6e4550b-…  U:  Ready  stopped/configured  runtime=Stopped
 **判据（下一步第一件事）**：看这一轮的服务日志里 `auto-start` 相关的行：
 - 有 `auto-start: this profile was running…` 且随后 `terminal` 成功 ⇒ 是时序问题，改用例（轮询）；
 - 有 `refused` / `kind=7` ⇒ 是产品问题，按 §3.54 的步骤查 worker 侧。
+### 3.68 2026-10-27 08:30：判据到手——**自动恢复的 start 真的失败了**（不是时序）
+
+服务日志（同一轮，`C:\ProgramData\MyRamDisk\logs\service.log` 尾部）：
+
+```text
+kind=6 disk.start phase=auto-start message=auto-start: the durable running state had no worker,
+       so it was retired before the disk was started
+kind=1 disk.start phase=auto-start message=auto-start: this profile was running when the service last had it
+kind=7 disk.start phase=running  message=action=create-runtime code=21001 native=87
+       step=assign_drive_letter detail=SetVolumeMountPointW failed
+kind=7 disk.start phase=terminal  message=terminal failure without a worker-action error; marker=worker
+```
+
+⇒ **退休陈旧状态 ✓、自动 start 被准入 ✓，但 start 在 `assign_drive_letter` 处失败**：
+`SetVolumeMountPointW` 返回 **native=87（ERROR_INVALID_PARAMETER）**。
+
+**最可能的原因**（断电后特有）：断电容留了**旧的盘符映射**——`U:` 仍映射到一个已不存在的设备，
+于是重新 `SetVolumeMountPointW` 到同一个盘符被拒绝。这解释了为什么"平时能起来、断电后起不来"。
+
+**下一步（产品侧，具体）**：
+1. 在 `assign_drive_letter` 里**先 `DeleteVolumeMountPointW(U:\)`**（忽略失败），再 `SetVolumeMountPointW`；
+   Windows 自己也是这么清理陈旧映射的；
+2. 若删除后仍失败，把 `GetLastError` 与当时的盘符占用情况一起记进日志（现在只有 native=87，
+   不足以区分"盘符被占"与"卷 GUID 路径无效"）；
+3. 客机验收：`Reset` → 断电三段；读数要求 `runtime=Running` 且 generation ≥ 提交值。
