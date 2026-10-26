@@ -752,6 +752,11 @@ DynamicBlockStoreStats M3AimRuntime::storage_stats() const {
     return {};
 }
 
+std::uint64_t M3AimRuntime::memory_budget_bytes() const {
+    if (provider_) return provider_->memory_budget_bytes();
+    return 0;
+}
+
 proxy::SessionSnapshot M3AimRuntime::transport_snapshot() const {
     if (provider_) return provider_->transport_snapshot();
     return {};

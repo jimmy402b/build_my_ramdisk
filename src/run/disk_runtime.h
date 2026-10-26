@@ -87,6 +87,12 @@ struct DiskMaintenanceStats final {
     std::uint64_t dirty_bytes{};
     std::uint64_t journal_bytes{};
     std::uint64_t generation{};
+    // **Memory visibility (M5 §7).**  The two numbers that make "memory is under
+    // control" checkable: how many bytes of RAM this runtime currently holds, and the
+    // budget it was opened with.  Read from the storage layer's own gauges -- the
+    // engine boundary stays free of storage headers, so the adapter fills them.
+    std::uint64_t resident_bytes{};
+    std::uint64_t budget_bytes{};
 };
 
 // M5 two-phase checkpoint boundary (design spec 3.3/3.4).

@@ -1921,6 +1921,14 @@ DynamicBlockStoreStats M3Provider::storage_stats() const {
     return final_stats_.value_or(DynamicBlockStoreStats{});
 }
 
+std::uint64_t M3Provider::memory_budget_bytes() const {
+    std::scoped_lock lock(operation_mutex_);
+    if (store_) return store_->options().hard_limit_bytes;
+    // After the store has gone, the budget the provider was opened with is still the
+    // truth about what this profile was allowed to use.
+    return config_.store.hard_limit_bytes;
+}
+
 proxy::SessionSnapshot M3Provider::transport_snapshot() const {
     std::scoped_lock lock(operation_mutex_);
     if (transport_) return transport_->snapshot();

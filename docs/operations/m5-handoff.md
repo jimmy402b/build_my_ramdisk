@@ -526,6 +526,23 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
 
 **下一步**：T1-07（内存可见性 + UNMAP 端到端）。
 
+### 3.16 2026-10-26 夜：T1-07 完成（内存可见性 + UNMAP 端到端）
+
+**验证文档**：`docs/validation/m5-t1-07-memory-visibility.md`。要点：
+
+1. `resident_bytes` / `budget_bytes` 从存储层计数器一路到 CLI：`disk list` / `disk show` 行尾
+   出现 `mem=<resident>/<budget>`。**来源是存储自己的 committed_bytes，不是进程工作集**。
+2. **UNMAP 首次端到端**：写 16 MiB → resident 2 949 120 → **19 660 800**（恰好 +16 MiB）→ 删除后
+   回到 **2 949 120**。budget 1 073 741 824，worker 工作集 22 573 056（同量级）。
+3. **第一次量不到，原因值得记**：普通写入后 resident 完全不动，数据还在 Windows 文件缓存里；
+   改**写穿** + 有界轮询才量到存储。所谓"写文件后内存立刻上升"在 Windows 上是缓存错觉。
+4. 每层都钉了用例（协议 round-trip、截断报 malformed、observation 只在 alive 时带值、wire、渲染）。
+
+**验收**：干净客机 `cli_e2e -Repeat 20 → 20/20`（式 `541c8b4a…`，7 分 10 秒）。
+
+**延后**：`disk release-memory`（§7.4）移入 T1-08——它需要一条从 storage 公开 `reclaim_to` 到 CLI
+动词的完整纵切，与内存压力同源。
+
 ---
 
 ## 4. 构建与测量循环

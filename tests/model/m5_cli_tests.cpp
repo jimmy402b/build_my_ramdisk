@@ -37,8 +37,10 @@ product::Uuid uuid(const char* text) {
 management::ServiceProfileProjection profile(const char* id,
                                              const char* mount,
                                              const management::AggregateStatus
-                                                 aggregate) {
-    return management::ServiceProfileProjection{
+                                                 aggregate,
+                                             const std::uint64_t resident = 0,
+                                             const std::uint64_t budget = 0) {
+    auto projection = management::ServiceProfileProjection{
         uuid(id),
         profile::ProfileLifecycle::ready,
         product::RuntimeState::running,
@@ -48,6 +50,9 @@ management::ServiceProfileProjection profile(const char* id,
         aggregate,
         3,
         std::optional<std::string>(mount)};
+    projection.resident_bytes = resident;
+    projection.budget_bytes = budget;
+    return projection;
 }
 
 management::ServiceResponseWire list_response() {
@@ -58,7 +63,8 @@ management::ServiceResponseWire list_response() {
         std::nullopt,
         std::nullopt,
         {profile("22222222-2222-4222-8222-222222222222", "X:",
-                 management::AggregateStatus::running),
+                 management::AggregateStatus::running, 19'660'800ull,
+                 1'073'741'824ull),
          profile("33333333-3333-4333-8333-333333333333", "Y:",
                  management::AggregateStatus::blocked_needs_attention)},
         {},
@@ -104,6 +110,10 @@ TEST_CASE(cli_wire_round_trips_a_list_response) {
     REQUIRE(decoded.value().profiles.front().aggregate
             == management::AggregateStatus::running);
     REQUIRE_EQ(decoded.value().profiles.front().confirmed_generation, 3ULL);
+    // M5 §7: the memory gauges are part of the projection a client renders, so they
+    // have to survive the codec.  The figures are the ones a measured run reported.
+    REQUIRE_EQ(decoded.value().profiles.front().resident_bytes, 19'660'800ULL);
+    REQUIRE_EQ(decoded.value().profiles.front().budget_bytes, 1'073'741'824ULL);
     // The second profile's verdict is what a client renders; a projection that lost it
     // would show a blocked disk as a healthy one.
     REQUIRE(decoded.value().profiles.back().aggregate
@@ -317,6 +327,15 @@ TEST_CASE(cli_renders_the_verdict_not_the_durable_claim) {
     REQUIRE(text.find("X:") != std::string::npos);
     REQUIRE(text.find("Y:") != std::string::npos);
     REQUIRE(text.find("2 disk(s)") != std::string::npos);
+}
+
+TEST_CASE(cli_renders_resident_memory_against_its_budget) {
+    // The one line a user checks when they ask "how much RAM is this disk using?".
+    // Rendered from the projection, so this case pins the *display* half; the value's
+    // source is pinned in the observation and projection cases.
+    const auto wire = list_response();
+    const auto text = cli::render_response(wire);
+    REQUIRE(text.find("mem=19660800/1073741824") != std::string::npos);
 }
 
 TEST_CASE(cli_maps_responses_to_the_documented_exit_codes) {

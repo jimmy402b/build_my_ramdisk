@@ -282,6 +282,14 @@ public:
     [[nodiscard]] std::uint64_t generation() const;
     [[nodiscard]] persistence::ImageGeometry geometry() const;
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;
+    // The RAM budget this provider's store was opened with.  Paired with
+    // `storage_stats().committed_bytes` (the RAM actually committed) it is what
+    // "memory is under control" means, and it is the denominator of every
+    // percentage a user sees.  Kept beside `storage_stats` rather than inside
+    // `DynamicBlockStoreStats` because that struct is the M2 report schema, which is
+    // frozen: the budget is a property of the configuration, not of the store's
+    // counters.
+    [[nodiscard]] std::uint64_t memory_budget_bytes() const;
     [[nodiscard]] proxy::SessionSnapshot transport_snapshot() const;
     [[nodiscard]] proxy::ProxyObjectNames names() const;
 

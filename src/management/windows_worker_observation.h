@@ -41,6 +41,11 @@ inline WorkerRuntimeObservation observe_worker_runtime(
     if (observation.worker_alive) {
         observation.active_operation_id = status.active_operation_id;
         observation.active_operation_phase = status.active_operation_phase;
+        // Memory gauges are a fact about the runtime, so they travel with the same
+        // condition: a torn-down runtime holds nothing, and reporting the budget of a
+        // runtime that no longer exists would make a stopped disk look allocated.
+        observation.resident_bytes = status.resident_bytes;
+        observation.budget_bytes = status.budget_bytes;
     }
     return observation;
 }

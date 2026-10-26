@@ -52,6 +52,10 @@ WorkerRuntimeStatus status() {
     value.dirty_epoch = 99;
     value.active_operation_id = uuid("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     value.active_operation_phase = 3;
+    // M5 §7's memory gauges, carried on the status so the service never has to
+    // infer them from a process' working set.
+    value.resident_bytes = 19'660'800;
+    value.budget_bytes = 1'073'741'824;
     return value;
 }
 
@@ -173,6 +177,11 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     // has to check an authorization against the bundle the worker actually
     // holds rather than against the authorization's own claim.
     REQUIRE(decoded.value().status->image_id == image_uuid(0x11));
+    // The memory gauges survive the wire as numbers, not as a flag: a caller that
+    // received a truncated pair must be told the document is malformed rather than
+    // reading two zeroes as "this disk holds nothing".
+    REQUIRE_EQ(decoded.value().status->resident_bytes, 19'660'800ULL);
+    REQUIRE_EQ(decoded.value().status->budget_bytes, 1'073'741'824ULL);
 }
 
 WorkerCheckpointCommitReply commit_reply(

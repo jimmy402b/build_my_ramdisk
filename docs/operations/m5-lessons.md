@@ -12,7 +12,7 @@
 |---|---|---|
 | 1.1 | **改过任何头文件 ⇒ 测量前 `cmake --build out/build/msvc --config Release --clean-first`** | 增量构建不重编所有包含该头文件的 TU → ABI 错配 → `0xC0000005` 假崩溃。**已咬过三次** |
 | 1.2 | **还原源码后必须 `touch` 它（或 `--clean-first`）** | `Move-Item` 还原备份会保留旧时间戳 ⇒ CMake 静默不重编。曾把 `1/1 passed` 误读成"完整套件通过" |
-| 1.3 | **核对二进制用间接信号，不要运行它** | 完整套件 ≈ **50–75 s**；被裁剪过的 ≈ **10 s**。耗时是判断"客机上跑的到底是哪个二进制"最省事的信号。**直接在开发机运行设备类测试会真的建 worker 与卷**（已违反过一次硬门） |
+| 1.3 | **核对二进制用间接信号，不要运行它** | 完整套件 ≈ **50–75 s**；被裁剪过的 ≈ **10 s**。耗时是判断"客机上跑的到底是哪个二进制"最省事的信号。**直接在开发机运行设备类测试会真的建 worker 与卷**（已违反过一次硬门）。**第二次（2026-10-26）**：用 `Get-ChildItem myrd_m5_*tests.exe` 通配跑了一轮"fake-only 套件"，把 `myrd_m5_production_execution_backend` 也带上了——它在第一个用例就因 `WorkerBindingStore::over_protected_root` 失败（开发机的 ProgramData 根不是安装器建的），因此没有建出卷；事后核对无残留 worker / 无多余盘。**教训不是"这次没事"，而是"不要通配"**：逐个点名跑，或只跑明确列在白名单里的 |
 | 1.4 | **改 `src/run/provision_volume.ps1` 必须 `touch src/run/run_resources.rc`** | 嵌入式资源不会因脚本变化重编；且 stage 前先在开发机跑 `unit.m4.provision_script`（AST 白名单守卫，`ForEach-Object` / `New-Object` 都不在白名单） |
 | 1.5 | **测试清单只在 `-Stage` 刷新** | `tests.json` 来自 `ctest --show-only=json-v1`。加了测试却只跑 `-Run`，客机上就没有那条。**判据是总数**：`staged 152 tests` ↔ `1 of 152`；看到 151 说明清单没刷新 |
 | 1.6 | **冷会话构建前先 `Set-ExecutionPolicy -Scope Process Bypass` 再 dot-source `tools/Enter-MsvcEnvironment.ps1`** | 不 dot-source 就没有 `LIB`/`INCLUDE`，链接报 **`LNK1181: 无法打开输入文件 bcrypt.lib`**——看起来像缺 SDK，其实是环境没进来。**每个新会话第一次构建都会撞**（2026-10-26 复现，记在 `m5-review-2026-10-26.md` §3.3）。这条以前只在评审文档里，不在本清单 |

@@ -398,6 +398,108 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if ($readBack.Trim() -ne $payload.Trim()) { Fail 'the bytes read back did not match what was written' }
     Write-Host "  wrote and read back $((Get-Item $probeFile).Length) bytes on $mount"
 
+    # -----------------------------------------------------------------------
+    # T1-07: the memory the user came for, and UNMAP end to end.
+    #
+    # Two claims, both measured rather than asserted from a design: the running
+    # disk reports the RAM it holds against the budget it was opened with, and
+    # deleting a file actually gives that memory back.  The second one is the
+    # first end-to-end verification of the release path -- NTFS delete -> volume
+    # UNMAP -> proxy -> `device_.unmap` -> store discard -- and it is the reason
+    # this step writes a real 16 MiB file instead of inspecting a counter.
+    # -----------------------------------------------------------------------
+    Write-Step 'T1-07: memory is visible, and deleting a file frees it (UNMAP)'
+    $memLine = {
+        param([string]$text)
+        $line = ($text -split "`n") |
+            Where-Object { $_ -match [regex]::Escape($mount) } | Select-Object -First 1
+        if ($null -eq $line) { return $null }
+        $match = [regex]::Match($line, 'mem=(\d+)/(\d+)')
+        if (-not $match.Success) { return $null }
+        return [pscustomobject]@{
+            resident = [uint64]$match.Groups[1].Value
+            budget   = [uint64]$match.Groups[2].Value
+        }
+    }
+
+    $baseline = & $memLine (Invoke-Cli @('disk', 'list')).output
+    if ($null -eq $baseline) {
+        Fail 'disk list did not report mem=<resident>/<budget> for the running disk'
+    }
+    if ($baseline.budget -eq 0) {
+        Fail 'the running disk reported a zero memory budget, so nothing can be shown against it'
+    }
+    Write-Host ("  memory before the file: resident={0} budget={1}" -f $baseline.resident, $baseline.budget)
+
+    # 16 MiB of incompressible-ish bytes, written **write-through** and then closed.
+    # Write-through is not caution, it is the difference between measuring the store
+    # and measuring the Windows file cache: the first run of this step wrote normally
+    # and the reported resident number did not move at all (2949120 before and after
+    # 16 MiB), because the data was still in the cache when the list was taken.
+    $bigFile = Join-Path $mount '\m5-unmap.bin'
+    $chunk = New-Object byte[] (1MB)
+    (New-Object System.Random 12345).NextBytes($chunk)
+    $stream = [System.IO.File]::Create(
+        $bigFile, 4096, [System.IO.FileOptions]::WriteThrough)
+    try {
+        for ($index = 0; $index -lt 16; $index++) { $stream.Write($chunk, 0, $chunk.Length) }
+        $stream.Flush($true)
+    } finally {
+        $stream.Dispose()
+    }
+    $written = (Get-Item -LiteralPath $bigFile).Length
+    if ($written -ne 16MB) { Fail "the large file is $written bytes, not 16 MiB" }
+
+    # Polled, not sampled once: the counter is maintained by the worker's store and
+    # the last block of a write can land a moment after the handle is closed.
+    $peak = $null
+    $riseDeadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $riseDeadline) {
+        $sample = & $memLine (Invoke-Cli @('disk', 'list')).output
+        if ($null -eq $sample) { break }
+        if ($null -eq $peak -or $sample.resident -gt $peak.resident) { $peak = $sample }
+        if ($sample.resident -gt $baseline.resident) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($null -eq $peak) { Fail 'disk list stopped reporting the memory gauges' }
+    if ($peak.budget -ne $baseline.budget) {
+        Fail ("the reported budget changed while nothing was reconfigured: {0} -> {1}" -f
+            $baseline.budget, $peak.budget)
+    }
+    if ($peak.resident -le $baseline.resident) {
+        Fail ("writing 16 MiB did not raise the reported resident memory: before={0} after={1}" -f
+            $baseline.resident, $peak.resident)
+    }
+    if ($peak.resident -gt $peak.budget) {
+        Fail ("the reported resident memory exceeds the budget: resident={0} budget={1}" -f
+            $peak.resident, $peak.budget)
+    }
+
+    Remove-Item -LiteralPath $bigFile -Force
+    $after = $null
+    $unmapDeadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $unmapDeadline) {
+        $after = & $memLine (Invoke-Cli @('disk', 'list')).output
+        if ($null -ne $after -and $after.resident -lt $peak.resident) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($null -eq $after) { Fail 'disk list stopped reporting the memory gauges after the delete' }
+    if ($after.resident -ge $peak.resident) {
+        Fail ("deleting a 16 MiB file freed no resident memory: peak={0} after={1}" -f
+            $peak.resident, $after.resident)
+    }
+    # "Same order as Task Manager" is reported rather than asserted: the two numbers
+    # count different things (the store's committed arena versus the worker process'
+    # whole working set) and pinning their ratio would turn a platform observation
+    # into a contract this project does not control.
+    $worker = Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    $workingSet = if ($null -ne $worker) { $worker.WorkingSet64 } else { 0 }
+    Write-Host ("  memory after the delete: resident={0} (peak {1}, before {2}); worker working set={3}" -f
+        $after.resident, $peak.resident, $baseline.resident, $workingSet)
+    Write-Host ("PASS T1-07: resident rose {0} -> {1} and fell to {2} after the delete (budget {3})" -f
+        $baseline.resident, $peak.resident, $after.resident, $peak.budget)
+
     Write-Step 'T1-05: checkpoint, then stop'
     $checkpoint = Invoke-Cli @('disk', 'checkpoint', $profileName, '--wait')
     if ($checkpoint.exit -ne 0) { Fail "disk checkpoint failed: $($checkpoint.output)" }

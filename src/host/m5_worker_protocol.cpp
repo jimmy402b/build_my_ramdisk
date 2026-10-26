@@ -363,6 +363,15 @@ Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
         }
         status.forget_probe = probe;
     }
+    // The memory gauges travel as plain numbers, and a truncated pair is malformed
+    // rather than zero: "the worker could not say" and "the worker holds nothing"
+    // are different answers and a caller must not receive the second one by accident.
+    status.resident_bytes = reader.u64();
+    status.budget_bytes = reader.u64();
+    if (!reader.ok()) {
+        return malformed<WorkerRuntimeStatus>(
+            L"decode_worker_message", L"status memory gauges are truncated");
+    }
     return Result<WorkerRuntimeStatus>::success(std::move(status));
 }
 
@@ -653,6 +662,8 @@ void write_status(detail::WorkerBytesWriter& writer,
         writer.boolean(status.forget_probe->writer_lock_absent);
         writer.boolean(status.forget_probe->matching_device_absent);
     }
+    writer.u64(status.resident_bytes);
+    writer.u64(status.budget_bytes);
 }
 
 void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message) {

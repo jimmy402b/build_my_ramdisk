@@ -488,3 +488,27 @@ TEST_CASE(m5_observe_worker_runtime_combines_session_and_runtime_liveness) {
     REQUIRE(!no_session.worker_alive);
     REQUIRE(!no_session.active_operation_id.has_value());
 }
+
+TEST_CASE(m5_observe_worker_runtime_carries_the_memory_gauges_only_while_alive) {
+    // M5 §7: the two numbers the CLI shows travel from the worker's own storage
+    // gauges.  They are asserted here rather than only at the CLI so the *source*
+    // is pinned: a later refactor that filled them from a process' working set, or
+    // from the durable profile, would still pass an end-to-end display check.
+    m5::WorkerRuntimeStatus status{};
+    status.worker_alive = true;
+    status.resident_bytes = 19'660'800;
+    status.budget_bytes = 1'073'741'824;
+
+    const auto live = observe_worker_runtime(status, true);
+    REQUIRE(live.worker_alive);
+    REQUIRE_EQ(live.resident_bytes, 19'660'800ull);
+    REQUIRE_EQ(live.budget_bytes, 1'073'741'824ull);
+
+    // A torn-down runtime holds nothing, so it reports nothing.  Carrying the last
+    // numbers forward would make a stopped disk look allocated.
+    m5::WorkerRuntimeStatus torn_down = status;
+    torn_down.worker_alive = false;
+    const auto stopped = observe_worker_runtime(torn_down, true);
+    REQUIRE_EQ(stopped.resident_bytes, 0ull);
+    REQUIRE_EQ(stopped.budget_bytes, 0ull);
+}

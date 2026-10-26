@@ -644,9 +644,17 @@ DiskMaintenanceStats ProductionRuntimeAdapter::maintenance_stats() const {
     // `reserved_bytes` is RAM committed by clean as well as dirty blocks;
     // checkpoint scheduling is driven only by mutations that have not yet
     // reached the M3 journal.
-    return {dirty_bytes_from_block_counts(stats.resident_dirty_blocks,
-                                          stats.zero_dirty_blocks),
-            0, stats.backing_generation};
+    DiskMaintenanceStats result;
+    result.dirty_bytes = dirty_bytes_from_block_counts(stats.resident_dirty_blocks,
+                                                       stats.zero_dirty_blocks);
+    result.journal_bytes = 0;
+    result.generation = stats.backing_generation;
+    // The gauge a user reads: RAM actually committed by the store's arena.  Not
+    // `reserved_bytes`, which is the arena's *virtual* reservation and therefore the
+    // disk's size rather than the memory in use.
+    result.resident_bytes = stats.committed_bytes;
+    result.budget_bytes = impl_->aim_runtime->memory_budget_bytes();
+    return result;
 }
 
 Result<DiskCheckpointPrepared> ProductionRuntimeAdapter::prepare_checkpoint(

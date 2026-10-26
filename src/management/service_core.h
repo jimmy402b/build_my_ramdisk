@@ -399,8 +399,15 @@ struct WorkerRuntimeObservation final {
     std::uint64_t committed_generation{};
     bool dirty{};
     std::uint64_t dirty_epoch{};
-    std::optional<product::Uuid> active_operation_id;
+    std::optional<product::Uuid> active_operation_id{};
     std::uint32_t active_operation_phase{};
+    // **Memory visibility (M5 §7).**  RAM this profile's runtime holds, and the budget
+    // it was opened with.  Both are read from the worker's own storage gauges; zero
+    // means zero, and they are meaningless when `worker_alive` is false.
+    //
+    // Appended so every existing aggregate initializer keeps its meaning.
+    std::uint64_t resident_bytes{};
+    std::uint64_t budget_bytes{};
 
     bool operator==(const WorkerRuntimeObservation&) const noexcept = default;
 };
@@ -690,6 +697,17 @@ struct ServiceProfileProjection final {
     // the only shape a client sees.  This is the mount target the user configured --
     // never the bundle path, which is the thing the projection exists to withhold.
     std::optional<std::string> mount_target;
+    // **Memory visibility (M5 §7).**  The two numbers the CLI and the GUI show, and
+    // the reason this projection carries them: "memory is under control" is only
+    // checkable if a client can see how much RAM the disk holds against its budget.
+    // Both come from the worker's own storage gauges through
+    // `WorkerRuntimeObservation`; a stopped runtime reports zero for both, which is
+    // the truth rather than an omission.
+    //
+    // Appended with defaults so every existing aggregate initializer keeps its
+    // meaning.  No path, no bundle, no host address travels with them.
+    std::uint64_t resident_bytes{};
+    std::uint64_t budget_bytes{};
     bool operator==(const ServiceProfileProjection&) const noexcept = default;
 };
 

@@ -184,7 +184,7 @@ Result<product::Uuid> read_uuid(Reader& reader) {
     return parsed;
 }
 
-constexpr std::size_t kProfileFixedBytes = 6 + 8 + 16 + 1 + 2;
+constexpr std::size_t kProfileFixedBytes = 6 + 8 + 16 + 1 + 8 + 8 + 2;
 constexpr std::size_t kOperationFixedBytes = 16 + 16 + 1 + 1 + 1 + 8 + 8 + 1;
 constexpr std::size_t kErrorFixedBytes = 1 + 4 + 4 + 2 + 2;
 
@@ -216,6 +216,10 @@ Result<void> encode_profile(std::vector<std::byte>& out,
     put_u64(out, profile.confirmed_generation);
     put_uuid(out, profile.profile_id);
     put_u8(out, profile.mount_target.has_value() ? 1 : 0);
+    // Before the length, so the mount length stays the last two bytes of the fixed
+    // part -- the property the container's framing depends on.
+    put_u64(out, profile.resident_bytes);
+    put_u64(out, profile.budget_bytes);
     put_u16(out, static_cast<std::uint16_t>(
                      profile.mount_target.has_value()
                          ? profile.mount_target->size() : 0));
@@ -262,8 +266,11 @@ Result<ServiceProfileProjection> decode_profile(
         return Result<ServiceProfileProjection>::failure(identifier.error());
     }
     std::uint8_t has_mount = 0;
+    std::uint64_t resident_bytes = 0;
+    std::uint64_t budget_bytes = 0;
     std::uint16_t mount_length = 0;
-    if (!reader.u8(has_mount) || !reader.u16(mount_length)) {
+    if (!reader.u8(has_mount) || !reader.u64(resident_bytes)
+        || !reader.u64(budget_bytes) || !reader.u16(mount_length)) {
         return wire_error<ServiceProfileProjection>(
             L"A profile projection is truncated");
     }
@@ -296,7 +303,7 @@ Result<ServiceProfileProjection> decode_profile(
     return Result<ServiceProfileProjection>::success(ServiceProfileProjection{
         identifier.move_value(), lifecycle_value, runtime_value, activity_value,
         persistence_value, health_value, aggregate_value, generation,
-        std::move(mount_target)});
+        std::move(mount_target), resident_bytes, budget_bytes});
 }
 
 Result<void> encode_operation(std::vector<std::byte>& out,
@@ -444,7 +451,7 @@ std::optional<std::string> mount_target_of(const profile::Profile& profile) {
 
 ServiceProfileProjection project_profile(const ManagedProfileSnapshot& snapshot) {
     const auto reported = reported_profile_state(snapshot);
-    return ServiceProfileProjection{
+    ServiceProfileProjection projection{
         snapshot.record.profile.profile_uuid,
         snapshot.record.profile.lifecycle,
         reported.disk.runtime,
@@ -454,6 +461,14 @@ ServiceProfileProjection project_profile(const ManagedProfileSnapshot& snapshot)
         aggregate_status(reported),
         snapshot.checkpoint.confirmed_generation,
         mount_target_of(snapshot.record.profile)};
+    // The memory gauges are a live fact about the runtime, so they are carried only
+    // when the read path actually observed one.  A durable snapshot has no opinion
+    // about them, and manufacturing one would let a stopped disk report memory.
+    if (snapshot.runtime_observation.has_value()) {
+        projection.resident_bytes = snapshot.runtime_observation->resident_bytes;
+        projection.budget_bytes = snapshot.runtime_observation->budget_bytes;
+    }
+    return projection;
 }
 
 ServiceOperationProjection project_operation(const OperationRecord& record) {

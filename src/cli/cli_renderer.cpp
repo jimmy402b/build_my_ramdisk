@@ -59,7 +59,11 @@ std::string profile_line(const management::ServiceProfileProjection& profile) {
          << product::to_string(profile.activity) << "  persistence="
          << product::to_string(profile.persistence) << "  health="
          << product::to_string(profile.health) << "  generation="
-         << profile.confirmed_generation;
+         << profile.confirmed_generation
+         // M5 §7: the memory the user came for.  `resident` is RAM the runtime holds,
+         // `budget` is what it was opened with; both are the worker's own gauges, and
+         // both are zero for a disk that is not running.
+         << "  mem=" << profile.resident_bytes << '/' << profile.budget_bytes;
     return text.str();
 }
 

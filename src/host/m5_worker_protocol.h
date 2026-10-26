@@ -392,6 +392,17 @@ struct WorkerRuntimeStatus final {
     // probed"; absent means "nobody probed", which a caller must never read as
     // "both facts are false".
     std::optional<WorkerForgetProbe> forget_probe;
+    // **Memory visibility (M5 §7).**  The RAM the runtime's store currently holds,
+    // and the budget it was opened with.  Both are read from the storage layer's own
+    // gauges inside the worker -- the process that actually owns the memory -- so the
+    // service never has to infer them from a process' working set, which counts a
+    // great deal that is not this disk.
+    //
+    // Appended with defaults so every existing aggregate initializer keeps its
+    // meaning.  Zero is reported honestly as zero: a runtime that holds nothing
+    // reports nothing, and a stopped runtime reports the budget it *was* given.
+    std::uint64_t resident_bytes{};
+    std::uint64_t budget_bytes{};
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };
