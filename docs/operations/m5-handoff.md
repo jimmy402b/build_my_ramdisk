@@ -252,7 +252,7 @@ installed service（SCM 安装/应答/停止/删除）。
 
 ---
 
-### 3.10 未完成：`disk start`（stop 之后重启）——剩下五处接线，照此做完
+### 3.10 **已完成（见 §3.13）**：`disk start`（stop 之后重启）的接线记录——保留作原理参考，不要再按它施工
 
 **现象**：`disk.start → create-runtime` 失败，`code=21000 step=select_volume_for_disk`，
 `seen=[C?@0 -?@0 -?@1 -?@0]`——卷在磁盘 1 上、**没有盘符**，而该函数第一道过滤是盘符。
@@ -322,7 +322,7 @@ installed service（SCM 安装/应答/停止/删除）。
 
 ---
 
-### 3.12 最后一个已知阻塞：stop 的 remove_mount 被"runtime 仍然 dirty"拒绝
+### 3.12 **已被 §3.13 取代**：stop 的 remove_mount 被"runtime 仍然 dirty"拒绝（`278d63e` 已处理）
 
 **读数**（`run-fe0a8a2a` 的服务日志）：
 
