@@ -312,6 +312,19 @@ public:
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryEvidence& correlation,
         const CheckpointEpochPublicationHandler& publish) override;
+    // Proves that nothing can still be holding this profile's bundle: no worker,
+    // no writer authority, no proxy device, and the bundle still the one the
+    // tombstone names.  Two of the five facts are invisible to this process by
+    // construction -- the service links neither persistence nor the driver -- so
+    // an inspection worker answers them; the other three come from the service's
+    // own records and from the process it just ended.
+    //
+    // Without this, disk forget refuses every time: the base class answers
+    // "does not expose forget safety proof", which is the correct fail-closed
+    // answer for an adapter that cannot prove it and the reason the command has
+    // never worked.
+    Result<ForgetSafetyEvidence> prove_forget_safe(
+        const WorkerActionRequest& request) override;
     Result<std::uint64_t> current_dirty_epoch(
         const product::Uuid& profile_id) override;
     Result<std::optional<WorkerRuntimeObservation>> observe_runtime(

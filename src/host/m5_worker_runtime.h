@@ -84,6 +84,12 @@ private:
     // evidence a start would have refused.
     Result<void> record_bundle_identity();
 
+    // The two absences a forget has to prove, answered by the only command that
+    // opens this bundle without a runtime: whether the writer authority can be
+    // taken (so nothing else holds it) and whether any proxy device has this
+    // bundle's geometry.
+    Result<WorkerForgetProbe> probe_forget_absences();
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

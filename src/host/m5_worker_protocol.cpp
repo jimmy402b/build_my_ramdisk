@@ -352,6 +352,17 @@ Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
         status.bundle = std::move(bundle);
     }
     status.writes_frozen = reader.boolean();
+    if (reader.boolean()) {
+        WorkerForgetProbe probe{};
+        probe.writer_lock_absent = reader.boolean();
+        probe.matching_device_absent = reader.boolean();
+        if (!reader.ok()) {
+            return malformed<WorkerRuntimeStatus>(
+                L"decode_worker_message",
+                L"status forget probe is truncated");
+        }
+        status.forget_probe = probe;
+    }
     return Result<WorkerRuntimeStatus>::success(std::move(status));
 }
 
@@ -637,6 +648,11 @@ void write_status(detail::WorkerBytesWriter& writer,
     // Always written, never implied: a reader that assumed "frozen" from the
     // presence of a volume would record a write freeze no call ever took.
     writer.boolean(status.writes_frozen);
+    writer.boolean(status.forget_probe.has_value());
+    if (status.forget_probe.has_value()) {
+        writer.boolean(status.forget_probe->writer_lock_absent);
+        writer.boolean(status.forget_probe->matching_device_absent);
+    }
 }
 
 void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message) {

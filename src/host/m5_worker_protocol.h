@@ -335,6 +335,16 @@ struct WorkerBundleEvidence final {
 // The worker's own view of what it is running.  Mirrors the service-side
 // WorkerRuntimeObservation, but is defined here so `src/host` never has to
 // include `src/management`: the service adapter maps one onto the other.
+// The two facts a forget needs and a running worker cannot supply: it holds both
+// the writer authority and the proxy device by design, so "absent" can only be
+// observed by something that opened the bundle without starting a runtime.
+struct WorkerForgetProbe final {
+    bool writer_lock_absent{};
+    bool matching_device_absent{};
+
+    bool operator==(const WorkerForgetProbe&) const noexcept = default;
+};
+
 struct WorkerRuntimeStatus final {
     bool worker_alive{};
     // Which bundle this status is about.  It is here because a removal
@@ -372,6 +382,16 @@ struct WorkerRuntimeStatus final {
     //
     // Declared last so every existing aggregate initializer keeps its meaning.
     bool writes_frozen{};
+    // What only a read-only inspection can answer: whether the bundle's writer
+    // authority and its proxy device are absent.
+    //
+    // It lives on the status because the inspection is the one command that opens
+    // a bundle *without* starting the runtime that would itself hold the lock and
+    // the device, and because an inspection session is dropped immediately -- so
+    // there is no second command in which to ask.  Present means "a worker
+    // probed"; absent means "nobody probed", which a caller must never read as
+    // "both facts are false".
+    std::optional<WorkerForgetProbe> forget_probe;
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };

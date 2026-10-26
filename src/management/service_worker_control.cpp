@@ -1497,6 +1497,118 @@ Result<void> ServiceWorkerControl::publish_checkpoint_epoch(
         correlation, status.value().dirty_epoch, status.value().dirty});
 }
 
+namespace {
+
+// A pid is not an identity: Windows reuses it.  The binding's creation time is
+// what makes "the worker I launched" a question with an answer, and the same
+// comparison keeps a recycled pid from being waited on for five seconds and then
+// reported as a worker that would not leave.
+bool worker_process_gone(const std::uint32_t process_id,
+                         const std::uint64_t process_creation_time,
+                         const DWORD timeout_ms) {
+    HANDLE process = OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+    if (process == nullptr) return true;
+    FILETIME created{};
+    FILETIME exited{};
+    FILETIME kernel{};
+    FILETIME user{};
+    ULARGE_INTEGER creation{};
+    if (GetProcessTimes(process, &created, &exited, &kernel, &user)) {
+        creation.LowPart = created.dwLowDateTime;
+        creation.HighPart = created.dwHighDateTime;
+    }
+    if (creation.QuadPart != process_creation_time) {
+        static_cast<void>(CloseHandle(process));
+        return true;
+    }
+    const bool gone = WaitForSingleObject(process, timeout_ms) == WAIT_OBJECT_0;
+    static_cast<void>(CloseHandle(process));
+    return gone;
+}
+
+} // namespace
+
+Result<ForgetSafetyEvidence> ServiceWorkerControl::prove_forget_safe(
+    const WorkerActionRequest& request) {
+    std::unique_lock lock(command_gate_);
+    if (!request.durable_profile.has_value()) {
+        return Result<ForgetSafetyEvidence>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.prove_forget_safe",
+            L"The forget proof needs the operation's durable profile"));
+    }
+    // A worker bound to this profile is the one thing that could still hold the
+    // bundle, so a proof taken beside it would be about a state that is already
+    // over.  The check is the session table, which is the only record of a worker
+    // this service can command.
+    if (find_session(request.profile_id) != nullptr) {
+        return Result<ForgetSafetyEvidence>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.prove_forget_safe",
+            L"A worker is still bound to this profile"));
+    }
+    auto launch_request = make_launch_request(request.durable_profile.value());
+    if (!launch_request.ok()) {
+        return Result<ForgetSafetyEvidence>::failure(launch_request.error());
+    }
+    auto launched = sessions_.launch(launch_request.value(), context());
+    if (!launched.ok()) {
+        return Result<ForgetSafetyEvidence>::failure(launched.error());
+    }
+    auto owned = launched.move_value();
+    const auto binding = owned->binding();
+    // The inspection is the one command that opens the bundle without starting a
+    // runtime, and it answers with the two absences a running runtime would
+    // contradict.  It is also the only command available here: an inspection
+    // session is not kept, so there is no second exchange to ask in.
+    auto observed = owned->inspect_bundle(context(), request.operation_id);
+    if (!observed.ok()) {
+        return Result<ForgetSafetyEvidence>::failure(observed.error());
+    }
+    const auto& status = observed.value();
+    if (!status.forget_probe.has_value() || !status.bundle.has_value()
+        || !status.bundle->complete()) {
+        return Result<ForgetSafetyEvidence>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.prove_forget_safe",
+            L"The inspection did not answer the forget proof"));
+    }
+    auto image_id = to_product_uuid(status.image_id);
+    if (!image_id.has_value()) {
+        return Result<ForgetSafetyEvidence>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.prove_forget_safe",
+            L"The inspected image identity is not a canonical uuid"));
+    }
+    BundleFileIdentity identity{};
+    identity.volume_serial = status.bundle->volume_serial;
+    identity.file_id = status.bundle->file_id;
+    // Aggregate-initialised: the two ids have no default constructor, so a
+    // default-constructed evidence could not be filled in afterwards.
+    ForgetSafetyEvidence evidence{
+        request.profile_id,
+        image_id.value(),
+        request.durable_profile->revision,
+        false,
+        status.forget_probe->writer_lock_absent,
+        status.forget_probe->matching_device_absent,
+        // The worker opened it and read its identity; that is what "present"
+        // means here, and the identity travels with it so ServiceCore can
+        // compare it with the one the tombstone recorded.
+        true,
+        identity};
+
+    // Closing the channel is what ends an inspection: no runtime was started, so
+    // there is nothing to stop, and the worker leaves on its next read.  It is
+    // waited for rather than assumed, because "absent" is the fact being
+    // certified.
+    owned.reset();
+    evidence.worker_absent = worker_process_gone(
+        binding.process_id, binding.process_creation_time, 5000);
+    return Result<ForgetSafetyEvidence>::success(evidence);
+}
+
 Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(
     const product::Uuid& profile_id) {
     std::unique_lock lock(command_gate_);

@@ -2,6 +2,10 @@
 
 #include "src/common/diagnostic_trace.h"
 #include "src/m3/m3_provider.h"
+#include "src/driver/adapter_discovery.h"
+#include "src/driver/direct_aim_adapter.h"
+#include "src/driver/windows_srb_transport.h"
+#include "src/persistence/writer_lock.h"
 #include "src/run/runtime_adapter.h"
 
 #include <chrono>
@@ -433,8 +437,76 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::inspect_bundle() {
     // `observe()` is what reports the evidence, and it reports it whether or not
     // the runtime is alive -- here it is not, which is exactly the answer an
     // inspection gives.  Nothing is started, so nothing is claimed.
-    return observe();
+    auto status = observe();
+    if (!status.ok()) return status;
+    // The two absences a forget needs, probed here and only here: this is the one
+    // command that opened the bundle without a runtime, so it is the only place
+    // where "the writer authority is free" is not contradicted by this process.
+    auto probe = probe_forget_absences();
+    if (!probe.ok()) {
+        return Result<WorkerRuntimeStatus>::failure(probe.error());
+    }
+    status.value().forget_probe = probe.move_value();
+    return status;
 }
+
+Result<WorkerForgetProbe> DiskWorkerRuntime::probe_forget_absences() {
+    auto& impl = *impl_;
+    if (!impl.bundle_evidence.has_value()) {
+        return Result<WorkerForgetProbe>::failure(runtime_error(
+            L"DiskWorkerRuntime::probe_forget_absences",
+            L"the bundle geometry is not known"));
+    }
+    const auto& geometry = impl.bundle_evidence.value();
+    WorkerForgetProbe probe{};
+
+    // Taking the authority and releasing it is the only way to ask: it is an
+    // OS-level exclusive claim, so "can I take it" and "is it absent" are the
+    // same question.  A bundle that cannot be opened at all never reaches here --
+    // `record_bundle_identity` has already failed.
+    {
+        auto acquired = persistence::acquire_bundle_writer_lock(
+            impl.config.bundle, impl.config.manifest_name);
+        if (acquired.ok()) {
+            probe.writer_lock_absent = true;
+            auto released = acquired.value().close();
+            if (!released.ok()) {
+                return Result<WorkerForgetProbe>::failure(released.error());
+            }
+        }
+    }
+
+    // The driver reports a device's length and sector size, never its image id,
+    // so geometry is what can be compared.  Only the length is compared here,
+    // deliberately: matching on size alone can only *refuse* a forget, while a
+    // sector-size mismatch could accept one over a device still holding this
+    // bundle.  A device that cannot be queried is treated as possibly ours for
+    // the same reason -- "could not ask" is not "absent".
+    auto discovered = aim::discover_aim_adapter();
+    if (!discovered.ok()) {
+        return Result<WorkerForgetProbe>::failure(discovered.error());
+    }
+    aim::WindowsSrbTransport transport(discovered.value().handle.get());
+    aim::DirectAimAdapter adapter(transport);
+    auto devices = adapter.list_devices();
+    if (!devices.ok()) {
+        return Result<WorkerForgetProbe>::failure(devices.error());
+    }
+    bool present = false;
+    for (const auto id : devices.value()) {
+        auto info = adapter.query_device(id);
+        if (!info.ok()) {
+            return Result<WorkerForgetProbe>::failure(info.error());
+        }
+        if (info.value().size_bytes == geometry.virtual_bytes) {
+            present = true;
+            break;
+        }
+    }
+    probe.matching_device_absent = !present;
+    return Result<WorkerForgetProbe>::success(probe);
+}
+
 
 Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
     auto& impl = *impl_;
