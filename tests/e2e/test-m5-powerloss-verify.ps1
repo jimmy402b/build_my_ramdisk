@@ -13,6 +13,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
+# Same reason as the prepare half: an uncaught exception that only reaches stderr is
+# unreadable through the harness, and a two-minute round trip per guess is not affordable.
+trap {
+    Write-Host "UNCAUGHT: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+    Write-Host ($_.ScriptStackTrace)
+    exit 1
+}
+
 if (-not $env:MYRD_M5VM_GUEST) {
     [Console]::Error.WriteLine(
         'integration.m5.powerloss_verify may only run on the guest (AGENTS.md section 4).')

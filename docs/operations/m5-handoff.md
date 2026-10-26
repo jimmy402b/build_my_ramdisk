@@ -595,12 +595,35 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
   判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
 - CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
 
-**卡在哪（下一步第一件事）**：`prepare` 在 `sc start` 之后**约 1 秒**就结束，stdout 断在服务
-`STATE: START_PENDING`，stderr 只有一串空白（疑似 UTF-16 被当 ANSI 读）。没有 `Fail:` 行，
-说明是**异常**而不是我的失败分支。下一步：给 prepare/verify 的整个主体包 try/catch，把
-`$_` 与 `$ScriptStackTrace` 打到 **stdout** 再 exit 1 —— 客机往返一次两分钟，猜不起。
+**2026-10-26 深夜 第二次读数（prepare 已通，卡在断电后的 start）**
 
-**下一步**：T1-09 的断电验收本身。
+- `prepare` **通过**（请求 `a9fb722dd5854923b25e754637f74ed4`，52 s）：装 auto-start 服务 →
+  建 30 s 间隔的盘 → `auto_start=true` → 写标记 → **自动提交到 generation 3** → 状态落盘。
+  第一次失败的原因不在脚本：客机上残留着上一次尝试的服务与 profile，`sc start` 与旧实例冲突；
+  清干净后一次通过（`sc start` 之后 stdout 断在 STATE 块是**旧实例**的表现，不是脚本 bug）。
+- 硬断电（`vmrun stop hard`）+ 开机后：**服务自己起来了**（`sc query` RUNNING，开机 23:04），
+  说明 `start= auto` 与 SCM 路径成立。
+- `verify`（请求 `05e2971d25474ee79b2feb2b4faeeca7`）读到：
+
+```text
+6b710f86-…  U:  ready  blocked/needs-attention  runtime=Running
+                persistence=PersistenceBlocked health=NeedsAttention
+                generation=3  mem=0/0
+recovered generation: 3 (last committed before the cut: 3)
+```
+
+即：**盘被自动拉起了（`runtime=Running`，generation 等于断电前的提交值），但运行面是坏的**——
+`PersistenceBlocked`、`mem=0/0`、盘符 U: 不存在、也没有 worker 进程。所以 T1-09 剩下的问题是
+**断电后的那次 start 没真正接上卷**，而不是"没有自动恢复"。
+
+**下一步（第一件事）**：查断电后那次 `disk start` 失败在哪一步。可用的入口：
+- `ServiceHostDiagnostics::auto_started_operations` 只给条数，不给原因；installed 服务的 stderr
+  被 SCM 丢掉，所以**必须**让这条原因落进服务自己的日志（`ServiceLogEvent`）而不是 stderr；
+- 可疑点与 §3.18 前面记的"两块盘"现象同源：**崩溃残留的设备/句柄**让 `create-runtime` 接不上
+  （`find_recovered_volume` 找不到卷，或 `start_aim` 拒绝）。T1-03 的 startup sweep 本该先回收
+  残留，sweep 在 auto-start 之前运行——所以要确认 sweep 是否真的把残留当"可回收"处理了。
+- 再顺带修一处脚本脆弱点：`verify` 在盘符不存在时抛 `DriveNotFoundException`（现在被 `trap`
+  捕获并打印，但不是一条可读的失败），应改成"读不到标记"的具名失败并附上 `disk list` 行。
 
 ---
 

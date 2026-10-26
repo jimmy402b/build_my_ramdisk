@@ -19,6 +19,19 @@ param(
 $ErrorActionPreference = 'Stop'
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
+# **An uncaught exception must say what it was, on stdout.**
+#
+# Measured: this script ended about a second after `sc start` with its stdout stopping at
+# the service's STATE block and its stderr a run of spaces -- no `Fail:` line, so not one
+# of this script's own failures, and nothing a reader could act on.  `trap` writes the
+# type, the message and the stack where the harness captures them; a guest round trip is
+# two minutes and guessing is not affordable.
+trap {
+    Write-Host "UNCAUGHT: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+    Write-Host ($_.ScriptStackTrace)
+    exit 1
+}
+
 function Exit-GuestOnly {
     [Console]::Error.WriteLine(
         'integration.m5.powerloss_prepare creates a real worker, a real AIM disk and a ' +
@@ -77,9 +90,10 @@ if ($createState -ne 'succeeded') { Fail "the create ended $createState" }
 
 $list = Invoke-Cli @('disk', 'list')
 if ($list.exit -ne 0) { Fail "disk list failed: $($list.output)" }
+Write-Host "  list: $($list.output.Trim())"
 $line = ($list.output -split "`n") | Where-Object { $_ -match [regex]::Escape($mount) } |
     Select-Object -First 1
-if ($null -eq $line) { Fail "disk list did not report $mount`: $($list.output)" }
+if ($null -eq $line) { Fail "disk list did not report ${mount}: $($list.output)" }
 $profileId = Get-UuidFromText $line
 if ($null -eq $profileId) { Fail 'disk list did not report the profile uuid' }
 Write-Host "  profile $profileId"
