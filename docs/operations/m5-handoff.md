@@ -1476,3 +1476,22 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
    客机 worktree 的 `.git` 是**指向主仓的指针**，而这次 staging 重解了 git metadata）
 2. 若确认卡在 git：把 runner 里对 git 的调用去掉或加超时（测试运行不需要版本信息）；
 3. 修好后 `Reset-M5Guest` → 清 `C:\m5\control\*.request.ps1` → 再跑单例验证 <60 s。
+### 3.53 2026-10-27 07:00：**runner 本身没问题**；是队列卡住 + 我一个无效探测
+
+- **无效探测（先纠正自己）**：我第一次手工跑 runner 时**没给 `-RequestId`**，而它是
+  `[Parameter(Mandatory)]` ⇒ PowerShell 停在交互提示上，60 秒"无输出且存活"——
+  **那不是挂住，是在等输入**。带 `-RequestId probe-0001` 重跑：**`1 of 1 passed`，45 秒内完成**，
+  并生成了 `run-probe-0001` 目录。
+- **队列证据**：`C:\m5\control` 里三个请求文件都在，内容也**合法**（例如
+  `& 'C:/m5/agent/Invoke-M5Tests.ps1' … -RequestId 'b4c523cc…' -Filter '^integration\.m5\.cli_e2e$' …`），
+  但 `run-b4c523cc…` **从未被创建** ⇒ **那条请求根本没开始跑**。
+- ⇒ 真正的原因是**agent 的排空循环卡在最老的一条请求上**（`18489f0e…`，05:17 的 m5 组），
+  后面的请求永远排队。
+
+**下一步（一次就够）**：
+1. 客机清队列：`Get-ChildItem C:\m5\control -Filter '*.request.ps1' | Remove-Item -Force`；
+2. `schtasks /end /tn 'MyRamDisk-M5-Agent'` → `schtasks /run /tn 'MyRamDisk-M5-Agent'`；
+3. `Reset-M5Guest`；
+4. **只提一个短请求**（`-Filter '^m5\.gui$'`）验证 <60 s，再提 `cli_e2e` 单例；
+5. 若 `cli_e2e` 单例仍超过 10 分钟，**那才**是产品侧要查的问题——届时用本次已验证可用的手工 runner
+   （带 `-RequestId`、加 `-TraceTestCases`）直接看它停在哪一例。
