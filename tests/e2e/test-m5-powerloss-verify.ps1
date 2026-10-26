@@ -37,18 +37,12 @@ $statePath = 'C:\m5\powerloss-state.txt'
 if (-not (Test-Path -LiteralPath $statePath)) {
     Fail "no power-loss state at $statePath -- the prepare half did not run"
 }
-$state = @{}
-foreach ($line in Get-Content -LiteralPath $statePath) {
-    # Defensive: a BOM on the first line turns `profile_id` into `\uFEFFprofile_id`.
-    $line = $line.TrimStart([char]0xFEFF)
-    $at = $line.IndexOf('=')
-    if ($at -gt 0) { $state[$line.Substring(0, $at)] = $line.Substring($at + 1) }
-}
+$state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 foreach ($key in @('profile_id', 'mount', 'generation', 'marker_payload')) {
-    if (-not $state.ContainsKey($key)) { Fail "the power-loss state has no $key" }
+    if ($null -eq $state.$key) { Fail "the power-loss state has no $key" }
 }
-$mount = $state['mount']
-$expectedGeneration = [uint64]$state['generation']
+$mount = $state.mount
+$expectedGeneration = [uint64]$state.generation
 
 Write-Step 'the service came up without being started by this script'
 $answered = Wait-ForService 180
@@ -81,13 +75,13 @@ if ($generation -lt $expectedGeneration) {
 Write-Host "  recovered generation: $generation (last committed before the cut: $expectedGeneration)"
 
 Write-Step 'the committed bytes are intact'
-$marker = Join-Path $mount ($state['marker_path'])
+$marker = Join-Path $mount ($state.marker_path)
 if (-not (Test-Path -LiteralPath $marker)) {
     Fail "the committed marker file is gone: $marker"
 }
 $payload = Get-Content -LiteralPath $marker -Raw
-if ($payload -ne $state['marker_payload']) {
-    Fail ("the committed marker contents changed:`n  expected: $($state['marker_payload'])`n  found:    $payload")
+if ($payload -ne $state.marker_payload) {
+    Fail ("the committed marker contents changed:`n  expected: $($state.marker_payload)`n  found:    $payload")
 }
 Write-Host "  marker bytes match the pre-cut record ($($payload.Length) chars)"
 
@@ -111,14 +105,14 @@ $disks = @(Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction Stop |
 Write-Host "  workers: $($workers.Count); aim-backed disks: $($disks.Count)"
 
 Write-Step 'cleanup: stop and forget the disk, remove the service'
-$stop = Invoke-Cli @('disk', 'stop', $state['profile_id'])
+$stop = Invoke-Cli @('disk', 'stop', $state.profile_id)
 if ($stop.exit -ne 0) { Fail "disk stop failed: $($stop.output)" }
 $stopId = Get-UuidFromText $stop.output
 if ($null -eq $stopId) { Fail 'the stop carried no operation id' }
 $stopState = Wait-ForTerminal $stopId 300
 if ($stopState -ne 'succeeded') { Fail "the stop ended $stopState" }
 
-$profileId = $state['profile_id']
+$profileId = $state.profile_id
 $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId)
 if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
 $forgetId = Get-UuidFromText $forget.output
@@ -127,7 +121,7 @@ $forgetState = Wait-ForTerminal $forgetId 300
 if ($forgetState -ne 'succeeded') { Fail "the forget ended $forgetState" }
 Remove-ScService
 Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $state['bundle'] -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $state.bundle -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host 'PASS T1-09: the disk came back by itself at the committed generation'
 exit 0

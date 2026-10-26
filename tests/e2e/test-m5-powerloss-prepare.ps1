@@ -154,20 +154,19 @@ Write-Host "  committed generation: $committedGeneration (marker is inside it)"
 $uncommitted = Join-Path $mount '\powerloss-uncommitted.txt'
 Set-Content -LiteralPath $uncommitted -Value 'written after the last checkpoint' -Encoding utf8
 
-$state = @(
-    "profile_id=$profileId"
-    "profile_name=$profileName"
-    "mount=$mount"
-    "bundle=$bundlePath"
-    "generation=$committedGeneration"
-    "marker_path=powerloss-marker.txt"
-    "marker_payload=$payload"
-    "service_name=$serviceName"
-)
-# ASCII, because Windows PowerShell writes a BOM with utf8 and the reader then sees the
-# first key as `\uFEFFprofile_id` -- measured as 	he power-loss state has no profile_id
-# on a file that plainly had one.
-Set-Content -LiteralPath $statePath -Value $state -Encoding ASCII
+# **JSON, not `key=value`.**  Windows PowerShell's `Set-Content -Encoding utf8` writes a BOM,
+# and the hand-written parser read the first key as "\uFEFFprofile_id" -- measured as "the
+# power-loss state has no profile_id" over a file that plainly had one.  JSON removes the
+# hand parsing along with the encoding question.
+@{ profile_id = $profileId
+   profile_name = $profileName
+   mount = $mount
+   bundle = $bundlePath
+   generation = $committedGeneration
+   marker_path = 'powerloss-marker.txt'
+   marker_payload = $payload
+   service_name = $serviceName } |
+    ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding ASCII
 Write-Host "  state written to $statePath"
 Write-Host 'PREPARED'
 exit 0
