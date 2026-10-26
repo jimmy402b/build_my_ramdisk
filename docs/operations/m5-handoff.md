@@ -2040,3 +2040,26 @@ PASS integration.m5.powerloss: the disk came back by itself after a hard power c
   然后按 64 字符分行替换 `from_hex(...)`，删打印、重跑三个用例。
 - **另一条**：临时把打印塞进测试时，**不要**顺手 `#include "tests/support/test_framework.h"`——
   该文件里原本就是 `#include "test_framework.h"`，多写一行会引入**不存在的路径**，报 C1083。
+### 3.83 2026-10-27 10:05：黄金样本再生——**让测试自己写文件**，不要再经控制台
+
+三次尝试都在"从控制台拿那 374 个字符"上翻车，分别是：管道截断（63 字符）、`2> file` 未捕获（0 字符）、
+`Start-Process -RedirectStandardError` 取到整段 stderr 后正则抓到 1030 字符（含后续行）。
+**结论：不要再从控制台搬运。**
+
+**下次的正确做法（唯一可靠）**：在测试的 golden 用例里**直接写文件**：
+```cpp
+{
+    std::string hex;
+    for (const auto byte : encoded.value()) { /* … 同上 … */ }
+    if (std::FILE* out = std::fopen("golden-hex.txt", "wb")) {
+        std::fwrite(hex.data(), 1, hex.size(), out);
+        std::fclose(out);
+    }
+}
+```
+然后 `Get-Content golden-hex.txt -Raw` 就是**恰好 374 个字符**，再按 64 字符分行替换 `from_hex(...)`，
+删掉写文件的那段，重跑三个用例。（`#include <cstdio>` 只在临时版本里加，落盘前删掉。）
+
+**本轮状态**：codec 改动与测试改动再次回退；构建干净、22 个用例全绿、工作树 0 改动、临时文件已删。
+已知的新格式十六进制形状：`4d59524450524600 01000000 48000000 03020000 …`（长度 `bb`=187 字节，
+中间含 tag 36 的 `2400 0201 01000000 01`）。
