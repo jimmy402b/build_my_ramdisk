@@ -1,4 +1,4 @@
-﻿# integration.m5.cli_e2e -- the public command surface, end to end, through the CLI.
+# integration.m5.cli_e2e -- the public command surface, end to end, through the CLI.
 #
 # Two acceptances live here:
 #
@@ -411,6 +411,17 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     # The foreground service above proved the command surface.  This proves the *shipped*
     # path -- an SCM-installed service serving the same pipe -- which is the only difference
     # between what ran so far and what a user gets.
+    # **The foreground service owns the public pipe.**  The installed one binds the
+    # same name, so it cannot start beside it: measured, with both alive the
+    # installed instance exited immediately (SCM 7024, service-specific code 0)
+    # while `Wait-ForService` still answered -- from the foreground process -- and
+    # the failure only surfaced later as `sc stop` 1062.  Stopping it first is what
+    # makes this section measure the SCM path rather than a pipe conflict.
+    if ($null -ne $serviceProcess -and -not $serviceProcess.HasExited) {
+        Stop-Process -Id $serviceProcess.Id -Force -ErrorAction SilentlyContinue
+        $null = $serviceProcess.WaitForExit(10000)
+    }
+    $serviceProcess = $null
     Invoke-Sc @('create', $serviceName, 'binPath=', $serviceExe, 'type=', 'own', 'start=', 'demand') | Out-Null
     Invoke-Sc @('start', $serviceName) | Out-Null
     $installed = Wait-ForService 90
