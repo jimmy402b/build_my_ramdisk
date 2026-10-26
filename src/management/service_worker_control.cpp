@@ -113,6 +113,13 @@ bool is_drive_letter(const std::wstring& mount_target) noexcept {
     return mount_target.size() >= 2 && mount_target[1] == L':';
 }
 
+// Defined below, beside the forget proof that first needed it.  Declared here so
+// the checkpoint reconciliation can close an inspection and wait for the worker
+// it launched to actually leave.
+bool worker_process_gone(std::uint32_t process_id,
+                         std::uint64_t process_creation_time,
+                         DWORD timeout_ms);
+
 } // namespace
 
 Result<WorkerLaunchRequest> make_launch_request(
@@ -1380,11 +1387,55 @@ Result<WorkerActionResult> ServiceWorkerControl::reconcile_checkpoint(
             L"The durable correlation carries no native operation id"));
     }
 
-    auto session = require_session(request.profile_id, true);
-    if (!session.ok()) {
-        return Result<WorkerActionResult>::failure(session.error());
+    // **The inspection may have to be launched, because after P4 there is often
+    // nothing left to attach to.**
+    //
+    // This used to be `require_session(profile_id, true)`, which adopts a live
+    // runtime or fails `execution_not_bound`.  That is exactly the state this
+    // question is about: a commit that reached its durable boundary and whose
+    // worker then went away.  No runtime is left to adopt, so the one path that
+    // must answer could never run -- which is why the recovery table's positive
+    // arms had never been executed once.
+    //
+    // Launching is safe for the reason `prove_forget_safe` gives: a launch
+    // authenticates and opens the bundle, and *starting* the runtime is a separate
+    // command this function never issues.  The worker enforces that ordering
+    // itself, and `DiskWorkerRuntime::prove_recovery` is documented as callable
+    // before `start()`.  The inspection answers one question and is then closed in
+    // every branch, because a session left open is a worker nobody commands and a
+    // bundle nobody can take for writing.
+    auto* const held = find_session(request.profile_id);
+    std::unique_ptr<ServiceWorkerSession> inspection;
+    ServiceWorkerSession* session = held;
+    std::uint32_t inspection_pid{};
+    std::uint64_t inspection_created{};
+    if (session == nullptr) {
+        if (!request.durable_profile.has_value()) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::invalid_argument,
+                L"service_worker_control.reconcile_checkpoint",
+                L"The reconciliation needs the operation's durable profile to "
+                L"launch an inspection"));
+        }
+        auto launch_request =
+            make_launch_request(request.durable_profile.value());
+        if (!launch_request.ok()) {
+            return Result<WorkerActionResult>::failure(launch_request.error());
+        }
+        auto launched = sessions_.launch(launch_request.value(), context());
+        if (!launched.ok()) {
+            // A launch that could not be completed is not an answer about the
+            // bundle.  It is returned as a failure so the caller reconciles; it
+            // must never become "the commit did not happen".
+            return Result<WorkerActionResult>::failure(launched.error());
+        }
+        inspection = launched.move_value();
+        const auto binding = inspection->binding();
+        inspection_pid = binding.process_id;
+        inspection_created = binding.process_creation_time;
+        session = inspection.get();
     }
-    auto bound = verify_binding(request, *session.value());
+    auto bound = verify_binding(request, *session);
     if (!bound.ok()) return bound;
 
     // The correlation the worker judges against is the durable record, handed
@@ -1403,7 +1454,16 @@ Result<WorkerActionResult> ServiceWorkerControl::reconcile_checkpoint(
             correlation.manifest_slot,
             correlation.candidate_bytes_digest}};
 
-    auto proof = session.value()->recovery_proof(context(), wire);
+    auto proof = session->recovery_proof(context(), wire);
+    if (inspection) {
+        // Closing the channel is what ends an inspection: no runtime was started,
+        // so there is nothing to stop and the worker leaves on its next read.  The
+        // wait is not allowed to turn into a finding, but a worker left running
+        // would be the next operation's problem, so it is released before any
+        // answer is returned.
+        inspection.reset();
+        (void)worker_process_gone(inspection_pid, inspection_created, 5000);
+    }
     if (!proof.ok()) {
         // The proof could not be taken at all -- an unreadable bundle, a
         // transport failure.  That is not one of the three answers, and

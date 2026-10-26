@@ -509,6 +509,25 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
 
 ---
 
+### 3.15 2026-10-26 夜：T1-06 完成（中断提交判定可达）
+
+**完整体验文档**：`docs/validation/m5-t1-06-recovery-proof.md`。要点：
+
+1. **从 P4 造 launch 起只读检查 worker**：`reconcile_checkpoint` 在没有 session 时从 durable
+   profile **launch 但不 start**，问 `recovery_proof`，每个分支都关闭 inspection 并等进程退出；
+   launch 失败作为失败上报。改前用 `require_session`，只能 adopt 活着的 runtime——而本问题
+   恰恰是"提交已在 P4、worker 已不在"，所以**正面路径一次都跑不到**。
+2. **发现一个让确认提交永远不可能的缺陷**：候选判据六条里的 prior generation 比的是 manifest 的
+   `base_generation`（基底镜像代次，提交 checkpoint 时不前进），而 correlation 的 prior 是上一代
+   checkpoint。客机读数 `mask=0x2`，其余五项（镜像 uuid、代次、native id、slot、digest）**全相同**。
+   修法：候选判据回到规格五条；prior 只用于否定判据；`CheckpointRecoveryInspection::prior_generation`
+   改名 `base_generation`。修后 `verdict=2 mask=0x0`。
+3. §14.3 七条全部有读数（含真 worker/真 bundle 的三条正面/否定路径、只读性指纹）。
+
+**下一步**：T1-07（内存可见性 + UNMAP 端到端）。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell

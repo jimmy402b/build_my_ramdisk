@@ -342,6 +342,76 @@ TEST_CASE(m5_worker_control_refuses_a_correlation_without_a_native_id) {
                ServiceWorkerControlError::recovery_not_provable);
 }
 
+TEST_CASE(m5_worker_control_treats_a_zero_digest_as_absent_not_as_a_match) {
+    // A correlation with a real slot but a zero digest is *missing* the fact the
+    // question is made of.  Comparing the zeroes would answer "matches", which is
+    // the one answer that must never come out of this path -- so it is refused as
+    // unprovable, and no worker is asked.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    CheckpointCommitBoundaryEvidence correlation{
+        operation_id(), profile_id(), uuid("12345678-1234-1234-1234-123456789012"),
+        1, 2, 3, 4, 5, 6, 2, 1, {}};
+    REQUIRE(!correlation.recovery_recoverable());
+    REQUIRE(correlation.native_m3_operation_id.has_value());
+
+    const auto result =
+        control.reconcile_checkpoint(request(ActionKind::checkpoint), correlation);
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(error_code_of(result.error()),
+               ServiceWorkerControlError::recovery_not_provable);
+    REQUIRE_EQ(provider.launches, 0);
+    REQUIRE_EQ(provider.attaches, 0);
+}
+
+TEST_CASE(m5_worker_control_reconcile_needs_the_durable_profile_to_launch) {
+    // The state this question exists for: the commit reached its durable
+    // boundary and the worker that cut it is gone.  There is no runtime left to
+    // attach to, so the reconciliation launches a read-only inspection -- and a
+    // launch with no durable profile to build its request from is refused before
+    // any process exists, rather than answered from a guess.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    CheckpointCommitBoundaryEvidence correlation{
+        operation_id(), profile_id(), uuid("12345678-1234-1234-1234-123456789012"),
+        1, 2, 3, 4, 5, 6, 2, 2, {}};
+    correlation.candidate_bytes_digest.fill(std::byte{0xAB});
+    REQUIRE(correlation.recovery_recoverable());
+    REQUIRE(correlation.native_m3_operation_id.has_value());
+
+    const auto result =
+        control.reconcile_checkpoint(request(ActionKind::checkpoint), correlation);
+    REQUIRE(!result.ok());
+    REQUIRE_EQ(error_code_of(result.error()),
+               ServiceWorkerControlError::invalid_argument);
+    // Neither a launch nor an attach was attempted: the request could not name
+    // one.
+    REQUIRE_EQ(provider.launches, 0);
+    REQUIRE_EQ(provider.attaches, 0);
+}
+
+TEST_CASE(m5_worker_control_reconcile_reports_a_launch_it_could_not_complete) {
+    // A refusal to launch is not an answer about the bundle.  It is surfaced as a
+    // failure so ServiceCore reconciles; turning it into `not_committed` would
+    // claim the commit did not land on the strength of never having asked.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    CheckpointCommitBoundaryEvidence correlation{
+        operation_id(), profile_id(), uuid("12345678-1234-1234-1234-123456789012"),
+        1, 2, 3, 4, 5, 6, 2, 2, {}};
+    correlation.candidate_bytes_digest.fill(std::byte{0xAB});
+
+    auto with_profile = request(ActionKind::checkpoint);
+    with_profile.durable_profile = profile_record(profile::ProfileLifecycle::ready);
+    const auto result = control.reconcile_checkpoint(with_profile, correlation);
+    REQUIRE(!result.ok());
+    // The launch was attempted, which is the whole difference from the case above.
+    REQUIRE_EQ(provider.launches, 1);
+    // And the refusal is the launcher's own error, not a verdict about ownership.
+    REQUIRE(error_code_of(result.error())
+            != ServiceWorkerControlError::recovery_not_provable);
+}
+
 TEST_CASE(m5_worker_control_prove_new_uninitialized_needs_the_durable_profile) {
     // A service-side preflight with no worker in it.  It still refuses without a
     // profile, because there is then no durable mount target to check and

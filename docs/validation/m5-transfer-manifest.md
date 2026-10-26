@@ -358,6 +358,27 @@ format failure is an outer `Result` failure. Either way nothing is confirmed.
 bundle could not be read far enough to check any. It exists so a refusal can say
 which conditions held; it is never zero unless the candidate is proved.
 
+> **CORRECTED — 2026-10-26 (M5 T1-06). The sixth condition was wrong, and it made
+> the confirming verdict unreachable.**
+>
+> The prior-generation clause compared the correlation's `prior_generation` against
+> the manifest's `base_generation`. Those are two different numbers: `base_generation`
+> names the base image a delta was built on and does **not** advance when a checkpoint
+> commits, while the correlation's prior generation is the checkpoint the candidate
+> was cut from. They coincide only before a bundle's first checkpoint.
+>
+> Measured on the guest against a real landed commit at generation 2:
+> `mask=0x2, verdict=OwnershipUnprovable` with image uuid, candidate generation,
+> native operation id, manifest slot and manifest digest **all equal**. Every
+> checkpoint after the first was therefore unconfirmable — which is every checkpoint
+> a running disk commits, and the reason the positive arm had never been executed.
+>
+> The condition set is back to §2.6's five; the prior generation is used only by the
+> negative verdict, where it is compared against the generation the bundle actually
+> records (`candidate_generation == expected.prior_generation`).
+> `CheckpointRecoveryInspection::prior_generation` is renamed `base_generation`,
+> because that is what it always read. See `m5-t1-06-recovery-proof.md`.
+
 **Evidence.** Release build clean after a **full object rebuild** (see §7 item
 17), `9/9 passed` from `myrd_m5_checkpoint_inspection_tests.exe`, and the full
 elevated suite:

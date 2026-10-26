@@ -117,10 +117,10 @@ std::uint32_t candidate_mismatch_mask(
     if (!(observed.image_uuid == expected.image_uuid)) {
         mask |= static_cast<std::uint32_t>(CheckpointRecoveryMismatch::ImageUuid);
     }
-    if (observed.prior_generation != expected.prior_generation) {
-        mask |= static_cast<std::uint32_t>(
-            CheckpointRecoveryMismatch::PriorGeneration);
-    }
+    // No prior-generation clause: the bundle records the *base* generation, not the
+    // checkpoint the candidate was cut from, and the two differ after the first
+    // checkpoint.  The reasoning and the measurement that found it are in the enum's
+    // comment in the header.
     if (observed.candidate_generation != expected.candidate_generation) {
         mask |= static_cast<std::uint32_t>(
             CheckpointRecoveryMismatch::CandidateGeneration);
@@ -177,7 +177,7 @@ Result<CheckpointRecoveryInspection> inspect_checkpoint(
 
     const auto& image = *outcome.image;
     inspection.image_uuid = image.image_uuid;
-    inspection.prior_generation = image.base_generation;
+    inspection.base_generation = image.base_generation;
     inspection.candidate_generation = image.checkpoint_generation;
     inspection.journal_operation_id = image.journal_operation_id;
     inspection.selected_manifest_slot = image.selected_slot;

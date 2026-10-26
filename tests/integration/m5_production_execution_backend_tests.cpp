@@ -22,10 +22,13 @@
 #include "tests/support/test_framework.h"
 
 #include "src/common/operation_context.h"
+#include "src/common/sha256.h"
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_job.h"
 #include "src/management/worker_binding_store.h"
 #include "src/management/windows_worker_sessions.h"
+#include "src/persistence/image_inspector.h"
+#include "src/persistence/recovery_engine.h"
 #include "src/profile/profile_types.h"
 #include "src/product/uuid.h"
 #include "src/run/windows_volume.h"
@@ -39,7 +42,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -1949,5 +1954,337 @@ TEST_CASE(m5_backend_holding_the_volume_lock_refuses_a_second_lock) {
         std::fflush(stderr);
     }
     REQUIRE(cleaned.ok());
+    REQUIRE(wait_for_letter_release(letter));
+}
+
+// A content fingerprint of everything under the bundle root.
+//
+// §14.3's read-only arm asks that the inspection leave the bundle's generation and
+// every file, plus the file names, folded into one value.  FNV-1a rather than a
+// cryptographic digest on purpose -- the claim is "nothing changed", and pulling a
+// hash in only to compare it with itself would add a dependency without adding a
+// question that this comparison does not already answer.
+struct BundleFingerprint final {
+    std::uint64_t digest{14'695'981'039'346'656'037ull};
+    std::uint64_t bytes{};
+    std::size_t files{};
+
+    bool operator==(const BundleFingerprint&) const noexcept = default;
+};
+
+BundleFingerprint fingerprint_bundle(const std::filesystem::path& root) {
+    BundleFingerprint print{};
+    std::error_code ignored;
+    if (!std::filesystem::exists(root, ignored)) return print;
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(root, ignored)) {
+        if (entry.is_regular_file(ignored)) files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    const auto fold = [&print](const std::uint8_t value) {
+        print.digest ^= static_cast<std::uint64_t>(value);
+        print.digest *= 1'099'511'628'211ull;
+    };
+    for (const auto& path : files) {
+        ++print.files;
+        for (const auto unit : path.filename().wstring()) {
+            fold(static_cast<std::uint8_t>(unit & 0xFFu));
+            fold(static_cast<std::uint8_t>((unit >> 8) & 0xFFu));
+        }
+        std::ifstream stream(path, std::ios::binary);
+        std::array<char, 64 * 1024> buffer{};
+        while (stream) {
+            stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const auto got = stream.gcount();
+            for (std::streamsize index = 0; index < got; ++index) {
+                fold(static_cast<std::uint8_t>(buffer[static_cast<std::size_t>(index)]));
+            }
+            print.bytes += static_cast<std::uint64_t>(got);
+        }
+    }
+    return print;
+}
+
+TEST_CASE(m5_backend_recovery_proof_proves_the_landed_candidate_read_only) {
+    // **§14.3's positive arms, executed for the first time.**
+    //
+    // A commit reaches its durable boundary and the worker that cut it then goes
+    // away -- the state the whole `recovery_proof` question exists for.  The
+    // reconciliation has no runtime to attach to, so it launches a read-only
+    // inspection from the durable profile, the *bundle* decides, and the answer is
+    // `committed`.  The same bundle is then asked about a correlation it cannot
+    // prove, which must come back indeterminate rather than "not committed".
+    //
+    // And the bundle is fingerprinted before and after all of it: a proof that
+    // changed what it inspected would be worthless.
+    REQUIRE(wait_for_no_worker_process());
+    TempBundle bundle(L"recovery-candidate");
+    const wchar_t letter = free_drive_letter();
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto image_id = uuid("3f3f3f3f-4e4e-5d5d-6c6c-7d7d7d7d7d7d");
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+    const auto durable = checkpoint_profile(profile, image_id,
+                                            bundle.root.wstring(), mount_target);
+
+    std::optional<CheckpointCommitBoundaryEvidence> correlation;
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+
+        WorkerActionRequest create{
+            operation, operation, profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt, std::nullopt};
+        require_created(control.execute(create));
+
+        WorkerActionRequest flush{
+            operation, operation, profile,
+            ManagementCommand::checkpoint,
+            ActionKind::flush_exact_volume,
+            std::nullopt, durable, std::nullopt};
+        REQUIRE(control.execute(flush).ok());
+
+        WorkerActionRequest boundary_request{
+            operation, operation, profile,
+            ManagementCommand::checkpoint,
+            ActionKind::checkpoint,
+            std::nullopt, durable, std::nullopt};
+        auto committed = control.execute_checkpoint(
+            boundary_request,
+            [](const CheckpointCommitBoundaryEvidence&) {
+                return Result<CheckpointCommitBoundaryDecision>::success(
+                    CheckpointCommitBoundaryDecision{true, 0, 0});
+            });
+        require_action(committed, "commit");
+        REQUIRE(committed.value().checkpoint.has_value());
+        REQUIRE(committed.value().checkpoint->disposition
+                == CheckpointCommitDisposition::committed);
+        correlation = committed.value().checkpoint->correlation;
+    }
+    // The worker is gone: this is the "commit reached P4, worker replaced" state,
+    // not a live runtime the adapter could have adopted.
+    REQUIRE(wait_for_no_worker_process());
+    const auto before = fingerprint_bundle(bundle.root);
+    REQUIRE(before.files > 0);
+    REQUIRE(before.bytes > 0);
+
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+        // No session is bound in this control: every one of these calls has to
+        // launch an inspection of its own.
+        WorkerActionRequest reconcile{
+            operation, operation, profile,
+            ManagementCommand::checkpoint,
+            ActionKind::checkpoint,
+            std::nullopt, durable, std::nullopt};
+
+        // What the bundle itself answers, asked over a session this case launched
+        // directly.  Printed because the adapter's mapping is four lines of
+        // arithmetic: when the mapped answer is wrong, the raw verdict is the
+        // reading that says whether the bundle or the mapping is at fault.
+        {
+            auto launch = make_launch_request(durable);
+            REQUIRE(launch.ok());
+            auto launched = provider.launch(launch.value(), context());
+            REQUIRE(launched.ok());
+            auto raw_session = launched.move_value();
+            const m5::WorkerRecoveryCorrelation wire{
+                correlation->product_operation_id,
+                persistence::CheckpointRecoveryCorrelation{
+                    image_bytes(image_id),
+                    correlation->prior_generation,
+                    correlation->candidate_generation,
+                    *correlation->native_m3_operation_id,
+                    correlation->manifest_slot,
+                    correlation->candidate_bytes_digest}};
+            auto raw = raw_session->recovery_proof(context(), wire);
+            if (!raw.ok()) {
+                std::fprintf(stderr, "PROBE-RECOVERY: proof failed: op=%ls msg=%ls\n",
+                             raw.error().operation.c_str(),
+                             raw.error().message.c_str());
+            } else {
+                std::fprintf(
+                    stderr,
+                    "PROBE-RECOVERY: outcome=%u observed_generation=%llu "
+                    "native=%llu slot=%u (prior=%llu candidate=%llu)\n",
+                    static_cast<unsigned>(raw.value().outcome),
+                    static_cast<unsigned long long>(
+                        raw.value().observed_generation),
+                    static_cast<unsigned long long>(
+                        raw.value().native_operation_id),
+                    static_cast<unsigned>(raw.value().manifest_slot),
+                    static_cast<unsigned long long>(correlation->prior_generation),
+                    static_cast<unsigned long long>(
+                        correlation->candidate_generation));
+            }
+            std::fflush(stderr);
+            // Which of the six candidate conditions failed.  The proof carries the
+            // verdict but not the mask, and without the mask "unprovable" has six
+            // possible causes.  The inspection is asked directly here, with the same
+            // reader limits the worker fills in when the service names none.
+            if (raw.ok()) {
+                persistence::ImageInspectOptions options{};
+                options.manifest_relative_name = "disk.rdm";
+                constexpr std::uint64_t kMiB = 1024 * 1024;
+                options.recovery.limits = {
+                    64 * kMiB, 64 * kMiB, 8192, 64 * 4096, 64, 64 * 4096, 64,
+                    2 * kMiB, 2 * kMiB};
+                auto inspected = persistence::inspect_checkpoint(
+                    context(), bundle.root, options, wire.checkpoint);
+                if (!inspected.ok()) {
+                    std::fprintf(stderr,
+                                 "PROBE-RECOVERY: inspection failed: msg=%ls\n",
+                                 inspected.error().message.c_str());
+                } else {
+                    const auto& seen = inspected.value();
+                    std::fprintf(
+                        stderr,
+                        "PROBE-RECOVERY: verdict=%u mask=0x%x "
+                        "observed(base=%llu candidate=%llu native=%llu slot=%u "
+                        "uuid_equal=%d) "
+                        "expected(prior=%llu candidate=%llu native=%llu slot=%u)\n",
+                        static_cast<unsigned>(seen.verdict),
+                        static_cast<unsigned>(seen.candidate_mismatch_mask),
+                        static_cast<unsigned long long>(seen.base_generation),
+                        static_cast<unsigned long long>(
+                            seen.candidate_generation),
+                        static_cast<unsigned long long>(
+                            seen.journal_operation_id),
+                        static_cast<unsigned>(seen.selected_manifest_slot),
+                        seen.image_uuid == image_bytes(image_id) ? 1 : 0,
+                        static_cast<unsigned long long>(
+                            correlation->prior_generation),
+                        static_cast<unsigned long long>(
+                            correlation->candidate_generation),
+                        static_cast<unsigned long long>(
+                            *correlation->native_m3_operation_id),
+                        static_cast<unsigned>(correlation->manifest_slot));
+                }
+            }
+            std::fflush(stderr);
+            raw_session.reset();
+        }
+
+        auto reconciled = control.reconcile_checkpoint(reconcile, correlation.value());
+        require_action(reconciled, "reconcile the landed commit");
+        REQUIRE(reconciled.value().completion == CompletionOutcome::succeeded_clean);
+        REQUIRE(reconciled.value().checkpoint.has_value());
+        const auto& proved = reconciled.value().checkpoint.value();
+        REQUIRE(proved.disposition == CheckpointCommitDisposition::committed);
+        // The generation is the bundle's own, and it is the one this operation
+        // cut -- not the prior one and not one derived from what the service
+        // expected to find.
+        REQUIRE_EQ(proved.generation, correlation->candidate_generation);
+
+        // The same bundle, asked about a correlation it cannot prove.  A digest
+        // that was never published is not a near miss: the answer must be "cannot
+        // tell", because "not ours" is not "did not happen".
+        auto tampered = correlation.value();
+        const auto first = std::to_integer<unsigned>(
+            tampered.candidate_bytes_digest[0]);
+        tampered.candidate_bytes_digest[0] =
+            static_cast<std::byte>((first ^ 0xFFu) & 0xFFu);
+        auto unprovable = control.reconcile_checkpoint(reconcile, tampered);
+        require_action(unprovable, "reconcile an unprovable correlation");
+        REQUIRE(unprovable.value().completion
+                == CompletionOutcome::resolution_unresolved);
+        REQUIRE(unprovable.value().checkpoint.has_value());
+        REQUIRE(unprovable.value().checkpoint->disposition
+                == CheckpointCommitDisposition::commit_indeterminate);
+    }
+
+    const auto after = fingerprint_bundle(bundle.root);
+    REQUIRE_EQ(after.files, before.files);
+    REQUIRE_EQ(after.bytes, before.bytes);
+    REQUIRE(after == before);
+    // Both inspections are closed and waited for: a worker left holding the
+    // bundle would make the next operation's writer lock unobtainable.
+    REQUIRE(wait_for_no_worker_process());
+    REQUIRE(wait_for_letter_release(letter));
+}
+
+TEST_CASE(m5_backend_recovery_proof_proves_the_prior_generation) {
+    // The other positive arm: a candidate was cut and then withdrawn, so the
+    // bundle is still at the prior generation.  A proof taken afterwards must say
+    // exactly that -- and, like the case above, must leave the bundle untouched.
+    REQUIRE(wait_for_no_worker_process());
+    TempBundle bundle(L"recovery-prior");
+    const wchar_t letter = free_drive_letter();
+    const std::wstring mount_target = std::wstring(1, letter) + L":";
+    const auto profile = uuid("11111111-2222-3333-4444-555555555555");
+    const auto image_id = uuid("4f4f4f4f-5e5e-6d6d-7c7c-8d8d8d8d8d8d");
+    const auto operation = uuid("99999999-8888-7777-6666-555555555555");
+    const auto durable = checkpoint_profile(profile, image_id,
+                                            bundle.root.wstring(), mount_target);
+
+    std::optional<CheckpointCommitBoundaryEvidence> correlation;
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+
+        WorkerActionRequest create{
+            operation, operation, profile,
+            ManagementCommand::create_and_start,
+            ActionKind::create_and_verify_bundle,
+            create_intent(image_id, bundle, mount_target),
+            std::nullopt, std::nullopt};
+        require_created(control.execute(create));
+
+        WorkerActionRequest flush{
+            operation, operation, profile,
+            ManagementCommand::checkpoint,
+            ActionKind::flush_exact_volume,
+            std::nullopt, durable, std::nullopt};
+        REQUIRE(control.execute(flush).ok());
+
+        WorkerActionRequest boundary_request{
+            operation, operation, profile,
+            ManagementCommand::checkpoint,
+            ActionKind::checkpoint,
+            std::nullopt, durable, std::nullopt};
+        auto withdrawn = control.execute_checkpoint(
+            boundary_request,
+            [](const CheckpointCommitBoundaryEvidence&) {
+                return Result<CheckpointCommitBoundaryDecision>::success(
+                    CheckpointCommitBoundaryDecision{false, 0, 0});
+            });
+        require_action(withdrawn, "withdraw the commit");
+        REQUIRE(withdrawn.value().checkpoint.has_value());
+        REQUIRE(withdrawn.value().checkpoint->disposition
+                == CheckpointCommitDisposition::not_committed);
+        correlation = withdrawn.value().checkpoint->correlation;
+    }
+    REQUIRE(wait_for_no_worker_process());
+    const auto before = fingerprint_bundle(bundle.root);
+    REQUIRE(before.files > 0);
+
+    {
+        WorkerJobFixture job;
+        WindowsWorkerSessionProvider provider(worker_executable(), job.source());
+        ServiceWorkerControl control(provider);
+        WorkerActionRequest reconcile{
+            operation, operation, profile,
+            ManagementCommand::checkpoint,
+            ActionKind::checkpoint,
+            std::nullopt, durable, std::nullopt};
+        auto reconciled = control.reconcile_checkpoint(reconcile, correlation.value());
+        require_action(reconciled, "reconcile the withdrawn commit");
+        REQUIRE(reconciled.value().checkpoint.has_value());
+        const auto& proved = reconciled.value().checkpoint.value();
+        REQUIRE(proved.disposition == CheckpointCommitDisposition::not_committed);
+        REQUIRE_EQ(proved.generation, correlation->prior_generation);
+    }
+
+    const auto after = fingerprint_bundle(bundle.root);
+    REQUIRE(after == before);
+    REQUIRE(wait_for_no_worker_process());
     REQUIRE(wait_for_letter_release(letter));
 }

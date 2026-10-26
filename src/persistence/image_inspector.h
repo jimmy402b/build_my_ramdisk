@@ -103,21 +103,34 @@ enum class CheckpointRecoveryVerdict : std::uint8_t {
     CandidateGenerationProved = 2,
 };
 
-// One bit per condition that must hold for CandidateGenerationProved
-// (§2.6).  Zero means every condition held.
+// One bit per condition that must hold for CandidateGenerationProved (§2.6).
+// Zero means every condition held.
+//
+// **The prior generation is deliberately not one of them.**
+//
+// It used to be, compared against the manifest's `base_generation` -- and those are
+// two different numbers the moment a bundle has more than one checkpoint.  The base
+// generation names the base image a delta was built on and does not advance when a
+// checkpoint commits; the prior generation is the checkpoint the candidate was cut
+// from.  Measured on the guest: a landed commit at generation 2 reported
+// `prior=0, candidate=2, native/slot/digest all equal`, mask `0x2`, verdict
+// `OwnershipUnprovable` -- so the only verdict that permits confirming an operation
+// was unreachable for every checkpoint after the first, which is every checkpoint a
+// running disk ever commits.  The five conditions below are the complete proof that
+// *this* candidate landed; the prior generation is still what the negative verdict
+// compares against, and there it is compared with the generation the bundle reports
+// (`candidate_generation == expected.prior_generation`), which the bundle does record.
 enum class CheckpointRecoveryMismatch : std::uint32_t {
     None = 0,
     ImageUuid = 1U << 0,
-    PriorGeneration = 1U << 1,
-    CandidateGeneration = 1U << 2,
-    NativeOperationId = 1U << 3,
-    ManifestSlot = 1U << 4,
-    ManifestDigest = 1U << 5,
+    CandidateGeneration = 1U << 1,
+    NativeOperationId = 1U << 2,
+    ManifestSlot = 1U << 3,
+    ManifestDigest = 1U << 4,
 };
 
 inline constexpr std::uint32_t kCheckpointCandidateConditions =
     static_cast<std::uint32_t>(CheckpointRecoveryMismatch::ImageUuid) |
-    static_cast<std::uint32_t>(CheckpointRecoveryMismatch::PriorGeneration) |
     static_cast<std::uint32_t>(CheckpointRecoveryMismatch::CandidateGeneration) |
     static_cast<std::uint32_t>(CheckpointRecoveryMismatch::NativeOperationId) |
     static_cast<std::uint32_t>(CheckpointRecoveryMismatch::ManifestSlot) |
@@ -128,15 +141,19 @@ inline constexpr std::uint32_t kCheckpointCandidateConditions =
 // own bytes -- never from a writer's plan object.
 struct CheckpointRecoveryInspection final {
     ImageUuid image_uuid{};
-    std::uint64_t prior_generation{};
+    // The generation of the base image this delta was built on.  It is **not** the
+    // checkpoint the candidate was cut from: those coincide only before the first
+    // checkpoint of a bundle, and using one as the other is what made the confirming
+    // verdict unreachable (see `CheckpointRecoveryMismatch`).
+    BaseGeneration base_generation{};
     std::uint64_t candidate_generation{};
     std::uint64_t journal_operation_id{};
     std::uint8_t selected_manifest_slot{};
     Sha256Digest selected_manifest_digest{};
     CheckpointRecoveryVerdict verdict{
         CheckpointRecoveryVerdict::OwnershipUnprovable};
-    // Which of the six candidate conditions failed.  Zero exactly when the
-    // verdict is CandidateGenerationProved; all six when the bundle could not
+    // Which of the five candidate conditions failed.  Zero exactly when the
+    // verdict is CandidateGenerationProved; all five when the bundle could not
     // be read far enough to verify any of them.
     std::uint32_t candidate_mismatch_mask{kCheckpointCandidateConditions};
 };

@@ -243,7 +243,7 @@ TEST_CASE(m5_checkpoint_inspection_proves_a_committed_candidate) {
     REQUIRE_EQ(inspection.candidate_mismatch_mask, 0u);
     // The observation is the bundle's own account, field by field.
     REQUIRE(inspection.image_uuid.bytes[0] == std::byte{0x11});
-    REQUIRE_EQ(inspection.prior_generation, 0ull);
+    REQUIRE_EQ(inspection.base_generation, 0ull);
     REQUIRE_EQ(inspection.candidate_generation, kCandidateGeneration);
     REQUIRE_EQ(inspection.journal_operation_id, kCandidateNativeId);
     REQUIRE_EQ(inspection.selected_manifest_slot, prepared.manifest_slot);
