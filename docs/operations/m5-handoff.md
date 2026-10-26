@@ -595,6 +595,56 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
   判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
 - CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
 
+**2026-10-27 00:52 第六次读数（干净三段跑完；剩下的问题是"服务 RUNNING 但没有公开管道"）**
+
+干净客机（硬重启 + 清 ProgramData + 删服务）跑完整三段：
+- `prepare` **1 of 1 passed**（请求 `b0cb01b9…`，52 s）
+- 硬断电 + 开机 + `verify` → **0 of 1**，请求 `1280adbd…`，耗时 187 s
+- 187 s ≈ `Wait-ForService 180` + 7 s，即**第一步就失败**：CLI 连不上
+
+断电后直接手动确认（不再靠 harness）：
+
+```text
+myrd-cli disk list → exit=3, 30016 ms
+  "myrd-cli: the service is not available (is it installed and running?)"
+sc query MyRamDiskPowerLoss → STATE: 4 RUNNING
+```
+
+**所以现在的未解问题是产品侧的**：断电重启后 **SCM 说 RUNNING，但公开管道不存在**（或不可连接）。
+`ServiceHost::start()` 若打开公开面失败会把状态置 failed 并让服务报 STOPPED，所以要么
+start() 根本没走到 open，要么 open 成功而管道对 CLI 不可达。
+
+**下一次要查的顺序（都很便宜）**：
+**2026-10-27 00:55 追加（关键一步已经查了）**：断电后那台客机上
+
+```text
+Get-Process myrd-service → 没有进程
+\\.\pipe\ 里 myrd*     → 没有任何管道
+C:\ProgramData\MyRamDisk\logs\service.log 最后写入 00:46:32（在断电之前）
+```
+
+而 `sc query` 在几分钟前还报 RUNNING。**结论：断电后的服务进程自己退出了（疑似崩溃），
+公开管道因此从没建立起来**。所以 T1-09 剩下的不是一个"恢复逻辑"问题，而是
+**"重启后服务进程会死"**——下一步必须看 **Windows 应用程序事件日志**（Event ID 1000 /
+WER）拿崩溃模块与偏移，再决定是修代码还是修环境。`service.log` 在 00:46:32 之后没有任何
+新行，说明服务**在这次开机里连一条日志都没写**——它很可能在 `ServiceHost::start()` 之前
+（或刚开始）就死了，这一点与"崩溃"比与"逻辑卡住"更吻合。
+
+**下一次要查的顺序**：
+0. **`Get-WinEvent -LogName Application -MaxEvents 40 | ? { $_.ProviderName -match 'Application Error|Windows Error Reporting' }`**
+   —— 先拿崩溃模块与偏移；
+1. `sc query` 的 PID 与 `Get-Process` 的 myrd-service 是否同一个；`Get-Process -Id <pid>` 的
+   `StartTime` 是不是这次开机；
+2. `C:\ProgramData\MyRamDisk\logs\service.log` 里这次开机的最后几行——**有没有** `auto-start`
+   与 subsequent 的 action 行（如果日志停在 `auto-start: …retired…` 之后，说明 start() 卡在
+   `admit_auto_starts` 或调度器启动里）；
+3. `\\.\pipe\` 里有没有公开管道名（`Get-ChildItem \\.\pipe\ | ? Name -match 'myrd'`）；
+4. 若服务日志**完全没有**这次开机的行，说明服务进程不是这一版二进制（staging/服务 binPath 不对）。
+
+**T1-09 已完成的部分**（有读数）：断电后服务自起、盘自起、generation ≥ 提交值、脏数据重放
+提交成下一代（`0af35d5` 的提交信息里有完整读数）。**未完成**：verify 端到端一次绿，
+以及上面那条"RUNNING 但无管道"的原因。
+
 **2026-10-27 00:45 第五次读数（T1-09 的产品部分已全绿；剩下的全在 verify 脚本与客机侧）**
 
 **断电后连续两次读到的产品事实**（这才是 T1-09 要的）：
