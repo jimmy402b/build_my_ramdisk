@@ -1053,3 +1053,23 @@ tag 与 length**，以及 `decode_profile` 收到 payload 的**首 8 字节十�
 **已经回退两次了**，不要再盲改：这条支线在拿到字节级证据前不值得第三次尝试。
 **替代路线**：把卷序列号放到**响应级字段**（像 `mount_target` 那样），完全避开 profile 的固定布局——
 `disk show` 只需要一块盘，够用；`disk list` 的每行序列号可以后面再补。
+### 3.30 2026-10-27 02:35：字节级读数到手——**编码端少了那 8 字节**
+
+探针（临时打印，已随回退移除）在客机无关的本机测试里给出两个数：
+
+- `probe: decoded profile bytes=51`、`probe: decode payload=51` —— profile 的 payload 声明长度是 **51**；
+- `probe: encoded profile bytes=12` —— 从 `budget` 之前量到结尾，只有 **12** 字节
+  （= budget 8 + mount_length 2 + mount 2）。
+
+51 恰好等于 **不含 serial** 的布局：`6 + 8 + uuid(2+16) + 1 + 8 + 8 + 2 = 51`。
+12 也恰好是 **不含 serial** 的尾部：`8 + 2 + 2`。**含 serial 时应是 59 与 20。**
+
+⇒ **解码端在读 serial（所以判截断），编码端没写**。原因：那两次改动里，编码端的
+`put_u64(out, profile.volume_serial);` 与解码端的 `reader.u64(volume_serial)` **不是同一次编辑
+加进去的**，而我在中途回退过一次，于是出现"半套改动"——这正是两次失败的真正原因，不是布局。
+
+**重做时的正确做法（一次编辑里同时加三处，然后用那两个数验收）**：
+1. `encode_profile`：在 `put_u64(out, profile.budget_bytes);` 之后加
+   `put_u64(out, profile.volume_serial);`（期望尾部 12 → **20**）；
+2. `decode_profile`：在 `budget_bytes` 之后声明并读 `volume_serial`（期望 payload 51 → **59**）；
+3. `ServiceDiskView`/`ServiceProfileProjection` 各加字段、`project_profile` 填、CLI 打 `serial=`。
