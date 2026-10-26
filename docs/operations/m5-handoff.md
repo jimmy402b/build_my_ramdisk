@@ -1036,3 +1036,20 @@ mount_length），所以不是顺序问题；**需要先拿到 decode 的具体�
    `message` 打印出来——一次就能定位；
 2. 拿到原因后再重做这次改动（字段与顺序可以照 3.27 的清单，已经验证过编译）；
 3. 该改动完成后 T4-02 的第 1 步就结束，再进卷标/簇大小。
+### 3.29 2026-10-27 02:25：卷序列号第二次失败——**不是陈旧对象，是布局真的不对称**
+
+这次用 `--clean-first` 全量重建（排除"增量构建留下旧编码器"的假设），失败**照旧**：
+`decode failed: A profile projection is truncated`（`m5.cli` 与 `m5.service_host` 的往返用例）。
+
+**已核对**：`encode_profile` 写 `6×u8, u64 generation, uuid, u8 has_mount, u64 resident,
+u64 budget, u64 serial, u16 mount_length, text`；`decode_profile` 读完全相同的顺序。
+两边逐字对称，却仍在"固定区"那组读取处判定截断 ⇒ 问题**不在我改的那 8 个字节**，而在
+**响应层切给 profile 的 payload 长度**（`put_field` / 字段切片）或 `Reader` 的边界语义。
+
+**下一步只有一条路（10 行代码，一次定位）**：在 `decode_service_response` 里**临时打印每个字段的
+tag 与 length**，以及 `decode_profile` 收到 payload 的**首 8 字节十六进制**——立刻就能看出
+`profiles` 字段的声明长度是否比实际写入少 8（或 `Reader::u64` 是否在末尾拒绝读）。
+
+**已经回退两次了**，不要再盲改：这条支线在拿到字节级证据前不值得第三次尝试。
+**替代路线**：把卷序列号放到**响应级字段**（像 `mount_target` 那样），完全避开 profile 的固定布局——
+`disk show` 只需要一块盘，够用；`disk list` 的每行序列号可以后面再补。
