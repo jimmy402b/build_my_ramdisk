@@ -870,3 +870,32 @@ tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>
 宸茶 v3 鍙栦唬锛涘伐浣滄爲涓庡垎鏀凡浜?2026-10-25 鍒犻櫎锛屼粎浠?tag
 `archive/m5-unified-integration`銆乣archive/m5-supervisor-service` 淇濈暀鍘嗗彶銆?
 **褰撳墠浠ｇ爜閲屾病鏈変换浣曚笢瑗夸緷璧栧畠浠?*锛沗docs/m4-m5-scope.md` 閲屽瀹冧滑鐨勬弿杩板睘浜庡巻鍙茶儗鏅€?
+
+---
+
+### 3.22 2026-10-27 01:15：T3 开始（T3-01 第一部分已落地）
+
+**已提交**：`src/product/service_view.{h,cpp}` —— 客户端可见的**中立词汇**
+（`ServiceLifecycle` / `Runtime` / `Activity` / `Persistence` / `Health` / `Aggregate` /
+`OperationState` / `Disposition`，加 `ServiceDiskView` / `ServiceOperationView`）。
+值就是线上的数字，并用 `static_assert` 钉住；`ServiceAggregate` **只有四个值**，与服务自己算的
+判定一一对应（客户端不许发明第五个）。
+
+**为什么先做这个**：T3-01 要求 GUI 只链 `myrd_product_contracts` + `myrd_product_ipc` + 纯客户端
+库，而服务的响应投影说的是 `product::RuntimeState` / `AggregateStatus` / `OperationState`
+（management 的概念）。边界只能建立在一套两边都能说的词汇上。
+
+**T3-01 剩余（下一步，机械执行）**：
+1. 新建库 `myrd_product_client`（`src/client/response_view.{h,cpp}`）：把
+   `src/management/service_response_wire.cpp` 的解码半边搬过去（约 230 行：`Reader`、
+   `read_uuid`、`decode_profile`、`decode_operation`、`decode_error_field`、
+   `decode_service_response`），产出 `ServiceDiskView` / `ServiceOperationView`；
+2. management 新增 `project_view()` 的**穷尽 switch**（新增状态忘映射就编译失败），编码仍留在 management；
+3. `myrd_cli` 改链 `myrd_product_client`（不再链 `myrd_management`）；
+4. **负例测试**：配置期用 `get_target_property` 把 GUI 目标的 `LINK_LIBRARIES` 闭包写文件，
+   ctest 断言不含 `myrd_management` / `myrd_persistence` / `myrd_storage` / `myrd_proxy` / `myrd_driver`；
+5. T3-02 起才是 Win32 窗口/托盘/列表（`CreateWindowEx` + `NOTIFYICONDATA` + `ListView`），
+   以及 T3-03 的进度一致性、T3-04 的三处确认流（force / accept_volatile_data_loss / confirmation_id）。
+
+**T3 验收口径**：GUI 在客机上能列出盘/内存/generation；创建/启动/停止/checkpoint 可用且长操作
+期间界面不假死；三处确认流分别出现；未提权时只读。
