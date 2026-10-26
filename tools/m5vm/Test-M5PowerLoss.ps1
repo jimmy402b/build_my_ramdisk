@@ -1,4 +1,4 @@
-# The power-cut acceptance (T1-09), host side.
+﻿# The power-cut acceptance (T1-09), host side.
 #
 # A hard power cut cannot be produced from inside the guest and cannot be observed from
 # outside it, so the acceptance is three phases:
@@ -54,7 +54,11 @@ function Invoke-Phase {
     param([string]$What, [hashtable]$Arguments)
     Write-Host ("=== {0}: Invoke-M5Vm.ps1 {1}" -f $What,
         (($Arguments.GetEnumerator() | ForEach-Object { "-$($_.Key) $($_.Value)" }) -join ' '))
-    $text = & $harness @Arguments 2>&1 | Out-String
+    # **`6>&1` is load-bearing.**  The harness reports its verdict with `Write-Host`, which goes to
+    # the *information* stream -- `2>&1 | Out-String` captures only success output and stderr,
+    # so the first version of this function saw an empty string and declared "no verdict line"
+    # over a run whose verdict was printed right there on the console.  Measured twice.
+    $text = & $harness @Arguments 6>&1 2>&1 | Out-String
     Write-Host $text
     $match = [regex]::Match([string]$text, '(\d+) of (\d+) passed')
     if (-not $match.Success) {
@@ -85,8 +89,14 @@ function Wait-ForSsh([int]$seconds) {
     return $false
 }
 
+# Staging prints a count, not a verdict, so it is judged by its exit code alone -- the
+# verdict rule below belongs to `-Run`, and applying it here declared "no verdict line"
+# over a stage that had just succeeded (measured).
 if (-not $SkipStage) {
-    Invoke-Phase -What 'stage' -Arguments @{ Stage = $true; Configuration = $Configuration }
+    Write-Host '=== stage: Invoke-M5Vm.ps1 -Stage -Configuration '"$Configuration"
+    $stage = & $harness -Stage -Configuration $Configuration 6>&1 2>&1 | Out-String
+    Write-Host $stage
+    if ($LASTEXITCODE -ne 0) { throw "staging failed ($LASTEXITCODE)" }
 }
 
 # ---- phase 1: leave a disk that the cut will interrupt -------------------------
