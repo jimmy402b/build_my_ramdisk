@@ -413,7 +413,21 @@ if ($Stage) {
     $guestRepoScp = $guestRepoWin -replace '\\', '/'
     Copy-ToRemote -Local (Join-Path $stageDir 'tests.json') -Remote "$RemoteRoot/tests.json"
     foreach ($entry in (Get-ChildItem -LiteralPath $stageDir -Force | Where-Object { $_.Name -ne 'tests.json' })) {
-        Copy-ToRemote -Local $entry.FullName -Remote "$guestRepoScp/$($entry.Name)"
+        # **A directory's contents, not the directory.**  Measured: `scp -r local\out remote\out` into a
+        # target that already exists creates `remote\out\out`, and the staged binaries then sit where the
+        # runner does not look -- the run reports "0 test executables" while 122 were staged, and the
+        # count check (which exists for exactly this) refuses.  `\.` copies the contents, so the result is
+        # the same whether the target exists or not.
+        $remoteTarget = "$guestRepoScp/$($entry.Name)"
+        if ($entry.PSIsContainer) {
+            # **Remove the target, then copy the directory itself.**  Two measured failures led here:
+            # copying `local\out` into an existing `remote\out` creates `remote\out\out`, and the
+            # `\.`-contents trick does not work with Windows OpenSSH's scp -- it fails to create the
+            # nested directories and reports "dest open ... Failure", which reads like a permission
+            # problem.  Deleting first makes the plain copy land where the runner looks.
+            $null = Invoke-Remote -Script ("Remove-Item -LiteralPath '$remoteTarget' -Recurse -Force -ErrorAction SilentlyContinue; 'ok'")
+        }
+        Copy-ToRemote -Local $entry.FullName -Remote $remoteTarget
     }
 
     # The main repository's git metadata goes to its own mirrored path, because
