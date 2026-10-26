@@ -1285,6 +1285,23 @@ Result<ProductVolume> select_volume_for_disk(
             + L" extents_not_one=" + std::to_wstring(extents)
             + L" other_disk=" + std::to_wstring(wrong_disk)
             + L" require_mounted=" + (require_mounted ? L"true" : L"false");
+        // **Which volumes, not just how many.**  `other_letter=4` is the same
+        // number whether the disk's volume came back under a different letter or
+        // never came back at all, and those two want opposite fixes.
+        summary += L" seen=[";
+        for (const auto& observation : observations) {
+            const auto& candidate = observation.volume;
+            summary += candidate.drive_letter == 0
+                ? L"-"
+                : std::wstring(1, candidate.drive_letter);
+            summary += candidate.mounted ? L":" : L"?";
+            summary += L"@";
+            summary += candidate.extents.empty()
+                ? L"?"
+                : std::to_wstring(candidate.extents.front().disk_number);
+            summary += L" ";
+        }
+        summary += L"]";
         return Result<ProductVolume>::failure(
             failure(VolumeError::not_found, L"select_volume_for_disk", summary));
     }
