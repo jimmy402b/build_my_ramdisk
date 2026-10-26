@@ -1,4 +1,6 @@
-#include "src/gui/gui_view_model.h"
+﻿#include "src/gui/gui_view_model.h"
+
+#include "src/product/service_status.h"
 
 #include <cstdint>
 #include <string>
@@ -53,6 +55,61 @@ std::vector<DiskRow> make_disk_rows(const std::vector<product::ServiceDiskView>&
     return rows;
 }
 
+std::string progress_text(const product::ServiceOperationState state,
+                          const std::string& phase) {
+    if (operation_finished(state)) {
+        return "finished: " + std::string(product::to_string(state));
+    }
+    if (phase.empty()) {
+        return std::string(product::to_string(state)) + "...";
+    }
+    return std::string(product::to_string(state)) + ": " + phase;
+}
+
+bool operation_finished(const product::ServiceOperationState state) {
+    return state == product::ServiceOperationState::succeeded
+        || state == product::ServiceOperationState::failed
+        || state == product::ServiceOperationState::cancelled;
+}
+
+ConfirmationRequest stop_confirmation(const bool checkpoint_confirmed,
+                                      const std::string& mount) {
+    ConfirmationRequest request{};
+    if (checkpoint_confirmed) {
+        return request;
+    }
+    request.kind = ConfirmationKind::volatile_data_loss;
+    request.text = "The checkpoint for " + mount +
+        " could not be confirmed, so stopping it will discard the writes that are still in "
+        "memory. Stop anyway?";
+    return request;
+}
+
+ConfirmationRequest forget_confirmation(const std::string& mount,
+                                        const std::string& profile_id) {
+    ConfirmationRequest request{};
+    request.kind = ConfirmationKind::forget;
+    request.text = "Forgetting " + mount + " removes this profile from the service. The identifier "
+        "below has to match, so that a stale script cannot do it by accident:\n\n" + profile_id;
+    return request;
+}
+
+bool needs_elevation(const std::uint32_t native_code) {
+    return native_code
+        == static_cast<std::uint32_t>(product::ServiceCoreError::authorization_denied);
+}
+
+std::string explain_refusal(const std::uint32_t native_code,
+                            const std::string& service_message) {
+    if (needs_elevation(native_code)) {
+        return "This window cannot change anything without administrator rights. "
+               "Restart it as administrator to make changes; reading works without.";
+    }
+    if (service_message.empty()) {
+        return "The service refused the command.";
+    }
+    return service_message;
+}
 std::string tray_summary(const std::vector<DiskRow>& rows) {
     std::size_t attention = 0;
     for (const auto& row : rows) {

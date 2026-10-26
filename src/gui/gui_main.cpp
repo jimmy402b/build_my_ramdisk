@@ -15,10 +15,15 @@
 #include <commctrl.h>
 #include <shellapi.h>
 
+#include "src/control/command.h"
 #include "src/gui/gui_client.h"
 #include "src/gui/gui_view_model.h"
 
 #include <chrono>
+#include <memory>
+#include <optional>
+#include <thread>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -35,6 +40,14 @@ constexpr int kTrayCommandExit = 1003;
 constexpr int kButtonRefresh = 2001;
 constexpr int kListDisks = 2002;
 constexpr int kStatusText = 2003;
+constexpr int kButtonStart = 2010;
+constexpr int kButtonStop = 2011;
+constexpr int kButtonCheckpoint = 2012;
+constexpr int kButtonForget = 2013;
+constexpr int kProgressText = 2014;
+constexpr UINT kCommandDone = WM_APP + 2;
+constexpr UINT kProgressTimerId = 2;
+constexpr UINT kProgressIntervalMs = 600;
 
 HWND g_window{};
 HWND g_list{};
@@ -42,6 +55,9 @@ HWND g_status{};
 HINSTANCE g_instance{};
 NOTIFYICONDATAW g_tray{};
 std::vector<myrd::gui::DiskRow> g_rows;
+HWND g_progress{};
+// The operation the progress line is following, if any.
+std::optional<myrd::product::Uuid> g_followed_operation;
 
 std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
@@ -117,6 +133,107 @@ void refresh() {
     }
 }
 
+std::optional<std::size_t> selected_row() {
+    const int index = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
+    if (index < 0 || static_cast<std::size_t>(index) >= g_rows.size()) return std::nullopt;
+    return static_cast<std::size_t>(index);
+}
+
+void set_progress(const std::string& text) {
+    SetWindowTextW(g_progress, widen(text).c_str());
+}
+
+// **The exchange happens on another thread.**  A command is admitted quickly, but the exchange
+// still crosses a pipe and can wait on a service that is busy; doing it on the UI thread is how a
+// window stops repainting while an operation is "in progress".
+void run_command(myrd::control::Command command) {
+    set_progress("sending...");
+    std::thread([command = std::move(command)] {
+        auto outcome = myrd::gui::send_command(command);
+        auto* heap = new myrd::gui::CommandOutcome(std::move(outcome));
+        PostMessageW(g_window, kCommandDone, 0, reinterpret_cast<LPARAM>(heap));
+    }).detach();
+}
+
+void follow_operation(const myrd::product::Uuid& operation_id) {
+    g_followed_operation = operation_id;
+    SetTimer(g_window, kProgressTimerId, kProgressIntervalMs, nullptr);
+}
+
+void on_command_done(myrd::gui::CommandOutcome outcome) {
+    if (!outcome.accepted) {
+        set_progress(outcome.message);
+        MessageBoxW(g_window, widen(outcome.message).c_str(), L"MyRamDisk", MB_ICONWARNING);
+        return;
+    }
+    if (outcome.response.has_value() && outcome.response->operation_id.has_value()) {
+        follow_operation(outcome.response->operation_id.value());
+        set_progress("queued");
+    } else {
+        set_progress("done");
+    }
+    refresh();
+}
+
+void tick_progress() {
+    if (!g_followed_operation.has_value()) {
+        KillTimer(g_window, kProgressTimerId);
+        return;
+    }
+    const auto progress = myrd::gui::poll_operation(g_followed_operation.value());
+    if (!progress.observed) {
+        set_progress(progress.message);
+        return;
+    }
+    set_progress(myrd::gui::progress_text(progress.state, progress.phase));
+    if (myrd::gui::operation_finished(progress.state)) {
+        // The terminal state is the last word: the prompt stops following and the list is rebuilt
+        // from the service's answer rather than from what the window expected to happen.
+        g_followed_operation.reset();
+        KillTimer(g_window, kProgressTimerId);
+        refresh();
+    }
+}
+
+void command_for_start() {
+    const auto row = selected_row();
+    if (!row.has_value()) return;
+    run_command(myrd::control::DiskStartCommand{widen(g_rows[row.value()].profile_id)});
+}
+
+void command_for_checkpoint() {
+    const auto row = selected_row();
+    if (!row.has_value()) return;
+    run_command(myrd::control::DiskCheckpointCommand{widen(g_rows[row.value()].mount)});
+}
+
+void command_for_stop() {
+    const auto row = selected_row();
+    if (!row.has_value()) return;
+    // `checkpoint_required` is the profile default, so a plain stop asks the service to checkpoint
+    // first; the confirmation for the data-losing variant is what T3-04 adds, and it is shown only
+    // when the caller has to use `force`.
+    run_command(myrd::control::DiskStopCommand{widen(g_rows[row.value()].mount), false, false});
+}
+
+void command_for_forget() {
+    const auto row = selected_row();
+    if (!row.has_value()) return;
+    const auto& disk = g_rows[row.value()];
+    const auto confirmation =
+        myrd::gui::forget_confirmation(disk.mount, disk.profile_id);
+    const int answer = MessageBoxW(g_window, widen(confirmation.text).c_str(), L"Forget disk",
+                                   MB_ICONWARNING | MB_OKCANCEL);
+    if (answer != IDOK) return;
+    const auto profile = myrd::product::Uuid::parse(disk.profile_id);
+    if (!profile.ok()) {
+        set_progress("the profile identifier could not be read");
+        return;
+    }
+    // The identifier is echoed as the confirmation, which is what makes this command impossible to
+    // run by accident: the caller has to have read the profile it is about to forget.
+    run_command(myrd::control::DiskForgetCommand{profile.value(), profile.value()});
+}
 void add_tray_icon(HWND window) {
     g_tray = NOTIFYICONDATAW{};
     g_tray.cbSize = sizeof(g_tray);
@@ -167,6 +284,20 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                                    WS_CHILD | WS_VISIBLE | SS_LEFT,
                                    124, 412, 748, 22, window,
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusText)), g_instance, nullptr);
+        const struct { int id; const wchar_t* text; int x; } buttons[] = {
+            {kButtonStart, L"Start", 12}, {kButtonStop, L"Stop", 116},
+            {kButtonCheckpoint, L"Checkpoint", 220}, {kButtonForget, L"Forget", 324}};
+        for (const auto& button : buttons) {
+            CreateWindowExW(0, L"BUTTON", button.text,
+                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, button.x, 444, 100, 28,
+                            window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(button.id)),
+                            g_instance, nullptr);
+        }
+        g_progress = CreateWindowExW(0, L"STATIC", L"",
+                                     WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                     436, 450, 436, 22, window,
+                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProgressText)),
+                                     g_instance, nullptr);
         add_tray_icon(window);
         SetTimer(window, kRefreshTimerId, kRefreshIntervalMs, nullptr);
         refresh();
@@ -192,6 +323,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SetForegroundWindow(window);
             refresh();
             return 0;
+        case kButtonStart: command_for_start(); return 0;
+        case kButtonStop: command_for_stop(); return 0;
+        case kButtonCheckpoint: command_for_checkpoint(); return 0;
+        case kButtonForget: command_for_forget(); return 0;
         case kTrayCommandExit:
             DestroyWindow(window);
             return 0;
@@ -208,9 +343,19 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         return 0;
     }
+    case kCommandDone: {
+        std::unique_ptr<myrd::gui::CommandOutcome> outcome(
+            reinterpret_cast<myrd::gui::CommandOutcome*>(lparam));
+        if (outcome != nullptr) on_command_done(std::move(*outcome));
+        return 0;
+    }
     case WM_TIMER: {
         if (wparam == kRefreshTimerId) {
             refresh();
+            return 0;
+        }
+        if (wparam == kProgressTimerId) {
+            tick_progress();
             return 0;
         }
         return DefWindowProcW(window, message, wparam, lparam);

@@ -1,4 +1,4 @@
-// The GUI's view model (T3-02): what a row says, and which field is allowed to be the verdict.
+﻿// The GUI's view model (T3-02): what a row says, and which field is allowed to be the verdict.
 //
 // These are the two claims worth testing without a desktop.  A list that composes its own status
 // from runtime and health will show a blocked disk as fine -- the service says "blocked/needs
@@ -9,6 +9,7 @@
 #include "tests/support/test_framework.h"
 
 #include "src/gui/gui_view_model.h"
+#include "src/product/service_status.h"
 
 #include <string>
 #include <vector>
@@ -90,4 +91,52 @@ TEST_CASE(m5_gui_the_tray_says_when_to_look) {
                std::string("MyRamDisk: 2 disks, 1 needs attention"));
 
     REQUIRE_EQ(myrd::gui::tray_summary({}), std::string("MyRamDisk: no disks"));
+}
+TEST_CASE(m5_gui_progress_follows_the_service_and_ends_with_it) {
+    using myrd::product::ServiceOperationState;
+    // A queued operation says so; a running one says which phase it is in; a terminal one stops
+    // claiming to be in progress.  A progress line that kept animating after `failed` would be
+    // telling a user to keep waiting for something that is over.
+    REQUIRE_EQ(myrd::gui::progress_text(ServiceOperationState::queued, ""),
+               std::string("queued..."));
+    REQUIRE_EQ(myrd::gui::progress_text(ServiceOperationState::running, "checkpoint"),
+               std::string("running: checkpoint"));
+    REQUIRE_EQ(myrd::gui::progress_text(ServiceOperationState::succeeded, "terminal"),
+               std::string("finished: succeeded"));
+    REQUIRE(myrd::gui::operation_finished(ServiceOperationState::failed));
+    REQUIRE(!myrd::gui::operation_finished(ServiceOperationState::reconciling));
+}
+
+TEST_CASE(m5_gui_a_stop_whose_checkpoint_failed_asks_before_losing_data) {
+    // The confirmation is driven by the service's answer, not by the window's optimism: this is the
+    // one stop that discards writes still in memory.
+    REQUIRE(myrd::gui::stop_confirmation(true, "R:").kind
+            == myrd::gui::ConfirmationKind::none);
+    const auto request = myrd::gui::stop_confirmation(false, "R:");
+    REQUIRE(request.kind == myrd::gui::ConfirmationKind::volatile_data_loss);
+    REQUIRE(request.text.find("discard the writes") != std::string::npos);
+    REQUIRE(request.text.find("R:") != std::string::npos);
+}
+
+TEST_CASE(m5_gui_forget_requires_the_identifier_to_be_echoed) {
+    const auto request = myrd::gui::forget_confirmation(
+        "R:", "11111111-1111-4111-8111-111111111111");
+    REQUIRE(request.kind == myrd::gui::ConfirmationKind::forget);
+    REQUIRE(request.text.find("11111111-1111-4111-8111-111111111111") != std::string::npos);
+}
+
+TEST_CASE(m5_gui_an_authorization_refusal_tells_the_user_what_to_do) {
+    const auto denied = static_cast<std::uint32_t>(
+        myrd::product::ServiceCoreError::authorization_denied);
+    REQUIRE(myrd::gui::needs_elevation(denied));
+    const auto text = myrd::gui::explain_refusal(denied, "access denied");
+    REQUIRE(text.find("administrator") != std::string::npos);
+
+    // A refusal for another reason is reported in the service's own words rather than replaced by
+    // a generic sentence that hides what happened.
+    const auto other = static_cast<std::uint32_t>(
+        myrd::product::ServiceCoreError::state_rejected);
+    REQUIRE(!myrd::gui::needs_elevation(other));
+    REQUIRE_EQ(myrd::gui::explain_refusal(other, "the disk is not running"),
+               std::string("the disk is not running"));
 }
