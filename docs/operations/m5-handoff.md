@@ -1648,3 +1648,17 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
    计算 SHA-256 并写入 manifest；
 4. **release manifest**：`frozen_at`、文件清单+哈希、构建配置、客机分组读数摘要、证据文件清单；
 5. 用 `tools/Verify-M5Evidence.ps1` 校验整组证据（它**永不打印 PASS**，只会 accepted 或具名拒绝）。
+### 3.62 2026-10-27 07:45：**Release `--clean-first` 全量重建通过** —— T4-04 "双配置干净"两半齐了
+
+- `cmake --build out/build/msvc --config Release --clean-first`：**451/451 目标，170 s，零 error / 零 warning**。
+- 加上 3.61 的 Debug（451/451，132 s，零 error/warning）⇒ **T4-04 的构建要求已满足**，
+  而且这是"从零重建"的干净，不是增量。
+
+**T4-04 剩余三项**（都不依赖客机）：
+1. **冻结哈希**：对四个 Release 产物算 SHA-256；
+2. **release manifest**：`frozen_at` + 文件/哈希 + 配置（Release/Debug 各 451 目标 132/170 s）
+   + 客机分组读数摘要（3.60 那张表）+ 证据文件清单；
+3. 用 `tools/Verify-M5Evidence.ps1 -EvidenceDirectory <目录>` 校验整组（**只会 accepted 或具名拒绝**）。
+
+**注意**：冻结必须在**最后一次代码改动之后**做；T4-02/T4-03 的功能改动仍会改变产物，
+所以冻结步骤放在这两项完成之后，而不是现在。
