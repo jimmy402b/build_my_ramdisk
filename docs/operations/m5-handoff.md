@@ -279,6 +279,18 @@ installed service（SCM 安装/应答/停止/删除）。
    `\\?\Volume{guid}\`。所以第 4 步必须把它拼成 **`\\?\Volume{<uuid>}\`** 再上线，
    否则 GUID 分支会匹配到 0 个、退回按盘符找、症状与现在一模一样。
 
+**第 13 轮补充：实际是六处，不是五处。** 服务侧的请求结构也要带上它，否则 spec 永远是空：
+
+| # | 位置 | 内容 |
+|---|---|---|
+| 0 | `src/management/service_worker_control.h` | `WorkerLaunchRequest` 加 `std::wstring volume_guid` |
+| 0b | `service_worker_control.cpp:118` / `:150` | 两个 `make_launch_request` 都填：durable 那条从 `profile.volume_guid` 取，create/import 那条留空 |
+| 1 | `src/host/windows_worker_sessions.cpp:59` | `spec.volume_guid = request.volume_guid;` |
+
+**已有先例可直接抄**：`service_worker_control.cpp:467` 就有
+`expected_volume = profile.volume_guid.value().to_string();`——同一个 durable 字段、
+同一种取法。别忘了第 5 条的 `\\?\Volume{…}\` 前缀。
+
 **验收**：干净客机单次 `cli_e2e`（含 restart）→ `-Repeat 20`。
 
 ---
