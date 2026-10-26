@@ -746,8 +746,26 @@ Result<WorkerRemoveAndStopReply> DiskWorkerRuntime::remove_and_stop(
     }
     reply.generation = before.value().committed_generation;
     if (before.value().dirty) {
-        reply.refusal = WorkerRemovalRefusal::runtime_dirty;
-        return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
+        // **One flush before refusing.**
+        //
+        // A stop commits its checkpoint and then asks to dismantle; writes that
+        // landed between the commit and this call leave it dirty, and the guard
+        // then refuses for good -- measured as 23559 on every stop, ending in a
+        // 300 s stall.  Flushing cannot lose anything (it is the opposite), so a
+        // runtime that is dirty *after* a flush is the only genuine hazard.
+        auto flushed = impl.runtime->flush_volume();
+        if (!flushed.ok()) {
+            return Result<WorkerRemoveAndStopReply>::failure(flushed.error());
+        }
+        auto after = observe();
+        if (!after.ok()) {
+            return Result<WorkerRemoveAndStopReply>::failure(after.error());
+        }
+        reply.generation = after.value().committed_generation;
+        if (after.value().dirty) {
+            reply.refusal = WorkerRemovalRefusal::runtime_dirty;
+            return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
+        }
     }
 
     auto cleaned = cleanup();
