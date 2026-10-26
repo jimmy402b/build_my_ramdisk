@@ -1345,3 +1345,18 @@ Get-ChildItem C:\m5\control -Filter '*.request.ps1' | Remove-Item -Force
   更新黄金样本后 unit 应为 **96/96**，那是 T4-04 的基线。
 - 备选做法（若不想硬编码）：把 `minimal_golden()` 改成"首次运行生成并比对 sha256"，但那会失去
   "字节级契约"的意义——**建议仍然更新明文黄金样本**，并在提交信息里写明"因 T1-10 默认值变更"。
+### 3.46 2026-10-27 05:10：客机基线两段到手，integration 组仍在跑
+
+- **`^unit\.`：96/96 通过（227 s，请求 `b37eed00…`）** —— 这是 T4-04 干净构建的第一段基线。
+  之前那次 `0/96` 是**假失败**：上一次 `-Stage` 其实失败（被 `Select-Object -Last 1` 吞掉），
+  `-Run` 跑在无二进制的树上，全报 `MISSING`。**纪律：`-Stage` 输出必须看到 `staged to usr@` 才算成。**
+- **`^model\.|^m5\.`：12/13（128 s）**，唯一红 `m5.production_execution_backend`（已知批内间发）。
+- **`^integration\.`**：请求 **`6f8fe4298c9149aab96fef4998e763c4`**，04:52 发起，25 分钟仍未回。
+  按之前的经验，很可能是某条 e2e 卡住（`integration.m5.powerloss_verify` 在没有断电前置时会等 180 s，
+  但 25 分钟意味着别的）。收集方式同前：
+  ```powershell
+  .\tools\m5vm\Invoke-M5Vm.ps1 -Run -RequestId 6f8fe4298c9149aab96fef4998e763c4 -MinTimeoutSeconds 600
+  ```
+- **下一步**：收这条结果；若卡住，把 integration 组再细分
+  （`^integration\.m5\.`、`^integration\.m3\.`、`^integration\.m4\.`、其余），逐组计时——
+  这正是 T4-04 "M4 回归"要用的分组口径。
