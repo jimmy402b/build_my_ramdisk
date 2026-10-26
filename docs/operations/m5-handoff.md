@@ -1671,3 +1671,16 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 - 文件里写明了两条自我约束：① `$PSScriptRoot` 不能用在 param 默认值里（实测报"empty string"），
   已在 body 里解析；② manifest 明确列出**它不主张什么**——它不证明客机跑过，那是 results 里的 request id 的职责。
 - **冻结仍未发生**：要等 T4-02/T4-03 完成后的最后一次构建，再跑这个脚本 + `Verify-M5Evidence.ps1`。
+### 3.64 2026-10-27 08:00：证据链**端到端跑通**（工具侧），冻结仍未做
+
+- 组了一个真实证据集（`out/m5-evidence`）：**8 个 results 文件**，来自今天客机上的 8 次真实运行
+  （model/m5、integration m1/m2/m3/m4、install、gui、cli_e2e）。
+- `New-M5ReleaseManifest.ps1` → **4 binaries + 8 readings**；`Verify-M5Evidence.ps1` →
+  **`accepted`（exit 0）**；`-SelfTest` → 四个坏证据集**仍全部被拒**（exit 0）。
+- **两处实测修正**（都写进代码注释）：
+  ① runner 写的是**数组**（每用例一条），`[int]$parsed.exit_code` 会报
+     `Cannot convert System.Object[] to System.Int32` ⇒ manifest 改为记 cases/failed/worst_exit 并列出失败用例名；
+  ② validator 里**硬编码的用例文件名清单会漂移**：它对一个**有意不含** power-loss 两例的证据集仍在索要它们
+     ⇒ 改为"manifest + 其中引用的 readings，至少 3 条"。
+- **冻结仍未做**：等 T4-02/T4-03 完成后的最后一次构建。当前 `frozen_at` 只是"工具能跑"的时间戳，
+  **不是发布冻结**。
