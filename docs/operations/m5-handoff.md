@@ -1187,3 +1187,15 @@ SetVolumeLabel / volume_label / cluster_size / FMIFS / FormatEx / IOCTL_DISK_FOR
    理由：它不是选项，是能力；把它塞进 T4-02 会让"产品化"这一段变成一次未评估的架构改动。
 
 在这条裁定之前，**不动 profile 字段**——先存字段再发现改不了卷，比不存更糟。
+### 3.37 2026-10-27 02:55：整套客机普查**已发起，结果待收**
+
+- 请求 **`29ada3b770e943a482878ba3ac64293d`**（`-Run` 无 filter，160 个用例），02:29 发起。
+  主机侧等待 1800 s 超时**不会中断客机运行**，按提示用下面这条收：
+  ```powershell
+  .\tools\m5vm\Invoke-M5Vm.ps1 -Run -RequestId 29ada3b770e943a482878ba3ac64293d -MinTimeoutSeconds 600
+  ```
+- 同时一条普通 ssh 探测（读 `C:\m5\control` 与进程）也**挂住了**，符合本会话早前记录的
+  "客机在长时间设备类运行中会变慢/挂住"的现象；**收结果前先确认客机能应答**，
+  必要时硬重启（会话里多次用过 `vmrun stop hard` + `start nogui`，15 s 内可 SSH）。
+- **这条普查是 T4-04 "M4 回归 + 干净构建" 的客机侧基线**：期望 158/160
+  （`structural.*` 两例在客机上因 `vswhere.exe not found` 失败，属已知）。
