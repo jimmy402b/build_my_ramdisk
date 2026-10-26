@@ -1784,3 +1784,40 @@ kind=7 disk.start phase=running  action=create-runtime code=21001 native=87
 2. 如果取不到活动 GUID，就把"记录 GUID vs 活动卷设备路径"一起打进日志——现在日志已能区分，
    只差活动值；
 3. 客机验收仍是断电三段：要求 `runtime=Running`、generation ≥ 提交值、标记字节一致。
+---
+
+## 3.70 当前状态一览（2026-10-27 08:40，**新会话从这里读起**）
+
+### 已完成并有客机读数
+- **T1-01…T1-10 + T1-11**：检查点策略（`generation 2→3` 自动推进）、内存可见性（20/20）、
+  中断提交判定（`verdict=2 mask=0x0`）、默认值收紧（60 s / 64 MiB）、断电三段（**曾在 T1-09 通过，
+  之后又因下述缺陷复现失败**）。
+- **T3-01…T3-05**：客户端边界（闭包断言、已证明能失败）、窗口/托盘/列表（`aggregate` 唯一判定）、
+  命令不冻结界面、三处确认流、客机 `PASS T3-05`。
+- **T4-01**：安装/卸载客机通过；三条 ACL 规则已记档。
+- **T4-02 部分**：卷序列号端到端 + 客机读数 `serial=5A42-9D28`。
+- **T4-04 部分**：Debug/Release **双配置干净构建**（各 451 目标）、manifest 生成器与证据校验器
+  （**永不打印 PASS**，自检拒绝四个坏证据集，端到端 accepted）。
+- **客机基线**：unit 96/96、model/m5 13/13、integration m1 1/1 / m2 4/4 / m3 31/31 / m4 3/3、
+  m5 四例 PASS（cli_e2e 72/85 s、install 9 s、gui 25 s、prepare 51 s）、structural 1/3（两条已知环境）。
+
+### 当前**唯一**阻塞（产品缺陷，已定位到具体一行）
+**断电恢复后的 `disk start` 在 `assign_drive_letter` 失败，`SetVolumeMountPointW` 返回 87**：
+- 事实链：陈旧 `running` 被退休 ✓ → auto-start 被准入 ✓ → `create-runtime` 在挂盘符处失败；
+- 已排除：陈旧盘符映射（先 `DeleteVolumeMountPointW` + 重试 100 ms，结果不变）；
+- 最可信原因：**恢复后卷被重建、GUID 变了，而挂载用的是 profile 记录里的旧 GUID**；
+- **下一步**：在 `create-device` 之后**从活动卷重新取 GUID**（`GetVolumeNameForVolumeDeviceW` 或
+  卷设备路径），用活动值挂载，并**把新 GUID 写回记录**；取不到时把记录值与活动设备路径一起记日志。
+
+### 之后剩余
+1. **T4-02**：卷标（创建参数 + 挂载后 `SetVolumeLabelW`）、易失盘模式、Load Only、单文件 VHDX 导出；
+2. **T4-03**：在线 compaction（第二套 durable phase + reconciliation + 自动触发；journal 增长有界可观测）；
+3. **T4-04**：最后再跑一次双配置干净构建 → `New-M5ReleaseManifest.ps1` 冻结 → `Verify-M5Evidence.ps1` 校验。
+
+### 每次跑客机测试的标准顺序
+```
+客机: powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1
+主机: .\tools\m5vm\Invoke-M5Vm.ps1 -Stage -Configuration Release   # 必须看到 "staged to usr@"
+      .\tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^...$'
+断电: .\tools\m5vm\Test-M5PowerLoss.ps1 -SkipStage
+```
