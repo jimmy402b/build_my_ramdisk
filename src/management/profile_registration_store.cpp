@@ -1,4 +1,4 @@
-#include "src/common/diagnostic_trace.h"
+﻿#include "src/common/diagnostic_trace.h"
 #include "src/management/profile_registration_store.h"
 
 #include "src/management/profile_registration_codec.h"
@@ -1114,6 +1114,13 @@ Result<profile::ProfileRecord> materialized_registration_profile(
     if (intent.dirty_threshold.has_value()) {
         checkpoint.dirty_threshold_enabled = intent.dirty_threshold->enabled;
         checkpoint.dirty_threshold_bytes = intent.dirty_threshold->bytes;
+    } else if (checkpoint.dirty_threshold_bytes > intent.requested_capacity_bytes) {
+        // **The default byte threshold cannot exceed the disk it guards.**  T1-10 turned the
+        // threshold on by default at 64 MiB, and a 32 MiB disk was then created with a budget
+        // larger than its own capacity -- refused by validation, so the create ended with
+        // "terminal failure without a worker-action error".  A threshold above the capacity is
+        // meaningless rather than harmful, so it is clamped to what the caller asked for.
+        checkpoint.dirty_threshold_bytes = intent.requested_capacity_bytes;
     }
     profile::ProfileRecord expected{
         1,

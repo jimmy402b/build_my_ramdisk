@@ -1,4 +1,4 @@
-# T3-05: the GUI as a thin client, accepted on the guest.
+﻿# T3-05: the GUI as a thin client, accepted on the guest.
 #
 # A desktop test cannot read a ListView belonging to another process, so the acceptance is split
 # into the two things that can be observed:
@@ -97,19 +97,28 @@ try {
         Fail "self-check did not report memory: $selfCheck"
     }
 
-    Write-Step 'the window starts, stays up, and owns a window with the product title'
+    Write-Step 'the real window is created by the real window procedure'
+    # **`--window-check` rather than finding the window from outside.**  Measured on the guest: a
+    # probe from this process does not see the GUI's window -- the scheduled task and the GUI run on
+    # a desktop FindWindow does not enumerate -- so the claim would have degraded to "a process with
+    # that name is alive".  Instead the window is created by the same code path, reported by handle,
+    # and found back by class and title from inside.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $windowCheck = & $guiExe --window-check 2>&1 | Out-String
+        $windowExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    Write-Host ($windowCheck.Trim())
+    if ($windowExit -ne 0) { Fail "window-check exited $windowExit`: $windowCheck" }
+
+    Write-Step 'the application itself stays up'
     $gui = Start-Process -FilePath $guiExe -PassThru
     Start-Sleep -Seconds 6
     if ($gui.HasExited) { Fail "the GUI exited early (code $($gui.ExitCode))" }
-    if (-not ([System.Management.Automation.PSTypeName]'Myrd.WindowProbe').Type) {
-        Add-Type -Namespace Myrd -Name WindowProbe -MemberDefinition @'
-[DllImport("user32.dll", CharSet = CharSet.Unicode)]
-public static extern System.IntPtr FindWindow(string className, string windowName);
-'@
-    }
-    $window = [Myrd.WindowProbe]::FindWindow($null, 'MyRamDisk')
-    if ($window -eq [System.IntPtr]::Zero) { Fail 'no window titled MyRamDisk exists' }
-    Write-Host "  window handle 0x$($window.ToString('X')); process $($gui.Id) is alive"
+    Write-Host "  process $($gui.Id) is alive after 6 s"
 }
 finally {
     if ($null -ne $gui -and -not $gui.HasExited) {

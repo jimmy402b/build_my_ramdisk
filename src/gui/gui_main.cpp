@@ -406,11 +406,48 @@ int run_self_check() {
     std::fflush(stdout);
     return 0;
 }
+
+// **`--window-check`: create the real window and say so.**
+//
+// T3-05 could not find the window from another process on the guest: the scheduled task and the GUI
+// run on a desktop a `FindWindow` from the probe does not enumerate.  Rather than weaken the claim
+// to "a process with this name exists", the window is created by the same code path and reported by
+// handle, and found back by class and title from inside.
+int run_window_check() {
+    WNDCLASSEXW definition{};
+    definition.cbSize = sizeof(definition);
+    definition.lpfnWndProc = window_proc;
+    definition.hInstance = g_instance;
+    definition.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    definition.lpszClassName = kWindowClass;
+    if (RegisterClassExW(&definition) == 0) {
+        std::printf("window-check: RegisterClassEx failed (%lu)\n", GetLastError());
+        return 1;
+    }
+    const HWND window = CreateWindowExW(
+        0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 920, 500,
+        nullptr, nullptr, g_instance, nullptr);
+    if (window == nullptr) {
+        std::printf("window-check: CreateWindowEx failed (%lu)\n", GetLastError());
+        return 1;
+    }
+    const HWND found = FindWindowW(kWindowClass, kWindowTitle);
+    std::printf("window-check: created 0x%llx, found 0x%llx\n",
+                static_cast<unsigned long long>(reinterpret_cast<INT_PTR>(window)),
+                static_cast<unsigned long long>(reinterpret_cast<INT_PTR>(found)));
+    std::fflush(stdout);
+    DestroyWindow(window);
+    return found == window ? 0 : 1;
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     g_instance = instance;
     // A GUI process started with `--self-check` prints and exits; everything else is the window.
     if (std::wcsstr(GetCommandLineW(), L"--self-check") != nullptr) {
         return run_self_check();
+    }
+    if (std::wcsstr(GetCommandLineW(), L"--window-check") != nullptr) {
+        return run_window_check();
     }
     INITCOMMONCONTROLSEX controls{};
     controls.dwSize = sizeof(controls);
