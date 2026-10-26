@@ -1166,8 +1166,33 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
     const DWORD error = GetLastError();
     if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
         return Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"mount query failed", error));
-    return SetVolumeMountPointW(mount.c_str(), owned.volume_guid.c_str()) ? Result<void>::success() :
-        Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"SetVolumeMountPointW failed", GetLastError()));
+    // **A stale mapping at this letter has to be cleared before it can be set.**
+    //
+    // Measured after a hard power cut: `create-runtime` failed here with native=87
+    // (ERROR_INVALID_PARAMETER) even though the profile had come back at its committed generation.  A
+    // power cut can leave the letter's mount point behind pointing at a device that no longer exists,
+    // and Windows then refuses to mount a new volume at it.  Deleting first is what Windows itself does;
+    // the delete is best-effort because "there was nothing there" and "we cannot delete it" both mean
+    // the same thing to the set that follows.
+    DeleteVolumeMountPointW(mount.c_str());
+    if (SetVolumeMountPointW(mount.c_str(), owned.volume_guid.c_str())) {
+        return Result<void>::success();
+    }
+    const DWORD first_error = GetLastError();
+    // One retry: the delete above is asynchronous in the device stack, so a set issued in the same
+    // instant can still see the old mapping.
+    Sleep(100);
+    DeleteVolumeMountPointW(mount.c_str());
+    if (SetVolumeMountPointW(mount.c_str(), owned.volume_guid.c_str())) {
+        return Result<void>::success();
+    }
+    // The GUID goes into the message: "native=87" alone cannot say whether the volume path we asked for
+    // was stale, which is the difference between a wrong recorded identity and an occupied letter.
+    const std::wstring detail =
+        std::wstring(L"SetVolumeMountPointW failed for ") + mount + L" at " + owned.volume_guid +
+        L" (first error " + std::to_wstring(first_error) + L")";
+    return Result<void>::failure(
+        failure(VolumeError::platform_error, L"assign_drive_letter", detail.c_str(), GetLastError()));
 #else
     (void)owned; (void)drive_letter;
     return Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"Win32 volume adapter unavailable"));
