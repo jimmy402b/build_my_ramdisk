@@ -1415,3 +1415,19 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
   （脚本已 scp 到 `C:\m5\`；仓库里是 `tools/m5vm/Reset-M5Guest.ps1`）。
 - **下一步**：干净机上跑 `^integration\.m5\.`（5 例，预期 4 过 + `powerloss_verify` 单独必失），
   拿到第一个可信的 integration 读数；然后依次 `^integration\.m3\.`、`^integration\.m4\.`、其余。
+### 3.50 2026-10-27 06:25：**干净客机上 `^integration\.m5\.` 也卡住**（30 分钟）
+
+- 客机：硬重启 + `Reset-M5Guest.ps1` → `profiles 0 / operations 0 / 只有 C:`，staging 也确认成功
+  （`staged to usr@`），然后请求 `2e2450f5…`（5 例）**30 分钟未完成**。
+- 期间一条普通的 EncodedCommand 探测（列 `run-2e2450f5…` 目录 + agent 日志 + 进程）**也挂住**
+  ⇒ 客机在跑这条 e2e 时又变得不可交互（本会话记录过的现象）。
+- **结论**：这不是脏机（已排除），是**某一例 e2e 在干净机上卡死**。必须逐例隔离：
+  ```powershell
+  -Filter '^integration\.m5\.cli_e2e$'        # 单独跑，它在 05:17 那次只要 3 s 就失败过
+  -Filter '^integration\.m5\.install_uninstall$'
+  -Filter '^integration\.m5\.gui_workflow$'
+  -Filter '^integration\.m5\.powerloss_prepare$'
+  ```
+  每例跑完先 `Reset-M5Guest`。**`powerloss_verify` 永远单独看**（需要主机断电）。
+- **注意**：`cli_e2e` 在 05:17 那次 3 秒失败时，客机上有残留盘（已解释）；现在干净机上它是"卡住"还是
+  "失败"未知——**先单独跑它**，并用 `C:\m5\runs\<work-root>.*.log` 与服务日志判断卡在哪一步。
