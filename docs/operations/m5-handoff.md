@@ -100,31 +100,44 @@ execute_operation failed: code=22022 step=service_core.checkpoint_epoch
   而用户会自然想用盘符（本轮排查就撞上过 `profile_not_found`）；
 - 失败原因的可达性已补（`m5-t1-05-cli.md` §5.2），但 `OperationRecord` 仍只存标记串。
 
-### 3.5 现在挡在 `create` 的注册步骤（2026-10-26，两次复现，硬重启后仍复现）
+### 3.5 2026-10-26 晚：create 通了，stop 也通了；现在挡在 `forget`
 
-`integration.m5.cli_e2e` 在 **`disk create`** 就失败，早于 stop：
+**create 的注册失败已修（`2e8cf32`）**：`ensure_profile_unique` 会打开**每一个其它 profile** 的
+bundle 去比 file identity，并把打开失败原样上抛。客机上有一个 01:59 留下的 profile
+（`c084bc42`，bundle 已被上一轮 teardown 删掉），于是**之后每一次 create 都失败**，
+而错误里报的是**新 bundle** 的路径。四次运行的失败路径完全相同（`b6707f16…`），
+而新 bundle 当时确实存在、用户进程用同样的 flags 能打开——这就是判据。
+现在改成：打不开的其它 bundle 不可能等于正在注册的那个（identity 相等要两边都打开），
+前四项检查（名字 / image / 路径 / 挂载点）已经覆盖真实冲突，所以 `continue`。
+
+**读到的链路（同一次运行，`disk.list` 停后仍可见）**：
 
 ```text
-kind=7 command=disk.create phase=publish-provisioning
-  message=publish_registration refused: code=22024 native=3
-  step=profile_registration.bundle_identity
-  detail=The registered bundle cannot be opened for identity inspection
+create → list → show → 读写 73 字节 → checkpoint succeeded → stop succeeded
+停后：V: ready stopped/configured runtime=Stopped persistence=Clean generation=4
 ```
 
-- `native=3` 是 `ERROR_PATH_NOT_FOUND`；该检查是
-  `CreateFileW(intent.bundle_path)`（`profile_registration_store.cpp:171`）；
-- **上一行日志是 `action-result: create-bundle completed`** ⇒ worker 说建好了，服务随后找不到；
-- 失败后工作根（`C:\m5\cli-e2e-<id>\`）只剩 `service.log`，**没有 `bundle`**；
-- 脚本传的是**绝对路径**（`tests/e2e/test-m5-cli-e2e.ps1:68,288`），所以先不怀疑相对路径；
-- 客机在失败前后都是干净的（`workers=0 / disks=1 / letters=C`）。
+**现在挡在 `disk forget`**：
 
-**线索（未验证，按代价排序）**：① bundle 在 create-bundle 与注册之间被删——先查 worker
-会话结束时的清理路径；② 服务与 worker 对同一路径解析不同（次要，脚本用绝对路径）；
-③ 同一路径两次打开、第一次成功第二次失败。
+```text
+kind=7 command=disk.forget phase=terminal
+  message=terminal failure without a worker-action error; marker=unsafe
+```
 
-**下一步**：在 `publish_registration` 之前加一行"这个路径 stat 到没有 + 打出来"的 trace，
-一次运行即可分辨，不要先猜。
+`ServiceWorkerControl` **没有实现** `prove_forget_safe`，走的是 `IWorkerControl` 的默认实现
+（`service_core.cpp:1390`，直接返回 "The worker control does not expose forget safety proof"）。
+而 worker 协议里**没有任何 forget 相关的命令**（`m5_worker_protocol.h` 全文无 forget）。
+⇒ **`disk forget` 是未实现，不是回归**；fail-closed 的语义让它看起来"安全地拒绝"，
+所以一直没被发现。
 
+**为什么不能简单在服务里补**：`myrd_management` 只链 profile/product_ipc/contracts/
+worker_protocol/common（`src/CMakeLists.txt:372`），拿不到 writer lock（persistence）和
+AIM 设备（driver）。proof 的五项里有两项必须由 worker 来答 ⇒ 要么加一个 worker 命令，
+要么先做 T1-06 的只读检查 worker。
+
+**下一步（按顺序）**：① 给 worker 协议加一个只读的 forget 证明命令（bundle 存在 + file identity、
+writer lock 可取、匹配设备不存在）；② 服务侧实现 `prove_forget_safe` 并接到 tombstone 校验；
+③ 客机跑 `-Repeat 20`。
 ---
 
 ## 4. 构建与测量循环
