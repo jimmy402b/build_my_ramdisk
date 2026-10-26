@@ -1556,3 +1556,22 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 
 **当前可信基线（客机，干净启动）**：`unit 96/96`、`model/m5 12/13`、`integration.m5.cli_e2e PASS 72 s`。
 `integration` 其余 4 例仍待跑（每次跑前重启+Reset）。
+### 3.57 2026-10-27 07:20：**候选盘枚举加界生效 —— 连续两次 e2e 不需要重启**
+
+| 运行 | 用例 | 用时 | 结果 | 请求 |
+|---|---|---|---|---|
+| 第 1 次（刚重启+Reset 后） | `integration.m5.cli_e2e` | **72 s** | **PASS** | `d4713c4e…` |
+| 第 2 次（**不重启**，同一台机） | `integration.m5.cli_e2e` | **85 s** | **PASS** | `d82c88a0…` |
+
+改动（`b1faaa3`）：`physical_drive_locator.cpp` 里三处仍调用**无界** `enumerate_disk_candidates()` 的
+地方（其中一处就在 worker 的启动路径上）改为调用已有的 `enumerate_disk_candidates_within(kEnumerateTimeout)`
+——那个包装函数自己的注释写的就是"runs it with a bound, because it has none of its own"。
+
+**意义**：之前"跑一次 e2e 之后必须重启客机"的限制**消失了**。一个半死的第三方设备最多让枚举
+多等 10 秒（被跳过），而不是让 `create-bundle` 等 120 秒后失败、再留下一个 worker 把整台客机拖慢。
+这同时消除了本会话反复出现的"跑几轮就不行了"的主要来源。
+
+**当前可信基线（客机）**：
+- `^unit\.` **96/96**（227 s）
+- `^model\.|^m5\.` **12/13**（唯一红为已知批内间发 `m5.production_execution_backend`）
+- `integration.m5.cli_e2e` **连续两次 PASS（72 s / 85 s）**
