@@ -442,7 +442,14 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $startId = Get-UuidFromText $start.output
     if ($null -eq $startId) { Fail 'the start response carried no operation identifier' }
     $startState = Wait-ForTerminal $startId 300
-    if ($startState -ne 'succeeded') { Fail "the restart ended $startState" }
+    if ($startState -ne 'succeeded') {
+        # The state alone is not actionable: `failed` hides which step refused,
+        # and reading the wrong log tail once already cost a round.
+        $tail = if (Test-Path -LiteralPath $serviceLog) {
+            ($(Get-Content -LiteralPath $serviceLog -Tail 15) -join "`n")
+        } else { '' }
+        Fail "the restart ended $startState`n$tail"
+    }
     $afterRestart = Join-Path $mount 'm5-cli-e2e-after.txt'
     if (-not (Test-Path -LiteralPath $afterRestart)) {
         Fail "the volume was not remounted at ${mount}: the profile started but no volume appeared"
