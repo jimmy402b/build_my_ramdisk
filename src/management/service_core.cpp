@@ -4192,10 +4192,24 @@ Result<OperationRecord> ServiceCore::execute_operation(
         const bool stop_removal_boundary = stop_operation
             && action == ActionKind::remove_mount;
         if (stop_removal_boundary && !current_operation.cancellable) {
+            // **At or past the boundary is the legitimate pre-existing state.**
+            //
+            // A stop recovered after a restart can already have published
+            // `removal_boundary` before it died; resuming the very step that
+            // published it must not be refused as contradictory.  Measured in a
+            // `-Repeat 20` sweep: every stop after the fourth one died here and
+            // the operation stayed in `reconciling`, taking the whole service with
+            // it.  Anything *before* the boundary (`resolving`, or no profile) is
+            // still refused: that is a stop whose checkpoint was not confirmed,
+            // and dismantling it would drop writes.
+            const bool at_or_past_boundary = current_profile.has_value()
+                && (current_profile->stop.phase
+                        == StopDurablePhase::checkpoint_confirmed
+                    || current_profile->stop.phase
+                        == StopDurablePhase::removal_boundary);
             if (!current_profile.has_value()
                 || current_profile->operation_gate.cancellable
-                || current_profile->stop.phase
-                    != StopDurablePhase::checkpoint_confirmed) {
+                || !at_or_past_boundary) {
                 return Result<OperationRecord>::failure(service_error(
                     ServiceCoreError::operation_invalid,
                     L"service_core.stop_removal_boundary",
