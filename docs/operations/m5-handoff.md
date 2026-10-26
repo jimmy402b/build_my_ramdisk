@@ -1226,3 +1226,16 @@ SetVolumeLabel / volume_label / cluster_size / FMIFS / FormatEx / IOCTL_DISK_FOR
 - **下一步**：读 `Invoke-M5Vm.ps1` 里"本地 staging → git metadata 拷贝"之间的那段，
   找出本该执行载荷拷贝的分支为什么没走（可能是某个条件/开关在上次改动后不再成立）。
   这条不修，任何客机测量都跑不起来。
+### 3.40 2026-10-27 03:35：staging 仍未落地，且**客机上查树也没回话**
+
+- 守卫生效后读数一致：本地 `staged 122 test binaries`、客机 `0`，报错原文就是
+  `staging did not land: the guest has 0 test executables ... but 122 were staged`。
+- 随后那条"Stage 后立刻查客机目录树"的 ssh 探测**没有任何输出**（不是报错，是空）——
+  说明要么该会话没执行，要么客机又处在本会话记录过的"能 echo、不能跑多行脚本"状态。
+- **下一步（按顺序，别跳）**：
+  1. 用**最短**的编码命令确认客机可写：`New-Item -Force C:\m5\probe.txt` 再 `Test-Path`；
+  2. 用**单行** `cmd /c dir /b "C:\...\m5-lifecycle"` 看客机 worktree 到底有什么（cmd 比多行 PowerShell 稳）；
+  3. 若 `out` 根本不存在，先手工 `mkdir` 出 `out\build\msvc\tests\Release`，再跑 `-Stage`，
+     看 scp 是否报错（目前 `Copy-ToRemote` 的 scp 退出码 0 但我们没有逐项打印，可疑）；
+  4. 若仍 0，把 `Copy-ToRemote` 临时改成**每项打印目标路径与结果**，一次就能看出哪一项没到。
+- **这条是当前唯一阻塞**：修好之前，任何客机测量（包括 T4-04 的 M4 回归）都无法进行。
