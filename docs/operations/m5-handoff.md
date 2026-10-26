@@ -1633,3 +1633,18 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 `152/154` 的预期一致（本表多算了两条 `m5.gui` 单例重复跑）。
 **仍缺**：`integration.m5.cli_e2e/powerloss 三段`作为一个整体的一次完整跑（T1-09 已做过一次），
 以及 Debug 配置的构建（T4-04 要求 Debug+Release 双干净）。
+### 3.61 2026-10-27 07:40：**Debug 配置构建通过**（T4-04 "双配置干净"的一半）
+
+- `cmake --build out/build/msvc --config Debug`：**451/451 目标，132 s，零 error / 零 warning**。
+- 仍缺（T4-04 自身要做）：**Release 的 `--clean-first` 全量重建**（当前 Release 是增量构建，
+  虽然八个套件绿，但"干净"要以一次 clean-first 为准）。
+- 记一条今天学到的：**头文件改动后必须 `--clean-first`**，否则会出现"半套改动"的假失败
+  （今天在卷序列号那次踩过：编码端没写、解码端在读）。
+
+**T4-04 待办清单（现在很具体）**：
+1. `--clean-first` 重建 Release + 全绿（客机分组读数已有，见 3.60）；
+2. Debug 配置的客机读数（可选：至少本机构建通过）；
+3. **冻结哈希**：对 Release 产物（`myrd-service.exe`、`myrd-cli.exe`、`myrd-gui.exe`、`myrd-m5-worker.exe`）
+   计算 SHA-256 并写入 manifest；
+4. **release manifest**：`frozen_at`、文件清单+哈希、构建配置、客机分组读数摘要、证据文件清单；
+5. 用 `tools/Verify-M5Evidence.ps1` 校验整组证据（它**永不打印 PASS**，只会 accepted 或具名拒绝）。
