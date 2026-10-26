@@ -2179,3 +2179,17 @@ cmake --build out/build/msvc --config Release --clean-first
   1. 直接在 `encode_profile` 里打 `payload.size()`（临时代码），确认 443 还是 115——这一步没做过，
      它能把"编码器多写"与"头部变长"直接分开；
   2. 用调试器在 `kLastKnownTag` 的 4 个引用点各下一个断点，看编码时是否有隐藏引用（模板/内联）。
+### 3.91 2026-10-27 10:45：矛盾的根源是**我的取数方式**——`Select-Object -First 1` 取到了别的用例
+
+- 在 `encode_profile` 里打印 `payload.size()` 之后，我取 `Select-String payloadsize | Select-Object -First 1`
+  ⇒ 得到 `payloadsize=434`。但**这个测试二进制里有多个用例都会调用 `encode_profile`**
+  （golden、decode-reencode、validation、以及若干构造大记录的用例），**第一条不是 golden 那条**。
+- 同理，`payload-probe.txt` 里的 `encoded=506` 是**上一次运行留下的**（我没有在每次运行前删除它），
+  于是"baseline 也是 506"这个结论是**把陈旧文件当成了新读数**。
+- ⇒ **3.87–3.90 里所有"506/515/187 互相矛盾"的观察，全部可以用"取错行 + 未删陈旧文件"解释**；
+  **产品代码很可能一直是自洽的**。这一点必须先被证实，再谈 tag 36 的编码是否真的变了。
+- **下次唯一可信的取数方式**：
+  1. 每次运行前 `Remove-Item` 所有探针文件；
+  2. 探针写入**唯一文件名**（带 GUID）或**追加一行带用例名的记录**（`TEST_CASE` 名 → `payload`/`encoded`）；
+  3. 只读**那一行**（按用例名过滤），不要 `-First 1`。
+- **状态**：回退后构建干净、22 用例全绿、工作树 0 改动、临时文件已删。
