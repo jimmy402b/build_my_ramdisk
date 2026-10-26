@@ -700,7 +700,26 @@ Result<ProductVolume> Win32VolumeAdapter::find_recovered_volume(
                         L"no volume carries the recorded identity",
                         ERROR_NOT_FOUND));
         }
-        // No disk filter either: the GUID has already decided.
+        // **The GUID has decided; do not hand it to the letter filter.**
+        //
+        // `select_volume_for_disk` rejects anything whose `drive_letter` differs
+        // from the requested one, and a stopped disk's volume comes back with *no*
+        // letter -- the stop removed it and re-attaching the bundle does not
+        // restore it.  Measured: `seen=[C?@0 -?@0 -?@1 -?@0]`, the disk's volume on
+        // disk 1, unlettered, so a restart always failed one filter before the
+        // durable identity was consulted.  The letter is assigned immediately
+        // afterwards by `DiskRuntime::recover`, which is where it belongs.
+        if (matched.size() == 1) {
+            auto& only = matched.front();
+            if (only.foreign_mount || only.drive_letter_occupied) {
+                return Result<ProductVolume>::failure(
+                    failure(VolumeError::foreign_mount, L"find_recovered_volume",
+                            L"the recorded volume is claimed by another mount"));
+            }
+            return Result<ProductVolume>::success(std::move(only.volume));
+        }
+        // More than one volume with one identity is not something to guess about.
+        // Keep the old path, which will refuse or pick the uniquely mounted one.
         return select_volume_for_disk(matched, std::nullopt, drive_letter,
                                       std::move(owner_token), false);
     }
