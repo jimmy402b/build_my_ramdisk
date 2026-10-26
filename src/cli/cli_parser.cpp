@@ -1,4 +1,4 @@
-﻿#include "src/cli/cli_parser.h"
+#include "src/cli/cli_parser.h"
 
 #include "src/product/quantity_parser.h"
 #include "src/product/uuid.h"
@@ -287,6 +287,7 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
             if (auto owner = value_of(L"--owner"); owner.has_value()) {
                 create.owner_sid = std::move(owner.value());
             }
+
             create.no_start = has_flag(L"--no-start");
             if (auto mode = value_of(L"--memory-mode"); mode.has_value()) {
                 const auto lowered = lower(mode.value());

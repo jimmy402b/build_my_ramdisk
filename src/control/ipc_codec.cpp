@@ -535,7 +535,7 @@ constexpr std::array<FieldDescriptor, 10> kCreateFields{{
     {10, FieldKind::uint64_le, FieldRequirement::optional, FieldDisposition::consume, 0, 8, 0},
 }};
 constexpr CommandSchema kCreateSchema{
-    static_cast<std::uint32_t>(CommandId::disk_create), 10, kCreateFields};
+    static_cast<std::uint32_t>(CommandId::disk_create), 11, kCreateFields};
 
 Result<std::wstring> decode_target(std::span<const std::byte> payload,
                                    std::uint16_t minor) {
@@ -949,6 +949,12 @@ Result<EncodedCommand> encode_command_payload(const control::Command& command) {
                 append_u64_field(payload, 10, encoded_dirty,
                                  FieldRequirement::optional);
             }
+            if (value.volume_label) {
+                auto label = append_string_field(payload, 11, FieldKind::string_utf8,
+                                                 *value.volume_label, 64,
+                                                 FieldRequirement::optional);
+                if (!label.ok()) return Result<EncodedCommand>::failure(label.error());
+            }
             return Result<EncodedCommand>::success(
                 EncodedCommand{CommandId::disk_create, std::move(payload)});
         } else {
@@ -1222,10 +1228,21 @@ Result<control::Command> decode_command_payload(
             }
         }
 
+        // The label arrives as optional text and is validated again here: a peer that sends 33 characters must be
+        // refused at the boundary, not by SetVolumeLabelW after the volume already exists.
+        auto volume_label = optional_string_from_field(fields.value(), 11);
+        if (!volume_label.ok()) {
+            return codec_error<control::Command>(L"Volume label field is invalid");
+        }
+        const auto& label_value = volume_label.value();
+        if (label_value.has_value() && (label_value->empty() || label_value->size() > 32)) {
+            return codec_error<control::Command>(L"Volume label must be 1 to 32 characters");
+        }
+
         return Result<control::Command>::success(control::DiskCreateCommand{
             name.move_value(), bundle.move_value(), size.value(),
             mount.move_value(), owner.move_value(), no_start.value(), memory_mode,
-            hard_limit, checkpoint, dirty_threshold});
+            hard_limit, checkpoint, dirty_threshold, volume_label.move_value()});
     }
     return codec_error<control::Command>(L"Command ID is unknown or unsupported");
 }
