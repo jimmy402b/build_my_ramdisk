@@ -368,6 +368,7 @@ Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
     // are different answers and a caller must not receive the second one by accident.
     status.resident_bytes = reader.u64();
     status.budget_bytes = reader.u64();
+    status.dirty_bytes = reader.u64();
     if (!reader.ok()) {
         return malformed<WorkerRuntimeStatus>(
             L"decode_worker_message", L"status memory gauges are truncated");
@@ -664,6 +665,7 @@ void write_status(detail::WorkerBytesWriter& writer,
     }
     writer.u64(status.resident_bytes);
     writer.u64(status.budget_bytes);
+    writer.u64(status.dirty_bytes);
 }
 
 void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message) {

@@ -1,8 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "src/common/result.h"
 #include "src/management/execution_scheduler.h"
 #include "src/management/service_core.h"
+#include "src/management/service_maintenance.h"
 
 #include <cstdint>
 #include <mutex>
@@ -91,7 +92,7 @@ public:
     [[nodiscard]] virtual Result<void> open() = 0;
 
     // Refuse new requests, and stop accepting connections.  Called first in `stop`,
-    // which is the design's own order (搂9: close admission, remove the pipe, then
+    // which is the design's own order (鎼?: close admission, remove the pipe, then
     // stop the scheduler): a command admitted after the scheduler stopped would be a
     // durable record that the next start has to reconcile.
     [[nodiscard]] virtual Result<void> close() = 0;
@@ -131,7 +132,7 @@ struct ServiceHostDiagnostics final {
 // shutdown reaches it before the process is killed.
 //
 // **What this object does not do yet.**  The per-profile shutdown of design spec
-// §9 -- "close admission, stop the scheduler, checkpoint and dismantle each disk
+// 搂9 -- "close admission, stop the scheduler, checkpoint and dismantle each disk
 // within a budget shared across the disks" -- is not here.  The scheduler stop
 // is, because it is the part that must happen before anything else is destroyed,
 // and the per-profile part belongs with the code that owns worker teardown
@@ -143,7 +144,8 @@ public:
                 management::IExecutionScheduler& scheduler,
                 ServiceHostOptions options = {},
                 IStartupSweep* sweep = nullptr,
-                IPublicCommandSurface* surface = nullptr) noexcept;
+                IPublicCommandSurface* surface = nullptr,
+                management::ISuspendCheckpoint* suspend = nullptr) noexcept;
 
     ServiceHost(const ServiceHost&) = delete;
     ServiceHost& operator=(const ServiceHost&) = delete;
@@ -166,7 +168,7 @@ public:
 
     // Brings the service up.
     //
-    // The order is the one design spec §9 gives: recover the durable state
+    // The order is the one design spec 搂9 gives: recover the durable state
     // first, then admit work.  Reconciling after the scheduler is polling would
     // let it claim an operation whose own record the recovery is still
     // rewriting, and the recovery is what decides which non-terminal operations
@@ -190,6 +192,14 @@ public:
     // stop from a machine going away.  What it does *not* change is the
     // requirement that the work is bounded and reported honestly.
     Result<void> preshutdown();
+
+    // The machine is about to sleep or hibernate.
+    //
+    // Not a shutdown and not a stop: the scheduler keeps running, the workers keep
+    // their devices, and the only work is the policy's own best-effort checkpoint for
+    // the profiles whose `on_suspend` says so.  Returns how many profiles were handed
+    // a checkpoint, so a caller can log an answer rather than a shrug.
+    std::size_t suspend();
 
     [[nodiscard]] ServiceHostState state() const;
     [[nodiscard]] ServiceHostDiagnostics diagnostics() const;
@@ -215,6 +225,9 @@ private:
     // the *ordering* of opening and closing it, which is the part that must not be
     // duplicated in an executable.
     IPublicCommandSurface* surface_{};
+    // Borrowed, and may be null: a host with no policy has nothing to checkpoint on
+    // suspend, which is every test whose subject is the shutdown ordering.
+    management::ISuspendCheckpoint* suspend_{};
 
     mutable std::mutex mutex_;
     ServiceHostState state_{ServiceHostState::constructed};

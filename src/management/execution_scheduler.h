@@ -44,6 +44,27 @@ struct ExecutionSchedulerConfig final {
     // budget, so a scheduler stop that a service shutdown drives is bounded by
     // the same number the SCM already allows.
     std::uint32_t stop_deadline_ms{120'000};
+    // How often the checkpoint policy is evaluated.  Zero disables it, which is what
+    // a test that drives the policy itself wants.  The tick runs on this pool because
+    // this is the object that already owns "when work runs", and it takes the
+    // execution gate itself so a tick never lands inside an operation.
+    //
+    // Declared last on purpose: every existing `ExecutionSchedulerConfig{a, b, c}`
+    // keeps meaning what it meant, and a new scheduling input cannot silently become
+    // somebody's stop budget.
+    std::uint32_t maintenance_interval_ms{15'000};
+};
+
+// The checkpoint policy, evaluated on the scheduler's clock.
+//
+// A separate interface because the scheduler must not know what a profile or a
+// policy is: all it does is decide *when* the evaluation happens, and the answer to
+// "what should be checkpointed" belongs to the management layer that owns the
+// profiles.
+class IMaintenanceTick {
+public:
+    virtual ~IMaintenanceTick() noexcept = default;
+    virtual void tick() = 0;
 };
 
 // The one executor of admitted work.
@@ -81,7 +102,8 @@ public:
         ServiceCore& core,
         IServiceClock& clock,
         std::timed_mutex& execution_gate,
-        ExecutionSchedulerConfig config) noexcept;
+        ExecutionSchedulerConfig config,
+        IMaintenanceTick* maintenance = nullptr) noexcept;
     ~ServiceExecutionScheduler() noexcept override;
 
     ServiceExecutionScheduler(const ServiceExecutionScheduler&) = delete;
@@ -106,6 +128,14 @@ private:
     IServiceClock& clock_;
     std::timed_mutex& execution_gate_;
     ExecutionSchedulerConfig config_{};
+    // Borrowed, not owned: the policy lives in the management layer and outlives the
+    // pool.  Null means "no policy", which is every test that does not wire one.
+    IMaintenanceTick* maintenance_{};
+    // When the next policy tick is due, in the clock this object already carries.
+    // Guarded by `state_mutex_` and claim-once, so a pool of N workers produces one
+    // tick per interval rather than N.
+    std::uint64_t next_maintenance_ms_{};
+    bool maintenance_seeded_{};
     mutable std::mutex state_mutex_;
     std::condition_variable_any state_cv_;
     // `workers_` is declared last on purpose.  Members die in reverse

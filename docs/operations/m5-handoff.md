@@ -540,8 +540,37 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
 
 **验收**：干净客机 `cli_e2e -Repeat 20 → 20/20`（式 `541c8b4a…`，7 分 10 秒）。
 
-**延后**：`disk release-memory`（§7.4）移入 T1-08——它需要一条从 storage 公开 `reclaim_to` 到 CLI
-动词的完整纵切，与内存压力同源。
+**延后**：`disk release-memory`（§7.4）——它需要一条从 storage 公开 `reclaim_to` 到 CLI
+动词的完整纵切，与内存压力同源。**T1-08 之后仍未做，见 §3.17「未做」。**
+
+---
+
+### 3.17 2026-10-26 深夜：T1-08 完成（检查点策略终于有消费者）
+
+**验证文档**：`docs/validation/m5-t1-08-checkpoint-policy.md`。要点：
+
+1. 四个策略字段（interval / dirty 阈值 / 内存压力 / 休眠）从"存下来就丢"变成真的会触发。
+   **客机读数**：`generation moved 2 -> 3 on its own after 30.4 s`，全程**没有发过 checkpoint 命令**。
+2. 落点：纯函数 `checkpoint_due_reason()` + `ServiceMaintenance`（SYSTEM 身份 dispatch，
+   **只做持久化准入**，执行仍归调度器）+ 调度器 claim-once tick（15 s）+
+   `SERVICE_ACCEPT_POWEREVENT` / `PBT_APMSUSPEND → ServiceHost::suspend()`。
+   suspend **不是 stop**：设备不拆、worker 不退，只做尽力而为的检查点。
+3. **接线时量到两个缺陷**：① interval 时钟没有起点（`since` 恒 0 ⇒ 永不到期）；
+   ② 命令寻址用了 mount target 而非 profile uuid（每次 `The requested profile is not registered`）。
+4. **一条范围边界**：两块盘同时活着时，第二块的拆卸不会真正移除设备（restart 找不到卷、
+   forget `device_absent=0`）。M5 是单盘产品（G4 延后），所以 e2e 改成一次一块盘；
+   这条不是策略缺陷，但值得记住。
+5. `forget` 的九个合取项现在拒绝时**逐项打印**（和 `verify_volume`、checkpoint boundary 同源）。
+
+**验收**：干净客机 `cli_e2e -Repeat 5 → 5/5`（请求 `7aa88f14…`，6 分 9 秒）。
+
+**未做（记录，不当作已完成）**：
+- `disk release-memory`（§7.4 手动释放）。它在 T1-07 与 T1-08 各被延后一次，理由不变：
+  需要 storage 公开 `reclaim_to` → M3 → M4 runtime → worker 命令 → 服务动作/计划 → CLI 动词
+  的完整纵切。**它不在完成口径里**（口径 = G1+G2+G3 验收 + T4-04 manifest + master-plan §8
+  的遗留清单，而该清单四项里没有它），但设计 §7.4 承诺过这个命令，所以在这里留名。
+
+**下一步**：T1-09（M5-A 单盘验收 + 断电恢复）。它依赖 T1-06/07/08/11，现在四个都齐了。
 
 ---
 

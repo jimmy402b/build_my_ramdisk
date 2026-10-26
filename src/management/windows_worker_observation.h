@@ -46,6 +46,7 @@ inline WorkerRuntimeObservation observe_worker_runtime(
         // runtime that no longer exists would make a stopped disk look allocated.
         observation.resident_bytes = status.resident_bytes;
         observation.budget_bytes = status.budget_bytes;
+        observation.dirty_bytes = status.dirty_bytes;
     }
     return observation;
 }

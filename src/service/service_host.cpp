@@ -1,4 +1,4 @@
-#include "src/service/service_host.h"
+﻿#include "src/service/service_host.h"
 
 namespace myrd::service {
 namespace {
@@ -34,13 +34,15 @@ ServiceHost::ServiceHost(management::IServiceClock& clock,
                          management::IExecutionScheduler& scheduler,
                          ServiceHostOptions options,
                          IStartupSweep* sweep,
-                         IPublicCommandSurface* surface) noexcept
+                         IPublicCommandSurface* surface,
+                         management::ISuspendCheckpoint* suspend) noexcept
     : clock_(clock), core_(core), scheduler_(scheduler),
-      options_(options), sweep_(sweep), surface_(surface) {}
+      options_(options), sweep_(sweep), surface_(surface), suspend_(suspend) {}
 
 ServiceHost::ServiceHost(ServiceHost&& other) noexcept
     : clock_(other.clock_), core_(other.core_), scheduler_(other.scheduler_),
       options_(other.options_), sweep_(other.sweep_), surface_(other.surface_),
+      suspend_(other.suspend_),
       state_(other.state_),
       recovered_operations_(other.recovered_operations_),
       sweep_needs_attention_(other.sweep_needs_attention_),
@@ -144,6 +146,21 @@ Result<void> ServiceHost::preshutdown() {
     return stop_locked();
 }
 
+std::size_t ServiceHost::suspend() {
+    // Deliberately does **not** take `mutex_`: it changes no host state, and holding
+    // the lifecycle lock across a policy tick would block a stop that the SCM may
+    // send while the machine is going to sleep.
+    //
+    // It also deliberately does not stop or pause anything.  The machine is sleeping,
+    // not shutting down: the workers keep their devices, the scheduler keeps running,
+    // and the only thing that happens is that profiles whose policy says so are handed
+    // a best-effort checkpoint.  A suspend that did a stop would dismantle the disks it
+    // is supposed to preserve.
+    if (suspend_ == nullptr) return 0;
+    if (!running()) return 0;
+    return suspend_->checkpoint_for_suspend();
+}
+
 Result<void> ServiceHost::stop_locked() {
     // Already down, or never up.  Both are answers, not failures: a stop that
     // arrived after the service stopped on its own must not be reported as a
@@ -156,7 +173,7 @@ Result<void> ServiceHost::stop_locked() {
     }
 
     state_ = ServiceHostState::stopping;
-    // The pipe first (design spec 搂9: close admission, remove the pipe, stop the
+    // The pipe first (design spec 鎼?: close admission, remove the pipe, stop the
     // scheduler).  A command admitted after the scheduler stopped would be a durable
     // record nobody runs -- the exact state the next start has to reconcile -- so the
     // surface is closed before the executor is asked to retire.

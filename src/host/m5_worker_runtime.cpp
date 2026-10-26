@@ -528,6 +528,7 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
         status.dirty = stats.dirty_bytes != 0;
         status.resident_bytes = stats.resident_bytes;
         status.budget_bytes = stats.budget_bytes;
+        status.dirty_bytes = stats.dirty_bytes;
         // Reported from the runtime that holds it, not inferred from the fact
         // that a freeze was once requested: the two answers differ exactly when
         // it matters, which is when a stop has to know whether the removal it is

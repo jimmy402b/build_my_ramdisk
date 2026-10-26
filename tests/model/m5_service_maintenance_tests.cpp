@@ -1,0 +1,98 @@
+#include "tests/support/test_framework.h"
+
+#include "src/management/service_maintenance.h"
+
+#include <string>
+
+using namespace myrd;
+using namespace myrd::management;
+
+namespace {
+
+MaintenanceInput running_input() {
+    MaintenanceInput input{};
+    input.state.lifecycle = profile::ProfileLifecycle::ready;
+    input.state.disk.runtime = product::RuntimeState::running;
+    input.state.disk.activity = product::ActivityState::idle;
+    input.state.disk.persistence = product::PersistenceState::dirty;
+    input.state.disk.health = product::HealthState::healthy;
+    input.checkpoint = profile::CheckpointPolicy{};
+    input.memory = profile::MemoryPolicy{};
+    return input;
+}
+
+} // namespace
+
+TEST_CASE(m5_maintenance_checkpoints_when_the_interval_has_elapsed) {
+    // The consumer that did not exist: `interval_seconds` was serialized, validated
+    // and read, and then dropped.  The policy is a pure function so this case can
+    // ask it the only question that matters -- "is a checkpoint due?".
+    auto input = running_input();
+    input.checkpoint.interval_enabled = true;
+    input.checkpoint.interval_seconds = 60;
+    input.since_last_checkpoint_ms = 59'999;
+    REQUIRE(checkpoint_due_reason(input).empty());
+    input.since_last_checkpoint_ms = 60'000;
+    REQUIRE_EQ(checkpoint_due_reason(input), std::string("interval"));
+}
+
+TEST_CASE(m5_maintenance_interval_is_off_when_the_policy_says_so) {
+    auto input = running_input();
+    input.checkpoint.interval_enabled = false;
+    input.checkpoint.interval_seconds = 60;
+    input.since_last_checkpoint_ms = 10'000'000;
+    REQUIRE(checkpoint_due_reason(input).empty());
+}
+
+TEST_CASE(m5_maintenance_checkpoints_on_the_dirty_threshold) {
+    auto input = running_input();
+    input.checkpoint.interval_enabled = false;
+    input.checkpoint.dirty_threshold_enabled = true;
+    input.checkpoint.dirty_threshold_bytes = 4ull * 1024 * 1024;
+    input.dirty_bytes = 4ull * 1024 * 1024 - 1;
+    REQUIRE(checkpoint_due_reason(input).empty());
+    input.dirty_bytes = 4ull * 1024 * 1024;
+    REQUIRE_EQ(checkpoint_due_reason(input), std::string("dirty-threshold"));
+}
+
+TEST_CASE(m5_maintenance_checkpoints_on_memory_pressure_before_the_threshold) {
+    // Both are due; memory pressure wins because it is the condition that gets worse
+    // on its own.  Asserting the *reason* and not just "a checkpoint" is the point:
+    // the log a user reads has to say why the disk was written to.
+    auto input = running_input();
+    input.memory.soft_limit_bytes = 1000;
+    input.resident_bytes = 1000;
+    input.checkpoint.dirty_threshold_enabled = true;
+    input.checkpoint.dirty_threshold_bytes = 1;
+    input.dirty_bytes = 1;
+    input.since_last_checkpoint_ms = 10'000'000;
+    REQUIRE_EQ(checkpoint_due_reason(input), std::string("memory-pressure"));
+}
+
+TEST_CASE(m5_maintenance_ignores_a_profile_that_is_not_running) {
+    // A stopped disk has nothing to checkpoint, and a `starting` or `stopping` one is
+    // a window rather than a state to act in.
+    for (const auto runtime : {product::RuntimeState::stopped,
+                               product::RuntimeState::starting,
+                               product::RuntimeState::stopping,
+                               product::RuntimeState::orphaned}) {
+        auto input = running_input();
+        input.state.disk.runtime = runtime;
+        input.checkpoint.interval_enabled = true;
+        input.checkpoint.interval_seconds = 1;
+        input.since_last_checkpoint_ms = 10'000'000;
+        input.memory.soft_limit_bytes = 1;
+        input.resident_bytes = 100;
+        REQUIRE(checkpoint_due_reason(input).empty());
+    }
+}
+
+TEST_CASE(m5_maintenance_treats_a_zero_memory_soft_limit_as_unconfigured) {
+    // A profile whose memory limit was never set must not checkpoint on every tick:
+    // `resident >= 0` is true for every running disk.
+    auto input = running_input();
+    input.memory.soft_limit_bytes = 0;
+    input.resident_bytes = 1'000'000;
+    input.checkpoint.interval_enabled = false;
+    REQUIRE(checkpoint_due_reason(input).empty());
+}

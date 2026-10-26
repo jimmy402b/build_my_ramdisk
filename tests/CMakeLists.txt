@@ -659,6 +659,23 @@ add_test(NAME m5.execution_scheduler
     COMMAND myrd_m5_execution_scheduler_tests)
 set_tests_properties(m5.execution_scheduler PROPERTIES TIMEOUT 120)
 
+# ---- M5 checkpoint policy (T1-08) -------------------------------------------
+# The consumer the policy never had.  It is a pure function, so the suite needs no
+# core, no worker and no clock -- which is exactly why the decision can be checked
+# here rather than only end to end.
+add_executable(myrd_m5_service_maintenance_tests
+    model/m5_service_maintenance_tests.cpp
+)
+target_link_libraries(myrd_m5_service_maintenance_tests PRIVATE
+    myrd_test_support myrd_management)
+target_include_directories(myrd_m5_service_maintenance_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/model")
+myrd_enable_warnings(myrd_m5_service_maintenance_tests)
+add_test(NAME m5.service_maintenance
+    COMMAND myrd_m5_service_maintenance_tests)
+set_tests_properties(m5.service_maintenance PROPERTIES TIMEOUT 120)
+
 # ---- M5 service lifecycle (T1-02) -------------------------------------------
 # The service's own lifecycle with no SCM in it.  It includes the checkpoint
 # model's fixture for its stores and its worker double, exactly as the

@@ -408,6 +408,9 @@ struct WorkerRuntimeObservation final {
     // Appended so every existing aggregate initializer keeps its meaning.
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
+    // Bytes this runtime holds that have not reached the journal.  The checkpoint
+    // policy's dirty threshold is a byte count, so the observation has to carry one.
+    std::uint64_t dirty_bytes{};
 
     bool operator==(const WorkerRuntimeObservation&) const noexcept = default;
 };

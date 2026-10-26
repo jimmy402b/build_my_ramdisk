@@ -403,6 +403,11 @@ struct WorkerRuntimeStatus final {
     // reports nothing, and a stopped runtime reports the budget it *was* given.
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
+    // The bytes this runtime holds that have not reached the journal yet.  The
+    // checkpoint policy's dirty threshold is expressed in bytes, so a status that
+    // carried only `dirty` (a bool) and `dirty_epoch` (a per-process counter) could
+    // not answer the question the policy asks.
+    std::uint64_t dirty_bytes{};
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };

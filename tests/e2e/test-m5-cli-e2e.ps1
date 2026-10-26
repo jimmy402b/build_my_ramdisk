@@ -582,6 +582,148 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         Fail 'the removed disk is still listed'
     }
 
+
+    # -----------------------------------------------------------------------
+    # T1-08: the checkpoint policy actually fires.
+    #
+    # A second disk, because the first one is the command-surface subject and an
+    # automatic checkpoint landing in the middle of those measurements would make
+    # both stories harder to read.  Nothing in this block issues `disk checkpoint`:
+    # the only thing asked for is `--checkpoint-interval 30s` at create time, and the
+    # generation must move on its own.  That is the whole claim -- before T1-08 the
+    # policy fields were serialized, validated, read and then dropped.
+    # -----------------------------------------------------------------------
+    Write-Step 'T1-08: an automatic checkpoint fires on the interval policy'
+    $policyMount = $null
+    foreach ($letter in @('T:', 'U:', 'V:', 'W:', 'X:', 'Y:', 'Z:')) {
+        if ($letter -eq $mount) { continue }
+        if ($occupied -contains $letter) { continue }
+        if ($listed.output -match [regex]::Escape($letter)) { continue }
+        $policyMount = $letter
+        break
+    }
+    if ($null -eq $policyMount) { Fail 'no second free drive letter for the policy disk' }
+    $policyName = 'm5-e2e-policy-' + [guid]::NewGuid().ToString('N')
+    $policyBundle = Join-Path 'C:\m5' $policyName
+    $policyCreate = Invoke-Cli @('disk', 'create', '--name', $policyName,
+        '--bundle', $policyBundle, '--size', '64MiB', '--mount', $policyMount,
+        '--checkpoint-interval', '30s')
+    if ($policyCreate.exit -ne 0) { Fail "the policy disk create failed: $($policyCreate.output)" }
+    Write-Host "  policy create: $($policyCreate.output.Trim())"
+    # `disk create` admits and returns "operation queued"; it does not wait, even
+    # without `--no-wait`.  The first disk's flow already knows this (it polls), and so
+    # must this one: a list taken here would show an empty table.
+    $policyCreateId = Get-UuidFromText $policyCreate.output
+    if ($null -eq $policyCreateId) { Fail 'the policy disk create carried no operation id' }
+    $policyCreated = Wait-ForTerminal $policyCreateId 300
+    if ($policyCreated -ne 'succeeded') { Fail "the policy disk create ended $policyCreated" }
+    Write-Host "  policy disk mounted at $policyMount with a 30 s checkpoint interval"
+
+    $generationLine = {
+        param([string]$text, [string]$letter)
+        $line = ($text -split "`n") |
+            Where-Object { $_ -match [regex]::Escape($letter) } | Select-Object -First 1
+        if ($null -eq $line) { return $null }
+        $match = [regex]::Match($line, 'generation=(\d+)')
+        if (-not $match.Success) { return $null }
+        return [uint64]$match.Groups[1].Value
+    }
+    $policyList = Invoke-Cli @('disk', 'list')
+    if ($policyList.exit -ne 0) { Fail "disk list failed after the policy create: $($policyList.output)" }
+    Write-Host "  policy list: $($policyList.output.Trim())"
+    $generationBefore = & $generationLine $policyList.output $policyMount
+    if ($null -eq $generationBefore) { Fail "disk list did not report a generation for $policyMount" }
+
+    # Something to checkpoint: 1 MiB write-through, so the runtime really is dirty.
+    $policyFile = Join-Path $policyMount '\m5-policy.bin'
+    $policyChunk = New-Object byte[] (1MB)
+    (New-Object System.Random 777).NextBytes($policyChunk)
+    $policyStream = [System.IO.File]::Create(
+        $policyFile, 4096, [System.IO.FileOptions]::WriteThrough)
+    try {
+        $policyStream.Write($policyChunk, 0, $policyChunk.Length)
+        $policyStream.Flush($true)
+    } finally {
+        $policyStream.Dispose()
+    }
+
+    # 30 s interval + the service's own 15 s policy tick, so the first automatic
+    # checkpoint can legitimately take up to ~45 s.  The window is 90 s: generous
+    # enough not to be flaky on a loaded guest, tight enough that "nothing happened"
+    # is a real failure rather than a scheduling coincidence.
+    $autoDeadline = (Get-Date).AddSeconds(90)
+    $autoObserved = $null
+    $startedWaiting = Get-Date
+    while ((Get-Date) -lt $autoDeadline) {
+        Start-Sleep -Seconds 3
+        $sample = Invoke-Cli @('disk', 'list')
+        if ($sample.exit -ne 0) { continue }
+        $generation = & $generationLine $sample.output $policyMount
+        if ($null -ne $generation -and $generation -gt $generationBefore) {
+            $autoObserved = $generation
+            break
+        }
+    }
+    if ($null -eq $autoObserved) {
+        Fail ("no automatic checkpoint was taken within 90 s of a 30 s interval " +
+            "(generation stayed {0})" -f $generationBefore)
+    }
+    $waitedSeconds = [math]::Round(((Get-Date) - $startedWaiting).TotalSeconds, 1)
+    Write-Host ("  generation moved {0} -> {1} on its own after {2} s" -f
+        $generationBefore, $autoObserved, $waitedSeconds)
+
+    # Cleanup of the policy disk, so the next iteration starts from a guest with no
+    # leftovers: a stopped and forgotten profile, and its letter released.
+    # **The policy disk runs alone.**  M5 is a single-disk product (G4 is deferred), and
+    # this section used to run while the first disk was still up: two live AIM proxy
+    # devices at once, which is outside the scope.  Measured consequence: the second
+    # disk's teardown left its device behind -- the stop's own `remove_exact_device`
+    # reported completed, then the restart failed `no volume carries the recorded
+    # identity` and the forget refused `device_absent=0`.  Every one of those is the
+    # single-disk scope saying so, not the policy.  This section therefore runs after
+    # the first disk is forgotten, so one disk exists at a time.
+    $policyStop = Invoke-Cli @('disk', 'stop', $policyName)
+    if ($policyStop.exit -ne 0) { Fail "the policy disk stop failed: $($policyStop.output)" }
+    $policyStopId = Get-UuidFromText $policyStop.output
+    if ($null -eq $policyStopId) { Fail 'the policy disk stop carried no operation id' }
+    $policyStopState = Wait-ForTerminal $policyStopId 300
+    if ($policyStopState -ne 'succeeded') { Fail "the policy disk stop ended $policyStopState" }
+    $policyId = $null
+    $policyListAfter = Invoke-Cli @('disk', 'list')
+    $policyLine = ($policyListAfter.output -split "`n") |
+        Where-Object { $_ -match [regex]::Escape($policyMount) } | Select-Object -First 1
+    if ($null -ne $policyLine) { $policyId = Get-UuidFromText $policyLine }
+    if ($null -eq $policyId) { Fail 'the policy disk vanished without a forget' }
+    # No `--wait` here either: the same client-side defect the first disk's forget
+    # documents.  Ask for the operation id and poll the command that works.
+    #
+    # **Retried, and the retry is not papering over anything.**  Forget is fail-closed:
+    # it refuses unless a fresh read-only inspection proves the writer lock and the
+    # proxy device are both absent.  A device that was removed a moment ago can still be
+    # retiring when that inspection runs, so the proof legitimately comes back
+    # `unsafe` -- measured: the first attempt after a stop ended `failed` with
+    # `marker=unsafe`.  Refusing is the correct behaviour; asking again after a settling
+    # interval is the correct response to it.
+    $policyForgetId = $null
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        $policyForget = Invoke-Cli @('disk', 'forget', $policyId, '--confirmation', $policyId)
+        if ($policyForget.exit -eq 0) {
+            $policyForgetId = Get-UuidFromText $policyForget.output
+            if ($null -eq $policyForgetId) { Fail 'the policy disk forget carried no operation id' }
+            $policyForgetState = Wait-ForTerminal $policyForgetId 300
+            if ($policyForgetState -eq 'succeeded') { break }
+        }
+        Write-Host ("  forget attempt {0} did not succeed; waiting for the device to settle" -f $attempt)
+        Start-Sleep -Seconds 2
+        $policyForgetId = $null
+    }
+    if ($null -eq $policyForgetId) {
+        Fail ("the policy disk could not be forgotten in 10 attempts: {0}" -f
+            $(if ($null -ne $policyForget) { $policyForget.output } else { 'no answer' }))
+    }
+    Write-Host '  policy disk stopped and forgotten'
+
+
     Write-Step 'the installed service path: install, answer one command, stop, delete'
     # The foreground service above proved the command surface.  This proves the *shipped*
     # path -- an SCM-installed service serving the same pipe -- which is the only difference

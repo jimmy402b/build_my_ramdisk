@@ -104,7 +104,12 @@ void report(SERVICE_STATUS_HANDLE handle, SERVICE_STATUS& status,
     status.dwControlsAccepted =
         state == SERVICE_RUNNING
             ? (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
-               | SERVICE_ACCEPT_PRESHUTDOWN)
+               | SERVICE_ACCEPT_PRESHUTDOWN
+               // Sleep and hibernate reach a service this way, and the checkpoint
+               // policy has a rule for them (`on_suspend`).  Without this bit the
+               // handler is never called and the rule has no consumer at all --
+               // which is exactly the state this service was in before T1-08.
+               | SERVICE_ACCEPT_POWEREVENT)
             : 0;
     status.dwCheckPoint =
         (state == SERVICE_RUNNING || state == SERVICE_STOPPED) ? 0
@@ -180,8 +185,8 @@ Result<std::unique_ptr<ServiceState>> build_state() {
 
 // The SCM's control handler.  One translation per control code and nothing else:
 // every decision lives in `ServiceHost`, which is the point of keeping this thin.
-DWORD WINAPI control_handler(const DWORD control, const DWORD, void* context,
-                             void*) {
+DWORD WINAPI control_handler(const DWORD control, const DWORD event_type,
+                             void* context, void*) {
     // The state comes from the file-static, not from the context pointer this
     // handler was registered with -- and that is a measured correction, not a
     // preference.  Windows called this handler with `context == nullptr` even
@@ -223,6 +228,28 @@ DWORD WINAPI control_handler(const DWORD control, const DWORD, void* context,
         report(state->status_handle, state->status,
                state->host->running() ? SERVICE_RUNNING : SERVICE_STOPPED);
         return NO_ERROR;
+    case SERVICE_CONTROL_POWEREVENT: {
+        // **The machine is going to sleep, not shutting down.**
+        //
+        // PBT_APMSUSPEND is the only event acted on.  The others (resume, power
+        // source changes) are acknowledged and otherwise ignored: a resume has no
+        // work of its own here, and inventing some would be a second lifecycle this
+        // service was never designed to run.
+        //
+        // A checkpoint is *not* performed on this thread.  The policy admits the work
+        // durably and returns, so the answer to the SCM is bounded no matter how many
+        // disks are running -- if the machine goes away before a commit lands, the
+        // recovery path is what covers it.
+        if (event_type == PBT_APMSUSPEND) {
+            const auto handed = state->host->suspend();
+            std::fprintf(stderr,
+                         "myrd-service: suspend: handed %zu profile(s) a "
+                         "best-effort checkpoint\n",
+                         handed);
+            std::fflush(stderr);
+        }
+        return NO_ERROR;
+    }
     default:
         return ERROR_CALL_NOT_IMPLEMENTED;
     }

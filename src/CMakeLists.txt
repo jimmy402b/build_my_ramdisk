@@ -349,6 +349,7 @@ add_library(myrd_management STATIC
     management/profile_registration_codec.cpp management/profile_registration_codec.h
     management/profile_registration_store.cpp management/profile_registration_store.h
     management/service_core.cpp management/service_core.h
+    management/service_maintenance.cpp management/service_maintenance.h
     management/service_operation_store.cpp management/service_operation_store.h
     management/service_response_wire.cpp management/service_response_wire.h
     management/service_worker_control.cpp management/service_worker_control.h

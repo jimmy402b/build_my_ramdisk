@@ -6194,6 +6194,62 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         && proof.value().retained_bundle_identity
                             == durable_tombstone.retained_bundle_identity;
                     if (!exact_proof) {
+                        // **Which of the nine conjuncts failed.**
+                        //
+                        // The refusal is one word -- `unsafe` -- and it covers a failed
+                        // proof, a mismatched identity and each of the four absences.
+                        // Measured cost of not having this: a forget on a stopped disk
+                        // refused ten times in a row and nothing in any log said which
+                        // fact was missing.  The facts are recorded here, where they
+                        // exist.
+                        {
+                            std::string facts = "forget safety refused:";
+                            if (!proof.ok()) {
+                                auto step = ipc::utf16_to_utf8(
+                                    proof.error().operation);
+                                auto detail = ipc::utf16_to_utf8(
+                                    proof.error().message);
+                                facts += " proof=error code="
+                                    + std::to_string(proof.error().code)
+                                    + " step=" + (step.ok() ? step.value() : "?")
+                                    + " detail=" + (detail.ok() ? detail.value() : "?");
+                            } else {
+                                const auto& value = proof.value();
+                                facts += " profile_match="
+                                    + std::to_string(value.profile_id
+                                        == durable_tombstone.profile_id)
+                                    + " image_match="
+                                    + std::to_string(value.image_id
+                                        == durable_tombstone.image_id)
+                                    + " revision="
+                                    + std::to_string(value.profile_revision)
+                                    + " expected_revision="
+                                    + std::to_string(
+                                        durable_tombstone.profile_revision)
+                                    + " worker_absent="
+                                    + std::to_string(value.worker_absent)
+                                    + " writer_lock_absent="
+                                    + std::to_string(value.writer_lock_absent)
+                                    + " device_absent="
+                                    + std::to_string(
+                                        value.matching_device_absent)
+                                    + " bundle_present="
+                                    + std::to_string(value.bundle_present)
+                                    + " identity_match="
+                                    + std::to_string(
+                                        value.retained_bundle_identity
+                                        == durable_tombstone
+                                               .retained_bundle_identity);
+                            }
+                            logger_.write(ServiceLogEvent{
+                                ServiceLogKind::operation_failed,
+                                current_operation.request_id,
+                                current_operation.operation_id,
+                                current_operation.profile_id,
+                                current_operation.command_scope,
+                                current_operation.phase,
+                                std::move(facts)});
+                        }
                         worker_result.completion =
                             CompletionOutcome::needs_attention_failure;
                         worker_result.terminal_result = {

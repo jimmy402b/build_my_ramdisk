@@ -1,4 +1,4 @@
-﻿#include "src/common/diagnostic_trace.h"
+#include "src/common/diagnostic_trace.h"
 
 #include <cstdio>
 
@@ -31,11 +31,13 @@ ServiceExecutionScheduler::ServiceExecutionScheduler(
     ServiceCore& core,
     IServiceClock& clock,
     std::timed_mutex& execution_gate,
-    ExecutionSchedulerConfig config) noexcept
+    ExecutionSchedulerConfig config,
+    IMaintenanceTick* maintenance) noexcept
     : core_(core),
       clock_(clock),
       execution_gate_(execution_gate),
-      config_(config) {}
+      config_(config),
+      maintenance_(maintenance) {}
 
 ServiceExecutionScheduler::~ServiceExecutionScheduler() noexcept {
     // Joining belongs here, in the body, and not in `workers_`'s destructor.
@@ -211,6 +213,28 @@ void ServiceExecutionScheduler::run(std::stop_token token) noexcept {
             worked = false;
         }
         if (!worked) wait_for_poll(token);
+        // **The checkpoint policy's clock.**
+        //
+        // Claimed once per interval, by whichever thread gets there first, so a pool
+        // of N workers evaluates the policy once per interval rather than N times.
+        // The tick takes the execution gate itself, and this thread does not hold it
+        // here -- the block above released it -- so a tick never lands inside an
+        // operation.
+        if (maintenance_ != nullptr && config_.maintenance_interval_ms != 0) {
+            bool due = false;
+            {
+                std::scoped_lock lock(state_mutex_);
+                const auto now = clock_.monotonic_time_ms();
+                if (!maintenance_seeded_) {
+                    maintenance_seeded_ = true;
+                    next_maintenance_ms_ = now + config_.maintenance_interval_ms;
+                } else if (now >= next_maintenance_ms_) {
+                    due = true;
+                    next_maintenance_ms_ = now + config_.maintenance_interval_ms;
+                }
+            }
+            if (due) maintenance_->tick();
+        }
     }
     {
         std::scoped_lock lock(state_mutex_);

@@ -109,6 +109,17 @@ private:
     std::vector<std::string>& log_;
 };
 
+// The suspend half of the checkpoint policy, as the host sees it.
+class FakeSuspend final : public management::ISuspendCheckpoint {
+public:
+    std::size_t checkpoint_for_suspend() override {
+        ++calls;
+        return handed;
+    }
+    int calls{};
+    std::size_t handed{};
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -514,6 +525,57 @@ TEST_CASE(m5_host_without_a_sweep_still_starts) {
 // `disk list` is the command used, because it is the one the read/write separation acceptance needs, and because
 // it carries no arguments -- so a payload mismatch would show up as a mismatch rather than as a field difference
 // with two possible readings.
+TEST_CASE(m5_host_suspend_hands_out_checkpoints_without_stopping_anything) {
+    // **A suspend is not a shutdown.**  The machine is going to sleep; the disks stay
+    // mounted, the workers keep their devices, and the only work is the policy's own
+    // best-effort checkpoint.  A suspend implemented as a stop would dismantle exactly
+    // the disks it exists to protect.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    FakeSuspend suspend;
+    suspend.handed = 2;
+    ServiceHost host(clock, core, scheduler, {}, nullptr, nullptr, &suspend);
+
+    // Before start: nothing to suspend, and the policy is not consulted -- asking it
+    // would checkpoint a service that has not reconciled its durable state yet.
+    REQUIRE_EQ(host.suspend(), 0u);
+    REQUIRE_EQ(suspend.calls, 0);
+
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.suspend(), 2u);
+    REQUIRE_EQ(suspend.calls, 1);
+    // Still running, still started: a suspend that stopped the scheduler would need a
+    // resume path this service does not have.
+    REQUIRE(host.running());
+    REQUIRE(scheduler.running);
+    REQUIRE(!scheduler.fail_stop);
+    REQUIRE(host.stop().ok());
+}
+
+TEST_CASE(m5_host_suspend_with_no_policy_is_a_no_op) {
+    FakeClock clock;
+    FakeScheduler scheduler;
+    Profiles profiles(provisioning_profile());
+    Operations operations;
+    Worker worker;
+    Logger logger;
+    Ids ids;
+    Memory memory;
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    ServiceHost host(clock, core, scheduler);
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.suspend(), 0u);
+    REQUIRE(host.running());
+    REQUIRE(host.stop().ok());
+}
+
 TEST_CASE(service_host_builds_a_request_frame_that_round_trips) {
     auto request_id = product::Uuid::random();
     REQUIRE(request_id.ok());

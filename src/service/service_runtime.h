@@ -21,6 +21,7 @@
 #include "src/management/execution_scheduler.h"
 #include "src/management/profile_registration_store.h"
 #include "src/management/service_core.h"
+#include "src/management/service_maintenance.h"
 #include "src/management/service_operation_store.h"
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_sessions.h"
@@ -170,6 +171,10 @@ private:
     // `create` rather than default-constructed because it borrows the core, which is
     // itself emplaced late.
     std::optional<PublicPipeSurface> surface_;
+    // The checkpoint policy's consumer (T1-08).  Declared before the scheduler and the
+    // host, because both borrow it: the scheduler calls `tick`, the host calls
+    // `checkpoint_for_suspend`.
+    std::optional<management::ServiceMaintenance> maintenance_;
     std::optional<management::ServiceExecutionScheduler> scheduler_;
 };
 
