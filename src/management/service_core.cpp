@@ -4891,9 +4891,20 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             unresolved.error());
                     }
                     current_profile = unresolved.move_value();
-                    return normal_stop
-                        ? park_stop_reconciliation()
-                        : park_checkpoint_reconciliation();
+                    // **A stop that cannot resolve its checkpoint must end, not
+                    // wait.**  Parking leaves the operation in `reconciling`,
+                    // which only the next service start can advance, so a live
+                    // command budget expires against a state that will never
+                    // change: measured as 300 s stalls with a surviving worker.
+                    // A named terminal failure is what needs-attention means.
+                    if (normal_stop) {
+                        return finalize_operation(
+                            current_operation, current_profile, pending_plan,
+                            CompletionOutcome::transient_failure,
+                            OperationState::failed,
+                            {std::byte{'s'}, std::byte{'t'}, std::byte{'p'}});
+                    }
+                    return park_checkpoint_reconciliation();
                 }
                 if (action == ActionKind::compact
                     && current_profile.has_value()
