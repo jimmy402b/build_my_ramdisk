@@ -91,7 +91,7 @@ if ($createState -ne 'succeeded') { Fail "the create ended $createState" }
 $list = Invoke-Cli @('disk', 'list')
 if ($list.exit -ne 0) { Fail "disk list failed: $($list.output)" }
 Write-Host "  list: $($list.output.Trim())"
-$line = ($list.output -split "`n") | Where-Object { $_ -match [regex]::Escape($mount) } |
+$line = ($list.output -split "`n") | Where-Object { $_ -match ('\s' + [regex]::Escape($mount)) } |
     Select-Object -First 1
 if ($null -eq $line) { Fail "disk list did not report ${mount}: $($list.output)" }
 # Parsed here, not through the shared helper: the helper returned null on a line that
@@ -118,7 +118,7 @@ function Read-Generation {
     param([string]$letter)
     $listing = Invoke-Cli @('disk', 'list')
     if ($listing.exit -ne 0) { return $null }
-    $row = ($listing.output -split "`n") | Where-Object { $_ -match [regex]::Escape($letter) } |
+    $row = ($listing.output -split "`n") | Where-Object { $_ -match ('\s' + [regex]::Escape($letter)) } |
         Select-Object -First 1
     if ($null -eq $row) { return $null }
     $match = [regex]::Match($row, 'generation=(\d+)')
@@ -164,7 +164,10 @@ $state = @(
     "marker_payload=$payload"
     "service_name=$serviceName"
 )
-Set-Content -LiteralPath $statePath -Value $state -Encoding utf8
+# ASCII, because Windows PowerShell writes a BOM with utf8 and the reader then sees the
+# first key as `\uFEFFprofile_id` -- measured as 	he power-loss state has no profile_id
+# on a file that plainly had one.
+Set-Content -LiteralPath $statePath -Value $state -Encoding ASCII
 Write-Host "  state written to $statePath"
 Write-Host 'PREPARED'
 exit 0

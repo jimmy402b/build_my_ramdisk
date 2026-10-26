@@ -1,4 +1,4 @@
-# The second half of the power-cut acceptance (T1-09): after the machine was cut off
+﻿# The second half of the power-cut acceptance (T1-09): after the machine was cut off
 # and booted again, prove that the disk came back **on its own**, at the last committed
 # generation, with the committed bytes intact and nothing left behind.
 #
@@ -39,6 +39,8 @@ if (-not (Test-Path -LiteralPath $statePath)) {
 }
 $state = @{}
 foreach ($line in Get-Content -LiteralPath $statePath) {
+    # Defensive: a BOM on the first line turns `profile_id` into `\uFEFFprofile_id`.
+    $line = $line.TrimStart([char]0xFEFF)
     $at = $line.IndexOf('=')
     if ($at -gt 0) { $state[$line.Substring(0, $at)] = $line.Substring($at + 1) }
 }
@@ -63,7 +65,7 @@ Write-Step 'the disk came back on its own'
 $list = Invoke-Cli @('disk', 'list')
 if ($list.exit -ne 0) { Fail "disk list failed: $($list.output)" }
 Write-Host "  $($list.output.Trim())"
-$line = ($list.output -split "`n") | Where-Object { $_ -match [regex]::Escape($mount) } |
+$line = ($list.output -split "`n") | Where-Object { $_ -match ('\s' + [regex]::Escape($mount)) } |
     Select-Object -First 1
 if ($null -eq $line) { Fail "the disk is absent after the power cut: $($list.output)" }
 if ($line -notmatch 'running') {
