@@ -1,6 +1,6 @@
 # M5 交接：从这里开始
 
-**最后更新：2026-10-25**（状态有变化先改这里，再改 tasklist）
+**最后更新：2026-10-26**（状态有变化先改这里，再改 tasklist）
 
 ---
 
@@ -13,7 +13,7 @@
 | 单盘（G2/G3） | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**；**T1-05 PARTIAL** |
 | 多盘（G4） | T2-01…T2-03 **整章延后**（2026-10-17 用户裁定） |
 | 产品面客机读数 | 完整 152 条 → **150 通过**，唯二失败是客机无 Visual Studio 的两条 structural |
-| **下一件事** | `stop` 的完成判定（本文 §3）——链路已经走到最后一步 |
+| **下一件事** | `create` 在注册步骤失败（本文 §3.3）——stop 已修但还没验收 |
 
 **顺序**：T1-05 收尾 → T1-06 → T1-07 → T1-08 → T1-09 → T1-10 → T3（GUI）→ T4（产品化）。
 T2 在 G4 恢复前不动。
@@ -39,9 +39,9 @@ T2 在 G4 恢复前不动。
 
 ---
 
-## 3. 当前增量 T1-05：只剩 `stop`
+## 3. 当前增量 T1-05：`stop` 已修，验收被 `create` 的新失败挡住
 
-### 3.1 已经通的（客机读数，请求 `32d4ba1c71b54d72a87c4d4e6cd33203`）
+### 3.1 已经通的那一段（客机读数，2026-10-23，请求 `32d4ba1c71b54d72a87c4d4e6cd33203`）
 
 ```text
 disk.create:     queued → running → … → publish-ready → assign-mount → readiness-io
@@ -51,7 +51,7 @@ disk.checkpoint: queued → running → succeeded (terminal)
 `create` 全链、`list`、`show`、读写、`checkpoint` 都通过了——**这些此前从未跑通过**。
 详细过程与六个被推翻的假设见 `docs/validation/m5-t1-05-cli.md` §8–§10。
 
-### 3.2 卡在哪
+### 3.2 原来是这里卡住（2026-10-26 已修，`d5b9ad7`）
 
 ```text
 execute_operation failed: code=22022 step=service_core.checkpoint_epoch
@@ -88,8 +88,9 @@ execute_operation failed: code=22022 step=service_core.checkpoint_epoch
    durable 状态（`phase = stable`、`disposition = committed`、
    `confirmed_generation`、`current_dirty_epoch`），让 remove 系列继续，
    由 `finalize_operation` 用 stop 的真实 outcome 收尾。
-3. **若要允许"stop 的最终 checkpoint 是 dirty"**，`stop` 分支必须显式接受它并落
-   `persistence = dirty`。这是状态机语义变更，**只做一次，并加用例**。
+3. **不要把"接受 dirty"当成修法（2026-10-26 更正）**：写冻结排在 checkpoint 之前，
+   "提交后还有脏块"意味着**冻结漏了写**——那是缺陷，报成功等于把数据丢失伪装成正常收尾。
+   已按此实现并加模型用例：clean 成功、dirty 不 applied。
 4. **验收**（客机）：`disk stop` → 盘符消失 → 重启服务 → `disk start` 恢复到最后
    generation → `disk forget`。修复类结论**至少 `-Repeat 20`**。
 
@@ -98,6 +99,31 @@ execute_operation failed: code=22022 step=service_core.checkpoint_epoch
 - `disk show/stop/checkpoint` 的 `<disk>` 参数只认 display name 或 uuid，**不认盘符**，
   而用户会自然想用盘符（本轮排查就撞上过 `profile_not_found`）；
 - 失败原因的可达性已补（`m5-t1-05-cli.md` §5.2），但 `OperationRecord` 仍只存标记串。
+
+### 3.5 现在挡在 `create` 的注册步骤（2026-10-26，两次复现，硬重启后仍复现）
+
+`integration.m5.cli_e2e` 在 **`disk create`** 就失败，早于 stop：
+
+```text
+kind=7 command=disk.create phase=publish-provisioning
+  message=publish_registration refused: code=22024 native=3
+  step=profile_registration.bundle_identity
+  detail=The registered bundle cannot be opened for identity inspection
+```
+
+- `native=3` 是 `ERROR_PATH_NOT_FOUND`；该检查是
+  `CreateFileW(intent.bundle_path)`（`profile_registration_store.cpp:171`）；
+- **上一行日志是 `action-result: create-bundle completed`** ⇒ worker 说建好了，服务随后找不到；
+- 失败后工作根（`C:\m5\cli-e2e-<id>\`）只剩 `service.log`，**没有 `bundle`**；
+- 脚本传的是**绝对路径**（`tests/e2e/test-m5-cli-e2e.ps1:68,288`），所以先不怀疑相对路径；
+- 客机在失败前后都是干净的（`workers=0 / disks=1 / letters=C`）。
+
+**线索（未验证，按代价排序）**：① bundle 在 create-bundle 与注册之间被删——先查 worker
+会话结束时的清理路径；② 服务与 worker 对同一路径解析不同（次要，脚本用绝对路径）；
+③ 同一路径两次打开、第一次成功第二次失败。
+
+**下一步**：在 `publish_registration` 之前加一行"这个路径 stat 到没有 + 打出来"的 trace，
+一次运行即可分辨，不要先猜。
 
 ---
 
