@@ -1124,3 +1124,25 @@ PASS T3-05
 
 **下一步**：T4-02 第 2 步——**卷标 / 簇大小**（intent → command → ipc_codec → CLI
 `--volume-label` / `--cluster-size` → profile 追加两字段 → `m3_provider` 卷格式化带上它们）。
+### 3.34 2026-10-27 03:15：下一步的最小可执行清单（T4-02 第 2 步：卷标 / 簇大小）
+
+已经勘察过，这里只列**按顺序要动的点**，每步都能单独编译通过：
+
+1. `src/control/command.h`：`DiskCreateCommand` 加 `std::wstring volume_label;` 与
+   `std::uint32_t cluster_size_bytes{};`（末尾追加）；
+2. `src/control/ipc_codec.cpp`：选两个未用的 tag 写/读这两个字段（该文件里 create 命令的
+   tag 表就在附近，按现有风格追加，严格解码：未知 tag 报错）；
+3. `src/cli/cli_parser.cpp`：`--volume-label <名字>`、`--cluster-size <N|NK|NM>`（复用
+   `product::quantity_parser` 解析字节数），写进 `DiskCreateCommand`；
+4. `src/management/service_core.h` 的 `LifecycleOperationIntent` 加同名字段，
+   `service_core.cpp` 的 `register_lifecycle` 路径把它们带进 profile；
+5. `src/profile/profile_types.h` 的 `Profile` 追加两个字段（`ProfileFieldTag` 已用到 26，
+   继续 27/28），同步 `profile_codec.cpp` 的写/读/字段计数与 `profile_validation.cpp` 的范围校验
+   （簇大小只接受 4096/8192/…/65536；卷标 ≤ 32 字符且非空）；
+6. `src/m3/m3_provider.cpp` 的卷格式化调用带上这两个值（AIM 的 format 请求里有卷标与簇大小）；
+7. 测试：`m5.cli`（解析与渲染）、`m4.checkpoint_operation`（profile 往返）、
+   以及一个**客机**用例断言 `fsutil fsinfo volumeinfo <盘符>` 的卷标与簇大小与配置一致。
+
+**纪律提醒（这轮踩过的两个坑，别再踩）**：
+- 改 `profile_types.h`（头文件）后**必须 `--clean-first`**，否则会出现"半套改动"的假失败；
+- **一次命令只做一处块替换**，每步都跑 `Parser::ParseFile` / 编译验证——上一轮三处叠加丢了一个 `}`。
