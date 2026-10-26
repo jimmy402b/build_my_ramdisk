@@ -947,3 +947,24 @@ PASS T3-05
 - **T4-02** Load Only 模式、导出单文件 VHDX（复用 compaction 的 fold writer）、易失盘模式、卷标/簇大小/卷序列号；
 - **T4-03** 在线 compaction（第二套 durable phase + reconciliation + 自动触发；journal 增长有界可观测）；
 - **T4-04** M5-E：干净 Debug/Release、M4 回归、冻结哈希、证据组校验工具（负例必须非零退出且**永不打印 PASS**）、release manifest。
+---
+
+### 3.25 2026-10-27 01:55：T4-01 完成（安装/卸载走通），T4 剩下三段
+
+**客机读数**（请求 `48750655…`，37 s）：`INSTALLED` → 服务 RUNNING 且 `disk list` 应答 → 目录 ACL
+符合 → 卸载把盘安全下盘、删服务、删文件、**保留** durable 记录 → `-PurgeData` 再清 →
+`PASS T4-01`。
+
+**profile store 的三条 ACL 规则（都是被拒后才学到的，写在这里省下次的时间）**：
+1. 记录目录里**不许出现任何非管理 SID**（`Users: RX` 也会被拒：`A management ACL entry lacks
+   required access`）⇒ profiles/operations **仅 SYSTEM + Administrators，FILE_ALL_ACCESS**；
+2. DACL 必须是 **protected**（`A profile directory ACL is not protected`）⇒
+   `icacls /inheritance:r` **不够**，要用 `SetAccessRuleProtection($true,$false)` + `Set-Acl`；
+3. **数据根目录本身也被检查**（三个子目录都保护后仍报同一句）⇒ 根也要同样保护。
+   唯一例外是 `logs`：它可以给 Users 只读（store 不检查它），因为"为什么失败"必须能被读到。
+
+**手法**：installed 服务的 stderr 被 SCM 丢弃，但 **`myrd-service.exe --console` 从安装目录跑**
+就能把 store 的原话打出来——三次定位全靠这一招。
+
+**T4 剩余**：T4-02（Load Only / 单文件 VHDX 导出 / 易失盘模式 / 卷标·簇大小·卷序列号）→
+T4-03（在线 compaction）→ T4-04（M5-E + release manifest 冻结）。
