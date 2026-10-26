@@ -720,14 +720,29 @@ Result<ForgetTombstone> complete_forget_removal_locked(
             L"profile_registration.forget_complete",
             L"Forget removal has no durable authorization boundary");
     }
+    // **A bundle that is already gone is what this removal is for.**
+    //
+    // The tombstone's recorded identity is the authority for *what* was removed;
+    // re-opening the path can only confirm that it is still the same object.  It
+    // used to refuse on a path that no longer opened, which made an interrupted
+    // forget -- or any later record recovered after the bundle's directory was
+    // deleted -- fail with "the registered bundle cannot be opened", although the
+    // removal had in fact already happened.  Fail-closed stays where it belongs:
+    // a bundle that *is* there with a different identity is still refused.
     auto retained = inspect_bundle_identity(tombstone.retained_bundle_path);
-    if (!retained.ok()) {
+    if (retained.ok()) {
+        if (retained.value() != tombstone.retained_bundle_identity.value()) {
+            return store_error<ForgetTombstone>(
+                L"profile_registration.forget_complete",
+                L"The retained bundle identity changed during metadata removal");
+        }
+    } else if (retained.error().native_code
+                   != static_cast<std::uint32_t>(ERROR_PATH_NOT_FOUND)
+               && retained.error().native_code
+                   != static_cast<std::uint32_t>(ERROR_FILE_NOT_FOUND)) {
+        // Absent is the one failure that means "already removed".  Anything else
+        // -- access denied, a device error -- is not evidence of removal.
         return Result<ForgetTombstone>::failure(retained.error());
-    }
-    if (retained.value() != tombstone.retained_bundle_identity.value()) {
-        return store_error<ForgetTombstone>(
-            L"profile_registration.forget_complete",
-            L"The retained bundle identity changed during metadata removal");
     }
     auto directory = open_profile_directory(
         impl.trusted_root, tombstone.profile_id);
