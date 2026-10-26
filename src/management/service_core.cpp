@@ -7046,6 +7046,35 @@ Result<std::vector<OperationRecord>> ServiceCore::recover_after_restart() {
                                 detail.c_str()));
                     }
                 }
+                if (!expected_absent_forget) {
+                    // **The exemption has to be per profile, not per record.**
+                    // The tombstone is filed under the forget operation's own id,
+                    // so a terminal record of any *other* command for the same
+                    // profile could never see it -- and each of those records
+                    // made the next start fail.  A service that cannot start is a
+                    // worse outcome than an operation record that outlived the
+                    // profile it names.
+                    for (const auto& sibling : records.value()) {
+                        if (sibling.profile_id != record.profile_id
+                            || sibling.command_scope != "disk.forget"
+                            || sibling.state != OperationState::succeeded) {
+                            continue;
+                        }
+                        auto ancestor = profiles_.find_forget_tombstone(
+                            sibling.operation_id);
+                        if (!ancestor.ok()) {
+                            return Result<std::vector<OperationRecord>>::failure(
+                                ancestor.error());
+                        }
+                        if (ancestor.value().has_value()
+                            && ancestor.value()->profile_id == record.profile_id
+                            && ancestor.value()->phase
+                                == ForgetTombstonePhase::metadata_removed) {
+                            expected_absent_forget = true;
+                            break;
+                        }
+                    }
+                }
                 if (record.command_scope != "disk.create"
                     && record.command_scope != "disk.import"
                     && !expected_absent_forget) {
