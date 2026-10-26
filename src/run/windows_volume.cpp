@@ -1188,9 +1188,14 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
     }
     // The GUID goes into the message: "native=87" alone cannot say whether the volume path we asked for
     // was stale, which is the difference between a wrong recorded identity and an occupied letter.
-    const std::wstring detail =
-        std::wstring(L"SetVolumeMountPointW failed for ") + mount + L" at " + owned.volume_guid +
-        L" (first error " + std::to_wstring(first_error) + L")";
+    // **Short, because the log line is truncated.**  Measured: the previous detail ended at "T:\\" and lost the
+    // GUID entirely -- the writer caps the line, so a longer message is the same as no message.  GUID and error
+    // codes only; the drive letter is already in the step.
+    std::wstring guid_text = owned.volume_guid;
+    if (guid_text.size() > 44) guid_text = guid_text.substr(0, 44);
+    const std::wstring detail = std::wstring(L"set-mount failed first=") +
+        std::to_wstring(first_error) + L" second=" + std::to_wstring(GetLastError()) +
+        L" guid=" + guid_text;
     return Result<void>::failure(
         failure(VolumeError::platform_error, L"assign_drive_letter", detail.c_str(), GetLastError()));
 #else

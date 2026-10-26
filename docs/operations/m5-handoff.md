@@ -1890,3 +1890,28 @@ action=create-runtime code=21001 native=87 step=assign_drive_letter detail=SetVo
   立刻可判定 3.71/3.72 的两种假设（裸 GUID vs 完整卷名）哪一个成立。
 - **注意**：这次终于排除了"跑旧二进制"这个反复出现的干扰项（哈希对齐），
   所以下一次的读数就是可信的产品读数。
+### 3.75 2026-10-27 09:05：诊断生效——**卷名是完整路径，87 不是格式问题**
+
+新的短诊断在客机上打出来了（worker 哈希已对齐 `1e8c7aba…`）：
+
+```text
+kind=7 disk.start phase=running action=create-runtime code=21001 native=87
+step=assign_drive_letter
+detail=set-mount failed first=87 second=87 guid=\\?\Volume{87792e03-9150-4130-ad02-b0f8b5700…
+```
+
+⇒ **`owned.volume_guid` 是完整的 `\\?\Volume{GUID}\` 路径，不是裸 GUID**（3.72 的假设**被否定**）；
+`SetVolumeMountPointW` 对该路径与 `T:\` 连续两次返回 **87**，即使之前已 `DeleteVolumeMountPointW`。
+
+**于是回到 3.71 的方向**（但这次有证据支撑）：**该卷 GUID 路径此刻不存在**，即
+**恢复后卷被重建、GUID 已变**，而我们用的是记录里的旧 GUID。`DeleteVolumeMountPointW` 无用，
+因为它清的是盘符映射，不是"卷 GUID 是否有效"。
+
+**下一步（两个读数即可定论，都很便宜）**：
+1. 在服务日志里**同时打出 worker 报的活动卷 GUID**（`status.volume->volume_guid`）与记录 GUID——
+   两者若不同，3.71 成立，修复就是"采纳活动身份并写回记录"；
+2. 或直接在 worker 的 `create-runtime` 完成后用 `GetVolumeNameForVolumeDeviceW`（对设备路径）
+   取活动卷名，若取到与记录不同 ⇒ 同上。
+
+**注意**：`assign_drive_letter` 里那句 `GetVolumeNameForVolumeMountPointW(mount)` 的比较也不可靠——
+它对 `T:\` 返回失败（因为 `T:\` 此刻是空的），于是走 Set，而不是走"已挂载同一卷"的快路径。
