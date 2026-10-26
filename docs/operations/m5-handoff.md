@@ -1714,3 +1714,26 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
   # 主机
   .\tools\m5vm\Test-M5PowerLoss.ps1 -SkipStage
   ```
+### 3.67 2026-10-27 08:25：断电复跑——verify 这次 2.8 s 就失败，读数是"盘回来了但 **runtime=Stopped**"
+
+`prepare` 过（51 s，请求 `f201e022…`）→ 硬断电 → 开机 → `verify` 失败（2.8 s，请求 `ea867784…`）。读数：
+
+```text
+service state: STATE : 4  RUNNING            ← 服务自己起来了（这一步通过）
+c6e4550b-…  U:  Ready  stopped/configured  runtime=Stopped
+            activity=Idle  persistence=Dirty  health=Healthy
+            generation=3  mem=0/0
+```
+
+⇒ **服务自起 ✓、盘回到提交的 generation ✓，但那一刻 `runtime=Stopped`**，所以 verify 的
+"盘自己回来运行"断言失败。
+
+**两种可能，必须分开**：
+1. **时序**：verify 在服务刚启动后**立刻**查（2.8 s），自动恢复的 `disk start` 可能还没执行完；
+   若是这样，verify 应该**轮询**（例如最多 60 s）而不是查一次——这是**用例**的缺陷；
+2. **真实失败**：自动恢复的 start 失败了（`Dirty` 的盘需要 recovery），服务把它留在 stopped；
+   若是这样，`service.log` 里会有 `auto-start refused/failed` 一行——**这是产品缺陷**。
+
+**判据（下一步第一件事）**：看这一轮的服务日志里 `auto-start` 相关的行：
+- 有 `auto-start: this profile was running…` 且随后 `terminal` 成功 ⇒ 是时序问题，改用例（轮询）；
+- 有 `refused` / `kind=7` ⇒ 是产品问题，按 §3.54 的步骤查 worker 侧。
