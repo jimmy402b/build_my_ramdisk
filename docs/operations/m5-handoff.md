@@ -2216,3 +2216,18 @@ cmake --build out/build/msvc --config Release --clean-first
 
 **状态**：全部回退——构建干净、22 用例全绿、工作树 0 改动、探针文件已删。
 **这轮的教训**：读数错的时候，代码对也是错的；读数对的时候，才知道代码错在哪。§3.87–3.91 的六轮都花在前半句上。
+### 3.93 2026-10-27 11:00：**这一轮没有产生新读数**——我的替换又没落地
+
+- 想在编码器里打 `LABELPROBE`（标签字节数 + payload 增长），但在 `profile_codec.cpp` 里
+  **`LABELPROBE` 一次都没出现**（`Select-String` 确认）⇒ 那段 `.Replace` **没有匹配上**，
+  于是这一轮跑的是"只改常量"的版本，只得到 `decoded.ok()` 失败（这是**已知**结论）。
+- ⇒ **又一次"以为改了、其实没改"**。本会话第 5 次同类事故（stale object、旧 worker、stale probe、
+  `Select-Object -First 1`、这次是 Replace 落空）。
+- **新纪律（从这一轮起强制）**：**每次修改后、构建前，必须 `Select-String` 确认标记存在**；
+  没有标记就**不构建、不测量**。
+  ```powershell
+  if (-not (Select-String -Path $file -Pattern 'LABELPROBE' -Quiet)) { throw 'edit did not land' }
+  ```
+- **状态**：回退后构建干净、22 用例全绿、工作树 0 改动、探针文件已删。
+- **卷标下一刀**：用 `edit` 工具（而不是 `.Replace`）落地，写完立刻 `Select-String` 验证，
+  再构建——本轮之前那次 515 就是用 `edit` 打出来的，说明**工具可靠、方法差别在于是否验证**。
