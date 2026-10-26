@@ -738,6 +738,26 @@ set_tests_properties(integration.m5.cli_e2e PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- M5 power-cut acceptance (T1-09) -----------------------------------------
+# Two guest-side halves with a host-side power cut between them, because neither half
+# can do the other's job: the guest cannot cut its own power, and the host cannot see
+# what the service did after it booted.  `tools/m5vm/Test-M5PowerLoss.ps1` drives the
+# three phases.  Both cases are guest-only and guarded like the e2e above.
+add_test(
+    NAME integration.m5.powerloss_prepare
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-powerloss-prepare.ps1")
+set_tests_properties(integration.m5.powerloss_prepare PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 900)
+add_test(
+    NAME integration.m5.powerloss_verify
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-powerloss-verify.ps1")
+set_tests_properties(integration.m5.powerloss_verify PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1200)
+
 # ---- M5 worker sweep policy (T1-03) -----------------------------------------
 # The startup sweep's *decisions*, with no job object and no processes in them:
 # which orphans are ours, which may be terminated, and which leftovers may be

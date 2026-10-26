@@ -574,6 +574,36 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
 
 ---
 
+### 3.18 2026-10-26 深夜：T1-09 进行中（开机自动恢复已完成，断电 harness 待打通）
+
+**已完成并提交（`51e164d`）**：开机自动恢复的消费者。
+- `ServiceCore::admit_auto_starts()`：启动时把"durable 状态 = running 且 `auto_start` = true"的
+  profile 逐个重新**准入** `disk start`（准入而非执行，执行仍归调度器）。
+- `ServiceHost::start()` 在 recovery → sweep → scheduler 之后、公开面打开之前调用它；失败即
+  启动失败（与 recovery/sweep 同规），条数进 `ServiceHostDiagnostics::auto_started_operations`。
+- 没有这段，断电后字节会被恢复、盘却以 stopped 回来等人手启——"最多丢一个间隔"只兑现一半。
+- 两个模型用例：会回来的那张盘被且仅被准入一次（`disk.start`）；`auto_start=false` 的盘不碰。
+- 顺带两处 fixture 修正（都由"拒绝要能定位"逼出来）：`resolve` 现在和产品一样接受 uuid；
+  失败日志带 `step=`。
+
+**已写好、未打通**：断电验收 harness
+- `tests/e2e/test-m5-powerloss-prepare.ps1`（装 auto-start 服务、建 30 s 间隔的盘、置 auto_start、
+  写标记、等一次自动提交、把"必须活下来的事实"写进 `C:\m5\powerloss-state.txt`）
+- `tests/e2e/test-m5-powerloss-verify.ps1`（只看不动：服务是否自己起来、盘是否自己回来、
+  generation ≥ 提交值、标记字节一致、worker 恰好一个）
+- `tools/m5vm/Test-M5PowerLoss.ps1`（host 侧三段：prepare → `vmrun stop hard` → 开机 → verify；
+  判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
+- CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
+
+**卡在哪（下一步第一件事）**：`prepare` 在 `sc start` 之后**约 1 秒**就结束，stdout 断在服务
+`STATE: START_PENDING`，stderr 只有一串空白（疑似 UTF-16 被当 ANSI 读）。没有 `Fail:` 行，
+说明是**异常**而不是我的失败分支。下一步：给 prepare/verify 的整个主体包 try/catch，把
+`$_` 与 `$ScriptStackTrace` 打到 **stdout** 再 exit 1 —— 客机往返一次两分钟，猜不起。
+
+**下一步**：T1-09 的断电验收本身。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
