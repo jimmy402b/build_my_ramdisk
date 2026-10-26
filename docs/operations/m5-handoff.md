@@ -2021,3 +2021,22 @@ PASS integration.m5.powerloss: the disk came back by itself after a hard power c
 3. 最后删掉打印，重跑 —— 三个测试（golden / decode-reencode / validation）应全绿；
 4. **注意**：这是"v1 记录不向后兼容"的决定——旧版本写下的 profile 将无法解码。
    产品未发布、profile 都是测试产物，可接受；但**必须写进 release manifest 的注意事项**。
+### 3.82 2026-10-27 10:00：黄金样本再生**改用文件重定向**（管道会截断长行）
+
+- 本轮拿到了新格式的十六进制（`…2400020101000000 01…`——tag 36、utf8、长度 1、哨兵 `0x01`），
+  但**两次都因为工具链细节没落成**：
+  1. 用 `& exe 2>&1 | Out-String` 取 stderr 时，**长行被截断**（只拿到 63 个字符，实际约 374），
+     于是写进黄金的是**前缀**——必然是错的；
+  2. 环境脚本名我连续几次打成 `EnterMsvcEnvironment.ps1`（正确是 `Enter-MsvcEn**v**ironment.ps1`），
+     没有 MSVC 环境时编译连 `test_framework.h` 都找不到，而我误以为是"文件被删了"。
+- 两次都已回退：构建干净、22 个编解码用例全绿、工作树 0 改动。
+- **下次的正确做法（写死）**：
+  ```powershell
+  # 用文件重定向，不要经过管道
+  & .\out\build\msvc\tests\Release\myrd_m4_profile_codec_tests.exe 2> golden.txt
+  # 再从文件里取完整十六进制
+  $hex = [regex]::Match((Get-Content golden.txt -Raw), 'golden hex ([0-9a-f]+)').Groups[1].Value
+  ```
+  然后按 64 字符分行替换 `from_hex(...)`，删打印、重跑三个用例。
+- **另一条**：临时把打印塞进测试时，**不要**顺手 `#include "tests/support/test_framework.h"`——
+  该文件里原本就是 `#include "test_framework.h"`，多写一行会引入**不存在的路径**，报 C1083。
