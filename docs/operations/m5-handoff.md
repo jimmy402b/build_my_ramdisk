@@ -1403,3 +1403,15 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 ```
 **下一步**：把这段做成 `tools/m5vm/Reset-M5Guest.ps1`（或 `Invoke-M5Vm.ps1 -Reset`），
 **每次跑 e2e 组之前自动执行**，然后再跑 `^integration\.m5\.`。这样 integration 组的读数才有意义。
+### 3.49 2026-10-27 06:00：`Reset-M5Guest.ps1` 落地，客机已干净
+
+- `tools/m5vm/Reset-M5Guest.ps1`：停已知服务 → 杀 worker/service 进程 → **若还有 worker 存活或记录目录非空就
+  `exit 1` 拒绝**（"拒绝"比"继续测"重要：脏机上的读数测的是机器）→ 清 `profiles`/`operations` →
+  报告挂载卷（保留 `logs`，因为下一次失败的诊断要对着它读）。
+- **实测**：重启前它拒绝了（`1 worker(s) survived`——那个 03:54 的 worker 卡在驱动调用里，
+  只能重启才能消失）；重启后一次通过：`profiles 0`、`operations 0`、`mounted volumes: C:`、`RESET`。
+- **用法**：客机上
+  `powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1`
+  （脚本已 scp 到 `C:\m5\`；仓库里是 `tools/m5vm/Reset-M5Guest.ps1`）。
+- **下一步**：干净机上跑 `^integration\.m5\.`（5 例，预期 4 过 + `powerloss_verify` 单独必失），
+  拿到第一个可信的 integration 读数；然后依次 `^integration\.m3\.`、`^integration\.m4\.`、其余。
