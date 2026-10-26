@@ -1,9 +1,12 @@
-#include "src/service/service_system.h"
+﻿#include "src/service/service_system.h"
 #include "src/service/service_host.h"
 
 #include <windows.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 
 namespace myrd::service {
 
@@ -64,6 +67,45 @@ void StderrServiceLogger::write(
                      event.message.c_str());
     }
     std::fflush(stderr);
+
+    // **And into a file, because stderr is discarded for an installed service.**
+    //
+    // The SCM starts the process with no console and its stderr goes nowhere anyone can
+    // read, so every one of these lines was lost in exactly the configuration a user
+    // runs.  Measured cost: after a hard power cut the service came back by itself and
+    // the disk's start did not attach, and the only surviving statement was
+    // `PersistenceBlocked` in `disk list` -- the reason had been written and thrown away.
+    //
+    // `%ProgramData%\MyRamDisk\logs\service.log`, appended, best effort.  A service that
+    // cannot open its own log still serves: the failure is silent here and visible in the
+    // event itself, which is the trade this interface already makes.
+    static std::mutex log_mutex;
+    static std::ofstream log_file;
+    static bool log_opened = false;
+    std::scoped_lock guard(log_mutex);
+    if (!log_opened) {
+        log_opened = true;
+        wchar_t program_data[MAX_PATH]{};
+        const DWORD length = GetEnvironmentVariableW(
+            L"ProgramData", program_data, static_cast<DWORD>(std::size(program_data)));
+        if (length != 0 && length < std::size(program_data)) {
+            std::error_code ignored;
+            const auto directory =
+                std::filesystem::path(program_data) / L"MyRamDisk" / L"logs";
+            std::filesystem::create_directories(directory, ignored);
+            log_file.open(directory / L"service.log",
+                          std::ios::out | std::ios::app);
+        }
+    }
+    if (!log_file.is_open()) return;
+    if (event.message.empty()) {
+        log_file << "myrd-service: kind=" << kind << " command=" << event.command
+                 << " phase=" << event.phase << '\n';
+    } else {
+        log_file << "myrd-service: kind=" << kind << " command=" << event.command
+                 << " phase=" << event.phase << " message=" << event.message << '\n';
+    }
+    log_file.flush();
 }
 
 } // namespace myrd::service
