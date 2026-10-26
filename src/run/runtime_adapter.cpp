@@ -468,7 +468,16 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
     // a stronger identifier than a drive number, which Windows reuses after a disk is removed.  The
     // extent and ownership clauses are unchanged, so a volume that is not ours still fails -- it simply
     // fails on the identity that cannot collide instead of the one that can.
-    if (!actual.operation_owned ||
+    // **Ownership only means something for a volume this operation created.**
+    //
+    // `enumerate_native_volumes` sets `operation_owned = false` on every volume it
+    // observes (`windows_volume.cpp:490`); only the provisioning path sets it true.
+    // Requiring it here therefore made every *recovery* fail, no matter how exact
+    // the identity was -- measured as `owned=0` with the volume GUID, disk number
+    // and extents all equal.  An attach-only runtime adopted a volume it cannot
+    // own by definition; the durable GUID is the identity that matters there.
+    const bool ownership_required = !config_.attach_only;
+    if ((ownership_required && !actual.operation_owned) ||
         actual.extents.size() != 1 ||
         extent_bytes == 0 || extent_bytes > expected_bytes ||
         expected_bytes - extent_bytes > kPartitionOverheadAllowance ||
