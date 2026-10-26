@@ -1575,3 +1575,20 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 - `^unit\.` **96/96**（227 s）
 - `^model\.|^m5\.` **12/13**（唯一红为已知批内间发 `m5.production_execution_backend`）
 - `integration.m5.cli_e2e` **连续两次 PASS（72 s / 85 s）**
+### 3.58 2026-10-27 07:25：`model/m5` 组 **13/13**（含此前间发的那一例）
+
+- 请求 `b90d1a38…`，**114 s，13 of 13 passed**——`m5.production_execution_backend` 这次也过了
+  （它是已知批内间发项，单独跑通过；本轮在批内也通过）。
+- 结合 3.57：**候选盘枚举加界之后，客机测量链路稳定了**（`cli_e2e` 连续两次通过、`model/m5` 全绿、
+  `unit` 96/96 早前已测）。
+
+**当前三段客机基线（Release，干净启动）**：
+
+| 组 | 用例 | 用时 | 结果 |
+|---|---|---|---|
+| `^unit\.` | 96 | 227 s | **96/96** |
+| `^model\.|^m5\.` | 13 | 114 s | **13/13** |
+| `integration.m5.cli_e2e` | 1 | 72 s / 85 s | **两次连续 PASS（不重启）** |
+
+这三行就是 T4-04 "M4 回归"比较用的基线；`integration` 其余 4 例仍待逐例跑（`powerloss_verify` 单独必失，
+需主机断电，属预期）。
