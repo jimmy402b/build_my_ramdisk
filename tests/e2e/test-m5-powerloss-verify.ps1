@@ -138,7 +138,10 @@ $forgetState = Wait-ForTerminal $forgetId 300
 if ($forgetState -ne 'succeeded') { Fail "the forget ended $forgetState" }
 Remove-ScService
 Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath  -Recurse -Force -ErrorAction SilentlyContinue
+# The bundle's path was dropped from the state file's reader; the disk's forget already
+# removed what belongs to the product, and deleting a path read out of a file is not worth
+# a line whose argument can go missing.
+
 
 Write-Host 'PASS T1-09: the disk came back by itself at the committed generation'
 exit 0

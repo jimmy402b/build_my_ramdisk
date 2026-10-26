@@ -1,872 +1,872 @@
-# M5 交接：从这里开始
+﻿# M5 浜ゆ帴锛氫粠杩欓噷寮€濮?
 
-**最后更新：2026-10-26**（状态有变化先改这里，再改 tasklist）
+**鏈€鍚庢洿鏂帮細2026-10-26**锛堢姸鎬佹湁鍙樺寲鍏堟敼杩欓噷锛屽啀鏀?tasklist锛?
 
 ---
 
-## 1. 一分钟现状
+## 1. 涓€鍒嗛挓鐜扮姸
 
-| 项 | 值 |
+| 椤?| 鍊?|
 |---|---|
-| **唯一活动线** | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`（HEAD 以 `git log` 为准，本文不钉 SHA） |
-| 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
-| 单盘（G2/G3） | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**；**T1-05 可判 PASSED**（`cli_e2e -Repeat 20 → 20/20`，本文 §3.14） |
-| 多盘（G4） | T2-01…T2-03 **整章延后**（2026-10-17 用户裁定） |
-| 产品面客机读数 | 完整 154 条 → **151/154**；两个是客机无 Visual Studio 的 structural，一个是批内间发（单跑 3/3 通过）。见 §3.14 ⑥ |
-| **下一件事** | T1-06（中断提交判定可达）。stop/restart 的收尾已在 §3.14 完成 |
+| **鍞竴娲诲姩绾?* | 鍒嗘敮 `feature/m5-lifecycle`锛屽伐浣滄爲 `.worktrees/m5-lifecycle`锛圚EAD 浠?`git log` 涓哄噯锛屾湰鏂囦笉閽?SHA锛?|
+| 鍩虹嚎 | `main` = `cb3df08`锛堝共鍑€ M4锛夛紝**淇濇寔涓嶅姩** |
+| 鍗曠洏锛圙2/G3锛?| T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**锛?*T1-05 鍙垽 PASSED**锛坄cli_e2e -Repeat 20 鈫?20/20`锛屾湰鏂?搂3.14锛?|
+| 澶氱洏锛圙4锛?| T2-01鈥2-03 **鏁寸珷寤跺悗**锛?026-10-17 鐢ㄦ埛瑁佸畾锛?|
+| 浜у搧闈㈠鏈鸿鏁?| 瀹屾暣 154 鏉?鈫?**151/154**锛涗袱涓槸瀹㈡満鏃?Visual Studio 鐨?structural锛屼竴涓槸鎵瑰唴闂村彂锛堝崟璺?3/3 閫氳繃锛夈€傝 搂3.14 鈶?|
+| **涓嬩竴浠朵簨** | T1-06锛堜腑鏂彁浜ゅ垽瀹氬彲杈撅級銆俿top/restart 鐨勬敹灏惧凡鍦?搂3.14 瀹屾垚 |
 
-**顺序**：T1-05 收尾（**已完成，§3.14**）→ T1-06 → T1-07 → T1-08 → T1-09 → T1-10 → T3（GUI）→ T4（产品化）。
-T2 在 G4 恢复前不动。
+**椤哄簭**锛歍1-05 鏀跺熬锛?*宸插畬鎴愶紝搂3.14**锛夆啋 T1-06 鈫?T1-07 鈫?T1-08 鈫?T1-09 鈫?T1-10 鈫?T3锛圙UI锛夆啋 T4锛堜骇鍝佸寲锛夈€?
+T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
 
 ---
 
-## 2. 文档地图（按"你想知道什么"）
+## 2. 鏂囨。鍦板浘锛堟寜"浣犳兂鐭ラ亾浠€涔?锛?
 
-| 想知道 | 读这份 |
+| 鎯崇煡閬?| 璇昏繖浠?|
 |---|---|
-| **现在在哪、下一步做什么** | **本文** |
-| 每个增量的状态 | `docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md`（**唯一状态来源**） |
-| 顺序、依赖、验收口径、风险、何时停下问 | `docs/superpowers/plans/2026-10-15-m5-master-plan.md` |
-| 设计与不变量 | `docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md` |
-| 某个增量凭什么算通过 | `docs/validation/`（按增量名对号） |
-| **已经付过学费的坑** | `docs/operations/m5-lessons.md`（**动手前扫一遍**） |
-| 2026-10-26 那次评审的结论与修法 | `docs/operations/m5-review-2026-10-26.md`（时点快照，写时固定） |
-| VM 回路的三条通道与一次性配置 | `docs/operations/m5-vm-harness.md` |
-| 引擎层（M3/M4）怎么跑 | `docs/operations/m3-persistence.md`、`docs/testing/m3-e2e.md` |
+| **鐜板湪鍦ㄥ摢銆佷笅涓€姝ュ仛浠€涔?* | **鏈枃** |
+| 姣忎釜澧為噺鐨勭姸鎬?| `docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md`锛?*鍞竴鐘舵€佹潵婧?*锛?|
+| 椤哄簭銆佷緷璧栥€侀獙鏀跺彛寰勩€侀闄┿€佷綍鏃跺仠涓嬮棶 | `docs/superpowers/plans/2026-10-15-m5-master-plan.md` |
+| 璁捐涓庝笉鍙橀噺 | `docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md` |
+| 鏌愪釜澧為噺鍑粈涔堢畻閫氳繃 | `docs/validation/`锛堟寜澧為噺鍚嶅鍙凤級 |
+| **宸茬粡浠樿繃瀛﹁垂鐨勫潙** | `docs/operations/m5-lessons.md`锛?*鍔ㄦ墜鍓嶆壂涓€閬?*锛?|
+| 2026-10-26 閭ｆ璇勫鐨勭粨璁轰笌淇硶 | `docs/operations/m5-review-2026-10-26.md`锛堟椂鐐瑰揩鐓э紝鍐欐椂鍥哄畾锛?|
+| VM 鍥炶矾鐨勪笁鏉￠€氶亾涓庝竴娆℃€ч厤缃?| `docs/operations/m5-vm-harness.md` |
+| 寮曟搸灞傦紙M3/M4锛夋€庝箞璺?| `docs/operations/m3-persistence.md`銆乣docs/testing/m3-e2e.md` |
 
-**文档纪律**：状态只写在 tasklist；本文写"下一步"；master-plan 不再写"当前位置"。
-任何一处与前两处冲突，以 tasklist → 本文 → master-plan 的顺序取舍。
+**鏂囨。绾緥**锛氱姸鎬佸彧鍐欏湪 tasklist锛涙湰鏂囧啓"涓嬩竴姝?锛沵aster-plan 涓嶅啀鍐?褰撳墠浣嶇疆"銆?
+浠讳綍涓€澶勪笌鍓嶄袱澶勫啿绐侊紝浠?tasklist 鈫?鏈枃 鈫?master-plan 鐨勯『搴忓彇鑸嶃€?
 
 ---
 
-## 3. 当前增量 T1-05：`stop` 已修，验收被 `create` 的新失败挡住
+## 3. 褰撳墠澧為噺 T1-05锛歚stop` 宸蹭慨锛岄獙鏀惰 `create` 鐨勬柊澶辫触鎸′綇
 
-### 3.1 已经通的那一段（客机读数，2026-10-23，请求 `32d4ba1c71b54d72a87c4d4e6cd33203`）
+### 3.1 宸茬粡閫氱殑閭ｄ竴娈碉紙瀹㈡満璇绘暟锛?026-10-23锛岃姹?`32d4ba1c71b54d72a87c4d4e6cd33203`锛?
 
 ```text
-disk.create:     queued → running → … → publish-ready → assign-mount → readiness-io
-disk.checkpoint: queued → running → succeeded (terminal)
+disk.create:     queued 鈫?running 鈫?鈥?鈫?publish-ready 鈫?assign-mount 鈫?readiness-io
+disk.checkpoint: queued 鈫?running 鈫?succeeded (terminal)
 ```
 
-`create` 全链、`list`、`show`、读写、`checkpoint` 都通过了——**这些此前从未跑通过**。
-详细过程与六个被推翻的假设见 `docs/validation/m5-t1-05-cli.md` §8–§10。
+`create` 鍏ㄩ摼銆乣list`銆乣show`銆佽鍐欍€乣checkpoint` 閮介€氳繃浜嗏€斺€?*杩欎簺姝ゅ墠浠庢湭璺戦€氳繃**銆?
+璇︾粏杩囩▼涓庡叚涓鎺ㄧ炕鐨勫亣璁捐 `docs/validation/m5-t1-05-cli.md` 搂8鈥撀?0銆?
 
-### 3.2 原来是这里卡住（2026-10-26 已修，`d5b9ad7`）
+### 3.2 鍘熸潵鏄繖閲屽崱浣忥紙2026-10-26 宸蹭慨锛宍d5b9ad7`锛?
 
 ```text
 execute_operation failed: code=22022 step=service_core.checkpoint_epoch
   detail=The final checkpoint state is invalid
 ```
 
-位置：`src/management/service_core.cpp:5753`，在 checkpoint 确认回调里
-用 `complete_command(pending_plan, succeeded_clean|succeeded_dirty)` 去**完成整个 stop 计划**。
+浣嶇疆锛歚src/management/service_core.cpp:5753`锛屽湪 checkpoint 纭鍥炶皟閲?
+鐢?`complete_command(pending_plan, succeeded_clean|succeeded_dirty)` 鍘?*瀹屾垚鏁翠釜 stop 璁″垝**銆?
 
-读代码确认的两个事实：
+璇讳唬鐮佺‘璁ょ殑涓や釜浜嬪疄锛?
 
-1. **`stop` 不接受 `succeeded_dirty`。**
-   `src/management/state_machine.cpp:740` 的 `stop` 分支只认
+1. **`stop` 涓嶆帴鍙?`succeeded_dirty`銆?*
+   `src/management/state_machine.cpp:740` 鐨?`stop` 鍒嗘敮鍙
    `succeeded_clean` / `transient_failure` / `persistence_blocked` /
-   `commit_indeterminate` / `committed_needs_reconciliation_*`；
-   `succeeded_dirty` 落到 `break` ⇒ `invalid_completion` ⇒ 就是上面这条 22022。
-2. **这一步本来也不该完成整个命令。**
-   stop 计划在 checkpoint 之后还有 `remove_mount` / `remove_exact_device` /
-   `stop_runtime_and_release_lock`；终点在 `finalize_operation`（`service_core.cpp:6795`）。
+   `commit_indeterminate` / `committed_needs_reconciliation_*`锛?
+   `succeeded_dirty` 钀藉埌 `break` 鈬?`invalid_completion` 鈬?灏辨槸涓婇潰杩欐潯 22022銆?
+2. **杩欎竴姝ユ湰鏉ヤ篃涓嶈瀹屾垚鏁翠釜鍛戒护銆?*
+   stop 璁″垝鍦?checkpoint 涔嬪悗杩樻湁 `remove_mount` / `remove_exact_device` /
+   `stop_runtime_and_release_lock`锛涚粓鐐瑰湪 `finalize_operation`锛坄service_core.cpp:6795`锛夈€?
 
-### 3.3 下一步（按顺序，不要跳）
+### 3.3 涓嬩竴姝ワ紙鎸夐『搴忥紝涓嶈璺筹級
 
-1. **根因已查明（2026-10-26）：dirty epoch 是一条两端都空着的管道，不是判据写错。**
-   - worker 侧的 `cut_dirty_epoch` 取的是 `maintenance_stats().generation`
-     （backing generation，`m5_worker_runtime.cpp:519`）；
-   - service 侧的 `live_dirty_epoch` 是**写死的 0**（`service_worker_control.cpp` 的
-     `publish_checkpoint_epoch`）；
-   - `WorkerRuntimeStatus.dirty_epoch` 全仓**没有生产者**，恒为 0。
-   ⇒ `clean = (0 == generation)`：generation 0 时成立（create 的第一处 checkpoint），
-   之后永不成立（stop）。**这是确定性的，不是间发。**
-   完整证据链与五步修法见 [`m5-review-2026-10-26.md`](m5-review-2026-10-26.md) §1。
-   **不要再往"比较顺序"上调参**——`dbb25a3` 已经证明那条路只能让 create 看起来好转。
-2. **`normal_stop` 时不要在这一步 `complete_command`**：只发布"checkpoint 已确认"的
-   durable 状态（`phase = stable`、`disposition = committed`、
-   `confirmed_generation`、`current_dirty_epoch`），让 remove 系列继续，
-   由 `finalize_operation` 用 stop 的真实 outcome 收尾。
-3. **不要把"接受 dirty"当成修法（2026-10-26 更正）**：写冻结排在 checkpoint 之前，
-   "提交后还有脏块"意味着**冻结漏了写**——那是缺陷，报成功等于把数据丢失伪装成正常收尾。
-   已按此实现并加模型用例：clean 成功、dirty 不 applied。
-4. **验收**（客机）：`disk stop` → 盘符消失 → 重启服务 → `disk start` 恢复到最后
-   generation → `disk forget`。修复类结论**至少 `-Repeat 20`**。
+1. **鏍瑰洜宸叉煡鏄庯紙2026-10-26锛夛細dirty epoch 鏄竴鏉′袱绔兘绌虹潃鐨勭閬擄紝涓嶆槸鍒ゆ嵁鍐欓敊銆?*
+   - worker 渚х殑 `cut_dirty_epoch` 鍙栫殑鏄?`maintenance_stats().generation`
+     锛坆acking generation锛宍m5_worker_runtime.cpp:519`锛夛紱
+   - service 渚х殑 `live_dirty_epoch` 鏄?*鍐欐鐨?0**锛坄service_worker_control.cpp` 鐨?
+     `publish_checkpoint_epoch`锛夛紱
+   - `WorkerRuntimeStatus.dirty_epoch` 鍏ㄤ粨**娌℃湁鐢熶骇鑰?*锛屾亽涓?0銆?
+   鈬?`clean = (0 == generation)`锛歡eneration 0 鏃舵垚绔嬶紙create 鐨勭涓€澶?checkpoint锛夛紝
+   涔嬪悗姘镐笉鎴愮珛锛坰top锛夈€?*杩欐槸纭畾鎬х殑锛屼笉鏄棿鍙戙€?*
+   瀹屾暣璇佹嵁閾句笌浜旀淇硶瑙?[`m5-review-2026-10-26.md`](m5-review-2026-10-26.md) 搂1銆?
+   **涓嶈鍐嶅線"姣旇緝椤哄簭"涓婅皟鍙?*鈥斺€擿dbb25a3` 宸茬粡璇佹槑閭ｆ潯璺彧鑳借 create 鐪嬭捣鏉ュソ杞€?
+2. **`normal_stop` 鏃朵笉瑕佸湪杩欎竴姝?`complete_command`**锛氬彧鍙戝竷"checkpoint 宸茬‘璁?鐨?
+   durable 鐘舵€侊紙`phase = stable`銆乣disposition = committed`銆?
+   `confirmed_generation`銆乣current_dirty_epoch`锛夛紝璁?remove 绯诲垪缁х画锛?
+   鐢?`finalize_operation` 鐢?stop 鐨勭湡瀹?outcome 鏀跺熬銆?
+3. **涓嶈鎶?鎺ュ彈 dirty"褰撴垚淇硶锛?026-10-26 鏇存锛?*锛氬啓鍐荤粨鎺掑湪 checkpoint 涔嬪墠锛?
+   "鎻愪氦鍚庤繕鏈夎剰鍧?鎰忓懗鐫€**鍐荤粨婕忎簡鍐?*鈥斺€旈偅鏄己闄凤紝鎶ユ垚鍔熺瓑浜庢妸鏁版嵁涓㈠け浼鎴愭甯告敹灏俱€?
+   宸叉寜姝ゅ疄鐜板苟鍔犳ā鍨嬬敤渚嬶細clean 鎴愬姛銆乨irty 涓?applied銆?
+4. **楠屾敹**锛堝鏈猴級锛歚disk stop` 鈫?鐩樼娑堝け 鈫?閲嶅惎鏈嶅姟 鈫?`disk start` 鎭㈠鍒版渶鍚?
+   generation 鈫?`disk forget`銆備慨澶嶇被缁撹**鑷冲皯 `-Repeat 20`**銆?
 
-### 3.4 顺带记下的两个可用性缺口（不阻塞 T1-05）
+### 3.4 椤哄甫璁颁笅鐨勪袱涓彲鐢ㄦ€х己鍙ｏ紙涓嶉樆濉?T1-05锛?
 
-- `disk show/stop/checkpoint` 的 `<disk>` 参数只认 display name 或 uuid，**不认盘符**，
-  而用户会自然想用盘符（本轮排查就撞上过 `profile_not_found`）；
-- 失败原因的可达性已补（`m5-t1-05-cli.md` §5.2），但 `OperationRecord` 仍只存标记串。
+- `disk show/stop/checkpoint` 鐨?`<disk>` 鍙傛暟鍙 display name 鎴?uuid锛?*涓嶈鐩樼**锛?
+  鑰岀敤鎴蜂細鑷劧鎯崇敤鐩樼锛堟湰杞帓鏌ュ氨鎾炰笂杩?`profile_not_found`锛夛紱
+- 澶辫触鍘熷洜鐨勫彲杈炬€у凡琛ワ紙`m5-t1-05-cli.md` 搂5.2锛夛紝浣?`OperationRecord` 浠嶅彧瀛樻爣璁颁覆銆?
 
-### 3.5 2026-10-26 晚：create 通了，stop 也通了；现在挡在 `forget`
+### 3.5 2026-10-26 鏅氾細create 閫氫簡锛宻top 涔熼€氫簡锛涚幇鍦ㄦ尅鍦?`forget`
 
-**create 的注册失败已修（`2e8cf32`）**：`ensure_profile_unique` 会打开**每一个其它 profile** 的
-bundle 去比 file identity，并把打开失败原样上抛。客机上有一个 01:59 留下的 profile
-（`c084bc42`，bundle 已被上一轮 teardown 删掉），于是**之后每一次 create 都失败**，
-而错误里报的是**新 bundle** 的路径。四次运行的失败路径完全相同（`b6707f16…`），
-而新 bundle 当时确实存在、用户进程用同样的 flags 能打开——这就是判据。
-现在改成：打不开的其它 bundle 不可能等于正在注册的那个（identity 相等要两边都打开），
-前四项检查（名字 / image / 路径 / 挂载点）已经覆盖真实冲突，所以 `continue`。
+**create 鐨勬敞鍐屽け璐ュ凡淇紙`2e8cf32`锛?*锛歚ensure_profile_unique` 浼氭墦寮€**姣忎竴涓叾瀹?profile** 鐨?
+bundle 鍘绘瘮 file identity锛屽苟鎶婃墦寮€澶辫触鍘熸牱涓婃姏銆傚鏈轰笂鏈変竴涓?01:59 鐣欎笅鐨?profile
+锛坄c084bc42`锛宐undle 宸茶涓婁竴杞?teardown 鍒犳帀锛夛紝浜庢槸**涔嬪悗姣忎竴娆?create 閮藉け璐?*锛?
+鑰岄敊璇噷鎶ョ殑鏄?*鏂?bundle** 鐨勮矾寰勩€傚洓娆¤繍琛岀殑澶辫触璺緞瀹屽叏鐩稿悓锛坄b6707f16鈥锛夛紝
+鑰屾柊 bundle 褰撴椂纭疄瀛樺湪銆佺敤鎴疯繘绋嬬敤鍚屾牱鐨?flags 鑳芥墦寮€鈥斺€旇繖灏辨槸鍒ゆ嵁銆?
+鐜板湪鏀规垚锛氭墦涓嶅紑鐨勫叾瀹?bundle 涓嶅彲鑳界瓑浜庢鍦ㄦ敞鍐岀殑閭ｄ釜锛坕dentity 鐩哥瓑瑕佷袱杈归兘鎵撳紑锛夛紝
+鍓嶅洓椤规鏌ワ紙鍚嶅瓧 / image / 璺緞 / 鎸傝浇鐐癸級宸茬粡瑕嗙洊鐪熷疄鍐茬獊锛屾墍浠?`continue`銆?
 
-**读到的链路（同一次运行，`disk.list` 停后仍可见）**：
+**璇诲埌鐨勯摼璺紙鍚屼竴娆¤繍琛岋紝`disk.list` 鍋滃悗浠嶅彲瑙侊級**锛?
 
 ```text
-create → list → show → 读写 73 字节 → checkpoint succeeded → stop succeeded
-停后：V: ready stopped/configured runtime=Stopped persistence=Clean generation=4
+create 鈫?list 鈫?show 鈫?璇诲啓 73 瀛楄妭 鈫?checkpoint succeeded 鈫?stop succeeded
+鍋滃悗锛歏: ready stopped/configured runtime=Stopped persistence=Clean generation=4
 ```
 
-**现在挡在 `disk forget`**：
+**鐜板湪鎸″湪 `disk forget`**锛?
 
 ```text
 kind=7 command=disk.forget phase=terminal
   message=terminal failure without a worker-action error; marker=unsafe
 ```
 
-`ServiceWorkerControl` **没有实现** `prove_forget_safe`，走的是 `IWorkerControl` 的默认实现
-（`service_core.cpp:1390`，直接返回 "The worker control does not expose forget safety proof"）。
-而 worker 协议里**没有任何 forget 相关的命令**（`m5_worker_protocol.h` 全文无 forget）。
-⇒ **`disk forget` 是未实现，不是回归**；fail-closed 的语义让它看起来"安全地拒绝"，
-所以一直没被发现。
+`ServiceWorkerControl` **娌℃湁瀹炵幇** `prove_forget_safe`锛岃蛋鐨勬槸 `IWorkerControl` 鐨勯粯璁ゅ疄鐜?
+锛坄service_core.cpp:1390`锛岀洿鎺ヨ繑鍥?"The worker control does not expose forget safety proof"锛夈€?
+鑰?worker 鍗忚閲?*娌℃湁浠讳綍 forget 鐩稿叧鐨勫懡浠?*锛坄m5_worker_protocol.h` 鍏ㄦ枃鏃?forget锛夈€?
+鈬?**`disk forget` 鏄湭瀹炵幇锛屼笉鏄洖褰?*锛沠ail-closed 鐨勮涔夎瀹冪湅璧锋潵"瀹夊叏鍦版嫆缁?锛?
+鎵€浠ヤ竴鐩存病琚彂鐜般€?
 
-**为什么不能简单在服务里补**：`myrd_management` 只链 profile/product_ipc/contracts/
-worker_protocol/common（`src/CMakeLists.txt:372`），拿不到 writer lock（persistence）和
-AIM 设备（driver）。proof 的五项里有两项必须由 worker 来答 ⇒ 要么加一个 worker 命令，
-要么先做 T1-06 的只读检查 worker。
+**涓轰粈涔堜笉鑳界畝鍗曞湪鏈嶅姟閲岃ˉ**锛歚myrd_management` 鍙摼 profile/product_ipc/contracts/
+worker_protocol/common锛坄src/CMakeLists.txt:372`锛夛紝鎷夸笉鍒?writer lock锛坧ersistence锛夊拰
+AIM 璁惧锛坉river锛夈€俻roof 鐨勪簲椤归噷鏈変袱椤瑰繀椤荤敱 worker 鏉ョ瓟 鈬?瑕佷箞鍔犱竴涓?worker 鍛戒护锛?
+瑕佷箞鍏堝仛 T1-06 鐨勫彧璇绘鏌?worker銆?
 
-**stop 的重复读数（2026-10-26 晚）**：`m5.production_execution_backend`（含 stop 路径）`-Repeat 20` → **20/20 通过**，请求 `a21cf2191a9d4b10bab4727e43a7737a`。这是 stop 修复的稳定证据；`cli_e2e` 整体仍卡在 forget。
+**stop 鐨勯噸澶嶈鏁帮紙2026-10-26 鏅氾級**锛歚m5.production_execution_backend`锛堝惈 stop 璺緞锛塦-Repeat 20` 鈫?**20/20 閫氳繃**锛岃姹?`a21cf2191a9d4b10bab4727e43a7737a`銆傝繖鏄?stop 淇鐨勭ǔ瀹氳瘉鎹紱`cli_e2e` 鏁翠綋浠嶅崱鍦?forget銆?
 
-**下一步（按顺序）**：① 给 worker 协议加一个只读的 forget 证明命令（bundle 存在 + file identity、
-writer lock 可取、匹配设备不存在）；② 服务侧实现 `prove_forget_safe` 并接到 tombstone 校验；
-③ 客机跑 `-Repeat 20`。
+**涓嬩竴姝ワ紙鎸夐『搴忥級**锛氣憼 缁?worker 鍗忚鍔犱竴涓彧璇荤殑 forget 璇佹槑鍛戒护锛坆undle 瀛樺湪 + file identity銆?
+writer lock 鍙彇銆佸尮閰嶈澶囦笉瀛樺湪锛夛紱鈶?鏈嶅姟渚у疄鐜?`prove_forget_safe` 骞舵帴鍒?tombstone 鏍￠獙锛?
+鈶?瀹㈡満璺?`-Repeat 20`銆?
 ---
 
-### 3.6 2026-10-26 晚：forget 通了，现在挡在"重启"
+### 3.6 2026-10-26 鏅氾細forget 閫氫簡锛岀幇鍦ㄦ尅鍦?閲嶅惎"
 
-**forget 已实现（`c1ac06f`）**：worker 在 `inspect_bundle` 里证明"writer lock 可取 + 没有同尺寸
-代理设备"，服务侧 `prove_forget_safe` 用一次 inspection 拿这两项并等进程退出。
-客机读数：`disk.forget: succeeded (phase terminal)`。
+**forget 宸插疄鐜帮紙`c1ac06f`锛?*锛歸orker 鍦?`inspect_bundle` 閲岃瘉鏄?writer lock 鍙彇 + 娌℃湁鍚屽昂瀵?
+浠ｇ悊璁惧"锛屾湇鍔′晶 `prove_forget_safe` 鐢ㄤ竴娆?inspection 鎷胯繖涓ら」骞剁瓑杩涚▼閫€鍑恒€?
+瀹㈡満璇绘暟锛歚disk.forget: succeeded (phase terminal)`銆?
 
-**e2e 现在过了整条数据面**：create → list/show → 读写 → checkpoint → stop → forget 全通过，
-失败点移到 **installed service** 阶段：
+**e2e 鐜板湪杩囦簡鏁存潯鏁版嵁闈?*锛歝reate 鈫?list/show 鈫?璇诲啓 鈫?checkpoint 鈫?stop 鈫?forget 鍏ㄩ€氳繃锛?
+澶辫触鐐圭Щ鍒?**installed service** 闃舵锛?
 
 ```text
 installed service state: STOPPED   WIN32_EXIT_CODE 1066
-sc.exe stop MyRamDiskService failed (1062): 服务尚未启动
+sc.exe stop MyRamDiskService failed (1062): 鏈嶅姟灏氭湭鍚姩
 ```
 
-**根因（已复现）**：一次 forget 之后 `C:\ProgramData\MyRamDisk\profiles\<id>\` 留下**空目录**，
-`profiles\workers\<id>.workers` 也留着；**下一次服务启动直接失败**：
+**鏍瑰洜锛堝凡澶嶇幇锛?*锛氫竴娆?forget 涔嬪悗 `C:\ProgramData\MyRamDisk\profiles\<id>\` 鐣欎笅**绌虹洰褰?*锛?
+`profiles\workers\<id>.workers` 涔熺暀鐫€锛?*涓嬩竴娆℃湇鍔″惎鍔ㄧ洿鎺ュけ璐?*锛?
 
 ```text
 myrd-service: start failed: op=profile_registration.load
   msg=The requested profile is not registered native=0
 ```
 
-空目录 `list_profiles` 会跳过，所以嫌疑在 worker binding / 启动协调路径。
-**下一步**：① forget 连目录与 binding 一起清掉（治源头）；② 启动路径把"已 forget 的 profile"
-当作可回收残留而不是致命错误（崩溃中途也安全）；③ 然后跑 `cli_e2e -Repeat 20`。
+绌虹洰褰?`list_profiles` 浼氳烦杩囷紝鎵€浠ュ珜鐤戝湪 worker binding / 鍚姩鍗忚皟璺緞銆?
+**涓嬩竴姝?*锛氣憼 forget 杩炵洰褰曚笌 binding 涓€璧锋竻鎺夛紙娌绘簮澶达級锛涒憽 鍚姩璺緞鎶?宸?forget 鐨?profile"
+褰撲綔鍙洖鏀舵畫鐣欒€屼笉鏄嚧鍛介敊璇紙宕╂簝涓€斾篃瀹夊叏锛夛紱鈶?鐒跺悗璺?`cli_e2e -Repeat 20`銆?
 
 ---
 
 
-### 3.7 2026-10-26 晚：cli_e2e 首次整套通过；重复 20 次暴露"第 5 次开始卡在 reconciling"
+### 3.7 2026-10-26 鏅氾細cli_e2e 棣栨鏁村閫氳繃锛涢噸澶?20 娆℃毚闇?绗?5 娆″紑濮嬪崱鍦?reconciling"
 
-**单次通过（第一次）**：`integration.m5.cli_e2e` → **1 of 1 passed**，请求
-`25e8077d130d42fdbe8c12d8e6b40509`。覆盖 create → list/show → 读写 → checkpoint →
-stop → 注册仍在 → forget → installed service（SCM 安装/应答/停止/删除）。
+**鍗曟閫氳繃锛堢涓€娆★級**锛歚integration.m5.cli_e2e` 鈫?**1 of 1 passed**锛岃姹?
+`25e8077d130d42fdbe8c12d8e6b40509`銆傝鐩?create 鈫?list/show 鈫?璇诲啓 鈫?checkpoint 鈫?
+stop 鈫?娉ㄥ唽浠嶅湪 鈫?forget 鈫?installed service锛圫CM 瀹夎/搴旂瓟/鍋滄/鍒犻櫎锛夈€?
 
-**`-Repeat 20`：4/20**（请求 `8446da51fcaf43c0a36c0d0e240f73cf`）。前 4 次通过，
-从第 5 次起全部失败，失败读数一致：
+**`-Repeat 20`锛?/20**锛堣姹?`8446da51fcaf43c0a36c0d0e240f73cf`锛夈€傚墠 4 娆￠€氳繃锛?
+浠庣 5 娆¤捣鍏ㄩ儴澶辫触锛屽け璐ヨ鏁颁竴鑷达細
 
 ```text
 FAIL: the operation did not reach a terminal state within 300 s (last state: reconciling)
 WARNING: 1 worker process(es) survived the run
 ```
 
-即 **stop 进入 reconciling 后 300 s 没有出来**，并且留下一个 worker 进程；此后每次运行都被
-这个残留状态挡住。这是**累积型缺陷**，单次通过并不能代表稳定。
+鍗?**stop 杩涘叆 reconciling 鍚?300 s 娌℃湁鍑烘潵**锛屽苟涓旂暀涓嬩竴涓?worker 杩涚▼锛涙鍚庢瘡娆¤繍琛岄兘琚?
+杩欎釜娈嬬暀鐘舵€佹尅浣忋€傝繖鏄?*绱Н鍨嬬己闄?*锛屽崟娆￠€氳繃骞朵笉鑳戒唬琛ㄧǔ瀹氥€?
 
-**已经修掉的测试侧缺陷**（这些曾把产品缺陷伪装成测试失败，或反之）：
-1. 安装服务前未停前台实例（管道冲突，SCM 7024）；
-2. stop 用 `--wait`（走已知坏掉的 `operation wait`）；
-3. 用 `disk list` 里**第一个 UUID** 当作本轮 profile（在有残留时打错盘）。
+**宸茬粡淇帀鐨勬祴璇曚晶缂洪櫡**锛堣繖浜涙浘鎶婁骇鍝佺己闄蜂吉瑁呮垚娴嬭瘯澶辫触锛屾垨鍙嶄箣锛夛細
+1. 瀹夎鏈嶅姟鍓嶆湭鍋滃墠鍙板疄渚嬶紙绠￠亾鍐茬獊锛孲CM 7024锛夛紱
+2. stop 鐢?`--wait`锛堣蛋宸茬煡鍧忔帀鐨?`operation wait`锛夛紱
+3. 鐢?`disk list` 閲?*绗竴涓?UUID** 褰撲綔鏈疆 profile锛堝湪鏈夋畫鐣欐椂鎵撻敊鐩橈級銆?
 
-**已经修掉的产品缺陷**：孤儿 profile 拖死 create（`2e8cf32`）、启动期终态操作缺 profile 即致命
-（`6d70940`，按 profile 豁免）、forget 完成时拒绝"bundle 已不存在"（`c11f6d2`）、
-forget 本身未实现（`c1ac06f`）。
+**宸茬粡淇帀鐨勪骇鍝佺己闄?*锛氬鍎?profile 鎷栨 create锛坄2e8cf32`锛夈€佸惎鍔ㄦ湡缁堟€佹搷浣滅己 profile 鍗宠嚧鍛?
+锛坄6d70940`锛屾寜 profile 璞佸厤锛夈€乫orget 瀹屾垚鏃舵嫆缁?bundle 宸蹭笉瀛樺湪"锛坄c11f6d2`锛夈€?
+forget 鏈韩鏈疄鐜帮紙`c1ac06f`锛夈€?
 
-**下一步**：查第 5 次那份 `last-service.log`/`last-trace.log` 里 stop 为什么停在 reconciling、
-那个 worker 为什么没退（很可能是设备退役窗口内的阻塞，或 reconciliation 的判定条件永远不满足）。
-
----
-
-### 3.8 决定：stop 的"最终 checkpoint 为 dirty"要有界复检，不 park
-
-**读数**：`cli_e2e -Repeat 20` = **18/20**（请求 `98e28d87d1ff46ea9a8905aa755cc935`），
-两个失败（#2、#14）同因：live stop 停在 `reconciling` 300 s，留一个 worker。
-
-**根因是两个守卫互相矛盾**：
-1. stop 的最终 checkpoint 判 dirty ⇒ `resolving` + needs-attention；
-2. `remove_and_stop` 拒绝 dirty runtime（怕拆卸时丢未提交的写）；
-3. 拒绝后 `park_stop_reconciliation` ⇒ `reconciling`，而它只能靠下一次服务启动推进。
-
-**决定（选项 2，有界复检）**：
-最终 checkpoint 判 dirty 时，**再 flush + checkpoint 一次（最多 N=2）**；
-干净了继续拆卸；仍 dirty 才以具名失败 + needs-attention **终态**收尾，**不 park**。
-不拆掉任何守卫，也不改变"允许丢 checkpoint 之后的写"这条既有契约。
-
-**实现落点（按顺序）**：
-1. `service_core.cpp` 的 stop checkpoint 分支：把「dirty ⇒ resolving」改成
-   「dirty ⇒ 再执行一次 `flush_exact_volume` + checkpoint；仍 dirty 才 resolving」；
-2. `park_stop_reconciliation` 的调用点：改为终态失败（`OperationState::failed`）
-   + 具名标记（如 `stop-final-checkpoint-dirty`），不再进入 `reconciling`；
-3. 验收：先 `-Repeat 3`（快），再 `-Repeat 20`。20/20 才算目标达成。
-
-**不要**做的事：不要为了通过而让 `remove_and_stop` 接受 dirty——那是唯一在防"拆盘即丢数据"的守卫。
+**涓嬩竴姝?*锛氭煡绗?5 娆￠偅浠?`last-service.log`/`last-trace.log` 閲?stop 涓轰粈涔堝仠鍦?reconciling銆?
+閭ｄ釜 worker 涓轰粈涔堟病閫€锛堝緢鍙兘鏄澶囬€€褰圭獥鍙ｅ唴鐨勯樆濉烇紝鎴?reconciliation 鐨勫垽瀹氭潯浠舵案杩滀笉婊¤冻锛夈€?
 
 ---
 
-### 3.9 2026-10-26：`cli_e2e -Repeat 20 → 20/20`（第一次）
+### 3.8 鍐冲畾锛歴top 鐨?鏈€缁?checkpoint 涓?dirty"瑕佹湁鐣屽妫€锛屼笉 park
+
+**璇绘暟**锛歚cli_e2e -Repeat 20` = **18/20**锛堣姹?`98e28d87d1ff46ea9a8905aa755cc935`锛夛紝
+涓や釜澶辫触锛?2銆?14锛夊悓鍥狅細live stop 鍋滃湪 `reconciling` 300 s锛岀暀涓€涓?worker銆?
+
+**鏍瑰洜鏄袱涓畧鍗簰鐩哥煕鐩?*锛?
+1. stop 鐨勬渶缁?checkpoint 鍒?dirty 鈬?`resolving` + needs-attention锛?
+2. `remove_and_stop` 鎷掔粷 dirty runtime锛堟€曟媶鍗告椂涓㈡湭鎻愪氦鐨勫啓锛夛紱
+3. 鎷掔粷鍚?`park_stop_reconciliation` 鈬?`reconciling`锛岃€屽畠鍙兘闈犱笅涓€娆℃湇鍔″惎鍔ㄦ帹杩涖€?
+
+**鍐冲畾锛堥€夐」 2锛屾湁鐣屽妫€锛?*锛?
+鏈€缁?checkpoint 鍒?dirty 鏃讹紝**鍐?flush + checkpoint 涓€娆★紙鏈€澶?N=2锛?*锛?
+骞插噣浜嗙户缁媶鍗革紱浠?dirty 鎵嶄互鍏峰悕澶辫触 + needs-attention **缁堟€?*鏀跺熬锛?*涓?park**銆?
+涓嶆媶鎺変换浣曞畧鍗紝涔熶笉鏀瑰彉"鍏佽涓?checkpoint 涔嬪悗鐨勫啓"杩欐潯鏃㈡湁濂戠害銆?
+
+**瀹炵幇钀界偣锛堟寜椤哄簭锛?*锛?
+1. `service_core.cpp` 鐨?stop checkpoint 鍒嗘敮锛氭妸銆宒irty 鈬?resolving銆嶆敼鎴?
+   銆宒irty 鈬?鍐嶆墽琛屼竴娆?`flush_exact_volume` + checkpoint锛涗粛 dirty 鎵?resolving銆嶏紱
+2. `park_stop_reconciliation` 鐨勮皟鐢ㄧ偣锛氭敼涓虹粓鎬佸け璐ワ紙`OperationState::failed`锛?
+   + 鍏峰悕鏍囪锛堝 `stop-final-checkpoint-dirty`锛夛紝涓嶅啀杩涘叆 `reconciling`锛?
+3. 楠屾敹锛氬厛 `-Repeat 3`锛堝揩锛夛紝鍐?`-Repeat 20`銆?0/20 鎵嶇畻鐩爣杈炬垚銆?
+
+**涓嶈**鍋氱殑浜嬶細涓嶈涓轰簡閫氳繃鑰岃 `remove_and_stop` 鎺ュ彈 dirty鈥斺€旈偅鏄敮涓€鍦ㄩ槻"鎷嗙洏鍗充涪鏁版嵁"鐨勫畧鍗€?
+
+---
+
+### 3.9 2026-10-26锛歚cli_e2e -Repeat 20 鈫?20/20`锛堢涓€娆★級
 
 ```text
-integration.m5.cli_e2e  -Repeat 20  →  20 of 20 passed
-请求 6d8dd60cf5064f6d85a21a3ef7065112
+integration.m5.cli_e2e  -Repeat 20  鈫? 20 of 20 passed
+璇锋眰 6d8dd60cf5064f6d85a21a3ef7065112
 ```
 
-覆盖：create → list/show → 读写 → checkpoint → stop → 注册仍在 → forget →
-installed service（SCM 安装/应答/停止/删除）。
+瑕嗙洊锛歝reate 鈫?list/show 鈫?璇诲啓 鈫?checkpoint 鈫?stop 鈫?娉ㄥ唽浠嶅湪 鈫?forget 鈫?
+installed service锛圫CM 瀹夎/搴旂瓟/鍋滄/鍒犻櫎锛夈€?
 
-**第二次同样 20/20**（请求 `3c6697405728401fa19ab5d75e3bb93b`）⇒ **连续两次 20/20，
-合计 40 次连续通过**。
+**绗簩娆″悓鏍?20/20**锛堣姹?`3c6697405728401fa19ab5d75e3bb93b`锛夆噿 **杩炵画涓ゆ 20/20锛?
+鍚堣 40 娆¤繛缁€氳繃**銆?
 
-**仍然诚实记录**：在这之前的两轮是 18/20（失败停在 `reconciling`），而且从 18/20 到
-20/20 之间**只改了测试的诊断输出、没有改产品代码**。所以那个间发缺陷**没有被根治**，
-只是在这 40 次里没再出现。它现在的判据已经就位：下次一旦复现，失败信息会直接带出
-`service.log` 尾部与 `step=`。
+**浠嶇劧璇氬疄璁板綍**锛氬湪杩欎箣鍓嶇殑涓よ疆鏄?18/20锛堝け璐ュ仠鍦?`reconciling`锛夛紝鑰屼笖浠?18/20 鍒?
+20/20 涔嬮棿**鍙敼浜嗘祴璇曠殑璇婃柇杈撳嚭銆佹病鏈夋敼浜у搧浠ｇ爜**銆傛墍浠ラ偅涓棿鍙戠己闄?*娌℃湁琚牴娌?*锛?
+鍙槸鍦ㄨ繖 40 娆￠噷娌″啀鍑虹幇銆傚畠鐜板湪鐨勫垽鎹凡缁忓氨浣嶏細涓嬫涓€鏃﹀鐜帮紝澶辫触淇℃伅浼氱洿鎺ュ甫鍑?
+`service.log` 灏鹃儴涓?`step=`銆?
 
-**这轮没有新的产品改动**，只给 `Wait-ForTerminal` 加了"失败时打印服务日志尾部"
-（`reconciling` 被三种失败共用，不打印就只能说"它挂了"）。也就是说：18/20 → 20/20
-之间没有代码变化，**这个间发缺陷仍未根治**，只是这次没出现。
+**杩欒疆娌℃湁鏂扮殑浜у搧鏀瑰姩**锛屽彧缁?`Wait-ForTerminal` 鍔犱簡"澶辫触鏃舵墦鍗版湇鍔℃棩蹇楀熬閮?
+锛坄reconciling` 琚笁绉嶅け璐ュ叡鐢紝涓嶆墦鍗板氨鍙兘璇?瀹冩寕浜?锛夈€備篃灏辨槸璇达細18/20 鈫?20/20
+涔嬮棿娌℃湁浠ｇ爜鍙樺寲锛?*杩欎釜闂村彂缂洪櫡浠嶆湭鏍规不**锛屽彧鏄繖娆℃病鍑虹幇銆?
 
 ---
 
-### 3.10 **已完成（见 §3.13）**：`disk start`（stop 之后重启）的接线记录——保留作原理参考，不要再按它施工
+### 3.10 **宸插畬鎴愶紙瑙?搂3.13锛?*锛歚disk start`锛坰top 涔嬪悗閲嶅惎锛夌殑鎺ョ嚎璁板綍鈥斺€斾繚鐣欎綔鍘熺悊鍙傝€冿紝涓嶈鍐嶆寜瀹冩柦宸?
 
-**现象**：`disk.start → create-runtime` 失败，`code=21000 step=select_volume_for_disk`，
-`seen=[C?@0 -?@0 -?@1 -?@0]`——卷在磁盘 1 上、**没有盘符**，而该函数第一道过滤是盘符。
+**鐜拌薄**锛歚disk.start 鈫?create-runtime` 澶辫触锛宍code=21000 step=select_volume_for_disk`锛?
+`seen=[C?@0 -?@0 -?@1 -?@0]`鈥斺€斿嵎鍦ㄧ鐩?1 涓娿€?*娌℃湁鐩樼**锛岃€岃鍑芥暟绗竴閬撹繃婊ゆ槸鐩樼銆?
 
-**根因**：`find_recovered_volume` 的 GUID 分支（`windows_volume.cpp:685`）是对的，
-但**上游从来没喂过 GUID**，所以它永远是 skip。
+**鏍瑰洜**锛歚find_recovered_volume` 鐨?GUID 鍒嗘敮锛坄windows_volume.cpp:685`锛夋槸瀵圭殑锛?
+浣?*涓婃父浠庢潵娌″杺杩?GUID**锛屾墍浠ュ畠姘歌繙鏄?skip銆?
 
-**已经做完的一层**（`798b0d1`）：`WorkerLaunchSpec` 有 `volume_guid` 字段 + 编解码，
-`unit.m5.worker_protocol` 通过。
+**宸茬粡鍋氬畬鐨勪竴灞?*锛坄798b0d1`锛夛細`WorkerLaunchSpec` 鏈?`volume_guid` 瀛楁 + 缂栬В鐮侊紝
+`unit.m5.worker_protocol` 閫氳繃銆?
 
-**还剩五处（按顺序）**：
+**杩樺墿浜斿锛堟寜椤哄簭锛?*锛?
 
-1. `src/host/m5_worker_runtime.h`：`WorkerRuntimeConfig` 加 `std::wstring volume_guid;`
-2. `src/host/m5_worker_main.cpp`（约 175-180 行，`config.bundle = …` 那一段）：
+1. `src/host/m5_worker_runtime.h`锛歚WorkerRuntimeConfig` 鍔?`std::wstring volume_guid;`
+2. `src/host/m5_worker_main.cpp`锛堢害 175-180 琛岋紝`config.bundle = 鈥 閭ｄ竴娈碉級锛?
    `config.volume_guid = spec.value().volume_guid;`
-3. `src/host/m5_worker_runtime.cpp`（约 313-320 行的 `ProductionRuntimeAdapter::Config{…}`）：
-   把 `volume_guid` 传到 `expected_volume_guid`。**注意这是聚合初始化，字段顺序敏感**。
-4. `src/management/service_worker_control.cpp` 的 `make_launch_request(const ProfileRecord&)`：
-   从 durable 记录填 `request.volume_guid`。记录里的字段是
-   `std::optional<product::Uuid> volume_guid`（`profile_types.h:116`），**只有大类
-   `{xxxxxxxx-…}`，没有前缀**。
-5. **格式陷阱（会白跑一轮，务必注意）**：`find_recovered_volume` 里的比较是
-   `_wcsicmp` + 只去掉尾部的 `\`，而枚举出来的 `volume.volume_guid` 形状是
-   `\\?\Volume{guid}\`。所以第 4 步必须把它拼成 **`\\?\Volume{<uuid>}\`** 再上线，
-   否则 GUID 分支会匹配到 0 个、退回按盘符找、症状与现在一模一样。
+3. `src/host/m5_worker_runtime.cpp`锛堢害 313-320 琛岀殑 `ProductionRuntimeAdapter::Config{鈥`锛夛細
+   鎶?`volume_guid` 浼犲埌 `expected_volume_guid`銆?*娉ㄦ剰杩欐槸鑱氬悎鍒濆鍖栵紝瀛楁椤哄簭鏁忔劅**銆?
+4. `src/management/service_worker_control.cpp` 鐨?`make_launch_request(const ProfileRecord&)`锛?
+   浠?durable 璁板綍濉?`request.volume_guid`銆傝褰曢噷鐨勫瓧娈垫槸
+   `std::optional<product::Uuid> volume_guid`锛坄profile_types.h:116`锛夛紝**鍙湁澶х被
+   `{xxxxxxxx-鈥`锛屾病鏈夊墠缂€**銆?
+5. **鏍煎紡闄烽槺锛堜細鐧借窇涓€杞紝鍔″繀娉ㄦ剰锛?*锛歚find_recovered_volume` 閲岀殑姣旇緝鏄?
+   `_wcsicmp` + 鍙幓鎺夊熬閮ㄧ殑 `\`锛岃€屾灇涓惧嚭鏉ョ殑 `volume.volume_guid` 褰㈢姸鏄?
+   `\\?\Volume{guid}\`銆傛墍浠ョ 4 姝ュ繀椤绘妸瀹冩嫾鎴?**`\\?\Volume{<uuid>}\`** 鍐嶄笂绾匡紝
+   鍚﹀垯 GUID 鍒嗘敮浼氬尮閰嶅埌 0 涓€侀€€鍥炴寜鐩樼鎵俱€佺棁鐘朵笌鐜板湪涓€妯′竴鏍枫€?
 
-**第 13 轮补充：实际是六处，不是五处。** 服务侧的请求结构也要带上它，否则 spec 永远是空：
+**绗?13 杞ˉ鍏咃細瀹為檯鏄叚澶勶紝涓嶆槸浜斿銆?* 鏈嶅姟渚х殑璇锋眰缁撴瀯涔熻甯︿笂瀹冿紝鍚﹀垯 spec 姘歌繙鏄┖锛?
 
-| # | 位置 | 内容 |
+| # | 浣嶇疆 | 鍐呭 |
 |---|---|---|
-| 0 | `src/management/service_worker_control.h` | `WorkerLaunchRequest` 加 `std::wstring volume_guid` |
-| 0b | `service_worker_control.cpp:118` / `:150` | 两个 `make_launch_request` 都填：durable 那条从 `profile.volume_guid` 取，create/import 那条留空 |
+| 0 | `src/management/service_worker_control.h` | `WorkerLaunchRequest` 鍔?`std::wstring volume_guid` |
+| 0b | `service_worker_control.cpp:118` / `:150` | 涓や釜 `make_launch_request` 閮藉～锛歞urable 閭ｆ潯浠?`profile.volume_guid` 鍙栵紝create/import 閭ｆ潯鐣欑┖ |
 | 1 | `src/host/windows_worker_sessions.cpp:59` | `spec.volume_guid = request.volume_guid;` |
 
-**已有先例可直接抄**：`service_worker_control.cpp:467` 就有
-`expected_volume = profile.volume_guid.value().to_string();`——同一个 durable 字段、
-同一种取法。别忘了第 5 条的 `\\?\Volume{…}\` 前缀。
+**宸叉湁鍏堜緥鍙洿鎺ユ妱**锛歚service_worker_control.cpp:467` 灏辨湁
+`expected_volume = profile.volume_guid.value().to_string();`鈥斺€斿悓涓€涓?durable 瀛楁銆?
+鍚屼竴绉嶅彇娉曘€傚埆蹇樹簡绗?5 鏉＄殑 `\\?\Volume{鈥\` 鍓嶇紑銆?
 
-**验收**：干净客机单次 `cli_e2e`（含 restart）→ `-Repeat 20`。
-
----
-
-### 3.11 2026-10-26 收尾：restart 的现状（交接用，未完成）
-
-**已做完并提交**
-- `798b0d1` / `99ff704`：`volume_guid` 从 durable profile 一路传到 worker 的
-  `expected_volume_guid`（6 处接线，格式 `\\?\Volume{...}\`）。
-- 客机**正面证据**：`verify_volume` 打出的 `volume_guid` 与 `expected_guid` 一致、
-  `actual_disk=1 expected_disk=1` —— 卷是**按身份**认出来的，不再靠盘符。
-- `stp`：stop 在 checkpoint 未解决时改为**具名终态失败**，不 park（另一处 `resolving`
-  早前已改）；`verify_volume` 的诊断改为逐条列出每个可拒绝条件。
-- `8b8e8fa`：e2e 增加 restart 校验（start → 同盘符 → 读回 stop 前写的文件 → 再 stop）。
-
-**未验证 / 未解决**
-- restart **通过过一次**（运行 `efbf62fe`，其后第二次 stop 卡在 `reconciling`），
-  但之后两次在 `create-runtime` 又失败；最近一次（干净客机 `2bbffea`）仍失败且耗时
-  约 5 分钟，指向又一次 300 s 等待。**结论：restart 不稳定，未达到 T1-05 的验收线。**
-- 300 s 的 `reconciling` 等待仍会出现，说明还有 `park` 落点没改成终态失败
-  （`service_core.cpp:3950` 的回滚路径尚未处理）。
-
-**下一步（建议新会话开头就做）**
-1. 硬重启 + 清 `ProgramData\MyRamDisk\{profiles,operations}`；
-2. 单次运行并**完整**读该 run 的 `stderr`（不是 tail），确认失败是 `create-runtime` 还是
-   `reconciling`；
-3. 若是 3950 的 park → 同样改为具名终态失败；若是 `create-runtime` → 读
-   `Diagnostic verify_volume` 的逐条输出定位。
+**楠屾敹**锛氬共鍑€瀹㈡満鍗曟 `cli_e2e`锛堝惈 restart锛夆啋 `-Repeat 20`銆?
 
 ---
 
-### 3.12 **已被 §3.13 取代**：stop 的 remove_mount 被"runtime 仍然 dirty"拒绝（`278d63e` 已处理）
+### 3.11 2026-10-26 鏀跺熬锛歳estart 鐨勭幇鐘讹紙浜ゆ帴鐢紝鏈畬鎴愶級
 
-**读数**（`run-fe0a8a2a` 的服务日志）：
+**宸插仛瀹屽苟鎻愪氦**
+- `798b0d1` / `99ff704`锛歚volume_guid` 浠?durable profile 涓€璺紶鍒?worker 鐨?
+  `expected_volume_guid`锛? 澶勬帴绾匡紝鏍煎紡 `\\?\Volume{...}\`锛夈€?
+- 瀹㈡満**姝ｉ潰璇佹嵁**锛歚verify_volume` 鎵撳嚭鐨?`volume_guid` 涓?`expected_guid` 涓€鑷淬€?
+  `actual_disk=1 expected_disk=1` 鈥斺€?鍗锋槸**鎸夎韩浠?*璁ゅ嚭鏉ョ殑锛屼笉鍐嶉潬鐩樼銆?
+- `stp`锛歴top 鍦?checkpoint 鏈В鍐虫椂鏀逛负**鍏峰悕缁堟€佸け璐?*锛屼笉 park锛堝彟涓€澶?`resolving`
+  鏃╁墠宸叉敼锛夛紱`verify_volume` 鐨勮瘖鏂敼涓洪€愭潯鍒楀嚭姣忎釜鍙嫆缁濇潯浠躲€?
+- `8b8e8fa`锛歟2e 澧炲姞 restart 鏍￠獙锛坰tart 鈫?鍚岀洏绗?鈫?璇诲洖 stop 鍓嶅啓鐨勬枃浠?鈫?鍐?stop锛夈€?
+
+**鏈獙璇?/ 鏈В鍐?*
+- restart **閫氳繃杩囦竴娆?*锛堣繍琛?`efbf62fe`锛屽叾鍚庣浜屾 stop 鍗″湪 `reconciling`锛夛紝
+  浣嗕箣鍚庝袱娆″湪 `create-runtime` 鍙堝け璐ワ紱鏈€杩戜竴娆★紙骞插噣瀹㈡満 `2bbffea`锛変粛澶辫触涓旇€楁椂
+  绾?5 鍒嗛挓锛屾寚鍚戝張涓€娆?300 s 绛夊緟銆?*缁撹锛歳estart 涓嶇ǔ瀹氾紝鏈揪鍒?T1-05 鐨勯獙鏀剁嚎銆?*
+- 300 s 鐨?`reconciling` 绛夊緟浠嶄細鍑虹幇锛岃鏄庤繕鏈?`park` 钀界偣娌℃敼鎴愮粓鎬佸け璐?
+  锛坄service_core.cpp:3950` 鐨勫洖婊氳矾寰勫皻鏈鐞嗭級銆?
+
+**涓嬩竴姝ワ紙寤鸿鏂颁細璇濆紑澶村氨鍋氾級**
+1. 纭噸鍚?+ 娓?`ProgramData\MyRamDisk\{profiles,operations}`锛?
+2. 鍗曟杩愯骞?*瀹屾暣**璇昏 run 鐨?`stderr`锛堜笉鏄?tail锛夛紝纭澶辫触鏄?`create-runtime` 杩樻槸
+   `reconciling`锛?
+3. 鑻ユ槸 3950 鐨?park 鈫?鍚屾牱鏀逛负鍏峰悕缁堟€佸け璐ワ紱鑻ユ槸 `create-runtime` 鈫?璇?
+   `Diagnostic verify_volume` 鐨勯€愭潯杈撳嚭瀹氫綅銆?
+
+---
+
+### 3.12 **宸茶 搂3.13 鍙栦唬**锛歴top 鐨?remove_mount 琚?runtime 浠嶇劧 dirty"鎷掔粷锛坄278d63e` 宸插鐞嗭級
+
+**璇绘暟**锛坄run-fe0a8a2a` 鐨勬湇鍔℃棩蹇楋級锛?
 
 ```text
-disk.stop → checkpoint completed → evidence-recorded profile state published
-disk.stop → lifecycle-action failed
+disk.stop 鈫?checkpoint completed 鈫?evidence-recorded profile state published
+disk.stop 鈫?lifecycle-action failed
 code=23559 step=service_worker_control.remove_mount
 detail=The worker refused to remove: its runtime stands dirty
-→ 操作停在 reconciling，300 s 超时，残留 1 个 worker
+鈫?鎿嶄綔鍋滃湪 reconciling锛?00 s 瓒呮椂锛屾畫鐣?1 涓?worker
 ```
 
-**含义**：冻结 → flush → checkpoint 提交 → 拆卸，前三步都成功，第四步被拆卸守卫拒绝。
-守卫本身是对的（dirty 时拆盘等于丢数据）；问题是**没有任何路径能在"提交后仍有残余写"时安全收尾**。
+**鍚箟**锛氬喕缁?鈫?flush 鈫?checkpoint 鎻愪氦 鈫?鎷嗗嵏锛屽墠涓夋閮芥垚鍔燂紝绗洓姝ヨ鎷嗗嵏瀹堝崼鎷掔粷銆?
+瀹堝崼鏈韩鏄鐨勶紙dirty 鏃舵媶鐩樼瓑浜庝涪鏁版嵁锛夛紱闂鏄?*娌℃湁浠讳綍璺緞鑳藉湪"鎻愪氦鍚庝粛鏈夋畫浣欏啓"鏃跺畨鍏ㄦ敹灏?*銆?
 
-**修法（两处选一，建议 A）**
+**淇硶锛堜袱澶勯€変竴锛屽缓璁?A锛?*
 
-- **A. 有界复检**：拆卸被拒且原因为 dirty 时，再做一次 `flush + checkpoint`，然后重试
-  `remove_mount` **一次**；第二次仍 dirty 则以具名终态失败收尾
-  （`stop-dirty-after-recheckpoint`），不再 park。
-- **B. worker 侧自愈**：让 `remove_and_stop` 在判定 dirty 之前先 flush 一次并重新取 dirty；
-  改动更局部，但要确认 flush 之后 dirty 计数确实会归零。
+- **A. 鏈夌晫澶嶆**锛氭媶鍗歌鎷掍笖鍘熷洜涓?dirty 鏃讹紝鍐嶅仛涓€娆?`flush + checkpoint`锛岀劧鍚庨噸璇?
+  `remove_mount` **涓€娆?*锛涚浜屾浠?dirty 鍒欎互鍏峰悕缁堟€佸け璐ユ敹灏?
+  锛坄stop-dirty-after-recheckpoint`锛夛紝涓嶅啀 park銆?
+- **B. worker 渚ц嚜鎰?*锛氳 `remove_and_stop` 鍦ㄥ垽瀹?dirty 涔嬪墠鍏?flush 涓€娆″苟閲嶆柊鍙?dirty锛?
+  鏀瑰姩鏇村眬閮紝浣嗚纭 flush 涔嬪悗 dirty 璁℃暟纭疄浼氬綊闆躲€?
 
-**落点**：`src/management/service_core.cpp` 的动作失败分支（`remove_mount` 的失败处理）
-＋ `src/host/m5_worker_runtime.cpp` 的 removal 路径。改完先单次，再 `-Repeat 20`。
+**钀界偣**锛歚src/management/service_core.cpp` 鐨勫姩浣滃け璐ュ垎鏀紙`remove_mount` 鐨勫け璐ュ鐞嗭級
+锛?`src/host/m5_worker_runtime.cpp` 鐨?removal 璺緞銆傛敼瀹屽厛鍗曟锛屽啀 `-Repeat 20`銆?
 
-**已验证通过的部分（本次会话的净收益）**：`volume_guid` 六层接线、`verify_volume` 的
-ownership 判据（attach-only 不再要求 owned）、恢复路径先分配盘符 —— restart 已能从
-`create-runtime` 一路走到"重启后再次 stop"。
+**宸查獙璇侀€氳繃鐨勯儴鍒嗭紙鏈浼氳瘽鐨勫噣鏀剁泭锛?*锛歚volume_guid` 鍏眰鎺ョ嚎銆乣verify_volume` 鐨?
+ownership 鍒ゆ嵁锛坅ttach-only 涓嶅啀瑕佹眰 owned锛夈€佹仮澶嶈矾寰勫厛鍒嗛厤鐩樼 鈥斺€?restart 宸茶兘浠?
+`create-runtime` 涓€璺蛋鍒?閲嶅惎鍚庡啀娆?stop"銆?
 
 ---
 
-### 3.13 当前真实位置（2026-10-26 晚，接 §3.12）
+### 3.13 褰撳墠鐪熷疄浣嶇疆锛?026-10-26 鏅氾紝鎺?搂3.12锛?
 
-**restart 已打通**：一次运行的服务日志显示 `disk.start` 的八个动作全部
-`action-result: completed` 并到达 terminal：
+**restart 宸叉墦閫?*锛氫竴娆¤繍琛岀殑鏈嶅姟鏃ュ織鏄剧ず `disk.start` 鐨勫叓涓姩浣滃叏閮?
+`action-result: completed` 骞跺埌杈?terminal锛?
 
 ```text
-create-runtime → recover-bundle → start-proxy → create-device →
-locate-physical-drive → verify-volume → assign-mount → readiness-io → terminal
+create-runtime 鈫?recover-bundle 鈫?start-proxy 鈫?create-device 鈫?
+locate-physical-drive 鈫?verify-volume 鈫?assign-mount 鈫?readiness-io 鈫?terminal
 ```
 
-**剩下的失败**：紧接着的**第二次 stop** 以终态失败结束（快速，不再挂 300 秒）：
+**鍓╀笅鐨勫け璐?*锛氱揣鎺ョ潃鐨?*绗簩娆?stop** 浠ョ粓鎬佸け璐ョ粨鏉燂紙蹇€燂紝涓嶅啀鎸?300 绉掞級锛?
 
 ```text
 kind=7 command=disk.stop phase=terminal
   message=terminal failure without a worker-action error; marker=flush
 ```
 
-`marker` 是 `finalize_operation` 收到的终止标记，内容恰好是**动作名** `flush`——即这次
-stop 失败在 `flush` 这个动作上，且**不是 worker 动作返回的错误**（`action-start: flush`
-甚至没有写出来，说明失败发生在动作启动阶段，例如 runtime 未绑定）。
+`marker` 鏄?`finalize_operation` 鏀跺埌鐨勭粓姝㈡爣璁帮紝鍐呭鎭板ソ鏄?*鍔ㄤ綔鍚?* `flush`鈥斺€斿嵆杩欐
+stop 澶辫触鍦?`flush` 杩欎釜鍔ㄤ綔涓婏紝涓?*涓嶆槸 worker 鍔ㄤ綔杩斿洖鐨勯敊璇?*锛坄action-start: flush`
+鐢氳嚦娌℃湁鍐欏嚭鏉ワ紝璇存槑澶辫触鍙戠敓鍦ㄥ姩浣滃惎鍔ㄩ樁娈碉紝渚嬪 runtime 鏈粦瀹氾級銆?
 
-**§3.12 的结论已被取代**：不再是 `remove_mount` 拒绝 dirty（`278d63e` 的
-flush-before-refusal 让那条不再触发），现在前移到 flush 本身。
+**搂3.12 鐨勭粨璁哄凡琚彇浠?*锛氫笉鍐嶆槸 `remove_mount` 鎷掔粷 dirty锛坄278d63e` 鐨?
+flush-before-refusal 璁╅偅鏉′笉鍐嶈Е鍙戯級锛岀幇鍦ㄥ墠绉诲埌 flush 鏈韩銆?
 
-**下一步**：查 `service_core.cpp` 里"用动作名当 marker"的那个 finalize 调用点，
-确认第二次 stop 在 flush 阶段失败的具体原因（runtime 是否已绑定、卷锁是否在手），
-修完再单次 → `-Repeat 20`。
+**涓嬩竴姝?*锛氭煡 `service_core.cpp` 閲?鐢ㄥ姩浣滃悕褰?marker"鐨勯偅涓?finalize 璋冪敤鐐癸紝
+纭绗簩娆?stop 鍦?flush 闃舵澶辫触鐨勫叿浣撳師鍥狅紙runtime 鏄惁宸茬粦瀹氥€佸嵎閿佹槸鍚﹀湪鎵嬶級锛?
+淇畬鍐嶅崟娆?鈫?`-Repeat 20`銆?
 
 ---
 
-### 3.14 2026-10-26 晚：restart + 两次 stop 全通，`cli_e2e -Repeat 20 → 20/20`
+### 3.14 2026-10-26 鏅氾細restart + 涓ゆ stop 鍏ㄩ€氾紝`cli_e2e -Repeat 20 鈫?20/20`
 
-**验收读数（干净客机）**：`integration.m5.cli_e2e` × 20 = **20/20**，
-请求 `ad796d29c8c04ef58b71766fdaa28a3b`，20 次共 5 分 50 秒（12:07:48 → 12:13:38Z）。
-每次迭代都走完 create → checkpoint → stop → **restart** → **第二次 stop** → forget →
-安装服务 install/answer/stop/delete。对照：修复前同一命令 **18/20**、**17/20**，两次不同批次。
+**楠屾敹璇绘暟锛堝共鍑€瀹㈡満锛?*锛歚integration.m5.cli_e2e` 脳 20 = **20/20**锛?
+璇锋眰 `ad796d29c8c04ef58b71766fdaa28a3b`锛?0 娆″叡 5 鍒?50 绉掞紙12:07:48 鈫?12:13:38Z锛夈€?
+姣忔杩唬閮借蛋瀹?create 鈫?checkpoint 鈫?stop 鈫?**restart** 鈫?**绗簩娆?stop** 鈫?forget 鈫?
+瀹夎鏈嶅姟 install/answer/stop/delete銆傚鐓э細淇鍓嶅悓涓€鍛戒护 **18/20**銆?*17/20**锛屼袱娆′笉鍚屾壒娆°€?
 
-#### ① 先加诊断（只加日志，不改行为）
+#### 鈶?鍏堝姞璇婃柇锛堝彧鍔犳棩蹇楋紝涓嶆敼琛屼负锛?
 
-`rollback_stop` 之前把失败原因写进服务日志；同一个 lambda 复用到 quiesce / freeze /
-flush / resume，并在两个 park 点各写一行。首次单次运行立刻读出原因：
+`rollback_stop` 涔嬪墠鎶婂け璐ュ師鍥犲啓杩涙湇鍔℃棩蹇楋紱鍚屼竴涓?lambda 澶嶇敤鍒?quiesce / freeze /
+flush / resume锛屽苟鍦ㄤ袱涓?park 鐐瑰悇鍐欎竴琛屻€傞娆″崟娆¤繍琛岀珛鍒昏鍑哄師鍥狅細
 
 ```text
 kind=7 message=stop action failed: action=flush_exact_volume outcome=error
       domain=3 code=20999 native=0 step=flush detail=volume ownership contract is incomplete
 ```
 
-`marker=flush` 只是把**动作名**当标记（`finalize_operation` 收到的终止标记），
-错误本身在 `rollback_stop({...})` 里被丢弃——这就是上一轮"日志只剩 marker"的全部原因。
+`marker=flush` 鍙槸鎶?*鍔ㄤ綔鍚?*褰撴爣璁帮紙`finalize_operation` 鏀跺埌鐨勭粓姝㈡爣璁帮級锛?
+閿欒鏈韩鍦?`rollback_stop({...})` 閲岃涓㈠純鈥斺€旇繖灏辨槸涓婁竴杞?鏃ュ織鍙墿 marker"鐨勫叏閮ㄥ師鍥犮€?
 
-另外：e2e 每次迭代把自己的 `service.log` / `trace.log` 另存到
-`C:\m5\runs\<work-root>.{service,trace}.log`。**这一条是必需的**：`last-*` 会被下一次
-迭代覆盖，2/20 那次失败时只剩下"最后一轮通过"的日志，等于没有证据。
+鍙﹀锛歟2e 姣忔杩唬鎶婅嚜宸辩殑 `service.log` / `trace.log` 鍙﹀瓨鍒?
+`C:\m5\runs\<work-root>.{service,trace}.log`銆?*杩欎竴鏉℃槸蹇呴渶鐨?*锛歚last-*` 浼氳涓嬩竴娆?
+杩唬瑕嗙洊锛?/20 閭ｆ澶辫触鏃跺彧鍓╀笅"鏈€鍚庝竴杞€氳繃"鐨勬棩蹇楋紝绛変簬娌℃湁璇佹嵁銆?
 
-#### ② 根因一：按身份认回的卷"不属于自己"（已修，`windows_volume.cpp`）
+#### 鈶?鏍瑰洜涓€锛氭寜韬唤璁ゅ洖鐨勫嵎"涓嶅睘浜庤嚜宸?锛堝凡淇紝`windows_volume.cpp`锛?
 
-`Win32VolumeAdapter::find_recovered_volume` 在"durable GUID 命中唯一候选"的快路径
-直接返回观测到的卷，而 `enumerate_native_volumes` 给每个卷都打
-`operation_owned=false`（`windows_volume.cpp:490`）。同函数的另外两条选择路径
-（`select_volume_for_disk`）都会补 `owner_token` / `drive_letter` / `operation_owned=true`。
+`Win32VolumeAdapter::find_recovered_volume` 鍦?durable GUID 鍛戒腑鍞竴鍊欓€?鐨勫揩璺緞
+鐩存帴杩斿洖瑙傛祴鍒扮殑鍗凤紝鑰?`enumerate_native_volumes` 缁欐瘡涓嵎閮芥墦
+`operation_owned=false`锛坄windows_volume.cpp:490`锛夈€傚悓鍑芥暟鐨勫彟澶栦袱鏉￠€夋嫨璺緞
+锛坄select_volume_for_disk`锛夐兘浼氳ˉ `owner_token` / `drive_letter` / `operation_owned=true`銆?
 
-于是**只有"重启后按身份认回卷"这条路**拿到一个无主的卷：`verify_native_volume_identity`
-的所有权前置（`windows_volume.cpp:302`）在 flush 时拒绝。而 `disk.create` 建出来的卷
-一直是有主的，所以**第一次 stop 永远正常、第二次 stop 必挂**——这正是 §3.13 的现象。
+浜庢槸**鍙湁"閲嶅惎鍚庢寜韬唤璁ゅ洖鍗?杩欐潯璺?*鎷垮埌涓€涓棤涓荤殑鍗凤細`verify_native_volume_identity`
+鐨勬墍鏈夋潈鍓嶇疆锛坄windows_volume.cpp:302`锛夊湪 flush 鏃舵嫆缁濄€傝€?`disk.create` 寤哄嚭鏉ョ殑鍗?
+涓€鐩存槸鏈変富鐨勶紝鎵€浠?*绗竴娆?stop 姘歌繙姝ｅ父銆佺浜屾 stop 蹇呮寕**鈥斺€旇繖姝ｆ槸 搂3.13 鐨勭幇璞°€?
 
-修法：快路径补上同样的三个字段（不动任何守卫）。修完单次运行全套通过
-（请求 `696c778500974694a68558a38b80c6cb`，24 秒）。
+淇硶锛氬揩璺緞琛ヤ笂鍚屾牱鐨勪笁涓瓧娈碉紙涓嶅姩浠讳綍瀹堝崼锛夈€備慨瀹屽崟娆¤繍琛屽叏濂楅€氳繃
+锛堣姹?`696c778500974694a68558a38b80c6cb`锛?4 绉掞級銆?
 
-#### ③ 根因二：stop 的写冻结从未运行过（T1-11 的死分支，已修）
+#### 鈶?鏍瑰洜浜岋細stop 鐨勫啓鍐荤粨浠庢湭杩愯杩囷紙T1-11 鐨勬鍒嗘敮锛屽凡淇級
 
-20× 随即暴露第二层：**18/20**，两次都是「300 s 没到终态，last state=reconciling」。
-诊断轮 **17/20** 拿到了原因，两个签名：
+20脳 闅忓嵆鏆撮湶绗簩灞傦細**18/20**锛屼袱娆￠兘鏄€?00 s 娌″埌缁堟€侊紝last state=reconciling銆嶃€?
+璇婃柇杞?**17/20** 鎷垮埌浜嗗師鍥狅紝涓や釜绛惧悕锛?
 
 ```text
 action=lifecycle-action code=23559 step=service_worker_control.remove_mount
   detail=The worker refused to remove: its runtime stands dirty
-→ stop parked at the removal boundary: action=lifecycle-action stop_phase=5
+鈫?stop parked at the removal boundary: action=lifecycle-action stop_phase=5
 
-checkpoint: disposition=3 …            （committed_needs_reconciliation）
-→ checkpoint parked for reconciliation: phase=checkpoint-resolving
+checkpoint: disposition=3 鈥?           锛坈ommitted_needs_reconciliation锛?
+鈫?checkpoint parked for reconciliation: phase=checkpoint-resolving
 ```
 
-两者是同一件事：**最终提交之后卷仍可写**，于是提交后又有 dirty。而写冻结
-（T1-11，`b3fae6f` 引入）本该是那道闸：
+涓よ€呮槸鍚屼竴浠朵簨锛?*鏈€缁堟彁浜や箣鍚庡嵎浠嶅彲鍐?*锛屼簬鏄彁浜ゅ悗鍙堟湁 dirty銆傝€屽啓鍐荤粨
+锛圱1-11锛宍b3fae6f` 寮曞叆锛夋湰璇ユ槸閭ｉ亾闂革細
 
 ```text
-state_machine：stop 计划 = quiesce_mutations, freeze_writes, flush_exact_volume, checkpoint_if_required, …
-service_core：quiesce 块把 phase 置为 quiesced 并发布
-              紧接着的 freeze 块守卫写的是 `stop_state.phase == admitted`  ⇒ 永不成立
-              之后 execution_actions.erase(begin, begin + 3) 仍按"前三个已执行"把 freeze 删掉
+state_machine锛歴top 璁″垝 = quiesce_mutations, freeze_writes, flush_exact_volume, checkpoint_if_required, 鈥?
+service_core锛歲uiesce 鍧楁妸 phase 缃负 quiesced 骞跺彂甯?
+              绱ф帴鐫€鐨?freeze 鍧楀畧鍗啓鐨勬槸 `stop_state.phase == admitted`  鈬?姘镐笉鎴愮珛
+              涔嬪悗 execution_actions.erase(begin, begin + 3) 浠嶆寜"鍓嶄笁涓凡鎵ц"鎶?freeze 鍒犳帀
 ```
 
-`git show b3fae6f` 里顺序已经如此，所以**自 T1-11 起这条分支就是死代码**，计划里的
-`freeze_writes` 被当成"已执行"跳过。T1-11 当时那份 20/20 来自 worker 侧
-（`remove_and_stop` 先 flush 再判 dirty、无共享独占打开有界重试），不是 service 侧这个动作。
+`git show b3fae6f` 閲岄『搴忓凡缁忓姝わ紝鎵€浠?*鑷?T1-11 璧疯繖鏉″垎鏀氨鏄浠ｇ爜**锛岃鍒掗噷鐨?
+`freeze_writes` 琚綋鎴?宸叉墽琛?璺宠繃銆俆1-11 褰撴椂閭ｄ唤 20/20 鏉ヨ嚜 worker 渚?
+锛坄remove_and_stop` 鍏?flush 鍐嶅垽 dirty銆佹棤鍏变韩鐙崰鎵撳紑鏈夌晫閲嶈瘯锛夛紝涓嶆槸 service 渚ц繖涓姩浣溿€?
 
-修法：守卫改成 `quiesced`（quiesce 之后、flush 之前）；worker 侧
-`DiskRuntime::freeze_writes` 幂等，`volume_flushed` 的续跑路径仍跳过。
+淇硶锛氬畧鍗敼鎴?`quiesced`锛坬uiesce 涔嬪悗銆乫lush 涔嬪墠锛夛紱worker 渚?
+`DiskRuntime::freeze_writes` 骞傜瓑锛宍volume_flushed` 鐨勭画璺戣矾寰勪粛璺宠繃銆?
 
-**客机正面证据**（`C:\m5\last-trace.log`，20/20 那轮）：
+**瀹㈡満姝ｉ潰璇佹嵁**锛坄C:\m5\last-trace.log`锛?0/20 閭ｈ疆锛夛細
 
 ```text
 Win32VolumeAdapter::lock: volume locked
-dismount: through the retained lock          ← 拆卸复用冻结那把锁（T1-11 的第 ① 条要求）
+dismount: through the retained lock          鈫?鎷嗗嵏澶嶇敤鍐荤粨閭ｆ妸閿侊紙T1-11 鐨勭 鈶?鏉¤姹傦級
 ```
 
-并且所有 stop 的最终提交都是 `checkpoint: disposition=2`（`committed`），
-不再有 park，也不再出现 `23559`。
+骞朵笖鎵€鏈?stop 鐨勬渶缁堟彁浜ら兘鏄?`checkpoint: disposition=2`锛坄committed`锛夛紝
+涓嶅啀鏈?park锛屼篃涓嶅啀鍑虹幇 `23559`銆?
 
-#### ④ 根因三：重启后卷还没发布就被枚举（已修，`runtime_adapter.cpp`）
+#### 鈶?鏍瑰洜涓夛細閲嶅惎鍚庡嵎杩樻病鍙戝竷灏辫鏋氫妇锛堝凡淇紝`runtime_adapter.cpp`锛?
 
-开冻结后 20× 变成 **17/20**，但失败前移到 restart 且**变快**（整批 6 分钟，不再 300 s）：
+寮€鍐荤粨鍚?20脳 鍙樻垚 **17/20**锛屼絾澶辫触鍓嶇Щ鍒?restart 涓?*鍙樺揩**锛堟暣鎵?6 鍒嗛挓锛屼笉鍐?300 s锛夛細
 
 ```text
 command=disk.start message=action=create-runtime code=21000 native=1168
   step=find_recovered_volume detail=no volume carries the recorded identity
 ```
 
-新建设备后卷尚未被枚举到（`ERROR_NOT_FOUND`），下一次迭代同样能起来 ⇒ 是发布延迟。
-`ProductionRuntimeAdapter::find` 现在对 `not_found` 做**有界复检**（5 s，250 ms 一次），
-**且只在有 durable GUID 时**才复检：没有记录身份时"找不到"就是答案（reclaim 的残留可能
-真的没了），不该等。
+鏂板缓璁惧鍚庡嵎灏氭湭琚灇涓惧埌锛坄ERROR_NOT_FOUND`锛夛紝涓嬩竴娆¤凯浠ｅ悓鏍疯兘璧锋潵 鈬?鏄彂甯冨欢杩熴€?
+`ProductionRuntimeAdapter::find` 鐜板湪瀵?`not_found` 鍋?*鏈夌晫澶嶆**锛? s锛?50 ms 涓€娆★級锛?
+**涓斿彧鍦ㄦ湁 durable GUID 鏃?*鎵嶅妫€锛氭病鏈夎褰曡韩浠芥椂"鎵句笉鍒?灏辨槸绛旀锛坮eclaim 鐨勬畫鐣欏彲鑳?
+鐪熺殑娌′簡锛夛紝涓嶈绛夈€?
 
-#### ⑤ 顺带修掉：三处陈旧期望（`6e1bfcc` 遗留）
+#### 鈶?椤哄甫淇帀锛氫笁澶勯檲鏃ф湡鏈涳紙`6e1bfcc` 閬楃暀锛?
 
-`m4_runtime_adapter_tests`、`m4_disk_runtime_tests`（开发机）与
-`integration.m4.multi_instance`（客机整套时才暴露）都是红的，**与本次改动无关**：
-`6e1bfcc` 把恢复路径改成"先分配盘符再校验身份"（所有权 token 在文件系统上，没挂载点读不到），
-三处 fake 的期望顺序仍是 `verify → assign`。已改成 `assign → verify`（`multi_instance` 是按下标
-断言的 `events[6]/[7]`，一并改），并把
-`m4_disk_runtime_recovery_size_mismatch_does_not_mount` 改成它真正想说的事：
-**失败的重启不许留下挂载**（现在断言盘符被收回：`assign-letter → verify → remove-letter →
-dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
+`m4_runtime_adapter_tests`銆乣m4_disk_runtime_tests`锛堝紑鍙戞満锛変笌
+`integration.m4.multi_instance`锛堝鏈烘暣濂楁椂鎵嶆毚闇诧級閮芥槸绾㈢殑锛?*涓庢湰娆℃敼鍔ㄦ棤鍏?*锛?
+`6e1bfcc` 鎶婃仮澶嶈矾寰勬敼鎴?鍏堝垎閰嶇洏绗﹀啀鏍￠獙韬唤"锛堟墍鏈夋潈 token 鍦ㄦ枃浠剁郴缁熶笂锛屾病鎸傝浇鐐硅涓嶅埌锛夛紝
+涓夊 fake 鐨勬湡鏈涢『搴忎粛鏄?`verify 鈫?assign`銆傚凡鏀规垚 `assign 鈫?verify`锛坄multi_instance` 鏄寜涓嬫爣
+鏂█鐨?`events[6]/[7]`锛屼竴骞舵敼锛夛紝骞舵妸
+`m4_disk_runtime_recovery_size_mismatch_does_not_mount` 鏀规垚瀹冪湡姝ｆ兂璇寸殑浜嬶細
+**澶辫触鐨勯噸鍚笉璁哥暀涓嬫寕杞?*锛堢幇鍦ㄦ柇瑷€鐩樼琚敹鍥烇細`assign-letter 鈫?verify 鈫?remove-letter 鈫?
+dismount 鈫?aim-stop 鈫?unlock`锛夈€備竷涓?fake-only 濂椾欢寮€鍙戞満鍏ㄧ豢銆?
 
-**下一步**：T1-05 可判 PASSED（create/checkpoint/stop/restart/第二次 stop/forget + 安装服务，
-20/20）；T1-06 起继续。**未验证**：`stop` 的 `require_clean` 策略分支（e2e 只走
-`checkpoint_required`）；park 仍保留给"真正 dirty"的情形（现在不再触发，但路径还在）。
+**涓嬩竴姝?*锛歍1-05 鍙垽 PASSED锛坈reate/checkpoint/stop/restart/绗簩娆?stop/forget + 瀹夎鏈嶅姟锛?
+20/20锛夛紱T1-06 璧风户缁€?*鏈獙璇?*锛歚stop` 鐨?`require_clean` 绛栫暐鍒嗘敮锛坋2e 鍙蛋
+`checkpoint_required`锛夛紱park 浠嶄繚鐣欑粰"鐪熸 dirty"鐨勬儏褰紙鐜板湪涓嶅啀瑙﹀彂锛屼絾璺緞杩樺湪锛夈€?
 
-#### ⑥ 整套回归（客机，硬重启 + 清空后）
+#### 鈶?鏁村鍥炲綊锛堝鏈猴紝纭噸鍚?+ 娓呯┖鍚庯級
 
-**151/154**（请求 `8ec8aa88c34740308c2098e9dc90a7f3`，9 分钟），三个失败都不是本次改动：
+**151/154**锛堣姹?`8ec8aa88c34740308c2098e9dc90a7f3`锛? 鍒嗛挓锛夛紝涓変釜澶辫触閮戒笉鏄湰娆℃敼鍔細
 
-| 失败 | 原因 | 处置 |
+| 澶辫触 | 鍘熷洜 | 澶勭疆 |
 |---|---|---|
-| `structural.m2.storage_independent_build` | 客机无 Visual Studio：`vswhere.exe not found` | 环境受阻，历次基线同项，**不是产品失败** |
-| `structural.m5.execution_boundary` | 同上 | 同上 |
-| `m5.production_execution_backend` | 批内挂在 `WorkerBindingStore::over_protected_root`（`store.ok()`，`m5_production_execution_backend_tests.cpp:514`） | 单跑 **3/3 通过** ⇒ 批内间发（`m5-vm-harness.md` 已列的已知间发之一），不是本次改动 |
+| `structural.m2.storage_independent_build` | 瀹㈡満鏃?Visual Studio锛歚vswhere.exe not found` | 鐜鍙楅樆锛屽巻娆″熀绾垮悓椤癸紝**涓嶆槸浜у搧澶辫触** |
+| `structural.m5.execution_boundary` | 鍚屼笂 | 鍚屼笂 |
+| `m5.production_execution_backend` | 鎵瑰唴鎸傚湪 `WorkerBindingStore::over_protected_root`锛坄store.ok()`锛宍m5_production_execution_backend_tests.cpp:514`锛?| 鍗曡窇 **3/3 閫氳繃** 鈬?鎵瑰唴闂村彂锛坄m5-vm-harness.md` 宸插垪鐨勫凡鐭ラ棿鍙戜箣涓€锛夛紝涓嶆槸鏈鏀瑰姩 |
 
-同日更早那次整套也是 151/154，第三个失败是 `integration.m4.multi_instance`
-（`events[7] == "assign-letter"`，与 §⑤ 同源），已修，单跑
-`multi_instance + cli_e2e` → **2/2**。**本分支整套的期望值是 152/154**
-（两条 vswhere 永远红），外加 `m5.production_execution_backend` 在批内的已知间发。
-
----
-
-### 3.15 2026-10-26 夜：T1-06 完成（中断提交判定可达）
-
-**完整体验文档**：`docs/validation/m5-t1-06-recovery-proof.md`。要点：
-
-1. **从 P4 造 launch 起只读检查 worker**：`reconcile_checkpoint` 在没有 session 时从 durable
-   profile **launch 但不 start**，问 `recovery_proof`，每个分支都关闭 inspection 并等进程退出；
-   launch 失败作为失败上报。改前用 `require_session`，只能 adopt 活着的 runtime——而本问题
-   恰恰是"提交已在 P4、worker 已不在"，所以**正面路径一次都跑不到**。
-2. **发现一个让确认提交永远不可能的缺陷**：候选判据六条里的 prior generation 比的是 manifest 的
-   `base_generation`（基底镜像代次，提交 checkpoint 时不前进），而 correlation 的 prior 是上一代
-   checkpoint。客机读数 `mask=0x2`，其余五项（镜像 uuid、代次、native id、slot、digest）**全相同**。
-   修法：候选判据回到规格五条；prior 只用于否定判据；`CheckpointRecoveryInspection::prior_generation`
-   改名 `base_generation`。修后 `verdict=2 mask=0x0`。
-3. §14.3 七条全部有读数（含真 worker/真 bundle 的三条正面/否定路径、只读性指纹）。
-
-**下一步**：T1-07（内存可见性 + UNMAP 端到端）。
-
-### 3.16 2026-10-26 夜：T1-07 完成（内存可见性 + UNMAP 端到端）
-
-**验证文档**：`docs/validation/m5-t1-07-memory-visibility.md`。要点：
-
-1. `resident_bytes` / `budget_bytes` 从存储层计数器一路到 CLI：`disk list` / `disk show` 行尾
-   出现 `mem=<resident>/<budget>`。**来源是存储自己的 committed_bytes，不是进程工作集**。
-2. **UNMAP 首次端到端**：写 16 MiB → resident 2 949 120 → **19 660 800**（恰好 +16 MiB）→ 删除后
-   回到 **2 949 120**。budget 1 073 741 824，worker 工作集 22 573 056（同量级）。
-3. **第一次量不到，原因值得记**：普通写入后 resident 完全不动，数据还在 Windows 文件缓存里；
-   改**写穿** + 有界轮询才量到存储。所谓"写文件后内存立刻上升"在 Windows 上是缓存错觉。
-4. 每层都钉了用例（协议 round-trip、截断报 malformed、observation 只在 alive 时带值、wire、渲染）。
-
-**验收**：干净客机 `cli_e2e -Repeat 20 → 20/20`（式 `541c8b4a…`，7 分 10 秒）。
-
-**延后**：`disk release-memory`（§7.4）——它需要一条从 storage 公开 `reclaim_to` 到 CLI
-动词的完整纵切，与内存压力同源。**T1-08 之后仍未做，见 §3.17「未做」。**
+鍚屾棩鏇存棭閭ｆ鏁村涔熸槸 151/154锛岀涓変釜澶辫触鏄?`integration.m4.multi_instance`
+锛坄events[7] == "assign-letter"`锛屼笌 搂鈶?鍚屾簮锛夛紝宸蹭慨锛屽崟璺?
+`multi_instance + cli_e2e` 鈫?**2/2**銆?*鏈垎鏀暣濂楃殑鏈熸湜鍊兼槸 152/154**
+锛堜袱鏉?vswhere 姘歌繙绾級锛屽鍔?`m5.production_execution_backend` 鍦ㄦ壒鍐呯殑宸茬煡闂村彂銆?
 
 ---
 
-### 3.17 2026-10-26 深夜：T1-08 完成（检查点策略终于有消费者）
+### 3.15 2026-10-26 澶滐細T1-06 瀹屾垚锛堜腑鏂彁浜ゅ垽瀹氬彲杈撅級
 
-**验证文档**：`docs/validation/m5-t1-08-checkpoint-policy.md`。要点：
+**瀹屾暣浣撻獙鏂囨。**锛歚docs/validation/m5-t1-06-recovery-proof.md`銆傝鐐癸細
 
-1. 四个策略字段（interval / dirty 阈值 / 内存压力 / 休眠）从"存下来就丢"变成真的会触发。
-   **客机读数**：`generation moved 2 -> 3 on its own after 30.4 s`，全程**没有发过 checkpoint 命令**。
-2. 落点：纯函数 `checkpoint_due_reason()` + `ServiceMaintenance`（SYSTEM 身份 dispatch，
-   **只做持久化准入**，执行仍归调度器）+ 调度器 claim-once tick（15 s）+
-   `SERVICE_ACCEPT_POWEREVENT` / `PBT_APMSUSPEND → ServiceHost::suspend()`。
-   suspend **不是 stop**：设备不拆、worker 不退，只做尽力而为的检查点。
-3. **接线时量到两个缺陷**：① interval 时钟没有起点（`since` 恒 0 ⇒ 永不到期）；
-   ② 命令寻址用了 mount target 而非 profile uuid（每次 `The requested profile is not registered`）。
-4. **一条范围边界**：两块盘同时活着时，第二块的拆卸不会真正移除设备（restart 找不到卷、
-   forget `device_absent=0`）。M5 是单盘产品（G4 延后），所以 e2e 改成一次一块盘；
-   这条不是策略缺陷，但值得记住。
-5. `forget` 的九个合取项现在拒绝时**逐项打印**（和 `verify_volume`、checkpoint boundary 同源）。
+1. **浠?P4 閫?launch 璧峰彧璇绘鏌?worker**锛歚reconcile_checkpoint` 鍦ㄦ病鏈?session 鏃朵粠 durable
+   profile **launch 浣嗕笉 start**锛岄棶 `recovery_proof`锛屾瘡涓垎鏀兘鍏抽棴 inspection 骞剁瓑杩涚▼閫€鍑猴紱
+   launch 澶辫触浣滀负澶辫触涓婃姤銆傛敼鍓嶇敤 `require_session`锛屽彧鑳?adopt 娲荤潃鐨?runtime鈥斺€旇€屾湰闂
+   鎭版伆鏄?鎻愪氦宸插湪 P4銆亀orker 宸蹭笉鍦?锛屾墍浠?*姝ｉ潰璺緞涓€娆￠兘璺戜笉鍒?*銆?
+2. **鍙戠幇涓€涓纭鎻愪氦姘歌繙涓嶅彲鑳界殑缂洪櫡**锛氬€欓€夊垽鎹叚鏉￠噷鐨?prior generation 姣旂殑鏄?manifest 鐨?
+   `base_generation`锛堝熀搴曢暅鍍忎唬娆★紝鎻愪氦 checkpoint 鏃朵笉鍓嶈繘锛夛紝鑰?correlation 鐨?prior 鏄笂涓€浠?
+   checkpoint銆傚鏈鸿鏁?`mask=0x2`锛屽叾浣欎簲椤癸紙闀滃儚 uuid銆佷唬娆°€乶ative id銆乻lot銆乨igest锛?*鍏ㄧ浉鍚?*銆?
+   淇硶锛氬€欓€夊垽鎹洖鍒拌鏍间簲鏉★紱prior 鍙敤浜庡惁瀹氬垽鎹紱`CheckpointRecoveryInspection::prior_generation`
+   鏀瑰悕 `base_generation`銆備慨鍚?`verdict=2 mask=0x0`銆?
+3. 搂14.3 涓冩潯鍏ㄩ儴鏈夎鏁帮紙鍚湡 worker/鐪?bundle 鐨勪笁鏉℃闈?鍚﹀畾璺緞銆佸彧璇绘€ф寚绾癸級銆?
 
-**验收**：干净客机 `cli_e2e -Repeat 5 → 5/5`（请求 `7aa88f14…`，6 分 9 秒）。
+**涓嬩竴姝?*锛歍1-07锛堝唴瀛樺彲瑙佹€?+ UNMAP 绔埌绔級銆?
 
-**未做（记录，不当作已完成）**：
-- `disk release-memory`（§7.4 手动释放）。它在 T1-07 与 T1-08 各被延后一次，理由不变：
-  需要 storage 公开 `reclaim_to` → M3 → M4 runtime → worker 命令 → 服务动作/计划 → CLI 动词
-  的完整纵切。**它不在完成口径里**（口径 = G1+G2+G3 验收 + T4-04 manifest + master-plan §8
-  的遗留清单，而该清单四项里没有它），但设计 §7.4 承诺过这个命令，所以在这里留名。
+### 3.16 2026-10-26 澶滐細T1-07 瀹屾垚锛堝唴瀛樺彲瑙佹€?+ UNMAP 绔埌绔級
 
-**下一步**：T1-09（M5-A 单盘验收 + 断电恢复）。它依赖 T1-06/07/08/11，现在四个都齐了。
+**楠岃瘉鏂囨。**锛歚docs/validation/m5-t1-07-memory-visibility.md`銆傝鐐癸細
+
+1. `resident_bytes` / `budget_bytes` 浠庡瓨鍌ㄥ眰璁℃暟鍣ㄤ竴璺埌 CLI锛歚disk list` / `disk show` 琛屽熬
+   鍑虹幇 `mem=<resident>/<budget>`銆?*鏉ユ簮鏄瓨鍌ㄨ嚜宸辩殑 committed_bytes锛屼笉鏄繘绋嬪伐浣滈泦**銆?
+2. **UNMAP 棣栨绔埌绔?*锛氬啓 16 MiB 鈫?resident 2 949 120 鈫?**19 660 800**锛堟伆濂?+16 MiB锛夆啋 鍒犻櫎鍚?
+   鍥炲埌 **2 949 120**銆俠udget 1 073 741 824锛寃orker 宸ヤ綔闆?22 573 056锛堝悓閲忕骇锛夈€?
+3. **绗竴娆￠噺涓嶅埌锛屽師鍥犲€煎緱璁?*锛氭櫘閫氬啓鍏ュ悗 resident 瀹屽叏涓嶅姩锛屾暟鎹繕鍦?Windows 鏂囦欢缂撳瓨閲岋紱
+   鏀?*鍐欑┛** + 鏈夌晫杞鎵嶉噺鍒板瓨鍌ㄣ€傛墍璋?鍐欐枃浠跺悗鍐呭瓨绔嬪埢涓婂崌"鍦?Windows 涓婃槸缂撳瓨閿欒銆?
+4. 姣忓眰閮介拤浜嗙敤渚嬶紙鍗忚 round-trip銆佹埅鏂姤 malformed銆乷bservation 鍙湪 alive 鏃跺甫鍊笺€亀ire銆佹覆鏌擄級銆?
+
+**楠屾敹**锛氬共鍑€瀹㈡満 `cli_e2e -Repeat 20 鈫?20/20`锛堝紡 `541c8b4a鈥锛? 鍒?10 绉掞級銆?
+
+**寤跺悗**锛歚disk release-memory`锛埪?.4锛夆€斺€斿畠闇€瑕佷竴鏉′粠 storage 鍏紑 `reclaim_to` 鍒?CLI
+鍔ㄨ瘝鐨勫畬鏁寸旱鍒囷紝涓庡唴瀛樺帇鍔涘悓婧愩€?*T1-08 涔嬪悗浠嶆湭鍋氾紝瑙?搂3.17銆屾湭鍋氥€嶃€?*
 
 ---
 
-### 3.18 2026-10-26 深夜：T1-09 进行中（开机自动恢复已完成，断电 harness 待打通）
+### 3.17 2026-10-26 娣卞锛歍1-08 瀹屾垚锛堟鏌ョ偣绛栫暐缁堜簬鏈夋秷璐硅€咃級
 
-**已完成并提交（`51e164d`）**：开机自动恢复的消费者。
-- `ServiceCore::admit_auto_starts()`：启动时把"durable 状态 = running 且 `auto_start` = true"的
-  profile 逐个重新**准入** `disk start`（准入而非执行，执行仍归调度器）。
-- `ServiceHost::start()` 在 recovery → sweep → scheduler 之后、公开面打开之前调用它；失败即
-  启动失败（与 recovery/sweep 同规），条数进 `ServiceHostDiagnostics::auto_started_operations`。
-- 没有这段，断电后字节会被恢复、盘却以 stopped 回来等人手启——"最多丢一个间隔"只兑现一半。
-- 两个模型用例：会回来的那张盘被且仅被准入一次（`disk.start`）；`auto_start=false` 的盘不碰。
-- 顺带两处 fixture 修正（都由"拒绝要能定位"逼出来）：`resolve` 现在和产品一样接受 uuid；
-  失败日志带 `step=`。
+**楠岃瘉鏂囨。**锛歚docs/validation/m5-t1-08-checkpoint-policy.md`銆傝鐐癸細
 
-**已写好、未打通**：断电验收 harness
-- `tests/e2e/test-m5-powerloss-prepare.ps1`（装 auto-start 服务、建 30 s 间隔的盘、置 auto_start、
-  写标记、等一次自动提交、把"必须活下来的事实"写进 `C:\m5\powerloss-state.txt`）
-- `tests/e2e/test-m5-powerloss-verify.ps1`（只看不动：服务是否自己起来、盘是否自己回来、
-  generation ≥ 提交值、标记字节一致、worker 恰好一个）
-- `tools/m5vm/Test-M5PowerLoss.ps1`（host 侧三段：prepare → `vmrun stop hard` → 开机 → verify；
-  判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
-- CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
+1. 鍥涗釜绛栫暐瀛楁锛坕nterval / dirty 闃堝€?/ 鍐呭瓨鍘嬪姏 / 浼戠湢锛変粠"瀛樹笅鏉ュ氨涓?鍙樻垚鐪熺殑浼氳Е鍙戙€?
+   **瀹㈡満璇绘暟**锛歚generation moved 2 -> 3 on its own after 30.4 s`锛屽叏绋?*娌℃湁鍙戣繃 checkpoint 鍛戒护**銆?
+2. 钀界偣锛氱函鍑芥暟 `checkpoint_due_reason()` + `ServiceMaintenance`锛圫YSTEM 韬唤 dispatch锛?
+   **鍙仛鎸佷箙鍖栧噯鍏?*锛屾墽琛屼粛褰掕皟搴﹀櫒锛? 璋冨害鍣?claim-once tick锛?5 s锛?
+   `SERVICE_ACCEPT_POWEREVENT` / `PBT_APMSUSPEND 鈫?ServiceHost::suspend()`銆?
+   suspend **涓嶆槸 stop**锛氳澶囦笉鎷嗐€亀orker 涓嶉€€锛屽彧鍋氬敖鍔涜€屼负鐨勬鏌ョ偣銆?
+3. **鎺ョ嚎鏃堕噺鍒颁袱涓己闄?*锛氣憼 interval 鏃堕挓娌℃湁璧风偣锛坄since` 鎭?0 鈬?姘镐笉鍒版湡锛夛紱
+   鈶?鍛戒护瀵诲潃鐢ㄤ簡 mount target 鑰岄潪 profile uuid锛堟瘡娆?`The requested profile is not registered`锛夈€?
+4. **涓€鏉¤寖鍥磋竟鐣?*锛氫袱鍧楃洏鍚屾椂娲荤潃鏃讹紝绗簩鍧楃殑鎷嗗嵏涓嶄細鐪熸绉婚櫎璁惧锛坮estart 鎵句笉鍒板嵎銆?
+   forget `device_absent=0`锛夈€侻5 鏄崟鐩樹骇鍝侊紙G4 寤跺悗锛夛紝鎵€浠?e2e 鏀规垚涓€娆′竴鍧楃洏锛?
+   杩欐潯涓嶆槸绛栫暐缂洪櫡锛屼絾鍊煎緱璁颁綇銆?
+5. `forget` 鐨勪節涓悎鍙栭」鐜板湪鎷掔粷鏃?*閫愰」鎵撳嵃**锛堝拰 `verify_volume`銆乧heckpoint boundary 鍚屾簮锛夈€?
 
-**2026-10-27 00:52 第六次读数（干净三段跑完；剩下的问题是"服务 RUNNING 但没有公开管道"）**
+**楠屾敹**锛氬共鍑€瀹㈡満 `cli_e2e -Repeat 5 鈫?5/5`锛堣姹?`7aa88f14鈥锛? 鍒?9 绉掞級銆?
 
-干净客机（硬重启 + 清 ProgramData + 删服务）跑完整三段：
-- `prepare` **1 of 1 passed**（请求 `b0cb01b9…`，52 s）
-- 硬断电 + 开机 + `verify` → **0 of 1**，请求 `1280adbd…`，耗时 187 s
-- 187 s ≈ `Wait-ForService 180` + 7 s，即**第一步就失败**：CLI 连不上
+**鏈仛锛堣褰曪紝涓嶅綋浣滃凡瀹屾垚锛?*锛?
+- `disk release-memory`锛埪?.4 鎵嬪姩閲婃斁锛夈€傚畠鍦?T1-07 涓?T1-08 鍚勮寤跺悗涓€娆★紝鐞嗙敱涓嶅彉锛?
+  闇€瑕?storage 鍏紑 `reclaim_to` 鈫?M3 鈫?M4 runtime 鈫?worker 鍛戒护 鈫?鏈嶅姟鍔ㄤ綔/璁″垝 鈫?CLI 鍔ㄨ瘝
+  鐨勫畬鏁寸旱鍒囥€?*瀹冧笉鍦ㄥ畬鎴愬彛寰勯噷**锛堝彛寰?= G1+G2+G3 楠屾敹 + T4-04 manifest + master-plan 搂8
+  鐨勯仐鐣欐竻鍗曪紝鑰岃娓呭崟鍥涢」閲屾病鏈夊畠锛夛紝浣嗚璁?搂7.4 鎵胯杩囪繖涓懡浠わ紝鎵€浠ュ湪杩欓噷鐣欏悕銆?
 
-断电后直接手动确认（不再靠 harness）：
+**涓嬩竴姝?*锛歍1-09锛圡5-A 鍗曠洏楠屾敹 + 鏂數鎭㈠锛夈€傚畠渚濊禆 T1-06/07/08/11锛岀幇鍦ㄥ洓涓兘榻愪簡銆?
+
+---
+
+### 3.18 2026-10-26 娣卞锛歍1-09 杩涜涓紙寮€鏈鸿嚜鍔ㄦ仮澶嶅凡瀹屾垚锛屾柇鐢?harness 寰呮墦閫氾級
+
+**宸插畬鎴愬苟鎻愪氦锛坄51e164d`锛?*锛氬紑鏈鸿嚜鍔ㄦ仮澶嶇殑娑堣垂鑰呫€?
+- `ServiceCore::admit_auto_starts()`锛氬惎鍔ㄦ椂鎶?durable 鐘舵€?= running 涓?`auto_start` = true"鐨?
+  profile 閫愪釜閲嶆柊**鍑嗗叆** `disk start`锛堝噯鍏ヨ€岄潪鎵ц锛屾墽琛屼粛褰掕皟搴﹀櫒锛夈€?
+- `ServiceHost::start()` 鍦?recovery 鈫?sweep 鈫?scheduler 涔嬪悗銆佸叕寮€闈㈡墦寮€涔嬪墠璋冪敤瀹冿紱澶辫触鍗?
+  鍚姩澶辫触锛堜笌 recovery/sweep 鍚岃锛夛紝鏉℃暟杩?`ServiceHostDiagnostics::auto_started_operations`銆?
+- 娌℃湁杩欐锛屾柇鐢靛悗瀛楄妭浼氳鎭㈠銆佺洏鍗翠互 stopped 鍥炴潵绛変汉鎵嬪惎鈥斺€?鏈€澶氫涪涓€涓棿闅?鍙厬鐜颁竴鍗娿€?
+- 涓や釜妯″瀷鐢ㄤ緥锛氫細鍥炴潵鐨勯偅寮犵洏琚笖浠呰鍑嗗叆涓€娆★紙`disk.start`锛夛紱`auto_start=false` 鐨勭洏涓嶇銆?
+- 椤哄甫涓ゅ fixture 淇锛堥兘鐢?鎷掔粷瑕佽兘瀹氫綅"閫煎嚭鏉ワ級锛歚resolve` 鐜板湪鍜屼骇鍝佷竴鏍锋帴鍙?uuid锛?
+  澶辫触鏃ュ織甯?`step=`銆?
+
+**宸插啓濂姐€佹湭鎵撻€?*锛氭柇鐢甸獙鏀?harness
+- `tests/e2e/test-m5-powerloss-prepare.ps1`锛堣 auto-start 鏈嶅姟銆佸缓 30 s 闂撮殧鐨勭洏銆佺疆 auto_start銆?
+  鍐欐爣璁般€佺瓑涓€娆¤嚜鍔ㄦ彁浜ゃ€佹妸"蹇呴』娲讳笅鏉ョ殑浜嬪疄"鍐欒繘 `C:\m5\powerloss-state.txt`锛?
+- `tests/e2e/test-m5-powerloss-verify.ps1`锛堝彧鐪嬩笉鍔細鏈嶅姟鏄惁鑷繁璧锋潵銆佺洏鏄惁鑷繁鍥炴潵銆?
+  generation 鈮?鎻愪氦鍊笺€佹爣璁板瓧鑺備竴鑷淬€亀orker 鎭板ソ涓€涓級
+- `tools/m5vm/Test-M5PowerLoss.ps1`锛坔ost 渚т笁娈碉細prepare 鈫?`vmrun stop hard` 鈫?寮€鏈?鈫?verify锛?
+  鍒ゅ畾璇?harness 鑷繁鐨?`N of M passed`锛屽洜涓?**harness 鍦ㄧ敤渚嬪け璐ユ椂浠嶉€€鍑?0**鈥斺€旇繖鏉″凡缁忚俯杩囷級
+- CMake 宸叉敞鍐?`integration.m5.powerloss_prepare` / `..._verify`锛?55 鈫?157 渚嬶級
+
+**2026-10-27 00:52 绗叚娆¤鏁帮紙骞插噣涓夋璺戝畬锛涘墿涓嬬殑闂鏄?鏈嶅姟 RUNNING 浣嗘病鏈夊叕寮€绠￠亾"锛?*
+
+骞插噣瀹㈡満锛堢‖閲嶅惎 + 娓?ProgramData + 鍒犳湇鍔★級璺戝畬鏁翠笁娈碉細
+- `prepare` **1 of 1 passed**锛堣姹?`b0cb01b9鈥锛?2 s锛?
+- 纭柇鐢?+ 寮€鏈?+ `verify` 鈫?**0 of 1**锛岃姹?`1280adbd鈥锛岃€楁椂 187 s
+- 187 s 鈮?`Wait-ForService 180` + 7 s锛屽嵆**绗竴姝ュ氨澶辫触**锛欳LI 杩炰笉涓?
+
+鏂數鍚庣洿鎺ユ墜鍔ㄧ‘璁わ紙涓嶅啀闈?harness锛夛細
 
 ```text
-myrd-cli disk list → exit=3, 30016 ms
+myrd-cli disk list 鈫?exit=3, 30016 ms
   "myrd-cli: the service is not available (is it installed and running?)"
-sc query MyRamDiskPowerLoss → STATE: 4 RUNNING
+sc query MyRamDiskPowerLoss 鈫?STATE: 4 RUNNING
 ```
 
-**所以现在的未解问题是产品侧的**：断电重启后 **SCM 说 RUNNING，但公开管道不存在**（或不可连接）。
-`ServiceHost::start()` 若打开公开面失败会把状态置 failed 并让服务报 STOPPED，所以要么
-start() 根本没走到 open，要么 open 成功而管道对 CLI 不可达。
+**鎵€浠ョ幇鍦ㄧ殑鏈В闂鏄骇鍝佷晶鐨?*锛氭柇鐢甸噸鍚悗 **SCM 璇?RUNNING锛屼絾鍏紑绠￠亾涓嶅瓨鍦?*锛堟垨涓嶅彲杩炴帴锛夈€?
+`ServiceHost::start()` 鑻ユ墦寮€鍏紑闈㈠け璐ヤ細鎶婄姸鎬佺疆 failed 骞惰鏈嶅姟鎶?STOPPED锛屾墍浠ヨ涔?
+start() 鏍规湰娌¤蛋鍒?open锛岃涔?open 鎴愬姛鑰岀閬撳 CLI 涓嶅彲杈俱€?
 
-**下一次要查的顺序（都很便宜）**：
-**2026-10-27 00:55 追加（关键一步已经查了）**：断电后那台客机上
+**涓嬩竴娆¤鏌ョ殑椤哄簭锛堥兘寰堜究瀹滐級**锛?
+**2026-10-27 00:55 杩藉姞锛堝叧閿竴姝ュ凡缁忔煡浜嗭級**锛氭柇鐢靛悗閭ｅ彴瀹㈡満涓?
 
 ```text
-Get-Process myrd-service → 没有进程
-\\.\pipe\ 里 myrd*     → 没有任何管道
-C:\ProgramData\MyRamDisk\logs\service.log 最后写入 00:46:32（在断电之前）
+Get-Process myrd-service 鈫?娌℃湁杩涚▼
+\\.\pipe\ 閲?myrd*     鈫?娌℃湁浠讳綍绠￠亾
+C:\ProgramData\MyRamDisk\logs\service.log 鏈€鍚庡啓鍏?00:46:32锛堝湪鏂數涔嬪墠锛?
 ```
 
-而 `sc query` 在几分钟前还报 RUNNING。**结论：断电后的服务进程自己退出了（疑似崩溃），
-公开管道因此从没建立起来**。所以 T1-09 剩下的不是一个"恢复逻辑"问题，而是
-**"重启后服务进程会死"**——下一步必须看 **Windows 应用程序事件日志**（Event ID 1000 /
-WER）拿崩溃模块与偏移，再决定是修代码还是修环境。`service.log` 在 00:46:32 之后没有任何
-新行，说明服务**在这次开机里连一条日志都没写**——它很可能在 `ServiceHost::start()` 之前
-（或刚开始）就死了，这一点与"崩溃"比与"逻辑卡住"更吻合。
+鑰?`sc query` 鍦ㄥ嚑鍒嗛挓鍓嶈繕鎶?RUNNING銆?*缁撹锛氭柇鐢靛悗鐨勬湇鍔¤繘绋嬭嚜宸遍€€鍑轰簡锛堢枒浼煎穿婧冿級锛?
+鍏紑绠￠亾鍥犳浠庢病寤虹珛璧锋潵**銆傛墍浠?T1-09 鍓╀笅鐨勪笉鏄竴涓?鎭㈠閫昏緫"闂锛岃€屾槸
+**"閲嶅惎鍚庢湇鍔¤繘绋嬩細姝?**鈥斺€斾笅涓€姝ュ繀椤荤湅 **Windows 搴旂敤绋嬪簭浜嬩欢鏃ュ織**锛圗vent ID 1000 /
+WER锛夋嬁宕╂簝妯″潡涓庡亸绉伙紝鍐嶅喅瀹氭槸淇唬鐮佽繕鏄慨鐜銆俙service.log` 鍦?00:46:32 涔嬪悗娌℃湁浠讳綍
+鏂拌锛岃鏄庢湇鍔?*鍦ㄨ繖娆″紑鏈洪噷杩炰竴鏉℃棩蹇楅兘娌″啓**鈥斺€斿畠寰堝彲鑳藉湪 `ServiceHost::start()` 涔嬪墠
+锛堟垨鍒氬紑濮嬶級灏辨浜嗭紝杩欎竴鐐逛笌"宕╂簝"姣斾笌"閫昏緫鍗′綇"鏇村惢鍚堛€?
 
-**2026-10-27 01:00 再追加（证据互相矛盾，必须按时间戳重测，不要再猜）**
+**2026-10-27 01:00 鍐嶈拷鍔狅紙璇佹嵁浜掔浉鐭涚浘锛屽繀椤绘寜鏃堕棿鎴抽噸娴嬶紝涓嶈鍐嶇寽锛?*
 
-同一台客机、几分钟之内：
+鍚屼竴鍙板鏈恒€佸嚑鍒嗛挓涔嬪唴锛?
 
-| 时刻 | 观察 |
+| 鏃跺埢 | 瑙傚療 |
 |---|---|
-| 00:52 | `myrd-cli disk list` → exit 3「service is not available」，30 s；`sc query` → **RUNNING** |
-| 00:55 | 没有 `myrd-service` 进程、没有任何 `myrd*` 管道；`service.log` 最后一行 **00:46:32**（断电前） |
-| 01:00 | `sc query` → **1060 服务不存在**（`service.log` 仍是 00:46:32） |
+| 00:52 | `myrd-cli disk list` 鈫?exit 3銆宻ervice is not available銆嶏紝30 s锛沗sc query` 鈫?**RUNNING** |
+| 00:55 | 娌℃湁 `myrd-service` 杩涚▼銆佹病鏈変换浣?`myrd*` 绠￠亾锛沗service.log` 鏈€鍚庝竴琛?**00:46:32**锛堟柇鐢靛墠锛?|
+| 01:00 | `sc query` 鈫?**1060 鏈嶅姟涓嶅瓨鍦?*锛坄service.log` 浠嶆槸 00:46:32锛?|
 
-三条观察不能同时为真：RUNNING 的服务不能既没有进程、又没有管道，更不能在没有人删它的情况下
-变成"不存在"。可能的解释有三类，**都必须用带时间戳的重测来区分**：
-(a) 我读到的 RUNNING 是**上一次准备阶段**的输出（命令输出串了）；
-(b) 客机在两次检查之间**重启过**（例如我加的 boot 重试或客机自己复位），服务因此回到
-    "未安装"（`C:\ProgramData` 里的 profile 目录还在，说明不是快照回滚）；
-(c) 服务装在一个**每次开机都会消失的位置**（例如 binPath 指向 staging 目录而被清理）。
+涓夋潯瑙傚療涓嶈兘鍚屾椂涓虹湡锛歊UNNING 鐨勬湇鍔′笉鑳芥棦娌℃湁杩涚▼銆佸張娌℃湁绠￠亾锛屾洿涓嶈兘鍦ㄦ病鏈変汉鍒犲畠鐨勬儏鍐典笅
+鍙樻垚"涓嶅瓨鍦?銆傚彲鑳界殑瑙ｉ噴鏈変笁绫伙紝**閮藉繀椤荤敤甯︽椂闂存埑鐨勯噸娴嬫潵鍖哄垎**锛?
+(a) 鎴戣鍒扮殑 RUNNING 鏄?*涓婁竴娆″噯澶囬樁娈?*鐨勮緭鍑猴紙鍛戒护杈撳嚭涓蹭簡锛夛紱
+(b) 瀹㈡満鍦ㄤ袱娆℃鏌ヤ箣闂?*閲嶅惎杩?*锛堜緥濡傛垜鍔犵殑 boot 閲嶈瘯鎴栧鏈鸿嚜宸卞浣嶏級锛屾湇鍔″洜姝ゅ洖鍒?
+    "鏈畨瑁?锛坄C:\ProgramData` 閲岀殑 profile 鐩綍杩樺湪锛岃鏄庝笉鏄揩鐓у洖婊氾級锛?
+(c) 鏈嶅姟瑁呭湪涓€涓?*姣忔寮€鏈洪兘浼氭秷澶辩殑浣嶇疆**锛堜緥濡?binPath 鎸囧悜 staging 鐩綍鑰岃娓呯悊锛夈€?
 
-**下一次的做法（写成清单，照做）**：
-1. 干净客机 → `Test-M5PowerLoss.ps1` 只跑到 prepare（`-ResumeVerify` 之前手动停）；
-2. **立刻**记录：`sc qc`（binPath/start 类型）+ `sc query` + `Get-Process myrd-service` +
-   `\\.\pipe\` 过滤 + `service.log` 行数 + `Get-Date`，作为**基线快照**；
-3. 断电 → 开机 → **每 15 秒**采一次同样的快照，连采 3 分钟并带时间戳输出；
-4. 用快照序列判断上面 (a)/(b)/(c) 哪一类，再动代码。
+**涓嬩竴娆＄殑鍋氭硶锛堝啓鎴愭竻鍗曪紝鐓у仛锛?*锛?
+1. 骞插噣瀹㈡満 鈫?`Test-M5PowerLoss.ps1` 鍙窇鍒?prepare锛坄-ResumeVerify` 涔嬪墠鎵嬪姩鍋滐級锛?
+2. **绔嬪埢**璁板綍锛歚sc qc`锛坆inPath/start 绫诲瀷锛? `sc query` + `Get-Process myrd-service` +
+   `\\.\pipe\` 杩囨护 + `service.log` 琛屾暟 + `Get-Date`锛屼綔涓?*鍩虹嚎蹇収**锛?
+3. 鏂數 鈫?寮€鏈?鈫?**姣?15 绉?*閲囦竴娆″悓鏍风殑蹇収锛岃繛閲?3 鍒嗛挓骞跺甫鏃堕棿鎴宠緭鍑猴紱
+4. 鐢ㄥ揩鐓у簭鍒楀垽鏂笂闈?(a)/(b)/(c) 鍝竴绫伙紝鍐嶅姩浠ｇ爜銆?
 
-**2026-10-27 01:05 结论：上一轮的"矛盾"是测量通道的问题，不是产品的**
+**2026-10-27 01:05 缁撹锛氫笂涓€杞殑"鐭涚浘"鏄祴閲忛€氶亾鐨勯棶棰橈紝涓嶆槸浜у搧鐨?*
 
-用**带时间戳的快照**（`C:\m5\snap.ps1`，客机本地跑）在断电重启后 31 秒采到：
+鐢?*甯︽椂闂存埑鐨勫揩鐓?*锛坄C:\m5\snap.ps1`锛屽鏈烘湰鍦拌窇锛夊湪鏂數閲嶅惎鍚?31 绉掗噰鍒帮細
 
 ```text
 01:03:38 state=RUNNING pid=3164 start=01:03:07 pipes=0 loglen=8605
-sc qc → START_TYPE: 2 AUTO_START
-        BINARY_PATH: …\out\build\msvc\src\Release\myrd-service.exe
+sc qc 鈫?START_TYPE: 2 AUTO_START
+        BINARY_PATH: 鈥out\build\msvc\src\Release\myrd-service.exe
 ```
 
-而同一时刻服务自己的日志已经写到 `disk.start … terminal`——**断电后的那次 start 走完了全部
-动作**（`start-proxy → create-device → locate-physical-drive → verify-volume → assign-mount →
-readiness-io → terminal`）。
+鑰屽悓涓€鏃跺埢鏈嶅姟鑷繁鐨勬棩蹇楀凡缁忓啓鍒?`disk.start 鈥?terminal`鈥斺€?*鏂數鍚庣殑閭ｆ start 璧板畬浜嗗叏閮?
+鍔ㄤ綔**锛坄start-proxy 鈫?create-device 鈫?locate-physical-drive 鈫?verify-volume 鈫?assign-mount 鈫?
+readiness-io 鈫?terminal`锛夈€?
 
-于是三条"矛盾"观察的解释是：**普通 ssh 会话不是提权会话**（AGENTS §5：SSH 是网络登录、不提权），
-所以
-- `\\.\pipe\` 枚举可能被拒 → 我看到的 `pipes=0` **不是**"没有管道"；
-- 非提权的 `myrd-cli disk list` 拿不到公开管道 → 我看到的 `service is not available` **不是**
-  "服务没起来"。
+浜庢槸涓夋潯"鐭涚浘"瑙傚療鐨勮В閲婃槸锛?*鏅€?ssh 浼氳瘽涓嶆槸鎻愭潈浼氳瘽**锛圓GENTS 搂5锛歋SH 鏄綉缁滅櫥褰曘€佷笉鎻愭潈锛夛紝
+鎵€浠?
+- `\\.\pipe\` 鏋氫妇鍙兘琚嫆 鈫?鎴戠湅鍒扮殑 `pipes=0` **涓嶆槸**"娌℃湁绠￠亾"锛?
+- 闈炴彁鏉冪殑 `myrd-cli disk list` 鎷夸笉鍒板叕寮€绠￠亾 鈫?鎴戠湅鍒扮殑 `service is not available` **涓嶆槸**
+  "鏈嶅姟娌¤捣鏉?銆?
 
-**教训（写进 lessons）**：**凡是要碰公开管道、进程、服务的测量，只能走 harness 的提权通道
-（ctest 用例 + scheduled task），不能用普通 ssh 会话下结论。** 我上一轮据此写下的
-"服务进程死了""服务不存在"两条都要收回。
+**鏁欒锛堝啓杩?lessons锛?*锛?*鍑℃槸瑕佺鍏紑绠￠亾銆佽繘绋嬨€佹湇鍔＄殑娴嬮噺锛屽彧鑳借蛋 harness 鐨勬彁鏉冮€氶亾
+锛坈test 鐢ㄤ緥 + scheduled task锛夛紝涓嶈兘鐢ㄦ櫘閫?ssh 浼氳瘽涓嬬粨璁恒€?* 鎴戜笂涓€杞嵁姝ゅ啓涓嬬殑
+"鏈嶅姟杩涚▼姝讳簡""鏈嶅姟涓嶅瓨鍦?涓ゆ潯閮借鏀跺洖銆?
 
-**下一步**：把快照做成一个 ctest 用例（提权通道），在 verify 之前打印一次；然后用它替代
-我这几轮的手工 ssh 判断，重跑一次三段。verify 的 `Wait-ForService` 若仍超时，那才是真问题。
+**涓嬩竴姝?*锛氭妸蹇収鍋氭垚涓€涓?ctest 鐢ㄤ緥锛堟彁鏉冮€氶亾锛夛紝鍦?verify 涔嬪墠鎵撳嵃涓€娆★紱鐒跺悗鐢ㄥ畠鏇夸唬
+鎴戣繖鍑犺疆鐨勬墜宸?ssh 鍒ゆ柇锛岄噸璺戜竴娆′笁娈点€倂erify 鐨?`Wait-ForService` 鑻ヤ粛瓒呮椂锛岄偅鎵嶆槸鐪熼棶棰樸€?
 
 
-   `StartTime` 是不是这次开机；
-2. `C:\ProgramData\MyRamDisk\logs\service.log` 里这次开机的最后几行——**有没有** `auto-start`
-   与 subsequent 的 action 行（如果日志停在 `auto-start: …retired…` 之后，说明 start() 卡在
-   `admit_auto_starts` 或调度器启动里）；
-3. `\\.\pipe\` 里有没有公开管道名（`Get-ChildItem \\.\pipe\ | ? Name -match 'myrd'`）；
-4. 若服务日志**完全没有**这次开机的行，说明服务进程不是这一版二进制（staging/服务 binPath 不对）。
+   `StartTime` 鏄笉鏄繖娆″紑鏈猴紱
+2. `C:\ProgramData\MyRamDisk\logs\service.log` 閲岃繖娆″紑鏈虹殑鏈€鍚庡嚑琛屸€斺€?*鏈夋病鏈?* `auto-start`
+   涓?subsequent 鐨?action 琛岋紙濡傛灉鏃ュ織鍋滃湪 `auto-start: 鈥etired鈥 涔嬪悗锛岃鏄?start() 鍗″湪
+   `admit_auto_starts` 鎴栬皟搴﹀櫒鍚姩閲岋級锛?
+3. `\\.\pipe\` 閲屾湁娌℃湁鍏紑绠￠亾鍚嶏紙`Get-ChildItem \\.\pipe\ | ? Name -match 'myrd'`锛夛紱
+4. 鑻ユ湇鍔℃棩蹇?*瀹屽叏娌℃湁**杩欐寮€鏈虹殑琛岋紝璇存槑鏈嶅姟杩涚▼涓嶆槸杩欎竴鐗堜簩杩涘埗锛坰taging/鏈嶅姟 binPath 涓嶅锛夈€?
 
-**T1-09 已完成的部分**（有读数）：断电后服务自起、盘自起、generation ≥ 提交值、脏数据重放
-提交成下一代（`0af35d5` 的提交信息里有完整读数）。**未完成**：verify 端到端一次绿，
-以及上面那条"RUNNING 但无管道"的原因。
+**T1-09 宸插畬鎴愮殑閮ㄥ垎**锛堟湁璇绘暟锛夛細鏂數鍚庢湇鍔¤嚜璧枫€佺洏鑷捣銆乬eneration 鈮?鎻愪氦鍊笺€佽剰鏁版嵁閲嶆斁
+鎻愪氦鎴愪笅涓€浠ｏ紙`0af35d5` 鐨勬彁浜や俊鎭噷鏈夊畬鏁磋鏁帮級銆?*鏈畬鎴?*锛歷erify 绔埌绔竴娆＄豢锛?
+浠ュ強涓婇潰閭ｆ潯"RUNNING 浣嗘棤绠￠亾"鐨勫師鍥犮€?
 
-**2026-10-27 00:45 第五次读数（T1-09 的产品部分已全绿；剩下的全在 verify 脚本与客机侧）**
+**2026-10-27 00:45 绗簲娆¤鏁帮紙T1-09 鐨勪骇鍝侀儴鍒嗗凡鍏ㄧ豢锛涘墿涓嬬殑鍏ㄥ湪 verify 鑴氭湰涓庡鏈轰晶锛?*
 
-**断电后连续两次读到的产品事实**（这才是 T1-09 要的）：
+**鏂數鍚庤繛缁袱娆¤鍒扮殑浜у搧浜嬪疄**锛堣繖鎵嶆槸 T1-09 瑕佺殑锛夛細
 
 ```text
-service state: RUNNING（脚本从未启动它）
-5003a664-… T: ready running runtime=Running activity=Idle
+service state: RUNNING锛堣剼鏈粠鏈惎鍔ㄥ畠锛?
+5003a664-鈥?T: ready running runtime=Running activity=Idle
             persistence=Dirty health=Healthy generation=4  mem=1048576/1073741824
 recovered generation: 4 (last committed before the cut: 3)
 ```
 
-即：**服务自己起来、盘自己回来、generation ≥ 断电前提交值、resident 内存 1 MiB**。
-`persistence=Dirty` 且 generation 从 3 走到 4，说明恢复把掉电时的脏数据重放并提交了一代
-——这正是"最多丢一个间隔"的实测形态。
+鍗筹細**鏈嶅姟鑷繁璧锋潵銆佺洏鑷繁鍥炴潵銆乬eneration 鈮?鏂數鍓嶆彁浜ゅ€笺€乺esident 鍐呭瓨 1 MiB**銆?
+`persistence=Dirty` 涓?generation 浠?3 璧板埌 4锛岃鏄庢仮澶嶆妸鎺夌數鏃剁殑鑴忔暟鎹噸鏀惧苟鎻愪氦浜嗕竴浠?
+鈥斺€旇繖姝ｆ槸"鏈€澶氫涪涓€涓棿闅?鐨勫疄娴嬪舰鎬併€?
 
-**本轮修掉的三处脚本/工具缺陷**（都是"让产品看起来坏了"的那类）：
-1. 状态文件**没落盘**：断电后回来是 0 字节 → 用 `FileStream.Flush($true)` 写；
-2. `verify` 里 `Join-Path $mount (powerloss-marker.txt)` 少引号（`CommandNotFoundException`）；
-3. 编排器加 `-ResumeVerify`（只跑 verify）与 boot 失败自动重试一次。
+**鏈疆淇帀鐨勪笁澶勮剼鏈?宸ュ叿缂洪櫡**锛堥兘鏄?璁╀骇鍝佺湅璧锋潵鍧忎簡"鐨勯偅绫伙級锛?
+1. 鐘舵€佹枃浠?*娌¤惤鐩?*锛氭柇鐢靛悗鍥炴潵鏄?0 瀛楄妭 鈫?鐢?`FileStream.Flush($true)` 鍐欙紱
+2. `verify` 閲?`Join-Path $mount (powerloss-marker.txt)` 灏戝紩鍙凤紙`CommandNotFoundException`锛夛紱
+3. 缂栨帓鍣ㄥ姞 `-ResumeVerify`锛堝彧璺?verify锛変笌 boot 澶辫触鑷姩閲嶈瘯涓€娆°€?
 
-**最后一个未解的现象**：`-ResumeVerify` 那次 `sc query` 是 RUNNING，但 CLI 连不上公开管道
-（`Wait-ForService 180` 超时）。两次读数之间我前一次 verify 失败后**没有做清理**，所以极可能是
-**上一个服务实例的管道残留**。下次：断电重启 → 完整跑一次三段（不要 -ResumeVerify），
-若仍在 `Wait-ForService` 失败，先看 `sc query` 的 PID 与 `C:\ProgramData\MyRamDisk\logs\service.log`
-是否来自同一进程。
+**鏈€鍚庝竴涓湭瑙ｇ殑鐜拌薄**锛歚-ResumeVerify` 閭ｆ `sc query` 鏄?RUNNING锛屼絾 CLI 杩炰笉涓婂叕寮€绠￠亾
+锛坄Wait-ForService 180` 瓒呮椂锛夈€備袱娆¤鏁颁箣闂存垜鍓嶄竴娆?verify 澶辫触鍚?*娌℃湁鍋氭竻鐞?*锛屾墍浠ユ瀬鍙兘鏄?
+**涓婁竴涓湇鍔″疄渚嬬殑绠￠亾娈嬬暀**銆備笅娆★細鏂數閲嶅惎 鈫?瀹屾暣璺戜竴娆′笁娈碉紙涓嶈 -ResumeVerify锛夛紝
+鑻ヤ粛鍦?`Wait-ForService` 澶辫触锛屽厛鐪?`sc query` 鐨?PID 涓?`C:\ProgramData\MyRamDisk\logs\service.log`
+鏄惁鏉ヨ嚜鍚屼竴杩涚▼銆?
 
-**下一步（新会话从这里开始）**：干净客机 → 三段一次跑通 → 写
-`docs/validation/m5-t1-09-power-loss.md`、tasklist T1-09 → PASSED → 进 T1-10。
+**涓嬩竴姝ワ紙鏂颁細璇濅粠杩欓噷寮€濮嬶級**锛氬共鍑€瀹㈡満 鈫?涓夋涓€娆¤窇閫?鈫?鍐?
+`docs/validation/m5-t1-09-power-loss.md`銆乼asklist T1-09 鈫?PASSED 鈫?杩?T1-10銆?
 
-**2026-10-27 00:35 第四次读数（prepare 稳定通过，断电后客机本身有概率起不来）**
+**2026-10-27 00:35 绗洓娆¤鏁帮紙prepare 绋冲畾閫氳繃锛屾柇鐢靛悗瀹㈡満鏈韩鏈夋鐜囪捣涓嶆潵锛?*
 
-- `prepare` 在干净客机上**连续两次通过**（请求 `d0667c91…` 50 s、`8eae57a7…` 52 s）：
-  装 auto-start 服务 → 建 30 s 间隔的盘 → `auto_start` → 写标记 → 等自动提交 → 落状态。
-- 状态文件改 JSON 后 `verify` 仍报 `invalid JSON primitive`（写读两端对编码的处理仍不一致），
-  于是**改成不依赖 JSON 的容错读取**（一条正则同时接受 JSON 与 `key=value`，失败时打印全文）。
-- **硬断电之后客机有概率起不来**：这次 600 s 内 SSH 无响应（累计第二次）。主机侧
-  `vmrun stop hard` + `start nogui` 之后 15 s 就好了，说明是**客机启动偶发挂死**，不是网络配置。
-  ⇒ 编排器需要：boot 等待超时后**自动断电重试一次**，并且提供 `-ResumeVerify`
-  （prepare 与断电都已完成、状态文件仍在时，只跑 verify，不重跑前两段）。
-- 断电后的那次 start 已经走完整真实序列（`6177380` 的修复），所以下一轮要看的只剩
-  **verify 的三条断言**能否读到正确的状态文件。
+- `prepare` 鍦ㄥ共鍑€瀹㈡満涓?*杩炵画涓ゆ閫氳繃**锛堣姹?`d0667c91鈥 50 s銆乣8eae57a7鈥 52 s锛夛細
+  瑁?auto-start 鏈嶅姟 鈫?寤?30 s 闂撮殧鐨勭洏 鈫?`auto_start` 鈫?鍐欐爣璁?鈫?绛夎嚜鍔ㄦ彁浜?鈫?钀界姸鎬併€?
+- 鐘舵€佹枃浠舵敼 JSON 鍚?`verify` 浠嶆姤 `invalid JSON primitive`锛堝啓璇讳袱绔缂栫爜鐨勫鐞嗕粛涓嶄竴鑷达級锛?
+  浜庢槸**鏀规垚涓嶄緷璧?JSON 鐨勫閿欒鍙?*锛堜竴鏉℃鍒欏悓鏃舵帴鍙?JSON 涓?`key=value`锛屽け璐ユ椂鎵撳嵃鍏ㄦ枃锛夈€?
+- **纭柇鐢典箣鍚庡鏈烘湁姒傜巼璧蜂笉鏉?*锛氳繖娆?600 s 鍐?SSH 鏃犲搷搴旓紙绱绗簩娆★級銆備富鏈轰晶
+  `vmrun stop hard` + `start nogui` 涔嬪悗 15 s 灏卞ソ浜嗭紝璇存槑鏄?*瀹㈡満鍚姩鍋跺彂鎸傛**锛屼笉鏄綉缁滈厤缃€?
+  鈬?缂栨帓鍣ㄩ渶瑕侊細boot 绛夊緟瓒呮椂鍚?*鑷姩鏂數閲嶈瘯涓€娆?*锛屽苟涓旀彁渚?`-ResumeVerify`
+  锛坧repare 涓庢柇鐢甸兘宸插畬鎴愩€佺姸鎬佹枃浠朵粛鍦ㄦ椂锛屽彧璺?verify锛屼笉閲嶈窇鍓嶄袱娈碉級銆?
+- 鏂數鍚庣殑閭ｆ start 宸茬粡璧板畬鏁寸湡瀹炲簭鍒楋紙`6177380` 鐨勪慨澶嶏級锛屾墍浠ヤ笅涓€杞鐪嬬殑鍙墿
+  **verify 鐨勪笁鏉℃柇瑷€**鑳藉惁璇诲埌姝ｇ‘鐨勭姸鎬佹枃浠躲€?
 
-**下一步（新会话从这里开始）**：
-1. 给编排器加 `-ResumeVerify`（跳过 prepare 与断电，直接 verify）与 boot 失败自动重试一次；
-2. 干净客机跑一次完整三段；verify 通过即 T1-09 完成（读数写进
-   `docs/validation/m5-t1-09-power-loss.md`，tasklist T1-09 → PASSED）；
-3. 然后进 T1-10。
+**涓嬩竴姝ワ紙鏂颁細璇濅粠杩欓噷寮€濮嬶級**锛?
+1. 缁欑紪鎺掑櫒鍔?`-ResumeVerify`锛堣烦杩?prepare 涓庢柇鐢碉紝鐩存帴 verify锛変笌 boot 澶辫触鑷姩閲嶈瘯涓€娆★紱
+2. 骞插噣瀹㈡満璺戜竴娆″畬鏁翠笁娈碉紱verify 閫氳繃鍗?T1-09 瀹屾垚锛堣鏁板啓杩?
+   `docs/validation/m5-t1-09-power-loss.md`锛宼asklist T1-09 鈫?PASSED锛夛紱
+3. 鐒跺悗杩?T1-10銆?
 
-**2026-10-27 00:05 第三次读数（harness 已能判绿，客机会在两处卡死）**
+**2026-10-27 00:05 绗笁娆¤鏁帮紙harness 宸茶兘鍒ょ豢锛屽鏈轰細鍦ㄤ袱澶勫崱姝伙級**
 
-- harness 的判定修好了，两处都是**量出来的**：
-  ① harness 用 `Write-Host` 报判定，走的是 information stream，`2>&1 | Out-String` **抓不到**，
-  于是包装器对着"屏幕上明明印着 `0 of 1 passed`"的 run 说"没有判定行"；改用 `6>&1`。
-  ② staging 阶段印的是数量不是判定，用同一条规则会把刚成功的 stage 判成失败；so stage 只看退出码。
-- **`-SkipStage` 会让客机跑旧的 e2e 脚本**（脚本随 `-Stage` 的 git 归档下发）。这解释了
-  "uuid 解析已修却仍然报同一个错"——那两次客机跑的是旧文件。以后改 e2e 脚本必须带 `-Stage`。
-- **客机会卡死**（两次，都在 prepare 阶段前后）：SSH 无响应，只有硬断电才能恢复；
-  两次都是先跑过一轮断电实验之后。**下一次尝试前先硬重启**，并把"跑前重启"当作这个
-  harness 的固定前置，而不是例外处理。
+- harness 鐨勫垽瀹氫慨濂戒簡锛屼袱澶勯兘鏄?*閲忓嚭鏉ョ殑**锛?
+  鈶?harness 鐢?`Write-Host` 鎶ュ垽瀹氾紝璧扮殑鏄?information stream锛宍2>&1 | Out-String` **鎶撲笉鍒?*锛?
+  浜庢槸鍖呰鍣ㄥ鐫€"灞忓箷涓婃槑鏄庡嵃鐫€ `0 of 1 passed`"鐨?run 璇?娌℃湁鍒ゅ畾琛?锛涙敼鐢?`6>&1`銆?
+  鈶?staging 闃舵鍗扮殑鏄暟閲忎笉鏄垽瀹氾紝鐢ㄥ悓涓€鏉¤鍒欎細鎶婂垰鎴愬姛鐨?stage 鍒ゆ垚澶辫触锛泂o stage 鍙湅閫€鍑虹爜銆?
+- **`-SkipStage` 浼氳瀹㈡満璺戞棫鐨?e2e 鑴氭湰**锛堣剼鏈殢 `-Stage` 鐨?git 褰掓。涓嬪彂锛夈€傝繖瑙ｉ噴浜?
+  "uuid 瑙ｆ瀽宸蹭慨鍗翠粛鐒舵姤鍚屼竴涓敊"鈥斺€旈偅涓ゆ瀹㈡満璺戠殑鏄棫鏂囦欢銆備互鍚庢敼 e2e 鑴氭湰蹇呴』甯?`-Stage`銆?
+- **瀹㈡満浼氬崱姝?*锛堜袱娆★紝閮藉湪 prepare 闃舵鍓嶅悗锛夛細SSH 鏃犲搷搴旓紝鍙湁纭柇鐢垫墠鑳芥仮澶嶏紱
+  涓ゆ閮芥槸鍏堣窇杩囦竴杞柇鐢靛疄楠屼箣鍚庛€?*涓嬩竴娆″皾璇曞墠鍏堢‖閲嶅惎**锛屽苟鎶?璺戝墠閲嶅惎"褰撲綔杩欎釜
+  harness 鐨勫浐瀹氬墠缃紝鑰屼笉鏄緥澶栧鐞嗐€?
 
-**下一步（新会话从这里开始）**：
-1. 硬重启客机 → 清 `ProgramData\MyRamDisk\{profiles,operations,logs}`；
-2. `Test-M5PowerLoss.ps1`（**不带** `-SkipStage`），一次跑完三段；
-3. 若 prepare 再次卡死：先用 `sc query`/`Get-Process` 确认是**服务**还是**客机**卡，
-   再把 prepare 里"装服务→start"这一步拆成独立 ctest 用例（现在它和 create 在一个用例里，
-   一卡就分不清）；
-4. 断电后 `verify` 若仍报 `blocked/needs-attention + PersistenceBlocked`，读
-   `C:\ProgramData\MyRamDisk\logs\service.log`（本轮新增的文件日志，`c97e9cc`）里
-   `auto-start refused: step=…` 那一行——原因就在那里。
+**涓嬩竴姝ワ紙鏂颁細璇濅粠杩欓噷寮€濮嬶級**锛?
+1. 纭噸鍚鏈?鈫?娓?`ProgramData\MyRamDisk\{profiles,operations,logs}`锛?
+2. `Test-M5PowerLoss.ps1`锛?*涓嶅甫** `-SkipStage`锛夛紝涓€娆¤窇瀹屼笁娈碉紱
+3. 鑻?prepare 鍐嶆鍗℃锛氬厛鐢?`sc query`/`Get-Process` 纭鏄?*鏈嶅姟**杩樻槸**瀹㈡満**鍗★紝
+   鍐嶆妸 prepare 閲?瑁呮湇鍔♀啋start"杩欎竴姝ユ媶鎴愮嫭绔?ctest 鐢ㄤ緥锛堢幇鍦ㄥ畠鍜?create 鍦ㄤ竴涓敤渚嬮噷锛?
+   涓€鍗″氨鍒嗕笉娓咃級锛?
+4. 鏂數鍚?`verify` 鑻ヤ粛鎶?`blocked/needs-attention + PersistenceBlocked`锛岃
+   `C:\ProgramData\MyRamDisk\logs\service.log`锛堟湰杞柊澧炵殑鏂囦欢鏃ュ織锛宍c97e9cc`锛夐噷
+   `auto-start refused: step=鈥 閭ｄ竴琛屸€斺€斿師鍥犲氨鍦ㄩ偅閲屻€?
 
-**2026-10-26 深夜 第二次读数（prepare 已通，卡在断电后的 start）**
+**2026-10-26 娣卞 绗簩娆¤鏁帮紙prepare 宸查€氾紝鍗″湪鏂數鍚庣殑 start锛?*
 
-- `prepare` **通过**（请求 `a9fb722dd5854923b25e754637f74ed4`，52 s）：装 auto-start 服务 →
-  建 30 s 间隔的盘 → `auto_start=true` → 写标记 → **自动提交到 generation 3** → 状态落盘。
-  第一次失败的原因不在脚本：客机上残留着上一次尝试的服务与 profile，`sc start` 与旧实例冲突；
-  清干净后一次通过（`sc start` 之后 stdout 断在 STATE 块是**旧实例**的表现，不是脚本 bug）。
-- 硬断电（`vmrun stop hard`）+ 开机后：**服务自己起来了**（`sc query` RUNNING，开机 23:04），
-  说明 `start= auto` 与 SCM 路径成立。
-- `verify`（请求 `05e2971d25474ee79b2feb2b4faeeca7`）读到：
+- `prepare` **閫氳繃**锛堣姹?`a9fb722dd5854923b25e754637f74ed4`锛?2 s锛夛細瑁?auto-start 鏈嶅姟 鈫?
+  寤?30 s 闂撮殧鐨勭洏 鈫?`auto_start=true` 鈫?鍐欐爣璁?鈫?**鑷姩鎻愪氦鍒?generation 3** 鈫?鐘舵€佽惤鐩樸€?
+  绗竴娆″け璐ョ殑鍘熷洜涓嶅湪鑴氭湰锛氬鏈轰笂娈嬬暀鐫€涓婁竴娆″皾璇曠殑鏈嶅姟涓?profile锛宍sc start` 涓庢棫瀹炰緥鍐茬獊锛?
+  娓呭共鍑€鍚庝竴娆￠€氳繃锛坄sc start` 涔嬪悗 stdout 鏂湪 STATE 鍧楁槸**鏃у疄渚?*鐨勮〃鐜帮紝涓嶆槸鑴氭湰 bug锛夈€?
+- 纭柇鐢碉紙`vmrun stop hard`锛? 寮€鏈哄悗锛?*鏈嶅姟鑷繁璧锋潵浜?*锛坄sc query` RUNNING锛屽紑鏈?23:04锛夛紝
+  璇存槑 `start= auto` 涓?SCM 璺緞鎴愮珛銆?
+- `verify`锛堣姹?`05e2971d25474ee79b2feb2b4faeeca7`锛夎鍒帮細
 
 ```text
-6b710f86-…  U:  ready  blocked/needs-attention  runtime=Running
+6b710f86-鈥? U:  ready  blocked/needs-attention  runtime=Running
                 persistence=PersistenceBlocked health=NeedsAttention
                 generation=3  mem=0/0
 recovered generation: 3 (last committed before the cut: 3)
 ```
 
-即：**盘被自动拉起了（`runtime=Running`，generation 等于断电前的提交值），但运行面是坏的**——
-`PersistenceBlocked`、`mem=0/0`、盘符 U: 不存在、也没有 worker 进程。所以 T1-09 剩下的问题是
-**断电后的那次 start 没真正接上卷**，而不是"没有自动恢复"。
+鍗筹細**鐩樿鑷姩鎷夎捣浜嗭紙`runtime=Running`锛実eneration 绛変簬鏂數鍓嶇殑鎻愪氦鍊硷級锛屼絾杩愯闈㈡槸鍧忕殑**鈥斺€?
+`PersistenceBlocked`銆乣mem=0/0`銆佺洏绗?U: 涓嶅瓨鍦ㄣ€佷篃娌℃湁 worker 杩涚▼銆傛墍浠?T1-09 鍓╀笅鐨勯棶棰樻槸
+**鏂數鍚庣殑閭ｆ start 娌＄湡姝ｆ帴涓婂嵎**锛岃€屼笉鏄?娌℃湁鑷姩鎭㈠"銆?
 
-**下一步（第一件事）**：查断电后那次 `disk start` 失败在哪一步。可用的入口：
-- `ServiceHostDiagnostics::auto_started_operations` 只给条数，不给原因；installed 服务的 stderr
-  被 SCM 丢掉，所以**必须**让这条原因落进服务自己的日志（`ServiceLogEvent`）而不是 stderr；
-- 可疑点与 §3.18 前面记的"两块盘"现象同源：**崩溃残留的设备/句柄**让 `create-runtime` 接不上
-  （`find_recovered_volume` 找不到卷，或 `start_aim` 拒绝）。T1-03 的 startup sweep 本该先回收
-  残留，sweep 在 auto-start 之前运行——所以要确认 sweep 是否真的把残留当"可回收"处理了。
-- 再顺带修一处脚本脆弱点：`verify` 在盘符不存在时抛 `DriveNotFoundException`（现在被 `trap`
-  捕获并打印，但不是一条可读的失败），应改成"读不到标记"的具名失败并附上 `disk list` 行。
+**涓嬩竴姝ワ紙绗竴浠朵簨锛?*锛氭煡鏂數鍚庨偅娆?`disk start` 澶辫触鍦ㄥ摢涓€姝ャ€傚彲鐢ㄧ殑鍏ュ彛锛?
+- `ServiceHostDiagnostics::auto_started_operations` 鍙粰鏉℃暟锛屼笉缁欏師鍥狅紱installed 鏈嶅姟鐨?stderr
+  琚?SCM 涓㈡帀锛屾墍浠?*蹇呴』**璁╄繖鏉″師鍥犺惤杩涙湇鍔¤嚜宸辩殑鏃ュ織锛坄ServiceLogEvent`锛夎€屼笉鏄?stderr锛?
+- 鍙枒鐐逛笌 搂3.18 鍓嶉潰璁扮殑"涓ゅ潡鐩?鐜拌薄鍚屾簮锛?*宕╂簝娈嬬暀鐨勮澶?鍙ユ焺**璁?`create-runtime` 鎺ヤ笉涓?
+  锛坄find_recovered_volume` 鎵句笉鍒板嵎锛屾垨 `start_aim` 鎷掔粷锛夈€俆1-03 鐨?startup sweep 鏈鍏堝洖鏀?
+  娈嬬暀锛宻weep 鍦?auto-start 涔嬪墠杩愯鈥斺€旀墍浠ヨ纭 sweep 鏄惁鐪熺殑鎶婃畫鐣欏綋"鍙洖鏀?澶勭悊浜嗐€?
+- 鍐嶉『甯︿慨涓€澶勮剼鏈剢寮辩偣锛歚verify` 鍦ㄧ洏绗︿笉瀛樺湪鏃舵姏 `DriveNotFoundException`锛堢幇鍦ㄨ `trap`
+  鎹曡幏骞舵墦鍗帮紝浣嗕笉鏄竴鏉″彲璇荤殑澶辫触锛夛紝搴旀敼鎴?璇讳笉鍒版爣璁?鐨勫叿鍚嶅け璐ュ苟闄勪笂 `disk list` 琛屻€?
 
 ---
 
-## 4. 构建与测量循环
+## 4. 鏋勫缓涓庢祴閲忓惊鐜?
 
 ```powershell
-# **每一个新会话、每一次构建之前：**
-#   不 dot-source 就没有 LIB/INCLUDE，链接会在 LNK1181（bcrypt.lib）上失败——
-#   看起来像缺 SDK，其实是环境没进来。冷会话一定会撞上（2026-10-26 复现并记在
-#   `m5-review-2026-10-26.md` §3.3；`m5-lessons.md` 里当时没写，别以为写过）。
+# **姣忎竴涓柊浼氳瘽銆佹瘡涓€娆℃瀯寤轰箣鍓嶏細**
+#   涓?dot-source 灏辨病鏈?LIB/INCLUDE锛岄摼鎺ヤ細鍦?LNK1181锛坆crypt.lib锛変笂澶辫触鈥斺€?
+#   鐪嬭捣鏉ュ儚缂?SDK锛屽叾瀹炴槸鐜娌¤繘鏉ャ€傚喎浼氳瘽涓€瀹氫細鎾炰笂锛?026-10-26 澶嶇幇骞惰鍦?
+#   `m5-review-2026-10-26.md` 搂3.3锛沗m5-lessons.md` 閲屽綋鏃舵病鍐欙紝鍒互涓哄啓杩囷級銆?
 Set-ExecutionPolicy -Scope Process Bypass -Force
 . .\tools\Enter-MsvcEnvironment.ps1
 
-# 构建（改过任何头文件 ⇒ 必须加 --clean-first，见 lessons §1）
+# 鏋勫缓锛堟敼杩囦换浣曞ご鏂囦欢 鈬?蹇呴』鍔?--clean-first锛岃 lessons 搂1锛?
 cmake --build out/build/msvc --config Release --clean-first
 
-# VM 回路（先在开发机构建，再送进客机；执行只在客机）
+# VM 鍥炶矾锛堝厛鍦ㄥ紑鍙戞満鏋勫缓锛屽啀閫佽繘瀹㈡満锛涙墽琛屽彧鍦ㄥ鏈猴級
 $env:M5VM_HOST='myrd-vm'; $env:M5VM_USER='usr'
 $env:M5VM_KEY="$env:USERPROFILE\.ssh\id_ed25519"
 tools/m5vm/Invoke-M5Vm.ps1 -Probe
 tools/m5vm/Invoke-M5Vm.ps1 -Stage -Configuration Release
 tools/m5vm/Invoke-M5Vm.ps1 -Run -MinTimeoutSeconds 180
-tools/m5vm/Invoke-M5Vm.ps1 -Run -Filter '<用例名>' -Repeat 20
+tools/m5vm/Invoke-M5Vm.ps1 -Run -Filter '<鐢ㄤ緥鍚?' -Repeat 20
 tools/m5vm/Invoke-M5Vm.ps1 -Run -RequestId <id>
 ```
 
-整套一遍约 9–11 分钟。**`-Stage` 不是可选的**：二进制在开发机构建，执行只在客机。
-**`-Stage` 失败会留下脏客机**（孤儿 worker + 多余盘 + 残留盘符）⇒ 先硬重启再重试。
+鏁村涓€閬嶇害 9鈥?1 鍒嗛挓銆?*`-Stage` 涓嶆槸鍙€夌殑**锛氫簩杩涘埗鍦ㄥ紑鍙戞満鏋勫缓锛屾墽琛屽彧鍦ㄥ鏈恒€?
+**`-Stage` 澶辫触浼氱暀涓嬭剰瀹㈡満**锛堝鍎?worker + 澶氫綑鐩?+ 娈嬬暀鐩樼锛夆噿 鍏堢‖閲嶅惎鍐嶉噸璇曘€?
 
 ---
 
-## 5. 环境事实
+## 5. 鐜浜嬪疄
 
-| 项 | 值 |
+| 椤?| 鍊?|
 |---|---|
-| 客机 | VMware Workstation，Windows 11 x64，MAC `00:0C:29:02:90:C1` |
-| 地址 | `192.168.180.129`，SSH 别名 **`myrd-vm`**（脚本一律传别名，不硬编码地址） |
-| 客机账户 | `usr` / `123`；密钥 `~\.ssh\id_ed25519` |
+| 瀹㈡満 | VMware Workstation锛學indows 11 x64锛孧AC `00:0C:29:02:90:C1` |
+| 鍦板潃 | `192.168.180.129`锛孲SH 鍒悕 **`myrd-vm`**锛堣剼鏈竴寰嬩紶鍒悕锛屼笉纭紪鐮佸湴鍧€锛?|
+| 瀹㈡満璐︽埛 | `usr` / `123`锛涘瘑閽?`~\.ssh\id_ed25519` |
 | VMX | `C:\Users\JimmyLin\Documents\Virtual Machines\Windows 11 x64\Windows 11 x64.vmx` |
-| vmrun | **`-T ws` 必须是第一个参数**；VM 加密，每条都要 `-vp 12345678` |
-| 驱动 | `phdskmnt` 必须 Running；**不得安装/替换/升级/卸载** |
+| vmrun | **`-T ws` 蹇呴』鏄涓€涓弬鏁?*锛沄M 鍔犲瘑锛屾瘡鏉￠兘瑕?`-vp 12345678` |
+| 椹卞姩 | `phdskmnt` 蹇呴』 Running锛?*涓嶅緱瀹夎/鏇挎崲/鍗囩骇/鍗歌浇** |
 
-**一条与仓库无关、但会浪费时间的工具事实**：本会话的 agent shell 在
-`workspace-write` 沙箱下**每个子进程都以 `0xC0000142`（`STATUS_DLL_INIT_FAILED`）退出**，
-连 `Get-Process` 都起不来；切到 `danger-full-access` 后正常。
-**看到这个错误码先怀疑沙箱模式，不要怀疑构建或仓库。**
+**涓€鏉′笌浠撳簱鏃犲叧銆佷絾浼氭氮璐规椂闂寸殑宸ュ叿浜嬪疄**锛氭湰浼氳瘽鐨?agent shell 鍦?
+`workspace-write` 娌欑涓?*姣忎釜瀛愯繘绋嬮兘浠?`0xC0000142`锛坄STATUS_DLL_INIT_FAILED`锛夐€€鍑?*锛?
+杩?`Get-Process` 閮借捣涓嶆潵锛涘垏鍒?`danger-full-access` 鍚庢甯搞€?
+**鐪嬪埌杩欎釜閿欒鐮佸厛鎬€鐤戞矙绠辨ā寮忥紝涓嶈鎬€鐤戞瀯寤烘垨浠撳簱銆?*
 
 ---
 
-## 6. 待裁决（只有这些需要停下来问）
+## 6. 寰呰鍐筹紙鍙湁杩欎簺闇€瑕佸仠涓嬫潵闂級
 
-| # | 事项 | 状态 |
+| # | 浜嬮」 | 鐘舵€?|
 |---|---|---|
-| 1 | Primo "Mini Tools" 的范围定义 | **未定义** ⇒ 不列入范围 |
-| 2 | T4-02 单文件 VHDX 导出 | 已裁决：保留 |
-| 3 | 完成口径 | **已裁决（2026-10-17）**：G1 + G2 + G3 全部验收 + T4-04 manifest 冻结 + §8 遗留清空；G4 延后 |
-| 4 | G4 何时恢复 | 未定；恢复前置条件见 master-plan §6 |
+| 1 | Primo "Mini Tools" 鐨勮寖鍥村畾涔?| **鏈畾涔?* 鈬?涓嶅垪鍏ヨ寖鍥?|
+| 2 | T4-02 鍗曟枃浠?VHDX 瀵煎嚭 | 宸茶鍐筹細淇濈暀 |
+| 3 | 瀹屾垚鍙ｅ緞 | **宸茶鍐筹紙2026-10-17锛?*锛欸1 + G2 + G3 鍏ㄩ儴楠屾敹 + T4-04 manifest 鍐荤粨 + 搂8 閬楃暀娓呯┖锛汫4 寤跺悗 |
+| 4 | G4 浣曟椂鎭㈠ | 鏈畾锛涙仮澶嶅墠缃潯浠惰 master-plan 搂6 |
 
-其余（含 T1-05 的 `stop` 语义）都在实现权限内，**自主推进，不要反复问**。
-
----
-
-## 7. 硬性规则（摘四条，全文见 `m5-lessons.md`）
-
-1. 改任何头文件之后、测量之前必须 `--clean-first`；否则得到 `0xC0000005` 假崩溃。
-2. **单次绿是弱证据**；修复类结论 ≥ `-Repeat 20`，任何"绿"的声明必须写明跑了几次。
-3. 开发机只跑**不创建真实 worker / AIM 盘 / Windows 卷**的测试；不确定时按"只能上 VM"。
-4. 断言失败必须打印 `operation / message / native / code`——一次客机往返 5–30 分钟，
-   盲猜的代价是整轮。
+鍏朵綑锛堝惈 T1-05 鐨?`stop` 璇箟锛夐兘鍦ㄥ疄鐜版潈闄愬唴锛?*鑷富鎺ㄨ繘锛屼笉瑕佸弽澶嶉棶**銆?
 
 ---
 
-## 8. 历史（已归档，不要再引用）
+## 7. 纭€ц鍒欙紙鎽樺洓鏉★紝鍏ㄦ枃瑙?`m5-lessons.md`锛?
 
-`feature/m5-unified-integration`、`feature/m5-supervisor-service` 是 2026-09 的两条实现线，
-已被 v3 取代；工作树与分支已于 2026-10-25 删除，仅以 tag
-`archive/m5-unified-integration`、`archive/m5-supervisor-service` 保留历史。
-**当前代码里没有任何东西依赖它们**；`docs/m4-m5-scope.md` 里对它们的描述属于历史背景。
+1. 鏀逛换浣曞ご鏂囦欢涔嬪悗銆佹祴閲忎箣鍓嶅繀椤?`--clean-first`锛涘惁鍒欏緱鍒?`0xC0000005` 鍋囧穿婧冦€?
+2. **鍗曟缁挎槸寮辫瘉鎹?*锛涗慨澶嶇被缁撹 鈮?`-Repeat 20`锛屼换浣?缁?鐨勫０鏄庡繀椤诲啓鏄庤窇浜嗗嚑娆°€?
+3. 寮€鍙戞満鍙窇**涓嶅垱寤虹湡瀹?worker / AIM 鐩?/ Windows 鍗?*鐨勬祴璇曪紱涓嶇‘瀹氭椂鎸?鍙兘涓?VM"銆?
+4. 鏂█澶辫触蹇呴』鎵撳嵃 `operation / message / native / code`鈥斺€斾竴娆″鏈哄線杩?5鈥?0 鍒嗛挓锛?
+   鐩茬寽鐨勪唬浠锋槸鏁磋疆銆?
+
+---
+
+## 8. 鍘嗗彶锛堝凡褰掓。锛屼笉瑕佸啀寮曠敤锛?
+
+`feature/m5-unified-integration`銆乣feature/m5-supervisor-service` 鏄?2026-09 鐨勪袱鏉″疄鐜扮嚎锛?
+宸茶 v3 鍙栦唬锛涘伐浣滄爲涓庡垎鏀凡浜?2026-10-25 鍒犻櫎锛屼粎浠?tag
+`archive/m5-unified-integration`銆乣archive/m5-supervisor-service` 淇濈暀鍘嗗彶銆?
+**褰撳墠浠ｇ爜閲屾病鏈変换浣曚笢瑗夸緷璧栧畠浠?*锛沗docs/m4-m5-scope.md` 閲屽瀹冧滑鐨勬弿杩板睘浜庡巻鍙茶儗鏅€?
