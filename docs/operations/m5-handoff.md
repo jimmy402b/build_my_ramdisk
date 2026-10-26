@@ -1304,3 +1304,28 @@ Invoke-Remote "& 'C:\Windows\system32\tar.exe' -xzf '$guestRepoScp/.m5-payload.t
 
 **注意**：整套 160 例在本机跑不完（42 分钟未完）+ agent 单实例 ⇒ **以后一律分组跑**，
 并在跑之前清残留请求。
+### 3.44 2026-10-27 04:20：agent 恢复，**分组基线到手**（42 分钟那次是 agent 卡住，不是套件慢）
+
+**恢复手法（有效，记住）**：
+```powershell
+# 客机上，EncodedCommand（ssh 会吞引号）
+schtasks /end /tn 'MyRamDisk-M5Agent'        # 任务名见 -Probe 输出，本机为 MyRamDisk-M5-Agent
+Get-ChildItem C:\m5\control -Filter '*.request.ps1' | Remove-Item -Force
+```
+之后一个单例 `^m5\.gui$` **5 s** 返回 1/1。
+
+**分组读数（客机，Release）**：
+
+| 组 | 用例数 | 用时 | 结果 |
+|---|---|---|---|
+| `^unit\.` | 96 | **210 s** | **95/96**，失败：`unit.m4.profile_codec` |
+| `^model\.|^m5\.` | 13 | **128 s** | **12/13**，失败：`m5.production_execution_backend`（**已知在批内间发**，单独跑通过） |
+| `^integration\.` | 51 | 未跑 | 待跑 |
+
+⇒ **整套 42 分钟"跑不完"的真相是 agent 单实例被上一次运行卡住**，不是套件本身慢。
+以后**分组跑**（unit 3.5 分钟 + model/m5 2 分钟 + integration 另算）。
+
+**两个待查**：
+1. `unit.m4.profile_codec`（本轮新出现，unit 组里唯一红）——很可能与 T1-10 的默认值或我今天的
+   profile 相关改动有关，**下一步先看它**（它的失败信息会指出哪个字段/字节）；
+2. `m5.production_execution_backend`——已知间发项，单独复跑确认。
