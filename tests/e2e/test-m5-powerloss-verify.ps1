@@ -92,7 +92,7 @@ if ($generation -lt $expectedGeneration) {
 Write-Host "  recovered generation: $generation (last committed before the cut: $expectedGeneration)"
 
 Write-Step 'the committed bytes are intact'
-$marker = Join-Path $mount (powerloss-marker.txt)
+$marker = Join-Path $mount 'powerloss-marker.txt'
 if (-not (Test-Path -LiteralPath $marker)) {
     Fail "the committed marker file is gone: $marker"
 }

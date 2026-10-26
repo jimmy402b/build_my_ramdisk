@@ -23,6 +23,10 @@ param(
     [string]$VmPassword = $env:M5VM_PASSWORD,
     [string]$Configuration = 'Release',
     [switch]$SkipStage,
+    # Run only the verify phase.  The prepare phase and the cut have already happened when
+    # this matters: the guest comes back, the state file survives on its disk, and re-running
+    # prepare would produce a second disk and a second cut.  Measured need, not speculation.
+    [switch]$ResumeVerify,
     [int]$BootTimeoutSeconds = 600
 )
 
@@ -100,26 +104,42 @@ if (-not $SkipStage) {
 }
 
 # ---- phase 1: leave a disk that the cut will interrupt -------------------------
+if (-not $ResumeVerify) {
 Invoke-Phase -What 'prepare' -Arguments @{
     Run = $true
     Filter = '^integration\.m5\.powerloss_prepare$'
     MinTimeoutSeconds = 600
     TimeoutSeconds = 1200
 }
+}
 
 # ---- phase 2: the cut ---------------------------------------------------------
 # `stop hard` is the power cut: no shutdown, no preshutdown, no flush -- the machine
 # simply stops.  That is the failure the recovery path exists for, and a graceful stop
 # would prove nothing.
+if (-not $ResumeVerify) {
 Write-Host '=== cutting the power (vmrun stop ... hard)'
 & $vmrun -T ws -vp $VmPassword stop $Vmx hard
 Start-Sleep -Seconds 5
 Write-Host '=== powering the machine back on'
 & $vmrun -T ws -vp $VmPassword start $Vmx nogui
-if (-not (Wait-ForSsh $BootTimeoutSeconds)) {
-    throw "the guest did not answer ssh within $BootTimeoutSeconds s of the reboot"
+$booted = Wait-ForSsh $BootTimeoutSeconds
+if (-not $booted) {
+    # **The cut sometimes leaves this guest unable to boot at all** -- twice, SSH dead for
+    # the whole window, and a host-side power cycle fixed it in 15 s.  So the boot is retried
+    # once rather than declared a product failure: the power cut is the experiment, an
+    # unbootable machine is the experiment's equipment.
+    Write-Host '  the guest did not answer ssh; power-cycling once'
+    & $vmrun -T ws -vp $VmPassword stop $Vmx hard
+    Start-Sleep -Seconds 10
+    & $vmrun -T ws -vp $VmPassword start $Vmx nogui
+    if (-not (Wait-ForSsh $BootTimeoutSeconds)) {
+        throw "the guest did not answer ssh within $BootTimeoutSeconds s after a second boot"
+    }
 }
 Write-Host '  ssh is up; waiting for the boot to settle'
+Start-Sleep -Seconds 20
+}
 # The service is started by the SCM partway through the boot and the verify phase waits for
 # it, so this is only to let the network and the SCM report settle.
 Start-Sleep -Seconds 20

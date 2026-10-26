@@ -158,15 +158,25 @@ Set-Content -LiteralPath $uncommitted -Value 'written after the last checkpoint'
 # and the hand-written parser read the first key as "\uFEFFprofile_id" -- measured as "the
 # power-loss state has no profile_id" over a file that plainly had one.  JSON removes the
 # hand parsing along with the encoding question.
-@{ profile_id = $profileId
-   profile_name = $profileName
-   mount = $mount
-   bundle = $bundlePath
-   generation = $committedGeneration
-   marker_path = 'powerloss-marker.txt'
-   marker_payload = $payload
-   service_name = $serviceName } |
-    ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding ASCII
+$json = @{ profile_id = $profileId
+           profile_name = $profileName
+           mount = $mount
+           bundle = $bundlePath
+           generation = $committedGeneration
+           marker_path = 'powerloss-marker.txt'
+           marker_payload = $payload
+           service_name = $serviceName } | ConvertTo-Json
+# **Flushed to the disk, not just to the file cache.**
+#
+# Measured: the state file came back after the cut with the right length and no content, so
+# the verify half read an empty file and reported it unreadable -- correctly, because a file
+# the power cut emptied is exactly what it saw.  `Set-Content` returns once the bytes are in
+# the cache; `Flush($true)` is what makes them survive the machine losing power.
+$bytes = [System.Text.Encoding]::ASCII.GetBytes($json)
+$stream = [System.IO.FileStream]::new(
+    [System.IO.Path]::GetFullPath($statePath), 'Create', 'Write', 'None')
+try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+finally { $stream.Dispose() }
 Write-Host "  state written to $statePath"
 Write-Host 'PREPARED'
 exit 0

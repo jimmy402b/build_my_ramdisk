@@ -595,6 +595,35 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
   判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
 - CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
 
+**2026-10-27 00:45 第五次读数（T1-09 的产品部分已全绿；剩下的全在 verify 脚本与客机侧）**
+
+**断电后连续两次读到的产品事实**（这才是 T1-09 要的）：
+
+```text
+service state: RUNNING（脚本从未启动它）
+5003a664-… T: ready running runtime=Running activity=Idle
+            persistence=Dirty health=Healthy generation=4  mem=1048576/1073741824
+recovered generation: 4 (last committed before the cut: 3)
+```
+
+即：**服务自己起来、盘自己回来、generation ≥ 断电前提交值、resident 内存 1 MiB**。
+`persistence=Dirty` 且 generation 从 3 走到 4，说明恢复把掉电时的脏数据重放并提交了一代
+——这正是"最多丢一个间隔"的实测形态。
+
+**本轮修掉的三处脚本/工具缺陷**（都是"让产品看起来坏了"的那类）：
+1. 状态文件**没落盘**：断电后回来是 0 字节 → 用 `FileStream.Flush($true)` 写；
+2. `verify` 里 `Join-Path $mount (powerloss-marker.txt)` 少引号（`CommandNotFoundException`）；
+3. 编排器加 `-ResumeVerify`（只跑 verify）与 boot 失败自动重试一次。
+
+**最后一个未解的现象**：`-ResumeVerify` 那次 `sc query` 是 RUNNING，但 CLI 连不上公开管道
+（`Wait-ForService 180` 超时）。两次读数之间我前一次 verify 失败后**没有做清理**，所以极可能是
+**上一个服务实例的管道残留**。下次：断电重启 → 完整跑一次三段（不要 -ResumeVerify），
+若仍在 `Wait-ForService` 失败，先看 `sc query` 的 PID 与 `C:\ProgramData\MyRamDisk\logs\service.log`
+是否来自同一进程。
+
+**下一步（新会话从这里开始）**：干净客机 → 三段一次跑通 → 写
+`docs/validation/m5-t1-09-power-loss.md`、tasklist T1-09 → PASSED → 进 T1-10。
+
 **2026-10-27 00:35 第四次读数（prepare 稳定通过，断电后客机本身有概率起不来）**
 
 - `prepare` 在干净客机上**连续两次通过**（请求 `d0667c91…` 50 s、`8eae57a7…` 52 s）：
