@@ -2106,3 +2106,22 @@ size=515
 2. 若 size 从 187 跳到 ~515 ⇒ **是 `kLastKnownTag` 在编码端驱动了额外输出**（例如按 tag 写占位/对齐），
    那 tag 36 的正确做法要按那个机制来，而不是"加一个 append"；
 3. 若 size 仍是 187 ⇒ 增长来自我加的 append，届时再看 `append_bytes_field` 是否写入了额外内容（例如长度前缀用了 4 字节 + 对齐）。
+### 3.87 2026-10-27 10:25：只改常量，size 从 187 变 **506** —— 与源码证据**矛盾**，先记矛盾
+
+实验：**只**把 `kLastKnownTag` 从 35 提到 36（**没加任何字段写入**），构建、量 `encode_profile(minimal_record()).size()`
+⇒ **506**（原 187）。
+
+**但源码里 `kLastKnownTag` 只出现在 4 处**（19 定义、490 解码的 `known` 数组、516/535 解码的必需性检查），
+**编码路径一处也没用**（`encode_profile` 297 行起，逐字段 append，直到 437 行写 header 再拼 payload）。
+`kProfileKnownFieldCount` 只进 header 的 4 字节。⇒ **按源码，size 不应变化。**
+
+**两种可能，必须分开**：
+1. **测量被污染**：`probe.txt` 可能来自**另一个用例/上一次运行**（我在同一目录反复写同名文件）；
+   验证方法：把 probe 写成**带随机后缀的文件名**，并在同一行写出 `encoded.value().size()` 与 `payload.size()`
+   （后者需要临时在编码器里打印），两者不一致就说明我取错了对象；
+2. **`kProfileKnownFieldCount` 是从 `kLastKnownTag` 派生的**，而它被用作**payload 的初始占位长度**——
+   需要直接看该常量的定义（`grep kProfileKnownFieldCount`）。
+
+**本轮已回退**：构建干净、22 用例全绿、工作树 0 改动、临时文件已删。
+
+**方法论（第三次同一个教训）**：**一个与源码矛盾的读数，先当作测量问题处理**。
