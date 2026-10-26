@@ -1996,3 +1996,28 @@ PASS integration.m5.powerloss: the disk came back by itself after a hard power c
   2. **必需**：那就必须**同时**把黄金样本更新为含 36 的新字节（今天已走过一次这条路，
      且会更动所有既有 profile 的兼容性假设——**不推荐**）。
 - **教训**：`kLastKnownTag` 这种常量的语义必须**从使用点反推**，不能从名字推。
+### 3.81 2026-10-27 09:55：profile 编解码**再次回退**，但这次学到了格式的真实规则
+
+**规则（从解码器读出来的，不是猜的）**：`decode_profile` 要求 **1..kLastKnownTag 的每一个 tag 都存在**
+（`known[tag] == nullptr` 即"Profile is missing a required field"），且每个已知 tag 必须带
+`kProfileMandatoryField` 标志。⇒ **这个 v1 profile 格式没有"省略字段"这回事**。
+
+**因此 tag 36 只能是"必需字段 + 哨兵值"**：
+- 写：`value.volume_label.value_or(L"\u0001")`——字段编码器**拒绝零长度值**（实测 `encoded.ok()` 为假），
+  所以"无标签"必须用一个可编码的值；**控制字符是诚实的哨兵**（CLI 拒绝控制字符、Windows 也不允许，
+  所以不会与用户能请求的标签冲突）；
+- 读：解出等于 `L"\u0001"` ⇒ 视为无标签。
+- 这条路**必然改变黄金字节**（每个记录都多一个字段），需要重算黄金样本。
+
+**这次为何仍然回退**：改完之后 `encoded.value() == minimal_golden()` 如预期失败，我需要打印新的黄金字节，
+但生成打印的那次构建把 MSVC 环境脚本名打错（`EnterMsvcEnvironment.ps1`），导致编译环境不完整、
+`test_framework.h` 找不到头文件，打印没跑出来。**没有新字节就不能提交**（否则留一棵红的树），
+所以整棵改动回退，构建与 22 个编解码用例恢复全绿、工作树干净。
+
+**下次的正确做法（一次到位）**：
+1. 在 `tests/unit/m4_profile_codec_tests.cpp` 的 `matches_exact_golden_bytes` 里**先放打印**
+   （`std::fprintf(stderr, "golden hex …")` + `#include <cstdio>`），构建该目标并运行，**抄下十六进制**；
+2. 再把十六进制**按 64 字符分行**替换 `minimal_golden()` 的 `from_hex(...)` 参数；
+3. 最后删掉打印，重跑 —— 三个测试（golden / decode-reencode / validation）应全绿；
+4. **注意**：这是"v1 记录不向后兼容"的决定——旧版本写下的 profile 将无法解码。
+   产品未发布、profile 都是测试产物，可接受；但**必须写进 release manifest 的注意事项**。
