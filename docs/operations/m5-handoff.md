@@ -322,6 +322,38 @@ installed service（SCM 安装/应答/停止/删除）。
 
 ---
 
+### 3.12 最后一个已知阻塞：stop 的 remove_mount 被"runtime 仍然 dirty"拒绝
+
+**读数**（`run-fe0a8a2a` 的服务日志）：
+
+```text
+disk.stop → checkpoint completed → evidence-recorded profile state published
+disk.stop → lifecycle-action failed
+code=23559 step=service_worker_control.remove_mount
+detail=The worker refused to remove: its runtime stands dirty
+→ 操作停在 reconciling，300 s 超时，残留 1 个 worker
+```
+
+**含义**：冻结 → flush → checkpoint 提交 → 拆卸，前三步都成功，第四步被拆卸守卫拒绝。
+守卫本身是对的（dirty 时拆盘等于丢数据）；问题是**没有任何路径能在"提交后仍有残余写"时安全收尾**。
+
+**修法（两处选一，建议 A）**
+
+- **A. 有界复检**：拆卸被拒且原因为 dirty 时，再做一次 `flush + checkpoint`，然后重试
+  `remove_mount` **一次**；第二次仍 dirty 则以具名终态失败收尾
+  （`stop-dirty-after-recheckpoint`），不再 park。
+- **B. worker 侧自愈**：让 `remove_and_stop` 在判定 dirty 之前先 flush 一次并重新取 dirty；
+  改动更局部，但要确认 flush 之后 dirty 计数确实会归零。
+
+**落点**：`src/management/service_core.cpp` 的动作失败分支（`remove_mount` 的失败处理）
+＋ `src/host/m5_worker_runtime.cpp` 的 removal 路径。改完先单次，再 `-Repeat 20`。
+
+**已验证通过的部分（本次会话的净收益）**：`volume_guid` 六层接线、`verify_volume` 的
+ownership 判据（attach-only 不再要求 owned）、恢复路径先分配盘符 —— restart 已能从
+`create-runtime` 一路走到"重启后再次 stop"。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
