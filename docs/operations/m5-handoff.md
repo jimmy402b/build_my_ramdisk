@@ -1017,3 +1017,22 @@ worker 只为读启动；导出的 VHDX 能被 `Mount-DiskImage` 挂上且根目
 **不需要** minor 号——这一点写在这里，免得下一个人以为要先加版本号而把它拆成两次发布。
 
 **这一步之后**才是卷标/簇大小（真正要动 profile schema），再之后是易失盘、Load Only、VHDX 导出。
+### 3.28 2026-10-27 02:15：卷序列号那次尝试被回退，原因记在这里
+
+**做了什么**：`WorkerRuntimeObservation` 加 `volume_serial`、`windows_worker_observation` 从
+`status.bundle->volume_serial` 填、`ServiceProfileProjection` / `ServiceDiskView` 各加一个字段、
+`encode_profile` / `decode_profile` 各写读一个 u64、`project_profile` 填、CLI 打 `serial=1A2B-3C4D`。
+
+**结果**：编译通过，但 `m5.cli` 与 `m5.service_host` 的**编解码往返用例**失败
+（`decoded.ok()` 为假）。两端读写顺序我核对过是一致的（has_mount, resident, budget, **serial**,
+mount_length），所以不是顺序问题；**需要先拿到 decode 的具体错误文本**（下一步：给
+`decode_service_response` 的错误加一行 stderr，或用一个小 driver 直接调它）。
+
+**处理**：`git checkout -- src/` **全部回退**，重建后三个套件恢复绿。理由：在拿不到 decode 错误
+的情况下继续改，只会把"不知道哪里错"变成"不知道哪里错且树是红的"。
+
+**下一步（照做即可）**：
+1. 用一个小 driver 编码一个含 `volume_serial` 的响应再解码，把 `decode` 的 `error().operation` 与
+   `message` 打印出来——一次就能定位；
+2. 拿到原因后再重做这次改动（字段与顺序可以照 3.27 的清单，已经验证过编译）；
+3. 该改动完成后 T4-02 的第 1 步就结束，再进卷标/簇大小。
