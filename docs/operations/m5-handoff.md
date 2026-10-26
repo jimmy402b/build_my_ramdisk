@@ -1278,3 +1278,29 @@ Invoke-Remote "& 'C:\Windows\system32\tar.exe' -xzf '$guestRepoScp/.m5-payload.t
   3. 若确认卡住：`schtasks /end /tn <任务名>` 再 `/run`，或直接重启客机（本会话多次证明 15 s 可恢复）。
 - **纪律**：Windows 的 ssh 命令里**引号与空格会被吞**，多参数一律改用 `-EncodedCommand`；
   这次连 `tasklist /fi "..."` 都被拆坏，浪费了两轮。
+### 3.43 2026-10-27 04:15：**VM harness 的 agent 停摆**（当前唯一阻塞）
+
+证据（都在客机上取到，客机本身健康：硬重启后 `echo up` 15 s、`Get-Date` 1.3 s）：
+
+- `C:\m5\control\m5-agent.log` 尾部：
+  ```text
+  2026-10-26T18:17:05 request 1e26484b… finished exit=0     ← 最后一次成功
+  2026-10-26T18:19:35 agent start elevated=True drain=True
+  2026-10-26T19:19:36 agent start elevated=True drain=True
+  2026-10-26T19:53:51 agent start elevated=True drain=True
+  ```
+  ⇒ 18:19 之后**每次 agent 都只是"start"，再没有任何 "finished"**；中间那次整套 160 例的运行
+  （`run-29ada3b7…`）到 04:03 还在写目录。
+- 我杀掉了那个卡住的 runner（`pid=4712`，`Invoke-M5Tests`），**请求仍然不被处理**：
+  `67f5bf1c…`（单个 `m5.gui` 用例）10 分钟无响应。
+- ⇒ 需要**重建计划任务/agent 状态**，不是等一等就好。
+
+**下一步（重建，按顺序）**：
+1. `schtasks /query /fo csv` 找到 agent 任务名（本轮那条命令被 ssh 引号吃掉，**必须用 `-EncodedCommand`**）；
+2. `schtasks /end /tn <名>` → `schtasks /delete /tn <名> /f` → 用 `tools/m5vm/Invoke-M5Vm.ps1 -Probe`
+   里记录的注册命令**重新注册**（该脚本 `-Probe` 会打印三条通道与任务名）；
+3. 清 `C:\m5\control\*.request.ps1` 残留，再跑一个单例（`^m5\.gui$`）确认 <60 s 返回；
+4. 确认后再分组跑套件，恢复"每项以客机实测为准"。
+
+**注意**：整套 160 例在本机跑不完（42 分钟未完）+ agent 单实例 ⇒ **以后一律分组跑**，
+并在跑之前清残留请求。
