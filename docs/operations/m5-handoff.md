@@ -1859,3 +1859,22 @@ if (status.value().volume->volume_guid != expected_volume) break;   // ← 不�
 裸 GUID 还是 `\\?\Volume{…}\`。若是裸的，**修复就是把裸 GUID 包成完整卷名再传给
 `SetVolumeMountPointW`**（`L"\\\\?\\Volume{" + guid + L"}\\"`），而不是加超时或重试。
 `ERROR_INVALID_PARAMETER (87)` 正是"卷名格式非法"的返回值，与本假设一致。
+### 3.73 2026-10-27 08:55：**先怀疑"跑的是旧二进制"**，再谈产品缺陷
+
+刚加的那行日志（`585f812`：`SetVolumeMountPointW failed for T:\ at <GUID> (first error N)`）
+**在客机日志里没有出现**——最新那条仍是旧格式：
+
+```text
+action=create-runtime code=21001 native=87 step=assign_drive_letter detail=SetVolumeMountPointW failed for T:\
+```
+
+⇒ **那次失败跑的不是带新日志的二进制**。所以在继续推断"卷名形态/身份形态"之前，必须先确认：
+
+1. **客机上实际被 SCM 启动的 `binPath` 是哪一个**（`sc qc`）；它可能是早前安装到
+   `C:\Program Files\MyRamDisk` 的副本，而不是 staging 到 repo 目录的那份；
+2. 那份二进制的 **SHA-256** 与本地 `out/build/msvc/src/Release/myrd-service.exe` 是否一致；
+3. 只有确认跑的是**最新构建**，日志格式也对得上，再谈 87 的原因（此时 `(first error …)` 与 GUID
+   会随行给出，3.71/3.72 的假设可当场判定）。
+
+**这一条比任何代码修改都优先**：本会话已经两次因为"以为跑的是新二进制"而误判
+（陈旧对象、`Select-Object -Last 1` 吞掉 staging 错误），第三次的代价是**改错地方**。
