@@ -356,7 +356,23 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $list = Invoke-Cli @('disk', 'list')
     if ($list.exit -ne 0) { Fail "disk list failed after the create: $($list.output)" }
     Write-Host "  $($list.output.Trim())"
-    $profileId = Get-UuidFromText $list.output
+    # **The created profile's own line, not the first uuid in the listing.**
+    #
+    # `Get-UuidFromText` on the whole listing returned whichever profile sorted
+    # first, so on a guest carrying leftovers every later command addressed a
+    # previous run's profile: measured, `disk show / stop / forget` all targeted
+    # `6c4f2c10` -- whose bundle had long been deleted -- while this run had
+    # created `6ce17b58`.  The stop "succeeded" and the mount went away, which is
+    # why nothing looked wrong until the forget tried to open the dead path.
+    $createdLine = ($list.output -split "`n") |
+        Where-Object { $_ -match [regex]::Escape($mount) -and $_ -match 'running' } |
+        Select-Object -First 1
+    if ($null -eq $createdLine) {
+        $createdLine = ($list.output -split "`n") |
+            Where-Object { $_ -match [regex]::Escape($mount) } |
+            Select-Object -First 1
+    }
+    $profileId = if ($null -ne $createdLine) { Get-UuidFromText $createdLine } else { $null }
     if ($null -eq $profileId) { Fail 'disk list did not report the created profile' }
     if ($list.output -notmatch [regex]::Escape($mount)) {
         Fail "disk list did not report the mount target $mount"
