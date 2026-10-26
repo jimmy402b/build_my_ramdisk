@@ -1495,3 +1495,23 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
 4. **只提一个短请求**（`-Filter '^m5\.gui$'`）验证 <60 s，再提 `cli_e2e` 单例；
 5. 若 `cli_e2e` 单例仍超过 10 分钟，**那才**是产品侧要查的问题——届时用本次已验证可用的手工 runner
    （带 `-RequestId`、加 `-TraceTestCases`）直接看它停在哪一例。
+### 3.54 2026-10-27 07:05：队列修好后 **`cli_e2e` 的真实失败暴露出来**（这是可查的产品症状）
+
+- 清队列 + `schtasks /end` + `/run` + `Reset-M5Guest` 之后：短请求 `^m5\.gui$` **5 s 通过**；
+  `cli_e2e` **126 s 跑完（不再卡）并失败**。⇒ 之前一小时所有"卡住"都是**队列**，与产品无关。
+- 失败原因（客机 `last-service.log` 原文）：
+  ```text
+  action=create-bundle code=4107 native=0 step=WorkerPipeChannel::read
+  detail=pipe transfer exceeded its bounded wait
+  WARNING: 1 worker process(es) survived the run
+  ```
+  ⇒ **`create-bundle` 等 worker 的私有管道超时**：worker 要么没起来、要么没在预算内应答；
+  并且**留下 1 个 worker 进程**。
+- **下一步（按成本）**：
+  1. 看 `C:\m5\last-trace.log`（服务与 worker 共写的步骤轨迹）——它会指出 worker 停在哪个动作之前的哪一步；
+  2. 单独跑一次 `myrd-m5-worker.exe` 看它能否独立启动（它需要 job object + 私有管道名参数）；
+  3. 这类"worker 不应答"在本会话早期（T1-04/T1-05）出现过，`m5-lessons.md` 里可能有同源记录，
+     先对照再动手；
+  4. 若与今天的改动相关：**最先怀疑 `Uuid()` 默认构造放宽**（nil uuid 流进 worker 命令 → worker 拒绝/挂），
+     验证方法是把该放宽**临时收回**（给需要默认构造的三个线格式结构改用 `std::optional<Uuid>`）
+     再跑 `cli_e2e`。
