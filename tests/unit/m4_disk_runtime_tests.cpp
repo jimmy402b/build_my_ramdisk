@@ -182,8 +182,10 @@ struct FakeRuntime final {
         };
         ops.assign_drive_letter = [this](const ProductVolume&, wchar_t letter) {
             events.push_back("assign-letter");
+            // Only the observation is required.  `verify` used to run first and this
+            // asserted it had; a recovery assigns the letter *before* the identity
+            // check, because the ownership token is unreadable without a mount point.
             REQUIRE(volume_observed);
-            REQUIRE(verified);
             observed_assign_letter = letter;
             drive_assigned = !fail_assign;
             return fail_assign ? Result<void>::failure(runtime_error())
@@ -502,8 +504,12 @@ TEST_CASE(m4_disk_runtime_recover_never_provisions_and_assigns_existing_volume) 
     REQUIRE_EQ(fake.observed_find_letter, options().drive_letter);
     REQUIRE_EQ(fake.observed_assign_letter, options().drive_letter);
     REQUIRE(!fake.provision_called);
+    // The letter comes before the identity check: the ownership token lives on the
+    // filesystem, so `verify_volume` cannot read it until the volume has a mount point
+    // (`disk_runtime.cpp`, the comment above the recovery assign).  The expectation here
+    // used to be `verify, assign-letter`, from before that ordering was fixed.
     require_events(fake, {"preflight", "classify", "lock", "recover",
-                           "aim-start", "find-volume", "verify", "assign-letter"});
+                           "aim-start", "find-volume", "assign-letter", "verify"});
 }
 
 TEST_CASE(m4_disk_runtime_recover_after_checkpoint_only_reopens_existing_volume) {
@@ -517,8 +523,8 @@ TEST_CASE(m4_disk_runtime_recover_after_checkpoint_only_reopens_existing_volume)
     // already-existing volume.  It must not flush, provision, or publish a
     // new checkpoint as part of startup.
     require_events(fake, {"preflight", "classify", "lock", "recover",
-                           "aim-start", "find-volume", "verify",
-                           "assign-letter"});
+                           "aim-start", "find-volume", "assign-letter",
+                           "verify"});
     REQUIRE_EQ(fake.observed_recover_size, options().virtual_bytes);
     REQUIRE_EQ(fake.observed_verify_size, options().virtual_bytes);
     REQUIRE(!fake.provision_called);
@@ -538,14 +544,22 @@ TEST_CASE(m4_disk_runtime_unknown_nonempty_does_not_start_aim) {
     REQUIRE_EQ(fake.events[3], std::string("unlock"));
 }
 
-TEST_CASE(m4_disk_runtime_recovery_size_mismatch_does_not_mount) {
+TEST_CASE(m4_disk_runtime_recovery_size_mismatch_does_not_leave_a_mount) {
     FakeRuntime fake;
     fake.bundle_kind = DiskBundleKind::manifest;
     fake.fail_verify = true;
     auto runtime = DiskRuntime::recover(options(), fake.operations());
     REQUIRE(runtime.ok());
     REQUIRE(!runtime.value()->start().ok());
-    for (const auto& event : fake.events) REQUIRE(event != "assign-letter");
+    // A recovery has to assign the letter *before* it can check the ownership token,
+    // so an `assign-letter` does happen even when the check goes on to fail.  What the
+    // case is really about is the property that mattered when it asserted "no assign at
+    // all": a failed recovery must not leave a mount behind.  That is now stated as what
+    // it is -- the letter that was assigned is taken back before anything else is torn
+    // down, and the volume is dismantled.
+    require_events(fake, {"preflight", "classify", "lock", "recover",
+                          "aim-start", "find-volume", "assign-letter", "verify",
+                          "remove-letter", "dismount", "aim-stop", "unlock"});
 }
 
 TEST_CASE(m4_disk_runtime_failure_cleans_only_owned_resources) {
@@ -567,7 +581,7 @@ TEST_CASE(m4_disk_runtime_successful_shutdown_reverses_owned_resources_exactly) 
     REQUIRE(runtime.value()->start().ok());
     REQUIRE(runtime.value()->shutdown_clean().ok());
     require_events(fake, {"preflight", "classify", "lock", "recover",
-                           "aim-start", "find-volume", "verify", "assign-letter",
+                           "aim-start", "find-volume", "assign-letter", "verify",
                            "flush", "remove-letter", "dismount", "aim-stop",
                            "unlock"});
 }
@@ -581,7 +595,7 @@ TEST_CASE(m4_disk_runtime_shutdown_is_idempotent_and_continues_after_cleanup_fai
     REQUIRE(runtime.value()->start().ok());
     REQUIRE(!runtime.value()->shutdown_clean().ok());
     require_events(fake, {"preflight", "classify", "lock", "recover",
-                           "aim-start", "find-volume", "verify", "assign-letter",
+                           "aim-start", "find-volume", "assign-letter", "verify",
                            "flush", "remove-letter"});
     const auto event_count = fake.events.size();
     REQUIRE(!runtime.value()->shutdown_clean().ok());
@@ -657,8 +671,11 @@ TEST_CASE(m4_disk_runtime_failed_stages_clean_only_resources_already_owned) {
          {"preflight", "classify", "lock", "generation-zero", "aim-start", "provision",
           "verify", "remove-letter", "dismount", "aim-stop", "unlock"}},
         {FailureCase::Stage::assign,
+         // Assigning is the recovery's first step on the volume, so a failure here
+         // never reaches `verify`: nothing was verified because there was no mount
+         // point to verify through.
          {"preflight", "classify", "lock", "recover", "aim-start", "find-volume",
-          "verify", "assign-letter", "dismount", "aim-stop", "unlock"}},
+          "assign-letter", "dismount", "aim-stop", "unlock"}},
     };
     for (const auto& c : cases) {
         FakeRuntime fake;

@@ -15,6 +15,7 @@
 | 1.3 | **核对二进制用间接信号，不要运行它** | 完整套件 ≈ **50–75 s**；被裁剪过的 ≈ **10 s**。耗时是判断"客机上跑的到底是哪个二进制"最省事的信号。**直接在开发机运行设备类测试会真的建 worker 与卷**（已违反过一次硬门） |
 | 1.4 | **改 `src/run/provision_volume.ps1` 必须 `touch src/run/run_resources.rc`** | 嵌入式资源不会因脚本变化重编；且 stage 前先在开发机跑 `unit.m4.provision_script`（AST 白名单守卫，`ForEach-Object` / `New-Object` 都不在白名单） |
 | 1.5 | **测试清单只在 `-Stage` 刷新** | `tests.json` 来自 `ctest --show-only=json-v1`。加了测试却只跑 `-Run`，客机上就没有那条。**判据是总数**：`staged 152 tests` ↔ `1 of 152`；看到 151 说明清单没刷新 |
+| 1.6 | **冷会话构建前先 `Set-ExecutionPolicy -Scope Process Bypass` 再 dot-source `tools/Enter-MsvcEnvironment.ps1`** | 不 dot-source 就没有 `LIB`/`INCLUDE`，链接报 **`LNK1181: 无法打开输入文件 bcrypt.lib`**——看起来像缺 SDK，其实是环境没进来。**每个新会话第一次构建都会撞**（2026-10-26 复现，记在 `m5-review-2026-10-26.md` §3.3）。这条以前只在评审文档里，不在本清单 |
 
 **最贵的一次**：一个陈旧二进制让"枚举会阻塞"这条结论活了整整几轮，
 六个假设全部围着它转，真实原因是**走了另一条分支**（见 §7.1）。

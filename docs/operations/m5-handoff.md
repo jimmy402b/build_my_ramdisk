@@ -10,12 +10,12 @@
 |---|---|
 | **唯一活动线** | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`（HEAD 以 `git log` 为准，本文不钉 SHA） |
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
-| 单盘（G2/G3） | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**；**T1-05 PARTIAL** |
+| 单盘（G2/G3） | T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**；**T1-05 可判 PASSED**（`cli_e2e -Repeat 20 → 20/20`，本文 §3.14） |
 | 多盘（G4） | T2-01…T2-03 **整章延后**（2026-10-17 用户裁定） |
-| 产品面客机读数 | 完整 152 条 → **150 通过**，唯二失败是客机无 Visual Studio 的两条 structural |
-| **下一件事** | `create` 在注册步骤失败（本文 §3.3）——stop 已修但还没验收 |
+| 产品面客机读数 | 完整 154 条 → **151/154**；两个是客机无 Visual Studio 的 structural，一个是批内间发（单跑 3/3 通过）。见 §3.14 ⑥ |
+| **下一件事** | T1-06（中断提交判定可达）。stop/restart 的收尾已在 §3.14 完成 |
 
-**顺序**：T1-05 收尾 → T1-06 → T1-07 → T1-08 → T1-09 → T1-10 → T3（GUI）→ T4（产品化）。
+**顺序**：T1-05 收尾（**已完成，§3.14**）→ T1-06 → T1-07 → T1-08 → T1-09 → T1-10 → T3（GUI）→ T4（产品化）。
 T2 在 G4 恢复前不动。
 
 ---
@@ -384,9 +384,141 @@ flush-before-refusal 让那条不再触发），现在前移到 flush 本身。
 
 ---
 
+### 3.14 2026-10-26 晚：restart + 两次 stop 全通，`cli_e2e -Repeat 20 → 20/20`
+
+**验收读数（干净客机）**：`integration.m5.cli_e2e` × 20 = **20/20**，
+请求 `ad796d29c8c04ef58b71766fdaa28a3b`，20 次共 5 分 50 秒（12:07:48 → 12:13:38Z）。
+每次迭代都走完 create → checkpoint → stop → **restart** → **第二次 stop** → forget →
+安装服务 install/answer/stop/delete。对照：修复前同一命令 **18/20**、**17/20**，两次不同批次。
+
+#### ① 先加诊断（只加日志，不改行为）
+
+`rollback_stop` 之前把失败原因写进服务日志；同一个 lambda 复用到 quiesce / freeze /
+flush / resume，并在两个 park 点各写一行。首次单次运行立刻读出原因：
+
+```text
+kind=7 message=stop action failed: action=flush_exact_volume outcome=error
+      domain=3 code=20999 native=0 step=flush detail=volume ownership contract is incomplete
+```
+
+`marker=flush` 只是把**动作名**当标记（`finalize_operation` 收到的终止标记），
+错误本身在 `rollback_stop({...})` 里被丢弃——这就是上一轮"日志只剩 marker"的全部原因。
+
+另外：e2e 每次迭代把自己的 `service.log` / `trace.log` 另存到
+`C:\m5\runs\<work-root>.{service,trace}.log`。**这一条是必需的**：`last-*` 会被下一次
+迭代覆盖，2/20 那次失败时只剩下"最后一轮通过"的日志，等于没有证据。
+
+#### ② 根因一：按身份认回的卷"不属于自己"（已修，`windows_volume.cpp`）
+
+`Win32VolumeAdapter::find_recovered_volume` 在"durable GUID 命中唯一候选"的快路径
+直接返回观测到的卷，而 `enumerate_native_volumes` 给每个卷都打
+`operation_owned=false`（`windows_volume.cpp:490`）。同函数的另外两条选择路径
+（`select_volume_for_disk`）都会补 `owner_token` / `drive_letter` / `operation_owned=true`。
+
+于是**只有"重启后按身份认回卷"这条路**拿到一个无主的卷：`verify_native_volume_identity`
+的所有权前置（`windows_volume.cpp:302`）在 flush 时拒绝。而 `disk.create` 建出来的卷
+一直是有主的，所以**第一次 stop 永远正常、第二次 stop 必挂**——这正是 §3.13 的现象。
+
+修法：快路径补上同样的三个字段（不动任何守卫）。修完单次运行全套通过
+（请求 `696c778500974694a68558a38b80c6cb`，24 秒）。
+
+#### ③ 根因二：stop 的写冻结从未运行过（T1-11 的死分支，已修）
+
+20× 随即暴露第二层：**18/20**，两次都是「300 s 没到终态，last state=reconciling」。
+诊断轮 **17/20** 拿到了原因，两个签名：
+
+```text
+action=lifecycle-action code=23559 step=service_worker_control.remove_mount
+  detail=The worker refused to remove: its runtime stands dirty
+→ stop parked at the removal boundary: action=lifecycle-action stop_phase=5
+
+checkpoint: disposition=3 …            （committed_needs_reconciliation）
+→ checkpoint parked for reconciliation: phase=checkpoint-resolving
+```
+
+两者是同一件事：**最终提交之后卷仍可写**，于是提交后又有 dirty。而写冻结
+（T1-11，`b3fae6f` 引入）本该是那道闸：
+
+```text
+state_machine：stop 计划 = quiesce_mutations, freeze_writes, flush_exact_volume, checkpoint_if_required, …
+service_core：quiesce 块把 phase 置为 quiesced 并发布
+              紧接着的 freeze 块守卫写的是 `stop_state.phase == admitted`  ⇒ 永不成立
+              之后 execution_actions.erase(begin, begin + 3) 仍按"前三个已执行"把 freeze 删掉
+```
+
+`git show b3fae6f` 里顺序已经如此，所以**自 T1-11 起这条分支就是死代码**，计划里的
+`freeze_writes` 被当成"已执行"跳过。T1-11 当时那份 20/20 来自 worker 侧
+（`remove_and_stop` 先 flush 再判 dirty、无共享独占打开有界重试），不是 service 侧这个动作。
+
+修法：守卫改成 `quiesced`（quiesce 之后、flush 之前）；worker 侧
+`DiskRuntime::freeze_writes` 幂等，`volume_flushed` 的续跑路径仍跳过。
+
+**客机正面证据**（`C:\m5\last-trace.log`，20/20 那轮）：
+
+```text
+Win32VolumeAdapter::lock: volume locked
+dismount: through the retained lock          ← 拆卸复用冻结那把锁（T1-11 的第 ① 条要求）
+```
+
+并且所有 stop 的最终提交都是 `checkpoint: disposition=2`（`committed`），
+不再有 park，也不再出现 `23559`。
+
+#### ④ 根因三：重启后卷还没发布就被枚举（已修，`runtime_adapter.cpp`）
+
+开冻结后 20× 变成 **17/20**，但失败前移到 restart 且**变快**（整批 6 分钟，不再 300 s）：
+
+```text
+command=disk.start message=action=create-runtime code=21000 native=1168
+  step=find_recovered_volume detail=no volume carries the recorded identity
+```
+
+新建设备后卷尚未被枚举到（`ERROR_NOT_FOUND`），下一次迭代同样能起来 ⇒ 是发布延迟。
+`ProductionRuntimeAdapter::find` 现在对 `not_found` 做**有界复检**（5 s，250 ms 一次），
+**且只在有 durable GUID 时**才复检：没有记录身份时"找不到"就是答案（reclaim 的残留可能
+真的没了），不该等。
+
+#### ⑤ 顺带修掉：三处陈旧期望（`6e1bfcc` 遗留）
+
+`m4_runtime_adapter_tests`、`m4_disk_runtime_tests`（开发机）与
+`integration.m4.multi_instance`（客机整套时才暴露）都是红的，**与本次改动无关**：
+`6e1bfcc` 把恢复路径改成"先分配盘符再校验身份"（所有权 token 在文件系统上，没挂载点读不到），
+三处 fake 的期望顺序仍是 `verify → assign`。已改成 `assign → verify`（`multi_instance` 是按下标
+断言的 `events[6]/[7]`，一并改），并把
+`m4_disk_runtime_recovery_size_mismatch_does_not_mount` 改成它真正想说的事：
+**失败的重启不许留下挂载**（现在断言盘符被收回：`assign-letter → verify → remove-letter →
+dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
+
+**下一步**：T1-05 可判 PASSED（create/checkpoint/stop/restart/第二次 stop/forget + 安装服务，
+20/20）；T1-06 起继续。**未验证**：`stop` 的 `require_clean` 策略分支（e2e 只走
+`checkpoint_required`）；park 仍保留给"真正 dirty"的情形（现在不再触发，但路径还在）。
+
+#### ⑥ 整套回归（客机，硬重启 + 清空后）
+
+**151/154**（请求 `8ec8aa88c34740308c2098e9dc90a7f3`，9 分钟），三个失败都不是本次改动：
+
+| 失败 | 原因 | 处置 |
+|---|---|---|
+| `structural.m2.storage_independent_build` | 客机无 Visual Studio：`vswhere.exe not found` | 环境受阻，历次基线同项，**不是产品失败** |
+| `structural.m5.execution_boundary` | 同上 | 同上 |
+| `m5.production_execution_backend` | 批内挂在 `WorkerBindingStore::over_protected_root`（`store.ok()`，`m5_production_execution_backend_tests.cpp:514`） | 单跑 **3/3 通过** ⇒ 批内间发（`m5-vm-harness.md` 已列的已知间发之一），不是本次改动 |
+
+同日更早那次整套也是 151/154，第三个失败是 `integration.m4.multi_instance`
+（`events[7] == "assign-letter"`，与 §⑤ 同源），已修，单跑
+`multi_instance + cli_e2e` → **2/2**。**本分支整套的期望值是 152/154**
+（两条 vswhere 永远红），外加 `m5.production_execution_backend` 在批内的已知间发。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
+# **每一个新会话、每一次构建之前：**
+#   不 dot-source 就没有 LIB/INCLUDE，链接会在 LNK1181（bcrypt.lib）上失败——
+#   看起来像缺 SDK，其实是环境没进来。冷会话一定会撞上（2026-10-26 复现并记在
+#   `m5-review-2026-10-26.md` §3.3；`m5-lessons.md` 里当时没写，别以为写过）。
+Set-ExecutionPolicy -Scope Process Bypass -Force
+. .\tools\Enter-MsvcEnvironment.ps1
+
 # 构建（改过任何头文件 ⇒ 必须加 --clean-first，见 lessons §1）
 cmake --build out/build/msvc --config Release --clean-first
 

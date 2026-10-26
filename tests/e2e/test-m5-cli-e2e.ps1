@@ -521,6 +521,25 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     exit 0
 } finally {
     Write-Step 'cleanup'
+    # **Every iteration keeps its own service log.**
+    #
+    # The two `last-*` copies below are overwritten by the next run, so the log of a
+    # failure in iteration 11 of a `-Repeat 20` was already gone by the time the batch
+    # ended -- and a batch is exactly where an intermittent failure is found.  A measured
+    # need: 2 of 20 repeats ended parked in `reconciling` and the only surviving file was
+    # the last iteration's log, which had passed.  The work root is unique per iteration,
+    # so its leaf name is reused as the archive key and nothing is overwritten.
+    $archiveTag = Split-Path -Leaf $workRoot
+    $archiveRoot = 'C:\m5\runs'
+    foreach ($preserve in @('trace.log', 'service.log')) {
+        $source = Join-Path $workRoot $preserve
+        if (Test-Path -LiteralPath $source) {
+            New-Item -ItemType Directory -Force -Path $archiveRoot | Out-Null
+            Copy-Item -LiteralPath $source `
+                -Destination (Join-Path $archiveRoot ($archiveTag + '.' + $preserve)) `
+                -Force -ErrorAction SilentlyContinue
+        }
+    }
     # The service log is the only record of what the service was doing when a command stopped
     # working, and the work root is about to be deleted -- so it is copied out first.
     foreach ($preserve in @('trace.log', 'service.log')) {

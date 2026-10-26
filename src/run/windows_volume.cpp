@@ -716,7 +716,30 @@ Result<ProductVolume> Win32VolumeAdapter::find_recovered_volume(
                     failure(VolumeError::foreign_mount, L"find_recovered_volume",
                             L"the recorded volume is claimed by another mount"));
             }
-            return Result<ProductVolume>::success(std::move(only.volume));
+            // **The identity path must stamp the same claim the letter path stamps.**
+            //
+            // `enumerate_native_volumes` marks every volume it observes as *not*
+            // owned (`operation_owned = false`, above); ownership is granted by the
+            // caller that decided the volume is ours.  This branch decided -- by the
+            // durable GUID, which is the strongest identity there is -- and then
+            // returned the observed volume unchanged, so a runtime that recovered a
+            // stopped disk held a volume it could never lock, flush or dismantle.
+            //
+            // Measured on the guest: after a restart, the next stop failed at
+            // `flush_exact_volume` with `step=flush detail=volume ownership contract
+            // is incomplete` (raised at the ownership precondition of
+            // `verify_native_volume_identity`), and the operation ended terminal-failed
+            // with nothing in the record but the word `flush`.
+            //
+            // Both sibling paths -- `select_volume_for_disk` for the multi-candidate
+            // fallback above and the no-durable-GUID case below -- have always stamped
+            // these three fields, which is exactly what hid the discrepancy: only the
+            // exact-identity path was wrong, and it is the one a clean restart takes.
+            auto adopted = std::move(only.volume);
+            adopted.owner_token = std::move(owner_token);
+            adopted.drive_letter = drive_letter;
+            adopted.operation_owned = true;
+            return Result<ProductVolume>::success(std::move(adopted));
         }
         // More than one volume with one identity is not something to guess about.
         // Keep the old path, which will refuse or pick the uniquely mounted one.

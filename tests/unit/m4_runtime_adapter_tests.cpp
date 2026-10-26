@@ -204,8 +204,11 @@ TEST_CASE(m4_runtime_adapter_recover_never_provisions_and_assigns_the_volume) {
     const auto runtime = harness.start(false);
     REQUIRE(runtime.ok());
     require_events(harness.events,
+                   // `assign` precedes `verify`: the ownership token is only readable
+                   // once the volume has a mount point, so a recovery assigns the letter
+                   // first and checks the identity through it.
                    {"preflight", "classify", "lock", "recover", "aim-start",
-                    "find", "verify", "assign"});
+                    "find", "assign", "verify"});
     REQUIRE_EQ(harness.backend.observed_recover_bytes, kBytes);
     REQUIRE(std::find(harness.events.begin(), harness.events.end(),
                       "provision") == harness.events.end());

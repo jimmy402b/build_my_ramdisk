@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <thread>
 #include <utility>
 
 namespace myrd {
@@ -425,8 +426,50 @@ Result<ProductVolume> ProductionRuntimeAdapter::find(const wchar_t letter) {
     // filter in `select_volume_for_disk` and drops only the one that was expensive to satisfy.
     // The durable identity, when this adapter has one, is what narrows the candidates: see the field's
     // declaration for why the letter filter does not.
-    return impl_->volume_adapter.find_recovered_volume(
-        std::nullopt, letter, impl_->owner_token, config_.expected_volume_guid);
+    //
+    // **A volume whose device was just created is not enumerable at that instant.**
+    //
+    // Measured on the guest: 3 of 20 `-Repeat 20` restarts failed at
+    // `step=find_recovered_volume detail=no volume carries the recorded identity`
+    // (native `ERROR_NOT_FOUND`), and the same disk restarted cleanly in the next
+    // iteration -- the enumeration ran before the freshly re-created device had
+    // published its volume.  The create path already tolerates exactly this: it
+    // re-enumerates inside a bounded budget rather than failing on the first look
+    // (`windows_volume.cpp`, the retry around `provision_and_adopt_volume`).  The
+    // restart path did not, so it turned a publication delay into a failed start.
+    //
+    // Only `not_found` is retried, and only for a bounded time: a genuine absence --
+    // a volume that really is not this disk's -- still fails, still names
+    // `not_found`, and just arrives a few seconds later.
+    const auto attempt = [this, letter]() {
+        return impl_->volume_adapter.find_recovered_volume(
+            std::nullopt, letter, impl_->owner_token,
+            config_.expected_volume_guid);
+    };
+    auto found = attempt();
+    if (found.ok()
+        || found.error().code
+            != static_cast<std::uint32_t>(VolumeError::not_found)
+        // Only the recorded identity can be "not published yet".  Without one there is
+        // nothing to wait for: the caller is matching whatever is on the machine, so a
+        // missing match is the answer rather than a delay -- which is the reclaim case,
+        // where the residue may genuinely be gone.
+        || !config_.expected_volume_guid.has_value()
+        || config_.expected_volume_guid->empty()) {
+        return found;
+    }
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(5000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        auto retried = attempt();
+        if (retried.ok()) return retried;
+        if (retried.error().code
+            != static_cast<std::uint32_t>(VolumeError::not_found)) {
+            return retried;
+        }
+    }
+    return found;
 }
 
 Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,

@@ -3780,6 +3780,18 @@ Result<OperationRecord> ServiceCore::execute_operation(
         if (!written.ok()) {
             return Result<OperationRecord>::failure(written.error());
         }
+        // Named, because a parked checkpoint moves again only on the next service
+        // start: without this line the log ends at "evidence-recorded profile state
+        // published" and the 300 s stall has no stated reason.  Measured on the guest
+        // in 2 of 20 repeats.
+        logger_.write(ServiceLogEvent{
+            ServiceLogKind::operation_failed,
+            parked.request_id,
+            parked.operation_id,
+            parked.profile_id,
+            parked.command_scope,
+            parked.phase,
+            "checkpoint parked for reconciliation: phase=" + parked.phase});
         {
             std::scoped_lock lock(pending_mutex_);
             const auto pending = std::find_if(
@@ -3928,11 +3940,55 @@ Result<OperationRecord> ServiceCore::execute_operation(
         const auto freeze_writes = [&]() -> Result<WorkerActionResult> {
             return execute_stop_action(ActionKind::freeze_writes);
         };
+        // **Every stop step that fails says why, here, where the error still exists.**
+        //
+        // Each branch of this stop turns a failure into a durable disposition plus a
+        // single-word marker (`quiesce`, `flush`, ...), and the error itself is gone by
+        // the time the operation is terminal.  Two measured consequences: the stop that
+        // follows a restart ended `failed` with `marker=flush` and no cause anywhere; and
+        // a 2-of-20 intermittent ended parked in `reconciling`, so the step that refused
+        // could not be named at all.  Nothing about the flow changes -- only what it says.
+        const auto log_stop_action_failure =
+            [&](const char* action, const Result<WorkerActionResult>& outcome) {
+            std::string facts = std::string("action=") + action;
+            if (!outcome.ok()) {
+                const auto& failed = outcome.error();
+                auto step = ipc::utf16_to_utf8(failed.operation);
+                auto detail = ipc::utf16_to_utf8(failed.message);
+                facts += " outcome=error domain="
+                    + std::to_string(static_cast<int>(failed.domain))
+                    + " code=" + std::to_string(failed.code)
+                    + " native=" + std::to_string(failed.native_code)
+                    + " step=" + (step.ok() ? step.value() : "?")
+                    + " detail=" + (detail.ok() ? detail.value() : "?");
+            } else {
+                facts += " outcome=completion completion="
+                    + std::to_string(static_cast<int>(
+                        outcome.value().completion));
+                std::string terminal;
+                for (const auto byte : outcome.value().terminal_result) {
+                    if (terminal.size() >= 48) break;
+                    const auto value = static_cast<unsigned char>(byte);
+                    terminal.push_back(value >= 0x20 && value < 0x7f
+                        ? static_cast<char>(value) : '.');
+                }
+                facts += " terminal=" + terminal;
+            }
+            logger_.write(ServiceLogEvent{
+                ServiceLogKind::operation_failed,
+                current_operation.request_id,
+                current_operation.operation_id,
+                current_operation.profile_id,
+                current_operation.command_scope,
+                current_operation.phase,
+                "stop action failed: " + facts});
+        };
         const auto rollback_stop = [&](std::vector<std::byte> result)
             -> Result<OperationRecord> {
             auto resumed = execute_stop_action(ActionKind::resume_mutations);
             if (!resumed.ok()
                 || !is_successful_completion(resumed.value().completion)) {
+                log_stop_action_failure("resume_mutations", resumed);
                 auto unresolved_stop = current_profile->stop;
                 unresolved_stop.phase = StopDurablePhase::resolving;
                 auto unresolved_state = current_profile->state;
@@ -3946,6 +4002,17 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     return Result<OperationRecord>::failure(
                         persisted.error());
                 }
+                // Named before it parks: a parked operation only moves again on the next
+                // service start, so this line is the last chance the log has to say that
+                // the stop was rolled back *and could not release its writes*.
+                logger_.write(ServiceLogEvent{
+                    ServiceLogKind::operation_failed,
+                    current_operation.request_id,
+                    current_operation.operation_id,
+                    current_operation.profile_id,
+                    current_operation.command_scope,
+                    current_operation.phase,
+                    "stop rollback could not resume writes; parked for reconciliation"});
                 return park_stop_reconciliation();
             }
             auto rollback_state = current_profile->stop.before_state.value();
@@ -3979,6 +4046,7 @@ Result<OperationRecord> ServiceCore::execute_operation(
             if (!quiesced.ok()
                 || !is_successful_completion(
                     quiesced.value().completion)) {
+                log_stop_action_failure("quiesce_mutations", quiesced);
                 return finalize_operation(
                     current_operation, current_profile, pending_plan,
                     CompletionOutcome::transient_failure,
@@ -4009,10 +4077,30 @@ Result<OperationRecord> ServiceCore::execute_operation(
         // volume is the only realistic cause and it is an observation, not a
         // broken runtime.  The profile is left running, and the rollback releases
         // nothing because nothing was taken.
-        if (stop_state.phase == StopDurablePhase::admitted) {
+        //
+        // **The guard used to test `admitted`, which this point can never be.**
+        //
+        // The quiesce block above moves the durable phase to `quiesced` and publishes
+        // it, so by here `stop_state.phase` is `quiesced` on every path that reaches
+        // this line -- `admitted` only ever matched a stop that had not been quiesced
+        // yet, and that case left the block above by a different branch.  The freeze
+        // therefore never ran: the plan still carried `freeze_writes` as its second
+        // action, `execution_actions.erase(begin, begin + 3)` below still removed it as
+        // if it had run, and the volume stayed writable across the commit.
+        //
+        // Measured on the guest, at a 10-15% rate across `-Repeat 20`: the final
+        // checkpoint landed `committed_needs_reconciliation` and parked, or the removal
+        // was refused with `23559 runtime stands dirty` and parked at the removal
+        // boundary -- both ending as a 300 s stall.  Those are exactly the symptoms the
+        // freeze was introduced to remove (T1-11), so it is now reachable: `quiesced` is
+        // the phase the quiesce publishes, and a resumed stop at `volume_flushed` still
+        // skips it.  The worker's own freeze is idempotent (`DiskRuntime::freeze_writes`
+        // returns success when the lock is already held), so re-entering is safe.
+        if (stop_state.phase == StopDurablePhase::quiesced) {
             auto frozen = freeze_writes();
             if (!frozen.ok()
                 || !is_successful_completion(frozen.value().completion)) {
+                log_stop_action_failure("freeze_writes", frozen);
                 return finalize_operation(
                     current_operation, current_profile, pending_plan,
                     CompletionOutcome::transient_failure,
@@ -4036,6 +4124,7 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 ActionKind::flush_exact_volume);
             if (!flushed.ok()
                 || !is_successful_completion(flushed.value().completion)) {
+                log_stop_action_failure("flush_exact_volume", flushed);
                 return rollback_stop(
                     {std::byte{'f'}, std::byte{'l'}, std::byte{'u'},
                      std::byte{'s'}, std::byte{'h'}});
@@ -4841,6 +4930,21 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             {std::byte{'d'}, std::byte{'i'}, std::byte{'r'},
                              std::byte{'t'}, std::byte{'y'}});
                     }
+                    // Which park this is.  The action's own reason is written by the
+                    // `action-result` branch above; this line says the operation stops
+                    // here rather than failing, and at which durable phase.
+                    logger_.write(ServiceLogEvent{
+                        ServiceLogKind::operation_failed,
+                        current_operation.request_id,
+                        current_operation.operation_id,
+                        current_operation.profile_id,
+                        current_operation.command_scope,
+                        current_operation.phase,
+                        "stop parked at the removal boundary: action="
+                            + std::string(lifecycle_action_phase(action))
+                            + " stop_phase="
+                            + std::to_string(static_cast<int>(
+                                current_profile->stop.phase))});
                     return park_stop_reconciliation();
                 }
                 if (action == ActionKind::checkpoint
@@ -5449,6 +5553,28 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     return park_checkpoint_reconciliation();
                 }
                 auto evidence = worker_result.checkpoint.value();
+                // **What the commit decided, before anything acts on it.**
+                //
+                // A stop whose final checkpoint lands `committed_needs_reconciliation`
+                // (or indeterminate) ends parked, and the record then keeps only the
+                // disposition's consequences.  These four numbers say whether the write
+                // freeze held: the disposition, the dirty epoch the commit observed, the
+                // generation it published, and whether the worker reported its own error.
+                logger_.write(ServiceLogEvent{
+                    ServiceLogKind::operation_running,
+                    current_operation.request_id,
+                    current_operation.operation_id,
+                    current_operation.profile_id,
+                    current_operation.command_scope,
+                    current_operation.phase,
+                    "checkpoint: disposition="
+                        + std::to_string(static_cast<int>(
+                            evidence.disposition))
+                        + " observed_dirty_epoch="
+                        + std::to_string(evidence.observed_dirty_epoch)
+                        + " generation=" + std::to_string(evidence.generation)
+                        + " worker_error="
+                        + std::to_string(evidence.error.has_value() ? 1 : 0)});
                 auto checkpoint_state = current_profile->checkpoint;
                 checkpoint_state.phase =
                     CheckpointDurablePhase::evidence_recorded;

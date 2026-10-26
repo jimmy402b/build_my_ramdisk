@@ -225,7 +225,12 @@ TEST_CASE(m4_multi_instance_recover_owns_its_mount_without_provisioning) {
     REQUIRE(runtime.value()->start().ok());
     REQUIRE_EQ(recovered.events[3], std::string("recover"));
     REQUIRE_EQ(recovered.events[5], std::string("find-recovered"));
-    REQUIRE_EQ(recovered.events[7], std::string("assign-letter"));
+    // `assign-letter` precedes `verify`: a recovery has to mount the volume before it
+    // can read the ownership token that `verify_volume` checks.  These two indices used
+    // to be the other way round; `6e1bfcc` swapped the order in `DiskRuntime::start` and
+    // left this expectation behind.
+    REQUIRE_EQ(recovered.events[6], std::string("assign-letter"));
+    REQUIRE_EQ(recovered.events[7], std::string("verify"));
     REQUIRE(std::find(recovered.events.begin(), recovered.events.end(),
                       "provision") == recovered.events.end());
     REQUIRE(ledger.assigned_letters.contains(L'T'));
