@@ -202,6 +202,32 @@ forget 本身未实现（`c1ac06f`）。
 
 ---
 
+### 3.8 决定：stop 的"最终 checkpoint 为 dirty"要有界复检，不 park
+
+**读数**：`cli_e2e -Repeat 20` = **18/20**（请求 `98e28d87d1ff46ea9a8905aa755cc935`），
+两个失败（#2、#14）同因：live stop 停在 `reconciling` 300 s，留一个 worker。
+
+**根因是两个守卫互相矛盾**：
+1. stop 的最终 checkpoint 判 dirty ⇒ `resolving` + needs-attention；
+2. `remove_and_stop` 拒绝 dirty runtime（怕拆卸时丢未提交的写）；
+3. 拒绝后 `park_stop_reconciliation` ⇒ `reconciling`，而它只能靠下一次服务启动推进。
+
+**决定（选项 2，有界复检）**：
+最终 checkpoint 判 dirty 时，**再 flush + checkpoint 一次（最多 N=2）**；
+干净了继续拆卸；仍 dirty 才以具名失败 + needs-attention **终态**收尾，**不 park**。
+不拆掉任何守卫，也不改变"允许丢 checkpoint 之后的写"这条既有契约。
+
+**实现落点（按顺序）**：
+1. `service_core.cpp` 的 stop checkpoint 分支：把「dirty ⇒ resolving」改成
+   「dirty ⇒ 再执行一次 `flush_exact_volume` + checkpoint；仍 dirty 才 resolving」；
+2. `park_stop_reconciliation` 的调用点：改为终态失败（`OperationState::failed`）
+   + 具名标记（如 `stop-final-checkpoint-dirty`），不再进入 `reconciling`；
+3. 验收：先 `-Repeat 3`（快），再 `-Repeat 20`。20/20 才算目标达成。
+
+**不要**做的事：不要为了通过而让 `remove_and_stop` 接受 dirty——那是唯一在防"拆盘即丢数据"的守卫。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
