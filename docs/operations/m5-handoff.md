@@ -142,6 +142,34 @@ writer lock 可取、匹配设备不存在）；② 服务侧实现 `prove_forge
 ③ 客机跑 `-Repeat 20`。
 ---
 
+### 3.6 2026-10-26 晚：forget 通了，现在挡在"重启"
+
+**forget 已实现（`c1ac06f`）**：worker 在 `inspect_bundle` 里证明"writer lock 可取 + 没有同尺寸
+代理设备"，服务侧 `prove_forget_safe` 用一次 inspection 拿这两项并等进程退出。
+客机读数：`disk.forget: succeeded (phase terminal)`。
+
+**e2e 现在过了整条数据面**：create → list/show → 读写 → checkpoint → stop → forget 全通过，
+失败点移到 **installed service** 阶段：
+
+```text
+installed service state: STOPPED   WIN32_EXIT_CODE 1066
+sc.exe stop MyRamDiskService failed (1062): 服务尚未启动
+```
+
+**根因（已复现）**：一次 forget 之后 `C:\ProgramData\MyRamDisk\profiles\<id>\` 留下**空目录**，
+`profiles\workers\<id>.workers` 也留着；**下一次服务启动直接失败**：
+
+```text
+myrd-service: start failed: op=profile_registration.load
+  msg=The requested profile is not registered native=0
+```
+
+空目录 `list_profiles` 会跳过，所以嫌疑在 worker binding / 启动协调路径。
+**下一步**：① forget 连目录与 binding 一起清掉（治源头）；② 启动路径把"已 forget 的 profile"
+当作可回收残留而不是致命错误（崩溃中途也安全）；③ 然后跑 `cli_e2e -Repeat 20`。
+
+---
+
 ## 4. 构建与测量循环
 
 ```powershell
