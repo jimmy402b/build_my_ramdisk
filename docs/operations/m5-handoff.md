@@ -1239,3 +1239,26 @@ SetVolumeLabel / volume_label / cluster_size / FMIFS / FormatEx / IOCTL_DISK_FOR
      看 scp 是否报错（目前 `Copy-ToRemote` 的 scp 退出码 0 但我们没有逐项打印，可疑）；
   4. 若仍 0，把 `Copy-ToRemote` 临时改成**每项打印目标路径与结果**，一次就能看出哪一项没到。
 - **这条是当前唯一阻塞**：修好之前，任何客机测量（包括 T4-04 的 M4 回归）都无法进行。
+### 3.41 2026-10-27 03:50：staging 的嵌套是 scp 语义问题，**建议改用 tar 直传**
+
+三次实测（都在客机上用 `cmd /c dir` 验证过）：
+
+1. `scp -r local\out remote\out` 在 `remote\out` **已存在**时会创建 `remote\out\out` ⇒ 载荷全落在
+   `out\out\build\...`，而 runner 只看 `out\build\...`，于是"客机有 0 个"；
+2. **`\.` 内容拷贝技巧在 Windows OpenSSH 的 scp 上不成立**：它对嵌套文件报
+   `dest open ... Failure`（看起来像权限问题，其实不是）；
+3. "先删目标再拷"也**没解决**（本次客机仍是 `out\out` + `out\build` 两棵树并存）。
+
+**推荐做法（不要再用 scp 拷目录）**：
+```powershell
+# 本地
+tar.exe -czf $payloadTar -C $stageDir .
+# 传输一个文件
+Copy-ToRemote -Local $payloadTar -Remote "$guestRepoScp/.m5-payload.tgz"
+# 客机解包（tar 已在该机可用，git metadata  Extract 就是这么做的）
+Invoke-Remote "& 'C:\Windows\system32\tar.exe' -xzf '$guestRepoScp/.m5-payload.tgz' -C '$guestRepoScp'; Remove-Item '$guestRepoScp/.m5-payload.tgz' -Force"
+```
+这与"git metadata 用 tar 传"的成功做法一致，且**把 scp 的目录语义从问题里彻底移除**。
+
+**在当前状态**：staging 会被计数守卫拒绝（这是好事，不会让客机跑出误导性失败）；
+`out\out` 残留需在客机上 `rmdir /s /q ...\out` 清一次。
