@@ -595,6 +595,28 @@ dismount → aim-stop → unlock`）。七个 fake-only 套件开发机全绿。
   判定读 harness 自己的 `N of M passed`，因为 **harness 在用例失败时仍退出 0**——这条已经踩过）
 - CMake 已注册 `integration.m5.powerloss_prepare` / `..._verify`（155 → 157 例）
 
+**2026-10-27 00:05 第三次读数（harness 已能判绿，客机会在两处卡死）**
+
+- harness 的判定修好了，两处都是**量出来的**：
+  ① harness 用 `Write-Host` 报判定，走的是 information stream，`2>&1 | Out-String` **抓不到**，
+  于是包装器对着"屏幕上明明印着 `0 of 1 passed`"的 run 说"没有判定行"；改用 `6>&1`。
+  ② staging 阶段印的是数量不是判定，用同一条规则会把刚成功的 stage 判成失败；so stage 只看退出码。
+- **`-SkipStage` 会让客机跑旧的 e2e 脚本**（脚本随 `-Stage` 的 git 归档下发）。这解释了
+  "uuid 解析已修却仍然报同一个错"——那两次客机跑的是旧文件。以后改 e2e 脚本必须带 `-Stage`。
+- **客机会卡死**（两次，都在 prepare 阶段前后）：SSH 无响应，只有硬断电才能恢复；
+  两次都是先跑过一轮断电实验之后。**下一次尝试前先硬重启**，并把"跑前重启"当作这个
+  harness 的固定前置，而不是例外处理。
+
+**下一步（新会话从这里开始）**：
+1. 硬重启客机 → 清 `ProgramData\MyRamDisk\{profiles,operations,logs}`；
+2. `Test-M5PowerLoss.ps1`（**不带** `-SkipStage`），一次跑完三段；
+3. 若 prepare 再次卡死：先用 `sc query`/`Get-Process` 确认是**服务**还是**客机**卡，
+   再把 prepare 里"装服务→start"这一步拆成独立 ctest 用例（现在它和 create 在一个用例里，
+   一卡就分不清）；
+4. 断电后 `verify` 若仍报 `blocked/needs-attention + PersistenceBlocked`，读
+   `C:\ProgramData\MyRamDisk\logs\service.log`（本轮新增的文件日志，`c97e9cc`）里
+   `auto-start refused: step=…` 那一行——原因就在那里。
+
 **2026-10-26 深夜 第二次读数（prepare 已通，卡在断电后的 start）**
 
 - `prepare` **通过**（请求 `a9fb722dd5854923b25e754637f74ed4`，52 s）：装 auto-start 服务 →
