@@ -163,12 +163,29 @@ TEST_CASE(m5_worker_control_fails_closed_on_actions_no_worker_realizes) {
     NullSessionProvider provider;
     ServiceWorkerControl control(provider);
     const ActionKind unrealized[] = {
+        // Every plan step the worker must not answer for.  Listed one by one
+        // rather than reached through a catch-all: the adapter used to answer
+        // `unrealized` from a `default:`, so a new action kind was classified as
+        // "nothing to do" without anyone deciding that.
+        ActionKind::none,
+        ActionKind::publish_provisioning_profile,
+        ActionKind::publish_imported_ready_profile,
+        ActionKind::checkpoint,
+        ActionKind::checkpoint_if_required,
+        ActionKind::publish_ready_profile,
         ActionKind::compact,
         ActionKind::publish_live_config,
         ActionKind::publish_stopped_config,
+        ActionKind::repair_profile_from_previous,
         ActionKind::verify_rebind_bundle,
         ActionKind::publish_rebind,
         ActionKind::forget_metadata,
+        ActionKind::resolve_commit,
+        ActionKind::read_status,
+        ActionKind::read_config,
+        ActionKind::collect_diagnostics,
+        ActionKind::read_operation,
+        ActionKind::request_operation_cancel,
     };
     for (const auto action : unrealized) {
         const auto result = control.execute(request(action));

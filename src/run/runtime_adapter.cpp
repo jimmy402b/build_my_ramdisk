@@ -8,6 +8,7 @@
 #include "src/persistence/production_policy.h"
 #include "src/run/driver_preflight.h"
 #include "src/run/m4_persistence_adapter.h"
+#include "src/storage/block_constants.h"
 
 #include <windows.h>
 
@@ -567,14 +568,23 @@ Result<DiskCheckpointResult> ProductionRuntimeAdapter::checkpoint() {
         {map_disposition(outcome.disposition), outcome.generation});
 }
 
+std::uint64_t dirty_bytes_from_block_counts(
+    const std::uint64_t resident_dirty_blocks,
+    const std::uint64_t zero_dirty_blocks) noexcept {
+    // Both counters are in the store's blocks, and the store's block is
+    // `kBlockSizeBytes`.  Multiplying by a second, larger constant produced a
+    // number that was 32x the truth and was compared against a byte threshold.
+    return (resident_dirty_blocks + zero_dirty_blocks) * kBlockSizeBytes;
+}
+
 DiskMaintenanceStats ProductionRuntimeAdapter::maintenance_stats() const {
     if (!impl_->aim_runtime) return {};
     const auto stats = impl_->aim_runtime->storage_stats();
     // `reserved_bytes` is RAM committed by clean as well as dirty blocks;
     // checkpoint scheduling is driven only by mutations that have not yet
     // reached the M3 journal.
-    constexpr std::uint64_t kBlockBytes = 2ULL * 1024ULL * 1024ULL;
-    return {(stats.resident_dirty_blocks + stats.zero_dirty_blocks) * kBlockBytes,
+    return {dirty_bytes_from_block_counts(stats.resident_dirty_blocks,
+                                          stats.zero_dirty_blocks),
             0, stats.backing_generation};
 }
 

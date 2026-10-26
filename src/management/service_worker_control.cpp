@@ -1,4 +1,4 @@
-﻿#include "src/management/service_worker_control.h"
+#include "src/management/service_worker_control.h"
 
 #include "src/management/windows_worker_observation.h"
 
@@ -1139,17 +1139,53 @@ Result<WorkerActionResult> ServiceWorkerControl::execute(
     case ActionKind::stop_runtime_and_release_lock:
         return confirm_removal(request);
     case ActionKind::reclaim_leftover:
-        // Explicit rather than left to the `default:` below, and that is not style: the
-        // default answers `unrealized`, so a new action kind that reached it would be
-        // reported as "no worker did this" and a leftover would never be dismantled --
-        // silently, and while every test that does not exercise it still passed.
+        // Explicit rather than left to a catch-all, and that is not style: a
+        // catch-all answered `unrealized`, so a new action kind that reached it
+        // was reported as "no worker did this" and a leftover was never
+        // dismantled -- silently, while every test that did not exercise it
+        // still passed.
         // The gate is already held by `execute`, so the body is called directly: taking
         // it again on this thread would deadlock, which is exactly why the body is its
         // own method.
         return reclaim_leftover_locked(request);
-    default:
+    case ActionKind::none:
+    case ActionKind::publish_provisioning_profile:
+    case ActionKind::publish_imported_ready_profile:
+    case ActionKind::checkpoint:
+    case ActionKind::checkpoint_if_required:
+    case ActionKind::publish_ready_profile:
+    case ActionKind::compact:
+    case ActionKind::publish_live_config:
+    case ActionKind::publish_stopped_config:
+    case ActionKind::repair_profile_from_previous:
+    case ActionKind::verify_rebind_bundle:
+    case ActionKind::publish_rebind:
+    case ActionKind::forget_metadata:
+    case ActionKind::resolve_commit:
+    case ActionKind::read_status:
+    case ActionKind::read_config:
+    case ActionKind::collect_diagnostics:
+    case ActionKind::read_operation:
+    case ActionKind::request_operation_cancel:
+        // Plan steps no worker executes: the service performs them, or the
+        // checkpoint path owns them.  They are listed one by one, and the switch
+        // has no `default:`, so a new action kind is a compile error here
+        // (C4062, promoted below) instead of silently answering "no worker did
+        // this".
         return unrealized(request);
     }
+    // Unreachable for any enumerator of ActionKind.  A new kind that was added
+    // without being classified lands here too, which is why the message names
+    // both possibilities: either the request is corrupt, or the action was
+    // never assigned to "a worker realizes it" or "the service owns it".  It is
+    // deliberately not `unrealized_action`: that code means "a plan step no
+    // worker performs", and answering it for an unknown kind is how a leftover
+    // once went un-dismantled.
+    return Result<WorkerActionResult>::failure(control_error(
+        ServiceWorkerControlError::invalid_argument,
+        L"service_worker_control.execute",
+        L"The action is neither realized by a worker nor classified as "
+        L"service-owned"));
 }
 
 Result<WorkerActionResult> ServiceWorkerControl::checkpoint_across_boundary(

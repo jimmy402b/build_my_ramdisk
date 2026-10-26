@@ -36,7 +36,15 @@ product::Uuid uuid(const char* text) {
 }
 
 product::Uuid profile_id() {
-    return uuid("11111111-2222-3333-4444-555555555555");
+    // A private pipe name is machine-wide and `ctest -j` runs these binaries
+    // side by side.  With a fixed id two processes raced for one name: measured
+    // as `server.ok()` failing in the other binary while this one spent 40 s
+    // waiting for a peer that could never connect.
+    static const product::Uuid value = [] {
+        auto generated = product::Uuid::random();
+        return generated.value();
+    }();
+    return value;
 }
 
 product::Uuid operation_id() {

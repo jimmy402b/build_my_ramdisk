@@ -130,6 +130,15 @@ struct RuntimeAdapterDependencies final {
 [[nodiscard]] Result<DiskRuntimeOperations> make_runtime_operations(
     RuntimeAdapterDependencies& dependencies);
 
+// A dirty-byte reading is a *count of blocks* times the block size, and a block
+// is `storage::kBlockSizeBytes` (64 KiB), not the 2 MiB that was hard-coded here.
+// Exposed so a unit can pin the unit of measure: the M4 checkpoint threshold
+// compares this number against `--checkpoint-dirty-mb`, so a wrong constant
+// silently changes *when* a checkpoint is committed, and nothing else fails.
+[[nodiscard]] std::uint64_t dirty_bytes_from_block_counts(
+    std::uint64_t resident_dirty_blocks,
+    std::uint64_t zero_dirty_blocks) noexcept;
+
 // Production implementation of both runtime boundaries over the accepted M4/M3
 // pieces (`M4PersistenceAdapter`, `M3AimRuntime`, `Win32VolumeAdapter`).
 class ProductionRuntimeAdapter final : public WindowsVolumeOperations,

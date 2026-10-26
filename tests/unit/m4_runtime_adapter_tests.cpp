@@ -1,6 +1,7 @@
 #include "tests/support/test_framework.h"
 
 #include "src/run/runtime_adapter.h"
+#include "src/storage/block_constants.h"
 
 #include <algorithm>
 #include <chrono>
@@ -275,4 +276,21 @@ TEST_CASE(m4_runtime_adapter_refuses_an_incomplete_environment) {
     const auto operations = make_runtime_operations(dependencies);
     REQUIRE(!operations.ok());
     REQUIRE(harness.events.empty());
+}
+
+// The dirty-byte reading is what the M4 run loop compares against
+// `--checkpoint-dirty-mb`, so its unit of measure is a behaviour, not a detail.
+// It used to be 2 MiB per block against a 64 KiB block: a 64 MiB threshold
+// therefore fired after ~2 MiB of real dirty data, and every existing test
+// still passed because they all handed the policy a number instead of asking
+// this function for one.
+TEST_CASE(m4_runtime_adapter_reports_dirty_bytes_in_store_block_units) {
+    REQUIRE_EQ(kBlockSizeBytes, 64ull * 1024);
+    REQUIRE_EQ(dirty_bytes_from_block_counts(0, 0), 0ull);
+    REQUIRE_EQ(dirty_bytes_from_block_counts(1, 0), kBlockSizeBytes);
+    REQUIRE_EQ(dirty_bytes_from_block_counts(0, 1), kBlockSizeBytes);
+    REQUIRE_EQ(dirty_bytes_from_block_counts(3, 2), 5ull * kBlockSizeBytes);
+    // The shape of the old defect, stated as a number: five blocks must not
+    // read as five units of 2 MiB.
+    REQUIRE(dirty_bytes_from_block_counts(3, 2) != 5ull * 2ull * 1024ull * 1024ull);
 }
