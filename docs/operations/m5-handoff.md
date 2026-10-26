@@ -1700,3 +1700,17 @@ sc.exe query MyRamDiskService > $null 2>&1; if ($LASTEXITCODE -eq 0) { sc.exe st
      届时看 `\\.\pipe\` 与服务的 `surface open` 日志顺序；
   3. **T1-09 之前的通过读数（请求 `1eb2ca27…`）仍然有效**，但需要在改动后再确认一次，
      因为今天改过枚举/序列号/默认值。
+### 3.66 2026-10-27 08:20：verify 等待提到 300 s；复跑改在 prepare 处失败（**必须先 Reset**）
+
+- 已改：`test-m5-powerloss-verify.ps1` 的 `Wait-ForService 180` → **300 s**，理由写在注释里
+  （3.65 量到：服务已 `serving`，而客户端 180 s 内没连上；窗口太短会把健康的服务判成失败验收）。
+- 复跑：`prepare` **17 s 就失败**——因为**上一次失败的 verify 把盘留在了客机上**，
+  而"同时两块盘"不在本产品支持范围内（3.17 已记）。⇒ **`Reset-M5Guest` 是 harness 的前置**，
+  不只是 verify 的前置。
+- **下次跑断电三段的标准顺序**（写死在这里）：
+  ```powershell
+  # 客机
+  powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1
+  # 主机
+  .\tools\m5vm\Test-M5PowerLoss.ps1 -SkipStage
+  ```
