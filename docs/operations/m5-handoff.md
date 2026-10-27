@@ -3406,3 +3406,24 @@ worker: command received   02:21:25.423
 
 **这条同时解释了一个本会话反复出现的现象**：`WARNING: 1 worker process(es) survived the run`——
 e2e 结束时服务停了，但**在那之前** worker 一直被 `disk list` 喂着，来不及自己退出。
+### 3.153 2026-10-27 21:30：**判定实验的结果：(1) 不够，必须做 (2)**
+
+修好"不问已停止的盘"（`cf79fce`）之后，在**重置过的客机**上跑同一场景：
+```text
+workers settled after 120 s (1 left)
+```
+⇒ **worker 依然不退**。按 §3.152 事先定好的判定规则：
+**光让 `disk list` 停止提问不足以让 worker 退出，`disk stop` 本身没有终结它。**
+
+**因此下一任要做 (2)：让 stop 真正关闭与 worker 的连接。**
+- 位置：`stop_runtime_and_release_lock`（计划最后一步，`state_machine.cpp:341` 之后那个 action 的实现）。
+- 机制（worker 侧已具备）：worker 主循环 `m5_worker_main.cpp:198-201` 在**读失败/写失败**时 `break`，
+  然后 `runtime->cleanup()` 并退出。所以**关闭管道就是最轻的终止手段**——
+  不需要新的 shutdown 协议，只需要**在 stop 结束时释放/关闭 worker 的连接对象**。
+- **判定标准（同样可事先定好）**：修好后再跑同一场景，`workers settled after N s` 应 **N < 30 s**；
+  若仍 120 s，说明连接对象被别的持有者引用着（例如观察缓存或 job object 的句柄），
+  那就顺藤摸瓜找持有者，而不是再加超时。
+
+**已回退 e2e**（工作树 0 改动）。**本会话到此为止，我没有在代码上做 (2)**——
+它属于"改产品生命周期"的一刀，需要先把连接对象的所有持有者列清楚；
+以当前余量做它是赌，不是推进。
