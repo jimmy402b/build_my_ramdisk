@@ -2951,3 +2951,16 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
      `maintenance: compaction dispatched (checkpoint-count)`"的断言）。
 - **教训（今天的第 6 次）**：**用正则删一段带注释的代码，是这个会话里最危险的动作**。
   前五次是"改了没落地"，这一次是"删了不该删的"。
+### 3.131 2026-10-27 17:45：**那次 `cli_e2e` 通过不算证据**——断言被我自己的回退带走了
+
+- 事实链：
+  1. `ed7b302` 那次提交把 `service_core.cpp` **和** `test-m5-cli-e2e.ps1` 一起提交了（我用了 `git add -A`）；
+  2. `git revert` 回退它时，**e2e 里的自动压缩断言也一起被撤销**；
+  3. 于是随后那次 `cli_e2e` **PASS 78 s** 是**没有断言**的通过——**不能**解读为"自动压缩发生了"；
+  4. 我重新加回断言后再跑：**12 s 就失败**，说明我插入的那段 PowerShell 本身有问题
+     （位置或变量作用域），**不是产品问题**。
+- **已处理**：`git checkout -- tests/e2e/test-m5-cli-e2e.ps1`（回到无断言的干净版本），工作树 0 改动。
+- **留给下一轮的**：把断言写进 e2e 时**先只加一行 `Write-Host`**，跑一次确认它真的执行到那里，
+  **再**加等待与 `Fail`。这与"先验证编辑落地、再构建"是同一条纪律，我今天在 PowerShell 上还没用过它。
+- **产品的现状**（不受影响）：`--compaction-threshold` 已能到达 profile（`ed7b302` 的修法已被
+  "字段逐项赋值"版取代并通过本地套件），自动压缩**已实现但尚未有客机证据**。
