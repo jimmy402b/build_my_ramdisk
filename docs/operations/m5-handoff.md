@@ -2868,3 +2868,20 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
 - **T4-03 剩余因此是两件清楚的事**：① 上述可观测（机械，有先例）；② **自动触发策略**（服务侧策略，
   需要定"何时自己发起"，建议：`checkpoints_since_compaction ≥ compaction.checkpoint_count_threshold`
   或 `journal 占用 ≥ journal_occupancy_percent`，两者都已在 `CompactionPolicy` 里）。
+### 3.126 2026-10-27 16:35：**T4-03 的两半卡在同一处**——journal/compaction 指标从来没有到达服务
+
+- `ProfileState`（`state_machine.h:102`）只有 `lifecycle` + `disk{runtime, activity, persistence, health}`，
+  **没有任何 journal 或 compaction 指标**；`ServiceMaintenance::tick()` 的输入正是这个列表。
+- ⇒ 我实现的 `compaction_due_reason()`（`78a02ab`，11/11）**无法被 tick 用上**：
+  策略函数需要 `journal_occupancy_percent` / `reclaimable_percent` / `checkpoints_since_compaction`，
+  而 tick **没有这些数**。抄 checkpoint 那段 dispatch 也救不了——**参数根本不存在**。
+- ⇒ **T4-03 的两半（自动触发 + 可观测）其实卡在同一处**：**指标必须先从权威来源进入服务**。
+  这个来源是**耐久状态**（`CompactionDurableState` 里已有 `successful_compactions_total`、
+  `checkpoints_since_compaction`）与 **worker 的运行时观测**（journal 占用）。
+- **因此正确的顺序是**（我此前把顺序写错了）：
+  1. **先把指标加进服务侧的 profile 视图**（就是 §3.125 那条四层链：observation → view → wire → renderer，
+     顺带在 `ProfileState`/`dashboard` 一侧暴露给 maintenance）；
+  2. **再**让 tick 用 `compaction_due_reason()` 决定；
+  3. **最后**才是 dispatch（那时才有 `DiskCompactCommand` + `no_wait` + 日志，形状与 checkpoint 那段一致）。
+- **教训**：我把"策略函数"当成第一步，其实**数据通路**才是第一步。这与今天反复出现的那条同源：
+  **先确认东西在哪，再写用它的代码。**
