@@ -126,6 +126,8 @@ struct DiskRuntimeOptions final {
     std::uint64_t virtual_bytes{};
     wchar_t drive_letter{};
     std::chrono::milliseconds volume_timeout{30000};
+    // Declared last so every existing positional initializer keeps its meaning (T4-02 volume label).
+    std::optional<std::wstring> volume_label;
 };
 
 // T06 deliberately exposes callbacks instead of production objects.  This
@@ -212,6 +214,9 @@ struct DiskRuntimeOperations final {
         flush_volume;
     std::function<Result<void>(const ProductVolume&, wchar_t)>
         assign_drive_letter;
+    // Optional and additive: writing the label needs the mount to exist, so the runtime calls it right after
+    // assign_drive_letter and treats a failure as a lost label, not a failed start.
+    std::function<Result<void>(wchar_t, const std::wstring&)> apply_volume_label;
     // Takes and *returns* the volume's exclusive lock, which the runtime then
     // retains.  Ownership travels with the attempt rather than being left with
     // the provider, because the window the lock has to cover is not one call:

@@ -200,6 +200,12 @@ Result<void> DiskRuntime::start() {
         if (!result.ok()) return fail(result);
         drive_letter_assigned_ = true;
         drive_letter_present_ = true;
+        // The label can only be written once the volume has a path, so it goes here -- and a label that will not
+        // stick is a lost label, not a failed start: the disk is mounted and usable either way.
+        if (options_.volume_label.has_value() && !options_.volume_label->empty()
+            && operations_.apply_volume_label) {
+            (void)operations_.apply_volume_label(options_.drive_letter, *options_.volume_label);
+        }
     }
     if (!operations_.verify_volume)
         return fail(missing_void(L"verify_volume"));
