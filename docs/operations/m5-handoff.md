@@ -3280,3 +3280,29 @@ compaction: completed total=<N> checkpoints_since=0
   可能的嫌疑：`--checkpoint-interval off` 与 `--no-start` 同时给出时，profile 的某个字段组合触发校验；
   或 `Z:` 在客机上不可用（e2e 里应改用 `disk list` 里没出现的盘符）。
 - **结论（对本轮）**：**T4-02 的 Load Only 与易失盘都还不能算完成**。我先前说"只差读数"是错的。
+### 3.148 2026-10-27 20:35：**那次 quiet create 失败是"重复注册"，不是 `--no-start` 的问题**
+
+服务日志（那次运行的 `last-service.log`，232 行）给出了确切的失败点：
+```text
+kind=7 disk.create phase=publish-provisioning
+message=publish_registration refused: code=22024 native=0 step=profile_registration.publish
+detail=The profile name, image, or bundle is already registered
+```
+
+⇒ **客机上留着上一次尝试的注册**（我那次运行**没有先 `Reset-M5Guest`**，而第一次尝试的 quiet 盘其实**创建成功了**，
+只是随后的 worker 断言失败）。所以第二次用新名字、新 bundle 也被判为"已注册"——
+**不是 `--no-start` 或 `--checkpoint-interval off` 的缺陷**。
+
+**因此 §3.147 的结论要再更正一次**：`--no-start` 的 create **没有证据表明它会失败**；
+我那次"失败"是**环境残留**。**Load Only 仍可能是"只差读数"**——但必须**先重置客机**再跑。
+
+**这正是今天第 N 次的同一类错误**：客机上的红，先问前提（这次是"有没有先 Reset"）。我把 §3.147 写成"Load Only 不算完成"，
+**那一步下结论太快了**。
+
+**下一任的第一步（一条命令）**：
+```powershell
+# 客机
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1
+# 然后跑带 §3.144 场景的 e2e（用 §3.146 的 120 s 轮询断言）
+```
+**如果那次通过**，T4-02 的 Load Only 与易失盘两条读数就都有了。
