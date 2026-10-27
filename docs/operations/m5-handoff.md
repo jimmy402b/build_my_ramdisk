@@ -3530,3 +3530,24 @@ request 2cad3213ad794c65a9f0bd1a8c57604c
 
 **下一任的第一件事**：为**缺陷 B** 找到"需要 `--accept-volatile-data-loss`"的那处判断（grep `accept_volatile`），
 确认它覆盖哪些命令；`disk stop` 显然不在其中。**B 比 A 更容易修，也更接近用户价值（数据丢失保护）。**
+### 3.159 2026-10-27 22:35：**缺陷 B 确认到代码级：`--accept-volatile-data-loss` 从来没有被"要求"过**
+
+全 `src/management` 里 `volatile` 的出现只有三类用途：
+1. **解析与传输**：`cli_parser.cpp:461` 读标志、`ipc_codec.cpp:835/844` 校验并编码；
+2. **持久化**：`service_core.cpp:960-961` 写进 durable stop 记录；
+3. **一致性校验**：`profile_registration_codec.cpp:835-851` 检查"标志与 force 是否自相矛盾"。
+
+**没有一处**是"**易失盘且未给标志 ⇒ 拒绝 stop**"。也没有任何 `volatile_data_loss_possible`
+被**计算**出来的地方（它只被持久化与校验自洽性）。
+
+⇒ **`disk stop` 对易失盘畅通无阻**（客机实测 `exit=0`），**而 CLI 的用法文本写着要这个标志**。
+**这是一条"承诺了但没实现"的保护**——比缺功能更糟，因为用户会以为数据被保护了。
+
+**修法（形状已定，下一任可做）**：
+1. 在 stop 的**受理**处计算 `volatile_data_loss_possible =
+   !profile.checkpoint.interval_enabled && !profile.checkpoint.last_confirmed_generation`
+   （即"没有定时检查点，也从未成功检查点过"）；
+2. 若 `possible && !accept_volatile_data_loss && !force` ⇒ **拒绝**，错误文本要说明"这个盘没有检查点"；
+3. 补一条 `m5.cli` 或 orchestration 用例：**易失盘 stop 不带标志必须失败**。
+
+**判定标准**：客机重跑 §3.158 的场景，`volatile stop exit` 必须 **≠ 0**，且输出里含 `volatile`。
