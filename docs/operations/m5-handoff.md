@@ -2985,3 +2985,19 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
 - **当前 HEAD 状态**：`e562e9e` —— 构建零错误、本地套件绿、`cli_e2e`（无 compaction 断言）通过。
   **`--compaction-threshold` 仍在 CLI/线格式/intent 中可用，但不会影响 profile**（策略层未接）。
 **这一条的教训**：**"本地全绿"对"带设备的 create 路径"没有证明力**。两次都是本地绿、客机红。
+### 3.133 2026-10-27 18:00：把范围再缩小一格——失败的很可能是**策略盘**那次 create，而且**不是校验拒绝**
+
+- 时间线对得上：主盘 create + 挂载 + checkpoint 大约 20 s，**失败发生在 24 s** ⇒ 很可能就是
+  **第二个（策略）盘**的 create，也就是**唯一带 `--compaction-threshold 2` 的那次**。
+- 而 `profile_validation.cpp:327-331` 的边界是
+  `journal_occupancy_percent ∈ [50,95]`、`reclaimable_percent ∈ [10,90]`、
+  **`checkpoint_count_threshold ∈ [1,4096]`** ⇒ **2 是合法值**，所以**不是校验拒绝**（至少不是这条规则）。
+- ⇒ **下一步只需要一个读数**（不用改代码）：在**当前 HEAD**（阈值不落 profile，create 正常）基础上，
+  **只加回 `service_core.cpp` 里那两行**（`profile::CompactionPolicy compaction{}` + 一次赋值 + 聚合换名），
+  然后**跑一次 `cli_e2e` 并读 `C:\m5\last-service.log` 里该次 create 的 `kind=7` 行**——
+  那条会写明 `step=` 与 `code=`，而这是我从头到尾**唯一没读**的一手信息。
+- **如果日志里该 create 没有任何 `kind=7`**：说明失败在**命令解码**（字段 12 的 `FieldRequirement`
+  我设的是 `optional`，但**服务端 schema 的 required 集合**可能与客户端不一致——两端的 `kCreateFields`
+  必须逐项相同，这是今天已经踩过的"两端一致"问题）。
+- **给下一任的提醒**：**不要**再靠"换一种写法试试"推进这一项；**先读服务日志的 `kind=7` 行**。
+  我今天为此多花了两轮客机运行（各 4 分钟），而那条日志一直都在 `C:\m5\last-service.log`。
