@@ -1,4 +1,4 @@
-﻿﻿﻿# M5 交接：从这里开�?
+﻿﻿﻿﻿﻿# M5 交接：从这里开�?
 
 **最后更新：2026-10-27**（状态有变化先改这里，再�?tasklist�?
 
@@ -7,13 +7,13 @@
 ## 1. 一分钟现状
 
 | 项 | 值 |
-|---|---|
-| **唯一活动�?* | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`（HEAD �?`git log` 为准，本文不�?SHA�?|
+| **唯一活动线** | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`（HEAD 以 `git log` 为准） |
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
-| 单盘（G2/G3�?| T1-01 / T1-02 / T1-03 / T1-04 / T1-11 **PASSED**�?*T1-05 可判 PASSED**（`cli_e2e -Repeat 20 �?20/20`，本�?§3.14�?|
-| 多盘（G4�?| T2-01…T2-03 **整章延后**�?026-10-17 用户裁定�?|
-| 产品面客机读�?| 完整 154 �?�?**151/154**；两个是客机�?Visual Studio �?structural，一个是批内间发（单�?3/3 通过）。见 §3.14 �?|
-| **下一件事** | T1-06（中断提交判定可达）。stop/restart 的收尾已�?§3.14 完成 |
+| **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
+| **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
+| **T4 进度** | T4-01 **PASSED**；T4-02 卷序列号完成、Load Only 与易失盘**已存在**（只缺客机读数）、VHDX 导出**只缺 `disk export` 命令**；T4-03 **PARTIAL**（机制全在，缺自动触发与 journal 可观测）；T4-04 双配置干净构建 + 证据工具**已完成**，**冻结未做** |
+| **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
+| **下一件事** | **T4-02 的 `disk export` 命令**（writer 已有：`persistence/vhdx_writer`），以及 Load Only / 易失盘的**各一次客机读数** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
