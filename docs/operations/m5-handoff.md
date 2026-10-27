@@ -4170,3 +4170,26 @@ Result<WorkerActionResult> ServiceWorkerControl::execute(
 3. 判据：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
 
 **已回退探针**（工作树 0 改动）。**这条结论足以让下一个人直接开工，而不必重复今天的 12 次收窄。**
+### 3.185 2026-10-28 03:45：`command_gate_` 的九个持有者，**其中一个已经在用 `try_to_lock`**——这是"重入"的痕迹
+
+```
+1068 reclaim_leftover           1137 execute              1387 execute_checkpoint
+1394 reconcile_checkpoint       1556 （continue of 1387?） 1626 prove_forget_safe
+1706 current_dirty_epoch        1733 try_to_lock（**有人已知重入风险**）  1766 （另一处）
+```
+⇒ **九个函数在持锁的情况下与 worker 通信**（设计上就该串行化，这一点没问题）。
+**但 `execute()`（1137）的锁覆盖了整个长函数体**，而它的调用链里只要有一处**再次**拿 `command_gate_`
+（`std::mutex` 不可重入），就是**自死锁**——表现正好是：
+- `service: asking the worker for an action` 出现一次、`returned` 永不出现；
+- worker 侧一切正常（§3.183 的 87/87/87）；
+- 进程 CPU≈0、杀不掉、操作永不终态。
+
+**下一任的第一步（一条 grep 就能确认/否证）**：
+```powershell
+# execute() 的函数体范围（1137 到下一个顶层函数），在里面找对下列函数的调用：
+grep -n "reclaim_leftover\|execute_checkpoint\|reconcile_checkpoint\|prove_forget_safe\|current_dirty_epoch" src/management/service_worker_control.cpp
+```
+若有任何一处被 `execute()` 间接调用 ⇒ **自死锁成立**，修法是把那把锁改成 `std::recursive_mutex`
+（最省事但掩盖设计问题），**或**把内层调用改成"已持锁"版本（更好，与 `reclaim_leftover_locked` 的既有命名一致）。
+
+**今天的 12 次收窄到此结束**：从"worker 莫名不退"到"**一把不可重入的锁**"。**每一次都由读数或代码推动。**
