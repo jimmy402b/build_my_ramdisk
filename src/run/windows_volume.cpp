@@ -1229,6 +1229,36 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
 #endif
 }
 
+Result<void> Win32VolumeAdapter::apply_volume_label(wchar_t drive_letter,
+                                                    const std::wstring& label) const {
+#ifdef _WIN32
+    if (!valid_letter(drive_letter)) {
+        return Result<void>::failure(
+            failure(VolumeError::platform_error, L"apply_volume_label",
+                    L"invalid drive letter"));
+    }
+    if (label.empty() || label.size() > 32) {
+        return Result<void>::failure(
+            failure(VolumeError::platform_error, L"apply_volume_label",
+                    L"label must be 1 to 32 characters"));
+    }
+    // The root of the mounted volume: SetVolumeLabelW takes a path, not a volume GUID, so this has to run after
+    // the mount exists -- which is why it is called from the mount's caller and not folded into the mount.
+    const std::wstring root{drive_letter, L':', L'\\', L'\0'};
+    if (!SetVolumeLabelW(root.c_str(), label.c_str())) {
+        return Result<void>::failure(
+            failure(VolumeError::platform_error, L"apply_volume_label",
+                    L"SetVolumeLabelW failed", GetLastError()));
+    }
+    return Result<void>::success();
+#else
+    (void)drive_letter; (void)label;
+    return Result<void>::failure(failure(VolumeError::platform_error,
+                                         L"apply_volume_label",
+                                         L"Win32 volume adapter unavailable"));
+#endif
+}
+
 Result<void> Win32VolumeAdapter::remove_drive_letter(const ProductVolume& owned) const {
 #ifdef _WIN32
     if (!valid_letter(owned.drive_letter)) return Result<void>::failure(failure(VolumeError::ownership_mismatch, L"remove_drive_letter", L"invalid drive letter"));

@@ -211,6 +211,11 @@ public:
         const ProductVolume& owned, wchar_t drive_letter) const;
     [[nodiscard]] Result<void> remove_drive_letter(
         const ProductVolume& owned) const;
+    // Writes the volume's label (T4-02).  Separate from assign_drive_letter and additive on purpose: the label
+    // is metadata the caller may or may not want, and folding it into the mount would change a signature whose
+    // callers have no opinion about labels.
+    [[nodiscard]] Result<void> apply_volume_label(
+        wchar_t drive_letter, const std::wstring& label) const;
 };
 
 // Executes the barrier only when the exact-volume identity is confirmed both
