@@ -3443,3 +3443,29 @@ workers settled after 120 s (1 left)
 - **判定标准（不变）**：修好后跑 §3.153 的场景，`workers settled after N s` 应 **N < 30 s**。
 
 **这条让"难修"变成"照抄"**：同一文件里已有正确处置（import 不持有 session），stop 只是**没有照做**。
+### 3.155 2026-10-27 21:50：**`shutdown()` 方法存在、文档写明、但全树零调用者**——缺陷就是这个
+
+`service_worker_session.h` 里的声明与注释：
+```cpp
+// Asks the worker to terminate.  Dismantles nothing, so `cleanup` is still
+// available afterwards -- the two are not synonyms.
+[[nodiscard]] Result<void> shutdown(const OperationContext& context, …);
+```
+实现（`service_worker_session.cpp:307`）发的是 `m5::WorkerCommand::shutdown`。
+
+**全树 grep 结果**：`.shutdown(` / `->shutdown(` / `held_sessions_.erase` / `erase_session` —— **0 个匹配**。
+
+⇒ **服务从来没有请 worker 终止过**：worker 只在**通道关闭**时自己退出，
+而持有 session 的容器（`service_worker_control.h:486` 的 `std::vector<std::pair<Uuid, unique_ptr<ServiceWorkerSession>>>`）
+在 stop 之后**没有释放那一项**。两件事合起来就是"盘显示 Stopped、worker 一直活着"。
+
+**修法（三行，位置明确）**：
+1. 在 stop 的 `ActionKind::stop_runtime_and_release_lock` 处理处（`service_core.cpp:6412` 一带）：
+   取到该 profile 的 session → `session->shutdown(context, operation_id)`（**这正是那个从未被调用的方法**）；
+2. 随后**释放/擦除该 session**（`held_sessions_` 里那一项）——通道关闭是 worker 的第二重保险；
+3. `cleanup()` 与 `shutdown()` **不是同义词**（文档明说），所以顺序上先 `cleanup`/设备退役、再 `shutdown`。
+
+**判定标准不变**：`workers settled after N s` 应 **N < 30 s**。
+
+**为什么这一条对验收是硬要求**：验收时一定会问"`disk stop` 之后内存释放了吗、设备退役了吗"。
+现在的答案在客户端看是"释放了"（`mem=0/0`、`runtime=Stopped`），**在进程列表里是"没有"**。
