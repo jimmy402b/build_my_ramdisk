@@ -46,9 +46,6 @@ struct DiskImportCommand {
     std::wstring bundle;
     std::wstring mount;
     std::optional<std::wstring> owner_sid;
-    // "Load Only" (T4-02): register and validate the bundle, publish the profile, and do not start the runtime or
-    // touch a device.  Declared last so the fields the command already had keep their encoded order.
-    bool no_start{};
 };
 struct DiskStopCommand {
     std::wstring target;
