@@ -2517,3 +2517,26 @@ worker 启动请求 → 启动规格 → **私有管道追加字段**（旧写�
 
 **唯一未做的验证**：客机读数 `fsutil fsinfo volumeinfo <letter>:` + 断电重启后标签仍在。
 `m5.cli` **17/17**、`m1.cli` **5/5**、`worker_protocol` **39/39**、`service_*` 25/25 各。
+### 3.108 2026-10-27 13:00：卷标**已验证到"服务接受"**，但 `cli_e2e` 在策略盘上卡住 300 s（已知失败）
+
+**本轮修掉的第三个"两处必须同步"**：`kCreateFields` 是**定长数组**（`std::array<FieldDescriptor, 10>`），
+我先把 schema 的**计数**改成 11、又补了第 11 行，但**数组长度**没改 ⇒ `error C2078: 初始值设定项太多`。
+已修（`510c164`）；**前面那次带红提交是我的错**，在下一条提交里修正并写明。
+
+**客机读数（请求 `94dbab6a…`）**：
+- 服务**接受了**带 `--volume-label` 的 create（`policy create: disk.create: operation queued`）；
+- 但该操作**300 s 未达终态**（`last state: running`）⇒ `cli_e2e` 失败。
+
+**首要嫌疑：卷标写入本身**。它就跑在挂载成功之后（`SetVolumeLabelW`），而此刻卷可能仍被我们自己的
+flush/lock 持有 ⇒ 可能阻塞。**次要可能**：策略盘这一段本来就要 30 s 检查点 + 64 MiB 初始化，叠加后超时。
+
+**下一步（二分，两次运行就能定性）**：
+1. **去掉** `cli_e2e` 里的 `--volume-label`（只留断言前的创建），重跑：
+   - 通过 ⇒ 问题在**卷标写入**（回到第 2 步）；
+   - 仍卡 ⇒ 与卷标无关（是策略盘这一段本身变慢/卡住）。
+2. 若确认是卷标：在 `apply_volume_label` 前后各打一行日志（`before/after SetVolumeLabelW`），
+   看它是否真的阻塞；若是，考虑把标签写入放到 **readiness-io 之后**、或对已挂载路径用
+   `SetVolumeLabelW` 前先确认卷不在 lock 中。
+
+**状态**：`m1.cli 5/5`、`m5.cli 17/17`、`m5.service_orchestration 25/25`；
+**`integration.m5.cli_e2e` 当前为已知失败**（不得读成"全绿"）。
