@@ -1,5 +1,6 @@
 #include "src/management/service_worker_control.h"
 
+#include "src/common/diagnostic_trace.h"
 #include "src/management/windows_worker_observation.h"
 
 #include <algorithm>
@@ -873,7 +874,11 @@ Result<WorkerActionResult> ServiceWorkerControl::remove_mount(
     // Best effort by design: the removal above already succeeded and the runtime is stopped, so a worker
     // that left before answering is the outcome this asked for, not a failure.
     const auto asked = session.value()->shutdown(context(), request.operation_id);
-    static_cast<void>(asked);
+    // **Not swallowed silently.**  The first version threw this away, so when the worker still outlived the
+    // stop there was no way to tell whether the request had reached it -- the same habit this project keeps
+    // paying for.  This line says which of the two happened.
+    diagnostic_trace(asked.ok() ? "stop: worker asked to shut down and answered"
+                                : "stop: shutdown request failed");
     const auto& reply = removed.value();
     if (reply.refused()) {
         // The worker's own decision about its own runtime, and the reason is
