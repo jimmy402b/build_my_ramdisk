@@ -2917,3 +2917,15 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   `disk show` 的 `successful_compactions_total` 增加；日志里出现 `maintenance: compaction dispatched (checkpoint-count)`。
 - **这条也解释了为什么 T4-03 之前一直标 PARTIAL**：机制全在，但**没有可操作的旋钮**去触发它，
   所以既没人测过、也没人用过。
+### 3.129 2026-10-27 17:05：**新接线的一个已知风险**（我引入的，未修）
+
+- `tick()` 每 15 s 一次。自动压缩派发**没有"刚刚派过"的记忆**（checkpoint 有 `record_last_checkpoint`，
+  compaction 没有对等物）。因此在"已受理、尚未进入非 stable 阶段"的窗口里，下一次 tick 会**再派一次**
+  `disk compact`；core 大概率以状态拒绝并记一条 `operation_failed` 日志。
+- **后果**：不会损坏数据（受理是耐久的，状态机会拒绝），但会**产生误导性的失败日志**，
+  且在 `--compaction-threshold` 很小的配置下会连续刷屏。
+- **修法（下次，很小的改动）**：镜像 checkpoint 的做法——记 `last_compaction_dispatch`（profile → 时间/理由），
+  在派发前跳过"最近 N 秒内已派发过同一 profile"的候选；或更简单：**只在一个稳定窗口的第一个 tick 派发**
+  （例如把 `successful_compactions_total` 也纳入键，派发后要求它变化才允许再派）。
+- **我没有实现它的原因**：需要新增成员 + 与 `state_mutex_` 的交互，而在会话末尾盲改状态机周边的锁与簿记，
+  风险高于收益。**记下来，比改坏强。**
