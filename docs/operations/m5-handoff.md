@@ -2628,3 +2628,23 @@ worker spec/运行时/适配器），未来若驱动支持或改用别的接口�
      重跑该用例——若恢复，则确认是"追加字段改变了 worker 启动语义"（这比性能问题严重得多）；
   3 **性能回归（227 → 517 s）单独查**：最可能是我的有界写入线程或 worker 启动路径引入了等待，
      但也不排除客机自身状态（本轮之前刚跑过多次 e2e）。
+### 3.114 2026-10-27 14:15：`m5.startup_sweep` 的真相——**它自己拒绝在它认为的"非客机"上运行**
+
+- 单独跑（`-Filter '^m5\.startup_sweep$'`）：**1.9 s，exit 1，stdout/stderr 都是 0 字节**。
+- 直接在客机上跑该 exe（普通 ssh，非 agent）：
+  ```text
+  m5.startup_sweep creates real worker processes and may only run on the guest (AGENTS.md section 4).
+  Use tools/m5vm/Invoke-M5Vm.ps1 -Run -Filter '^m5\.startup_sweep$' rather than ctest on the development machine.
+  exit=2
+  ```
+- ⇒ 这个用例**有一道"只在客机运行"的自检**，而**我的普通 ssh 会话不满足它的判定**（exit 2 + 明确提示）；
+  但**通过 agent 跑时 exit 1、无任何输出**——**两种行为不同**，说明判定逻辑对"agent 会话"和"普通 ssh 会话"
+  （以及可能的开发机）给出三种不同结果，而其中一种**默默失败且不留痕迹**。
+- **下一步（两件小事）**：
+  1. 找到这道自检的实现（grep `may only run on the guest`），看它依据什么判定
+     （环境变量？标记文件？是否存在 worker 二进制？），并把"agent 会话"这一路补上——
+     否则这条用例在客机上**永远静默失败**；
+  2. 让它在拒绝时**把原因写进 stdout/stderr**（现在 agent 路径上是 0 字节）。
+- **这条与我的改动无关**：它是**既有缺陷**（本会话更早的 `model/m5 12/13` 只出现过
+  `m5.production_execution_backend`，说明 `startup_sweep` 那时是过的，或当时也静默失败过而未被注意）。
+  **下次要先确认"它曾经绿过吗"**，再决定是否算回归。
