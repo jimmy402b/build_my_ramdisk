@@ -2929,3 +2929,25 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   （例如把 `successful_compactions_total` 也纳入键，派发后要求它变化才允许再派）。
 - **我没有实现它的原因**：需要新增成员 + 与 `state_mutex_` 的交互，而在会话末尾盲改状态机周边的锁与簿记，
   风险高于收益。**记下来，比改坏强。**
+### 3.130 2026-10-27 17:30：**阈值到 profile 的那一改把 create 弄坏了**——已回退，留下精确线索
+
+- **客机读数 1**（`d3408e1a…`，修 `ed7b302` 之前）：checkpoint 到 **generation 8**，服务日志 307 行里
+  **`compaction` 出现 0 次** ⇒ 自动压缩从未触发。原因：**选项走到了 intent 就停了**
+  （`service_core.cpp` 里记录仍构造默认 `CompactionPolicy{}`，阈值 64）。
+- **修法 `ed7b302`**：在记录构造前用 intent 构建 `compaction_policy` 并交给记录。
+  本地套件全绿（orchestration 25 / host 25 / maintenance 11 / cli 17）。
+- **客机读数 2**（`d3408e1a…` 之后，带修重跑）：**create 直接失败**（38 s，`the policy disk create ended failed`，
+  且 `1 worker process(es) survived`）。
+  ⇒ 我的改动**破坏了创建路径**：最可能是我用来删 no-op 的那条 regex
+  （`// A create may ask for …` 到下一个 `}`）**删多了或删错了位置**，
+  把 `materialize_*_profile` 里的一段真正逻辑一起吃掉——它仍能编译，因为删掉的是一段赋值。
+- **已回退**（`2181e5b`）：构建零错误、orchestration 25/25、host 25/25。**工作树干净**。
+- **下一轮该做的（顺序不能变）**：
+  1. **先**读 `service_core.cpp` 的 `materialize_*_profile`（约 540–600 行）**当前完整内容**，
+     确认 `checkpoint` 策略是怎么被逐字段赋值的，**照它的样子**给 `compaction` 赋值
+     （不要用"构建一个 CompactionPolicy 再塞进聚合"的方式，那是我的失误）；
+  2. 本地 `orchestration` + `host` 绿；
+  3. 客机跑 `cli_e2e`（它已带 `--compaction-threshold 2` 与"180 s 内必须在日志里看到
+     `maintenance: compaction dispatched (checkpoint-count)`"的断言）。
+- **教训（今天的第 6 次）**：**用正则删一段带注释的代码，是这个会话里最危险的动作**。
+  前五次是"改了没落地"，这一次是"删了不该删的"。
