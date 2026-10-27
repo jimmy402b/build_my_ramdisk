@@ -2384,3 +2384,27 @@ green=True pass=22
      （`volume label not applied: code=… label=…`）；
   2. **把 `--volume-label` 加回 `cli_parser.cpp`**（`--owner` 之后）+ 用法行；
      然后客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行。
+### 3.101 2026-10-27 12:00：worker 侧落点的勘察结果（下一步照着改，不用再找）
+
+**动作序列在 `src/management/state_machine.h:143` 的 `enum class ActionKind`**，与卷标相关的相邻成员：
+
+```cpp
+    verify_existing_volume_identity,   // 161
+    assign_exact_mount,                // 162  → 字符串 "assign-mount"（service_core.cpp:330）
+    readiness_io,                      // 163  → "readiness-io"
+    remove_mount,                      // 164
+```
+
+**因此 worker 应用卷标有两条路，推荐第二条**：
+1. **新增 `ActionKind::apply_volume_label`**：要在 5 处同步（枚举、`to_string`、动作执行分发、
+   start 序列插入点、`validate_*` 对动作合法性的检查）——面广、易漏，且本会话已证明"面广的改动"在这种
+   上下文里很难一次做对；
+2. **并入 `assign_exact_mount` 的实现**（推荐）：挂载成功后，若 `profile.volume_label` 有值，
+   直接 `SetVolumeLabelW(<盘符>:\ 或挂载路径, label)`；失败**只记日志**、不影响 start 结果。
+   这样**只改一个函数**，用户可见行为就是"创建时给了标签 ⇒ 启动后卷上有标签"。
+
+**验收（客机）**：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行必须等于请求值；
+再断电重启一次，确认恢复后标签仍在（它就是卷上的元数据，应随之保留）。
+
+**当前状态**：构建干净、工作树 0 改动、`m4.profile_codec` 22/22。
+**卷标还剩**：① `assign_exact_mount` 里应用（上面第 2 条）；② CLI `--volume-label`；③ 客机读数。
