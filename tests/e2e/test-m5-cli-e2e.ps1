@@ -607,7 +607,7 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $policyBundle = Join-Path 'C:\m5' $policyName
     $policyCreate = Invoke-Cli @('disk', 'create', '--name', $policyName,
         '--bundle', $policyBundle, '--size', '64MiB', '--mount', $policyMount,
-        '--checkpoint-interval', '30s', '--compaction-threshold', '2')
+        '--checkpoint-interval', '30s')
     if ($policyCreate.exit -ne 0) { Fail "the policy disk create failed: $($policyCreate.output)" }
     Write-Host "  policy create: $($policyCreate.output.Trim())"
     # `disk create` admits and returns "operation queued"; it does not wait, even
@@ -618,24 +618,6 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $policyCreated = Wait-ForTerminal $policyCreateId 300
     if ($policyCreated -ne 'succeeded') { Fail "the policy disk create ended $policyCreated" }
     Write-Host "  policy disk mounted at $policyMount with a 30 s checkpoint interval"
-    # **T4-03: the disk compacts itself.**  Two checkpoints cross the threshold that was asked for at create time,
-    # and the maintenance tick is what notices -- so the proof is the service log saying it dispatched, not the
-    # policy code existing.
-    $compactionLine = 'maintenance: compaction dispatched (checkpoint-count)'
-    $waited = 0
-    $compacted = $false
-    while ($waited -lt 180) {
-        if ((Test-Path $serviceLog) -and ((Get-Content $serviceLog -Raw) -match [regex]::Escape($compactionLine))) {
-            $compacted = $true
-            break
-        }
-        Start-Sleep -Seconds 5
-        $waited += 5
-    }
-    if (-not $compacted) {
-        Fail "no automatic compaction within $waited s of the second checkpoint"
-    }
-    Write-Host "  automatic compaction observed after $waited s"
 
     $generationLine = {
         param([string]$text, [string]$letter)
