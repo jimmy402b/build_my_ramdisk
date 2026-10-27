@@ -17,7 +17,7 @@ namespace {
 constexpr std::size_t kHashOffset = 40;
 constexpr std::size_t kHashBytes = 32;
 constexpr std::uint16_t kLastKnownTag =
-    static_cast<std::uint16_t>(ProfileFieldTag::index_headroom_percent);
+    static_cast<std::uint16_t>(ProfileFieldTag::volume_label);
 
 template <class T>
 Result<T> codec_failure(ProfileCodecError code, const wchar_t* operation,
@@ -207,6 +207,7 @@ bool expected_kind_and_length(const FieldView& field) noexcept {
     case ProfileFieldTag::bundle_path:
     case ProfileFieldTag::manifest_name:
     case ProfileFieldTag::mount_target:
+    case ProfileFieldTag::volume_label:
         return field.kind == ProfileFieldKind::utf8;
     case ProfileFieldTag::created_unix_ms:
     case ProfileFieldTag::logical_capacity:
@@ -413,6 +414,13 @@ Result<std::vector<std::byte>> encode_profile(const ProfileRecord& record) {
                      value.compaction.checkpoint_count_threshold);
     append_u32_field(payload, ProfileFieldTag::index_headroom_percent,
                      value.compaction.index_headroom_percent);
+    // Tag 36, last because fields are ordered by tag.  Mandatory like every other field here -- the decoder
+    // requires each tag up to kLastKnownTag and the header declares how many are known -- and the field codec
+    // refuses a zero-length value, so "no label" travels as a sentinel no real label can contain.
+    auto label = encode_utf8(value.volume_label.value_or(std::wstring(1, L'\u0001')), 64);
+    if (!label.ok()) return Result<std::vector<std::byte>>::failure(label.error());
+    append_bytes_field(payload, ProfileFieldTag::volume_label, ProfileFieldKind::utf8,
+                       label.value());
 
     if (payload.size() > kProfileMaximumBytes - kProfileHeaderBytes) {
         return codec_failure<std::vector<std::byte>>(
@@ -631,7 +639,15 @@ Result<ProfileRecord> decode_profile(std::span<const std::byte> bytes) {
             read_u32(field(ProfileFieldTag::journal_occupancy_percent).value, 0),
             read_u32(field(ProfileFieldTag::reclaimable_percent).value, 0),
             read_u32(field(ProfileFieldTag::checkpoint_count_threshold).value, 0),
-            read_u32(field(ProfileFieldTag::index_headroom_percent).value, 0)}};
+            read_u32(field(ProfileFieldTag::index_headroom_percent).value, 0)},
+        [&]() -> std::optional<std::wstring> {
+            // The sentinel is what "no label was asked for" looks like on the wire; the tag is required, so a
+            // record without it cannot exist.
+            auto label = decode_utf8(field(ProfileFieldTag::volume_label).value, 64);
+            if (!label.ok()) return std::nullopt;
+            if (label.value() == std::wstring(1, L'\u0001')) return std::nullopt;
+            return std::optional<std::wstring>(label.move_value());
+        }()};
     return Result<ProfileRecord>::success(
         ProfileRecord{revision, std::move(decoded)});
 }

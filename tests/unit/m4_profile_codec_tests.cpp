@@ -79,9 +79,9 @@ std::vector<std::byte> from_hex(std::string_view text) {
 
 const std::vector<std::byte>& minimal_golden() {
     static const auto bytes = from_hex(
-        "4d595244505246000100000048000000fa010000000000000700000000000000"
-        "b20100002300000097587e8adf5343a0f8c597c13bc0faa38748e8b56c68c931"
-        "834bccca8fe77c42010001011000000000112233445566778899aabbccddeeff"
+        "4d59524450524600010000004800000003020000000000000700000000000000"
+        "bb01000024000000294b2fcd5fd8d743b0bffe0e085fcdae0e903a31f4774ed5"
+        "5ebfee3b24eda6e1010001011000000000112233445566778899aabbccddeeff"
         "0200020108000000532d312d352d313803000201010000004104000501080000"
         "000068e5cf8b0100000500030101000000000600020104000000443a5c420700"
         "0201080000006469736b2e72646d0800010110000000102132435465768798a9"
@@ -94,7 +94,8 @@ const std::vector<std::byte>& minimal_golden() {
         "000000001900060101000000011a0005010800000000000004000000001b0006"
         "0101000000011c00030101000000011d00030101000000011e00030101000000"
         "001f000601010000000120000401040000004600000021000401040000003200"
-        "000022000401040000004000000023000401040000000a000000"
+        "000022000401040000004000000023000401040000000a000000240002010100"
+        "000001"
     );
     return bytes;
 }
@@ -144,7 +145,7 @@ TEST_CASE(profile_v1_layout_constants_are_frozen) {
     REQUIRE_EQ(kProfileSchemaMinor, std::uint16_t{0});
     REQUIRE_EQ(kProfileHeaderBytes, std::uint32_t{72});
     REQUIRE_EQ(kProfileFieldHeaderBytes, std::uint32_t{8});
-    REQUIRE_EQ(kProfileKnownFieldCount, std::uint32_t{35});
+    REQUIRE_EQ(kProfileKnownFieldCount, std::uint32_t{36});
 }
 
 TEST_CASE(profile_v1_canonical_field_tags_are_contiguous_and_ordered) {
@@ -283,7 +284,7 @@ TEST_CASE(profile_v1_rejects_missing_duplicate_and_unknown_mandatory_fields) {
     constexpr std::size_t kLastFieldOffset = 494;
 
     auto missing = minimal_golden();
-    put_u16(missing, kLastFieldOffset, 36);
+    put_u16(missing, kLastFieldOffset, 37);
     missing[kLastFieldOffset + 3] = std::byte{0};
     refresh_payload_hash(missing);
     require_decode_rejected(missing);
@@ -294,7 +295,7 @@ TEST_CASE(profile_v1_rejects_missing_duplicate_and_unknown_mandatory_fields) {
     require_decode_rejected(duplicate);
 
     auto unknown_mandatory = minimal_golden();
-    put_u16(unknown_mandatory, kLastFieldOffset, 36);
+    put_u16(unknown_mandatory, kLastFieldOffset, 37);
     refresh_payload_hash(unknown_mandatory);
     require_decode_rejected(unknown_mandatory);
 }
@@ -302,9 +303,9 @@ TEST_CASE(profile_v1_rejects_missing_duplicate_and_unknown_mandatory_fields) {
 TEST_CASE(profile_v1_accepts_bounded_unknown_optional_field) {
     auto bytes = minimal_golden();
     put_u64(bytes, 16, bytes.size() + 11);
-    put_u32(bytes, 32, 445);
-    put_u32(bytes, 36, 36);
-    bytes.push_back(std::byte{36});
+    put_u32(bytes, 32, 454);
+    put_u32(bytes, 36, 37);
+    bytes.push_back(std::byte{37});
     bytes.push_back(std::byte{0});
     bytes.push_back(std::byte{99});
     bytes.push_back(std::byte{0});
