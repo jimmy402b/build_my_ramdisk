@@ -432,3 +432,24 @@ TEST_CASE(cli_wire_carries_the_volume_serial_and_renders_it) {
     const auto text = cli::render_response(decoded.value());
     REQUIRE(text.find("serial=A1B2-C3D4") != std::string::npos);
 }
+TEST_CASE(m5_cli_renders_the_compaction_count_through_the_wire) {
+    // T4-03's client half: the number has to survive the wire and reach the line, or "bounded journal growth" is a
+    // claim nobody can check.  Zero stays invisible, so a disk that never compacted looks exactly as it did.
+    auto wire = list_response();
+    wire.profiles.front().successful_compactions = 7;
+    auto bytes = management::encode_service_response_wire(wire);
+    REQUIRE(bytes.ok());
+    auto decoded = management::decode_service_response(bytes.value(), ipc::kProtocolMinor);
+    REQUIRE(decoded.ok());
+    REQUIRE_EQ(decoded.value().profiles.front().successful_compactions, 7ULL);
+
+    const auto text = cli::render_response(decoded.value());
+    REQUIRE(text.find("compactions=7") != std::string::npos);
+
+    wire.profiles.front().successful_compactions = 0;
+    auto plain = management::encode_service_response_wire(wire);
+    REQUIRE(plain.ok());
+    auto plainDecoded = management::decode_service_response(plain.value(), ipc::kProtocolMinor);
+    REQUIRE(plainDecoded.ok());
+    REQUIRE(cli::render_response(plainDecoded.value()).find("compactions=") == std::string::npos);
+}
