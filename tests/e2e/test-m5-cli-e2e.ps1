@@ -357,6 +357,11 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         Write-Host "  work root: $((Get-ChildItem -LiteralPath $workRoot -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ', ')"
         Write-Host "  service log:"
         Write-Host "$(Get-Content -LiteralPath $serviceLog -Raw)"
+        # **The operation record is the only place the failure's own fields are decoded.**  Its files are TLV binaries
+        # on disk, so this asks the still-running service to read them: the phase, the step and the detail here are
+        # what the service believes failed, which is what the log and the trace have disagreed about.
+        Write-Host "  operation show:"
+        Write-Host "$((Invoke-Cli @('operation', 'show', $createId)).output.Trim())"
         Fail "the create did not succeed: $finalState"
     }
     Write-Host "  $($waited.output.Trim())"

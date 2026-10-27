@@ -3092,3 +3092,25 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   2. 或写一个 5 行的独立脚本：起服务 → create（带 `--compaction-threshold 2`）→ `operation show` → 停服务。
 - **为什么值得**：现在的症状是"**报错内容与 trace 自相矛盾**"（§3.134–§3.137）。
   只有 `operation.show` 的 `failure` 字段能判断"这条错误是本次的还是回放的"。**在此之前，T4-03 的客机证据无法取得。**
+### 3.139 2026-10-27 18:55：**失败的是"策略盘"那次 create**（带阈值的那个），主盘创建成功
+
+同一次运行（`d243ad9b…`）的 stdout 把两件事分开了：
+
+```text
+operation bd2a3b13-…: succeeded (phase terminal)          ← 主盘 create 成功
+--- T1-08: an automatic checkpoint fires on the interval policy
+  policy create: disk.create: operation queued
+operation 127d80ff-…: running (phase admitting)            ← 策略盘 create 卡在这里
+--- cleanup
+```
+
+- ⇒ **带上 `--compaction-threshold 2` 的那次 create 就是失败的那次**，而**主盘（默认阈值）成功**。
+- ⇒ 服务日志里那条 `code=258 step=enumerate_disk_candidates` 属于 `127d80ff`；
+  而 trace 显示**枚举从未超时** ⇒ **这条错误的内容与它所描述的失败不是一回事**。
+- **我插入的 `operation show` 没触发**，因为策略盘的失败走的是另一条 `Fail`（"policy disk create ended failed"），
+  不是主盘那条。**下一轮把它也加上**（同样一行），就能读到 `127d80ff` 的失败字段。
+- **最值得先试的一个假设**：**创建期间 tick 就把这个 profile 当成可压缩对象**
+  （`checkpoint_due_reason` 空 → 走到 compaction 分支 → `phase == stable` → 计数已达 2 ⇒ 立刻派发 compact），
+  于是 **create 过程中并发了一次 compress**，把 create 弄失败。
+  验证方法：把 tick 的 compaction 分支加上 `input.state.disk.runtime == running` **且**
+  `lifecycle == ready` 的双重条件（或直接用 `active_operation_id` 已经覆盖的那条），再看是否还失败。
