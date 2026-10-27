@@ -2434,3 +2434,21 @@ green=True pass=22
 | `m5.cli` | **17/17** |
 
 构建零错误、工作树 0 改动。
+### 3.103 2026-10-27 12:15：`apply_volume_label` 就位（无调用方），**剩下的是它前面那条数据通路**
+
+- `src/run/windows_volume.{h,cpp}`：新增 `Win32VolumeAdapter::apply_volume_label(wchar_t, const std::wstring&)`
+  —— 与 `assign_drive_letter` **并列**，不改任何既有签名；标签长度 1–32 在这里（Windows 之前的最后一道）**再校验一次**；
+  `m4.windows_volume` **19/19**、`m4.profile_codec` **22/22**。
+- **为什么还没被调用**：worker 侧的挂载入口是
+  `ProductionRuntimeAdapter::assign(const ProductVolume&, const wchar_t letter)`（`runtime_adapter.cpp:569`），
+  经 `disk_runtime.cpp:199` 的 `options_.drive_letter` 调用——**这条路径上没有标签**。
+  要把标签送到这里，必须先让 `DiskRuntimeOptions`/adapter 的 `assign` 带上它（**这是接口改动，会扩散**），
+  而我不能在半懂的状态下动一个 M4 的公共接口。
+- **T4-02 卷标剩余（剩下的都是这一条通路）**：
+  1. `DiskRuntimeOptions` 增 `std::optional<std::wstring> volume_label`；worker 构造 options 时从 profile 记录填入；
+  2. `ProductionRuntimeAdapter::assign` 在 `assign_drive_letter` 成功后，若 `volume_label` 有值则调
+     `apply_volume_label(letter, *label)`，**失败只记日志**（`volume label not applied: …`）；
+  3. CLI `--volume-label`（`cli_parser.cpp`，`--owner` 之后）+ 用法行；
+  4. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label`；断电重启后仍在。
+- **本轮的现场**：构建零错误、工作树干净、四套件（windows_volume 19、profile_codec 22、
+  service_orchestration 25、service_host 25）全绿。
