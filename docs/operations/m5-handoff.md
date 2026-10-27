@@ -2671,3 +2671,20 @@ exit=1
   这样"重置后立刻跑测试"才成立。
 - **修正 3.113 的结论**：`m5.startup_sweep` 的红**不是新回归**，是**重置脚本与用例前提不匹配**；
   `unit` 从 227 s 变 517 s 的那条**仍未解释**（单独跑 `^unit\.` 时也慢，可能与客机当时状态有关）。
+### 3.116 2026-10-27 14:35：**`m5.startup_sweep` 仍未通过，且目录已重建、安装脚本也跑过——下一轮从这里接**
+
+- 改动：`Reset-M5Guest.ps1` 现在**清空后重建** `profiles`/`operations`（`3.x` 的原因），实测 `operations: 0 entries left`。
+- 重跑：仍 **exit 1，1.9 s，无捕获输出**；随后**在客机上跑了 `Install-MyRamDisk.ps1`**（`profiles` 存在），
+  **仍然 exit 1**。
+- **已知**：手动带 `MYRD_M5VM_GUEST=1` 跑时，**唯一的诊断行**是
+  `DIAG store open failed op=profile_store.open_directory native=2`（目录不存在）。
+  现在目录存在却仍失败 ⇒ **下一层原因未取到**（可能是 **DACL**：profile store 要求"受保护、仅管理组"的 ACL，
+  而重建/安装后的 ACL 与记录期不同；T4-01 已记过 store 会拒绝非管理组 ACE 与非受保护 DACL）。
+- **下一轮第一步（很便宜）**：带标记手动跑一次并**保留完整输出**（不要 `Select-Object -First`）：
+  ```powershell
+  $env:MYRD_M5VM_GUEST='1'
+  & '...\myrd_m5_startup_sweep_tests.exe' 2>&1 | Tee-Object C:\m5\ss.log
+  ```
+  然后看 `DIAG` 行的 `op=` 是否变成 `profile_store.*` 的其它检查（例如 ACL/所有权），据此定位。
+- **不影响产品判断**：这是**测试前置条件**问题，与 M5 功能无关；但它挡住 `model/m5` 组的全绿，
+  所以 T4-04 基线必须先把这条解决或**明确标注为例外**。

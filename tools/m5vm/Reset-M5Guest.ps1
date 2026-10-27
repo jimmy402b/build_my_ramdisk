@@ -56,6 +56,13 @@ foreach ($child in @('profiles', 'operations')) {
     if (Test-Path -LiteralPath $directory) {
         Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        # **Recreate the directory after clearing it.**  Measured: `m5.startup_sweep` fails with
+        # `profile_store.open_directory` `native=2` on a guest whose record directory was removed rather than
+        # emptied -- the case, like several others, starts from the state an installation leaves behind.  The
+        # DACL belongs to the installer, so this creates the directory and nothing else.
+        if (-not (Test-Path -LiteralPath $directory)) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        }
         $remaining = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue)
         Write-Host ("  {0}: {1} entries left" -f $child, $remaining.Count)
         if ($remaining.Count -ne 0) {
