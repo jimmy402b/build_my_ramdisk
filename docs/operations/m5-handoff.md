@@ -2794,3 +2794,18 @@ DIAG store open failed op=profile_store.directory_acl native=0
 
 3. **VHDX 导出 = 新 `disk export` 动词**（writer 已有，见 §3.120 之后的 T4-02 行）：把当前 bundle 通过
    `persistence/image_creator` 落成一个单文件 VHDX；验收：导出文件能被 `VhdxReader` 读回且 extent 一致。
+### 3.122 2026-10-27 15:40：**"Load Only" 其实已经存在**——`disk import` 从不自动启动；我加的两层已回退
+
+- 读 `LifecycleOperationIntent` 的构造处：`auto_start` 的表达式是
+  `create != nullptr && !create->no_start` ⇒ **对 `import` 恒为 `false`**。
+  也就是说 **`disk import` 已经只登记/校验并发布 profile、不启动运行时、不碰设备**——这正是 §3.121 给
+  "Load Only" 定的语义。
+- ⇒ 我本轮加的两层（`DiskImportCommand::no_start` 字段 + 线格式字段 5）**是多余的**，
+  已用 `git revert` 回退（`5d3bc31`、`54c903f`），构建零错误、三套件绿。
+- **这条对 T4-02 的意义**：**"Load Only" 不需要新代码**，需要的是**确认与记录**：
+  1. 客机实测：`disk import` 一个 bundle → `disk list` 显示 `Ready stopped/configured`、
+     **无 `myrd-m5-worker` 进程**（一次读数即可，尚未做）；
+  2. 文档/用法里把这个行为写清楚（现在 `disk import` 的帮助行没有提到"不会启动"）。
+- **教训（写给自己）**：**先读实现，再定"要做什么"**。我上一轮把语义定对了（§3.121），
+  却没有再往前读一步去确认它是否已经实现——于是白写两层、再回退两层。
+  今天已经因为"没先读"付出过黄金样本、`kLastKnownTag`、schema 计数三次代价。
