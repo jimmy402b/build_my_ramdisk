@@ -3024,3 +3024,20 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
 
 **当前 HEAD（`1504b5f`）**：`kEnumerateTimeout = 120 s`；`cli_e2e` **失败**（38 s，同一个 `code=258`）；
 `--compaction-threshold` 已在 CLI/线格式/intent/**profile** 全链就位（本地套件全绿），**但客机读数被这个 create 失败挡住**。
+### 3.135 2026-10-27 18:20：**决定性证据——包装器从不超时**，那条 `258` 是**误归因**
+
+一次运行里 6 次 `enum_within: completed normally`，**一次 `timeout fired` 都没有**，而服务日志仍写
+`code=258 step=enumerate_disk_candidates detail=enumerating … did not finish within its bound`。
+
+⇒ **这条错误不是包装器产生的**：`step`/`detail` 是**上一次动作留下的陈旧字段**，被套在了这次 create 失败上。
+`code=258` 也很可能不是 `WAIT_TIMEOUT` 的真身，而是**别处**（例如 worker 管道读超时）被映射出来的。
+
+**下一轮的唯一任务（不要再调上界、不要再改 profile）**：
+1. 找到 **`create-bundle` 失败时谁在写 `step`/`detail`**（`WorkerActionResult` → 服务日志的那一段），
+   让它们**描述真正发生的失败**；
+2. 顺带把 `code` 的映射也查一遍（258 是否被人为赋值）；
+3. 修好诊断后**重跑**，那时才会看到真实的失败原因——**在此之前，任何关于 create 的推断都不可信**。
+
+**这条也解释了今天后半段的两次白改**：我被一条**假线索**（`step=enumerate_disk_candidates`）牵着走了两轮，
+包括把上界从 10 s 提到 30 s 再到 120 s，**三个值都无效**。教训：**当一条诊断自相矛盾（12 ms 成功 vs "超时"），
+先怀疑诊断本身。**
