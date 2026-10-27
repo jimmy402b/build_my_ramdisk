@@ -2901,3 +2901,19 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   3. 理由非空则 `DiskCompactCommand{target}` + `caller` + `no_wait` 派发并记日志（形状与 checkpoint 那段完全一致）。
 - **本轮状态**：尝试按上写下这三步时，**替换锚点没匹配上**（`candidate anchor missing`），
   **文件未被修改**（写入在锚点校验之后才发生），构建与工作树均干净。下次用 `edit` 工具按行写入即可。
+### 3.128 2026-10-27 17:00：自动压缩**接线完成但今天无法端到端验证**——阈值不能从 CLI 调
+
+- 自动触发已端到端接线（`bd32f41`：策略 → 候选 → `DiskCompactCommand` + `no_wait` 受理）。
+- **但验收需要的"磁盘真的自己压缩"读数今天取不到**：
+  - `CompactionPolicy` 默认 `checkpoint_count_threshold = 64`、`journal_occupancy_percent = 70`、`reclaimable_percent = 50`；
+  - `disk create` **没有**任何设置这三项的选项；`disk config set` 只支持 `auto_start`（`cli_parser.cpp` 断言
+    `words[3] == "auto_start"`）；
+  - ⇒ 要用默认阈值触发一次自动压缩，需要**64 次 checkpoint**（`cli_e2e` 用 30 s 间隔 ⇒ 32 分钟），不可行。
+- **因此 T4-03 的验收需要一个很小的前置**（建议二选一）：
+  1. `disk create` 加 `--compaction-threshold <count>` / `--compaction-occupancy <percent>`（形状与
+     `--checkpoint-interval` 完全一致，走 `DiskCreateCommand` → intent → `CompactionPolicy`）；
+  2. 或 `disk config set` 增加对应两个键（需要一个新的配置命令面，比 1 大）。
+- **读数脚本（有了 1 之后）**：`create --compaction-threshold 2 --checkpoint-interval 30s` → 等两次 checkpoint →
+  `disk show` 的 `successful_compactions_total` 增加；日志里出现 `maintenance: compaction dispatched (checkpoint-count)`。
+- **这条也解释了为什么 T4-03 之前一直标 PARTIAL**：机制全在，但**没有可操作的旋钮**去触发它，
+  所以既没人测过、也没人用过。
