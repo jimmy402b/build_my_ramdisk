@@ -3235,3 +3235,21 @@ compaction: completed total=<N> checkpoints_since=0
 - `--checkpoint-interval off` 就是易失盘（§3.121 的裁定），`disk stop` 必须要求
   `--accept-volatile-data-loss`——**拒绝**才是正确行为，脚本断言的是"拒绝发生"。
 - 若 `Z:` 被占用，换一个 `disk list` 里没出现的盘符。
+### 3.145 2026-10-27 20:15：**我插入的 T4-02 场景两次失败，已回退**——但失败信息本身有价值
+
+| 尝试 | 结果 |
+|---|---|
+| 直接断言"`--no-start` 后无 worker" | **Fail**：`a --no-start create left a worker running` |
+| 加 30 s 静置窗口后再断言 | **仍 Fail**（41 s 内结束） |
+
+- ⇒ **`--no-start` 的 create 之后，客机上仍有 `myrd-m5-worker` 进程**（至少持续到 30 s 之后）。
+  这可能意味着：① `create_stopped` 仍会拉起 worker 再停（与"不启动"的语义不符）；
+  ② 或 e2e 前一步刚停下的盘留下的 worker 迟迟不退。
+- **无法在本次会话内分辨**（那需要读那次运行的 worker StartTime 与服务日志）。
+- **已回退**：`git checkout -- tests/e2e/test-m5-cli-e2e.ps1`，工作树 0 改动。
+  **e2e 回到上次通过的状态**（`f3a09779…` 104 s 通过，含 T4-03 断言）。
+- **下一任的第一步（很便宜）**：跑一次带该场景的 e2e，**失败时立刻记录 `Get-Process myrd-m5-worker | Select Id,StartTime`**
+  与服务日志里该盘的 `disk.stop`/`disk.create` 行——**StartTime 能立刻区分①②**。
+- **这条也修正了我先前的一个说法**：§3.123 说"import 走 `import_profile`"是**代码层**证据，
+  但**"`--no-start` 的 create 实际不拉 worker"是运行时行为**，两者不能互相替代。这正是今天反复出现的教训：
+  **代码说它不该启动，不等于运行时它没启动。**
