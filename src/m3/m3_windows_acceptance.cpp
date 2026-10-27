@@ -877,6 +877,9 @@ Result<void> M3AimRuntime::stop() {
     }
     auto stopped = stop_provider();
     started_ = false;
+    // The last line of the stop path, so a run that never gets here is not stuck in the m3 layer at all -- which is the
+    // question this trace settles, after the provider's own stop proved to take two milliseconds.
+    diagnostic_trace("M3AimRuntime::stop: returning");
     return stopped;
 }
 

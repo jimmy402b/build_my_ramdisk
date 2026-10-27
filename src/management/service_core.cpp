@@ -2939,6 +2939,9 @@ Result<OperationRecord> ServiceCore::execute_claimed_operation(
     }
     auto executed = execute_operation(operation_id);
     if (!executed.ok()) {
+        // The other end of the same bracket: if the m3 stop traces finish and this one does not, the block is between
+        // the worker answering and the service publishing.
+        diagnostic_trace("service: execute_operation returned a failure");
         // **A failed execution names itself here.**  The scheduler used to discard this result,
         // so an operation could stop mid-plan with nothing anywhere saying why: measured on the
         // guest as a create that stayed running forever after its checkpoint, while the only
