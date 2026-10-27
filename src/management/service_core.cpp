@@ -581,7 +581,8 @@ Result<profile::ProfileRecord> make_registration_record(
             intent.auto_start,
             memory.move_value(),
             checkpoint,
-            profile::CompactionPolicy{}}};
+            profile::CompactionPolicy{},
+            intent.volume_label}};
     const auto validation = profile::validate_profile(record);
     if (!validation.ok()) {
         return Result<profile::ProfileRecord>::failure(service_error(
@@ -1792,7 +1793,8 @@ Result<ServiceResponse> ServiceCore::dispatch(
             create != nullptr ? create->checkpoint_interval : std::nullopt,
             create != nullptr ? create->dirty_threshold : std::nullopt,
             memory.value(),
-            clock_.unix_time_ms()};
+            clock_.unix_time_ms(),
+            create != nullptr ? create->volume_label : std::nullopt};
         if (create != nullptr) {
             auto materialized = materialize_memory_policy(
                 intent.memory_mode,
