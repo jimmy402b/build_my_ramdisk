@@ -846,11 +846,18 @@ Result<void> M3AimRuntime::remove_owned_device() {
 
 Result<void> M3AimRuntime::stop_provider() {
     if (!provider_) return Result<void>::success();
+    // **Four calls that can block, and one line each to say which.**  A create on the guest retires its device and
+    // then never returns; the provider's request timeout reaches its transport, so what is left is either the stop
+    // call itself or one of the four releases below -- destructors that close a driver handle are not obliged to
+    // return either.  Traces rather than reasoning, because six narrower hypotheses about this path were all wrong.
+    diagnostic_trace("stop_provider: asking the provider to stop");
     const auto stopped = provider_->stop(OperationContext{}, {});
+    diagnostic_trace("stop_provider: provider stopped");
     provider_.reset();
     adapter_.reset();
     transport_.reset();
     adapter_handle_.reset();
+    diagnostic_trace("stop_provider: handles released");
     if (!stopped.ok()) {
         return Result<void>::failure(stopped.error.value_or(Error{
             ErrorDomain::cleanup,
