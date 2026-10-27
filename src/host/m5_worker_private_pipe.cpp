@@ -248,6 +248,7 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     spec.private_pipe_name = reader.text();
     spec.session_nonce = reader.u64();
     const auto secret = reader.raw(spec.startup_secret.bytes.size());
+    if (reader.boolean()) spec.volume_label = reader.text();
     if (!reader.ok() || !reader.exhausted()) {
         return Result<WorkerLaunchSpec>::failure(pipe_error(
             static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
@@ -313,6 +314,10 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     writer.text(spec.private_pipe_name);
     writer.u64(spec.session_nonce);
     writer.raw(spec.startup_secret.bytes);
+    // Appended last, so a spec encoded by an older writer decodes as "no label" -- and the flag byte keeps the
+    // absence explicit rather than inferring it from an empty string, which is a label someone could ask for.
+    writer.boolean(spec.volume_label.has_value());
+    if (spec.volume_label.has_value()) writer.text(*spec.volume_label);
     return Result<std::vector<std::byte>>::success(writer.take());
 }
 

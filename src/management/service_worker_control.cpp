@@ -158,7 +158,11 @@ Result<WorkerLaunchRequest> make_launch_request(
         const auto text = record.volume_guid->to_string();
         request.volume_guid =
             L"\\\\?\\Volume{" + std::wstring(text.begin(), text.end()) + L"}\\";
-    }    return Result<WorkerLaunchRequest>::success(std::move(request));
+    }
+    // The label the profile carries, so a restart re-applies it: the volume remembers a label only until it is
+    // re-created from the bundle, and re-creating is exactly what a recovery does.
+    request.volume_label = record.volume_label;
+    return Result<WorkerLaunchRequest>::success(std::move(request));
 }
 
 Result<WorkerLaunchRequest> make_launch_request(

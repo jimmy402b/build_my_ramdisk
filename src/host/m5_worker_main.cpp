@@ -179,6 +179,7 @@ int wmain(const int argc, wchar_t** argv) {
     config.image_id = spec.value().image_id;
     config.volume_mode = spec.value().volume_mode;
     config.volume_guid = spec.value().volume_guid;
+    config.volume_label = spec.value().volume_label;
     config.virtual_bytes = spec.value().logical_size_bytes;
     config.drive_letter =
         spec.value().mount_target.empty() ? L'\0' : spec.value().mount_target[0];

@@ -229,6 +229,9 @@ struct WorkerLaunchRequest final {
     // to recognise it with no drive letter, and the selection filters on the
     // letter first, so this is what lets the durable identity decide.
     std::wstring volume_guid;
+    // The label to write once the volume has a path (T4-02).  Declared last so the request's existing fields keep
+    // their order for every caller that builds one.
+    std::optional<std::wstring> volume_label;
 };
 
 // The two translations into a launch request.
