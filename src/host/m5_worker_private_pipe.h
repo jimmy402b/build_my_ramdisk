@@ -99,6 +99,10 @@ struct WorkerLaunchSpec final {
     std::wstring private_pipe_name;
     std::uint64_t session_nonce{};
     StartupSecret startup_secret{};
+    // The label the volume should carry (T4-02).  Declared last so the fields the launch already had keep their
+    // encoded order; the codec writes it as an appended tag, which needs no protocol minor bump because the
+    // service and its worker ship together.
+    std::optional<std::wstring> volume_label;
 
     bool operator==(const WorkerLaunchSpec&) const noexcept = default;
 };

@@ -45,6 +45,8 @@ struct WorkerRuntimeConfig final {
     // say which of the two lifecycles this worker runs.
     WorkerVolumeMode volume_mode{WorkerVolumeMode::adopt_existing};
     persistence::RecoveryOptions recovery{};
+    // The label to write once the volume has a path (T4-02).  Absent means "leave the volume as it is".
+    std::optional<std::wstring> volume_label;
 };
 
 class DiskWorkerRuntime final : public WorkerRuntime {
