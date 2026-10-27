@@ -3782,3 +3782,33 @@ kind=7 command=disk.forget phase=terminal message=terminal failure without a wor
 2. **只跑一次性场景**（不进 e2e）：`create --no-start --checkpoint-interval off` → 立刻看
    `worker: command received` 之后是否有后续 trace（`last-trace.log`），**定位它卡在 `create_bundle` 的哪一步**；
 3. 修好后，`disk forget` 应当恢复（`device_absent=1`）——这可以作为**副判据**。
+### 3.171 2026-10-28 01:00：**重置过的客机上，`--no-start` 的 create 以"已注册"失败——而名字是全新的**
+
+**探针**（重启客机 + `Reset-M5Guest` + 名字与 bundle 都是新 GUID）：
+```text
+  probe create exit=0            ← 命令受理
+  probe terminal=failed          ← 操作最终失败
+```
+服务日志（260 行）：
+```text
+kind=7 disk.create phase=publish-provisioning message=publish_registration refused:
+  code=22024 step=profile_registration.publish
+  detail=The profile name, image, or bundle is already registered
+kind=7 disk.create phase=terminal message=terminal failure without a worker-action error; marker=register
+```
+
+⇒ **这是"干净客机 + 全新名字 + 全新 bundle"下的重复注册拒绝**。
+**上一轮（§3.148）我把它归因于"上次尝试的残留"，现在这个归因被推翻了**——
+至少在这条路径上，**没有任何残留可归**。
+
+**最可疑的地方**：那条检查同时看 **name / image / bundle** 三者之一即可拒绝。
+名字与 bundle 都唯一时，**只能是 `image` 撞了**。而 image id 若由**尺寸/几何**派生（而不是路径），
+那么"**第二个同样大小的盘**"就会被判为重复——这能解释本节的一系列现象，
+也能解释为什么同样的命令有时成功（当时没有同尺寸的盘）有时失败。
+
+**下一任的第一步（一条命令）**：读**生成 image_id 的那个函数**（`profile::` 或 `persistence::` 里，
+关键字 `image_uuid`/`image_id`），确认它是否**只依赖容量/几何**。
+- 若是 ⇒ **这是产品缺陷**（第二个同尺寸盘永远建不出来），修法是让 image id 参与 bundle 路径或 UUID；
+- 若否 ⇒ 回到 §3.169 的 worker 卡住那条线。
+
+**本次探针已从 e2e 移除**（工作树 0 改动），**两条读数保留在本文档**。
