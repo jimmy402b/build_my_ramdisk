@@ -3971,3 +3971,27 @@ Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers() {
    来回避（AGENTS.md §2.1 的卷 extents 方案），而不是继续在这里找锁。
 
 **判定标准（不变）**：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
+### 3.178 2026-10-28 02:25：**候选 2 也排除**（设备等待只有 30 s）——现在需要一个 2 行的定位实验
+
+- `M3AimRuntime::create(config, device_timeout = 30 s)`（`m3_windows_acceptance.h:81`），
+  `runtime_adapter.cpp:380` 用**默认值**，且 `provider.request_timeout = 30 s`。
+  ⇒ 基线之后的"等盘出现"最多 30 s，**不可能撑到 300 s**。
+- `snapshot_physical_drive_numbers()` 有 120 s 上界。
+- ⇒ **两者相加 ≤ 150 s**，而 e2e 等到 **300 s** 仍在 `running`；且 trace 里**没有** `enum_within: timeout fired`。
+  **结论：worker 卡在"基线调用返回之前"的某处，而连超时分支都没走到。**
+
+**下一轮的唯一实验（2 行 trace，不用改逻辑）**——在 `m3_windows_acceptance.cpp:334` 附近：
+```cpp
+    std::vector<std::uint32_t> baseline;
+    if (!adopting_existing && !config_.attach_only) {
+        diagnostic_trace("M3AimRuntime::start: baseline about to be taken");
+        auto snapshot = aim::snapshot_physical_drive_numbers();
+        diagnostic_trace("M3AimRuntime::start: baseline taken");
+```
+- 若只出现 **about to be taken** ⇒ 卡在 `snapshot_physical_drive_numbers()`（或它内部），
+  那就去 `enumerate_disk_candidates_within` 的**入口**再加一行，逐层夹逼；
+- 若两行都出现 ⇒ 卡在**基线之后**（`wait_for_created_physical_drive`，30 s 上界仍不成立 ⇒ 那里的实现有问题）。
+
+**为什么这个实验值得做**：今天我已经排除了三个假设（上界太紧、没有上界、被放弃线程持锁），
+**每一次排除都把范围缩小一半**，而这次只需两行 `diagnostic_trace` 就能再对半分。
+**不要在这个状态下改逻辑**——`create` 是 T1/T4 全都经过的路径。
