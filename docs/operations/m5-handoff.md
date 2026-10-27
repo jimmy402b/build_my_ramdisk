@@ -3380,3 +3380,29 @@ worker: command received   02:21:25.423
 
 **这条对验收的意义**：`disk stop` 是用户日常动作；"显示已停止但 worker 还活着并每 15 秒被唤醒"
 **在验收时一定会被问到**（内存是否真的释放、设备是否真的退役）。**它不是测试问题，是产品行为问题。**
+### 3.152 2026-10-27 21:15：**每 15 秒的"唤醒"来自 tick 自己发的 `disk list`**
+
+`service_maintenance.cpp:170` 起，tick 每轮做的第一件事就是：
+```cpp
+    ServiceCommandRequest list_request{};
+    list_request.command = control::DiskListCommand{};
+    auto listed = core_.dispatch(list_request);
+```
+而 `disk list` 的投影需要 `runtime_observation`（`mem=`、`runtime=`、`serial=` 都来自它，
+见 `service_response_wire.cpp` 的 `snapshot.runtime_observation->…`）——
+**对运行中的盘，这要问 worker**。于是：
+- 维护 tick（15 s）→ `disk list` → 投影 → 问 worker → **worker 收到一条命令**（正是 trace 里的
+  `worker: command received` 每 15 秒一次）；
+- 而那块盘的 `runtime` 已经是 `Stopped`（`disk show` 都这么显示）。
+
+⇒ **两条修法（下一任按顺序判断）**：
+1. **让 `disk list` 在 `runtime != running` 时不查 worker**（快、局部、可测）；
+2. 或者**让 stop 真正终结 worker**（治本；但要看 §3.151 第 1 步的结论：
+   `stop_runtime_and_release_lock` 到底做了什么）。
+
+**判断依据（下一轮就能拿到）**：若 (1) 修好后 worker 仍不退 ⇒ 说明 stop 没终结它，必须做 (2)；
+若 (1) 修好后 worker 在下一轮 tick 内退出（管道断开触发 worker 主循环的 `break`）⇒ **(1) 就够了**，
+因为 worker 的退出条件之一正是"通道关闭/写失败"（`m5_worker_main.cpp:198-201`）。
+
+**这条同时解释了一个本会话反复出现的现象**：`WARNING: 1 worker process(es) survived the run`——
+e2e 结束时服务停了，但**在那之前** worker 一直被 `disk list` 喂着，来不及自己退出。
