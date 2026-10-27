@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿# M5 交接：从这里开�?
+﻿﻿﻿﻿﻿﻿# M5 交接：从这里开�?
 
 **最后更新：2026-10-27**（状态有变化先改这里，再�?tasklist�?
 
@@ -7,6 +7,7 @@
 ## 1. 一分钟现状
 
 | 项 | 值 |
+|---|---|
 | **唯一活动线** | 分支 `feature/m5-lifecycle`，工作树 `.worktrees/m5-lifecycle`（HEAD 以 `git log` 为准） |
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
