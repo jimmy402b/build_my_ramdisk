@@ -9,6 +9,6 @@
 | 2026-10-27 | M5-DEF-A | 缺陷 A：`--no-start` 的 create 不终态、留 worker、占设备 | **PASSED**。根因是 publish-provisioning 二次观测已退出的 worker（失败分支还读错变量）+ `current_dirty_epoch` 阻塞拿 gate；客机三判据两次通过 | §3.188 |
 | 2026-10-27 | M5-INFRA | 可诊断性：`shutdown` 结果入 trace、重复注册错误报明冲突字段、`killed` 旧任务清理 | 完成（零成本 trace，长期保留） | §3.172、§3.175 |
 | 2026-10-27 | M5-T4-02d | 单文件 VHDX 导出 | **PASSED**：客机 `export exit=0`、14,680,064 B、generation 不变（5）、二次导出拒绝覆盖；导出路径在发布前用 `VhdxReader` 逐 payload 读回 | §3.189 |
-| 2026-10-27 | M5-T4-04 | release manifest 冻结 | **未开始**（须在 T4-02 之后） | tasklist T4-04 行 |
+| 2026-10-27 | M5-T4-04 | release manifest 冻结 | **PASSED**：干净 Debug/Release 451/451（`/WX`）、manifest 4 binaries + 8 readings（`frozen_at 2026-10-27T15:37:45Z`）、validator `accepted`、自检四拒四中 | §3.190 |
 
-**当前状态**：缺陷 A 与 VHDX 导出已完成；剩余 **T4-04 冻结** 与 **Load Only 的 start 半边**。完成后才谈"可进入虚拟机验收"。
+**当前状态**：三件任务（缺陷 A、VHDX 导出、T4-04 冻结）均已完成。**唯一已知缺口：Load Only 的 start 半边**（`--no-start` 创建的盘无法 `disk start`，§3.188）；冻结基于当前构建，修它会改变哈希、必须重新冻结。可向用户报告并请求进入 M5 虚拟机验收，同时请其决定该缺口是否作为遗留项。

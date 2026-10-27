@@ -12,9 +12,9 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**（自动触发 + 日志 + `compactions=N`，客机三次通过）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅ / Load Only 的 create ✅ / 单文件 VHDX 导出 ✅**（客机 export exit=0、14,680,064 B、generation 不变、二次导出拒绝，§3.189）；**Load Only 的 start ❌**（M3 `match_created_disk` 拒绝非空的续跑盘）；T4-04 冻结未开始 |
+| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**；**T4-04 PASSED**（干净 Debug/Release 451/451、manifest 4 binaries + 8 readings、validator `accepted`，§3.190）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅ / Load Only 的 create ✅ / 单文件 VHDX 导出 ✅**（§3.189）；**Load Only 的 start ❌**（M3 `match_created_disk` 拒绝非空的续跑盘，§3.188） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **T4-04 release manifest 冻结**（干净 Debug+Release → `tools/New-M5ReleaseManifest.ps1` → `tools/Verify-M5Evidence.ps1`，目标读数 `accepted`） |
+| **下一件事** | **M5 虚拟机验收**；开始前需决定 Load Only 的 start 缺口是否作为遗留项接受（它不影响已通过的三判据与 VHDX 导出，但 `--no-start` 创建的盘目前无法 `disk start`） |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4350,3 +4350,19 @@ stopped create 的 bundle 里已经有一个已配额的卷，start 却按 creat
 durable view；把它当作"当前盘"会是一个安静的谎。
 
 **仍未完成：** Load Only 的 start 半边（§3.188）。T4-04 的 release manifest 冻结尚未开始。
+### 3.190 2026-10-28 05:40：**T4-04 release manifest 冻结——`accepted`**
+
+- **干净构建**：Debug `--clean-first` 451/451、Release `--clean-first` 451/451；两者都在
+  `/WX`（warnings-as-errors）下成功，所以"零 error/warning"是构建本身的结论，不是看日志得出的。
+- **证据组**：`out/m5-evidence/m5-cli-e2e.results.json` 已换成 T4-02 导出那次客机通过
+  （request `9da7393b…`，130.7 s，`exit=0`）；其余 readings 保留 2026-10-27 的全套客机结果。
+- `tools/New-M5ReleaseManifest.ps1` → `out/m5-evidence/release-manifest.json`
+  （4 binaries + 8 readings，`frozen_at 2026-10-27T15:37:45Z`）。
+- `tools/Verify-M5Evidence.ps1 -EvidenceDirectory out/m5-evidence` → **`accepted`**（exit 0）；
+  `-SelfTest` 的四个坏证据集全部被拒。
+- 四个哈希（SHA-256，前 8 位）：`myrd-service 9ba40554`、`myrd-cli 17099c80`、
+  `myrd-gui ec4cad28`、`myrd-m5-worker 1fdefed7`。
+
+**这不是"T4-02 已全部完成"的声明。** Load Only 的 **start** 半边仍未完成（§3.188）；冻结的是
+**当前构建**，一旦修 start，二进制哈希会变，必须重新冻结。T4-04 自身的判据（干净构建 + manifest +
+validator `accepted`）已经满足。
