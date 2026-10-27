@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿# M5 交接：从这里开�?
+﻿﻿﻿﻿# M5 交接：从这里开�?
 
 **最后更新：2026-10-27**（状态有变化先改这里，再�?tasklist�?
 
@@ -12,7 +12,7 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；T4-02 卷序列号完成、Load Only 与易失盘**已存在**（只缺客机读数）、VHDX 导出**只缺 `disk export` 命令**；T4-03 **PASSED**（自动触发 + 日志 + 客户端 `compactions=N`，客机三次 PASS 并有回归用例）（机制全在，缺自动触发与 journal 可观测）；T4-04 双配置干净构建 + 证据工具**已完成**，**冻结未做** |
+| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**（自动触发 + 日志 + `compactions=N`，客机三次通过）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅**（`volatile stop` 无标志 `exit=1`、带标志 `exit=0`，已进 e2e）/ Load Only 语义 ✅（`stopped/configured`），**但 `--no-start` 遗留一个 worker（缺陷 A，未修）**；**VHDX 导出未开始**；T4-04 冻结未开始 |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
 | **下一件事** | **T4-02 的 `disk export` 命令**（writer 已有：`persistence/vhdx_writer`），以及 Load Only / 易失盘的**各一次客机读数** |
 
