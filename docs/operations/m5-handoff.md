@@ -2854,3 +2854,17 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
 
 **这一条的价值**：它把"差一个命令"改成"**差一次 fold writer 的参数化 + 一条命令链**"——
 下一个会话按这个开始，就不会像我今天这样先写两层再回退。
+### 3.125 2026-10-27 16:20：T4-03 的"可观测"具体缺什么——CLI 现在**不显示** journal/compaction 指标
+
+- `cli_renderer.cpp` 的 profile 行只渲染：状态、`health`、`generation`、`serial` 等（62–63 行附近），
+  **没有任何 journal 占用或 compaction 指标**。
+- 而数据来源并不缺：`WorkerRuntimeObservation`（我在卷序列号那一刀扩过）与 `CompactionDurableState` 都已有指标字段；
+  缺的是**从观测到渲染**的那条链。
+- ⇒ **T4-03 的第二项（journal 增长有界且可见）可以照抄卷序列号那一刀的形状**（四层，已走过一次）：
+  1. `WorkerRuntimeObservation` 增 `journal_bytes`（或占用百分比）；
+  2. `product::ServiceDiskView` 增字段 + `to_string`；
+  3. 线格式追加字段（**注意 `kProfileFixedBytes` 这类"固定长度护栏"要一起长大**——卷序列号那次前两次失败就是它）；
+  4. `cli_renderer` 渲染，`m5.cli` 加一条断言；客机读数：`disk show` 里出现该字段且随 workload 增长。
+- **T4-03 剩余因此是两件清楚的事**：① 上述可观测（机械，有先例）；② **自动触发策略**（服务侧策略，
+  需要定"何时自己发起"，建议：`checkpoints_since_compaction ≥ compaction.checkpoint_count_threshold`
+  或 `journal 占用 ≥ journal_occupancy_percent`，两者都已在 `CompactionPolicy` 里）。
