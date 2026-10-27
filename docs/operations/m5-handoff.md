@@ -3636,3 +3636,31 @@ the acknowledged stop failed: myrd-cli: the command could not be encoded for the
 **顺带记一条命令事实**：GUI 用例名是 **`integration.m5.gui_workflow`**（不是 `integration.m5.gui`，
 后者不存在；`m5.gui` 是单元例）。我第一次用错过滤词，5 秒就失败了——**过滤词写错时的输出是
 "the filter matched no case"，不会误判为通过**，这点值得记住。
+### 3.165 2026-10-27 23:45：缺陷 A 的**正确**修法（比我先前写的"改 `register_bundle` 分支"更准）
+
+先前 §3.163 说在 `register_bundle()` 里按证据来源分支——**那样不对**：`create_and_start` 的计划是
+`create_and_verify_bundle` → `publish_provisioning_profile` → **start 动作**，
+两条路径都会经过 `publish_provisioning_profile`，而 start 需要那个 session。**在 `register_bundle` 里释放会打断 start。**
+
+**正确的修法是"计划结束时按运行时状态决定留不留"**，而且判据**文件里已经有了**：
+```cpp
+bool asserts_live_worker(product::RuntimeState runtime) noexcept {
+    return runtime == product::RuntimeState::running;
+}
+```
+——这正是我在观察守卫（`cf79fce`）里用的那个谓词。
+
+**做法（约 5 行）**：在**计划执行完毕**处（`execute_operation` 的成功路径之后），
+对本次操作涉及的 profile 调用一个新增的
+```cpp
+void ServiceWorkerControl::release_session(const product::Uuid& profile_id);
+```
+（内部：从 `held_sessions_` 擦除该项；析构即关通道，worker 主循环读失败后自行退出），
+**仅当 `!asserts_live_worker(profile.runtime)`**。
+
+**为什么这个位置对**：
+- start 完成后 `runtime == running` ⇒ **不释放**（worker 应当继续活着，供后续命令使用）；
+- `create_stopped` 完成后 `runtime != running` ⇒ **释放** ⇒ worker 退出（缺陷 A 关闭）；
+- `stop` 完成后同样成立（那一刀已经在 `confirm_removal` 里单独做过了，两处不冲突）。
+
+**判定标准（不变）**：§3.158 场景的 `workers settled after N s` 应 **N < 30 s**。
