@@ -3175,3 +3175,15 @@ kind=1 command=disk.compact phase=maintenance message=maintenance: compaction di
 
 **T4-03 剩余**：`journal`/`compaction` **指标的可观测性**（`disk show` 不显示，§3.125 给了四层形状）。
 自动触发这一半**已完成并有客机证据**。
+### 3.142 2026-10-27 19:40：压缩完成时**日志会报计数**（可观测性的第一步）
+
+```text
+compaction: completed total=<N> checkpoints_since=0
+```
+写在该次操作终态前（`ServiceLogKind::operation_terminal`）。**为什么有用**：T4-03 要求"journal 增长有界且可见"，
+而此前**服务日志一个字都没有**——一个不断长大的盘，运维无从读起。
+
+**仍缺（客户端可见的那一半）**：`disk show` 不显示这两个数。**形状已定（§3.125）**：`ServiceDiskView` 加字段 →
+线格式加字段（**`kProfileFixedBytes` 护栏一起长**）→ 投影填充 → 渲染 + `m5.cli` 断言。
+
+**读数**：`orchestration 25/25`、`host 25/25`、`maintenance 11/11`，构建零错误。
