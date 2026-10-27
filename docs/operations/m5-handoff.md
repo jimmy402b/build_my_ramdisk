@@ -2688,3 +2688,27 @@ exit=1
   然后看 `DIAG` 行的 `op=` 是否变成 `profile_store.*` 的其它检查（例如 ACL/所有权），据此定位。
 - **不影响产品判断**：这是**测试前置条件**问题，与 M5 功能无关；但它挡住 `model/m5` 组的全绿，
   所以 T4-04 基线必须先把这条解决或**明确标注为例外**。
+### 3.117 2026-10-27 14:45：`m5.startup_sweep` 的根因**确认是 DACL**（`A profile directory is not protected`）
+
+补上 `profiles\workers`（`WorkerBindingStore::over_protected_root` 要 `MyRamDisk\profiles\workers`）之后，
+诊断行**变了**，这正好证明前一层已解决、露出下一层：
+
+```text
+DIAG store open failed op=profile_store.directory_acl native=0
+     msg=A profile directory is not protected
+```
+
+⇒ **profile store 要求"受保护（protected）的 DACL"**——正是 T4-01 记录过的那三条规则之一。
+`Reset-M5Guest` 用 `New-Item` 建的目录只有**继承 ACL**，所以被拒。
+
+**正确的修法（下次一次做完）**：让 `Reset-M5Guest.ps1` 在重建目录后**应用与安装脚本相同的 ACL**
+（`tools/install/Install-MyRamDisk.ps1` 里的 `Set-ManagementAcl`：`SetAccessRuleProtection($true,$false)`
++ 仅管理组/系统 ACE）。两种实现都可以：
+1. **复用**：把安装脚本里的 ACL 函数抽到 `tools/install/M5Acl.ps1`，两个脚本都 dot-source 它（推荐，单一事实来源）；
+2. **内联**：在重置脚本里重复那几行（快，但会漂移——本会话已因"两处必须同步"踩过三次）。
+
+**为什么值得修**：这条挡住 `model/m5` 组全绿，而 T4-04 的基线需要它；而且"重置后立刻跑测试"是**这个 harness
+最重要的一条纪律**，它必须真的成立。
+
+**当前状态**：`profiles`/`operations`/`profiles\workers` 都会在重置后重建；**ACL 未设**，所以 `m5.startup_sweep` 仍红。
+其余套件与 `cli_e2e`（87 s）不受影响。

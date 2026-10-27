@@ -71,6 +71,14 @@ foreach ($child in @('profiles', 'operations')) {
         }
     }
 }
+# `WorkerBindingStore::over_protected_root` opens `MyRamDisk\profiles\workers`, and a guest that has never
+# installed the service has neither.  Measured: with only `profiles` present the case still failed with
+# `profile_store.open_directory` `native=2`, because the leaf it wants is one level deeper.
+$workers = Join-Path (Join-Path $DataDirectory 'profiles') 'workers'
+if (-not (Test-Path -LiteralPath $workers)) {
+    New-Item -ItemType Directory -Force -Path $workers | Out-Null
+    Write-Host "  created $workers"
+}
 if ($PurgeData -and (Test-Path -LiteralPath $DataDirectory)) {
     Remove-Item -LiteralPath $DataDirectory -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "  purged $DataDirectory"
