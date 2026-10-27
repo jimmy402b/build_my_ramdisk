@@ -3057,3 +3057,25 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   而我把服务的 trace 当成了全部证据。这解释了"三个上界值都不起作用"吗？**不能**——若上界在 worker 生效，
   改 10→30→120 应当改变失败时间，而实测几乎不变（29/35/38 s）。
   ⇒ **仍然自相矛盾**，所以下一步必须是"把 worker 的 trace 拿到"，而不是再推理。
+### 3.137 2026-10-27 18:40：trace 的**结尾是干净的**——失败不是本次运行的包装器产生的
+
+`trace3.log`（1435 行）最后 12 行：
+
+```text
+01:53:34.192Z worker: command received
+01:53:34.194Z opstore.write: waiting for gate
+… atomic_publish: current published
+01:53:34.233Z opstore.write: done
+01:53:34.234Z scheduler: execute returned
+```
+
+⇒ **调度器正常返回**，**没有任何 `enum_within: timeout fired`**，却仍然向客户端报了
+`code=258 step=enumerate_disk_candidates detail=…did not finish within its bound`。
+
+⇒ 这条错误**不是本次运行里那个包装器产生的**。最可信的两个来源：
+1. **持久操作记录里残留的失败证据**被复用/回放（`opstore` 是本会话多次提到的原子发布存储）；
+2. 某个**陈旧 `WorkerActionResult`** 被当成这次的结果。
+
+**下一轮的唯一动作**：把这次 `disk.create` 的**操作记录**（`operation.show` 的输出，或
+`C:\ProgramData\MyRamDisk\operations` 里的那个文件）读出来，看 `failure` 字段的**时间戳与步骤**
+是否属于本次运行。这能一次分辨 1 与 2，而且**不需要改代码、不需要再跑 e2e**。
