@@ -4929,7 +4929,15 @@ Result<OperationRecord> ServiceCore::execute_operation(
                              current_operation.revision,
                              current_profile->record.revision});
                     }))
-                : worker_.execute(worker_request);
+                : [&] {
+                      // **Whether this call returns at all.**  On the guest the worker answers every command and this
+                      // service never reaches the log line below, so the question is exactly this call: two traces
+                      // bracket it, and a missing 'returned' names it.
+                      diagnostic_trace("service: asking the worker for an action");
+                      auto outcome = worker_.execute(worker_request);
+                      diagnostic_trace("service: worker action returned");
+                      return outcome;
+                  }();
             // The action's own verdict, whatever it was.  A checkpoint that never returns is
             // then distinguishable from one that returned and was judged.
             logger_.write(ServiceLogEvent{
