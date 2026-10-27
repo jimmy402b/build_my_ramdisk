@@ -1,4 +1,4 @@
-﻿#include "src/common/diagnostic_trace.h"
+#include "src/common/diagnostic_trace.h"
 #include "src/management/profile_registration_store.h"
 
 #include "src/management/profile_registration_codec.h"
@@ -1122,6 +1122,16 @@ Result<profile::ProfileRecord> materialized_registration_profile(
         // meaningless rather than harmful, so it is clamped to what the caller asked for.
         checkpoint.dirty_threshold_bytes = intent.requested_capacity_bytes;
     }
+    // **The same compaction policy the create's own record carries.**
+    //
+    // This function rebuilds the profile that a publish must equal, and it used to leave the policy at its default.
+    // A create that asked for a lower threshold then failed at `profile_registration.publish` with 22024, "does not
+    // exactly match the lifecycle intent and bundle evidence", because the two sides disagreed about a field only one
+    // of them set -- and the service log's step for that failure named an unrelated earlier one.
+    profile::CompactionPolicy compaction{};
+    if (intent.compaction_checkpoint_threshold.has_value()) {
+        compaction.checkpoint_count_threshold = *intent.compaction_checkpoint_threshold;
+    }
     profile::ProfileRecord expected{
         1,
         profile::Profile{
@@ -1149,7 +1159,7 @@ Result<profile::ProfileRecord> materialized_registration_profile(
                     ? profile::MemoryMode::automatic : profile::MemoryMode::fixed,
                 hard, soft, low, cow_limit},
             checkpoint,
-            profile::CompactionPolicy{}}};
+            compaction}};
     auto validation = profile::validate_profile(expected);
     if (!validation.ok()) {
         return store_error<profile::ProfileRecord>(
