@@ -3589,3 +3589,20 @@ the acknowledged stop failed: myrd-cli: the command could not be encoded for the
 **待客机验证（同一场景两条读数）**：
 - `volatile stop without the flag: exit=1`（**已达成**，§3.160）；
 - `volatile stop with the flag: exit=0`（**本次待验**）。
+### 3.162 2026-10-27 23:15：**缺陷 B + C 关闭**（两条读数都达成，且已进 e2e）
+
+客机（`9b6bd93f…`，**整个 `cli_e2e` 通过，115 s**）：
+```text
+  volatile stop without the flag: exit=1
+  volatile stop with the flag: exit=0
+```
+
+⇒ **易失盘的数据丢失保护：存在、可被合法确认、并被 e2e 永久守住。**
+
+**这一项走过的路（值得记住）**：
+1. 早上我以为它"只差读数"；
+2. 读数显示 `exit=0`（**保护根本没实现**）；
+3. 补上保护（`ba9f3aa`）⇒ 无标志时 `exit=1` ✅；
+4. 但**带标志也停不掉**（`could not be encoded`）⇒ 解析器补 `force`（`97b547d`）⇒ 两条都过 ✅。
+
+**教训**：**一条"只差读数"的项，往往藏着两个缺陷**——一个在行为里，一个在**配套路径**里。
