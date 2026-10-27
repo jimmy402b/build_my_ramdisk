@@ -5468,6 +5468,22 @@ Result<OperationRecord> ServiceCore::execute_operation(
                                 final_profile.error());
                         }
                         current_profile = final_profile.move_value();
+                        // **The counters are durable, so they are also worth saying out loud.**  T4-03 asks for
+                        // journal growth that is bounded *and observable*; the terminal result carries these numbers
+                        // to the client, and this line puts them where an operator looks when a disk grows.
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_terminal,
+                            running.request_id,
+                            operation_id,
+                            running.profile_id,
+                            running.command_scope,
+                            running.phase,
+                            "compaction: completed total="
+                                + std::to_string(current_profile->compaction
+                                                     .successful_compactions_total)
+                                + " checkpoints_since="
+                                + std::to_string(current_profile->compaction
+                                                     .checkpoints_since_compaction)});
                         completion = clean
                             ? CompletionOutcome::succeeded_clean
                             : CompletionOutcome::succeeded_dirty;
