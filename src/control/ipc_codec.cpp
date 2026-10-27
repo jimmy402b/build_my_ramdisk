@@ -522,7 +522,7 @@ constexpr std::array<FieldDescriptor, 4> kImportFields{{
 constexpr CommandSchema kImportSchema{
     static_cast<std::uint32_t>(CommandId::disk_import), 4, kImportFields};
 
-constexpr std::array<FieldDescriptor, 10> kCreateFields{{
+constexpr std::array<FieldDescriptor, 11> kCreateFields{{
     {1, FieldKind::string_utf8, FieldRequirement::required, FieldDisposition::consume, 0, 4096, 0},
     {2, FieldKind::path_local, FieldRequirement::required, FieldDisposition::consume, 0, 131072, 0},
     {3, FieldKind::uint64_le, FieldRequirement::required, FieldDisposition::consume, 0, 8, 0},
