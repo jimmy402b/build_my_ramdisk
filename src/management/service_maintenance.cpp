@@ -282,6 +282,30 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
         }
         decisions.push_back(std::move(decision));
     }
+    // **The compaction half of the same tick.**  Same shape as the checkpoint dispatch above, and for the same
+    // reason: admission is durable and execution belongs to the scheduler, so a policy that awaited its own work
+    // would hold the gate it needs to release.
+    for (const auto& candidate : compactions) {
+        ServiceCommandRequest compact_request{};
+        compact_request.command = control::DiskCompactCommand{candidate.target};
+        compact_request.caller = service_caller_identity();
+        compact_request.no_wait = true;
+        auto accepted = core_.dispatch(compact_request);
+        logger_.write(ServiceLogEvent{
+            accepted.ok() ? ServiceLogKind::operation_queued
+                          : ServiceLogKind::operation_failed,
+            accepted.ok() ? accepted.value().request_id : maintenance_request_id(),
+            accepted.ok() ? accepted.value().operation_id : std::nullopt,
+            candidate.profile_id,
+            "disk.compact",
+            "maintenance",
+            accepted.ok()
+                ? "maintenance: compaction dispatched (" + candidate.reason + ")"
+                : "maintenance: compaction refused (" + candidate.reason + "): "
+                      + narrow(accepted.error().message)});
+        decisions.push_back(MaintenanceDecision{candidate.profile_id,
+                                               candidate.reason, accepted.ok()});
+    }
     std::scoped_lock lock(state_mutex_);
     last_decisions_ = decisions;
     return decisions;
