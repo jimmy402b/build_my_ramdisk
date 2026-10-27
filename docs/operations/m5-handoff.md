@@ -2829,3 +2829,28 @@ const auto management_command = create != nullptr
 - **Load Only = `disk import`**：语义由**计划选择**保证，不依赖任何运行时开关；
 - **create 侧的同族能力 = `disk create --no-start`**（`create_stopped` 计划），同样是一等公民；
 - 两者都**已实现**，都**缺一次客机读数**（`disk list` 的 `stopped/configured` + 无 worker 进程）。
+### 3.124 2026-10-27 16:10：**VHDX 导出不是"薄薄一层命令"**——fold writer 的输出位置目前写死在 bundle 里
+
+读到 `persistence/compaction_coordinator.h` 的 `CompactionArtifactBuildRequest`，字段是：
+
+```cpp
+BundleWriterLock* writer_lock;  ManifestSlot active_slot;
+std::string base_temporary_name;  std::string base_relative_name;
+VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
+```
+
+⇒ 它把合并后的 base **按"相对名字写进 bundle"**，并要求持有 **`BundleWriterLock`**。
+而 `image_creator.h` 的 `create_generation_zero_image` 是**创建空镜像**，不是导出已有内容。
+
+**因此 `disk export` 的真实工作量**（修正 T4-02 行里"只缺命令"的乐观说法）：
+1. **把 fold writer 的输出位置参数化**（bundle 内相对名 → 调用方给的绝对路径），或
+2. **在 bundle 内构建 + 复制出去 + 丢弃**——但那样会**改动 bundle**（等于做了一次 compaction），
+   **导出不该有副作用**，所以这条不可取；
+3. 加上命令层：`disk export <disk> --output <file.vhdx>` → 命令结构 + 线格式（**四处一致**：
+   数组长度/字段行/schema 计数/编解码）→ 解析器 → 服务 → worker。
+
+**验收（定稿）**：导出文件能被 `VhdxReader` 打开、`VhdxWritePlan` 的几何与源一致、
+**导出过程不改动 bundle**（导出前后 `disk show` 的 generation 不变），且目标文件已存在时**拒绝覆盖**。
+
+**这一条的价值**：它把"差一个命令"改成"**差一次 fold writer 的参数化 + 一条命令链**"——
+下一个会话按这个开始，就不会像我今天这样先写两层再回退。
