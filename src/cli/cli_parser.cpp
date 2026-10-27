@@ -459,6 +459,13 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
             // two flags is that a user can mean only one of them.
             stop.force = has_flag(L"--force");
             stop.accept_volatile_data_loss = has_flag(L"--accept-volatile-data-loss");
+            // **The acknowledgement alone must be usable.**  The wire requires `force` and the
+            // acknowledgement to agree (`ipc_codec.cpp`), so a command carrying only the latter could not
+            // be encoded at all -- measured on the guest as "the command could not be encoded for the
+            // service", which told the user nothing.  Acknowledging volatile loss *is* a forced stop: the
+            // disk keeps no checkpoints, so the stop discards data by definition.  `--force` remains its
+            // own flag and still means what its comment says.
+            stop.force = stop.force || stop.accept_volatile_data_loss;
             request.command = std::move(stop);
             return invocation;
         }
