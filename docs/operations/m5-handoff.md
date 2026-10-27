@@ -3001,3 +3001,26 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   必须逐项相同，这是今天已经踩过的"两端一致"问题）。
 - **给下一任的提醒**：**不要**再靠"换一种写法试试"推进这一项；**先读服务日志的 `kind=7` 行**。
   我今天为此多花了两轮客机运行（各 4 分钟），而那条日志一直都在 `C:\m5\last-service.log`。
+### 3.134 2026-10-27 18:10：追踪日志显示**枚举本身只要 12 毫秒**——所以那次 `code=258` 来自别处或来自误判
+
+**证据（`C:\m5\last-trace.log`，1413 行，最后一段）**：
+```text
+01:51:09.316Z enumerate_disk_candidates: opening the candidate
+01:51:09.320Z enumerate_disk_candidates: CreateFileW took 0 ms
+01:51:09.325Z enumerate_disk_candidates: IOCTL_SCSI_GET_ADDRESS took 0 ms
+01:51:09.328Z enumerate_disk_candidates: end, 2 candidates, all steps returned
+```
+⇒ 枚举**12 毫秒内成功**，而服务日志仍报 `code=258 ... enumerate_disk_candidates`。
+
+**三种可能，下一步用一个 `diagnostic_trace` 就能分辨**：
+1. **上界值没生效**：某个调用点仍传旧值（我已把四处都改成 `kEnumerateTimeout`，但**staged 二进制**是否真的重编过需要哈希对齐一次）；
+2. **`wait_until` 误判**：包装器代码看起来正确（有谓词、`notify_one` 在解锁后），但 `complete` 与 `outcome`
+   的可见性依赖同一把锁——这条本身没问题，**不能排除是我读漏了别处的类似包装**；
+3. **258 来自另一条路径**：例如 worker 侧对 `create-bundle` 动作有自己的等待预算，而 `detail` 文本恰好相似。
+
+**下一步（很小）**：在 `enumerate_disk_candidates_within` 的**超时返回前**与**成功返回前**各打一行
+`diagnostic_trace("enum_within: timeout/completed at …")`，跑一次 e2e，看是哪一行出现。
+**不要**再调上界值——10 s、30 s、120 s 三个值都试过，失败时间几乎不变（29/35/38 s），这本身说明**上界不是变量**。
+
+**当前 HEAD（`1504b5f`）**：`kEnumerateTimeout = 120 s`；`cli_e2e` **失败**（38 s，同一个 `code=258`）；
+`--compaction-threshold` 已在 CLI/线格式/intent/**profile** 全链就位（本地套件全绿），**但客机读数被这个 create 失败挡住**。
