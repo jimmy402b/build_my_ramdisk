@@ -3469,3 +3469,22 @@ workers settled after 120 s (1 left)
 
 **为什么这一条对验收是硬要求**：验收时一定会问"`disk stop` 之后内存释放了吗、设备退役了吗"。
 现在的答案在客户端看是"释放了"（`mem=0/0`、`runtime=Stopped`），**在进程列表里是"没有"**。
+### 3.156 2026-10-27 22:00：**补上 `shutdown()` 调用后仍然 121 s / 1 left**——所以问题在 worker 的退出路径，不在"没人请它走"
+
+重置客机、同一场景，读数 **`workers settled after 121 s (1 left)`**（与修复前一致）。
+
+⇒ 两种可能，**必须用 worker 的 StartTime 分辨**（下一轮一件小事）：
+1. **存活的是主盘的 worker**（它在我的场景之前被 stop）：那说明 `confirm_removal` 里的 `shutdown` **没成功**
+   （best-effort 被吞掉）——要读 `asked` 的错误码；
+2. **存活的是别的 worker**：那说明我一直在看错的对象。
+
+**我的判断失误（记录在案）**：`shutdown` 是 best-effort，**我把错误吞掉了却没有记录**——
+这正是本会话反复出现的毛病（"吞掉证据"）。正确做法是**至少写一条服务日志**说明 shutdown 失败与否。
+
+**下一轮的两步**：
+1. 在 `confirm_removal` 里把 `asked` 的结果写成服务日志（成功/失败+code），
+   并把 **worker 的进程 StartTime** 打进 e2e 的输出（分辨是哪个盘）；
+2. 若 `asked` 失败且 code 表示"管道已关" ⇒ worker 其实已经走了，**存活的是另一个**；
+   若 code 表示"超时" ⇒ worker 卡在 `remove_and_stop` 之后的处理里 ⇒ 去读 worker 侧 `cleanup()` 的路径。
+
+**已回退 e2e**（工作树 0 改动）。**代码修复 `ec75b6d` 保留**（它是必要不充分的一步，且不劣化行为）。
