@@ -509,7 +509,7 @@ constexpr CommandSchema kDiagnosticsSchema{
     static_cast<std::uint32_t>(CommandId::diagnostics_collect), 3,
     kDiagnosticsFields};
 
-constexpr std::array<FieldDescriptor, 5> kImportFields{{
+constexpr std::array<FieldDescriptor, 4> kImportFields{{
     {1, FieldKind::string_utf8, FieldRequirement::required,
      FieldDisposition::consume, 0, 4096, 0},
     {2, FieldKind::path_local, FieldRequirement::required,
@@ -518,13 +518,9 @@ constexpr std::array<FieldDescriptor, 5> kImportFields{{
      FieldDisposition::consume, 0, 4096, 0},
     {4, FieldKind::string_utf8, FieldRequirement::optional,
      FieldDisposition::consume, 0, 4096, 0},
-    // Load Only (T4-02).  The array's size, this row and the schema's declared count are three numbers that have
-    // to agree -- the label slice learned that when only the count was bumped and the decoder still said "unknown".
-    {5, FieldKind::boolean, FieldRequirement::required,
-     FieldDisposition::consume, 0, 1, 0},
 }};
 constexpr CommandSchema kImportSchema{
-    static_cast<std::uint32_t>(CommandId::disk_import), 5, kImportFields};
+    static_cast<std::uint32_t>(CommandId::disk_import), 4, kImportFields};
 
 constexpr std::array<FieldDescriptor, 11> kCreateFields{{
     {1, FieldKind::string_utf8, FieldRequirement::required, FieldDisposition::consume, 0, 4096, 0},
@@ -913,7 +909,6 @@ Result<EncodedCommand> encode_command_payload(const control::Command& command) {
                     *value.owner_sid, 4096, FieldRequirement::optional);
                 if (!owner.ok()) return Result<EncodedCommand>::failure(owner.error());
             }
-            append_bool_field(payload, 5, value.no_start);
             return Result<EncodedCommand>::success(
                 EncodedCommand{CommandId::disk_import, std::move(payload)});
         } else if constexpr (std::is_same_v<T, control::DiskCreateCommand>) {
@@ -1161,9 +1156,7 @@ Result<control::Command> decode_command_payload(
         auto bundle_text = string_from_field(fields.value(), 2);
         auto mount = string_from_field(fields.value(), 3);
         auto owner = optional_string_from_field(fields.value(), 4);
-        auto no_start = bool_from_field(fields.value(), 5);
-        if (!name.ok() || !bundle_text.ok() || !mount.ok() || !owner.ok()
-            || !no_start.ok()) {
+        if (!name.ok() || !bundle_text.ok() || !mount.ok() || !owner.ok()) {
             return codec_error<control::Command>(L"Import payload is invalid");
         }
         auto bundle = product::normalize_local_absolute_path(bundle_text.value());
@@ -1172,7 +1165,7 @@ Result<control::Command> decode_command_payload(
         }
         return Result<control::Command>::success(control::DiskImportCommand{
             name.move_value(), bundle.move_value(), mount.move_value(),
-            owner.move_value(), no_start.value()});
+            owner.move_value()});
     }
     if (command_id == CommandId::disk_create) {
         auto fields = decode_typed_payload(payload, kCreateSchema,
