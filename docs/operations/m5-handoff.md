@@ -3328,3 +3328,29 @@ workers settled after 121 s (1 left)
 - 已回退 e2e（`git checkout`），工作树 0 改动；套件与 e2e 回到通过状态。
 - **T4-02 状态更新**：**Load Only 语义已验证**；**易失盘的 stop 拒绝断言未执行到**（worker 断言先失败），
   所以易失盘那条读数**仍缺**。
+### 3.150 2026-10-27 20:55：**`--no-start` 的计划里没有启动动作**——所以那个 worker 属于**被 stop 的盘**
+
+`state_machine.cpp:321` 附近，`create_stopped` 的计划只有两个动作：
+```cpp
+    case ManagementCommand::create_stopped:
+        append_action(plan, ActionKind::create_and_verify_bundle);
+        append_action(plan, ActionKind::publish_provisioning_profile);
+        return;
+```
+（对照 `create_and_start`：它多一行 `append_start_actions(plan, true);`。）
+
+⇒ **服务不会为 `--no-start` 的 create 拉起 worker。** 因此 §3.149 里那个"121 秒后仍在"的 worker
+**属于那一刻刚被 `disk stop` 停掉的主盘**（e2e 在插入点之前刚执行过 "stop it again before removing it"）。
+
+**所以缺陷重新定位**：**`disk stop` 之后 worker 在 121 秒内没有退出** —— 这比"create 留下 worker"更严重，
+因为 `disk stop` 是用户每天都在用的动作，而 `disk list` 会显示 `runtime=Stopped`。
+**它是否等于"泄漏"取决于它最终会不会退出**：§3.146 观察过一次运行结束数分钟后 worker=0，
+那可能是**服务整体退出时**带走的，而不是 worker 自己退出的。
+
+**下一任的第一步（一条 grep 就能定性）**：读失败运行的 `last-trace.log`，找该盘 stop 之后的
+`worker:` 行（例如 `worker: shutdown`/`worker: exiting`）——
+- 若**没有**这类行 ⇒ **worker 不响应 stop，只在服务退出时被带走**（真缺陷）；
+- 若**有**但之后仍在 ⇒ **退出路径卡在设备退役**（另一类缺陷，已有 §4.15.57 的先例）。
+
+**本次两轮的价值**：`--no-start` 的清白由一个**计划表**证明；剩下的问题被**重新指向 `disk stop`**，
+而它是一个用户可见的日常动作。
