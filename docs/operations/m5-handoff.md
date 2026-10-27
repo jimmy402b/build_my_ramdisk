@@ -2730,3 +2730,22 @@ DIAG store open failed op=profile_store.directory_acl native=0
 而一个留下"产品会拒绝的目录"的重置脚本，会让测试**因为不是产品的原因而失败**。
 
 **`model/m5` 组现在应为 13/13**（需一次整组复跑确认，见下）。
+### 3.119 2026-10-27 15:00：**`model/m5` 回到 13/13**（含 `m5.startup_sweep` 与 `production_execution_backend`）
+
+```text
+13 of 13 passed     请求 b37c8262…，114 s
+```
+
+- 这一组在两个半小时内出现过 **13/13 → 12/13 → 11/13 → 13/13** 的波动，**每一次的归因现在都能对上**：
+  1. 12/13：`m5.production_execution_backend` 是**已知批内间发**（单独跑通过）；
+  2. 11/13：额外的 `m5.startup_sweep` 是**环境假信号**——重置脚本没重建目录、建了也没保护 ACL；
+  3. 13/13：`Reset-M5Guest.ps1` 现在建目录 + 申请保护 DACL（§3.118）。
+- **⇒ 一个可复用的经验**：客机上的红，**先问"这台机器的前提成立吗"**（目录/ACL/服务状态/残留设备），
+  再问产品。本会话在这条上花了很长时间，但最终每次都是前提问题。
+- **客机基线（当前）**：
+  | 组 | 结果 |
+  |---|---|
+  | `^unit\.` | 96/96（用时长波动 227→517 s，**仍未解释**） |
+  | `^model\.|^m5\.` | **13/13**（114 s） |
+  | `integration.m5.cli_e2e` | **PASS**（87 s，撤回卷标入口后） |
+  | `integration.m5.install_uninstall` / `gui_workflow` | 上次各 PASS（9 s / 25 s） |
