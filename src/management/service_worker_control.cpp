@@ -1001,7 +1001,7 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
         return Result<WorkerActionResult>::failure(observed.error());
     }
 
-    if (creating) {
+    if (creating && request.command != ManagementCommand::create_stopped) {
         // Held, because the plan continues: `create_runtime_and_worker` finds
         // this session rather than launching a second worker for one bundle, and
         // the provisioning-family steps that follow read the runtime this
@@ -1011,6 +1011,12 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
     // An inspection is not held: nothing is running to command, and the worker
     // exits when the channel closes.  Holding it would keep a process alive for
     // a profile whose operation has nothing left to do.
+    //
+    // **A stopped create is the same case and was not treated as one.**  `creating` is about *how* the bundle
+    // was produced, and it was also deciding whether to keep the session -- so `create_stopped`, whose plan ends
+    // here, kept a worker alive with nothing to command: measured as a process still running two minutes after a
+    // `--no-start` create, while `disk list` reported `stopped/configured` and `mem=0/0`.  Only a plan that goes
+    // on to start the runtime needs the session kept, which is why the condition above names the command.
 
     const auto& evidence = observed.value().bundle.value();
     auto image_id = to_product_uuid(evidence.image_id);
