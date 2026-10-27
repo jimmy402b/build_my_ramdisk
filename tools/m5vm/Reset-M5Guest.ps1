@@ -50,6 +50,24 @@ if ($left.Count -ne 0) {
     exit 1
 }
 
+# **The store refuses a directory that is not protected.**  Measured: with the leaf created but its ACL inherited,
+# `m5.startup_sweep` failed with `profile_store.directory_acl` -- "A profile directory is not protected" -- which is
+# the third of the three rules in the T4-01 evidence.  A reset that leaves directories the product refuses is a reset
+# that makes tests fail for a reason that is not the product's.
+function Protect-ManagementDirectory([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $acl = Get-Acl -LiteralPath $path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+    foreach ($sidText in @('S-1-5-32-544', 'S-1-5-18')) {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidText)
+        $rights = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        [void]$acl.AddAccessRule($rights)
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl
+    Write-Host "  protected $path"
+}
 Step 'clear the durable record so the service starts from nothing'
 foreach ($child in @('profiles', 'operations')) {
     $directory = Join-Path $DataDirectory $child
@@ -94,5 +112,31 @@ if (Test-Path -LiteralPath $logs) {
     # run's failures are read against it.
     Write-Host "  kept $logs"
 }
+# **The store refuses a directory that is not protected.**  Measured: with the leaf created but its ACL inherited,
+# `m5.startup_sweep` failed at `profile_store.directory_acl` -- "A profile directory is not protected" -- the third of
+# the three rules in the T4-01 evidence.  A reset that leaves directories the product refuses is a reset that makes
+# tests fail for a reason that is not the product's.
+function Protect-ManagementDirectory([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $acl = Get-Acl -LiteralPath $path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+    foreach ($sidText in @('S-1-5-32-544', 'S-1-5-18')) {
+        $sid = New-Object System.Security.Principal.SecurityIdentifier($sidText)
+        $rights = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        [void]$acl.AddAccessRule($rights)
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl
+    Write-Host "  protected $path"
+}
+
+foreach ($target in @($DataDirectory,
+                      (Join-Path $DataDirectory 'profiles'),
+                      (Join-Path $DataDirectory 'operations'),
+                      (Join-Path (Join-Path $DataDirectory 'profiles') 'workers'))) {
+    Protect-ManagementDirectory $target
+}
+
 Write-Host 'RESET'
 exit 0
