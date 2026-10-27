@@ -710,6 +710,9 @@ struct ServiceProfileProjection final {
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
     std::uint64_t volume_serial{};
+    // Durable compaction counters (T4-03), appended with defaults like their neighbours.
+    std::uint64_t successful_compactions{};
+    std::uint64_t checkpoints_since_compaction{};
     bool operator==(const ServiceProfileProjection&) const noexcept = default;
 };
 

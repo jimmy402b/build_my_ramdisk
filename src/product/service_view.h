@@ -211,6 +211,12 @@ struct ServiceDiskView final {
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
     std::uint64_t volume_serial{};
+    // **Compaction, made visible (T4-03).**  The policy has bounded journal growth since the schema was written and
+    // nothing in the service ever read it; the counters are durable, the log now reports them, and these two are what
+    // a client needs to see the same thing happen.  Zero means no compaction has completed, which is the truth for a
+    // disk that has never needed one.
+    std::uint64_t successful_compactions{};
+    std::uint64_t checkpoints_since_compaction{};
     bool operator==(const ServiceDiskView&) const noexcept = default;
 };
 

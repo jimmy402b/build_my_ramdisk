@@ -37,7 +37,9 @@ product::ServiceDiskView view_of(const ServiceProfileProjection& projection) {
         projection.mount_target,
         projection.resident_bytes,
         projection.budget_bytes,
-        projection.volume_serial};
+        projection.volume_serial,
+        projection.successful_compactions,
+        projection.checkpoints_since_compaction};
 }
 
 product::ServiceOperationView view_of(const ServiceOperationProjection& projection) {
@@ -72,6 +74,12 @@ product::ServiceDiskView project_profile(const ManagedProfileSnapshot& snapshot)
         projection.resident_bytes = snapshot.runtime_observation->resident_bytes;
         projection.budget_bytes = snapshot.runtime_observation->budget_bytes;
         projection.volume_serial = snapshot.runtime_observation->volume_serial;
+    }
+    // The counters are durable rather than observed, so they are filled whether or not a worker is alive: a
+    // stopped disk still knows how many compactions it has completed.
+    {
+        projection.successful_compactions = snapshot.compaction.successful_compactions_total;
+        projection.checkpoints_since_compaction = snapshot.compaction.checkpoints_since_compaction;
     }
     return projection;
 }
