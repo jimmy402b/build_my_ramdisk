@@ -3841,3 +3841,29 @@ kind=7 disk.create phase=terminal message=terminal failure without a worker-acti
 **下一任的第一步**：把 §3.171 的探针**换一个空闲盘符**（e2e 应用 `disk list` 里没出现的字母）再跑一次；
 若那次 `terminal=succeeded`，则 **§3.171 的"重复注册"完全解释为挂载点冲突**，缺陷 A 的真实形态就只剩
 "worker 不退出"（§3.169）这一条。
+### 3.173 2026-10-28 01:30：**新错误文本生效了，但这次失败**不是**"已注册"——是 create 卡在 `running`**
+
+客机（`382b3c0b…`，327 s）：
+```text
+FAIL: the operation did not reach a terminal state within 300 s (last state: running)
+```
+服务日志只留下一行：
+```text
+kind=7 disk.create phase=publish-provisioning message=publish_registration disposition=0 (the store reported no cause)
+```
+
+⇒ 两个新事实：
+1. **把盘符换成 `Y:` 后，重复注册的拒绝没有再出现** ⇒ §3.172 的判断成立：**之前那次是挂载点冲突**；
+2. **但 create 现在卡在 `running`，300 s 内没有进入终态**，而且日志里只有那条"store reported no cause"。
+   - `disposition=0 (the store reported no cause)` 是**新的措辞**（来自我改的那条路径附近），
+     **它说明这次不是重复注册**，而是**发布阶段返回了一个没有 message 的结果**；
+   - 卡在 `running` 与 §3.169 的"worker 不退出"很可能是**同一件事的两面**：create 的发布步骤在等一个不会回来的 worker 回复。
+
+**已回退探针**（工作树 0 改动）。
+
+**下一任的第一步**：把 §3.173 与 §3.169 合成一条线——**create 的某一步在等 worker，而 worker 卡住了**。
+用 `last-trace.log` 里**该 worker 的最后 20 行**定位（`worker: command received` 之后有无后续），
+这与我 §3.169 写的第 3 步是同一条命令。
+
+**注意**：`publish_registration disposition=0 (the store reported no cause)` 这个措辞本身**也应改**：
+"store reported no cause" 对用户毫无意义——它应当说**是哪一步没有给出原因**（这是今天第三次遇到"错误文本不告诉人任何事"）。
