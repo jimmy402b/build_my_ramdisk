@@ -4023,3 +4023,36 @@ Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers() {
 它们本身**不是**修复，但每一次运行都会把位置钉得更准。
 
 **已回退探针**（工作树 0 改动）。
+### 3.180 2026-10-28 02:55：**"退役之后"的等待找到了：是 `provider_->stop()`，不是等设备消失**
+
+`m3_windows_acceptance.cpp:836-843`：
+```cpp
+            *owned_device_, info_.virtual_bytes, remaining);
+        if (!retired) return retired;
+        diagnostic_trace("remove_owned_device: PhysicalDrive retired");   // ← 打印了，说明**等待已成功**
+        physical_drive_restored_ = true;
+    }
+    return Result<void>::success();
+}
+
+Result<void> M3AimRuntime::stop_provider() {
+    if (!provider_) return Result<void>::success();
+    const auto stopped = provider_->stop(OperationContext{}, {});        // ← 卡在这里
+```
+⇒ **"PhysicalDrive retired" 打印 = 设备退役的等待成功了**（我上一轮把它读成"卡在这行之后"，方向对、对象错）。
+真正的阻塞点是下一步：**`stop()` → `stop_provider()` → `provider_->stop(...)`**。
+
+**这与"CPU≈0、杀不掉"完全吻合**：`provider_->stop` 是向 AIM 驱动/传输层发停止请求，**若它不返回，线程就永久停在内核等待里**。
+
+**下一任的第一步（一条 grep）**：`runtime_adapter.cpp:379` 设的是
+```cpp
+    factory.provider.request_timeout = std::chrono::seconds(30);
+```
+⇒ **检查 `provider_->stop()` 是否真的用这个 `request_timeout`**。
+- 若**不用** ⇒ 让它用（或给它自己的上界）——**这是唯一缺的东西**；
+- 若**用了**却仍不返回 ⇒ 那是 transport 层不遵守超时（`worker_pipe`/`aim` 传输），继续往下追一层。
+
+**判定标准（不变）**：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `forget` 的 `device_absent=1`。
+
+**注**：这已经是**第 6 次收窄**（`step=` 陈旧 → 挂载点判据 → 上界 → 锁 → 基线 → 异常 → 退役等待 → **provider stop**），
+每一次都由一条读数或一段代码推动，**没有一次是猜对的**。
