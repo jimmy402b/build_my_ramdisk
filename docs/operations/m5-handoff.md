@@ -3664,3 +3664,22 @@ void ServiceWorkerControl::release_session(const product::Uuid& profile_id);
 - `stop` 完成后同样成立（那一刀已经在 `confirm_removal` 里单独做过了，两处不冲突）。
 
 **判定标准（不变）**：§3.158 场景的 `workers settled after N s` 应 **N < 30 s**。
+
+### 3.166 2026-10-27 23:50（记录时间已不可考）：**宽过滤器 `m5` 把客机跑死了——不要再用它**
+
+**经过**：
+1. 我想做一次"M5 全体回归"，用了 `-Filter 'm5'`（**宽匹配**）；
+2. 第一次 30 分钟内没结束（`-DeadlineSeconds` 默认 1800），提示"guest run 未被中断，可稍后用 `-RequestId` 收取"；
+3. 用 `-RequestId e11ef7e7…` 收，**又等 30 分钟**仍未出现 `response.txt`；
+4. 此时 **SSH 本身开始挂起**（一条 `Get-Process` 命令 600 秒不返回）⇒ **客机已经无响应**；
+5. **断电重启**（`vmrun stop/start`）⇒ 15 秒后 SSH 恢复。
+
+**结论与纪律（请写进习惯）**：
+- ❌ **不要用 `-Filter 'm5'`**。它会选中**设备类重用例**（例如 `m5.production_execution_backend`），
+  这类用例**一次就可能把客机的存储栈拖垮**——本会话早先已记录过一次同类退化。
+- ✅ 只用**精确过滤器**：`^integration\.m5\.cli_e2e$`、`^integration\.m5\.gui_workflow$`、
+  `^unit\.m5\.` 等（**逐个跑，别求"一次跑完"**）。
+- ✅ 判据仍然是"**跑了哪几个、各多少秒**"，不是"跑了一大类"。
+- **本次没有任何读数产出**（结果文件从未生成），因此**不能**据此说"M5 回归通过"或"回归失败"。
+
+**代价**：约一小时客机时间与一次断电重启。**这是我今天最不该做的一次"图省事"。**
