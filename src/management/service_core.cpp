@@ -555,8 +555,11 @@ Result<profile::ProfileRecord> make_registration_record(
     }
     // A create may ask for a lower compaction threshold, and the profile is where the policy lives -- so this is
     // the one place it can be recorded.  Absent leaves the schema's default alone.
+    // **The threshold a create asks for has to reach the profile**, because the profile is where the policy lives and
+    // the maintenance tick reads it there.  Assigned field by field, the way the checkpoint policy above is.
+    profile::CompactionPolicy compaction{};
     if (intent.compaction_checkpoint_threshold.has_value()) {
-        checkpoint = checkpoint;
+        compaction.checkpoint_count_threshold = *intent.compaction_checkpoint_threshold;
     }
     profile::ProfileRecord record{
         1,
@@ -586,7 +589,7 @@ Result<profile::ProfileRecord> make_registration_record(
             intent.auto_start,
             memory.move_value(),
             checkpoint,
-            profile::CompactionPolicy{},
+            compaction,
             intent.volume_label}};
     const auto validation = profile::validate_profile(record);
     if (!validation.ok()) {
