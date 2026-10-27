@@ -2809,3 +2809,22 @@ DIAG store open failed op=profile_store.directory_acl native=0
 - **教训（写给自己）**：**先读实现，再定"要做什么"**。我上一轮把语义定对了（§3.121），
   却没有再往前读一步去确认它是否已经实现——于是白写两层、再回退两层。
   今天已经因为"没先读"付出过黄金样本、`kLastKnownTag`、schema 计数三次代价。
+### 3.123 2026-10-27 15:55：Load Only 的**第二重证据**——import 走的是 `import_profile` 计划，而不是"auto_start=false 的 create"
+
+`service_core.cpp` 的命令分派（1810 行附近）**无条件**为 import 选计划：
+
+```cpp
+const auto management_command = create != nullptr
+    ? (create->no_start ? ManagementCommand::create_stopped
+                        : ManagementCommand::create_and_start)
+    : ManagementCommand::import_profile;      // ← import 永远走这条
+```
+
+⇒ **"import 不会启动"不是靠某个布尔值为假的副作用**，而是它**根本不进入 create 的计划分支**。
+接线处（`plan_lifecycle_reservation`，275 行）也是同一个形状：`LifecycleOperationKind::import` 直接映射到
+`import_profile`，`auto_start` 只影响 create 走 `create_and_start` 还是 `create_stopped`。
+
+**结论（可以写进验收材料）**：
+- **Load Only = `disk import`**：语义由**计划选择**保证，不依赖任何运行时开关；
+- **create 侧的同族能力 = `disk create --no-start`**（`create_stopped` 计划），同样是一等公民；
+- 两者都**已实现**，都**缺一次客机读数**（`disk list` 的 `stopped/configured` + 无 worker 进程）。
