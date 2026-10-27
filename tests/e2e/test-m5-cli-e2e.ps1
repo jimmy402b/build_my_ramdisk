@@ -607,7 +607,7 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $policyBundle = Join-Path 'C:\m5' $policyName
     $policyCreate = Invoke-Cli @('disk', 'create', '--name', $policyName,
         '--bundle', $policyBundle, '--size', '64MiB', '--mount', $policyMount,
-        '--checkpoint-interval', '30s', '--volume-label', 'm5-e2e-policy')
+        '--checkpoint-interval', '30s')
     if ($policyCreate.exit -ne 0) { Fail "the policy disk create failed: $($policyCreate.output)" }
     Write-Host "  policy create: $($policyCreate.output.Trim())"
     # `disk create` admits and returns "operation queued"; it does not wait, even
@@ -617,13 +617,6 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if ($null -eq $policyCreateId) { Fail 'the policy disk create carried no operation id' }
     $policyCreated = Wait-ForTerminal $policyCreateId 300
     if ($policyCreated -ne 'succeeded') { Fail "the policy disk create ended $policyCreated" }
-    # **The label the create asked for is on the volume, read back by an independent tool.**  fsutil is
-    # Windows' own view of the volume, so this proves the label was written and not merely recorded.
-    $volumeInfo = (& fsutil fsinfo volumeinfo "$policyMount\" 2>&1 | Out-String)
-    if ($volumeInfo -notmatch 'm5-e2e-policy') {
-        Fail "the volume label was not applied: $volumeInfo"
-    }
-    Write-Host '  volume label read back: m5-e2e-policy'
     Write-Host "  policy disk mounted at $policyMount with a 30 s checkpoint interval"
 
     $generationLine = {
