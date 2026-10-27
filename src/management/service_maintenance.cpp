@@ -241,6 +241,12 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
             (std::min)(snapshot.compaction.checkpoints_since_compaction,
                        static_cast<std::uint64_t>(0xFFFFFFFFULL)));
         // The durable phase is the authority on "a compaction is already in flight", not the policy.
+        //
+        // **And so is an active operation, which is the stateless half of the same question.**  Between the moment a
+        // compaction is admitted and the moment the durable phase moves off `stable`, this tick runs again -- and
+        // without this check it would admit a second one, which the core would refuse and log as a failure.  Asking
+        // "is something already running for this profile" needs no memory of my own.
+        if (observation.has_value() && observation->active_operation_id.has_value()) continue;
         if (snapshot.compaction.phase == CompactionDurablePhase::stable) {
             const auto compaction_reason = compaction_due_reason(compaction_input);
             if (!compaction_reason.empty()) {
