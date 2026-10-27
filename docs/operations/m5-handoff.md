@@ -3354,3 +3354,29 @@ workers settled after 121 s (1 left)
 
 **本次两轮的价值**：`--no-start` 的清白由一个**计划表**证明；剩下的问题被**重新指向 `disk stop`**，
 而它是一个用户可见的日常动作。
+### 3.151 2026-10-27 21:05：**`disk stop` 之后 worker 仍在被"每 15 秒唤醒"**——这是要修的缺陷
+
+失败运行（`44ee3644…`）的 `last-trace.log`（1381 行）里：
+```text
+worker: command received   02:20:55.398
+worker: command received   02:21:10.398
+worker: command received   02:21:25.423
+…（每 15 秒一次，持续到最后）
+```
+- **`shutdown` / `cleanup` / `exiting` / `released` 关键字：0 条**。
+- ⇒ 那个 worker **既没被要求退出，也一直在收命令**；而 `disk list` 同时显示 `runtime=Stopped`。
+- **15 秒**正是维护 tick 的周期 ⇒ **tick 每轮都在和一个"已停止"的运行时通信**，这既让 worker 活着，
+  也说明 **stop 没有真正终止运行时**（尽管 `stop` 的计划最后一步是
+  `stop_runtime_and_release_lock`，见 `state_machine.cpp:341`）。
+
+**下一任的第一步（按顺序）**：
+1. 找到 `stop_runtime_and_release_lock` 的实现：它**是否真的**向 worker 发 shutdown / 关管道？
+   若只是"标记状态 + 释放锁"，那 **worker 是设计上被遗弃的**（只在服务退出时被带走）——
+   这与 `worker: command received` 每 15 秒一条**矛盾**（被遗弃的 worker 不该再收命令），
+   所以**更可能是"标记了停止，但还在轮询"**；
+2. 找到 tick 里**向每个 profile 发命令**的那一处（`worker: command received` 的来源），
+   看它是否检查 `runtime == running`；
+3. 两处都看过后，再决定是**停掉轮询**还是**补上 shutdown**。
+
+**这条对验收的意义**：`disk stop` 是用户日常动作；"显示已停止但 worker 还活着并每 15 秒被唤醒"
+**在验收时一定会被问到**（内存是否真的释放、设备是否真的退役）。**它不是测试问题，是产品行为问题。**
