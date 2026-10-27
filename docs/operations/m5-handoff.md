@@ -3867,3 +3867,36 @@ kind=7 disk.create phase=publish-provisioning message=publish_registration dispo
 
 **注意**：`publish_registration disposition=0 (the store reported no cause)` 这个措辞本身**也应改**：
 "store reported no cause" 对用户毫无意义——它应当说**是哪一步没有给出原因**（这是今天第三次遇到"错误文本不告诉人任何事"）。
+### 3.174 2026-10-28 01:45：**缺陷 A 的根因：worker 卡死在"打开候选磁盘设备"——`enumerate_disk_candidates` 的最后一行就是它**
+
+`last-trace.log`（1347 行）里那个 worker 自己的最后几行：
+```text
+04:31:29.187Z worker: command received
+04:31:29.194Z M4Adapter::create_generation_zero: entered
+04:31:29.303Z M4Adapter::create_generation_zero: wrote generation zero
+04:31:29.303Z M3AimRuntime::start: provider open
+04:31:29.313Z M3AimRuntime::start: provider start
+04:31:29.313Z M3AimRuntime::start: discover adapter
+04:31:29.320Z M3AimRuntime::start: look for an existing device
+04:31:29.322Z enumerate_disk_candidates: begin
+04:31:29.324Z SetupDiEnumDeviceInterfaces[0] took 0 ms
+04:31:29.324Z SetupDiGetDeviceInterfaceDetailW took 0 ms
+04:31:29.324Z enumerate_disk_candidates: opening the candidate     ← **到此为止，之后再无任何行**
+```
+⇒ **worker 卡在 `CreateFileW`（打开某个候选磁盘设备）里，永不返回**。于是：
+- create 永不进入终态（§3.173 的 `running`）；
+- worker 永不退出、CPU≈0、非提权杀不掉（§3.169）；
+- 它占着设备，导致别的盘 `forget` 被拒（§3.170，`device_absent=0`）。
+
+**这三条症状是同一个根因**：**打开候选设备会在"设备退役窗口"里永久阻塞**——
+这正是 `docs/validation/m5-t1-03-worker-job.md` §4.15.57 记录过的 11 秒阻塞的**更坏形态**（这里是永不返回）。
+
+**为什么我加的 120 s 上界没救回来**：`enumerate_disk_candidates_within` 把调用放到**分离线程**里并超时返回，
+**但那个线程永远卡在内核里**；worker 之后的 `cleanup()` 需要释放设备，于是**进程也无法干净退出**。
+⇒ **上界只救了"调用者"，没救"被卡住的线程"。**
+
+**修法方向（AGENTS.md §2.1 已写）**：**不要靠打开磁盘设备来问盘号**。
+卷侧 `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` 能给出盘号而不碰磁盘设备；
+`M3AimRuntime::start` 这一步的 "look for an existing device" 应当改成**按卷 extents 匹配**（T1-09 已经用过同样的思路）。
+
+**判定标准（合成一条）**：`create --no-start` 后 30 s 内 ① 操作进入终态、② 无残留 worker、③ 该盘 `forget` 的 `device_absent=1`。
