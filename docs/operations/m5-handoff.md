@@ -3812,3 +3812,32 @@ kind=7 disk.create phase=terminal message=terminal failure without a worker-acti
 - 若否 ⇒ 回到 §3.169 的 worker 卡住那条线。
 
 **本次探针已从 e2e 移除**（工作树 0 改动），**两条读数保留在本文档**。
+### 3.172 2026-10-28 01:15：**"already registered" 的第四条判据是**挂载点**，而错误文本从不提它**
+
+`profile_registration_store.cpp:1410-1419`（publish 的重复检查）：
+```cpp
+        if (equal_ignore_case(record.value().profile.display_name,
+                              proposed.profile.display_name)
+            || record.value().profile.image_uuid == proposed.profile.image_uuid
+            || equal_ignore_case(record.value().profile.bundle_path,
+                                 proposed.profile.bundle_path)
+            || mount_targets_equal(record.value().profile, proposed.profile)) {
+            return store_error<void>(L"profile_registration.publish",
+                L"The profile name, image, or bundle is already registered");
+        }
+```
+
+⇒ **判据有四条**：名字、image、bundle、**挂载点**；而错误文本只列了**三条**（名字/image/bundle）。
+**挂载点冲突时，读者会被指向三个都不冲突的字段**——我今天就因此改了两轮错误的方向（§3.148、§3.171）。
+
+**这解释了 §3.171 的探针失败**：探针用了 `--mount Z:`，而那次运行里**已经有一个 profile 占着 `Z:`**
+（e2e 早前的某个磁盘，或上一次尝试留下的）。**"干净客机"是真的，但"Z: 空闲"是假的。**
+
+**修法（很小，两处）**：
+1. **错误文本补上挂载点**，例如
+   `L"The profile name, image, bundle or mount target is already registered"`；
+2. 更好的做法是**分别给出冲突的是哪一项**（四条判据分别返回不同 detail）——这让下一次诊断从"猜"变成"读"。
+
+**下一任的第一步**：把 §3.171 的探针**换一个空闲盘符**（e2e 应用 `disk list` 里没出现的字母）再跑一次；
+若那次 `terminal=succeeded`，则 **§3.171 的"重复注册"完全解释为挂载点冲突**，缺陷 A 的真实形态就只剩
+"worker 不退出"（§3.169）这一条。
