@@ -3948,3 +3948,26 @@ Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers() {
 - 否 ⇒ 卡在 `wait_for_created_physical_drive` 或 `stop_provider()` 的等待里，去读那条路径。
 
 **判定标准（不变）**：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
+### 3.177 2026-10-28 02:15：**"被放弃线程持锁"这一条也被排除**——剩下的三个候选
+
+`physical_drive_locator.cpp` 里的锁只有**包装器自己那三处**（`:394` 的 `std::mutex`、`:406` 的 `lock_guard`、
+`:413` 的 `unique_lock`），**没有任何锁跨越 `CreateFileW`**。⇒ §3.176 的假设不成立。
+
+**还有一个更硬的事实**：我加的 `enum_within: timeout fired` 那行**在那次 trace 里没有出现**，
+而时间线是够的（trace 最后一行 04:31:29，e2e 失败在 04:36:30 ≈ +5 分钟，上界 120 s 早该到了）。
+⇒ **包装器根本没有返回**，连"超时"这条路径都没走到。
+
+**因此剩下的候选只有三个，按可能性排序**：
+1. **`M3AimRuntime::start` 在调用基线之前已持有自己的锁**，而 `stop_provider()`（超时后的清理路径）
+   或后续步骤需要同一把锁 ⇒ 表现为死锁（**最能解释"连 timeout 分支都没走完"**）；
+2. **`wait_for_created_physical_drive` 在等一个永远不出现的盘**（它的 timeout 若 > 300 s 则与症状一致）；
+3. **驱动内部全局锁**：`CreateFileW` 在驱动里阻塞时，进程内**其它触碰同一驱动器的线程**也一并阻塞
+   ⇒ 整个 worker "冻结"，这与"CPU≈0、杀不掉"完全吻合。
+
+**下一任的第一步（按 1 → 2 → 3 顺序，每一步都只要读一段代码）**：
+1. 在 `M3AimRuntime::start` 里找**基线调用之前/之后**的锁作用域（关键字 `scoped_lock`/`mutex`）；
+2. 找 `wait_for_created_physical_drive` 的 timeout 值（`kM0*` 常量）并与 300 s 比较；
+3. 若 1、2 都不成立，则按候机 3 处理：**这是驱动层问题**，只能靠"**不要在 create 前枚举全机盘号**"
+   来回避（AGENTS.md §2.1 的卷 extents 方案），而不是继续在这里找锁。
+
+**判定标准（不变）**：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
