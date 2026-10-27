@@ -247,6 +247,13 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
         // without this check it would admit a second one, which the core would refuse and log as a failure.  Asking
         // "is something already running for this profile" needs no memory of my own.
         if (observation.has_value() && observation->active_operation_id.has_value()) continue;
+        // **Only a ready profile is a compaction candidate.**  A create spends its first moments provisioning, and
+        // asking for a compaction there is asking for one on a volume that is still being built -- measured as a
+        // policy-disk create that never reached terminal while the main disk in the same run succeeded.
+        if (!snapshot.state.lifecycle.has_value()
+            || *snapshot.state.lifecycle != profile::ProfileLifecycle::ready) {
+            continue;
+        }
         if (snapshot.compaction.phase == CompactionDurablePhase::stable) {
             const auto compaction_reason = compaction_due_reason(compaction_input);
             if (!compaction_reason.empty()) {
