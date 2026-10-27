@@ -3578,3 +3578,14 @@ the acknowledged stop failed: myrd-cli: the command could not be encoded for the
 `volatile stop with the flag: exit=0`（**未达成**，卡在缺陷 C）。
 
 **已回退 e2e**（工作树 0 改动）。代码修复 `ba9f3aa` 保留——它让保护**真的存在**了。
+### 3.161 2026-10-27 23:00：**缺陷 C 已修**（确认方式现在可用）
+
+`cli_parser.cpp`：`stop.force = stop.force || stop.accept_volatile_data_loss;`
+——理由写进代码注释：**线格式要求两者一致**，而"承认易失丢数据"**本身就是强制**（该盘没有检查点）。
+`--force` 仍保有自己的语义与标志。
+
+**读数**：构建零错误、`cli 18/18`、`m1.cli 5/5`、`orchestration 25/25`。
+
+**待客机验证（同一场景两条读数）**：
+- `volatile stop without the flag: exit=1`（**已达成**，§3.160）；
+- `volatile stop with the flag: exit=0`（**本次待验**）。
