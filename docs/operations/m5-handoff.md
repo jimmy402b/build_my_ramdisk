@@ -3606,3 +3606,21 @@ the acknowledged stop failed: myrd-cli: the command could not be encoded for the
 4. 但**带标志也停不掉**（`could not be encoded`）⇒ 解析器补 `force`（`97b547d`）⇒ 两条都过 ✅。
 
 **教训**：**一条"只差读数"的项，往往藏着两个缺陷**——一个在行为里，一个在**配套路径**里。
+### 3.163 2026-10-27 23:25：**缺陷 A 的持有者确认：`register_bundle()`**
+
+`service_worker_control.cpp:1133` 起：
+```cpp
+    case ActionKind::create_and_verify_bundle:
+        return register_bundle(request, BundleEvidenceSource::created_and_verified);
+    case ActionKind::inspect_bundle_read_only:
+        return register_bundle(request, BundleEvidenceSource::read_only_inspection);
+```
+**同一个函数、两种证据来源**：
+- `read_only_inspection`（import 走这条）**不持有 session**（§3.154 的文档原话）；
+- `created_and_verified`（create 走这条）**持有**——于是在 `create_stopped` 之后**没有任何人释放**，
+  worker 就此活下去（§3.158 用进程 id/StartTime 证明）。
+
+**所以修法就在 `register_bundle()` 内部按 `BundleEvidenceSource` 分支**（或按 plan 是否还有 start 动作），
+**与 import 的既有处置对齐**——这是本项第 3 次出现同一个形状：**把已有的正确处置复制到缺它的那条路径上**。
+
+**判定标准（不变）**：跑 §3.158 的场景，`workers settled after N s` 应 **N < 30 s**。
