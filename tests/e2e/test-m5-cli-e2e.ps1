@@ -623,12 +623,22 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $policyCreated = Wait-ForTerminal $policyCreateId 300
     if ($policyCreated -ne 'succeeded') { Fail "the policy disk create ended $policyCreated" }
     Write-Host "  policy disk mounted at $policyMount with a 30 s checkpoint interval"
-    # Probe first, assert later: this proves the block is reached and reports what the service log actually says.
-    Write-Host "  probe: compaction block reached"
-    Start-Sleep -Seconds 75
-    $probeHit = $false
-    if (Test-Path $serviceLog) { $probeHit = ((Get-Content $serviceLog -Raw) -match 'compaction dispatched') }
-    Write-Host "  probe: compaction observed = $probeHit"
+    # **T4-03: the disk compacts itself.**  Two checkpoints cross the threshold asked for at create time, and the
+    # maintenance tick is what notices -- so the proof is the service log saying it dispatched, not the policy code
+    # existing.  Polled rather than slept on: the tick runs every fifteen seconds and the checkpoints every thirty.
+    $compactionLine = 'maintenance: compaction dispatched (checkpoint-count)'
+    $compactionWaited = 0
+    $compacted = $false
+    while ($compactionWaited -lt 180) {
+        if ((Test-Path $serviceLog) -and ((Get-Content $serviceLog -Raw) -match [regex]::Escape($compactionLine))) {
+            $compacted = $true
+            break
+        }
+        Start-Sleep -Seconds 5
+        $compactionWaited += 5
+    }
+    if (-not $compacted) { Fail "no automatic compaction within $compactionWaited s of the second checkpoint" }
+    Write-Host "  automatic compaction observed after $compactionWaited s"
 
     $generationLine = {
         param([string]$text, [string]$letter)
