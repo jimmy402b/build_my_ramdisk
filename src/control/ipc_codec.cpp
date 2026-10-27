@@ -522,7 +522,7 @@ constexpr std::array<FieldDescriptor, 4> kImportFields{{
 constexpr CommandSchema kImportSchema{
     static_cast<std::uint32_t>(CommandId::disk_import), 4, kImportFields};
 
-constexpr std::array<FieldDescriptor, 11> kCreateFields{{
+constexpr std::array<FieldDescriptor, 12> kCreateFields{{
     {1, FieldKind::string_utf8, FieldRequirement::required, FieldDisposition::consume, 0, 4096, 0},
     {2, FieldKind::path_local, FieldRequirement::required, FieldDisposition::consume, 0, 131072, 0},
     {3, FieldKind::uint64_le, FieldRequirement::required, FieldDisposition::consume, 0, 8, 0},
@@ -537,9 +537,12 @@ constexpr std::array<FieldDescriptor, 11> kCreateFields{{
     // what the decoder actually walks: without this entry a client that sends a label is refused as sending an
     // unknown field, which is exactly what the guest reported.
     {11, FieldKind::string_utf8, FieldRequirement::optional, FieldDisposition::consume, 0, 64, 0},
+    // Field 12 is the compaction threshold (T4-03).  Array size, row and schema count are three numbers that must
+    // agree; this session has paid for getting that wrong twice.
+    {12, FieldKind::uint32_le, FieldRequirement::optional, FieldDisposition::consume, 0, 4, 0},
 }};
 constexpr CommandSchema kCreateSchema{
-    static_cast<std::uint32_t>(CommandId::disk_create), 11, kCreateFields};
+    static_cast<std::uint32_t>(CommandId::disk_create), 12, kCreateFields};
 
 Result<std::wstring> decode_target(std::span<const std::byte> payload,
                                    std::uint16_t minor) {
@@ -953,6 +956,10 @@ Result<EncodedCommand> encode_command_payload(const control::Command& command) {
                 append_u64_field(payload, 10, encoded_dirty,
                                  FieldRequirement::optional);
             }
+            if (value.compaction_checkpoint_threshold) {
+                append_u32_field(payload, 12, *value.compaction_checkpoint_threshold,
+                                 FieldRequirement::optional);
+            }
             if (value.volume_label) {
                 auto label = append_string_field(payload, 11, FieldKind::string_utf8,
                                                  *value.volume_label, 64,
@@ -1234,6 +1241,7 @@ Result<control::Command> decode_command_payload(
 
         // The label arrives as optional text and is validated again here: a peer that sends 33 characters must be
         // refused at the boundary, not by SetVolumeLabelW after the volume already exists.
+        auto compaction_threshold = optional_u32_from_field(fields.value(), 12);
         auto volume_label = optional_string_from_field(fields.value(), 11);
         if (!volume_label.ok()) {
             return codec_error<control::Command>(L"Volume label field is invalid");
@@ -1246,7 +1254,8 @@ Result<control::Command> decode_command_payload(
         return Result<control::Command>::success(control::DiskCreateCommand{
             name.move_value(), bundle.move_value(), size.value(),
             mount.move_value(), owner.move_value(), no_start.value(), memory_mode,
-            hard_limit, checkpoint, dirty_threshold, volume_label.move_value()});
+            hard_limit, checkpoint, dirty_threshold, volume_label.move_value(),
+            compaction_threshold});
     }
     return codec_error<control::Command>(L"Command ID is unknown or unsupported");
 }

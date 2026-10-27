@@ -538,6 +538,8 @@ struct LifecycleOperationIntent final {
     std::uint64_t created_unix_ms{};
     // Declared last so every existing positional initializer keeps meaning what it meant (T4-02).
     std::optional<std::wstring> volume_label;
+    // Declared last, like its neighbours, so every existing positional initializer keeps its meaning (T4-03).
+    std::optional<std::uint32_t> compaction_checkpoint_threshold;
 };
 
 enum class RecoveryOperationKind : std::uint8_t {

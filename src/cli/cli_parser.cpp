@@ -4,6 +4,7 @@
 #include "src/product/uuid.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cwctype>
 #include <map>
 #include <utility>
@@ -108,7 +109,7 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
     // option would be a client that did something other than what was asked.
     const std::vector<std::wstring> value_options{
         L"--name", L"--bundle", L"--size", L"--mount", L"--owner",
-        L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval",
+        L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval", L"--compaction-threshold",
         L"--confirmation", L"--expected-image", L"--timeout", L"--pipe"};
     const std::vector<std::wstring> switch_options{
         L"--no-start", L"--force", L"--accept-volatile-data-loss", L"--wait",
@@ -311,6 +312,21 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
                     return invocation;
                 }
                 create.memory_hard_limit_bytes = parsed_limit.value();
+            }
+            if (auto threshold = value_of(L"--compaction-threshold"); threshold.has_value()) {
+                // A plain count, not a size: "64" means sixty-four checkpoints.  `parse_binary_size` insists on a
+                // unit and would refuse it, which is why this is parsed on its own.
+                wchar_t* end = nullptr;
+                const auto text = threshold.value();
+                const auto count = std::wcstoull(text.c_str(), &end, 10);
+                if (end == text.c_str() || end == nullptr || *end != L'\0' || count == 0
+                    || count > 0xFFFFFFFFULL) {
+                    invocation.usage_error =
+                        "--compaction-threshold is a checkpoint count greater than zero";
+                    return invocation;
+                }
+                create.compaction_checkpoint_threshold =
+                    static_cast<std::uint32_t>(count);
             }
             if (auto interval = value_of(L"--checkpoint-interval");
                 interval.has_value()) {

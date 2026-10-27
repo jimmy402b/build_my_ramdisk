@@ -84,6 +84,9 @@ struct DiskCreateCommand {
     // and the label has to be applied to the volume the worker just mounted -- not to a record that may describe a
     // volume which no longer exists.
     std::optional<std::wstring> volume_label;
+    // The checkpoint count that makes a compaction due (T4-03).  Declared last so the fields the command already
+    // had keep their encoded order; absent means "use the profile's policy default".
+    std::optional<std::uint32_t> compaction_checkpoint_threshold;
 };
 
 using Command = std::variant<StatusCommand, DiskListCommand, DiskShowCommand,

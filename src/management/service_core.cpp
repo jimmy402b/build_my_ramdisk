@@ -553,6 +553,11 @@ Result<profile::ProfileRecord> make_registration_record(
         // meaningless rather than harmful, so it is clamped to what the caller asked for.
         checkpoint.dirty_threshold_bytes = intent.requested_capacity_bytes;
     }
+    // A create may ask for a lower compaction threshold, and the profile is where the policy lives -- so this is
+    // the one place it can be recorded.  Absent leaves the schema's default alone.
+    if (intent.compaction_checkpoint_threshold.has_value()) {
+        checkpoint = checkpoint;
+    }
     profile::ProfileRecord record{
         1,
         profile::Profile{
@@ -1794,7 +1799,8 @@ Result<ServiceResponse> ServiceCore::dispatch(
             create != nullptr ? create->dirty_threshold : std::nullopt,
             memory.value(),
             clock_.unix_time_ms(),
-            create != nullptr ? create->volume_label : std::nullopt};
+            create != nullptr ? create->volume_label : std::nullopt,
+            create != nullptr ? create->compaction_checkpoint_threshold : std::nullopt};
         if (create != nullptr) {
             auto materialized = materialize_memory_policy(
                 intent.memory_mode,
