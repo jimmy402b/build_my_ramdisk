@@ -70,6 +70,12 @@ std::string profile_line(const product::ServiceDiskView& profile) {
              << ((profile.volume_serial >> 16) & 0xFFFF) << '-' << std::setw(4)
              << (profile.volume_serial & 0xFFFF) << std::dec;
     }
+    // T4-03: journal growth is bounded by the compaction policy, and a client that cannot see the compactions cannot
+    // tell "bounded" from "not happening".  Shown only when there is something to show, so an ordinary disk's line
+    // stays as short as it was.
+    if (profile.successful_compactions != 0) {
+        text << "  compactions=" << profile.successful_compactions;
+    }
     return text.str();
 }
 
