@@ -2144,6 +2144,20 @@ Result<ServiceResponse> ServiceCore::dispatch(
             L"service_core.stop_policy",
             L"The persisted normal-stop policy is invalid"));
     }
+    // **A disk with no automatic checkpoints must be told it will lose data.**  `disk stop` used to
+    // succeed for one without `--accept-volatile-data-loss`: the flag was parsed, carried and persisted,
+    // and never required anywhere -- so the CLI promised a safeguard the service did not have.  The
+    // condition is the policy's own: no interval means the only durable points are manual checkpoints,
+    // and everything written since the last one goes with the stop.
+    if (stop != nullptr && !force_stop_requested
+        && !profile.value().record.profile.checkpoint.interval_enabled
+        && !stop->accept_volatile_data_loss) {
+        return Result<ServiceResponse>::failure(service_error(
+            ServiceCoreError::operation_invalid,
+            L"service_core.stop_volatile",
+            L"This disk keeps no automatic checkpoints, so stopping it discards everything written "
+            L"since its last manual checkpoint. Pass --accept-volatile-data-loss to confirm."));
+    }
     if ((repair != nullptr && !repair->from_previous)
         || (rebind != nullptr
             && (rebind->bundle.empty()
