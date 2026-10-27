@@ -596,6 +596,12 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if ($volForced.exit -ne 0) { Fail "the acknowledged stop failed: $($volForced.output)" }
     $volForceId = Get-UuidFromText $volForced.output
     if ((Wait-ForTerminal $volForceId 300) -ne 'succeeded') { Fail 'the acknowledged stop did not succeed' }
+    $probeName = 'm5-probe-' + [guid]::NewGuid().ToString('N')
+    $probe = Invoke-Cli @('disk', 'create', '--name', $probeName, '--bundle', (Join-Path 'C:\m5' $probeName),
+        '--size', '64MiB', '--mount', 'Y:', '--no-start', '--checkpoint-interval', 'off')
+    Write-Host "  probe create exit=$($probe.exit)"
+    $probeId = Get-UuidFromText $probe.output
+    if ($probeId) { Write-Host "  probe terminal=$((Wait-ForTerminal $probeId 240))" }
     Write-Step 'T1-05: remove it (fail-closed forget, confirmation is the profile identifier)'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
