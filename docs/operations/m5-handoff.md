@@ -3306,3 +3306,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1
 # 然后跑带 §3.144 场景的 e2e（用 §3.146 的 120 s 轮询断言）
 ```
 **如果那次通过**，T4-02 的 Load Only 与易失盘两条读数就都有了。
+### 3.149 2026-10-27 20:45：**Load Only 的读数拿到了，而且它同时暴露了一个真缺陷**
+
+重置客机后，同一个场景给出了两条读数：
+
+```text
+4bad2f44-925a-4e41-962f-82788e95c5b8  U:  Ready  stopped/configured  runtime=Stopped  activity=Idle
+  persistence=Clean  health=Healthy  generation=4  mem=0/0
+workers settled after 121 s (1 left)
+```
+
+1. ✅ **`disk create --no-start` 成功**，且 `disk list` 显示 **`Ready  stopped/configured  runtime=Stopped  mem=0/0`**
+   ⇒ **Load Only 的语义成立**（§3.148 的更正方向对了；§3.147 的"Load Only 不算完成"是错的）。
+2. ❌ **但 `--no-start` 的盘留下了一个 `myrd-m5-worker`，121 秒后仍在** ⇒
+   **"stopped" 的盘实际占着一个 worker 进程**。这与 `runtime=Stopped`、`mem=0/0` 自相矛盾，
+   也解释了本会话多次出现的 `WARNING: 1 worker process(es) survived the run`。
+
+**这是一个应该修的产品缺陷**（不是测试问题）：worker 在 `--no-start` 的 create 之后没有被回收。
+**下一任的第一步**：读那次运行的 `last-service.log` 里该盘 create 的终态行，看 **worker 是在哪一步被拉起、
+又是谁应当在第几步回收它**（`create_stopped` 的意图是"只注册、不启动"）。
+- 已回退 e2e（`git checkout`），工作树 0 改动；套件与 e2e 回到通过状态。
+- **T4-02 状态更新**：**Load Only 语义已验证**；**易失盘的 stop 拒绝断言未执行到**（worker 断言先失败），
+  所以易失盘那条读数**仍缺**。
