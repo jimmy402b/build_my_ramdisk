@@ -190,7 +190,7 @@ Result<product::Uuid> read_uuid(Reader& reader) {
 // flag, the two memory gauges, the volume serial and the mount length.  It is a *minimum* the
 // container enforces before allocating, so a field added to the payload has to be added here --
 // which is exactly what the volume serial cost two attempts to learn.
-constexpr std::size_t kProfileFixedBytes = 6 + 8 + 16 + 1 + 8 + 8 + 8 + 2;
+constexpr std::size_t kProfileFixedBytes = 6 + 8 + 16 + 1 + 8 + 8 + 8 + 8 + 2;
 constexpr std::size_t kOperationFixedBytes = 16 + 16 + 1 + 1 + 1 + 8 + 8 + 1;
 constexpr std::size_t kErrorFixedBytes = 1 + 4 + 4 + 2 + 2;
 
@@ -227,6 +227,8 @@ Result<void> encode_profile(std::vector<std::byte>& out,
     put_u64(out, profile.resident_bytes);
     put_u64(out, profile.budget_bytes);
     put_u64(out, profile.volume_serial);
+    // Durable compaction counters (T4-03): journal growth is bounded only if a client can see it happen.
+    put_u64(out, profile.successful_compactions);
     put_u16(out, static_cast<std::uint16_t>(
                      profile.mount_target.has_value()
                          ? profile.mount_target->size() : 0));
@@ -276,9 +278,11 @@ Result<ServiceDiskView> decode_profile(
     std::uint64_t resident_bytes = 0;
     std::uint64_t budget_bytes = 0;
     std::uint64_t volume_serial = 0;
+    std::uint64_t successful_compactions = 0;
     std::uint16_t mount_length = 0;
     if (!reader.u8(has_mount) || !reader.u64(resident_bytes)
         || !reader.u64(budget_bytes) || !reader.u64(volume_serial)
+        || !reader.u64(successful_compactions)
         || !reader.u16(mount_length)) {
         return wire_error<ServiceDiskView>(
             L"A profile projection is truncated");
@@ -312,7 +316,8 @@ Result<ServiceDiskView> decode_profile(
     return Result<ServiceDiskView>::success(ServiceDiskView{
         identifier.move_value(), lifecycle_value, runtime_value, activity_value,
         persistence_value, health_value, aggregate_value, generation,
-        std::move(mount_target), resident_bytes, budget_bytes, volume_serial});
+        std::move(mount_target), resident_bytes, budget_bytes, volume_serial,
+            successful_compactions});
 }
 
 Result<void> encode_operation(std::vector<std::byte>& out,
