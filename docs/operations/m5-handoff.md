@@ -4219,3 +4219,39 @@ grep -n "reclaim_leftover\|execute_checkpoint\|reconcile_checkpoint\|prove_forge
 
 **这一条把"锁"从"可能有自死锁"改成了"确定是跨线程争用 + 一处可能无上界的等待"**——
 **范围再次减半，仍然是靠一段代码。**
+### 3.187 2026-10-28 03:58：**最后一块拼图的位置：`current_dirty_epoch` 会阻塞等锁，而 `observe_runtime` 不会**
+
+`service_worker_control.cpp` 里两个"读"的对比（同一把锁）：
+
+```cpp
+Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(
+    const product::Uuid& profile_id) {
+    std::unique_lock lock(command_gate_);                       // ← **阻塞等锁**
+    auto session = require_session(profile_id, true);
+    auto status = session.value()->require_runtime_observation(context());   // ← 之后的通信
+```
+
+```cpp
+Result<std::optional<WorkerRuntimeObservation>>
+ServiceWorkerControl::observe_runtime(const product::Uuid& profile_id) {
+    // **Never waits for the channel.** … the gate is *tried*: if this adapter is mid-command,
+    // nothing is known about the runtime right now, and `nullopt` says so.
+    std::unique_lock lock(command_gate_, std::try_to_lock);     // ← **不等锁**
+```
+
+⇒ **设计意图很清楚**：读取路径**不该等**（T1-04 要求 create 期间 `disk list` 一秒内答复）。
+`observe_runtime` 遵守了；**`current_dirty_epoch` 没有**——它阻塞地拿锁，然后再做一次 worker 通信。
+
+**它被谁调用**：`service_core.cpp:1167`、`:2255`、`:3944`（读取/观测路径）。
+⇒ **一次 `disk list` / 一次 tick 就可能阻塞在 `command_gate_` 上**；
+而只要它持锁期间那次 `require_runtime_observation(context())` **没有上界**（或上界很大），
+`execute()`（create）就会**一直等锁**——这正是客机上的 `asking=1, returned=0`。
+
+**下一任的第一件事（两行代码级别）**：
+1. 读 `context()` 的实现（`ServiceWorkerControl` 的成员），确认它**带 `request_timeout`**；
+2. 若不带 ⇒ 给它一个（30 s）：**这是缺陷 A 的修复**；
+3. 若带 ⇒ 把 `current_dirty_epoch` 也改成 `try_to_lock` + "未知"语义
+   （`std::optional<uint64_t>`，与 `observe_runtime` 完全同型——**注释已经把理由写好了**）。
+
+**两种修法都在同一个文件里、都有现成的先例**，而判据只有一条：
+`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
