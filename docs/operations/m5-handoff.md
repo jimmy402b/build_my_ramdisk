@@ -2408,3 +2408,29 @@ green=True pass=22
 
 **当前状态**：构建干净、工作树 0 改动、`m4.profile_codec` 22/22。
 **卷标还剩**：① `assign_exact_mount` 里应用（上面第 2 条）；② CLI `--volume-label`；③ 客机读数。
+### 3.102 2026-10-27 12:05：worker 应用的**真实接线位置**（勘察完，供下一次一次做完）
+
+`SetVolumeMountPointW` 全树**只有一处调用方**：`src/run/windows_volume.cpp` 的
+`Win32VolumeAdapter::assign_drive_letter(const ProductVolume&, wchar_t)`（1178/1186/1214 行）。
+⇒ **worker 侧应用卷标的正确做法（不改签名、不扩散）**：
+1. 在同一个类里**新增**一个方法（纯增量，不影响任何现有调用）：
+   ```cpp
+   Result<void> apply_volume_label(wchar_t drive_letter, const std::wstring& label) const;
+   // 实现：std::wstring root{drive_letter, L':', L'\\', L'\0'};
+   //       SetVolumeLabelW(root.c_str(), label.c_str()) 失败 ⇒ failure(platform_error, L"apply_volume_label", …)
+   ```
+2. 在**调用 `assign_drive_letter` 的地方**（worker 侧 runtime adapter 的 start 路径）紧接着调用它，
+   条件：`profile.volume_label.has_value()`；**失败只记日志**，不影响 start 结果；
+3. CLI `--volume-label` 最后加（此时链路才完整）；
+4. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label`；断电重启后仍在。
+
+**当前状态（本轮结束时，全部有读数为证）**：
+
+| 套件 | 结果 |
+|---|---|
+| `m4.profile_codec` | **22/22** |
+| `m5.service_orchestration` | **25/25** |
+| `m5.service_host` | **25/25** |
+| `m5.cli` | **17/17** |
+
+构建零错误、工作树 0 改动。
