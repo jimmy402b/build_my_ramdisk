@@ -2465,3 +2465,22 @@ green=True pass=22
   1. **worker 把 profile 记录的标签填进 `DiskRuntimeOptions`**（构造 options 的地方）；
   2. **CLI `--volume-label`**（`cli_parser.cpp`，`--owner` 之后）+ 用法行；
   3. 客机读数：`fsutil fsinfo volumeinfo <letter>:`；断电重启后标签仍在。
+### 3.105 2026-10-27 12:30：卷标**最后两步的确切位置**（worker 启动规格是第三层线格式）
+
+**数据通路（三层，前两层已完成）**：
+1. **命令层**（✔ 完成）：`DiskCreateCommand::volume_label` → IPC 字段 11 → `LifecycleOperationIntent` → `Profile::volume_label`；
+2. **运行时层**（✔ 完成）：`DiskRuntimeOptions::volume_label` → `DiskRuntimeOperations::apply_volume_label`
+   → `ProductionRuntimeAdapter::apply_label` → `Win32VolumeAdapter::apply_volume_label`
+   （`disk_runtime.cpp` 在挂载成功后调用，失败即丢标签）；
+3. **worker 启动层（✘ 未做）**：
+   - `src/host/m5_worker_main.cpp:175-185` 从 `spec.value()`（`WorkerSpec`，即 worker 启动命令的**解码结果**）
+     填 `config.*`；`config.drive_letter` 就是这么来的；
+   - ⇒ 需要：`WorkerSpec` 加字段 + worker 命令编解码（与 IPC 字段同样做法：**追加 tag，不需要协议次版本号**）
+     + 服务端启动 worker 时填值（从 profile 记录）+ `config.volume_label` + `options.volume_label = impl.config.volume_label`；
+4. **CLI**（✘ 未做）：`cli_parser.cpp` 的 `--volume-label`（`--owner` 之后）+ 用法行。
+
+**为什么 3 和 4 必须一起做**：只加 CLI 而没有 3，就会"接受参数、写进 profile、卷上什么都没有"——
+正是本会话一直拒绝的静默空转。
+
+**状态**：构建干净、工作树干净；`runtime_adapter 6/6`、`disk_runtime 33/33`、`windows_volume 19/19`、
+`profile_codec 22/22`、`service_orchestration 25/25`、`service_host 25/25`、`cli 17/17`。
