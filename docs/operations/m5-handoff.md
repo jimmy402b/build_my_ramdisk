@@ -3758,3 +3758,27 @@ taskkill /F /IM myrd-m5-worker.exe   →  拒绝访问（无法终止，PID 6764
 
 **本次运行的 e2e 也未完成**（挂起 30 分钟，被中止），**无读数产出**。
 **不要把这次算作"缺陷 A 已修未验"**——它是"修了一处、又暴露下一处"。
+### 3.170 2026-10-28 00:45：**孤儿 worker 的后果：它占着设备，导致**别的盘**`forget` 被拒**
+
+那次挂起运行的 `service.log`（194 行，`C:\m5\cli-e2e-d121dac7…`）结尾：
+
+```text
+kind=2 command=disk.forget phase=lifecycle-action message=action-start: lifecycle-action
+kind=7 command=disk.forget phase=noncancellable
+  message=forget safety refused: profile_match=1 image_match=1 revision=3 expected_revision=3
+           worker_absent=1 writer_lock_absent=1 device_absent=0 bundle_present=1 identity_match=1
+kind=7 command=disk.forget phase=terminal message=terminal failure without a worker-action error; marker=unsafe
+```
+
+- **`device_absent=0`** ⇒ 那块盘的**设备还在**，于是 `forget` 按安全规则**拒绝**（`marker=unsafe`）。
+- 而同一时刻客机上有一个 **30 分钟不退、CPU≈0、杀不掉**的 `myrd-m5-worker`（§3.169）——
+  **它占着设备**，所以设备无法消失。
+
+⇒ **缺陷 A 的真实后果不是"多一个进程"**：**它会阻止后续的磁盘清理**（`disk forget` 因 `device_absent=0` 被拒），
+进而让整个 e2e 流程卡在这一步。**这是"一个泄漏的 worker 会污染无关操作"的实证**，也是验收时会被踩到的那类问题。
+
+**下一任的入口（现在很具体）**：
+1. 重启客机清掉孤儿 worker；
+2. **只跑一次性场景**（不进 e2e）：`create --no-start --checkpoint-interval off` → 立刻看
+   `worker: command received` 之后是否有后续 trace（`last-trace.log`），**定位它卡在 `create_bundle` 的哪一步**；
+3. 修好后，`disk forget` 应当恢复（`device_absent=1`）——这可以作为**副判据**。
