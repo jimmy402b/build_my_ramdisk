@@ -2484,3 +2484,16 @@ green=True pass=22
 
 **状态**：构建干净、工作树干净；`runtime_adapter 6/6`、`disk_runtime 33/33`、`windows_volume 19/19`、
 `profile_codec 22/22`、`service_orchestration 25/25`、`service_host 25/25`、`cli 17/17`。
+### 3.106 2026-10-27 12:40：worker 启动规格与 worker 配置**都能带标签**（尚无人读）
+
+- `src/host/m5_worker_private_pipe.h`：`WorkerLaunchSpec` 末尾新增 `std::optional<std::wstring> volume_label;`
+  （声明在最后 ⇒ 既有字段的编码顺序不变）。
+- `src/host/m5_worker_runtime.h`：`DiskWorkerConfig` 同样末尾新增 `volume_label`。
+- **干净重建 451/451**；`m5.worker_protocol` **39/39**、`m5.worker_session` **25/25**、`m5.service_host` **25/25**。
+- **剩余三步（都在同一条链上）**：
+  1. **worker 命令编解码**：`WorkerLaunchSpec` 的写入/读取各加一个**追加 tag**（客户机与 worker 一起发版，
+     **不需要协议次版本号**）；对应套件 `m5.worker_protocol` 加一条往返用例；
+  2. **服务端填值**：启动 worker 时从 profile 记录取 `volume_label` 放进 spec；
+  3. **worker 侧转交**：`m5_worker_main.cpp` 把 `spec.volume_label` 放进 `config.volume_label`，
+     `m5_worker_runtime.cpp` 再放进 `options.volume_label`（这一行就是 §3.105 第 2 层已在等的东西）；
+  4. 最后 **CLI `--volume-label`** + 客机 `fsutil fsinfo volumeinfo` 读数。
