@@ -1106,6 +1106,16 @@ bool asserts_live_worker(product::RuntimeState runtime) noexcept {
 Result<ManagedProfileSnapshot> annotate_runtime_observation(
     IWorkerControl& worker,
     ManagedProfileSnapshot profile) {
+    // **A profile whose durable runtime is not running has no live facts to ask for.**
+    // Asking anyway is how a stopped disk's worker was kept awake: the maintenance tick
+    // dispatches `disk list` every fifteen seconds, the projection wants the observation, and the
+    // observation was requested for every profile -- including the ones whose runtime says
+    // `Stopped`, whose worker was then woken by the very question of whether it was alive.
+    // Measured: `worker: command received` at fifteen-second intervals for more than two minutes
+    // after a stop, while the listing reported `runtime=Stopped`.
+    if (!asserts_live_worker(profile.state.disk.runtime)) {
+        return Result<ManagedProfileSnapshot>::success(std::move(profile));
+    }
     auto observed =
         worker.observe_runtime(profile.record.profile.profile_uuid);
     if (!observed.ok()) {
