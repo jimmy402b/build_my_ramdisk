@@ -3427,3 +3427,19 @@ workers settled after 120 s (1 left)
 **已回退 e2e**（工作树 0 改动）。**本会话到此为止，我没有在代码上做 (2)**——
 它属于"改产品生命周期"的一刀，需要先把连接对象的所有持有者列清楚；
 以当前余量做它是赌，不是推进。
+### 3.154 2026-10-27 21:40：**修法有现成先例：`import` 就是靠"不持有 session"让 worker 退出的**
+
+`service_worker_control.h:94-96` 的原文：
+> `import` … `inspect_bundle` … **The session is not held afterwards either: an inspection leaves nothing to
+> command, and the worker exits when the channel closes.**
+
+⇒ **机制不需要新协议**：**释放 session（关闭通道）⇒ worker 主循环读失败 ⇒ `break` ⇒ `cleanup()` ⇒ 退出**
+（`m5_worker_main.cpp:198-201`）。
+
+**所以 stop 的修法就是照 import 的做法**：在 `stop_runtime_and_release_lock` 完成之后，
+**不要继续持有该 profile 的 `ServiceWorkerSession`**——把它释放掉（与 import 相同的处置）。
+- `service_core.cpp:6412` 那段 `case ActionKind::stop_runtime_and_release_lock:` 目前**只做耐久阶段推进**
+  （`StopDurablePhase::runtime_stopped`），**没有任何释放 session 的动作**——这就是缺口。
+- **判定标准（不变）**：修好后跑 §3.153 的场景，`workers settled after N s` 应 **N < 30 s**。
+
+**这条让"难修"变成"照抄"**：同一文件里已有正确处置（import 不持有 session），stop 只是**没有照做**。
