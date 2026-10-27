@@ -1,3 +1,4 @@
+#include <memory>
 #include "src/common/diagnostic_trace.h"
 #include "src/common/unique_handle.h"
 #include "src/run/windows_volume.h"
@@ -1244,11 +1245,39 @@ Result<void> Win32VolumeAdapter::apply_volume_label(wchar_t drive_letter,
     }
     // The root of the mounted volume: SetVolumeLabelW takes a path, not a volume GUID, so this has to run after
     // the mount exists -- which is why it is called from the mount's caller and not folded into the mount.
-    const std::wstring root{drive_letter, L':', L'\\', L'\0'};
-    if (!SetVolumeLabelW(root.c_str(), label.c_str())) {
+    //
+    // **Bounded, because measured: with a label the create never reached a terminal state and without it the same
+    // create finished in a third of a minute.**  SetVolumeLabelW was still inside its call after 300 s.  A label is
+    // a convenience; a creation that never ends is a defect, so the write gets five seconds and then becomes a lost
+    // label.  The waiting thread is detached and owns its own copies of the arguments: a thread that cannot be
+    // cancelled is the price of calling a blocking API, and it must not read this frame after it returns.
+    struct LabelWrite final {
+        std::wstring root;
+        std::wstring label;
+        std::atomic<bool> finished{false};
+        std::atomic<unsigned long> error{0};
+    };
+    auto write = std::make_shared<LabelWrite>();
+    write->root = std::wstring(drive_letter, L':') + L"\\";
+    write->label = label;
+    std::thread([write]() {
+        if (!SetVolumeLabelW(write->root.c_str(), write->label.c_str())) {
+            write->error.store(GetLastError());
+        }
+        write->finished.store(true);
+    }).detach();
+    for (int attempt = 0; attempt < 50 && !write->finished.load(); ++attempt) {
+        Sleep(100);
+    }
+    if (!write->finished.load()) {
         return Result<void>::failure(
             failure(VolumeError::platform_error, L"apply_volume_label",
-                    L"SetVolumeLabelW failed", GetLastError()));
+                    L"SetVolumeLabelW did not return within five seconds", 0));
+    }
+    if (write->error.load() != 0) {
+        return Result<void>::failure(
+            failure(VolumeError::platform_error, L"apply_volume_label",
+                    L"SetVolumeLabelW failed", write->error.load()));
     }
     return Result<void>::success();
 #else
