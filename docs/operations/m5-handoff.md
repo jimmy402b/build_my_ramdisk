@@ -3900,3 +3900,30 @@ kind=7 disk.create phase=publish-provisioning message=publish_registration dispo
 `M3AimRuntime::start` 这一步的 "look for an existing device" 应当改成**按卷 extents 匹配**（T1-09 已经用过同样的思路）。
 
 **判定标准（合成一条）**：`create --no-start` 后 30 s 内 ① 操作进入终态、② 无残留 worker、③ 该盘 `forget` 的 `device_absent=1`。
+### 3.175 2026-10-28 01:55：**更正 §3.174 的一半：create 路径并不"找已存在设备"，卡住的是**预创建基线**那次枚举**
+
+`m3_windows_acceptance.cpp:312` 起：
+```cpp
+    auto existing = config_.attach_only
+        ? find_existing_device(spec)
+        : Result<std::optional<aim::DeviceId>>::success(std::nullopt);
+```
+⇒ **创建型运行时本来就不做 adopt**（那段长注释解释了原因，且已被实测验证）。所以 trace 里
+`look for an existing device` 那一行只是**无条件打印的 trace**，紧随其后的枚举**不是它**。
+
+**真正卡住的调用**（`:334`）：
+```cpp
+    std::vector<std::uint32_t> baseline;
+    if (!adopting_existing && !config_.attach_only) {
+        auto snapshot = aim::snapshot_physical_drive_numbers();   // ← 无上界
+```
+这是"**创建设备之前取一次全机盘号基线**"，用来让 `match_created_disk` 跳过 `existed_before`。
+注释里已经记着：**这段枚举曾在设备退役窗口里被测量到阻塞 11 秒**，当时把它从"每次 start"移到"仅创建前一次"。
+**但它仍然没有上界**，于是这次**永久阻塞**在 `CreateFileW`。
+
+**修法（小，且与今天的上界经验一致）**：**给这次基线枚举加上界**；
+**超时的语义应当是"基线为空"而不是"创建失败"**——因为基线的唯一用途是"跳过创建前就存在的盘"，
+而没有基线时 `match_created_disk` 仍会用几何 + backing file 身份核对（那是更强的判据）。
+代码里已经有"empty baseline 也在客机上测过可用"的注释（`:274`），**这条路径是被认可的**。
+
+**判定标准**（同 §3.174）：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `forget` 的 `device_absent=1`。
