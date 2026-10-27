@@ -3624,3 +3624,15 @@ the acknowledged stop failed: myrd-cli: the command could not be encoded for the
 **与 import 的既有处置对齐**——这是本项第 3 次出现同一个形状：**把已有的正确处置复制到缺它的那条路径上**。
 
 **判定标准（不变）**：跑 §3.158 的场景，`workers settled after N s` 应 **N < 30 s**。
+### 3.164 2026-10-27 23:35：**回归确认：加线格式字段后 GUI 仍然通过**
+
+今天给 `ServiceDiskView` 加了一个 u64（压缩计数）并改了客户端编解码，**GUI 走同一条线**——
+所以跑了一次 GUI 工作流（客机，`67e272f6…`）：
+```text
+1 of 1 passed        27 s
+```
+⇒ **加字段没有破坏 GUI 客户端**（它是 T3 的验收对象，不能被"顺手改坏"）。
+
+**顺带记一条命令事实**：GUI 用例名是 **`integration.m5.gui_workflow`**（不是 `integration.m5.gui`，
+后者不存在；`m5.gui` 是单元例）。我第一次用错过滤词，5 秒就失败了——**过滤词写错时的输出是
+"the filter matched no case"，不会误判为通过**，这点值得记住。
