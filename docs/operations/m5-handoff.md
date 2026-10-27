@@ -3488,3 +3488,18 @@ workers settled after 120 s (1 left)
    若 code 表示"超时" ⇒ worker 卡在 `remove_and_stop` 之后的处理里 ⇒ 去读 worker 侧 `cleanup()` 的路径。
 
 **已回退 e2e**（工作树 0 改动）。**代码修复 `ec75b6d` 保留**（它是必要不充分的一步，且不劣化行为）。
+### 3.157 2026-10-27 22:10：**回归确认：`shutdown` 那一刀没有破坏 stop**
+
+重置客机后跑未插入任何场景的 `cli_e2e`：
+```text
+request 2cad3213ad794c65a9f0bd1a8c57604c
+1 of 1 passed            （115 s）
+```
+⇒ `ec75b6d`（在 `confirm_removal` 里补 `shutdown` 调用）**没有劣化 stop 路径**，
+`T1-05` 的 stop/restart/forget 全链仍然通过。
+
+**当前状态（准确）**：
+- **T4-03 完成**（三次客机读数 + 回归用例）；
+- **`disk stop` 的 worker 存活问题未解决**：两刀（观察守卫 `cf79fce`、shutdown `ec75b6d`）都保留，
+  均未使 `workers settled` 降到 30 s 以内，但**都没有引入回归**；
+- **下一步的诊断已经写死**（§3.156）：把 `shutdown` 的返回值写进服务日志 + 在场景里打印 worker 的 `StartTime`。
