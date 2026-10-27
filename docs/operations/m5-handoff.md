@@ -2370,3 +2370,17 @@ green=True pass=22
 3. worker 在卷挂载完成后调 `SetVolumeLabelW`（**失败不让 start 失败**，但要记日志）；
 4. **然后把 `--volume-label` 加回 CLI 解析器**（`--owner` 之后）+ 用法行；
 5. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行。
+### 3.100 2026-10-27 11:55：卷标**已从创建命令贯通到 profile 记录**（两层就位）
+
+- `service_core.cpp`：`LifecycleOperationIntent{…}` 的位置初始化末尾新增
+  `create != nullptr ? create->volume_label : std::nullopt`；
+- `materialize_*_profile` 里构造 `Profile` 的位置初始化末尾新增 `intent.volume_label`；
+- 构建零错误；`m5.service_orchestration` **25/25**、`m5.service_host` **25/25**、
+  `m4.profile_codec` **22/22**。
+- **仍对用户不可达**：CLI 还不接受 `--volume-label`（守纪律：宁可没有入口，也不要静默空转）。
+- **剩余两步**：
+  1. **worker 在卷挂载完成后 `SetVolumeLabelW`**：标签已经在 profile 记录里，
+     worker 拿到记录后可在 `assign-mount` 成功后调用；**失败不让 start 失败**，但要写日志
+     （`volume label not applied: code=… label=…`）；
+  2. **把 `--volume-label` 加回 `cli_parser.cpp`**（`--owner` 之后）+ 用法行；
+     然后客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行。
