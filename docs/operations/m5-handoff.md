@@ -2964,3 +2964,24 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   **再**加等待与 `Fail`。这与"先验证编辑落地、再构建"是同一条纪律，我今天在 PowerShell 上还没用过它。
 - **产品的现状**（不受影响）：`--compaction-threshold` 已能到达 profile（`ed7b302` 的修法已被
   "字段逐项赋值"版取代并通过本地套件），自动压缩**已实现但尚未有客机证据**。
+### 3.132 2026-10-27 17:55：**阈值到 profile 的两次尝试都让 create 失败**——已全部回退，这次留下可查的方向
+
+| 尝试 | 本地 | 客机 | 结论 |
+|---|---|---|---|
+| `ed7b302`（构建 `CompactionPolicy` 塞进聚合） | 全绿 | **create 失败**（38 s） | 坏 |
+| `a0a4dbe`（逐字段赋值，照 checkpoint 的形状） | 全绿 | **create 失败**（24 s） | **也坏** |
+| 全部回退（`2181e5b`、`e562e9e`） | 全绿 | 之前那次无断言 `cli_e2e` **PASS 78 s** | 回到可用状态 |
+
+- ⇒ **不是"写法"问题**：两种写法都让 create 在客机上失败，而**本地 `orchestration`/`host`/`cli` 全绿**
+  ⇒ 说明**本地测试没有覆盖"带 compaction 阈值创建"这条路径的真实副作用**，而客机在
+  `make_registration_record` 之后某处失败（stderr 只有 `the create did not succeed: failed`）。
+- **下次的正确诊断顺序**（不要再盲改写法）：
+  1. 客机 `last-service.log` 里找该次 create 的 `kind=7` 行 —— 它会给出 `step=` 与 `code=`
+     （上一次我只看了 e2e 的 stderr，没看服务日志，这是信息浪费）；
+  2. 若是 `validate_profile` 拒绝，日志会是 `invalid_request` + "materialized profile violates schema"；
+     那就要看 `compaction.checkpoint_count_threshold = 2` 是否与其它策略字段**互相矛盾**
+     （例如 `index_headroom_percent` 或 `journal_occupancy_percent` 的下界）；
+  3. 若日志里根本没有该 create 的服务端行，则问题在**命令解码/受理**，回到 `ipc_codec` 字段 12。
+- **当前 HEAD 状态**：`e562e9e` —— 构建零错误、本地套件绿、`cli_e2e`（无 compaction 断言）通过。
+  **`--compaction-threshold` 仍在 CLI/线格式/intent 中可用，但不会影响 profile**（策略层未接）。
+**这一条的教训**：**"本地全绿"对"带设备的 create 路径"没有证明力**。两次都是本地绿、客机红。

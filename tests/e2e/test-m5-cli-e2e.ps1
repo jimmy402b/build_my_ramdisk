@@ -607,7 +607,7 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $policyBundle = Join-Path 'C:\m5' $policyName
     $policyCreate = Invoke-Cli @('disk', 'create', '--name', $policyName,
         '--bundle', $policyBundle, '--size', '64MiB', '--mount', $policyMount,
-        '--checkpoint-interval', '30s')
+        '--checkpoint-interval', '30s', '--compaction-threshold', '2')
     if ($policyCreate.exit -ne 0) { Fail "the policy disk create failed: $($policyCreate.output)" }
     Write-Host "  policy create: $($policyCreate.output.Trim())"
     # `disk create` admits and returns "operation queued"; it does not wait, even
@@ -618,6 +618,12 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $policyCreated = Wait-ForTerminal $policyCreateId 300
     if ($policyCreated -ne 'succeeded') { Fail "the policy disk create ended $policyCreated" }
     Write-Host "  policy disk mounted at $policyMount with a 30 s checkpoint interval"
+    # Probe first, assert later: this proves the block is reached and reports what the service log actually says.
+    Write-Host "  probe: compaction block reached"
+    Start-Sleep -Seconds 75
+    $probeHit = $false
+    if (Test-Path $serviceLog) { $probeHit = ((Get-Content $serviceLog -Raw) -match 'compaction dispatched') }
+    Write-Host "  probe: compaction observed = $probeHit"
 
     $generationLine = {
         param([string]$text, [string]$letter)
