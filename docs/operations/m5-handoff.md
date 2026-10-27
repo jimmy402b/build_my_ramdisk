@@ -2885,3 +2885,19 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
   3. **最后**才是 dispatch（那时才有 `DiskCompactCommand` + `no_wait` + 日志，形状与 checkpoint 那段一致）。
 - **教训**：我把"策略函数"当成第一步，其实**数据通路**才是第一步。这与今天反复出现的那条同源：
   **先确认东西在哪，再写用它的代码。**
+### 3.127 2026-10-27 16:45：**修正 §3.126 的"全堵在数据通路"**——`checkpoint-count` 触发器**今天就能接**
+
+- `ServiceMaintenance::tick()` 的数据源不是 `ProfileState`，而是 `listed.value().profiles` 的**快照**
+  （`ManagedProfileSnapshot`），它**同时带** `record.profile.compaction`（策略）与
+  `compaction`（`CompactionDurableState`，含 **`checkpoints_since_compaction`** 与
+  `successful_compactions_total`）。
+- ⇒ **`checkpoint-count` 这一个触发器不需要任何协议改动**：tick 里已经有它要的两个数。
+  真正缺 worker 侧数据的只有 **`journal-occupancy` 与 `reclaimable`**（worker 未上报占用），
+  而我的策略函数把 `0` 当作"该触发器关闭"，所以这两条**不接也不会误导**。
+- ⇒ **T4-03 自动触发的正确下一步**（比 §3.126 说的更小）：
+  1. tick 里填充 `input.compaction = profile.compaction`、
+     `input.checkpoints_since_compaction = snapshot.compaction.checkpoints_since_compaction(截断到 uint32)`；
+  2. 仅在 `snapshot.compaction.phase == CompactionDurablePhase::stable` 时评估（**不许在压缩进行中再要求一次**）；
+  3. 理由非空则 `DiskCompactCommand{target}` + `caller` + `no_wait` 派发并记日志（形状与 checkpoint 那段完全一致）。
+- **本轮状态**：尝试按上写下这三步时，**替换锚点没匹配上**（`candidate anchor missing`），
+  **文件未被修改**（写入在锚点校验之后才发生），构建与工作树均干净。下次用 `edit` 工具按行写入即可。
