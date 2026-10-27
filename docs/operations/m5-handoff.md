@@ -3927,3 +3927,24 @@ kind=7 disk.create phase=publish-provisioning message=publish_registration dispo
 代码里已经有"empty baseline 也在客机上测过可用"的注释（`:274`），**这条路径是被认可的**。
 
 **判定标准**（同 §3.174）：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `forget` 的 `device_absent=1`。
+### 3.176 2026-10-28 02:05：**基线调用本来就有上界**——所以卡的是"被放弃的线程**持有锁**"
+
+`physical_drive_locator.cpp:439`：
+```cpp
+Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers() {
+    auto cand = enumerate_disk_candidates_within(kEnumerateTimeout);   // 120 s 上界
+```
+⇒ **它会在 120 s 内返回**（超时返回 error）。所以 §3.175 说"没有上界"是错的；`kEnumerateTimeout` 现在就是 120 s。
+
+**那为什么 create 到 300 s 还没终态？** 只剩一个解释：**包装器返回后，调用者卡在了别的同步点上**——
+最可能是**那个被放弃的分离线程仍然持有某把锁**（枚举若在持有 provider/device 互斥量的情况下进入 `CreateFileW`，
+那么"放弃线程"就等于"放弃了锁"）。
+
+**这正是"以分离线程加界"这种做法的固有风险**，而我今天早些时候在 §3.174 的注释里还把它当作解决方案的一部分。
+
+**下一任的第一步（一条 grep 就能定性）**：在 `enumerate_disk_candidates` 里找**加锁的位置**（`scoped_lock`/`mutex`），
+确认它是否**跨越 `CreateFileW`**：
+- 是 ⇒ 修法是把锁挪到打开之后（或每次打开只用局部状态），**让被放弃的线程不再持有任何锁**；
+- 否 ⇒ 卡在 `wait_for_created_physical_drive` 或 `stop_provider()` 的等待里，去读那条路径。
+
+**判定标准（不变）**：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
