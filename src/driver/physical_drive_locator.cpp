@@ -357,7 +357,12 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates() {
 //
 // A worst-case bound, not a performance target: a healthy enumeration is milliseconds, and this
 // project's guest has been measured over eighty seconds without returning.
-constexpr auto kEnumerateTimeout = std::chrono::seconds(10);
+// **Thirty seconds, not ten.**  Measured on the guest: with a ten-second bound a `disk create` failed with code 258
+// (`WAIT_TIMEOUT`) at `step=enumerate_disk_candidates` while the machine was busy from earlier runs -- the bound did
+// its job, and its job turned a slow enumeration into a failed create.  The bound exists so a hung third-party device
+// cannot stop a start for minutes; thirty seconds still does that, and leaves room for a guest that is merely busy.
+// The trade is deliberate: a longer wait is preferable to a create that fails for being early.
+constexpr auto kEnumerateTimeout = std::chrono::seconds(30);
 
 // Runs `enumerate_disk_candidates` with a bound, because it has none of its own.
 //
