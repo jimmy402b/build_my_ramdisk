@@ -3041,3 +3041,19 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
 **这条也解释了今天后半段的两次白改**：我被一条**假线索**（`step=enumerate_disk_candidates`）牵着走了两轮，
 包括把上界从 10 s 提到 30 s 再到 120 s，**三个值都无效**。教训：**当一条诊断自相矛盾（12 ms 成功 vs "超时"），
 先怀疑诊断本身。**
+### 3.136 2026-10-27 18:30：那条消息**只有一个产出点**，而它的 trace 在服务进程里——**worker 那条没被记录**
+
+- 全树 grep：`"did not finish within its bound"` **只有一处**（`physical_drive_locator.cpp:425`，就是我加的包装器）。
+  所以 worker 报的那条**必然来自同一个函数**。
+- 而那 6 行 `enum_within: completed normally` 来自**服务进程**的枚举（服务在 create 前自己也会枚举）。
+  ⇒ **worker 进程里的那次调用没有被记录**，最可能的原因是：
+  **`diagnostic_trace` 依赖 `MYRD_TRACE_FILE`，而 worker 若是用自定义环境块启动的，就写不出 trace**。
+- **下一次的最小实验（不用改逻辑）**：
+  1. 在包装器**超时分支**额外写一条**进服务日志**（`logger_` 不可用，那就用 `OutputDebugString` 或
+     把 trace 路径显式传给 worker）；
+  2. 或者最简单：**让 worker 启动时显式继承/接收 `MYRD_TRACE_FILE`**，然后重跑——若 trace 里出现
+     `enum_within: timeout fired`，则**上界确实在 worker 里生效**，那时再谈"为什么 worker 的枚举要 >120 s"。
+- **当前判断（谨慎）**：`code=258` **可能就是** WAIT_TIMEOUT，只是它发生在 **worker**，
+  而我把服务的 trace 当成了全部证据。这解释了"三个上界值都不起作用"吗？**不能**——若上界在 worker 生效，
+  改 10→30→120 应当改变失败时间，而实测几乎不变（29/35/38 s）。
+  ⇒ **仍然自相矛盾**，所以下一步必须是"把 worker 的 trace 拿到"，而不是再推理。
