@@ -3114,3 +3114,40 @@ operation 127d80ff-…: running (phase admitting)            ← 策略盘 creat
   于是 **create 过程中并发了一次 compress**，把 create 弄失败。
   验证方法：把 tick 的 compaction 分支加上 `input.state.disk.runtime == running` **且**
   `lifecycle == ready` 的双重条件（或直接用 `active_operation_id` 已经覆盖的那条），再看是否还失败。
+### 3.140 2026-10-27 19:10：**真因找到了——store 侧有一份"重新构造的 profile"用于比对，它没带上阈值**
+
+**完整错误文本**（服务日志原文，此前被我截断）：
+```text
+publish_registration refused: code=22024 native=0 step=profile_registration.publish
+detail=The proposed registration does not exactly match the lifecycle intent and bundle evidence
+```
+
+`profile_registration_store.cpp:1979` 附近的检查是：
+```cpp
+auto materialized = materialized_registration_profile(intent, bundle, volume);
+if (!materialized.ok() || proposed != materialized.value() || !validate_profile(proposed).ok())
+    return store_error(… "does not exactly match …");
+```
+
+而 `materialized_registration_profile()`（同文件 1074 行起）里那一行仍然是：
+```cpp
+    profile::CompactionPolicy{}}};      // ← 默认策略（阈值 64）
+```
+
+⇒ **`disk create --compaction-threshold 2` 必然在这里失败**：`make_registration_record()` 造出的
+profile 带阈值 2，store 重造的比较对象是 64，两者**不相等** ⇒ 22024。
+这解释了今天全部症状：主盘（默认阈值）成功、带阈值的那次失败、枚举报错是**陈旧字段的噪声**。
+
+**修法（两处，形状已定）**：在 `materialized_registration_profile()` 里照
+`make_registration_record()` 的写法加同样的两行：
+```cpp
+profile::CompactionPolicy compaction{};
+if (intent.compaction_checkpoint_threshold.has_value()) {
+    compaction.checkpoint_count_threshold = *intent.compaction_checkpoint_threshold;
+}
+```
+并把聚合里的 `profile::CompactionPolicy{}` 换成 `compaction`。
+
+**我这轮尝试直接改它，锚点因文件是 LF 结尾没匹配上，未做任何修改**（工作树干净）。
+**这是今天最有价值的一条结论**：它把"神秘 create 失败"变成了"**两处必须一致**"——
+而这正是今天第 5 次同族问题（profile 字段数、CLI 白名单、schema 计数、字段表、现在是这个）。
