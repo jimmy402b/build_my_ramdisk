@@ -414,11 +414,17 @@ Result<std::vector<DiskCandidate>> enumerate_disk_candidates_within(
     const auto finish = std::chrono::steady_clock::now() + timeout;
     if (!shared->done.wait_until(guard, finish,
                                  [&shared] { return shared->complete; })) {
+        // **Which exit is taken is the question, not the bound.**  Three bound values produced the same failure
+        // within seconds of each other, so this line and the one below decide it: a fast enumeration that reports a
+        // timeout means the wait is wrong, and a completion followed by the same error means the error is from
+        // somewhere else entirely.
+        diagnostic_trace("enum_within: timeout fired");
         return Result<std::vector<DiskCandidate>>::failure(
             {ErrorDomain::win32, static_cast<std::uint32_t>(WAIT_TIMEOUT),
              L"enumerate_disk_candidates",
              L"enumerating the disk interfaces did not finish within its bound"});
     }
+    diagnostic_trace("enum_within: completed normally");
     return shared->outcome.has_value()
         ? std::move(*shared->outcome)
         : Result<std::vector<DiskCandidate>>::failure(
