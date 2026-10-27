@@ -3995,3 +3995,31 @@ Result<std::vector<std::uint32_t>> snapshot_physical_drive_numbers() {
 **为什么这个实验值得做**：今天我已经排除了三个假设（上界太紧、没有上界、被放弃线程持锁），
 **每一次排除都把范围缩小一半**，而这次只需两行 `diagnostic_trace` 就能再对半分。
 **不要在这个状态下改逻辑**——`create` 是 T1/T4 全都经过的路径。
+### 3.179 2026-10-28 02:45：**又一次运行：没有异常，但 trace 停在 `remove_owned_device: PhysicalDrive retired`**
+
+同一条探针（`c25f5fc9…`，5.5 分钟，失败），但**这次没有 EXCEPTION 行** ⇒ **异常是间歇的**，不是每次都有。
+这次 trace 的最后几行是：
+```text
+04:48:04.802Z enumerate_disk_candidates: end, 1 candidates, all steps returned
+04:48:04.802Z enum_within: completed normally
+04:48:04.805Z remove_owned_device: PhysicalDrive retired         ← 之后再无任何行
+```
+而进程一直活到 04:52:59（约 5 分钟）⇒ **卡在"设备已退役"之后**。
+
+**这解释了两条旧读数**：
+- `device_absent=0`（§3.170）：**设备退役动作执行了，但"消失"没有发生**——退役是请求，不是完成；
+- worker 不退、CPU≈0（§3.169）：它在**等设备真正消失**。
+
+**因此缺陷 A 的最可能形态**（现在三处证据一致）：**`create` 在创建镜像后回滚/退役设备，然后等待"设备已消失"，
+而该等待没有上界或上界很大**；同时间歇性地会有一个异常（§3.178 抓到过一次）。
+
+**下一任的第一步（按顺序，每步都小）**：
+1. 读 `remove_owned_device` 之后那段代码：**它等的是什么条件、用什么上界**（关键字 `PhysicalDrive retired` 的下文，
+   以及 `wait_for_...` / `device_absent` / `retire`）；
+2. 那个等待**必须有上界**，且超时的语义应是"设备仍未消失"的**明确失败**（不是继续等）；
+3. 再复跑同一条探针，看是"超时失败"还是"继续卡住"。
+
+**本轮的两条 trace（`enum_within`、`baseline about to be taken/taken`）已经把范围压到"退役之后"这一段**——
+它们本身**不是**修复，但每一次运行都会把位置钉得更准。
+
+**已回退探针**（工作树 0 改动）。
