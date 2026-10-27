@@ -333,7 +333,14 @@ Result<void> M3AimRuntime::start() {
     // the wait.
     std::vector<std::uint32_t> baseline;
     if (!adopting_existing && !config_.attach_only) {
+        // **Two lines that say where a stuck create stops.**  On the guest a create never reached a terminal
+        // state, the worker never exited, and the trace ended at 'opening the candidate' with no timeout line even
+        // though the bound is two minutes and the run lasted five: so the wait is somewhere before this call
+        // returns, not inside its timeout path.  'about to be taken' without 'taken' names the callee; both lines
+        // name the code after it.
+        diagnostic_trace("M3AimRuntime::start: baseline about to be taken");
         auto snapshot = aim::snapshot_physical_drive_numbers();
+        diagnostic_trace("M3AimRuntime::start: baseline taken");
         if (snapshot) {
             baseline = snapshot.move_value();
             // The numbers, not just the count: whether another profile's disk is in this list is the whole
