@@ -577,6 +577,25 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if (Test-Path -LiteralPath ($mount + '\')) {
         Fail "the volume is still mounted at $mount after the second stop"
     }
+    $volName = 'm5-e2e-volatile-' + [guid]::NewGuid().ToString('N')
+    $vol = Invoke-Cli @('disk', 'create', '--name', $volName, '--bundle', (Join-Path 'C:\m5' $volName),
+        '--size', '64MiB', '--mount', 'Z:', '--no-start', '--checkpoint-interval', 'off')
+    if ($vol.exit -ne 0) { Fail "the volatile create failed: $($vol.output)" }
+    $volId = Get-UuidFromText $vol.output
+    if ((Wait-ForTerminal $volId 300) -ne 'succeeded') { Fail 'the volatile create did not succeed' }
+    $volStart = Invoke-Cli @('disk', 'start', $volName)
+    if ($volStart.exit -ne 0) { Fail "the volatile start failed: $($volStart.output)" }
+    $volStartId = Get-UuidFromText $volStart.output
+    if ((Wait-ForTerminal $volStartId 300) -ne 'succeeded') { Fail 'the volatile start did not succeed' }
+    $volPlain = Invoke-Cli @('disk', 'stop', $volName)
+    Write-Host "  volatile stop without the flag: exit=$($volPlain.exit)"
+    if ($volPlain.exit -eq 0) { Fail 'a volatile disk stopped without --accept-volatile-data-loss' }
+    if ($volPlain.output -notmatch 'volatile') { Fail "the refusal does not name volatile data: $($volPlain.output)" }
+    $volForced = Invoke-Cli @('disk', 'stop', $volName, '--accept-volatile-data-loss')
+    Write-Host "  volatile stop with the flag: exit=$($volForced.exit)"
+    if ($volForced.exit -ne 0) { Fail "the acknowledged stop failed: $($volForced.output)" }
+    $volForceId = Get-UuidFromText $volForced.output
+    if ((Wait-ForTerminal $volForceId 300) -ne 'succeeded') { Fail 'the acknowledged stop did not succeed' }
     Write-Step 'T1-05: remove it (fail-closed forget, confirmation is the profile identifier)'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
