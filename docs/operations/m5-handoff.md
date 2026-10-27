@@ -4193,3 +4193,29 @@ grep -n "reclaim_leftover\|execute_checkpoint\|reconcile_checkpoint\|prove_forge
 （最省事但掩盖设计问题），**或**把内层调用改成"已持锁"版本（更好，与 `reclaim_leftover_locked` 的既有命名一致）。
 
 **今天的 12 次收窄到此结束**：从"worker 莫名不退"到"**一把不可重入的锁**"。**每一次都由读数或代码推动。**
+### 3.186 2026-10-28 03:52：**不是自死锁**——那五个函数在本文件里只被"定义"，没有被"调用"
+
+```text
+1066 reclaim_leftover(...)          ← 定义
+1121 session->reclaim_leftover(...) ← 这是 **会话对象**的方法，不是控制器的
+1384 execute_checkpoint(...)        ← 定义
+1391 reconcile_checkpoint(...)      ← 定义
+1624 prove_forget_safe(...)         ← 定义
+1704 current_dirty_epoch(...)       ← 定义
+```
+⇒ **本文件内没有任何一处"在持锁时再次拿 `command_gate_`"**（`1121` 调的是 `ServiceWorkerSession::reclaim_leftover`，
+不是控制器同名函数）。**所以 §3.185 的自死锁假设不成立。**
+
+**结论收窄为：跨线程争用**。
+- **线程 A**（维护 tick / checkpoint 策略）持有 `command_gate_`，并**阻塞在某次与 worker 的通信**里；
+- **线程 B**（`execute`，来自 create）**在等这把锁**（`asking=1, returned=0`）；
+- worker 本身健康（§3.183 的 87/87/87），所以 A 那次通信**不是"worker 不回"，而是"这条路径没有上界"**。
+
+**下一任的第一步（一条 grep + 一次读）**：
+1. `grep -n "current_dirty_epoch\|prove_forget_safe" src/` —— 看 **tick/策略**那条线程是否调用其中之一；
+2. 读那次调用的 **`OperationContext` 超时**：`require_session(profile_id, true)` 之后的
+   `session->status(...)` / `exchange(...)` 是否都带 `request_timeout`。
+   **若有一处用默认空 context ⇒ 那就是无上界的等待**，也是缺陷 A 的最后一块。
+
+**这一条把"锁"从"可能有自死锁"改成了"确定是跨线程争用 + 一处可能无上界的等待"**——
+**范围再次减半，仍然是靠一段代码。**
