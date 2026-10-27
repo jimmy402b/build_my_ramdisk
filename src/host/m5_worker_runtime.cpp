@@ -208,6 +208,8 @@ struct DiskWorkerRuntime::Impl final {
     WorkerRuntimeConfig config;
     std::unique_ptr<ProductionRuntimeAdapter> adapter;
     std::unique_ptr<DiskRuntime> runtime;
+    // Kept beside `runtime` because `operations` is moved into it; the label is applied after start returns.
+    std::function<Result<void>(wchar_t, const std::wstring&)> apply_label;
     // The image the bundle turned out to hold, read from the bundle itself and
     // -- for an adopt -- checked against the one the service named.  Seeded from
     // the claim so a status read before `start()` describes the profile rather
@@ -351,6 +353,10 @@ Result<void> DiskWorkerRuntime::start() {
     if (impl.config.volume_mode == WorkerVolumeMode::reclaim_existing) {
         trace_reclaim_steps(operations.value());
     }
+    // **Copied before the operations are moved into the runtime.**  The label is applied after `start()` returns,
+    // not inside the device pipeline: measured, writing it immediately after the mount blocked the volume and the
+    // create never reached a terminal state.
+    impl.apply_label = operations.value().apply_volume_label;
     DiskRuntimeOptions options{};
     options.bundle = impl.config.bundle;
     options.virtual_bytes = impl.config.virtual_bytes;
@@ -379,6 +385,13 @@ Result<void> DiskWorkerRuntime::start() {
         // the runtime's own cleanup is reverse-order and idempotent.
         static_cast<void>(impl.runtime->shutdown_clean());
         return started;
+    }
+
+    // The volume is mounted and the runtime's step work is finished here, which is the moment a label can be
+    // written without standing in front of the device pipeline.
+    if (impl.apply_label && impl.config.volume_label.has_value()
+        && !impl.config.volume_label->empty()) {
+        static_cast<void>(impl.apply_label(impl.config.drive_letter, *impl.config.volume_label));
     }
 
     auto recorded = record_bundle_identity();
@@ -435,7 +448,14 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::inspect_bundle() {
     // file this worker holds the writer lock for, and would report a bundle the
     // worker is running as one it merely looked at.
     if (!impl.bundle_evidence.has_value()) {
-        auto recorded = record_bundle_identity();
+        // The volume is mounted and the runtime's step work is finished here, which is the moment a label can be
+    // written without standing in front of the device pipeline.
+    if (impl.apply_label && impl.config.volume_label.has_value()
+        && !impl.config.volume_label->empty()) {
+        static_cast<void>(impl.apply_label(impl.config.drive_letter, *impl.config.volume_label));
+    }
+
+    auto recorded = record_bundle_identity();
         if (!recorded.ok()) {
             return Result<WorkerRuntimeStatus>::failure(recorded.error());
         }
