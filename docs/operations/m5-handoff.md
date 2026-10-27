@@ -2772,3 +2772,25 @@ DIAG store open failed op=profile_store.directory_acl native=0
 | `integration.m5.gui_workflow` | PASS | 25 s |
 | `integration.m1/m2/m3/m4` | 1/1、4/4、31/31、3/3 | 5/19/97/9 s |
 | `structural` | 1/3（两条 `vswhere` 环境） | 5 s |
+### 3.121 2026-10-27 15:25：**Load Only 与易失盘的语义裁定**（设计文档只列了名字，没定义——这一条必须由实现方定）
+
+**勘察结果**：`docs/.../m5-service-cli-gui-design-v3.md` 里这两项**只出现在任务表**（第 501 行），**没有定义**。
+`disk import` 的解析器**不接受 `--no-start`**（`create` 接受）。因此裁定如下，按最小改动实现：
+
+1. **Load Only = `disk import --no-start`**
+   - `DiskImportCommand` 加 `bool no_start{}`；解析器加 `--no-start`；
+   - 服务侧：`import` 的 intent `auto_start = !no_start`（`create` 已是这个形状，照抄）；
+   - 语义：**只登记/校验 bundle 并发布 profile，不创建运行时、不碰设备**；
+   - 验收：`disk import --no-start` 后 `disk list` 显示 `Ready stopped/configured`，且**没有 worker 进程**。
+
+2. **易失盘模式 = 创建时禁用检查点（"数据只在内存/仅靠最终落盘"）**
+   - 现状：`create` 已有 `--checkpoint-interval`（可禁用？需确认 `CheckpointInterval{enabled=false}` 的解析入口）
+     与 `--accept-volatile-data-loss`（停止时的确认）；
+   - 语义：**不做周期性 checkpoint**，断电即丢到最后一次手工 `disk checkpoint`；
+   - 若 `--checkpoint-interval` 已能表达"禁用"，则这一项**只差一个显式别名**（如 `--volatile`）
+     与文档/测试；**不要新增一套持久化机制**。
+   - 验收：创建后写入数据、硬断电、恢复应回到**上一次手工 checkpoint** 的 generation（而不是最新数据），
+     且 `disk stop` 必须要求 `--accept-volatile-data-loss`。
+
+3. **VHDX 导出 = 新 `disk export` 动词**（writer 已有，见 §3.120 之后的 T4-02 行）：把当前 bundle 通过
+   `persistence/image_creator` 落成一个单文件 VHDX；验收：导出文件能被 `VhdxReader` 读回且 extent 一致。
