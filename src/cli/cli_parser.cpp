@@ -21,7 +21,7 @@ const char* kUsage =
     "  myrd-cli disk create --name <name> --bundle <dir> --size <size> --mount <target>\n"
     "                       [--owner <sid>] [--no-start] [--memory-mode automatic|fixed]\n"
     "                       [--memory-hard-limit <size>] [--checkpoint-interval <interval>]\n"
-    "  myrd-cli disk import --name <name> --bundle <dir> --mount <target> [--owner <sid>]\n"
+    "  myrd-cli disk import --name <name> --bundle <dir> --mount <target> [--owner <sid>]  (registers only; does not start)\n"
     "  myrd-cli disk start <disk>\n"
     "  myrd-cli disk stop <disk> [--force] [--accept-volatile-data-loss]\n"
     "  myrd-cli disk checkpoint <disk>\n"
