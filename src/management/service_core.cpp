@@ -553,10 +553,12 @@ Result<profile::ProfileRecord> make_registration_record(
         // meaningless rather than harmful, so it is clamped to what the caller asked for.
         checkpoint.dirty_threshold_bytes = intent.requested_capacity_bytes;
     }
-    // A create may ask for a lower compaction threshold, and the profile is where the policy lives -- so this is
-    // the one place it can be recorded.  Absent leaves the schema's default alone.
+    // **A create may ask for a lower compaction threshold, and the profile is where the policy lives.**
+    // Assigned the same way the checkpoint policy above is -- a local, modified field by field -- rather than by
+    // building a whole policy and slotting it into the aggregate, which is what broke the create path earlier.
+    profile::CompactionPolicy compaction{};
     if (intent.compaction_checkpoint_threshold.has_value()) {
-        checkpoint = checkpoint;
+        compaction.checkpoint_count_threshold = *intent.compaction_checkpoint_threshold;
     }
     profile::ProfileRecord record{
         1,
@@ -586,7 +588,7 @@ Result<profile::ProfileRecord> make_registration_record(
             intent.auto_start,
             memory.move_value(),
             checkpoint,
-            profile::CompactionPolicy{},
+            compaction,
             intent.volume_label}};
     const auto validation = profile::validate_profile(record);
     if (!validation.ok()) {
