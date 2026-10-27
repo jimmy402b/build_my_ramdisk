@@ -2712,3 +2712,21 @@ DIAG store open failed op=profile_store.directory_acl native=0
 
 **当前状态**：`profiles`/`operations`/`profiles\workers` 都会在重置后重建；**ACL 未设**，所以 `m5.startup_sweep` 仍红。
 其余套件与 `cli_e2e`（87 s）不受影响。
+### 3.118 2026-10-27 14:55：**`m5.startup_sweep` 通过**——重置脚本现在会保护它重建的目录
+
+```text
+[1/1] m5.startup_sweep
+1 of 1 passed            （请求 a874a9ca…）
+```
+
+**三层原因，逐层量出来**：
+1. `profiles\workers` 目录不存在 ⇒ `profile_store.open_directory native=2`；
+2. 目录建了但 **ACL 是继承的** ⇒ `profile_store.directory_acl`：`A profile directory is not protected`；
+3. 修法正是 T4-01 记的第三条规则：**去掉继承 + 只给 Administrators/SYSTEM 完全控制**（`SetAccessRuleProtection($true,$false)`）。
+
+`Reset-M5Guest.ps1` 现在会 `protected` 四个目录（数据根、`profiles`、`operations`、`profiles\workers`），实测输出四行 `protected …`。
+
+**意义**：这条不只是修一个用例——"**重置客机 → 立刻跑测试**"是这个 harness 最重要的一条纪律，
+而一个留下"产品会拒绝的目录"的重置脚本，会让测试**因为不是产品的原因而失败**。
+
+**`model/m5` 组现在应为 13/13**（需一次整组复跑确认，见下）。
