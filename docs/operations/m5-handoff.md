@@ -3079,3 +3079,16 @@ VhdxWriterIdentity base_identity;  …  CompactionArtifactBuildMetrics
 **下一轮的唯一动作**：把这次 `disk.create` 的**操作记录**（`operation.show` 的输出，或
 `C:\ProgramData\MyRamDisk\operations` 里的那个文件）读出来，看 `failure` 字段的**时间戳与步骤**
 是否属于本次运行。这能一次分辨 1 与 2，而且**不需要改代码、不需要再跑 e2e**。
+### 3.138 2026-10-27 18:45：操作记录是**二进制 TLV**，读不出失败详情——需要 `operation.show`，而那要求服务在跑
+
+- `C:\ProgramData\MyRamDisk\operations\*.myop`（372–542 字节）确实是**本次失败运行留下的**（时间 9:53），
+  但它们是 `MYRDOPR` 开头的 **TLV 二进制**（本机按 ASCII 转储只见字段边界与 SID 文本），
+  **无法直接读出 `failure` 字段**。
+- ⇒ 要读失败详情，唯一途径是 **`myrd-cli operation show <id>`**，而那需要**服务在运行**。
+  e2e 在失败后立刻清理并停服，所以那条路径在现有 e2e 里取不到。
+- **下一轮的具体做法（二选一，都很小）**：
+  1. 在 `test-m5-cli-e2e.ps1` 的 create 失败分支里**先 `operation show` 再 Fail**
+     （服务此刻还在跑，一条 CLI 调用即可）；
+  2. 或写一个 5 行的独立脚本：起服务 → create（带 `--compaction-threshold 2`）→ `operation show` → 停服务。
+- **为什么值得**：现在的症状是"**报错内容与 trace 自相矛盾**"（§3.134–§3.137）。
+  只有 `operation.show` 的 `failure` 字段能判断"这条错误是本次的还是回放的"。**在此之前，T4-03 的客机证据无法取得。**
