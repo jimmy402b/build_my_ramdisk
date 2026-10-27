@@ -2452,3 +2452,16 @@ green=True pass=22
   4. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label`；断电重启后仍在。
 - **本轮的现场**：构建零错误、工作树干净、四套件（windows_volume 19、profile_codec 22、
   service_orchestration 25、service_host 25）全绿。
+### 3.104 2026-10-27 12:25：卷标**执行链路已通到适配器**（只差"谁把标签填进 options"）
+
+- `IRuntimeAdapter::apply_label(wchar_t, const std::wstring&)`：**非纯虚 + 默认成功**（这样测试里的 fake 不用改，
+  不能标记的平台也只是"不标记"）；`ProductionRuntimeAdapter` 覆盖它，转调
+  `Win32VolumeAdapter::apply_volume_label`。
+- `DiskRuntimeOperations::apply_volume_label` 在 `runtime_adapter.cpp` 里接到 `volumes.apply_label(...)`。
+- `DiskRuntimeOptions::volume_label`（末尾追加）+ `disk_runtime.cpp` 在**挂载成功后**调用，
+  **失败即丢标签、不影响 start**。
+- 干净重建（`--clean-first`）+ 三个套件：`runtime_adapter` **6/6**、`disk_runtime` **33/33**、`windows_volume` **19/19**。
+- **T4-02 卷标只剩两步**：
+  1. **worker 把 profile 记录的标签填进 `DiskRuntimeOptions`**（构造 options 的地方）；
+  2. **CLI `--volume-label`**（`cli_parser.cpp`，`--owner` 之后）+ 用法行；
+  3. 客机读数：`fsutil fsinfo volumeinfo <letter>:`；断电重启后标签仍在。
