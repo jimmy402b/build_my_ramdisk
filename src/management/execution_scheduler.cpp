@@ -209,8 +209,8 @@ void ServiceExecutionScheduler::run(std::stop_token token) noexcept {
             // something threw: the operation then stayed non-terminal by design (a restart reconciles it), so the
             // client saw a create that never finished and no artifact anywhere named the exception.  `what()` is
             // the cheapest possible answer to "which exception", and it costs one line.
-            char trace_buffer[512]{};
-            std::snprintf(trace_buffer, sizeof(trace_buffer),
+            char exception_trace[512]{};
+            std::snprintf(exception_trace, sizeof(exception_trace),
                           "scheduler: EXCEPTION while executing a claimed operation: %s",
                           error.what());
             myrd::diagnostic_trace(trace_buffer);
