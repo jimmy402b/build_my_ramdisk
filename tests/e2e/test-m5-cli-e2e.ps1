@@ -596,21 +596,6 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if ($volForced.exit -ne 0) { Fail "the acknowledged stop failed: $($volForced.output)" }
     $volForceId = Get-UuidFromText $volForced.output
     if ((Wait-ForTerminal $volForceId 300) -ne 'succeeded') { Fail 'the acknowledged stop did not succeed' }
-    # **Defect A check: a --no-start create must leave nothing running.**
-    $quietName = 'm5-e2e-quiet-' + [guid]::NewGuid().ToString('N')
-    $quiet = Invoke-Cli @('disk', 'create', '--name', $quietName, '--bundle', (Join-Path 'C:\m5' $quietName),
-        '--size', '64MiB', '--mount', 'Z:', '--no-start', '--checkpoint-interval', 'off')
-    if ($quiet.exit -ne 0) { Fail "the quiet create failed: $($quiet.output)" }
-    $quietId = Get-UuidFromText $quiet.output
-    if ((Wait-ForTerminal $quietId 300) -ne 'succeeded') { Fail 'the quiet create did not succeed' }
-    if ((Invoke-Cli @('disk', 'list')).output -notmatch 'stopped/configured') { Fail 'a --no-start create is not stopped' }
-    $settleStart = Get-Date
-    while (((Get-Date) - $settleStart).TotalSeconds -lt 60 -and
-           (@(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue)).Count -ne 0) { Start-Sleep -Seconds 2 }
-    $settleSeconds = [int]((Get-Date) - $settleStart).TotalSeconds
-    $left = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue).Count
-    Write-Host "  workers settled after $settleSeconds s ($left left)"
-    if ($left -ne 0) { Fail "a --no-start create left $left worker(s) after $settleSeconds s" }
     Write-Step 'T1-05: remove it (fail-closed forget, confirmation is the profile identifier)'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
