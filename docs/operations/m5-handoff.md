@@ -2349,3 +2349,24 @@ out/.../tests/Release/myrd_m4_profile_codec_tests.exe  7:58:24
   对应的偏移）抄成一张表，再改这条用例的常量。**这条用例是唯一剩下的拦路者**，
   它挡住的不是产品功能，而是"格式演进时如何表达未知字段"的契约。
 - **状态**：全部回退（脚本、探针、源码、测试）——构建干净、22 用例全绿、工作树 0 改动。
+### 3.99 2026-10-27 11:45：**卷标的 profile 编解码完成，22/22 全绿**（`c04876a`）
+
+```text
+green=True pass=22
+```
+
+**最终落地内容**（配方 = §3.97 + §3.98 的补充）：
+- `ProfileFieldTag::volume_label = 36`；`Profile::volume_label`（`std::optional<std::wstring>`）；
+- `kLastKnownTag` 与 **`kProfileKnownFieldCount` 一起**提到 36（**必须同步**，否则头部声明的字段数与解码要求不一致）；
+- 编码器**末尾**写该字段（字段按 tag 升序），无标签时写**控制字符哨兵** `\x01`（字段编码器拒绝零长度）；
+- 解码器把哨兵映射回 `nullopt`；`expected_kind_and_length()` 把它并入 utf8 组（**漏了会 decode 失败**）；
+- 黄金样本由**编码器自己产出**（515 字节）而非手推；探针随后移除；
+- 两条"未知字段"契约用例：tag 36 → **37**、payload 长度 445 → **454**、
+  **头部字段数 `put_u32(bytes,36,…)` 必须 36 → 37**（解析器按这个数走，少一个就报 trailing bytes）。
+
+**下一步（卷标剩余部分）**：
+1. 服务把 `DiskCreateCommand::volume_label` 放进 `LifecycleOperationIntent`（**字段已在**，要确认赋值处）；
+2. profile 记录写入该字段（`profile_registration_store` / 记录构造处）；
+3. worker 在卷挂载完成后调 `SetVolumeLabelW`（**失败不让 start 失败**，但要记日志）；
+4. **然后把 `--volume-label` 加回 CLI 解析器**（`--owner` 之后）+ 用法行；
+5. 客机读数：`fsutil fsinfo volumeinfo <letter>:` 的 `Volume Label` 行。
