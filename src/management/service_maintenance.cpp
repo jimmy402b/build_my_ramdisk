@@ -1,4 +1,4 @@
-﻿#include "src/management/service_maintenance.h"
+#include "src/management/service_maintenance.h"
 
 #include <algorithm>
 #include <chrono>
@@ -72,6 +72,27 @@ std::string checkpoint_due_reason(const MaintenanceInput& input) {
     return {};
 }
 
+std::string compaction_due_reason(const MaintenanceInput& input) {
+    // Compaction moves data the disk already has, so a disk that is not running has nothing to compact from and
+    // nothing to compact into.  `starting` and `stopping` are windows, not states to act in.
+    if (input.state.disk.runtime != product::RuntimeState::running) return {};
+    if (!input.compaction.automatic) return {};
+    if (input.compaction.journal_occupancy_percent != 0
+        && input.journal_occupancy_percent >= input.compaction.journal_occupancy_percent) {
+        return "journal-occupancy";
+    }
+    if (input.compaction.reclaimable_percent != 0
+        && input.reclaimable_percent >= input.compaction.reclaimable_percent) {
+        return "reclaimable";
+    }
+    // The count threshold is a count of checkpoints, and the policy says zero means "do not use this trigger" --
+    // which is why it is compared only when it is set.
+    if (input.compaction.checkpoint_count_threshold != 0
+        && input.checkpoints_since_compaction >= input.compaction.checkpoint_count_threshold) {
+        return "checkpoint-count";
+    }
+    return {};
+}
 ServiceMaintenance::ServiceMaintenance(ServiceCore& core, IServiceClock& clock,
                                        IServiceLogger& logger,
                                        std::timed_mutex& execution_gate,

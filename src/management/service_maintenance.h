@@ -54,7 +54,20 @@ struct MaintenanceInput final {
     std::uint64_t resident_bytes{};
     std::uint64_t dirty_bytes{};
     std::uint64_t since_last_checkpoint_ms{};
+    // Compaction's half, declared last so every existing aggregate initializer keeps its meaning.  The two
+    // thresholds are the policy's own fields -- they have been serialized since the schema was written and, like
+    // the checkpoint interval before T1-08, nothing ever read them.
+    profile::CompactionPolicy compaction{};
+    std::uint32_t checkpoints_since_compaction{};
+    std::uint32_t journal_occupancy_percent{};
+    std::uint32_t reclaimable_percent{};
 };
+
+// **When compaction should run by itself**, separate from the checkpoint policy on purpose: a checkpoint is
+// about not losing data, compaction is about not growing without bound, and a profile may want one and not the
+// other.  Order is stated rather than incidental -- occupancy first (it is the condition the journal enforces),
+// then the reclaimable share, then the checkpoint count.
+[[nodiscard]] std::string compaction_due_reason(const MaintenanceInput& input);
 
 // The policy itself.  Returns the reason a checkpoint is due, or an empty string.
 //

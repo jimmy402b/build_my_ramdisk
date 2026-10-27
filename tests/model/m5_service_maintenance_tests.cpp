@@ -1,4 +1,4 @@
-﻿#include "tests/support/test_framework.h"
+#include "tests/support/test_framework.h"
 
 #include "src/management/service_maintenance.h"
 
@@ -107,4 +107,50 @@ TEST_CASE(m5_maintenance_treats_a_zero_memory_soft_limit_as_unconfigured) {
     input.resident_bytes = 1'000'000;
     input.checkpoint.interval_enabled = false;
     REQUIRE(checkpoint_due_reason(input).empty());
+}
+// **The compaction policy's own triggers.**  Same shape as the checkpoint cases above and for the same reason:
+// `compaction` has been serialized since the schema was written, and until now nothing read it -- a disk grew
+// until the journal filled and then failed, however the policy was configured.
+TEST_CASE(m5_maintenance_compaction_waits_for_a_running_disk) {
+    auto input = running_input();
+    input.journal_occupancy_percent = 99;
+    input.compaction.journal_occupancy_percent = 70;
+    REQUIRE_EQ(compaction_due_reason(input), std::string("journal-occupancy"));
+
+    input.state.disk.runtime = product::RuntimeState::stopped;
+    REQUIRE(compaction_due_reason(input).empty());
+}
+
+TEST_CASE(m5_maintenance_compaction_respects_the_automatic_switch) {
+    auto input = running_input();
+    input.journal_occupancy_percent = 99;
+    input.compaction.automatic = false;
+    REQUIRE(compaction_due_reason(input).empty());
+}
+
+TEST_CASE(m5_maintenance_compaction_orders_occupancy_before_reclaimable_before_count) {
+    auto input = running_input();
+    input.journal_occupancy_percent = 80;
+    input.reclaimable_percent = 60;
+    input.checkpoints_since_compaction = 100;
+    input.compaction = {};
+    // All three say yes; the reason names the one the journal enforces first.
+    REQUIRE_EQ(compaction_due_reason(input), std::string("journal-occupancy"));
+
+    input.journal_occupancy_percent = 10;
+    REQUIRE_EQ(compaction_due_reason(input), std::string("reclaimable"));
+
+    input.reclaimable_percent = 10;
+    REQUIRE_EQ(compaction_due_reason(input), std::string("checkpoint-count"));
+}
+
+TEST_CASE(m5_maintenance_compaction_ignores_triggers_set_to_zero) {
+    // Zero means "this trigger is off", not "compact immediately" -- the mistake the dirty-threshold test above
+    // exists to prevent.
+    auto input = running_input();
+    input.checkpoints_since_compaction = 1000;
+    input.compaction.journal_occupancy_percent = 0;
+    input.compaction.reclaimable_percent = 0;
+    input.compaction.checkpoint_count_threshold = 0;
+    REQUIRE(compaction_due_reason(input).empty());
 }
