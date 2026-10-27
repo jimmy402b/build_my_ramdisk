@@ -3734,3 +3734,27 @@ void ServiceWorkerControl::forget_session(const product::Uuid& profile_id) noexc
    之后若无后续动作"的位置；**不要**放在 `register_bundle` 里（§3.165 已说明那会打断 `create_and_start`）。
 
 **判定标准（不变）**：§3.158 场景 `workers settled after N s` 应 **N < 30 s**。
+### 3.169 2026-10-28 00:35：**修了"留住 session"，但那个 worker 30 分钟后仍在，而且杀不掉**
+
+**读数（客机，SSH 非提权会话）**：
+```text
+myrd-m5-worker  Id=6764  StartTime=2026/10/27 11:53:37  CPU=0.078
+taskkill /F /IM myrd-m5-worker.exe   →  拒绝访问（无法终止，PID 6764）
+```
+- **`11:53:37` 正是那次 `--no-start` create 的时刻**（§3.158 的记录方式一致）；
+- **30 分钟后仍在**，CPU 几乎为 0（**不是忙等，是卡住**）；
+- **非提权会话杀不掉**（worker 由提权服务拉起）—— 这是本会话早先记过的客机特性。
+
+**因此缺陷 A 的性质要更新**：它**不只是"session 被留住了"**（那个我已在 `4278144` 里修掉：
+`create_stopped` 不再保留 session），而是 **worker 在某一步卡住、不能自行退出**。
+`diagnostic_trace` 的存在理由写的就是这件事：**卡在驱动调用里的进程不会回答、不会退出**。
+
+**下一任的第一步（顺序不能变）**：
+1. **重启客机**（那个 worker 只能这样清掉）；
+2. 用**带 StartTime 输出**的场景跑一次（§3.158 的写法），**同时**保留 `last-trace.log`；
+3. 读 trace 里**那个 worker 自己的最后一组行**（`worker:` 系列），确认它停在哪个命令之后——
+   若最后一行是 `worker: command received` 且再没有后续 ⇒ **卡在 `create_bundle` 里**；
+4. 只有拿到这一步，才谈得上修。
+
+**本次运行的 e2e 也未完成**（挂起 30 分钟，被中止），**无读数产出**。
+**不要把这次算作"缺陷 A 已修未验"**——它是"修了一处、又暴露下一处"。
