@@ -597,6 +597,12 @@ struct WorkerLifecycleEvidence final {
     std::optional<BundleRegistrationEvidence> bundle;
     std::optional<VolumeRegistrationEvidence> volume;
     bool first_checkpoint_acknowledged{};
+    // The generation the bundle stood at when the worker answered the create or
+    // inspection.  It is the durable checkpoint's starting point, and for a
+    // stopped create it is the only reading there can be: the worker is closed
+    // before the profile is published, so asking it again is asking a process
+    // that has already answered and left.
+    std::uint64_t bundle_generation{};
 };
 
 enum class LifecycleReservationPhase : std::uint8_t {
@@ -1071,7 +1077,12 @@ public:
         const WorkerActionRequest& request,
         const CompactionMutationBoundaryEvidence& correlation,
         const CompactionEpochPublicationHandler& publish);
-    virtual Result<std::uint64_t> current_dirty_epoch(
+    // The live dirty epoch for a profile, when it can be read without waiting.
+    // `nullopt` means no epoch was observed *now* -- there is no worker this
+    // authority can see, or the adapter is mid-command and the channel must not
+    // be queued behind.  It is a weaker claim than an observation and it is not
+    // a claim that nothing is dirty; callers must not read it as `clean`.
+    virtual Result<std::optional<std::uint64_t>> current_dirty_epoch(
         const product::Uuid& profile_id);
     // Observe the worker bound to this profile so the read path can reconcile
     // what the durable record claims against what is actually running.

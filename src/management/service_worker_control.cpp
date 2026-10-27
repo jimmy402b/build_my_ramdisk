@@ -1044,6 +1044,11 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
         kProductPayloadBlockBytes,
         file_identity,
         source};
+    // The generation this reply observed.  Captured here because this is the one
+    // moment the worker is certainly the live authority on it: a stopped create's
+    // session is dropped below, and the worker exits, so a later publication step
+    // that asked again would be asking a process that has already left.
+    result.lifecycle.bundle_generation = observed.value().committed_generation;
 
     // **This is the moment the bundle's identity becomes knowable**, and therefore the
     // only moment it can be recorded: the worker has just read it off the handle it
@@ -1701,20 +1706,42 @@ Result<ForgetSafetyEvidence> ServiceWorkerControl::prove_forget_safe(
     return Result<ForgetSafetyEvidence>::success(evidence);
 }
 
-Result<std::uint64_t> ServiceWorkerControl::current_dirty_epoch(
+Result<std::optional<std::uint64_t>> ServiceWorkerControl::current_dirty_epoch(
     const product::Uuid& profile_id) {
-    std::unique_lock lock(command_gate_);
-    auto session = require_session(profile_id, true);
-    if (!session.ok()) {
-        return Result<std::uint64_t>::failure(session.error());
+    // **Never waits for the channel**, for the same reason and in the same shape as
+    // `observe_runtime` below: the gate is *tried*, not taken.  A read that queued here
+    // holds `command_gate_` while the command it is queued behind needs that same gate
+    // to finish -- and a service process in that state never reaches the terminal state
+    // of the operation it is answering.  Measured on the guest: `disk show` during a
+    // `create --no-start` and a worker that answers every command, with
+    // `execute_operation` never returning.
+    //
+    // `nullopt` says "not observed right now".  It is the honest answer for a read path:
+    // the durable snapshot is still reported, and what must never happen is reporting
+    // `dirty_epoch = 0` (or calling the disk clean) because the question could not be
+    // asked.  Callers that need the strict answer for a mutation use
+    // `require_runtime_observation`, which does queue.
+    std::unique_lock lock(command_gate_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
     }
-    // Strict: the dirty epoch decides whether a checkpoint is required, and
-    // "could not ask" must not read as "nothing is dirty".
-    auto status = session.value()->require_runtime_observation(context());
+    // `find_session`, not `require_session(..., true)`: asking for an epoch must not
+    // adopt or launch a worker.  A profile this authority holds no session for has no
+    // live epoch it can read, and a read path that launched a worker to answer would
+    // turn `disk list` into a writer.
+    auto* const session = find_session(profile_id);
+    if (session == nullptr) {
+        return Result<std::optional<std::uint64_t>>::success(std::nullopt);
+    }
+    // Strict about the *answer*: a transport failure is a fact about the channel, not
+    // an absence of truth, so it is still returned as a failure.  Callers on the read
+    // path already treat a failure as "no live epoch to add".
+    auto status = session->require_runtime_observation(context());
     if (!status.ok()) {
-        return Result<std::uint64_t>::failure(status.error());
+        return Result<std::optional<std::uint64_t>>::failure(status.error());
     }
-    return Result<std::uint64_t>::success(status.value().dirty_epoch);
+    return Result<std::optional<std::uint64_t>>::success(
+        status.value().dirty_epoch);
 }
 
 Result<std::optional<WorkerRuntimeObservation>>

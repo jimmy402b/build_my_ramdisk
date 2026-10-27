@@ -332,7 +332,7 @@ public:
     // never worked.
     Result<ForgetSafetyEvidence> prove_forget_safe(
         const WorkerActionRequest& request) override;
-    Result<std::uint64_t> current_dirty_epoch(
+    Result<std::optional<std::uint64_t>> current_dirty_epoch(
         const product::Uuid& profile_id) override;
     Result<std::optional<WorkerRuntimeObservation>> observe_runtime(
         const product::Uuid& profile_id) override;

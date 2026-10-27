@@ -1,6 +1,6 @@
-﻿﻿﻿﻿# M5 交接：从这里开�?
+﻿# M5 交接：从这里开�?
 
-**最后更新：2026-10-27**（状态有变化先改这里，再�?tasklist�?
+**最后更新：2026-10-28**（状态有变化先改这里，再�?tasklist�?
 
 ---
 
@@ -12,9 +12,9 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**（自动触发 + 日志 + `compactions=N`，客机三次通过）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅**（`volatile stop` 无标志 `exit=1`、带标志 `exit=0`，已进 e2e）/ Load Only 语义 ✅（`stopped/configured`），**但 `--no-start` 遗留一个 worker（缺陷 A，未修）**；**VHDX 导出未开始**；T4-04 冻结未开始 |
+| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**（自动触发 + 日志 + `compactions=N`，客机三次通过）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅**（`volatile stop` 无标志 `exit=1`、带标志 `exit=0`，已进 e2e）/ Load Only 的 **create** ✅（`--no-start` 30 s 终态、无残留 worker、forget `device_absent=1`，§3.188）/ Load Only 的 **start** ❌（M3 `match_created_disk` 拒绝非空的续跑盘）；**VHDX 导出未开始**；T4-04 冻结未开始 |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **T4-02 的 `disk export` 命令**（writer 已有：`persistence/vhdx_writer`），以及 Load Only / 易失盘的**各一次客机读数** |
+| **下一件事** | **T4-02 的 `disk export` 命令**（writer 已有：`persistence/vhdx_writer`；fold 的输出位置必须先参数化，不能 bundle 内构建再复制） |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4255,3 +4255,56 @@ ServiceWorkerControl::observe_runtime(const product::Uuid& profile_id) {
 
 **两种修法都在同一个文件里、都有现成的先例**，而判据只有一条：
 `create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
+### 3.188 2026-10-28 04:10：**缺陷 A 修好了，三判据在客机上通过——但"stopped create 的 start"仍未完成**
+
+**两个根因，不是一个。**
+
+1. **`publish-provisioning` 仍在向一个已经答复并离开的 worker 要 live observation。**
+   `create_stopped` 的 `register_bundle` 按设计丢弃 session，worker 回复后开始 cleanup；服务随后调
+   `require_runtime_observation`。更硬的一处：失败分支写的是 `observed.error()`（作用域里另一个
+   `Result`），不是 `runtime_observed.error()`——对成功 `Result` 调 `.error()` 抛
+   `bad_optional_access`，异常被吞，操作永远停在 `running`。这解释了"worker 已退出、服务日志只有
+   action-start、没有 kind=7"的全部读数。
+2. **`current_dirty_epoch` 阻塞拿 `command_gate_` 再通信**（§3.187 的定位仍成立）。读路径因此会和
+   正在执行的操作抢同一把锁。
+
+**修法：**
+- `create_stopped` / `import_profile` 的发布**直接用 worker 答复里的 `bundle_generation`**
+  （新增 `WorkerLifecycleEvidence::bundle_generation`），不再二次观测一个已退出的进程。
+- worker 的 `observe()` 报告**从 bundle 恢复出的 generation**（`observed_bundle_generation`），
+  stopped runtime 也有值；运行中取 `max(runtime stats, bundle)`。没有它，stopped create 会发布 0，
+  下一次 start 的 checkpoint boundary 对不上。
+- `current_dirty_epoch` 与 `observe_runtime` 同型：`try_to_lock`、`find_session`（不 attach）、
+  `Result<std::optional<uint64_t>>` 的"未知"语义；checkpoint 路径不把未知读成 clean，也不重写
+  durable epoch——由 checkpoint 自己的 boundary 证据负责。
+- 失败分支的 `observed.error()` → `runtime_observed.error()`。
+- **成功 forget 也记录证据**：`forget safety proved: worker_absent=… device_absent=…`。否则
+  "device_absent=1" 只在**拒绝**时出现在日志里，e2e 只能拿 exit code 当证据。
+
+**客机读数（`integration.m5.cli_e2e`，Release，`Reset-M5Guest` 后，两次独立运行通过）：**
+```text
+probe create exit=0
+probe terminal=succeeded                  ← Wait-ForTerminal 30（判据 ①）
+no worker survived the stopped create     ← 判据 ②
+stopped disk forgotten; device_absent=1 proved  ← 判据 ③
+1 of 1 passed                              ← 120 s / 117 s
+```
+`cli_e2e` 里新增的断言就是这三行；`disk list` 不显示 profile 名，所以探针按挂载点 `Y:` 取 profile id。
+易失盘用例改成"正常运行 create + 一次手工 checkpoint + 拒绝无标志 stop"：不这样它会在**脏 runtime 的
+remove_mount** 上被拒（那是另一条守卫），而不是测到 volatile 策略。
+
+**仍未完成（明确记下，别当成已修）：从 `--no-start` 创建的盘执行 `disk start` 仍失败。**
+`DiskRuntimeOptions::resume_existing_create` 已把 create 模式放宽到"续跑已有 generation-zero
+bundle"（本地 `unit.m4.disk_runtime` 35/35，含两个新用例），客机上它越过了 `classify_bundle`，
+但停在 `M3AimRuntime::start` 的 `match_created_disk`：
+
+```text
+located a disk that is not empty, so it is not the disk this runtime just created
+```
+
+stopped create 的 bundle 里已经有一个已配额的卷，start 却按 create 路径去找"空盘"。这是 Load Only
+的 **start 半边**，留待后续；`--no-start` 的 create 本身满足三判据。
+
+**纪律复盘：** 先按给定根因修 `current_dirty_epoch` **并没有让判据变绿**——真正卡住的是 publish 的
+二次观测。两轮 trace 夹逼（"observing / returned"、"publishing registration"）把它钉在两行之间；
+失败分支的变量名错误是读代码时发现的。**不要把"读起来像根因"当成"已经验证的根因"。**

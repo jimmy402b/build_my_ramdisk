@@ -140,7 +140,7 @@ struct FakeRuntime final {
             events.push_back("provision");
             provision_called = true;
             if (fail_provision) return Result<ProductVolume>::failure(runtime_error());
-            REQUIRE(generation_zero_ready);
+            REQUIRE(generation_zero_ready || recovered_image_ready);
             REQUIRE(aim_running);
             observed_provision_size = bytes;
             observed_provision_letter = letter;
@@ -302,6 +302,40 @@ TEST_CASE(m4_disk_runtime_create_orders_generation_zero_provision_verify_flush_c
     require_events(fake, {"preflight", "classify", "lock", "generation-zero",
                            "aim-start", "provision", "verify", "flush",
                            "checkpoint"});
+}
+
+TEST_CASE(m4_disk_runtime_create_resumes_an_existing_generation_zero_bundle) {
+    // A stopped create has already written generation zero; the start that follows
+    // must finish it rather than refuse a non-empty bundle or replace the image the
+    // service already registered.  The identity check that permits this lives in the
+    // worker; here the flag is the caller's proof and the effect is the event order:
+    // recover, not generation-zero, then the same provisioning a create performs.
+    FakeRuntime fake;
+    fake.bundle_kind = DiskBundleKind::manifest;
+    auto resumed = options();
+    resumed.resume_existing_create = true;
+    auto runtime = DiskRuntime::create(resumed, fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(runtime.value()->start().ok());
+    REQUIRE_EQ(fake.observed_recover_size, resumed.virtual_bytes);
+    REQUIRE_EQ(fake.observed_provision_size, resumed.virtual_bytes);
+    REQUIRE(fake.recovered_image_ready);
+    REQUIRE(!fake.generation_zero_ready);
+    require_events(fake, {"preflight", "classify", "lock", "recover",
+                           "aim-start", "provision", "verify", "flush",
+                           "checkpoint"});
+}
+
+TEST_CASE(m4_disk_runtime_create_without_resume_still_refuses_an_existing_bundle) {
+    // The relaxation is opt-in.  A create that has not proved the bundle is its own
+    // must not adopt it, because the image a stranger left there would then be
+    // provisioned and registered as this operation's disk.
+    FakeRuntime fake;
+    fake.bundle_kind = DiskBundleKind::manifest;
+    auto runtime = DiskRuntime::create(options(), fake.operations());
+    REQUIRE(runtime.ok());
+    REQUIRE(!runtime.value()->start().ok());
+    REQUIRE(!fake.aim_running);
 }
 
 TEST_CASE(m4_disk_runtime_exposes_the_adopted_volume_identity) {

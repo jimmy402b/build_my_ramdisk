@@ -578,15 +578,28 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         Fail "the volume is still mounted at $mount after the second stop"
     }
     $volName = 'm5-e2e-volatile-' + [guid]::NewGuid().ToString('N')
+    # **Created running, deliberately.**  The volatile guard is a property of the
+    # *stop*, and this case must measure that guard.  Starting a disk that a
+    # `--no-start` create left un-provisioned is Load Only's separate problem and
+    # has its own coverage above; folding the two together made a failure in one
+    # read as a failure in the other.
     $vol = Invoke-Cli @('disk', 'create', '--name', $volName, '--bundle', (Join-Path 'C:\m5' $volName),
-        '--size', '64MiB', '--mount', 'Z:', '--no-start', '--checkpoint-interval', 'off')
+        '--size', '64MiB', '--mount', 'Z:', '--checkpoint-interval', 'off')
     if ($vol.exit -ne 0) { Fail "the volatile create failed: $($vol.output)" }
     $volId = Get-UuidFromText $vol.output
     if ((Wait-ForTerminal $volId 300) -ne 'succeeded') { Fail 'the volatile create did not succeed' }
-    $volStart = Invoke-Cli @('disk', 'start', $volName)
-    if ($volStart.exit -ne 0) { Fail "the volatile start failed: $($volStart.output)" }
-    $volStartId = Get-UuidFromText $volStart.output
-    if ((Wait-ForTerminal $volStartId 300) -ne 'succeeded') { Fail 'the volatile start did not succeed' }
+    # **One manual checkpoint, so the stop below tests the volatile *policy*, not a
+    # dirty removal.**  A runtime that still holds uncommitted writes refuses a
+    # removal even when the caller accepts data loss, and that refusal is a
+    # different guard with its own evidence.  The checkpoint interval is `off`, so
+    # the stop-without-the-flag refusal is decided by the policy and remains the
+    # fact this case asserts.
+    $volCheckpoint = Invoke-Cli @('disk', 'checkpoint', $volName)
+    if ($volCheckpoint.exit -ne 0) { Fail "the volatile checkpoint failed: $($volCheckpoint.output)" }
+    $volCheckpointId = Get-UuidFromText $volCheckpoint.output
+    if ((Wait-ForTerminal $volCheckpointId 300) -ne 'succeeded') {
+        Fail 'the volatile checkpoint did not succeed'
+    }
     $volPlain = Invoke-Cli @('disk', 'stop', $volName)
     Write-Host "  volatile stop without the flag: exit=$($volPlain.exit)"
     if ($volPlain.exit -eq 0) { Fail 'a volatile disk stopped without --accept-volatile-data-loss' }
@@ -600,8 +613,35 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $probe = Invoke-Cli @('disk', 'create', '--name', $probeName, '--bundle', (Join-Path 'C:\m5' $probeName),
         '--size', '64MiB', '--mount', 'Y:', '--no-start', '--checkpoint-interval', 'off')
     Write-Host "  probe create exit=$($probe.exit)"
+    if ($probe.exit -ne 0) { Fail "the --no-start create was not admitted: $($probe.output)" }
     $probeId = Get-UuidFromText $probe.output
-    if ($probeId) { Write-Host "  probe terminal=$((Wait-ForTerminal $probeId 240))" }
+    if ($null -eq $probeId) { Fail 'the --no-start create carried no operation identifier' }
+    # **The defect-A acceptance, on the reading the user sees.**  A stopped create
+    # must reach a terminal state inside thirty seconds, and the worker that served
+    # it must not outlive the operation.  Before this was asserted, the create sat
+    # `running` forever while a worker held the device, and the next disk's forget
+    # was refused with `device_absent=0`.
+    $probeState = Wait-ForTerminal $probeId 30
+    Write-Host "  probe terminal=$probeState"
+    if ($probeState -ne 'succeeded') { Fail "the --no-start create ended $probeState" }
+    $probeWorkers = @()
+    for ($i = 0; $i -lt 20; $i++) {
+        $probeWorkers = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue)
+        if ($probeWorkers.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($probeWorkers.Count -ne 0) {
+        Fail "the --no-start create left $($probeWorkers.Count) worker process(es) behind"
+    }
+    Write-Host '  no worker survived the stopped create'
+    $probeList = Invoke-Cli @('disk', 'list')
+    if ($probeList.exit -ne 0) { Fail "disk list failed after the --no-start create: $($probeList.output)" }
+    # `disk list` renders the mount target, not the display name, so the mount is
+    # what identifies this profile's row; Y: is not used by any other disk here.
+    $probeLine = ($probeList.output -split "`n") |
+        Where-Object { $_ -match [regex]::Escape('Y:') } | Select-Object -First 1
+    $probeProfileId = if ($null -ne $probeLine) { Get-UuidFromText $probeLine } else { $null }
+    if ($null -eq $probeProfileId) { Fail 'disk list did not report the --no-start profile' }
     Write-Step 'T1-05: remove it (fail-closed forget, confirmation is the profile identifier)'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
@@ -611,6 +651,23 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if ($empty.output -match [regex]::Escape($profileId)) {
         Fail 'the removed disk is still listed'
     }
+
+    Write-Step 'T4-02c: forget the stopped disk -- its device must be proved absent'
+    $probeForget = Invoke-Cli @('disk', 'forget', $probeProfileId,
+        '--confirmation', $probeProfileId, '--wait')
+    if ($probeForget.exit -ne 0) {
+        Fail "the --no-start disk's forget failed: $($probeForget.output)"
+    }
+    $probeForgetLog = if (Test-Path -LiteralPath $serviceLog) {
+        Get-Content -LiteralPath $serviceLog -Raw
+    } else { '' }
+    $provedLines = ($probeForgetLog -split "`n") |
+        Where-Object { $_ -match 'forget safety proved:' }
+    if (-not ($provedLines | Where-Object { $_ -match 'device_absent=1' })) {
+        Fail ("the stopped disk's forget did not record device_absent=1 in the " +
+            "service log; proved lines: $($provedLines -join ' | ')")
+    }
+    Write-Host '  stopped disk forgotten; device_absent=1 proved'
 
 
     # -----------------------------------------------------------------------

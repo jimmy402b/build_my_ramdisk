@@ -451,6 +451,20 @@ TEST_CASE(m5_worker_control_strict_observation_refuses_when_unbound) {
                ServiceWorkerControlError::execution_not_bound);
 }
 
+TEST_CASE(m5_worker_control_dirty_epoch_is_not_observed_by_adopting_a_worker) {
+    // A read must not turn into a writer: with no session held, the epoch query
+    // answers "not observed" instead of attaching (and thereby launching) a
+    // worker.  And it must not fail the read either -- an unobserved epoch is
+    // not a dirty one, and the read path already reports the durable claim.
+    NullSessionProvider provider;
+    ServiceWorkerControl control(provider);
+    const auto epoch = control.current_dirty_epoch(profile_id());
+    REQUIRE(epoch.ok());
+    REQUIRE(!epoch.value().has_value());
+    REQUIRE_EQ(provider.attaches, 0);
+    REQUIRE_EQ(provider.launches, 0);
+}
+
 TEST_CASE(m5_observe_worker_runtime_combines_session_and_runtime_liveness) {
     // Both halves are needed and they are different facts: the session proves a
     // worker exists, the status says its runtime is up.  A worker that has

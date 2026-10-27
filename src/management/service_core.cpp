@@ -1151,13 +1151,14 @@ Result<std::vector<ManagedProfileSnapshot>> annotate_runtime_observations(
 // query is still consulted: for that adapter this is M4's read path, and it
 // must keep reporting exactly what M4 reported.
 //
-// A refused query is an absence of an answer, not an absence of truth.  The
-// inherited implementation says the worker does not expose an epoch at all; the
-// production adapter says no session is bound.  Neither is a fact about the
-// disk, so neither contradicts the durable claim the snapshot already carries,
-// and the read reports that claim.  A refusal that *is* a fact still fails the
-// read: it arrives as an observation failure, which the caller propagates
-// before asking this.
+// A refused or unobserved query is an absence of an answer, not an absence of
+// truth.  The inherited implementation says the worker does not expose an epoch
+// at all; the production adapter says no session is bound, or that it was
+// mid-command and would not answer without waiting.  None of those is a fact
+// about the disk, so none contradicts the durable claim the snapshot already
+// carries, and the read reports that claim.  A refusal that *is* a fact still
+// fails the read: it arrives as an observation failure, which the caller
+// propagates before asking this.
 std::optional<std::uint64_t> observed_dirty_epoch(
     IWorkerControl& worker, const ManagedProfileSnapshot& snapshot) {
     if (snapshot.runtime_observation.has_value()) {
@@ -1165,8 +1166,8 @@ std::optional<std::uint64_t> observed_dirty_epoch(
     }
     auto live =
         worker.current_dirty_epoch(snapshot.record.profile.profile_uuid);
-    if (!live.ok()) return std::nullopt;
-    return live.value();
+    if (!live.ok() || !live.value().has_value()) return std::nullopt;
+    return live.value().value();
 }
 
 } // namespace
@@ -1401,9 +1402,9 @@ Result<void> IWorkerControl::publish_compaction_epoch(
         L"The worker does not implement the compaction dirty-epoch fence"));
 }
 
-Result<std::uint64_t> IWorkerControl::current_dirty_epoch(
+Result<std::optional<std::uint64_t>> IWorkerControl::current_dirty_epoch(
     const product::Uuid&) {
-    return Result<std::uint64_t>::failure(service_error(
+    return Result<std::optional<std::uint64_t>>::failure(service_error(
         ServiceCoreError::dependency_failure,
         L"service_core.current_dirty_epoch",
         L"The worker does not expose the authoritative dirty epoch"));
@@ -2257,11 +2258,18 @@ Result<ServiceResponse> ServiceCore::dispatch(
         if (!live_epoch.ok()) {
             return Result<ServiceResponse>::failure(live_epoch.error());
         }
-        if (live_epoch.value()
-            > profile.value().checkpoint.current_dirty_epoch) {
+        // An unobserved epoch is not a clean one.  It means this process could
+        // not ask without waiting behind another command, so the command is
+        // admitted without rewriting durable state from a reading it does not
+        // have; the checkpoint's own boundary evidence remains the authority on
+        // the epoch it cuts.  Refusing here would reject a valid command merely
+        // because another profile's command held the worker gate.
+        if (live_epoch.value().has_value()
+            && live_epoch.value().value()
+                > profile.value().checkpoint.current_dirty_epoch) {
             auto observed_dirty = profile.value();
             observed_dirty.checkpoint.current_dirty_epoch =
-                live_epoch.value();
+                live_epoch.value().value();
             observed_dirty.state.disk.persistence =
                 product::PersistenceState::dirty;
             if (request.dry_run) {
@@ -3943,12 +3951,12 @@ Result<OperationRecord> ServiceCore::execute_operation(
         auto state = current_profile->state;
         auto live_epoch = worker_.current_dirty_epoch(
             current_operation.profile_id);
-        if (live_epoch.ok()) {
+        if (live_epoch.ok() && live_epoch.value().has_value()) {
+            const auto epoch = live_epoch.value().value();
             stop_state.dirty_epoch_before = (std::max)(
-                stop_state.dirty_epoch_before, live_epoch.value());
-            if (live_epoch.value()
-                > checkpoint_state.current_dirty_epoch) {
-                checkpoint_state.current_dirty_epoch = live_epoch.value();
+                stop_state.dirty_epoch_before, epoch);
+            if (epoch > checkpoint_state.current_dirty_epoch) {
+                checkpoint_state.current_dirty_epoch = epoch;
                 state.disk.persistence = product::PersistenceState::dirty;
             }
         }
@@ -6339,6 +6347,35 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             std::byte{'u'}, std::byte{'n'}, std::byte{'s'},
                             std::byte{'a'}, std::byte{'f'}, std::byte{'e'}};
                     } else {
+                        // The positive half of the same facts.  The refusal above
+                        // names which conjunct failed; a forget that succeeds must
+                        // say what it proved, or "it worked" is only an exit code
+                        // and the absence of a matching device cannot be read back
+                        // from any record.
+                        {
+                            const auto& value = proof.value();
+                            logger_.write(ServiceLogEvent{
+                                ServiceLogKind::operation_running,
+                                current_operation.request_id,
+                                current_operation.operation_id,
+                                current_operation.profile_id,
+                                current_operation.command_scope,
+                                current_operation.phase,
+                                "forget safety proved: worker_absent="
+                                    + std::to_string(value.worker_absent)
+                                    + " writer_lock_absent="
+                                    + std::to_string(value.writer_lock_absent)
+                                    + " device_absent="
+                                    + std::to_string(
+                                        value.matching_device_absent)
+                                    + " bundle_present="
+                                    + std::to_string(value.bundle_present)
+                                    + " identity_match="
+                                    + std::to_string(
+                                        value.retained_bundle_identity
+                                        == durable_tombstone
+                                               .retained_bundle_identity)});
+                        }
                         const ForgetMetadataRemovalRequest removal_request{
                             current_operation.operation_id,
                             current_operation.request_id,
@@ -6605,7 +6642,42 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 // publication does not happen.  Guessing 0 here is the same defect in a
                 // different disguise.
                 std::uint64_t bundle_generation = 0;
-                {
+                // Two plans publish a profile after the worker that answered them
+                // has already left: a stopped create drops its session by design,
+                // and an import never holds one (its worker only inspected the
+                // bundle read-only).  Both replies carry the bundle's durable
+                // generation, and both must publish that number rather than ask a
+                // process that is gone.
+                const bool worker_answered_and_left =
+                    pending_plan.command == ManagementCommand::create_stopped
+                    || pending_plan.command == ManagementCommand::import_profile;
+                if (worker_answered_and_left) {
+                    // **No runtime is observable here, and asking is a race.**
+                    // `create_bundle`/`inspect_bundle` answered, the session was
+                    // dropped (nothing is left to command), and the worker exits.
+                    // Asking it again was measured on the guest as an observation
+                    // that either failed after the runtime had gone down or never
+                    // returned, leaving the operation `running` with a dead worker
+                    // and no terminal state.  The generation the reply carried is
+                    // the bundle's durable generation, and nothing can move it
+                    // after the reply -- the worker held the writer lock until it
+                    // left.
+                    bundle_generation =
+                        worker_result.lifecycle.bundle_generation;
+                    const std::string why =
+                        pending_plan.command == ManagementCommand::import_profile
+                        ? " (import inspection; the worker has answered and left)"
+                        : " (create stopped; the worker has answered and left)";
+                    logger_.write(ServiceLogEvent{
+                        ServiceLogKind::operation_running,
+                        current_operation.request_id,
+                        current_operation.operation_id,
+                        current_operation.profile_id,
+                        current_operation.command_scope,
+                        current_operation.phase,
+                        "publishing with bundle_generation="
+                            + std::to_string(bundle_generation) + why});
+                } else {
                     auto runtime_observed = worker_.require_runtime_observation(
                         intent.profile_id);
                     if (!runtime_observed.ok()) {
@@ -6616,7 +6688,7 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             std::byte{'i'}, std::byte{'s'}, std::byte{'t'},
                             std::byte{'e'}, std::byte{'r'}};
                         auto detail = ipc::utf16_to_utf8(
-                            observed.error().message);
+                            runtime_observed.error().message);
                         logger_.write(ServiceLogEvent{
                             ServiceLogKind::operation_failed,
                             current_operation.request_id,

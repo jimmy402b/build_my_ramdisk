@@ -1,4 +1,4 @@
-﻿#include "tests/support/test_framework.h"
+#include "tests/support/test_framework.h"
 
 // The M4 checkpoint fixture, for its durable stores, clock, ids and worker
 // double.  Including it with the guard defined gives the fixture without its
@@ -122,7 +122,7 @@ public:
         return inner.publish_compaction_epoch(request, correlation, publish);
     }
 
-    Result<std::uint64_t> current_dirty_epoch(
+    Result<std::optional<std::uint64_t>> current_dirty_epoch(
         const product::Uuid& profile_id) override {
         return inner.current_dirty_epoch(profile_id);
     }

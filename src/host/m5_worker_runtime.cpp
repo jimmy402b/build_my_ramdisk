@@ -8,6 +8,7 @@
 #include "src/persistence/writer_lock.h"
 #include "src/run/runtime_adapter.h"
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
@@ -216,6 +217,12 @@ struct DiskWorkerRuntime::Impl final {
     // than reporting an identity nobody has looked at yet, and replaced by the
     // verified one the moment there is one.
     persistence::ImageUuid observed_image_id{};
+    // The generation the bundle itself was recovered at.  Kept because a
+    // stopped create tears its runtime down before it answers, and the runtime's
+    // in-memory stats then say zero -- while the bundle is already at the
+    // generation it was created with.  Publishing that zero makes the next start
+    // classify the bundle against the wrong generation.
+    std::uint64_t observed_bundle_generation{};
     // Engaged only after `start()` has confirmed the bundle's own image uuid.
     bool identity_verified{};
     bool cleaned_up{};
@@ -357,11 +364,31 @@ Result<void> DiskWorkerRuntime::start() {
     // not inside the device pipeline: measured, writing it immediately after the mount blocked the volume and the
     // create never reached a terminal state.
     impl.apply_label = operations.value().apply_volume_label;
+    // **A stopped create left a bundle behind, and this start must finish it.**
+    // The create mode normally writes generation zero itself and therefore
+    // refuses a non-empty bundle; here the bundle is this profile's own, already
+    // registered, and the missing half is the volume.  Inspecting it first is
+    // what proves the identity matches the launch before the runtime is allowed
+    // to treat the bundle as its own.
+    bool resume_existing_create = false;
+    if (impl.config.volume_mode == WorkerVolumeMode::provision_new) {
+        std::error_code ignored;
+        const auto manifest_path =
+            impl.config.bundle / impl.config.manifest_name;
+        if (std::filesystem::is_regular_file(manifest_path, ignored)) {
+            auto recorded = record_bundle_identity();
+            if (!recorded.ok()) {
+                return Result<void>::failure(recorded.error());
+            }
+            resume_existing_create = true;
+        }
+    }
     DiskRuntimeOptions options{};
     options.bundle = impl.config.bundle;
     options.virtual_bytes = impl.config.virtual_bytes;
     options.drive_letter = impl.config.drive_letter;
     options.volume_label = impl.config.volume_label;
+    options.resume_existing_create = resume_existing_create;
     // Which lifecycle this worker runs, chosen by the launch and not by what it finds:
     // `DiskRuntime` independently requires the bundle's own kind to match the mode, so a
     // mode that disagrees with reality fails closed inside the runtime rather than
@@ -437,6 +464,8 @@ Result<void> DiskWorkerRuntime::record_bundle_identity() {
         impl.config.bundle, *image.value().selected);
     if (!evidence.ok()) return Result<void>::failure(evidence.error());
     impl.observed_image_id = image.value().selected->image_uuid;
+    impl.observed_bundle_generation =
+        image.value().selected->checkpoint_generation;
     impl.bundle_evidence = evidence.move_value();
     return Result<void>::success();
 }
@@ -543,9 +572,14 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
     // instead would let the service authorize a removal against an image the
     // worker never confirmed it holds.
     status.image_id = impl.observed_image_id;
+    // The durable generation is the one recovery read from the bundle, and it
+    // does not disappear when the runtime is torn down.  A running runtime's
+    // stats may have advanced past it, so the larger of the two is reported.
+    status.committed_generation = impl.observed_bundle_generation;
     if (impl.runtime) {
         const auto stats = impl.runtime->maintenance_stats();
-        status.committed_generation = stats.generation;
+        status.committed_generation =
+            (std::max)(status.committed_generation, stats.generation);
         status.dirty = stats.dirty_bytes != 0;
         status.resident_bytes = stats.resident_bytes;
         status.budget_bytes = stats.budget_bytes;

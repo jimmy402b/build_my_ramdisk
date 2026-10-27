@@ -128,6 +128,14 @@ struct DiskRuntimeOptions final {
     std::chrono::milliseconds volume_timeout{30000};
     // Declared last so every existing positional initializer keeps its meaning (T4-02 volume label).
     std::optional<std::wstring> volume_label;
+    // **A create that resumes the bundle a previous `--no-start` create already
+    // wrote.**  The create mode normally refuses a non-empty bundle because it
+    // expects to write generation zero itself; a stopped create has already done
+    // exactly that, and the later start must finish the provisioning it did not
+    // do.  The flag is the caller's proof that the bundle is this profile's own
+    // (the worker verifies the image identity before setting it), so a create
+    // cannot adopt a stranger's bundle by accident.
+    bool resume_existing_create{};
 };
 
 // T06 deliberately exposes callbacks instead of production objects.  This

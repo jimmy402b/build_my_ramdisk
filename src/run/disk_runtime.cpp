@@ -129,7 +129,12 @@ Result<void> DiskRuntime::start() {
     // *existing* complete image, and neither may ever provision.  What separates them is
     // further down -- whether a drive letter is assigned -- and that is the only
     // difference, which is why this branch reads the same for both.
-    if ((mode_ == DiskRuntimeMode::create && kind != DiskBundleKind::empty) ||
+    const bool resuming_create =
+        mode_ == DiskRuntimeMode::create &&
+        kind == DiskBundleKind::manifest &&
+        options_.resume_existing_create;
+    if (((mode_ == DiskRuntimeMode::create && kind != DiskBundleKind::empty) &&
+         !resuming_create) ||
         (mode_ != DiskRuntimeMode::create && kind != DiskBundleKind::manifest)) {
         auto invalid = Result<void>::failure(
             runtime_error(L"classify_bundle", L"bundle kind does not match runtime mode"));
@@ -138,9 +143,20 @@ Result<void> DiskRuntime::start() {
     }
 
     if (mode_ == DiskRuntimeMode::create) {
-        if (!operations_.create_generation_zero_image)
-            return fail(missing_void(L"create_generation_zero_image"));
-        result = operations_.create_generation_zero_image(options_.virtual_bytes);
+        if (resuming_create) {
+            // The bundle was written by this profile's own stopped create.  Recover
+            // it exactly as the recover mode would, so the image is verified and
+            // the same backing view is provisioned below; writing generation zero
+            // again would replace a bundle the service has already registered.
+            if (!operations_.recover_complete_image)
+                return fail(missing_void(L"recover_complete_image"));
+            result = operations_.recover_complete_image(options_.virtual_bytes);
+        } else {
+            if (!operations_.create_generation_zero_image)
+                return fail(missing_void(L"create_generation_zero_image"));
+            result =
+                operations_.create_generation_zero_image(options_.virtual_bytes);
+        }
     } else {
         if (!operations_.recover_complete_image)
             return fail(missing_void(L"recover_complete_image"));

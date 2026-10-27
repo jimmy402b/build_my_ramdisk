@@ -1100,9 +1100,9 @@ public:
             correlation, live_dirty_epoch});
     }
 
-    Result<std::uint64_t> current_dirty_epoch(
+    Result<std::optional<std::uint64_t>> current_dirty_epoch(
         const product::Uuid&) override {
-        return Result<std::uint64_t>::success(live_dirty_epoch);
+        return Result<std::optional<std::uint64_t>>::success(live_dirty_epoch);
     }
 
     Result<ForgetSafetyEvidence> prove_forget_safe(
