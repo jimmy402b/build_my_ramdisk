@@ -533,6 +533,10 @@ constexpr std::array<FieldDescriptor, 10> kCreateFields{{
     {8, FieldKind::uint64_le, FieldRequirement::optional, FieldDisposition::consume, 0, 8, 0},
     {9, FieldKind::uint64_le, FieldRequirement::optional, FieldDisposition::consume, 0, 8, 0},
     {10, FieldKind::uint64_le, FieldRequirement::optional, FieldDisposition::consume, 0, 8, 0},
+    // Field 11 is the volume label (T4-02).  The count above had already been bumped to 11, but the table is
+    // what the decoder actually walks: without this entry a client that sends a label is refused as sending an
+    // unknown field, which is exactly what the guest reported.
+    {11, FieldKind::string_utf8, FieldRequirement::optional, FieldDisposition::consume, 0, 64, 0},
 }};
 constexpr CommandSchema kCreateSchema{
     static_cast<std::uint32_t>(CommandId::disk_create), 11, kCreateFields};
