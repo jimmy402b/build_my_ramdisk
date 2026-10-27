@@ -2305,3 +2305,33 @@ out/.../tests/Release/myrd_m4_profile_codec_tests.exe  7:58:24
 `size=515 hexlen=1030`），并**同时**把 `kProfileKnownFieldCount` 与 `kLastKnownTag` 一起提到 36
 （因为头部写的是"已知字段数"，现在有 36 个；只改一个很可能就是 §3.92 里 `decoded.ok()` 失败的原因）。
 **`golden-hex-out.txt` 我在 3.92 里存过、后来删了**——下次重新生成即可（探针写法已验证可用）。
+### 3.97 2026-10-27 11:25：卷标编解码**已打通 10/22**，卡在两条"字节手术"用例——配方完整记录
+
+**本轮真实进展**（这些改动已回退，因为整树没绿；但配方是验证过的）：
+
+1. `profile_types.h`：`kProfileKnownFieldCount` **35 → 36**（**必须**与 `kLastKnownTag` 同步，
+   否则头部声明的已知字段数与解码要求不一致，`decoded.ok()` 失败）；
+2. `profile_codec.cpp`：`kLastKnownTag` → `ProfileFieldTag::volume_label`（36）；
+3. 编码器末尾（`index_headroom_percent` 之后）追加：
+   ```cpp
+   auto label = encode_utf8(value.volume_label.value_or(std::wstring(1, L'\u0001')), 64);
+   if (!label.ok()) return Result<std::vector<std::byte>>::failure(label.error());
+   append_bytes_field(payload, ProfileFieldTag::volume_label, ProfileFieldKind::utf8, label.value());
+   ```
+4. 解码聚合初始化末尾加一个 lambda，把 `L"\u0001"` 视为"无标签"；
+5. `expected_kind_and_length()` 的 switch 里把 `volume_label` **并入 utf8 组**
+   （**漏了这一步会得到 `decoded.ok()` 失败**——这是本轮踩的坑）；
+6. 黄金样本换成 **515 字节**（`size=515 hexlen=1030`，本轮抓到并存过）；
+7. 布局常量测试：`kProfileKnownFieldCount` 断言 35 → **36**。
+
+**结果**：**22 例中 10 例通过**，`decoded.ok()` 在新黄金上成功 ⇒ **编解码本体已通**。
+剩下的 2 条是**字节手术用例**，它们把"未知字段"用 tag **36** 表示，而 36 现在已是已知字段：
+- `profile_v1_rejects_unknown_mandatory_field`：`put_u16(…, kLastFieldOffset, 36)` → 改 **37**；
+- `profile_v1_accepts_bounded_unknown_optional_field`：
+  - 追加字段的 tag 字节 `{36}` → **{37}**；
+  - **payload 长度 445 → 454**（新 payload 443 + 11）；
+  - 头部已知字段数 `put_u32(bytes, 36, 36)` **保持不变**（36 是对的）。
+  改完仍失败 ⇒ 再核对这条用例追加的 11 字节布局（tag 2 + kind 1 + flags 1 + len 4 + value 3）。
+
+**状态**：全部回退——构建干净、22 用例全绿、工作树 0 改动。
+**这一段（3.81–3.97）的净产出**：一份**可复现的配方** + 一条教训（**先核对基准，再怀疑实现**）。
