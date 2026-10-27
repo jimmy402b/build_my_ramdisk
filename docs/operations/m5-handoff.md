@@ -3203,3 +3203,35 @@ compaction: completed total=<N> checkpoints_since=0
 1. **`step=` 可能是上一次动作的陈旧字段**——我因此把枚举上界从 10 调到 30 再到 120，三次都无效；
 2. **两处必须一致**——`make_registration_record()` 与 `materialized_registration_profile()` 是同一份 profile 的两次构造，
    只有前者带阈值时，带阈值的 create 就必然被 22024 拒绝。
+### 3.144 2026-10-27 20:05：**两条缺的客机读数，给一段可直接粘的脚本**
+
+下一任要取的两条读数（T4-02 的 Load Only 与易失盘）**不需要新功能**，只需要一个场景。
+把下面这段加进 `tests/e2e/test-m5-cli-e2e.ps1`（放在现有 `disk forget` 之前，`Invoke-Cli`/`Fail` 已在该文件里）：
+
+```powershell
+    # --- T4-02: a stopped create starts nothing, and a volatile disk refuses a plain stop ---
+    $quietName = 'm5-e2e-quiet-' + [guid]::NewGuid().ToString('N')
+    $quietBundle = Join-Path 'C:\m5' $quietName
+    $quiet = Invoke-Cli @('disk', 'create', '--name', $quietName, '--bundle', $quietBundle,
+        '--size', '64MiB', '--mount', 'Z:', '--no-start', '--checkpoint-interval', 'off')
+    if ($quiet.exit -ne 0) { Fail "the quiet create failed: $($quiet.output)" }
+    $quietId = Get-UuidFromText $quiet.output
+    if ($null -eq $quietId) { Fail 'the quiet create carried no operation id' }
+    if ((Wait-ForTerminal $quietId 300) -ne 'succeeded') { Fail 'the quiet create did not succeed' }
+    $quietList = (Invoke-Cli @('disk', 'list')).output
+    if ($quietList -notmatch 'Ready\s+stopped/configured') { Fail "a --no-start create is not stopped: $quietList" }
+    if ((@(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue)).Count -ne 0) {
+        Fail 'a --no-start create left a worker running'
+    }
+    $stopPlain = Invoke-Cli @('disk', 'stop', $quietName)
+    if ($stopPlain.exit -eq 0) { Fail 'stopping a volatile disk did not require --accept-volatile-data-loss' }
+    if ($stopPlain.output -notmatch 'volatile') { Fail "the refusal does not mention volatile data: $($stopPlain.output)" }
+    Write-Host '  quiet create left no worker; volatile stop was refused as it should be'
+```
+
+**为什么这样写**：
+- `--no-start` 走的是 `ManagementCommand::create_stopped`（§3.123 已证明分派无条件），
+  所以"没有 worker"是**硬断言**，不是观察；
+- `--checkpoint-interval off` 就是易失盘（§3.121 的裁定），`disk stop` 必须要求
+  `--accept-volatile-data-loss`——**拒绝**才是正确行为，脚本断言的是"拒绝发生"。
+- 若 `Z:` 被占用，换一个 `disk list` 里没出现的盘符。
