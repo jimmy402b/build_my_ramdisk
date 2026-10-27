@@ -183,6 +183,7 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
 
     const auto now = clock_.monotonic_time_ms();
     std::vector<Candidate> candidates;
+    std::vector<Candidate> compactions;
     for (const auto& snapshot : listed.value().profiles) {
         const auto& profile = snapshot.record.profile;
         if (!snapshot.runtime_observation.has_value()
@@ -224,10 +225,32 @@ std::vector<MaintenanceDecision> ServiceMaintenance::evaluate(
             continue;
         }
         const auto reason = checkpoint_due_reason(input);
-        if (reason.empty()) continue;
-        candidates.push_back({profile.profile_uuid,
-                              profile_handle(profile.profile_uuid), reason});
+        if (!reason.empty()) {
+            candidates.push_back({profile.profile_uuid,
+                                  profile_handle(profile.profile_uuid), reason});
+            continue;
+        }
+        // **Compaction's half, from the same snapshot.**  The policy is the profile's and the count is the
+        // durable one, so the checkpoint-count trigger needs nothing new.  The two percentage triggers stay at
+        // zero because the worker does not report occupancy yet, and the policy reads zero as "trigger off" --
+        // nothing is guessed in the meantime.
+        if (for_suspend) continue;
+        MaintenanceInput compaction_input = input;
+        compaction_input.compaction = profile.compaction;
+        compaction_input.checkpoints_since_compaction = static_cast<std::uint32_t>(
+            (std::min)(snapshot.compaction.checkpoints_since_compaction,
+                       static_cast<std::uint64_t>(0xFFFFFFFFULL)));
+        // The durable phase is the authority on "a compaction is already in flight", not the policy.
+        if (snapshot.compaction.phase == CompactionDurablePhase::stable) {
+            const auto compaction_reason = compaction_due_reason(compaction_input);
+            if (!compaction_reason.empty()) {
+                compactions.push_back({profile.profile_uuid,
+                                       profile_handle(profile.profile_uuid),
+                                       compaction_reason});
+            }
+        }
     }
+
 
     std::vector<MaintenanceDecision> decisions;
     decisions.reserve(candidates.size());
