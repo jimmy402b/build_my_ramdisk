@@ -3702,3 +3702,35 @@ request 3713c53b33cb4efc8afcb40dc712e164
 | `integration.m5.cli_e2e`（含易失盘 + 自动压缩断言） | 118 s | **PASS** |
 | `integration.m5.gui_workflow` | 27 s | **PASS** |
 | 本机十一套件 | — | **228/228** |
+### 3.168 2026-10-28 00:05：**更正 + 缺陷 A 的修法已缩到"补一次调用"**
+
+**先更正我之前写错的名字**：持有 session 的容器**不是** `held_sessions_`（我在 §3.163/§3.165 写错了，
+按那个名字 grep 永远搜不到），实际是：
+
+```cpp
+// service_worker_control.h:486
+std::vector<std::pair<product::Uuid, std::unique_ptr<ServiceWorkerSession>>> sessions_by_profile_;
+```
+
+**而且"释放"的方法早就有了**（`service_worker_control.cpp:240`）：
+```cpp
+void ServiceWorkerControl::forget_session(const product::Uuid& profile_id) noexcept {
+    … if (found != sessions_by_profile_.end()) sessions_by_profile_.erase(found);
+}
+```
+**它今天有两处调用**：
+- `:394` —— `start()` 失败时（会话已不可用）；
+- `:932` —— 移除动作之后，注释原文：*"The worker's runtime is gone, so the session no longer describes
+  anything this adapter may command."*
+
+⇒ **所以 stop 其实会释放 session**（§3.158 里那两个 `shutdown … answered` 也证明 stop 是通的）。
+**缺陷 A 的缺口精确到一句话**：`register_bundle()` 在 `:383` 把 session 放进 `sessions_by_profile_`，
+而**`create_stopped` 的计划在那里结束后再没有第二步**（`create_and_start` 才有后续 start 动作），
+**于是没有任何人调用 `forget_session`**。
+
+**修法（下一任 10 分钟可完成）**：
+1. 把 `forget_session` 从私有提为可调用（或加一个公开的 `release_stopped(profile_id)` 转调它）；
+2. **在 `create_stopped` 的计划结束处调用一次**——计划结束处是那个"`publish_provisioning_profile`
+   之后若无后续动作"的位置；**不要**放在 `register_bundle` 里（§3.165 已说明那会打断 `create_and_start`）。
+
+**判定标准（不变）**：§3.158 场景 `workers settled after N s` 应 **N < 30 s**。
