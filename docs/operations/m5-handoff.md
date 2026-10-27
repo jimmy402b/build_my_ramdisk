@@ -3151,3 +3151,27 @@ if (intent.compaction_checkpoint_threshold.has_value()) {
 **我这轮尝试直接改它，锚点因文件是 LF 结尾没匹配上，未做任何修改**（工作树干净）。
 **这是今天最有价值的一条结论**：它把"神秘 create 失败"变成了"**两处必须一致**"——
 而这正是今天第 5 次同族问题（profile 字段数、CLI 白名单、schema 计数、字段表、现在是这个）。
+### 3.141 2026-10-27 19:25：**T4-03 自动触发：已证明，并且现在由 e2e 断言守住**
+
+**根因（本轮修复）**：`profile_registration_store.cpp` 的 `materialized_registration_profile()`
+用**默认 `CompactionPolicy`** 重建比对对象，而提议里带着 `--compaction-threshold 2` ⇒
+`publish_registration` 以 **22024 "does not exactly match…"** 拒绝创建。**日志里的 `step=` 指向更早的枚举步骤，是误导。**
+
+**修复后（两次连续通过）**：
+| 运行 | 结果 | 用时 |
+|---|---|---|
+| `5d383052…`（探针版） | **PASS**，`probe: compaction observed = True` | 130 s |
+| `fa6b1c05…`（**断言版**） | **PASS** | 103 s |
+
+服务日志（`5d383052…` 那次）：
+```text
+kind=0 command=disk.compact phase=authorized
+kind=1 command=disk.compact phase=queued
+kind=1 command=disk.compact phase=maintenance message=maintenance: compaction dispatched (checkpoint-count)
+```
+
+**e2e 现在会守这条**：`--compaction-threshold 2` + 30 s 检查点 ⇒ 轮询 ≤180 s 等
+`maintenance: compaction dispatched (checkpoint-count)`，等不到就 `Fail`。**探针已删除。**
+
+**T4-03 剩余**：`journal`/`compaction` **指标的可观测性**（`disk show` 不显示，§3.125 给了四层形状）。
+自动触发这一半**已完成并有客机证据**。
