@@ -3267,3 +3267,16 @@ compaction: completed total=<N> checkpoints_since=0
   ```
   若 > 60 s，那**本身值得作为一条产品读数记下来**（用户按 stop 之后，worker 还活着一分钟）。
 - **顺带修正 §3.144 的措辞**：那里说"没有 worker 是硬断言"——**只有等它退出才是**；否则断言的是"退出够快"，那不是我原本想测的东西。
+### 3.147 2026-10-27 20:30：**`--no-start` 的 create 在客机上直接失败** —— Load Only **并不是"已经能用"**
+
+- 更正后的场景（120 s 轮询 + 易失盘 stop 拒绝）**在第一条断言就失败**：
+  `the quiet create did not succeed`，且 `1 worker process(es) survived the run`。
+- 也就是说 **`disk create --no-start --checkpoint-interval off --mount Z: ...` 这次创建没有成功**。
+- **因此 §3.122 的结论需要收紧**：那里说"Load Only = `disk import`，已存在"——那是**代码层**证据（分派表）。
+  而 **`--no-start` 的 *create*** 是另一条路径，**它在客机上失败**。**两条路径不能互相替代**（§3.146 已记同一类错误）。
+- **已回退**：`git checkout -- tests/e2e/test-m5-cli-e2e.ps1`，工作树 0 改动；e2e 回到含 T4-03 断言的通过版本。
+- **下一任的第一步**：把这条命令手跑一次并读**服务日志的 `kind=7` 行**（就像修 T4-03 那次一样）——
+  大概率是某个具体步骤（挂载/发布/设备）失败，而不是"`--no-start` 不支持"。
+  可能的嫌疑：`--checkpoint-interval off` 与 `--no-start` 同时给出时，profile 的某个字段组合触发校验；
+  或 `Z:` 在客机上不可用（e2e 里应改用 `disk list` 里没出现的盘符）。
+- **结论（对本轮）**：**T4-02 的 Load Only 与易失盘都还不能算完成**。我先前说"只差读数"是错的。
