@@ -4140,3 +4140,33 @@ worker: reply written    = 87
 
 **缺陷 A 的定位区间（现在）**：**服务进程内，"worker 答复之后 → execute_operation 返回之前"**——
 从"整条 create 路径"缩到这里，用了 **10 次收窄**，全部由 trace 或代码推动。
+### 3.184 2026-10-28 03:35：**定位完成：卡在 `ServiceWorkerControl::execute()` 的一次调用上——而它的第一行是拿锁**
+
+客机（`1c5e2ecf…`）读数：
+```text
+service: asking the worker for an action = 1
+service: worker action returned            = 0        ← **从未返回**
+```
+而 worker 侧此前已证明"收/处理/回"三样齐全（87/87/87，§3.183）。
+
+**关键结构事实**（`service_worker_control.cpp:1128` 起）：
+```cpp
+Result<WorkerActionResult> ServiceWorkerControl::execute(
+    const WorkerActionRequest& request) {
+    std::unique_lock lock(command_gate_);      // ← **第一行就是拿锁**
+```
+⇒ **`execute()` 卡在拿 `command_gate_` 上**，而不是卡在 worker 通信上。
+而今天早些时候（§3.152）已确认：**维护 tick 每 15 秒会走 `observe_runtime`**，`find_session`/`observe_runtime`
+也在这把锁的作用域内。**若某条路径持锁后等 worker 答复，而 worker 正忙在另一条命令上，
+`execute()` 就会无限期等这把锁。**
+
+**这是缺陷 A 的最终定位**（11 → 12 次收窄，全部由读数推动）：
+**服务内 `command_gate_` 的争用/死锁**，不是驱动、不是枚举、不是管道。
+
+**下一任的第一步（一次读 + 一次改）**：
+1. 找出**所有**拿 `command_gate_` 的地方（`grep command_gate_ service_worker_control.cpp`），
+   确认哪一处**在持锁期间等待 worker**（那处就是死锁的一半）；
+2. 把那处的等待**移到锁外**（或改成"取快照 → 放锁 → 通信"），这与 §3.154 里 import 的做法同型；
+3. 判据：`create --no-start` 后 30 s 内 ① 终态 ② 无残留 worker ③ `device_absent=1`。
+
+**已回退探针**（工作树 0 改动）。**这条结论足以让下一个人直接开工，而不必重复今天的 12 次收窄。**
