@@ -3253,3 +3253,17 @@ compaction: completed total=<N> checkpoints_since=0
 - **这条也修正了我先前的一个说法**：§3.123 说"import 走 `import_profile`"是**代码层**证据，
   但**"`--no-start` 的 create 实际不拉 worker"是运行时行为**，两者不能互相替代。这正是今天反复出现的教训：
   **代码说它不该启动，不等于运行时它没启动。**
+### 3.146 2026-10-27 20:20：**worker 不是泄漏，但退出超过 30 秒**——这解释了那次断言为何失败
+
+- 现在（失败运行之后数分钟）客机上 **`myrd-m5-worker` 数量 = 0** ⇒ **不是泄漏**，进程最终退出了。
+- 结合 §3.145：那次断言在"主盘 stop 之后 30 秒"仍看到 1 个 worker ⇒ **停止后的 worker 退出耗时 > 30 s**。
+- **合理怀疑**：`disk stop` 返回时 worker 只是"被要求退出"，真正的退出由**调度/清扫**在后续 tick（15 s）里完成，
+  期间可能还要等设备退役（本会话记录过"设备退役窗口"）。**这本身可能不是缺陷**——但它让"停完立刻查进程"不可靠。
+- **下一任的正确断言**（替换 §3.144 里那条）：**轮询到 120 s**并**打印实际耗时**：
+  ```powershell
+  $t0 = Get-Date
+  while (((Get-Date) - $t0).TotalSeconds -lt 120 -and @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue).Count -ne 0) { Start-Sleep -Seconds 2 }
+  Write-Host ("  workers settled after {0:N0} s" -f ((Get-Date) - $t0).TotalSeconds)
+  ```
+  若 > 60 s，那**本身值得作为一条产品读数记下来**（用户按 stop 之后，worker 还活着一分钟）。
+- **顺带修正 §3.144 的措辞**：那里说"没有 worker 是硬断言"——**只有等它退出才是**；否则断言的是"退出够快"，那不是我原本想测的东西。
