@@ -2648,3 +2648,26 @@ worker spec/运行时/适配器），未来若驱动支持或改用别的接口�
 - **这条与我的改动无关**：它是**既有缺陷**（本会话更早的 `model/m5 12/13` 只出现过
   `m5.production_execution_backend`，说明 `startup_sweep` 那时是过的，或当时也静默失败过而未被注意）。
   **下次要先确认"它曾经绿过吗"**，再决定是否算回归。
+### 3.115 2026-10-27 14:25：`m5.startup_sweep` 失败的真因——**数据目录不存在**（环境前提，不是回归）
+
+用 `MYRD_M5VM_GUEST=1` 手动跑（这正好复现了 agent 那条路径）：
+
+```text
+DIAG store open failed op=profile_store.open_directory native=2
+     msg=Failed to open a required profile directory
+exit=1
+```
+
+- ⇒ **不是断言失败、也不是我的改动**：这个用例**要求 `C:\ProgramData\MyRamDisk\profiles` 存在**，
+  而 `Reset-M5Guest.ps1` 清空内容时**不会重建被删掉的目录**（它只删文件）。
+  本会话更早 `model/m5` 记 12/13 时之所以没这条红，是因为那时客机上**装着服务、目录在**。
+- **为什么不带标记时 exit 2**：用例开头有 `MYRD_M5VM_GUEST` 自检（`m5_startup_sweep_tests.cpp:96`），
+  拒绝时**会打印原因并返回 2**；带标记后才真正跑，然后因目录缺失失败（1）。
+  ⇒ **"静默失败"是我的误读**：agent 路径下输出写进了 run 目录的 stdout，但我那次 scp 拿的是**别的文件名**，
+  所以看起来是 0 字节。
+- **正确的环境前提（写进流程）**：跑这类"需要已安装状态"的用例之前，要么**先跑安装脚本**，
+  要么让 `Reset-M5Guest` 在清空后**重建目录**（`profiles`/`operations`，DACL 由安装脚本负责）。
+  建议后者：`Reset-M5Guest.ps1` 加 `New-Item -ItemType Directory -Force` 两步，
+  这样"重置后立刻跑测试"才成立。
+- **修正 3.113 的结论**：`m5.startup_sweep` 的红**不是新回归**，是**重置脚本与用例前提不匹配**；
+  `unit` 从 227 s 变 517 s 的那条**仍未解释**（单独跑 `^unit\.` 时也慢，可能与客机当时状态有关）。
