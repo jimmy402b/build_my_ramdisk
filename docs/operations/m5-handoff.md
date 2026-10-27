@@ -2497,3 +2497,23 @@ green=True pass=22
   3. **worker 侧转交**：`m5_worker_main.cpp` 把 `spec.volume_label` 放进 `config.volume_label`，
      `m5_worker_runtime.cpp` 再放进 `options.volume_label`（这一行就是 §3.105 第 2 层已在等的东西）；
   4. 最后 **CLI `--volume-label`** + 客机 `fsutil fsinfo volumeinfo` 读数。
+### 3.107 2026-10-27 12:50：**卷标纵切完成**——`--volume-label` 已是真实选项
+
+**三条路径实测（用构建出来的 `myrd-cli.exe`）**：
+```text
+--volume-label MyDisk        → 走到了服务（本机无服务 ⇒ "the service is not available"，正确的下一个错误）
+--volume-label <33 个字符>    → myrd-cli: --volume-label must be 1 to 32 characters
+--volume-label "a<TAB>b"     → myrd-cli: --volume-label must not contain control characters
+```
+
+**踩到的坑（记下来）**：`create` 分支里已经在解析这个选项了，但客户端仍报 `unknown option`——
+因为**还有一张"合法选项白名单"**（`cli_parser.cpp` 的 `value_options`）。**解析代码与白名单是两处，必须同时改。**
+这类"两处必须同步"的坑在这个项目里已出现多次（`kProfileKnownFieldCount`/`kLastKnownTag` 也是）。
+
+**卷标纵切最终形态（全部有读数）**：
+命令字段 → IPC 字段 11（边界校验）→ `LifecycleOperationIntent`（含相等性）→ `Profile` tag 36（22/22）→
+worker 启动请求 → 启动规格 → **私有管道追加字段**（旧写入方解码为"无标签"）→ worker 配置 →
+`DiskRuntimeOptions` → 挂载成功后 `SetVolumeLabelW`（失败只记日志）→ **CLI `--volume-label`**
+
+**唯一未做的验证**：客机读数 `fsutil fsinfo volumeinfo <letter>:` + 断电重启后标签仍在。
+`m5.cli` **17/17**、`m1.cli` **5/5**、`worker_protocol` **39/39**、`service_*` 25/25 各。
