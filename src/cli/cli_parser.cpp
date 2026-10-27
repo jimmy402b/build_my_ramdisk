@@ -18,7 +18,7 @@ const char* kUsage =
     "Usage:\n"
     "  myrd-cli disk list\n"
     "  myrd-cli disk show <disk>\n"
-    "  myrd-cli disk create --name <name> --bundle <dir> --size <size> --mount <target>\n"
+    "  myrd-cli disk create --name <name> --bundle <dir> --size <size> --mount <target> [--volume-label <text>]\n"
     "                       [--owner <sid>] [--no-start] [--memory-mode automatic|fixed]\n"
     "                       [--memory-hard-limit <size>] [--checkpoint-interval <interval>]\n"
     "  myrd-cli disk import --name <name> --bundle <dir> --mount <target> [--owner <sid>]\n"
@@ -106,6 +106,7 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
     // option would be a client that did something other than what was asked.
     const std::vector<std::wstring> value_options{
         L"--name", L"--bundle", L"--size", L"--mount", L"--owner",
+        L"--volume-label",
         L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval",
         L"--confirmation", L"--expected-image", L"--timeout", L"--pipe"};
     const std::vector<std::wstring> switch_options{
@@ -289,6 +290,23 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
             }
 
             create.no_start = has_flag(L"--no-start");
+            // 32 is the NTFS limit, so a longer label can never be applied and is refused here rather than after
+            // the volume exists.  Control characters are refused for the same reason: the label is shown in
+            // Explorer and in `dir`, where they would be invisible or break the layout.
+            if (auto label = value_of(L"--volume-label"); label.has_value()) {
+                const std::wstring& requested = label.value();
+                if (requested.empty() || requested.size() > 32) {
+                    invocation.usage_error = "--volume-label must be 1 to 32 characters";
+                    return invocation;
+                }
+                for (const wchar_t unit : requested) {
+                    if (unit < 0x20 || unit == 0x7F) {
+                        invocation.usage_error = "--volume-label must not contain control characters";
+                        return invocation;
+                    }
+                }
+                create.volume_label = requested;
+            }
             if (auto mode = value_of(L"--memory-mode"); mode.has_value()) {
                 const auto lowered = lower(mode.value());
                 if (lowered == L"automatic") {
