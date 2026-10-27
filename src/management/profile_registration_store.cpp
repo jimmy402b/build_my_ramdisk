@@ -1407,15 +1407,25 @@ Result<void> ensure_profile_unique(
             if (is_profile_path_not_found(record.error())) continue;
             return Result<void>::failure(record.error());
         }
-        if (equal_ignore_case(record.value().profile.display_name,
-                              proposed.profile.display_name)
-            || record.value().profile.image_uuid == proposed.profile.image_uuid
-            || equal_ignore_case(record.value().profile.bundle_path,
-                                 proposed.profile.bundle_path)
-            || mount_targets_equal(record.value().profile,
-                                   proposed.profile)) {
-            return store_error<void>(L"profile_registration.publish",
-                L"The profile name, image, or bundle is already registered");
+        // **Say which of the four collided.**  This check counts name, image, bundle *and mount target*, and its
+        // message named only the first three -- so a mount collision sent the reader after three fields that all
+        // differed.  That cost this project two rounds of wrong direction; naming the field costs one branch.
+        const bool same_name = equal_ignore_case(
+            record.value().profile.display_name, proposed.profile.display_name);
+        const bool same_image =
+            record.value().profile.image_uuid == proposed.profile.image_uuid;
+        const bool same_bundle = equal_ignore_case(
+            record.value().profile.bundle_path, proposed.profile.bundle_path);
+        const bool same_mount =
+            mount_targets_equal(record.value().profile, proposed.profile);
+        if (same_name || same_image || same_bundle || same_mount) {
+            std::wstring detail = L"The profile ";
+            detail += same_name ? L"name"
+                : same_image ? L"image"
+                : same_bundle ? L"bundle" : L"mount target";
+            detail += L" is already registered to another disk";
+            return store_error<void>(
+                L"profile_registration.publish", detail.c_str());
         }
         auto identity = inspect_bundle_identity(record.value().profile.bundle_path);
         if (!identity.ok()) {
