@@ -4114,3 +4114,29 @@ Result<void> M3AimRuntime::stop_provider() {
 
 **现状**：今天 9 次收窄，缺陷 A 的定位区间从"整条 create 路径"缩到"**m3 stop 返回 → 服务收到失败**"这一段，
 **下一次两行 trace 就能再缩到函数级**。
+### 3.183 2026-10-28 03:25：**worker 对每一条命令都答复了（87/87/87）**——卡点在**服务内部**
+
+客机（`8b48a1c4…`）统计：
+```text
+worker: command received = 87
+worker: command handled  = 87
+worker: reply written    = 87
+```
+⇒ **worker 收到、处理、回复三样完全对齐**；trace 末尾是两次 `M3AimRuntime::stop: returning`（05:09:24），
+而运行继续到 **05:14**（5 分钟）——**期间 worker 什么都不缺**。
+
+再看服务侧那条 bracket：**`service: execute_operation returned a failure` 从未出现**。
+
+⇒ **结论（本次收窄的终点）**：**worker 已答复，服务没有从 `execute_operation` 返回**。
+卡点**在服务进程内部**，位置是"拿到 worker 答复之后、`execute_operation` 返回之前"。
+
+**下一任的第一步（两行 trace，位置在服务侧）**：
+1. 在 `service_core.cpp` 调 worker 动作的地方**之前**：`service: asking the worker for an action`；
+2. 在其**之后**：`service: worker action returned`。
+- 前有后无 ⇒ **卡在发命令或读答复**（管道/超时）；
+- 两者都有 ⇒ 卡在**动作结果处理**（发布/状态机），那里已有 `execute_operation failed` 与 durable 阶段可供比对。
+
+**已回退探针**（工作树 0 改动）。
+
+**缺陷 A 的定位区间（现在）**：**服务进程内，"worker 答复之后 → execute_operation 返回之前"**——
+从"整条 create 路径"缩到这里，用了 **10 次收窄**，全部由 trace 或代码推动。
