@@ -4056,3 +4056,31 @@ Result<void> M3AimRuntime::stop_provider() {
 
 **注**：这已经是**第 6 次收窄**（`step=` 陈旧 → 挂载点判据 → 上界 → 锁 → 基线 → 异常 → 退役等待 → **provider stop**），
 每一次都由一条读数或一段代码推动，**没有一次是猜对的**。
+### 3.181 2026-10-28 03:05：**`stop_provider()` 全程完成**——所以卡点在它**之后**
+
+客机（`d7897e53…`）的 `last-trace.log` 尾部：
+```text
+04:55:13.500Z remove_owned_device: PhysicalDrive retired
+04:55:13.500Z stop_provider: asking the provider to stop
+04:55:13.502Z stop_provider: provider stopped
+04:55:13.502Z stop_provider: handles released
+```
+- **三行全出现** ⇒ `provider_->stop` 与四个 `reset()` **都在 2 毫秒内完成**；
+- **没有 EXCEPTION 行**（本次运行没有抛异常）；
+- trace 到此结束，而运行直到 **05:00:08** 才失败（**又过了 4.5 分钟，无任何 trace**）。
+
+⇒ **卡点在 `stop_provider()` 返回之后**：即 `M3AimRuntime::stop()` 的剩余两行、或**调用者的错误处理**、
+或**worker 把失败结果回给服务的那一步**、或**服务把操作推进终态的那一步**。
+
+**下一任的第一步（三行 trace，逐个夹逼，位置已明确）**：
+1. `M3AimRuntime::stop()` 末尾（`started_ = false;` 之后）加一行 `stop: returned`；
+2. worker 的 create-bundle 动作在**返回错误结果之前**加一行（`m5_worker_runtime` 的 create 分支）；
+3. 服务侧 `execute_operation` 的失败路径入口（`service_core.cpp:2916` 附近那段）加一行。
+
+**为什么这样排**：trace 已经证明"停止是干净的"，所以剩下的三段（stop 之后 / worker 回包 / 服务推进终态）
+**必须**用同样的三段式夹逼，而不是再猜。
+
+**已回退探针**（工作树 0 改动）。
+
+**注**：这是第 8 次收窄，且**每一次都把"不可能"的那一段排除掉**——今天的 trace 支出很小，收益是
+"缺陷 A 从'worker 莫名不退'变成'三行已知代码' "。
