@@ -864,6 +864,16 @@ Result<WorkerActionResult> ServiceWorkerControl::remove_mount(
     if (!removed.ok()) {
         return Result<WorkerActionResult>::failure(removed.error());
     }
+    // **Ask the worker to terminate, which nothing in this service has ever done.**  `shutdown` was
+    // written for exactly this and had no callers: the worker only left when its channel closed, and the
+    // session is held until the service exits, so a stopped disk kept a live worker -- measured as
+    // `worker: command received` every fifteen seconds and a process still present two minutes after
+    // `disk stop`, while `disk list` reported `runtime=Stopped` and `mem=0/0`.
+    //
+    // Best effort by design: the removal above already succeeded and the runtime is stopped, so a worker
+    // that left before answering is the outcome this asked for, not a failure.
+    const auto asked = session.value()->shutdown(context(), request.operation_id);
+    static_cast<void>(asked);
     const auto& reply = removed.value();
     if (reply.refused()) {
         // The worker's own decision about its own runtime, and the reason is
