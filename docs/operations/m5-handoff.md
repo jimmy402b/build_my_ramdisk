@@ -3187,3 +3187,19 @@ compaction: completed total=<N> checkpoints_since=0
 线格式加字段（**`kProfileFixedBytes` 护栏一起长**）→ 投影填充 → 渲染 + `m5.cli` 断言。
 
 **读数**：`orchestration 25/25`、`host 25/25`、`maintenance 11/11`，构建零错误。
+### 3.143 2026-10-27 19:55：**T4-03 完成**（自动触发 + 可观测，均有客机证据）
+
+**证据链**：
+| 环节 | 读数 |
+|---|---|
+| 策略 | `compaction_due_reason()` **11/11**（停止盘不压、`automatic=false` 静默、三理由按序、零值关闭） |
+| 派发 | tick 仅在 `phase == stable`、`lifecycle == ready`、无 `active_operation_id` 时派发 `DiskCompactCommand`（`no_wait`，与 checkpoint 同形状） |
+| 客机 | **两次连续 PASS**：`5d383052…`（130 s，探针版）、`fa6b1c05…`（103 s，**断言版**） |
+| 日志 | `maintenance: compaction dispatched (checkpoint-count)`、`compaction: completed total=N checkpoints_since=0` |
+| 客户端 | `disk show` 输出 `compactions=N`；线格式四处一次性提交后 **客机 `cli_e2e` 跨进程通过**（`f3a09779…`，104 s） |
+| 测试 | `m5.cli` 17/17、`m1.cli` 5/5、`orchestration` 25/25、`host` 25/25、`maintenance` 11/11 |
+
+**今天在这项上学到的两条**（都写进了代码注释）：
+1. **`step=` 可能是上一次动作的陈旧字段**——我因此把枚举上界从 10 调到 30 再到 120，三次都无效；
+2. **两处必须一致**——`make_registration_record()` 与 `materialized_registration_profile()` 是同一份 profile 的两次构造，
+   只有前者带阈值时，带阈值的 create 就必然被 22024 拒绝。
