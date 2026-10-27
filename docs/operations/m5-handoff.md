@@ -2749,3 +2749,26 @@ DIAG store open failed op=profile_store.directory_acl native=0
   | `^model\.|^m5\.` | **13/13**（114 s） |
   | `integration.m5.cli_e2e` | **PASS**（87 s，撤回卷标入口后） |
   | `integration.m5.install_uninstall` / `gui_workflow` | 上次各 PASS（9 s / 25 s） |
+### 3.120 2026-10-27 15:10：`unit` 的 517 s **不复现**——安静客机上 275 s（结论：先前那次是瞬时负载）
+
+```text
+96 of 96 passed      请求 8c285128…，275 s
+```
+
+- 三次读数：**227 s**（最早，安静客机）→ **517 s**（§3.113，刚跑过多次 e2e 与断电流程）→ **275 s**（现在）。
+- ⇒ **不是回归**：517 s 那次客机刚经历连续 e2e + 断电 + 多次安装，磁盘与设备栈处于"脏"状态。
+  **可用的口径：`unit` 在安静客机上约 3–5 分钟**，超过 6 分钟再怀疑。
+- **至此 §3.113 的两个异常都收口**：`m5.startup_sweep` = 环境假信号（已修，§3.118）；
+  `unit` 变慢 = 瞬时负载（不复现）。
+
+**客机基线（最终版，全部为安静客机读数）**：
+
+| 组 | 结果 | 用时 |
+|---|---|---|
+| `^unit\.` | **96/96** | 275 s |
+| `^model\.|^m5\.` | **13/13** | 114 s |
+| `integration.m5.cli_e2e` | **PASS** | 87 s |
+| `integration.m5.install_uninstall` | PASS | 9 s |
+| `integration.m5.gui_workflow` | PASS | 25 s |
+| `integration.m1/m2/m3/m4` | 1/1、4/4、31/31、3/3 | 5/19/97/9 s |
+| `structural` | 1/3（两条 `vswhere` 环境） | 5 s |
