@@ -3551,3 +3551,30 @@ request 2cad3213ad794c65a9f0bd1a8c57604c
 3. 补一条 `m5.cli` 或 orchestration 用例：**易失盘 stop 不带标志必须失败**。
 
 **判定标准**：客机重跑 §3.158 的场景，`volatile stop exit` 必须 **≠ 0**，且输出里含 `volatile`。
+### 3.160 2026-10-27 22:50：**易失盘保护生效了（exit=1），但"确认"这条路走不通**
+
+客机读数（`8263d645…`）：
+```text
+  volatile stop without the flag: exit=1
+```
+✅ **缺陷 B 的保护生效**：不给 `--accept-volatile-data-loss` 的 stop **被拒绝**（这是我加的那段判断）。
+
+❌ **但给了标志也停不掉**，客户端自己就失败了：
+```text
+the acknowledged stop failed: myrd-cli: the command could not be encoded for the service
+```
+原因在 `ipc_codec.cpp:835`：
+```cpp
+            if (value.force != value.accept_volatile_data_loss) {
+```
+⇒ **`force` 与 `accept_volatile_data_loss` 必须同为真或同为假**。而 `cli_parser.cpp:461` 只设 ack、不设 force
+⇒ **只给 ack 的命令无法编码**，用户会看到"could not be encoded"而不是"参数不合法"。
+
+**缺陷 C（新）**：**文档给出的确认方式不可用**。修法二选一：
+1. 解析器在 `--accept-volatile-data-loss` 时**同时置 `force`**（一行，且语义上 force 是"明知有损仍停"）；
+2. 或在 codec 放宽（`accept` 为真即可），但那会改变线格式的既有约束，**优先选 1**。
+
+**验收判据（更新）**：`volatile stop without the flag: exit=1`（已达成）**且**
+`volatile stop with the flag: exit=0`（**未达成**，卡在缺陷 C）。
+
+**已回退 e2e**（工作树 0 改动）。代码修复 `ba9f3aa` 保留——它让保护**真的存在**了。
