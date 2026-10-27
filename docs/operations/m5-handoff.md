@@ -2608,3 +2608,23 @@ worker spec/运行时/适配器），未来若驱动支持或改用别的接口�
 
 **读数**：`m1.cli 5/5`、`m5.cli 17/17`、`disk_runtime 33/33`、`worker_session 25/25`；
 `cli_e2e` 上次在撤回状态下 **1 of 1 passed，87 s**（请求 `77c53791…`）。
+### 3.113 2026-10-27 14:05：**客机复跑出现两个异常，未解释——下一轮必须先查这个**
+
+| 组 | 上次（卷标工作前） | 本次 | 差异 |
+|---|---|---|---|
+| `^unit\.` | 96/96，**227 s** | 96/96，**517 s** | 全对但**慢 2.3 倍** |
+| `^model\.|^m5\.` | 13/13（曾 12/13 间发） | **11/13** | `m5.production_execution_backend`（已知间发）+ **`m5.startup_sweep`（新失败）** |
+
+- **`m5.startup_sweep` 是本轮新出现的失败**，而这一轮我改过：`DiskWorkerConfig`/`WorkerLaunchSpec` 加字段、
+  worker 私有管道编解码追加字段、`disk_runtime` 移除流水线内写标签、worker 在 `start()` 之后应用标签。
+  **其中最可疑的是 worker 启动规格的字段追加**（`startup_sweep` 正是启动/接管相关的用例）。
+- 本地跑 `myrd_m5_startup_sweep_tests.exe` **没有任何输出**（`fail=0 pass=0`）——说明这个可执行文件
+  在本机要么需要参数、要么直接退出。**不能据此判断绿。**
+- **采集失败**：那次运行没有留下 `integration.m5.startup_sweep.stdout.txt`（scp 报文件不存在），
+  所以**失败原因目前未知**。
+- **下一轮第一件事**（按成本）：
+  1. 单跑 `-Filter '^integration\.m5\.startup_sweep$'`（现在能稳定复现），拿到它的 stdout/stderr；
+  2. 若与启动规格字段有关：**临时把 `volume_label` 字段从 `WorkerLaunchSpec` 与编解码中移除**，
+     重跑该用例——若恢复，则确认是"追加字段改变了 worker 启动语义"（这比性能问题严重得多）；
+  3 **性能回归（227 → 517 s）单独查**：最可能是我的有界写入线程或 worker 启动路径引入了等待，
+     但也不排除客机自身状态（本轮之前刚跑过多次 e2e）。
