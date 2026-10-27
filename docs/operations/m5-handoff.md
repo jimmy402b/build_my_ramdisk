@@ -4084,3 +4084,33 @@ Result<void> M3AimRuntime::stop_provider() {
 
 **注**：这是第 8 次收窄，且**每一次都把"不可能"的那一段排除掉**——今天的 trace 支出很小，收益是
 "缺陷 A 从'worker 莫名不退'变成'三行已知代码' "。
+### 3.182 2026-10-28 03:15：**m3 出口已到，服务入口未到**——缺口就是"worker 的答复"
+
+客机（`48bb0b4d…`）的 `last-trace.log`：
+```text
+05:02:15.126Z stop_provider: provider stopped
+05:02:15.128Z stop_provider: handles released
+05:02:15.128Z M3AimRuntime::stop: returning      ← **m3 出口到了**
+（之后无任何行；`service: execute_operation returned a failure` **从未出现**；也没有 EXCEPTION）
+```
+运行一直持续到 ~05:07。
+
+⇒ **缺口被夹在两条 trace 之间，长度为一段**：**worker 在 m3 停止返回之后、把失败结果回给服务之前**卡住。
+这一段的内容是 `m5_worker_runtime` 的 create-bundle 收尾（很可能是 **`runtime->cleanup()`**）
+
+**下一任的第一步（两行 trace，位置精确）**——在 `m5_worker_main.cpp` 的主循环里：
+```cpp
+        diagnostic_trace("worker: command handling");            // 已有 "command received"
+        auto reply = session.handle(request.value());
+        diagnostic_trace("worker: command handled");            // ← 新增
+        auto written = client.value()->write(...);
+        diagnostic_trace("worker: reply written");               // ← 新增
+```
+- 只见 `command received`（无 `command handled`）⇒ **卡在 `session.handle()` 内部**，
+  而 m3 stop 已返回 ⇒ 那就是 create-bundle 收尾里的 **`cleanup()`**（下一步把 trace 放进 `cleanup`）；
+- 见 `command handled` 无 `reply written` ⇒ **卡在写管道**（那是另一类问题）。
+
+**已回退探针**（工作树 0 改动）。
+
+**现状**：今天 9 次收窄，缺陷 A 的定位区间从"整条 create 路径"缩到"**m3 stop 返回 → 服务收到失败**"这一段，
+**下一次两行 trace 就能再缩到函数级**。
