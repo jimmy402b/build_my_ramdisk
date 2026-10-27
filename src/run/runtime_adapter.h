@@ -48,6 +48,12 @@ public:
                                std::optional<LockedVolume>& held) = 0;
     virtual Result<void> assign(const ProductVolume& volume, wchar_t letter) = 0;
     virtual Result<void> remove_letter(const ProductVolume& volume) = 0;
+    // Labelling is optional for an adapter: the default succeeds without doing anything, so the fakes in the
+    // tests keep compiling and a platform that cannot label simply does not.  Production overrides it.
+    virtual Result<void> apply_label(wchar_t letter, const std::wstring& label) {
+        (void)letter; (void)label;
+        return Result<void>::success();
+    }
     // Takes the volume's exclusive lock.  The attempt owns the lock it acquires,
     // so a caller that means to keep it must retain the attempt's `locked`.
     virtual Result<VolumeLockAttempt> lock(const ProductVolume& volume,
@@ -202,6 +208,7 @@ public:
                        std::optional<LockedVolume>& held) override;
     Result<void> assign(const ProductVolume& volume, wchar_t letter) override;
     Result<void> remove_letter(const ProductVolume& volume) override;
+    Result<void> apply_label(wchar_t letter, const std::wstring& label) override;
     Result<VolumeLockAttempt> lock(const ProductVolume& volume,
                                    std::uint32_t timeout_ms) override;
     Result<void> dismount(const ProductVolume& volume,

@@ -255,6 +255,10 @@ Result<DiskRuntimeOperations> make_runtime_operations(
                                                 const wchar_t letter) {
         return volumes.assign(volume, letter);
     };
+    operations.apply_volume_label = [&volumes](const wchar_t letter,
+                                               const std::wstring& label) {
+        return volumes.apply_label(letter, label);
+    };
     operations.lock_volume = [&volumes](const ProductVolume& volume,
                                         const std::uint64_t timeout) {
         return volumes.lock(volume, static_cast<std::uint32_t>(timeout));
@@ -567,6 +571,11 @@ Result<void> ProductionRuntimeAdapter::flush(const ProductVolume& volume,
 Result<void> ProductionRuntimeAdapter::assign(const ProductVolume& volume,
                                               const wchar_t letter) {
     return impl_->volume_adapter.assign_drive_letter(volume, letter);
+}
+
+Result<void> ProductionRuntimeAdapter::apply_label(const wchar_t letter,
+                                                   const std::wstring& label) {
+    return impl_->volume_adapter.apply_volume_label(letter, label);
 }
 
 Result<void> ProductionRuntimeAdapter::remove_letter(const ProductVolume& volume) {
