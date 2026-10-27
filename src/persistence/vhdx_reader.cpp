@@ -674,6 +674,17 @@ Result<std::unique_ptr<VhdxReader>> VhdxReader::create(
         identity, std::move(layout), options);
 }
 
+Result<std::unique_ptr<VhdxReader>> VhdxReader::create_from_standalone_file(
+    const OperationContext& context,
+    std::unique_ptr<IPersistenceFile> file,
+    WindowsFileIdentity windows_identity,
+    VhdxLayout layout,
+    VhdxReaderOptions options) {
+    return create_owned(
+        context, std::move(file), std::move(windows_identity),
+        std::move(layout), options);
+}
+
 #if defined(MYRD_ENABLE_TEST_SEAMS)
 Result<std::unique_ptr<VhdxReader>> VhdxReader::create_for_testing(
     std::unique_ptr<IPersistenceFile> file,

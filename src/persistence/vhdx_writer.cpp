@@ -1,6 +1,7 @@
 #include "src/persistence/vhdx_writer.h"
 
 #include "src/common/crc32c.h"
+#include "src/persistence/file_io.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/vhdx_reader.h"
 #include "src/persistence/writer_lock.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -769,6 +771,162 @@ Result<VhdxWrittenFile> write_sparse_vhdx_file(
             L"allocating bounded VHDX write state failed",
             PersistenceErrorCode::IoError, operation);
     }
+}
+
+Result<VhdxPathWriteResult> write_sparse_vhdx_to_path(
+    const OperationContext& context,
+    const std::filesystem::path& destination,
+    const VhdxWritePlan& plan,
+    const IVhdxPayloadSource& source) {
+    constexpr auto operation = L"write_sparse_vhdx_to_path";
+    if (destination.empty() || plan.file_length() == 0) {
+        return writer_failure<VhdxPathWriteResult>(
+            L"VHDX export destination or plan is empty",
+            PersistenceErrorCode::InvalidFormat, operation);
+    }
+    if (GetFileAttributesW(destination.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return writer_failure<VhdxPathWriteResult>(
+            L"VHDX export destination already exists; refusing to overwrite",
+            PersistenceErrorCode::GenerationConflict, operation);
+    }
+    // The partial file lives beside the destination, so the final MoveFileEx is
+    // a same-volume rename and the destination appears whole or not at all.
+    static std::atomic<std::uint64_t> sequence{0};
+    std::filesystem::path temporary = destination;
+    temporary += L".partial-";
+    temporary += std::to_wstring(GetCurrentProcessId());
+    temporary += L"-";
+    temporary += std::to_wstring(sequence.fetch_add(1) + 1);
+    struct TemporaryFile final {
+        std::filesystem::path path;
+        bool keep{};
+        ~TemporaryFile() {
+            if (!keep) static_cast<void>(DeleteFileW(path.c_str()));
+        }
+    } cleanup{temporary, false};
+    auto created = open_windows_persistence_file(
+        temporary, FileOpenMode::CreateNewReadWrite);
+    if (!created.ok()) {
+        return Result<VhdxPathWriteResult>::failure(created.error());
+    }
+    auto written = write_sparse_vhdx_file(
+        context, plan, source, created.move_value());
+    if (!written.ok()) {
+        return Result<VhdxPathWriteResult>::failure(written.error());
+    }
+    const auto layout = written.value().layout();
+    const auto file_bytes = layout.file_length();
+    auto written_file = written.value().release_file();
+    if (!written_file) {
+        return writer_failure<VhdxPathWriteResult>(
+            L"VHDX export lost its written file",
+            PersistenceErrorCode::FatalInternalInvariant, operation);
+    }
+    auto closed = written_file->close();
+    if (!closed.ok()) {
+        return Result<VhdxPathWriteResult>::failure(closed.error());
+    }
+    written_file.reset();
+    // **Read the file back through the production reader before publishing it.**
+    // A reported success is therefore a file `VhdxReader` has already opened and
+    // whose payloads matched the plan digest for digest.
+    {
+        auto reopened = open_windows_persistence_file(
+            temporary, FileOpenMode::ReadOnlyExisting);
+        if (!reopened.ok()) {
+            return Result<VhdxPathWriteResult>::failure(reopened.error());
+        }
+        const HANDLE identity_handle = CreateFileW(
+            temporary.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr);
+        if (identity_handle == INVALID_HANDLE_VALUE) {
+            return writer_failure<VhdxPathWriteResult>(
+                L"the exported file could not be identified for readback",
+                PersistenceErrorCode::IoError, operation);
+        }
+        auto identity = query_windows_file_identity(identity_handle);
+        static_cast<void>(CloseHandle(identity_handle));
+        if (!identity.ok()) {
+            return Result<VhdxPathWriteResult>::failure(identity.error());
+        }
+        const auto integrity_budget = (std::max)(
+            std::uint64_t{2},
+            static_cast<std::uint64_t>(plan.payloads().size()) + 2);
+        auto reader_result = VhdxReader::create_from_standalone_file(
+            context, reopened.move_value(), identity.value(), layout,
+            {{16 * kVhdxBatPageBytes, 16}, integrity_budget, integrity_budget});
+        if (!reader_result.ok()) {
+            return Result<VhdxPathWriteResult>::failure(
+                reader_result.error());
+        }
+        auto reader = reader_result.move_value();
+        std::vector<std::byte> payload_bytes(kVhdxDataBlockBytes);
+        std::array<std::byte, kBlockSizeBytes> block{};
+        if (plan.payloads().empty()) {
+            auto first = reader->read_block(context, 0, block);
+            if (!first.ok()) {
+                return Result<VhdxPathWriteResult>::failure(first.error());
+            }
+            const auto last_block = (plan.virtual_size() - 1) / kBlockSizeBytes;
+            if (last_block != 0) {
+                auto last = reader->read_block(context, last_block, block);
+                if (!last.ok()) {
+                    return Result<VhdxPathWriteResult>::failure(last.error());
+                }
+            }
+        }
+        for (const auto& payload : plan.payloads()) {
+            std::fill(payload_bytes.begin(), payload_bytes.end(), std::byte{0});
+            const auto virtual_offset =
+                payload.payload_index * kVhdxDataBlockBytes;
+            const auto logical_bytes = (std::min)(
+                static_cast<std::uint64_t>(kVhdxDataBlockBytes),
+                plan.virtual_size() - virtual_offset);
+            const auto block_count =
+                (logical_bytes + kBlockSizeBytes - 1) / kBlockSizeBytes;
+            for (std::uint64_t slice = 0; slice < block_count; ++slice) {
+                auto loaded = reader->read_block(
+                    context,
+                    payload.payload_index *
+                        (kVhdxDataBlockBytes / kBlockSizeBytes) + slice,
+                    block);
+                if (!loaded.ok()) {
+                    return Result<VhdxPathWriteResult>::failure(
+                        loaded.error());
+                }
+                if (loaded.value().kind != BlockLoadKind::Data) {
+                    return writer_failure<VhdxPathWriteResult>(
+                        L"exported VHDX payload read back as zero",
+                        PersistenceErrorCode::BackingDataCorrupt, operation);
+                }
+                std::copy(block.begin(), block.end(),
+                          payload_bytes.begin() +
+                              static_cast<std::ptrdiff_t>(
+                                  slice * kBlockSizeBytes));
+            }
+            auto digest = sha256_digest(payload_bytes);
+            if (!digest.ok()) {
+                return Result<VhdxPathWriteResult>::failure(digest.error());
+            }
+            if (digest.value() != payload.digest) {
+                return writer_failure<VhdxPathWriteResult>(
+                    L"exported VHDX payload readback digest differs",
+                    PersistenceErrorCode::BackingDataCorrupt, operation);
+            }
+        }
+    }
+    if (!MoveFileExW(temporary.c_str(), destination.c_str(),
+                     MOVEFILE_WRITE_THROUGH)) {
+        return writer_failure<VhdxPathWriteResult>(
+            L"VHDX export could not be published; the destination may have "
+            L"appeared between the refusal check and the rename",
+            PersistenceErrorCode::IoError, operation);
+    }
+    cleanup.keep = true;
+    return Result<VhdxPathWriteResult>::success({file_bytes});
 }
 
 VhdxPublishedBase::VhdxPublishedBase(

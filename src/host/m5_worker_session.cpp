@@ -178,8 +178,30 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
-    case WorkerCommand::status: {
-        if (!started_) {
+    case WorkerCommand::export_bundle: {
+        if (!request.export_path.has_value()) {
+            reply.error = refusal(
+                L"export_bundle", L"the export names no destination");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        auto exported = runtime_.export_bundle(*request.export_path);
+        if (!exported.ok()) {
+            reply.error = exported.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        // The reply is the worker's own observation of what it just exported:
+        // the bundle's durable generation and identity.  It does not claim the
+        // runtime is alive, because an export never starts one.
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.status = status.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::status: {        if (!started_) {
             reply.error = refusal(L"observe", L"the runtime has not been started");
             return Result<WorkerMessage>::success(std::move(reply));
         }

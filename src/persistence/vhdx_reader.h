@@ -73,6 +73,15 @@ public:
         std::unique_ptr<ValidatedPersistenceFile> file,
         VhdxLayout layout,
         VhdxReaderOptions options);
+    // Binds any standalone file (one not opened through a bundle capability) to
+    // a reader.  The caller supplies the identity it observed for that exact
+    // handle; this is what the export path uses to read its own output back.
+    static Result<std::unique_ptr<VhdxReader>> create_from_standalone_file(
+        const OperationContext& context,
+        std::unique_ptr<IPersistenceFile> file,
+        WindowsFileIdentity windows_identity,
+        VhdxLayout layout,
+        VhdxReaderOptions options);
 
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     static Result<std::unique_ptr<VhdxReader>> create_for_testing(

@@ -8,6 +8,7 @@
 | 2026-10-27 | M5-T4-02c | Load Only（`create --no-start`） | **create 半边 PASSED**：客机 `cli_e2e` 两次通过（30 s 内 terminal、无残留 worker、该盘 forget `device_absent=1`）。**start 半边仍未完成**：M3 `match_created_disk` 拒绝非空的续跑盘 | §3.188 |
 | 2026-10-27 | M5-DEF-A | 缺陷 A：`--no-start` 的 create 不终态、留 worker、占设备 | **PASSED**。根因是 publish-provisioning 二次观测已退出的 worker（失败分支还读错变量）+ `current_dirty_epoch` 阻塞拿 gate；客机三判据两次通过 | §3.188 |
 | 2026-10-27 | M5-INFRA | 可诊断性：`shutdown` 结果入 trace、重复注册错误报明冲突字段、`killed` 旧任务清理 | 完成（零成本 trace，长期保留） | §3.172、§3.175 |
+| 2026-10-27 | M5-T4-02d | 单文件 VHDX 导出 | **PASSED**：客机 `export exit=0`、14,680,064 B、generation 不变（5）、二次导出拒绝覆盖；导出路径在发布前用 `VhdxReader` 逐 payload 读回 | §3.189 |
 | 2026-10-27 | M5-T4-04 | release manifest 冻结 | **未开始**（须在 T4-02 之后） | tasklist T4-04 行 |
 
-**当前状态**：缺陷 A 已修且客机验证；M5 未达"可进入虚拟机验收"。剩余 T4-02（VHDX 导出；Load Only 的 start 半边）、T4-04 冻结。
+**当前状态**：缺陷 A 与 VHDX 导出已完成；剩余 **T4-04 冻结** 与 **Load Only 的 start 半边**。完成后才谈"可进入虚拟机验收"。

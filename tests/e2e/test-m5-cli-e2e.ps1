@@ -577,6 +577,53 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if (Test-Path -LiteralPath ($mount + '\')) {
         Fail "the volume is still mounted at $mount after the second stop"
     }
+
+    # -----------------------------------------------------------------------
+    # T4-02: export the stopped disk to one standalone VHDX.
+    #
+    # The worker's export path reads the file back through `VhdxReader` before
+    # it publishes the name, so a success here *is* "the reader can read it".
+    # What this block adds is the user-visible half: the file exists, the
+    # bundle's generation did not move, and a second export refuses to
+    # overwrite.
+    # -----------------------------------------------------------------------
+    Write-Step 'T4-02: export the stopped disk to a standalone VHDX'
+    $exportList = Invoke-Cli @('disk', 'list')
+    if ($exportList.exit -ne 0) { Fail "disk list failed before the export: $($exportList.output)" }
+    $exportLine = ($exportList.output -split "`n") |
+        Where-Object { $_ -match [regex]::Escape($mount) } | Select-Object -First 1
+    if ($null -eq $exportLine) { Fail "disk list did not report $mount before the export" }
+    $exportGeneration = [regex]::Match($exportLine, 'generation=(\d+)')
+    if (-not $exportGeneration.Success) { Fail "disk list did not report a generation for $mount" }
+    $generationBeforeExport = [uint64]$exportGeneration.Groups[1].Value
+    $exportPath = Join-Path 'C:\m5' ('m5-export-' + [guid]::NewGuid().ToString('N') + '.vhdx')
+    $exportResult = Invoke-Cli @('disk', 'export', $profileName, '--output', $exportPath)
+    Write-Host "  export exit=$($exportResult.exit)"
+    if ($exportResult.exit -ne 0) { Fail "disk export failed: $($exportResult.output)" }
+    if (-not (Test-Path -LiteralPath $exportPath)) {
+        Fail "disk export reported success but $exportPath does not exist"
+    }
+    $exportBytes = (Get-Item -LiteralPath $exportPath).Length
+    if ($exportBytes -le 0) { Fail "the exported VHDX is empty" }
+    Write-Host "  exported $exportBytes bytes"
+    $afterExport = Invoke-Cli @('disk', 'list')
+    if ($afterExport.exit -ne 0) { Fail "disk list failed after the export: $($afterExport.output)" }
+    $afterLine = ($afterExport.output -split "`n") |
+        Where-Object { $_ -match [regex]::Escape($mount) } | Select-Object -First 1
+    $afterGeneration = [regex]::Match($afterLine, 'generation=(\d+)')
+    if (-not $afterGeneration.Success) { Fail "disk list lost the generation after the export" }
+    if ([uint64]$afterGeneration.Groups[1].Value -ne $generationBeforeExport) {
+        Fail ("the export changed the bundle's generation: {0} -> {1}" -f
+            $generationBeforeExport, [uint64]$afterGeneration.Groups[1].Value)
+    }
+    Write-Host "  generation unchanged at $generationBeforeExport"
+    $overwrite = Invoke-Cli @('disk', 'export', $profileName, '--output', $exportPath)
+    Write-Host "  second export exit=$($overwrite.exit)"
+    if ($overwrite.exit -eq 0) { Fail 'the export overwrote an existing file' }
+    if ($overwrite.output -notmatch 'exists|overwrite') {
+        Fail "the refusal does not say the destination exists: $($overwrite.output)"
+    }
+
     $volName = 'm5-e2e-volatile-' + [guid]::NewGuid().ToString('N')
     # **Created running, deliberately.**  The volatile guard is a property of the
     # *stop*, and this case must measure that guard.  Starting a disk that a

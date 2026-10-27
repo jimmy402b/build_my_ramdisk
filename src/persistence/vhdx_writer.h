@@ -164,6 +164,30 @@ private:
     const IVhdxPayloadSource& source,
     std::unique_ptr<IPersistenceFile> temporary_file);
 
+// Writes one standalone VHDX at an absolute path that is not part of a bundle.
+//
+// The operation is the fold writer's export face: the same plan and payload
+// source the compaction path uses, but the destination is a caller-named file,
+// not a bundle-relative temporary that is renamed into the manifest.  It
+// therefore takes no `BundleWriterLock` and never touches the bundle.
+//
+// Three promises, each of which is a test:
+//   * the destination is never overwritten -- an existing file is refused before
+//     a byte is written, and the final rename does not replace;
+//   * a failed write leaves no partial file behind;
+//   * the bytes are read back through `VhdxReader`, with every payload digest
+//     compared, before the file is published.  A file this function reports
+//     success for has already been read by the production reader.
+struct VhdxPathWriteResult final {
+    std::uint64_t file_bytes{};
+};
+
+[[nodiscard]] Result<VhdxPathWriteResult> write_sparse_vhdx_to_path(
+    const OperationContext& context,
+    const std::filesystem::path& destination,
+    const VhdxWritePlan& plan,
+    const IVhdxPayloadSource& source);
+
 class VhdxPublishedBase final {
 public:
     VhdxPublishedBase(VhdxPublishedBase&&) noexcept = default;

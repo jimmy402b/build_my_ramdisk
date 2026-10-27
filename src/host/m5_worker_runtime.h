@@ -60,6 +60,7 @@ public:
     Result<void> start() override;
     Result<WorkerRuntimeStatus> observe() override;
     Result<WorkerRuntimeStatus> inspect_bundle() override;
+    Result<void> export_bundle(const std::wstring& destination) override;
     Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) override;
     Result<void> freeze_writes() override;

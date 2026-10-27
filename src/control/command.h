@@ -25,6 +25,12 @@ struct StatusCommand {};
 struct DiskListCommand {};
 struct DiskCheckpointCommand { std::wstring target; };
 struct DiskCompactCommand { std::wstring target; };
+// Writes the disk's durable image to a standalone VHDX at `output`.  Read-only
+// with respect to the disk: no profile state, bundle or generation changes.
+struct DiskExportCommand {
+    std::wstring target;
+    std::wstring output;
+};
 struct DiskConfigGetCommand { std::wstring target; };
 struct OperationListCommand {};
 struct OperationShowCommand { product::Uuid operation_id; };
@@ -95,7 +101,7 @@ using Command = std::variant<StatusCommand, DiskListCommand, DiskShowCommand,
     OperationWaitCommand, OperationCancelCommand, DriverStatusCommand,
     DiskConfigSetCommand, DiagnosticsCollectCommand, DiskImportCommand,
     DiskStopCommand, DiskRepairProfileCommand, DiskRebindCommand,
-    DiskForgetCommand, DiskCreateCommand>;
+    DiskForgetCommand, DiskCreateCommand, DiskExportCommand>;
 
 std::string_view command_name(const Command& command) noexcept;
 bool is_mutating(const Command& command) noexcept;

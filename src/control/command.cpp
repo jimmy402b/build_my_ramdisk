@@ -23,7 +23,8 @@ inline constexpr bool kReadOnlyCommand =
     || std::is_same_v<T, OperationShowCommand>
     || std::is_same_v<T, OperationWaitCommand>
     || std::is_same_v<T, DriverStatusCommand>
-    || std::is_same_v<T, DiagnosticsCollectCommand>;
+    || std::is_same_v<T, DiagnosticsCollectCommand>
+    || std::is_same_v<T, DiskExportCommand>;
 
 template <class T>
 inline constexpr bool kMutatingCommand =
@@ -96,6 +97,8 @@ std::string_view command_name(const Command& command) noexcept {
             return "disk.forget";
         } else if constexpr (std::is_same_v<T, DiskCreateCommand>) {
             return "disk.create";
+        } else if constexpr (std::is_same_v<T, DiskExportCommand>) {
+            return "disk.export";
         } else {
             static_assert(kAlwaysFalse<T>, "Command name mapping is incomplete");
             return {};

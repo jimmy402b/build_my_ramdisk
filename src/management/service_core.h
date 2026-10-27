@@ -1084,6 +1084,12 @@ public:
     // a claim that nothing is dirty; callers must not read it as `clean`.
     virtual Result<std::optional<std::uint64_t>> current_dirty_epoch(
         const product::Uuid& profile_id);
+    // Writes this profile's durable image to a standalone VHDX at `destination`.
+    // The default refuses: an adapter that cannot produce the file must not
+    // report one, and a test fake that has no opinion keeps compiling.
+    virtual Result<void> export_bundle(
+        const profile::ProfileRecord& profile,
+        const std::wstring& destination);
     // Observe the worker bound to this profile so the read path can reconcile
     // what the durable record claims against what is actually running.
     // `nullopt` means no observation was taken -- no adapter is wired, or the

@@ -1410,6 +1410,14 @@ Result<std::optional<std::uint64_t>> IWorkerControl::current_dirty_epoch(
         L"The worker does not expose the authoritative dirty epoch"));
 }
 
+Result<void> IWorkerControl::export_bundle(
+    const profile::ProfileRecord&, const std::wstring&) {
+    return Result<void>::failure(service_error(
+        ServiceCoreError::dependency_failure,
+        L"service_core.export_bundle",
+        L"The worker does not implement bundle export"));
+}
+
 Result<WorkerRuntimeObservation> IWorkerControl::require_runtime_observation(
     const product::Uuid&) {
     return Result<WorkerRuntimeObservation>::failure(service_error(
@@ -1990,6 +1998,72 @@ Result<ServiceResponse> ServiceCore::dispatch(
             std::nullopt,
             std::nullopt,
             {}});
+    }
+
+    if (const auto* export_command =
+            std::get_if<control::DiskExportCommand>(&request.command)) {
+        if (request.no_wait || request.dry_run
+            || request.wait_timeout_ms.has_value()) {
+            return Result<ServiceResponse>::failure(service_error(
+                ServiceCoreError::invalid_request,
+                L"service_core.export",
+                L"Export is a read-only command and takes no operation wait options"));
+        }
+        auto profile = profiles_.resolve(export_command->target);
+        if (!profile.ok()) {
+            return Result<ServiceResponse>::failure(profile.error());
+        }
+        const auto authorization = ipc::authorize_public_command(
+            static_cast<std::uint32_t>(encoded.value().command_id),
+            request.caller, profile.value().record.profile.owner_sid);
+        if (!authorization.allowed) {
+            return Result<ServiceResponse>::failure(service_error(
+                ServiceCoreError::authorization_denied,
+                L"service_core.authorize_export",
+                L"The caller is not authorized for this profile"));
+        }
+        // The worker reads the durable image, not a live runtime: a running disk
+        // has uncommitted RAM contents the bundle does not hold, and exporting
+        // the last checkpoint while calling it the disk would be a quiet lie.
+        if (profile.value().state.disk.runtime
+            == product::RuntimeState::running) {
+            return Result<ServiceResponse>::failure(service_error(
+                ServiceCoreError::operation_invalid,
+                L"service_core.export_running",
+                L"Stop the disk before exporting it: a running runtime holds "
+                L"writes the durable image does not"));
+        }
+        auto output =
+            product::normalize_local_absolute_path(export_command->output);
+        if (!output.ok()) {
+            return Result<ServiceResponse>::failure(service_error(
+                ServiceCoreError::invalid_request,
+                L"service_core.export_path",
+                L"The export destination must be an absolute local path"));
+        }
+        auto exported =
+            worker_.export_bundle(profile.value().record, output.value());
+        if (!exported.ok()) {
+            return Result<ServiceResponse>::failure(exported.error());
+        }
+        logger_.write(ServiceLogEvent{
+            ServiceLogKind::operation_running,
+            request_id,
+            std::nullopt,
+            profile.value().record.profile.profile_uuid,
+            command,
+            "export",
+            "exported the durable image"});
+        ServiceResponse response{
+            request_id,
+            command,
+            ServiceResponseDisposition::completed,
+            std::nullopt,
+            std::nullopt,
+            std::move(profile.value()),
+            std::nullopt,
+            {}};
+        return Result<ServiceResponse>::success(std::move(response));
     }
 
     const auto* show = std::get_if<control::DiskShowCommand>(&request.command);

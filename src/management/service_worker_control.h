@@ -334,6 +334,9 @@ public:
         const WorkerActionRequest& request) override;
     Result<std::optional<std::uint64_t>> current_dirty_epoch(
         const product::Uuid& profile_id) override;
+    Result<void> export_bundle(
+        const profile::ProfileRecord& profile,
+        const std::wstring& destination) override;
     Result<std::optional<WorkerRuntimeObservation>> observe_runtime(
         const product::Uuid& profile_id) override;
     Result<WorkerRuntimeObservation> require_runtime_observation(

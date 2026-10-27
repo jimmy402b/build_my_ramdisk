@@ -157,8 +157,33 @@ struct CompactionArtifactBuildMetrics final {
         default;
 };
 
-struct CompactionDeltaPrepareRequest final {
-    explicit CompactionDeltaPrepareRequest(
+// The fold writer's export face.  It reuses the compaction payload source and
+// plan, but writes one standalone file at an absolute destination: no
+// `BundleWriterLock`, no bundle-relative name and no rename into a manifest, so
+// exporting cannot alter the image it reads.
+struct VhdxExportRequest final {
+    std::filesystem::path destination;
+    VhdxWriterIdentity identity{};
+    VhdxWriterLimits vhdx_limits{};
+    CompactionArtifactBuildLimits limits{};
+};
+
+struct VhdxExportMetrics final {
+    BackingGeneration source_generation{};
+    LiveExtentEnumerationMetrics extents{};
+    std::uint64_t candidate_payloads{};
+    std::uint64_t file_bytes{};
+
+    bool operator==(const VhdxExportMetrics&) const noexcept = default;
+};
+
+[[nodiscard]] Result<VhdxExportMetrics> export_sparse_vhdx(
+    const OperationContext& context,
+    const BackingView& view,
+    const CompositeBackingIdentity& identity,
+    const VhdxExportRequest& request);
+
+struct CompactionDeltaPrepareRequest final {    explicit CompactionDeltaPrepareRequest(
         CompletePersistenceErrorContext correlation) noexcept
         : correlation_context(std::move(correlation)) {}
 

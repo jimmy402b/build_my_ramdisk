@@ -172,6 +172,7 @@ std::optional<AuthorizationRule> public_command_authorization_rule(
     case CommandId::disk_stop:
     case CommandId::disk_checkpoint:
     case CommandId::disk_compact:
+    case CommandId::disk_export:
     case CommandId::disk_config_get:
     case CommandId::disk_config_set:
     case CommandId::operation_show:

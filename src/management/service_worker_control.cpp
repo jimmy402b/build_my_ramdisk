@@ -1744,6 +1744,41 @@ Result<std::optional<std::uint64_t>> ServiceWorkerControl::current_dirty_epoch(
         status.value().dirty_epoch);
 }
 
+Result<void> ServiceWorkerControl::export_bundle(
+    const profile::ProfileRecord& profile,
+    const std::wstring& destination) {
+    if (destination.empty()) {
+        return Result<void>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.export_bundle",
+            L"The export destination is empty"));
+    }
+    std::unique_lock lock(command_gate_);
+    auto launch = make_launch_request(profile);
+    if (!launch.ok()) return Result<void>::failure(launch.error());
+    // The bundle already exists and is only read.  `provision_new` is the mode a
+    // create uses to write generation zero; an export must never take it.
+    launch.value().volume_mode = m5::WorkerVolumeMode::adopt_existing;
+    auto launched = sessions_.launch(launch.value(), context());
+    if (!launched.ok()) return Result<void>::failure(launched.error());
+    auto owned = launched.move_value();
+    auto operation_id = product::Uuid::random();
+    if (!operation_id.ok()) {
+        return Result<void>::failure(operation_id.error());
+    }
+    auto exported =
+        owned->export_bundle(context(), operation_id.value(), destination);
+    const auto binding = owned->binding();
+    owned.reset();
+    // Closing the channel is what ends the inspection worker; the export has no
+    // runtime that needs stopping.  Wait for the process so a leftover worker is
+    // not the next command's problem.
+    (void)worker_process_gone(
+        binding.process_id, binding.process_creation_time, 5000);
+    if (!exported.ok()) return Result<void>::failure(exported.error());
+    return Result<void>::success();
+}
+
 Result<std::optional<WorkerRuntimeObservation>>
 ServiceWorkerControl::observe_runtime(const product::Uuid& profile_id) {
     // **Never waits for the channel.**  A worker's command pipe is one request/reply

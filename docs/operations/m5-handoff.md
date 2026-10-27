@@ -1,4 +1,4 @@
-﻿# M5 交接：从这里开�?
+# M5 交接：从这里开�?
 
 **最后更新：2026-10-28**（状态有变化先改这里，再�?tasklist�?
 
@@ -12,9 +12,9 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**（自动触发 + 日志 + `compactions=N`，客机三次通过）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅**（`volatile stop` 无标志 `exit=1`、带标志 `exit=0`，已进 e2e）/ Load Only 的 **create** ✅（`--no-start` 30 s 终态、无残留 worker、forget `device_absent=1`，§3.188）/ Load Only 的 **start** ❌（M3 `match_created_disk` 拒绝非空的续跑盘）；**VHDX 导出未开始**；T4-04 冻结未开始 |
+| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**（自动触发 + 日志 + `compactions=N`，客机三次通过）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅ / Load Only 的 create ✅ / 单文件 VHDX 导出 ✅**（客机 export exit=0、14,680,064 B、generation 不变、二次导出拒绝，§3.189）；**Load Only 的 start ❌**（M3 `match_created_disk` 拒绝非空的续跑盘）；T4-04 冻结未开始 |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **T4-02 的 `disk export` 命令**（writer 已有：`persistence/vhdx_writer`；fold 的输出位置必须先参数化，不能 bundle 内构建再复制） |
+| **下一件事** | **T4-04 release manifest 冻结**（干净 Debug+Release → `tools/New-M5ReleaseManifest.ps1` → `tools/Verify-M5Evidence.ps1`，目标读数 `accepted`） |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4308,3 +4308,45 @@ stopped create 的 bundle 里已经有一个已配额的卷，start 却按 creat
 **纪律复盘：** 先按给定根因修 `current_dirty_epoch` **并没有让判据变绿**——真正卡住的是 publish 的
 二次观测。两轮 trace 夹逼（"observing / returned"、"publishing registration"）把它钉在两行之间；
 失败分支的变量名错误是读代码时发现的。**不要把"读起来像根因"当成"已经验证的根因"。**
+### 3.189 2026-10-28 05:20：**T4-02 的单文件 VHDX 导出完成——fold writer 的输出位置真的参数化了**
+
+**这不是"加一个命令"**（§3.124 的裁定）：`CompactionArtifactBuildRequest` 原来只会把 base
+按 bundle 相对名写作并 rename 进 manifest，所以先给 writer 加了**绝对路径**的导出面：
+
+1. `persistence/vhdx_writer`：`write_sparse_vhdx_to_path(context, destination, plan, source)`
+   - **目标已存在 ⇒ 在任何字节写入前拒绝**（`GetFileAttributesW` + 最终 `MoveFileExW` 不覆盖）；
+   - 写同目录的 `.partial-<pid>-<n>`，关闭后**重新以只读打开**，用
+     `VhdxReader::create_from_standalone_file` 逐 payload 读回并比对 digest；
+   - `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)` 发布；任何失败删除 partial。
+   `VhdxReader` 新增 `create_from_standalone_file`：非 bundle capability 的独立文件也能读，
+   调用方提供它刚观察到的 `WindowsFileIdentity`。
+2. `persistence/compaction_coordinator`：`export_sparse_vhdx(...)` 复用
+   `CompactionPayloadSource` + `plan_sparse_vhdx`，但**不取 `BundleWriterLock`**、不写 bundle 内
+   任何名字——导出对 bundle 无副作用。
+3. worker：`WorkerCommand::export_bundle = 17`；`WorkerMessage::export_path`（UTF-16，
+   presence bit 13）；`DiskWorkerRuntime::export_bundle` 用 `recover_complete_image` 读 durable
+   view，**running runtime 直接拒绝**；导出后 service 关闭会话，worker 退出。
+4. service：`ServiceWorkerControl::export_bundle` 以 `adopt_existing` 启动 inspection worker；
+   `disk export` 是**同步只读命令**（不建 operation），running 盘在 service 和 worker 两处都被拒。
+5. CLI/IPC：`disk export <disk> --output <file.vhdx>`；`CommandId::disk_export = 21`；
+   schema 2 字段（target / output）；授权 `owner_or_administrator`。
+
+**客机读数（`integration.m5.cli_e2e`，Release，clean build 后，1 次；整例 133 s）：**
+```text
+--- T4-02: export the stopped disk to a standalone VHDX
+  export exit=0
+  exported 14680064 bytes
+  generation unchanged at 5
+  second export exit=1
+1 of 1 passed
+```
+- **"VhdxReader 能读回"是导出成功的发布前条件**：写句柄关闭后重新只读打开，逐 payload 用
+  `VhdxReader` 读回并比对 digest；任何一步失败都不会 rename 成目标名。所以 `export exit=0`
+  本身已经包含"reader 读回了这个文件"（64 MiB 虚拟盘，输出 14,680,064 字节）。
+- **generation 不变**：导出前后 `disk list` 的 `generation=5` 相同。
+- **拒绝覆盖**：第二次 export `exit=1`，错误文本含 "already exists / refusing to overwrite"。
+
+**边界（明确写下）：** 只支持**停止的盘**。running 盘有未 checkpoint 的 RAM 内容，导出的只是
+durable view；把它当作"当前盘"会是一个安静的谎。
+
+**仍未完成：** Load Only 的 start 半边（§3.188）。T4-04 的 release manifest 冻结尚未开始。

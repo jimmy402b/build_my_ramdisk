@@ -123,8 +123,7 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::status(
     return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
 }
 
-Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::require_runtime_observation(
-    const OperationContext& context) {
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::require_runtime_observation(    const OperationContext& context) {
     m5::WorkerMessage request{};
     request.command = m5::WorkerCommand::require_runtime_observation;
     auto reply = exchange(context, std::move(request));
@@ -142,6 +141,24 @@ Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::require_runtime_observatio
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"ServiceWorkerSession::require_runtime_observation",
             L"the observation does not assert a live runtime"));
+    }
+    return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
+}
+
+Result<m5::WorkerRuntimeStatus> ServiceWorkerSession::export_bundle(
+    const OperationContext& context,
+    const product::Uuid& operation_id,
+    const std::wstring& destination) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::export_bundle;
+    request.product_operation_id = operation_id;
+    request.export_path = destination;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) return Result<m5::WorkerRuntimeStatus>::failure(reply.error());
+    if (!reply.value().status.has_value()) {
+        return Result<m5::WorkerRuntimeStatus>::failure(unexpected(
+            L"ServiceWorkerSession::export_bundle",
+            L"the export reply carries no status").error());
     }
     return Result<m5::WorkerRuntimeStatus>::success(*reply.value().status);
 }

@@ -29,6 +29,7 @@ const char* kUsage =
     "  myrd-cli disk stop <disk> [--force] [--accept-volatile-data-loss]\n"
     "  myrd-cli disk checkpoint <disk>\n"
     "  myrd-cli disk compact <disk>\n"
+    "  myrd-cli disk export <disk> --output <file.vhdx>   (standalone VHDX; refuses to overwrite)\n"
     "  myrd-cli disk config set auto_start <true|false> <disk>\n"
     "  myrd-cli disk forget <profile-id> --confirmation <uuid>\n"
     "  myrd-cli disk repair-profile <profile-id> [--from-previous]\n"
@@ -110,7 +111,7 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
     const std::vector<std::wstring> value_options{
         L"--name", L"--bundle", L"--size", L"--mount", L"--owner",
         L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval", L"--compaction-threshold",
-        L"--confirmation", L"--expected-image", L"--timeout", L"--pipe"};
+        L"--confirmation", L"--expected-image", L"--timeout", L"--pipe", L"--output"};
     const std::vector<std::wstring> switch_options{
         L"--no-start", L"--force", L"--accept-volatile-data-loss", L"--wait",
         L"--no-wait", L"--dry-run", L"--from-previous", L"--help", L"-h",
@@ -475,6 +476,17 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
         }
         if (verb == L"compact") {
             request.command = control::DiskCompactCommand{words[2]};
+            return invocation;
+        }
+        if (verb == L"export") {
+            auto output = value_of(L"--output");
+            if (!output.has_value() || output->empty()) {
+                invocation.usage_error =
+                    "disk export requires --output <file.vhdx>";
+                return invocation;
+            }
+            request.command =
+                control::DiskExportCommand{words[2], output.value()};
             return invocation;
         }
         invocation.usage_error = "unknown disk verb '" + narrow(verb) + "'";

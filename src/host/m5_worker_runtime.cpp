@@ -5,6 +5,7 @@
 #include "src/driver/adapter_discovery.h"
 #include "src/driver/direct_aim_adapter.h"
 #include "src/driver/windows_srb_transport.h"
+#include "src/persistence/compaction_coordinator.h"
 #include "src/persistence/writer_lock.h"
 #include "src/run/runtime_adapter.h"
 
@@ -505,8 +506,76 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::inspect_bundle() {
     return status;
 }
 
-Result<WorkerForgetProbe> DiskWorkerRuntime::probe_forget_absences() {
+Result<void> DiskWorkerRuntime::export_bundle(const std::wstring& destination) {
     auto& impl = *impl_;
+    // Export reads the durable image.  A running runtime holds a live, possibly
+    // dirty view whose RAM contents are not in the bundle; exporting that would
+    // silently produce the last checkpoint and call it the disk.  Refuse rather
+    // than export something the caller did not ask for.
+    if (impl.runtime != nullptr && !impl.cleaned_up) {
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::export_bundle",
+            L"the runtime is running; stop the disk before exporting it"));
+    }
+    if (destination.empty()) {
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::export_bundle",
+            L"the export destination is empty"));
+    }
+    auto recovered = persistence::recover_complete_image(
+        context(), impl.config.bundle, impl.config.manifest_name,
+        impl.config.recovery);
+    if (!recovered.ok() || !recovered.image.has_value()) {
+        return Result<void>::failure(recovered.error.value_or(runtime_error(
+            L"DiskWorkerRuntime::export_bundle",
+            L"the bundle holds no complete image to export")));
+    }
+    const auto& image = *recovered.image;
+    if (impl.config.image_id.has_value() &&
+        !(image.image_uuid == *impl.config.image_id)) {
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::export_bundle",
+            L"the bundle's image uuid is not the one this worker was launched for"));
+    }
+    impl.observed_image_id = image.image_uuid;
+    impl.observed_bundle_generation = image.checkpoint_generation;
+    auto file_guid = product::Uuid::random();
+    auto data_guid = product::Uuid::random();
+    if (!file_guid.ok() || !data_guid.ok()) {
+        return Result<void>::failure(runtime_error(
+            L"DiskWorkerRuntime::export_bundle",
+            L"a fresh VHDX identity could not be generated"));
+    }
+    persistence::VhdxExportRequest request{};
+    request.destination = std::filesystem::path(destination);
+    // The exported file is the same image, so its virtual disk id stays; the two
+    // write GUIDs are per-file and must be new or two exports would claim to be
+    // the same file object.
+    request.identity.virtual_disk_id =
+        image.backing_identity.virtual_disk_id;
+    std::copy(file_guid.value().bytes().begin(), file_guid.value().bytes().end(),
+              request.identity.file_identity.file_write_guid.begin());
+    std::copy(data_guid.value().bytes().begin(), data_guid.value().bytes().end(),
+              request.identity.file_identity.data_write_guid.begin());
+    const auto payloads =
+        image.backing_identity.geometry.virtual_bytes /
+            persistence::kVhdxDataBlockBytes +
+        1;
+    request.vhdx_limits = persistence::VhdxWriterLimits{
+        payloads, payloads,
+        (std::max)(static_cast<std::uint64_t>(
+                       persistence::kVhdxDataBlockBytes),
+                   payloads)};
+    request.limits.max_live_extents = payloads;
+    auto exported = persistence::export_sparse_vhdx(
+        context(), image.backing_view, image.backing_identity, request);
+    if (!exported.ok()) {
+        return Result<void>::failure(exported.error());
+    }
+    return Result<void>::success();
+}
+
+Result<WorkerForgetProbe> DiskWorkerRuntime::probe_forget_absences() {    auto& impl = *impl_;
     if (!impl.bundle_evidence.has_value()) {
         return Result<WorkerForgetProbe>::failure(runtime_error(
             L"DiskWorkerRuntime::probe_forget_absences",

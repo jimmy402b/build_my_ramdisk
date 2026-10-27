@@ -136,6 +136,11 @@ enum class WorkerCommand : std::uint16_t {
     // the values are on the wire, so inserting one would silently reinterpret every
     // command after it.
     reclaim_leftover = 16,
+    // Writes the bundle's durable image to a standalone VHDX file the request
+    // names.  Read-only with respect to the bundle: no runtime is started and no
+    // manifest, base or journal is written.  Appended for the same wire reason as
+    // every command above.
+    export_bundle = 17,
 };
 
 // Identity of one worker process bound to one profile for one session.
@@ -588,6 +593,10 @@ struct WorkerMessage final {
     // Carried by a remove-and-stop request: the service's ownership proof.
     // Without it the worker has nothing to remove *as its own* and must refuse.
     std::optional<WorkerRemovalAuthorization> removal;
+    // Carried by an export request: the absolute file the worker must create.
+    // UTF-16 because it is a Windows path, and the message is already a private
+    // in-process channel with a fixed 64 KiB bound.
+    std::optional<std::wstring> export_path;
     // Set only on a reply that reports failure.  A reply is either a payload or
     // an error, never both.
     std::optional<Error> error;

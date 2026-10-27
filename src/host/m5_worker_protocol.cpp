@@ -28,6 +28,7 @@ constexpr std::uint32_t kHasRemoval = 1U << 9;
 constexpr std::uint32_t kHasCommitReply = 1U << 10;
 constexpr std::uint32_t kHasRemovalReply = 1U << 11;
 constexpr std::uint32_t kHasAbortReply = 1U << 12;
+constexpr std::uint32_t kHasExportPath = 1U << 13;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -56,6 +57,7 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.error.has_value()) mask |= kHasError;
     if (message.correlation.has_value()) mask |= kHasCorrelation;
     if (message.removal.has_value()) mask |= kHasRemoval;
+    if (message.export_path.has_value()) mask |= kHasExportPath;
     return mask;
 }
 
@@ -182,6 +184,15 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::reply ? kHasStatus : 0U),
                 kHasError};
+    case WorkerCommand::export_bundle:
+        // Operation-scoped: an export creates a file at a caller-named path, and
+        // an unattributable file write must not exist.  The request carries the
+        // destination; the reply is a bare status because the bundle's identity
+        // and generation are already durable facts the caller holds.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::request ? kHasExportPath
+                                                        : kHasStatus),
+                kHasError};
     }
     return {};
 }
@@ -297,6 +308,17 @@ Result<void> validate_shape(const WorkerMessage& message) {
             L"validate_shape",
             L"An abort reply must report either an abort or a refusal, not "
             L"both and not neither"));
+    }
+    // The destination is a bounded Windows path.  An empty one would make the
+    // worker create a file at the process' current directory, which is a place
+    // nobody named; an overlong one cannot be a valid Win32 path at all.
+    if (message.export_path.has_value() &&
+        (message.export_path->empty() ||
+         message.export_path->size() > 32767)) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
+            L"validate_shape",
+            L"The export destination is empty or beyond the Win32 path limit"));
     }
     return Result<void>::success();
 }
@@ -603,6 +625,16 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         }
         message.removal = authorization;
     }
+    if ((mask & kHasExportPath) != 0) {
+        message.export_path = reader.text();
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"export destination is truncated"));
+        }
+    }
     if ((mask & kHasError) != 0) {
         Error error{};
         error.domain = static_cast<ErrorDomain>(reader.u8());
@@ -752,6 +784,8 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.u8(message.removal->device_match_proved ? 1 : 0);
         writer.u8(message.removal->bundle_identity_proved ? 1 : 0);
     }
+    if (message.export_path.has_value())
+        writer.text(*message.export_path);
     if (message.error.has_value()) {
         writer.u8(static_cast<std::uint8_t>(message.error->domain));
         writer.u32(message.error->code);

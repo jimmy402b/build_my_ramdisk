@@ -62,6 +62,13 @@ public:
     // so a caller deciding whether a mutation is safe never reads it as clean.
     [[nodiscard]] Result<m5::WorkerRuntimeStatus> require_runtime_observation(
         const OperationContext& context);
+    // Asks the worker to write its durable image to `destination`.  The reply is
+    // the worker's observation of the bundle it exported; the file is verified by
+    // the worker's reader before the command succeeds.
+    [[nodiscard]] Result<m5::WorkerRuntimeStatus> export_bundle(
+        const OperationContext& context,
+        const product::Uuid& operation_id,
+        const std::wstring& destination);
 
     // Takes the worker's volume write freeze and keeps it.  The reply's
     // `writes_frozen` is required, not consulted: a success that did not carry it

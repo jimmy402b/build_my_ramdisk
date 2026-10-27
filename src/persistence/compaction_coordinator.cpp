@@ -756,6 +756,51 @@ PreparedCompactionOperation::build_artifacts(
     }
 }
 
+Result<VhdxExportMetrics> export_sparse_vhdx(
+    const OperationContext& context,
+    const BackingView& view,
+    const CompositeBackingIdentity& identity,
+    const VhdxExportRequest& request) {
+    if (request.destination.empty() || request.limits.max_live_extents == 0 ||
+        request.vhdx_limits.max_candidate_payloads == 0) {
+        return compaction_failure<VhdxExportMetrics>(
+            PersistenceErrorCode::InvalidFormat,
+            L"VHDX export limits are invalid");
+    }
+    // The same bounded live-extent source the compaction fold uses.  Exporting
+    // is a read of the durable view: the plan and every payload come from the
+    // captured generation, never from RAM.
+    LiveExtentEnumeratorOptions extent_options{};
+    extent_options.max_extent_bytes = kVhdxDataBlockBytes;
+    auto payload = CompactionPayloadSource::create(
+        context, view, identity, extent_options,
+        request.limits.max_live_extents,
+        request.vhdx_limits.max_candidate_payloads);
+    if (!payload.ok()) {
+        return Result<VhdxExportMetrics>::failure(payload.error());
+    }
+    auto plan = plan_sparse_vhdx(
+        context,
+        {identity.geometry.virtual_bytes, identity.geometry.logical_sector_size},
+        request.identity, payload.value()->candidate_payloads(),
+        *payload.value(), request.vhdx_limits);
+    if (!plan.ok()) {
+        return Result<VhdxExportMetrics>::failure(plan.error());
+    }
+    auto written = write_sparse_vhdx_to_path(
+        context, request.destination, plan.value(), *payload.value());
+    if (!written.ok()) {
+        return Result<VhdxExportMetrics>::failure(written.error());
+    }
+    VhdxExportMetrics metrics{};
+    metrics.source_generation = view.generation;
+    metrics.extents = payload.value()->metrics();
+    metrics.candidate_payloads =
+        payload.value()->candidate_payloads().size();
+    metrics.file_bytes = written.value().file_bytes;
+    return Result<VhdxExportMetrics>::success(metrics);
+}
+
 Result<PreparedCompactionOperation> CompactionCoordinator::begin(
     const OperationContext& context) {
     return begin_impl(context

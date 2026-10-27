@@ -542,6 +542,61 @@ TEST_CASE(m5_worker_protocol_create_bundle_is_operation_scoped) {
     REQUIRE(!encode(request_message).ok());
 }
 
+TEST_CASE(m5_worker_protocol_export_request_carries_its_destination) {
+    // The destination is a Windows path, so it travels as UTF-16 and round-trips
+    // without a widening/narrowing step.  A path that came back mangled would
+    // make the worker write beside the file the user named.
+    WorkerMessage request_message{};
+    request_message.kind = WorkerMessageKind::request;
+    request_message.command = WorkerCommand::export_bundle;
+    request_message.sequence = 9;
+    request_message.binding = session_binding();
+    request_message.product_operation_id =
+        uuid("99999999-8888-7777-6666-555555555555");
+    request_message.export_path = L"C:\\m5\\导出 文件.vhdx";
+    const auto bytes = encode(request_message);
+    REQUIRE(bytes.ok());
+    const auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().command == WorkerCommand::export_bundle);
+    REQUIRE(decoded.value().export_path.has_value());
+    REQUIRE(*decoded.value().export_path == *request_message.export_path);
+}
+
+TEST_CASE(m5_worker_protocol_export_is_operation_scoped_and_needs_a_path) {
+    // An export creates a file, so it must be attributable to one operation; and
+    // a request with no destination would make the worker choose one, which no
+    // caller named.  Both are refused before anything is executed.
+    WorkerMessage request_message{};
+    request_message.kind = WorkerMessageKind::request;
+    request_message.command = WorkerCommand::export_bundle;
+    request_message.sequence = 9;
+    request_message.binding = session_binding();
+    request_message.export_path = L"C:\\m5\\export.vhdx";
+    REQUIRE(!authenticate_worker_message(request_message, session_binding(), 8)
+                 .ok());
+
+    request_message.product_operation_id =
+        uuid("99999999-8888-7777-6666-555555555555");
+    REQUIRE(authenticate_worker_message(request_message, session_binding(), 8)
+                .ok());
+
+    request_message.export_path.reset();
+    REQUIRE(!encode(request_message).ok());
+
+    WorkerMessage reply{};
+    reply.kind = WorkerMessageKind::reply;
+    reply.command = WorkerCommand::export_bundle;
+    reply.sequence = 10;
+    reply.binding = session_binding();
+    reply.product_operation_id =
+        uuid("99999999-8888-7777-6666-555555555555");
+    reply.status = status();
+    const auto reply_bytes = encode(reply);
+    REQUIRE(reply_bytes.ok());
+    REQUIRE(decode_worker_message(reply_bytes.value()).ok());
+}
+
 TEST_CASE(m5_worker_protocol_inspect_bundle_answers_with_the_same_status) {
     // The read-only command is a second way to ask for the same evidence, not a
     // second evidence type: its reply is the bare status, and a status from an

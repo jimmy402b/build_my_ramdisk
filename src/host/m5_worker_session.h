@@ -29,6 +29,15 @@ public:
     // the operation never asked to mount.  The reply's `worker_alive` is false,
     // which is the fact that distinguishes this from a start.
     virtual Result<WorkerRuntimeStatus> inspect_bundle() = 0;
+    // Writes the durable image to a standalone VHDX at `destination`.  Read-only
+    // with respect to the bundle: it starts, mounts and modifies nothing.  The
+    // default refuses, so a runtime with no opinion keeps compiling and cannot
+    // accidentally report a file it never wrote.
+    virtual Result<void> export_bundle(const std::wstring&) {
+        return Result<void>::failure(Error{
+            ErrorDomain::internal, 1, L"export_bundle",
+            L"this runtime does not export a bundle", 0});
+    }
     virtual Result<WorkerPreparedCandidate> prepare_checkpoint(
         std::uint64_t native_operation_id) = 0;
     // Takes the adopted volume's exclusive lock and keeps it across the commands

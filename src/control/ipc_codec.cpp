@@ -509,6 +509,15 @@ constexpr CommandSchema kDiagnosticsSchema{
     static_cast<std::uint32_t>(CommandId::diagnostics_collect), 3,
     kDiagnosticsFields};
 
+constexpr std::array<FieldDescriptor, 2> kExportFields{{
+    {1, FieldKind::string_utf8, FieldRequirement::required,
+     FieldDisposition::consume, 0, 4096, 0},
+    {2, FieldKind::path_local, FieldRequirement::required,
+     FieldDisposition::consume, 0, 131072, 0},
+}};
+constexpr CommandSchema kExportSchema{
+    static_cast<std::uint32_t>(CommandId::disk_export), 2, kExportFields};
+
 constexpr std::array<FieldDescriptor, 4> kImportFields{{
     {1, FieldKind::string_utf8, FieldRequirement::required,
      FieldDisposition::consume, 0, 4096, 0},
@@ -896,6 +905,17 @@ Result<EncodedCommand> encode_command_payload(const control::Command& command) {
             }
             return Result<EncodedCommand>::success(EncodedCommand{
                 CommandId::diagnostics_collect, std::move(payload)});
+        } else if constexpr (std::is_same_v<T, control::DiskExportCommand>) {
+            std::vector<std::byte> payload;
+            auto target = append_string_field(payload, 1, FieldKind::string_utf8,
+                                              value.target, 4096);
+            auto output = append_string_field(payload, 2, FieldKind::path_local,
+                                              value.output, 131072);
+            if (!target.ok() || !output.ok()) {
+                return codec_error<EncodedCommand>(L"Export payload is invalid");
+            }
+            return Result<EncodedCommand>::success(
+                EncodedCommand{CommandId::disk_export, std::move(payload)});
         } else if constexpr (std::is_same_v<T, control::DiskImportCommand>) {
             std::vector<std::byte> payload;
             auto name = append_string_field(payload, 1, FieldKind::string_utf8,
@@ -1152,6 +1172,24 @@ Result<control::Command> decode_command_payload(
         return Result<control::Command>::success(
             control::DiagnosticsCollectCommand{
                 disk.move_value(), std::move(output), include_paths});
+    }
+    if (command_id == CommandId::disk_export) {
+        auto fields = decode_typed_payload(payload, kExportSchema,
+                                           negotiated_minor);
+        if (!fields.ok()) return Result<control::Command>::failure(fields.error());
+        auto target = string_from_field(fields.value(), 1);
+        auto output_text = string_from_field(fields.value(), 2);
+        if (!target.ok() || !output_text.ok()) {
+            return codec_error<control::Command>(L"Export payload is invalid");
+        }
+        auto output =
+            product::normalize_local_absolute_path(output_text.value());
+        if (!output.ok()) {
+            return codec_error<control::Command>(
+                L"Export output path is invalid");
+        }
+        return Result<control::Command>::success(control::DiskExportCommand{
+            target.move_value(), output.move_value()});
     }
     if (command_id == CommandId::disk_import) {
         auto fields = decode_typed_payload(payload, kImportSchema,

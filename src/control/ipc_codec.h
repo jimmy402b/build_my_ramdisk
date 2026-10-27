@@ -93,6 +93,7 @@ enum class CommandId : std::uint32_t {
     operation_cancel = 18,
     diagnostics_collect = 19,
     driver_status = 20,
+    disk_export = 21,
 };
 
 struct EncodedCommand {
