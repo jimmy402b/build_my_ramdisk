@@ -201,9 +201,14 @@ int wmain(const int argc, wchar_t** argv) {
             break;
         }
         auto reply = session.handle(request.value());
+        // **Where the worker's answer is lost.**  A create on the guest ends with the m3 layer returning from a clean
+        // stop and the service never hearing a failure, four minutes later -- so the gap is one of these two calls.
+        // 'command handled' without 'reply written' is a channel problem; neither is a block inside the action.
+        diagnostic_trace("worker: command handled");
         if (!reply.ok()) break;
         auto written = client.value()->write(context_for(kHandshakeTimeout),
                                              reply.value());
+        diagnostic_trace("worker: reply written");
         if (!written.ok()) break;
         if (session.shutdown_requested()) break;
     }
