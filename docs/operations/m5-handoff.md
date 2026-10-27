@@ -3503,3 +3503,30 @@ request 2cad3213ad794c65a9f0bd1a8c57604c
 - **`disk stop` 的 worker 存活问题未解决**：两刀（观察守卫 `cf79fce`、shutdown `ec75b6d`）都保留，
   均未使 `workers settled` 降到 30 s 以内，但**都没有引入回归**；
 - **下一步的诊断已经写死**（§3.156）：把 `shutdown` 的返回值写进服务日志 + 在场景里打印 worker 的 `StartTime`。
+### 3.158 2026-10-27 22:25：**两条新读数，两个真缺陷**（都有进程 id 与退出码）
+
+场景（90 s 轮询 + 打印 worker 身份）的完整输出：
+```text
+  workers before the scenario: 0
+  workers settled after 90 s (1 left)
+    id=6196 started=10:37:33
+  volatile stop exit=0
+--- trace ---
+02:37:32.269Z stop: worker asked to shut down and answered
+02:37:33.701Z stop: worker asked to shut down and answered
+```
+
+**缺陷 A —— `--no-start` 的 create 会拉起 worker，而且没人让它退出。**
+- 场景开始前 **0 个** worker；场景结束后剩下的那个 **`started=10:37:33`**，正是**这次 `--no-start` create 的时刻**。
+- 而 `create_stopped` 的计划里**没有**启动动作（§3.150）⇒ **worker 是由 `create_and_verify_bundle`
+  或 `publish_provisioning_profile` 顺带拉起的**，之后**没有任何人**请它退出（只有 stop 才调 `shutdown`）。
+- ⇒ **§3.150 的推断（"worker 属于被 stop 的盘"）是错的**，现在有进程启动时间作证。
+
+**缺陷 B —— 易失盘的 `disk stop` 竟然成功（`exit=0`）。**
+- `--checkpoint-interval off` 的盘，`disk stop` **没有**要求 `--accept-volatile-data-loss`，**直接成功**。
+- ⇒ **易失盘的数据丢失保护没有生效**（或该保护只在别的命令上生效）。这是**验收时一定会被问到**的一条。
+
+**已回退 e2e**（工作树 0 改动）。两处修复都保留（`cf79fce`、`ec75b6d` + `8da16ed` 的 trace），它们**不劣化**任何行为。
+
+**下一任的第一件事**：为**缺陷 B** 找到"需要 `--accept-volatile-data-loss`"的那处判断（grep `accept_volatile`），
+确认它覆盖哪些命令；`disk stop` 显然不在其中。**B 比 A 更容易修，也更接近用户价值（数据丢失保护）。**
