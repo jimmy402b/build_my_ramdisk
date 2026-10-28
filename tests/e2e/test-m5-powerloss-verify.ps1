@@ -30,7 +30,7 @@ if (-not $env:MYRD_M5VM_GUEST) {
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $bin = Join-Path $repo "out/build/msvc/src/$Configuration"
 $cliExe = Join-Path $bin 'myrd-cli.exe'
-$serviceName = 'MyRamDiskPowerLoss'
+$serviceName = 'MyRamDiskService'
 . (Join-Path $PSScriptRoot 'm5-e2e-common.ps1')
 
 $statePath = 'C:\m5\powerloss-state.txt'

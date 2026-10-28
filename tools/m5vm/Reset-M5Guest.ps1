@@ -74,19 +74,22 @@ foreach ($child in @('profiles', 'operations')) {
     if (Test-Path -LiteralPath $directory) {
         Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        # **Recreate the directory after clearing it.**  Measured: `m5.startup_sweep` fails with
-        # `profile_store.open_directory` `native=2` on a guest whose record directory was removed rather than
-        # emptied -- the case, like several others, starts from the state an installation leaves behind.  The
-        # DACL belongs to the installer, so this creates the directory and nothing else.
-        if (-not (Test-Path -LiteralPath $directory)) {
-            New-Item -ItemType Directory -Force -Path $directory | Out-Null
-        }
-        $remaining = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue)
-        Write-Host ("  {0}: {1} entries left" -f $child, $remaining.Count)
-        if ($remaining.Count -ne 0) {
-            [Console]::Error.WriteLine("reset: $child is not empty; a run now would inherit a disk")
-            exit 1
-        }
+    }
+    # **The directory has to exist whether or not it existed before the reset.**
+    # Measured: an uninstall can remove `operations`, and the old code only recreated a
+    # directory it had just emptied.  The next service start then failed
+    # `ServiceOperationStore::open_existing` with native=2, which `sc start` reports as
+    # 1053 and which looks like a product start failure.  The DACL belongs to the
+    # installer; this creates the directory and nothing else.
+    if (-not (Test-Path -LiteralPath $directory)) {
+        New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        Write-Host "  created $directory"
+    }
+    $remaining = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue)
+    Write-Host ("  {0}: {1} entries left" -f $child, $remaining.Count)
+    if ($remaining.Count -ne 0) {
+        [Console]::Error.WriteLine("reset: $child is not empty; a run now would inherit a disk")
+        exit 1
     }
 }
 # `WorkerBindingStore::over_protected_root` opens `MyRamDisk\profiles\workers`, and a guest that has never

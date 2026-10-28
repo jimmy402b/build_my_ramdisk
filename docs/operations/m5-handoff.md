@@ -4486,3 +4486,48 @@ stopped disk forgotten; device_absent=1 proved
   `myrd-gui 744a68f5`、`myrd-m5-worker 0f46b8a9`。
 
 **§3.190 / §3.192 的哈希均已作废，以本节为准。**
+### 3.196 2026-10-28 15:50：**M5 验收首跑：G2/G1/T4-01 通过，G3 失败在自动启动的挂载**
+
+**全量 160 的首跑**（14:07–14:48）跑到尾部卡在 `unit.m2.harness_preflight`（0 字节、无进程推进）；
+host 40 分钟 deadline 到期。根因不是产品：客机 agent 的请求队列里积压了旧请求，每次启动会把
+`*.request.ps1` 依次重放，后面的请求（包括 M5 组）排在旧请求后面。清空队列后单例可跑。
+
+**单例读数（当前冻结构建）：**
+
+| 用例 | 结果 | 读数 |
+|---|---|---|
+| `integration.m5.cli_e2e` | **1/1 通过** | 请求 `9da83ac2…`，120 s |
+| `integration.m5.gui_workflow` | **1/1 通过** | 请求 `3d533bf5…`，29 s |
+| `integration.m5.install_uninstall` | **1/1 通过** | 请求 `7f22aba1…`，7.5 s |
+| `integration.m5.powerloss_prepare` | **1/1 通过** | 请求 `bb79da1c…`，50 s |
+| `integration.m5.powerloss_verify` | **0/1 失败** | 请求 `5c2ff5a0…` |
+
+**G3 失败读数：**
+```text
+service state: RUNNING
+1660bdb6-767d-4f4f-81d1-f3c27d5662b9  T:  Ready  stopped/configured
+    runtime=Stopped  activity=Idle  persistence=Dirty  health=Healthy
+    generation=3  mem=0/0
+```
+`service.log`：
+```text
+kind=6 command=disk.start phase=auto-start message=auto-start: this profile was running when the service last had it
+kind=2 command=disk.start phase=running message=action-result: create-runtime failed
+kind=7 ... action=create-runtime code=21001 native=18 step=assign_drive_letter
+    detail=set-mount failed first=87 second=18 guid=\\?\Volume{...
+```
+⇒ 服务自动起来了，恢复也到了 generation 3（dirty），但**自动启动没有把盘挂上**；盘停在
+`Ready stopped/configured`。手动 `disk start` 未能复测——verify 清理后服务已不在。
+
+**这次修的两处基础设施：**
+1. `Reset-M5Guest` 原来只在 `operations` **已存在**时清空/重建；卸载把它删掉后，服务启动
+   `ServiceOperationStore::open_existing` 报 `native=2`，SCM 表现为 `sc start` 1053。现在两个
+   目录无论是否存在都保证建出来。
+2. `test-m5-powerloss-{prepare,verify}.ps1` 的服务名从 `MyRamDiskPowerLoss` 改为
+   `MyRamDiskService`：`service_main.cpp` 的 `kServiceName` 是硬编码的，SCM 用别的名字启动
+   时 dispatcher 匹配不上。
+
+**下一步：** 修自动启动的挂载。优先复用 §3.77 的"按 extents 采纳活动卷"；本次
+`second=18`（`ERROR_NO_MORE_FILES`）说明候选卷可能尚不可挂载，或者枚举没找到它。修完重跑
+`Test-M5PowerLoss.ps1 -SkipStage`，读数要求 `runtime=Running`、generation ≥ 提交值、标记字节
+一致、worker 恰好 1 个。

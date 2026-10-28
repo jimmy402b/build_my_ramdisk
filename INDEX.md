@@ -11,4 +11,6 @@
 | 2026-10-27 | M5-T4-02d | 单文件 VHDX 导出 | **PASSED**：客机 `export exit=0`、14,680,064 B、generation 不变（5）、二次导出拒绝覆盖；导出路径在发布前用 `VhdxReader` 逐 payload 读回 | §3.189 |
 | 2026-10-27 | M5-T4-04 | release manifest 冻结 | **PASSED（数据丢失授权后重新冻结）**：干净 Debug/Release 451/451（`/WX`）、manifest 4 binaries + 8 readings（`frozen_at 2026-10-28T05:24:56Z`；service `8f8f855d`、cli `ebdedbf6`、gui `744a68f5`、worker `0f46b8a9`）、validator `accepted` | §3.190、§3.195 |
 
-**当前状态**：T4 增量全部收口（缺陷 A、VHDX 导出、Load Only 的 create + start、易失盘 dirty force-stop、T4-04 重新冻结）。下一步是 M5 虚拟机验收（G1 + G2 + G3）。
+| 2026-10-28 | M5-ACC-01 | M5 验收首跑 | **G2/G1/T4-01 通过**（cli_e2e 1/1 120 s、gui 1/1 29 s、install 1/1 7.5 s）；**G3 verify 失败**：自动启动卡在 `assign_drive_letter`（`87/18`），盘停在 `Ready stopped/configured`；全量 160 卡在 `unit.m2.harness_preflight`（agent 旧请求重放） | §3.196 |
+
+**当前状态**：M5 验收被 G3 自动启动挂载阻塞；G2/G1/T4-01 已通过单例读数。下一步修自动启动的挂载（优先按 extents 采纳活动卷），再重跑 `Test-M5PowerLoss.ps1`。

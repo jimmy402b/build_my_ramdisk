@@ -1,4 +1,4 @@
-﻿# The first half of the power-cut acceptance (T1-09): leave a disk that a hard
+# The first half of the power-cut acceptance (T1-09): leave a disk that a hard
 # power-off will interrupt, with everything the second half needs written down.
 #
 # It deliberately leaves the **installed** service running with `start= auto`: after a
@@ -44,7 +44,7 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $bin = Join-Path $repo "out/build/msvc/src/$Configuration"
 $serviceExe = Join-Path $bin 'myrd-service.exe'
 $cliExe = Join-Path $bin 'myrd-cli.exe'
-$serviceName = 'MyRamDiskPowerLoss'
+$serviceName = 'MyRamDiskService'
 . (Join-Path $PSScriptRoot 'm5-e2e-common.ps1')
 
 foreach ($path in @($serviceExe, $cliExe)) {
