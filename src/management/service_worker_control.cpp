@@ -1049,6 +1049,34 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
     // session is dropped below, and the worker exits, so a later publication step
     // that asked again would be asking a process that has already left.
     result.lifecycle.bundle_generation = observed.value().committed_generation;
+    // **A stopped create did not checkpoint, but its bundle still stands at
+    // generation 1.**  Generation 0 is the empty base; the first checkpoint the
+    // runtime can prepare advances 1 -> 2 (measured on the guest: prior=1,
+    // confirmed=0, candidate=2 was exactly the refusal this caused).  Publishing
+    // the reply's raw 0 would make every later checkpoint fail its boundary, so
+    // the durable starting point is the first generation the image can commit.
+    if (creating && request.command == ManagementCommand::create_stopped
+        && result.lifecycle.bundle_generation == 0) {
+        result.lifecycle.bundle_generation = 1;
+    }
+    // **The volume identity the create reply carries.**  A stopped create drops
+    // its session below, so the service-side actions that follow have no worker
+    // left to ask for this; capturing it here is what lets the profile become
+    // `ready` with the volume it actually provisioned, and therefore what lets a
+    // later `disk start` adopt that volume instead of provisioning a new one.
+    if (observed.value().volume.has_value() &&
+        observed.value().volume->complete()) {
+        auto disk_id =
+            product::Uuid::parse(observed.value().volume->disk_guid);
+        auto partition_id =
+            product::Uuid::parse(observed.value().volume->partition_guid);
+        auto volume_id =
+            product::Uuid::parse(observed.value().volume->volume_guid);
+        if (disk_id.ok() && partition_id.ok() && volume_id.ok()) {
+            result.lifecycle.volume = VolumeRegistrationEvidence{
+                disk_id.value(), partition_id.value(), volume_id.value()};
+        }
+    }
 
     // **This is the moment the bundle's identity becomes knowable**, and therefore the
     // only moment it can be recorded: the worker has just read it off the handle it
@@ -1195,6 +1223,7 @@ Result<WorkerActionResult> ServiceWorkerControl::execute(
     case ActionKind::none:
     case ActionKind::publish_provisioning_profile:
     case ActionKind::publish_imported_ready_profile:
+    case ActionKind::record_created_volume_identity:
     case ActionKind::checkpoint:
     case ActionKind::checkpoint_if_required:
     case ActionKind::publish_ready_profile:

@@ -1,4 +1,4 @@
-﻿#include "src/management/state_machine.h"
+#include "src/management/state_machine.h"
 
 #include <algorithm>
 #include <array>
@@ -321,6 +321,14 @@ void fill_actions(ActionPlan& plan) noexcept {
     case ManagementCommand::create_stopped:
         append_action(plan, ActionKind::create_and_verify_bundle);
         append_action(plan, ActionKind::publish_provisioning_profile);
+        // **A stopped create finishes its profile.**  The worker's create
+        // provisioned the volume; what is missing is the durable record of that
+        // volume and the ready lifecycle, both service-side now that the worker
+        // has been closed.  Without them the disk is registered as `provisioning`
+        // with no volume identity and no later `start` can adopt what the bundle
+        // actually holds.
+        append_action(plan, ActionKind::record_created_volume_identity);
+        append_action(plan, ActionKind::publish_ready_profile);
         return;
     case ManagementCommand::import_profile:
         append_action(plan, ActionKind::inspect_bundle_read_only);

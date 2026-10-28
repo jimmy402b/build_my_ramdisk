@@ -322,6 +322,8 @@ const char* lifecycle_action_phase(ActionKind action) noexcept {
     case ActionKind::prove_new_uninitialized: return "prove-uninitialized";
     case ActionKind::provision_gpt_ntfs: return "provision-gpt-ntfs";
     case ActionKind::record_volume_identity: return "record-volume";
+    case ActionKind::record_created_volume_identity:
+        return "record-created-volume";
     case ActionKind::flush_exact_volume: return "flush-volume";
     case ActionKind::checkpoint: return "checkpoint";
     case ActionKind::publish_ready_profile: return "publish-ready";
@@ -4012,6 +4014,10 @@ Result<OperationRecord> ServiceCore::execute_operation(
     };
     std::optional<BundleRegistrationEvidence> bundle_evidence;
     std::optional<VolumeRegistrationEvidence> volume_evidence;
+    // The generation the create/inspection reply carried.  It has to survive
+    // across actions: the publication actions are service-owned and run after
+    // the worker result they would otherwise read has gone out of scope.
+    std::uint64_t created_bundle_generation = 0;
     std::optional<BundleRegistrationEvidence> rebind_bundle_evidence;
     std::optional<profile::ProfileRecord> rebind_record;
     bool first_checkpoint_acknowledged = false;
@@ -4391,6 +4397,7 @@ Result<OperationRecord> ServiceCore::execute_operation(
             action == ActionKind::publish_provisioning_profile
             || action == ActionKind::publish_imported_ready_profile
             || action == ActionKind::publish_ready_profile
+            || action == ActionKind::record_created_volume_identity
             || action == ActionKind::publish_rebind
             || action == ActionKind::repair_profile_from_previous
             || action == ActionKind::forget_metadata;
@@ -6632,6 +6639,8 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     }
                     bundle_evidence = worker_result.lifecycle.bundle;
                     volume_evidence = worker_result.lifecycle.volume;
+                    created_bundle_generation =
+                        worker_result.lifecycle.bundle_generation;
                     auto proposed_reservation =
                         lifecycle_reservation.value();
                     proposed_reservation.phase =
@@ -6639,7 +6648,11 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         ? LifecycleReservationPhase::bundle_verified
                         : LifecycleReservationPhase::inspection_verified;
                     proposed_reservation.bundle = bundle_evidence;
-                    proposed_reservation.volume = volume_evidence;
+                    // The volume is deliberately *not* set here: this transition
+                    // stops at `bundle_verified`/`inspection_verified`, and the
+                    // reservation validator refuses a volume before the phase that
+                    // requires one.  `record_created_volume_identity` advances it
+                    // to `volume_identity_recorded` and attaches the volume there.
                     auto persisted = persist_reservation_transition(
                         *registrations_, lifecycle_reservation.value(),
                         std::move(proposed_reservation));
@@ -6737,7 +6750,21 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     // after the reply -- the worker held the writer lock until it
                     // left.
                     bundle_generation =
-                        worker_result.lifecycle.bundle_generation;
+                        created_bundle_generation;
+                    // A stopped create wrote generation zero and did not
+                    // checkpoint; its bundle's first durable generation is 1.  The
+                    // control already publishes that, and this fallback keeps the
+                    // same answer if the create result did not survive (a service
+                    // restart between the create and this publication).
+                    if (pending_plan.command == ManagementCommand::create_stopped
+                        && bundle_generation == 0) {
+                        bundle_generation = 1;
+                    }
+                    // The flag stays false for a stopped create: no checkpoint has
+                    // happened, and pretending one has would make the durable
+                    // record lie.  `publish_ready_profile` explicitly allows that
+                    // plan to reach ready without one; every started create's
+                    // checkpoint action sets the flag itself.
                     const std::string why =
                         pending_plan.command == ManagementCommand::import_profile
                         ? " (import inspection; the worker has answered and left)"
@@ -6941,7 +6968,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 }
             }
         }
-        if (action == ActionKind::record_volume_identity) {
+        if (action == ActionKind::record_volume_identity
+            || action == ActionKind::record_created_volume_identity) {
+            // A stopped create's volume was captured when its reply was
+            // published; this action has no worker result of its own to read.
+            if (!worker_result.lifecycle.volume.has_value()
+                && volume_evidence.has_value()) {
+                worker_result.lifecycle.volume = volume_evidence;
+            }
             if (!current_profile.has_value()
                 || !worker_result.lifecycle.volume.has_value()
                 || registrations_ == nullptr) {
@@ -7033,7 +7067,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
             }
             first_checkpoint_acknowledged = true;
         } else if (action == ActionKind::publish_ready_profile) {
-            if (!first_checkpoint_acknowledged
+            // **A stopped create reaches ready without a checkpoint.**  Its worker
+            // created generation zero and provisioned the volume, then left; the
+            // first checkpoint belongs to the later start, so requiring one here
+            // would leave every Load Only disk stuck in `provisioning`.  Every
+            // other plan that reaches this action has committed its checkpoint.
+            const bool ready_without_checkpoint =
+                pending_plan.command == ManagementCommand::create_stopped;
+            if ((!first_checkpoint_acknowledged && !ready_without_checkpoint)
                 || !current_profile.has_value()
                 || recorded_volume_identity_count(
                     current_profile->record.profile) != 3

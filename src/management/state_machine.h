@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "src/product/product_state.h"
 #include "src/product/service_status.h"
@@ -201,6 +201,11 @@ enum class ActionKind : std::uint8_t {
     // adapter is driven by, and giving it a second dispatch mechanism to avoid one enum
     // value would be a second thing to keep in step.
     reclaim_leftover,
+    // Records the volume identity a `create_bundle` reply already carries, on a
+    // stopped create whose worker has left.  The service-owned sibling of
+    // `record_volume_identity`: that one asks the live session, and a stopped
+    // create has no session to ask.  Appended for the same wire-stability reason.
+    record_created_volume_identity,
 };
 
 inline constexpr std::size_t kMaximumPlanActions = 16;

@@ -12,9 +12,9 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；**T4-03 PASSED**；**T4-04 PASSED**（干净 Debug/Release 451/451、manifest 4 binaries + 8 readings、validator `accepted`，§3.190）；T4-02 **卷序列号 ✅ / 易失盘保护 ✅ / Load Only 的 create ✅ / 单文件 VHDX 导出 ✅**（§3.189）；**Load Only 的 start ❌**（M3 `match_created_disk` 拒绝非空的续跑盘，§3.188） |
+| **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护 / Load Only 的 create + start / 单文件 VHDX 导出；start 客机连续两次通过，§3.191）；**T4-03 PASSED**；**T4-04 PASSED**（Load Only 修完后重新冻结，§3.192） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **M5 虚拟机验收**；开始前需决定 Load Only 的 start 缺口是否作为遗留项接受（它不影响已通过的三判据与 VHDX 导出，但 `--no-start` 创建的盘目前无法 `disk start`） |
+| **下一件事** | **M5 虚拟机验收**（G1 + G2 + G3）；T4 增量全部收口，Load Only 的 create + start 都已有客机读数 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4366,3 +4366,77 @@ durable view；把它当作"当前盘"会是一个安静的谎。
 **这不是"T4-02 已全部完成"的声明。** Load Only 的 **start** 半边仍未完成（§3.188）；冻结的是
 **当前构建**，一旦修 start，二进制哈希会变，必须重新冻结。T4-04 自身的判据（干净构建 + manifest +
 validator `accepted`）已经满足。
+### 3.191 2026-10-28 12:50：**Load Only 的 start 半边完成——stopped create 现在发布 ready + 卷身份**
+
+**问题有两层：**
+1. `--no-start` 的 create 只发布 `provisioning`，并把 `create_bundle` 答复里的卷身份丢掉了；之后的
+   `disk start` 走 create 路径找"空盘"，M3 的 `match_created_disk` 拒绝非空的续跑盘。
+2. 即使绕过第一层，profile 的 `confirmed_generation` 若发布 0，第一次 checkpoint 会报
+   `prior=1 confirmed=0 candidate=2`——bundle 的第一代是 1，不是 0。
+
+**修法（全部在 service 侧，worker 不需要常驻）：**
+- `register_bundle` 从 create 答复捕获两样东西：卷身份（`status.volume` →
+  `VolumeRegistrationEvidence`）和**有效的 durable generation**（stopped create 的答复是 0，但
+  它的 bundle 第一代是 1，所以发布 1）。
+- `create_stopped` 计划追加两个 service-owned action：
+  `record_created_volume_identity`（把卷身份写进 profile 与 reservation）→
+  `publish_ready_profile`（lifecycle ready）。
+- `publish_ready_profile` 对 `create_stopped` 允许"尚无 checkpoint"：第一次 checkpoint 属于之后的
+  start。
+- 修一处 reservation 约束：`bundle_verified` 阶段**不允许**带 volume（validator 明确拒绝），卷只在
+  `volume_identity_recorded` 阶段挂上；原来那行会让 create 的 reservation 变成非法。
+- `bundle_generation` 用外层 `created_bundle_generation` 跨 action 传递：worker 结果只在它自己那个
+  action 的作用域里，service-owned 的 publish 动作读不到。
+
+**客机读数（`integration.m5.cli_e2e`，连续两次通过，120 s / 122 s）：**
+```text
+probe create exit=0
+probe terminal=succeeded
+no worker survived the stopped create
+--- T4-02c: start the disk that was created without starting
+start terminal=succeeded
+<uuid>  Y:  Ready  running  runtime=Running  activity=Idle  persistence=Clean
+        health=Healthy  generation=1  mem=1048576/1073741824  serial=5A42-9D28
+the started Load Only volume accepted a write
+stopped disk forgotten; device_absent=1 proved
+```
+- 起点 `generation=1`；随后一次手工 checkpoint 推到 2，再 stop（volatile 盘用
+  `--accept-volatile-data-loss`），最后 forget 的 `device_absent=1` 成立。
+- 同一用例里的 VHDX 导出仍通过：`export exit=0`、14,680,064 B、generation 不变、二次导出
+  `exit=1`。
+
+**已知边界（记下，不冒充已闭合）：** service 在 create 与 publish 之间重启时，
+`created_bundle_generation` 不跨重启持久化；代码里有 `create_stopped && 0 → 1` 的 fallback，
+正常路径因此仍能发布正确 generation，但 reservation 里没有这个数。要彻底闭合需要把它加进
+lifecycle reservation（durable schema 变更），留作后续。
+
+**重新冻结：** 二进制哈希变了，manifest 必须重新生成；见 §3.192。
+### 3.192 2026-10-28 12:55：**Load Only 之后重新冻结——仍然 `accepted`**
+
+- 干净 Debug 451/451、Release 451/451（`/WX`，零 error/warning）；随后只改了
+  `service_core.cpp` 的 generation fallback，`cmake --build` 为 `no work to do` 说明
+  Release 已经在干净构建里包含它。
+- `tools/New-M5ReleaseManifest.ps1` → `out/m5-evidence/release-manifest.json`
+  （4 binaries + 8 readings，`frozen_at 2026-10-28T05:05:09Z`）。
+- `tools/Verify-M5Evidence.ps1 -EvidenceDirectory out/m5-evidence` → **`accepted`**（exit 0）。
+- 证据里的 `m5-cli-e2e.results.json` 已换成 Load Only start 的最后一次通过
+  （request `5914d1d2…`，109 s，`exit=0`）。
+- 新哈希（SHA-256，前 8 位）：`myrd-service ca8fd2ff`、`myrd-cli 5bb73c44`、
+  `myrd-gui 6b740bd8`、`myrd-m5-worker 27783c91`。
+
+**§3.190 的哈希已作废，以本节为准；§3.190 的冻结判据过程仍然有效。**
+### 3.193 2026-10-28 13:10：**发现但未修：脏 runtime 的 force stop 仍会被 worker 拒绝**
+
+- 一次 Load Only 运行里，探针盘写入一个文件、手工 checkpoint、再
+  `disk stop --accept-volatile-data-loss`；worker 的 `remove_and_stop` 先 flush，仍看到
+  dirty，返回 `runtime_dirty`，服务在 `remove_mount` 处报 23559 并 park 到 `reconciling`。
+- **含义**：`--accept-volatile-data-loss` 在 service 的 stop 策略里生效（无标志会被拒），但
+  **没有传到 worker 的 removal authorization**；worker 的注释写的是"dirty runtime 必须对
+  durable truth 解决，不能被覆盖"，这与用户明确接受数据丢失的语义冲突。
+- T4-02b 的易失盘 e2e 是在**干净 runtime**（没有写）上测的，所以没有踩到。两次带写的
+  Load Only 运行也成功 stop 过，说明这是**时序相关**的：checkpoint 之后挂载的文件系统元数据
+  可能再次写脏。
+- **修法方向（未做）**：给 `WorkerRemovalAuthorization` 加 `accept_data_loss`；
+  service 把 stop 的 `--accept-volatile-data-loss` 传进 action；worker 仅在授权时跳过 dirty 拒绝，
+  未授权时保持拒绝。这是 durable protocol 的多副本改动，留作后续。
+- **状态**：已记录，未修；不属于 Load Only start 的三判据。M5 虚拟机验收前需要决定是否先修。

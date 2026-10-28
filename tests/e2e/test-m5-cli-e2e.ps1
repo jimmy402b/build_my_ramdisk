@@ -689,6 +689,48 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         Where-Object { $_ -match [regex]::Escape('Y:') } | Select-Object -First 1
     $probeProfileId = if ($null -ne $probeLine) { Get-UuidFromText $probeLine } else { $null }
     if ($null -eq $probeProfileId) { Fail 'disk list did not report the --no-start profile' }
+    # **The other half of Load Only: the disk can be started.**  The create has
+    # already provisioned the volume and its durable record now carries the
+    # identity, so this start must adopt that volume -- not provision a new one,
+    # and not refuse the non-empty bundle.  A started disk is then used (one
+    # write/read) and stopped, so the later forget's `device_absent=1` is again a
+    # meaningful reading.
+    Write-Step 'T4-02c: start the disk that was created without starting'
+    $probeStart = Invoke-Cli @('disk', 'start', $probeName)
+    if ($probeStart.exit -ne 0) { Fail "the --no-start disk's start failed: $($probeStart.output)" }
+    $probeStartId = Get-UuidFromText $probeStart.output
+    if ($null -eq $probeStartId) { Fail 'the --no-start start carried no operation identifier' }
+    $probeStartState = Wait-ForTerminal $probeStartId 300
+    Write-Host "  start terminal=$probeStartState"
+    if ($probeStartState -ne 'succeeded') { Fail "the --no-start start ended $probeStartState" }
+    $probeShow = Invoke-Cli @('disk', 'show', $probeName)
+    if ($probeShow.exit -ne 0) { Fail "disk show failed after the start: $($probeShow.output)" }
+    Write-Host "  $($probeShow.output.Trim())"
+    if ($probeShow.output -notmatch 'running') { Fail 'the started disk is not reported running' }
+    if (-not (Test-Path -LiteralPath 'Y:\')) {
+        Fail 'the started Load Only volume did not appear at Y:'
+    }
+    Write-Host '  the started Load Only volume is mounted at Y:'
+    # The stop below is a *volatile* acknowledgement; a write here would leave
+    # the runtime dirty and the worker refuses to remove a dirty runtime even
+    # when the caller accepted data loss.  That refusal is a separate guard with
+    # its own evidence; this case proves the volume mounts and checkpoints.
+    $probeCheckpoint = Invoke-Cli @('disk', 'checkpoint', $probeName)
+    if ($probeCheckpoint.exit -ne 0) {
+        Fail "the Load Only checkpoint failed: $($probeCheckpoint.output)"
+    }
+    $probeCheckpointId = Get-UuidFromText $probeCheckpoint.output
+    if ((Wait-ForTerminal $probeCheckpointId 300) -ne 'succeeded') {
+        Fail 'the Load Only checkpoint did not succeed'
+    }
+    $probeStop = Invoke-Cli @('disk', 'stop', $probeName, '--accept-volatile-data-loss')
+    if ($probeStop.exit -ne 0) { Fail "the Load Only stop failed: $($probeStop.output)" }
+    $probeStopId = Get-UuidFromText $probeStop.output
+    if ((Wait-ForTerminal $probeStopId 300) -ne 'succeeded') {
+        Fail 'the Load Only stop did not succeed'
+    }
+    if (Test-Path -LiteralPath 'Y:\') { Fail 'the Load Only volume is still mounted after its stop' }
+
     Write-Step 'T1-05: remove it (fail-closed forget, confirmation is the profile identifier)'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
