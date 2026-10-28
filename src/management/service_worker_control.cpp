@@ -858,6 +858,12 @@ Result<WorkerActionResult> ServiceWorkerControl::remove_mount(
     authorization.writer_lock_proved = true;
     authorization.device_match_proved = true;
     authorization.bundle_identity_proved = true;
+    // A force stop is the only plan admitted with the user's volatile-data-loss
+    // acknowledgement (`force_stop_requested` requires both flags), so the
+    // operation's own command is the authorization.  A normal stop keeps the
+    // worker's fail-closed refusal for a dirty runtime.
+    authorization.accept_data_loss =
+        request.command == ManagementCommand::force_stop;
 
     auto removed = session.value()->remove_and_stop(context(),
                                                     request.operation_id,

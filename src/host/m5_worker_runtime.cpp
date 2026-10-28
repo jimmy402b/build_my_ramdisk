@@ -890,8 +890,21 @@ Result<WorkerRemoveAndStopReply> DiskWorkerRuntime::remove_and_stop(
         }
         reply.generation = after.value().committed_generation;
         if (after.value().dirty) {
-            reply.refusal = WorkerRemovalRefusal::runtime_dirty;
-            return Result<WorkerRemoveAndStopReply>::success(std::move(reply));
+            // **The acknowledgement is the one thing that may override the
+            // refusal, and it is not inferred from the dirty flag.**  A force
+            // stop carries the user's `--accept-volatile-data-loss` through the
+            // authorization; a normal stop does not, and keeps the fail-closed
+            // answer.  The flush above still ran, so "accepted" means the writes
+            // that remain could not be flushed -- exactly the data the user
+            // agreed to lose.
+            if (!authorization.accept_data_loss) {
+                reply.refusal = WorkerRemovalRefusal::runtime_dirty;
+                return Result<WorkerRemoveAndStopReply>::success(
+                    std::move(reply));
+            }
+            diagnostic_trace(
+                "remove_and_stop: dirty writes discarded under the caller's "
+                "volatile-data-loss acknowledgement");
         }
     }
 

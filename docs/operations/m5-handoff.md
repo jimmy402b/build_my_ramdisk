@@ -12,9 +12,9 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护 / Load Only 的 create + start / 单文件 VHDX 导出；start 客机连续两次通过，§3.191）；**T4-03 PASSED**；**T4-04 PASSED**（Load Only 修完后重新冻结，§3.192） |
+| **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（数据丢失授权修完后重新冻结，§3.195） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **M5 虚拟机验收**（G1 + G2 + G3）；T4 增量全部收口，Load Only 的 create + start 都已有客机读数 |
+| **下一件事** | **M5 虚拟机验收**（G1 + G2 + G3）；T4 增量全部收口 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4440,3 +4440,49 @@ lifecycle reservation（durable schema 变更），留作后续。
   service 把 stop 的 `--accept-volatile-data-loss` 传进 action；worker 仅在授权时跳过 dirty 拒绝，
   未授权时保持拒绝。这是 durable protocol 的多副本改动，留作后续。
 - **状态**：已记录，未修；不属于 Load Only start 的三判据。M5 虚拟机验收前需要决定是否先修。
+- **2026-10-28 13:20：已修，见 §3.194。**
+### 3.194 2026-10-28 13:20：**脏 runtime 的 force stop 已修——`accept_data_loss` 走完整条链**
+
+**根因**：`--accept-volatile-data-loss` 只到 service 的 stop 策略和 `force_stop` 计划选择，
+**没有进 worker 的 removal authorization**；worker 的 `remove_and_stop` 先 flush，仍 dirty 就返回
+`runtime_dirty`，service 在 `remove_mount` 处报 23559 并 park 到 `reconciling`。
+
+**修法（一处新增字段，四处消费）：**
+- `WorkerRemovalAuthorization` 增加 `bool accept_data_loss{}`（worker 私有协议，第四个 bool）；
+- 编解码：`write_body`/`parse_body` 的 removal 块各加一个显式 bool（不是打包位）；
+- `ServiceWorkerControl::remove_mount`：
+  `authorization.accept_data_loss = (request.command == ManagementCommand::force_stop);`
+  ——`force_stop` 只有在 `force` 与 acknowledgement 一致时才会被 service 选中；
+- `DiskWorkerRuntime::remove_and_stop`：flush 后仍 dirty 时，**未授权**才返回
+  `runtime_dirty`；授权时写 trace
+  `remove_and_stop: dirty writes discarded under the caller's volatile-data-loss acknowledgement`
+  并继续 cleanup。正常 stop 的 fail-closed 行为不变。
+- 单测：`unit.m5.worker_protocol` 的 removal roundtrip 断言第四个 bool 独立往返；
+  `unit.m5.service_worker_session` 通过。
+
+**客机读数（`integration.m5.cli_e2e`，连续两次通过，138 s / 125 s）：**
+```text
+wrote data the forced stop must be allowed to discard
+volatile stop without the flag: exit=1
+volatile stop with the flag: exit=0
+...
+remove_and_stop: dirty writes discarded under the caller's volatile-data-loss acknowledgement
+...
+probe terminal=succeeded
+start terminal=succeeded
+stopped disk forgotten; device_absent=1 proved
+```
+易失盘现在**先 checkpoint、再写文件**制造真正的 dirty 状态；forced stop 的 trace 证明走的是
+授权丢弃路径，而不是"碰巧干净"。
+### 3.195 2026-10-28 13:25：**数据丢失授权之后重新冻结——仍然 `accepted`**
+
+- 干净 Debug 451/451、Release 451/451（`/WX`，零 error/warning）。
+- `tools/New-M5ReleaseManifest.ps1` → `out/m5-evidence/release-manifest.json`
+  （4 binaries + 8 readings，`frozen_at 2026-10-28T05:24:56Z`）。
+- `tools/Verify-M5Evidence.ps1 -EvidenceDirectory out/m5-evidence` → **`accepted`**（exit 0）。
+- 证据里的 `m5-cli-e2e.results.json` 是数据丢失授权修复后的最后一次通过
+  （request `83f33dcd…`，125 s，`exit=0`）。
+- 新哈希（SHA-256，前 8 位）：`myrd-service 8f8f855d`、`myrd-cli ebdedbf6`、
+  `myrd-gui 744a68f5`、`myrd-m5-worker 0f46b8a9`。
+
+**§3.190 / §3.192 的哈希均已作废，以本节为准。**

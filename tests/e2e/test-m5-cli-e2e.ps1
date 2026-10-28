@@ -635,18 +635,19 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if ($vol.exit -ne 0) { Fail "the volatile create failed: $($vol.output)" }
     $volId = Get-UuidFromText $vol.output
     if ((Wait-ForTerminal $volId 300) -ne 'succeeded') { Fail 'the volatile create did not succeed' }
-    # **One manual checkpoint, so the stop below tests the volatile *policy*, not a
-    # dirty removal.**  A runtime that still holds uncommitted writes refuses a
-    # removal even when the caller accepts data loss, and that refusal is a
-    # different guard with its own evidence.  The checkpoint interval is `off`, so
-    # the stop-without-the-flag refusal is decided by the policy and remains the
-    # fact this case asserts.
+    # **Checkpoint first, then write.**  The disk starts clean, the write below
+    # makes it dirty, and the forced stop must be allowed to discard those bytes
+    # -- the worker's dirty refusal is exactly what used to park this operation
+    # in `reconciling`.  The checkpoint interval is `off`, so the
+    # stop-without-the-flag refusal is decided by the volatile policy.
     $volCheckpoint = Invoke-Cli @('disk', 'checkpoint', $volName)
     if ($volCheckpoint.exit -ne 0) { Fail "the volatile checkpoint failed: $($volCheckpoint.output)" }
     $volCheckpointId = Get-UuidFromText $volCheckpoint.output
     if ((Wait-ForTerminal $volCheckpointId 300) -ne 'succeeded') {
         Fail 'the volatile checkpoint did not succeed'
     }
+    Set-Content -LiteralPath 'Z:\m5-volatile.txt' -Value 'volatile data' -Encoding utf8
+    Write-Host '  wrote data the forced stop must be allowed to discard'
     $volPlain = Invoke-Cli @('disk', 'stop', $volName)
     Write-Host "  volatile stop without the flag: exit=$($volPlain.exit)"
     if ($volPlain.exit -eq 0) { Fail 'a volatile disk stopped without --accept-volatile-data-loss' }
@@ -710,11 +711,15 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     if (-not (Test-Path -LiteralPath 'Y:\')) {
         Fail 'the started Load Only volume did not appear at Y:'
     }
-    Write-Host '  the started Load Only volume is mounted at Y:'
-    # The stop below is a *volatile* acknowledgement; a write here would leave
-    # the runtime dirty and the worker refuses to remove a dirty runtime even
-    # when the caller accepted data loss.  That refusal is a separate guard with
-    # its own evidence; this case proves the volume mounts and checkpoints.
+    $loadOnlyFile = Join-Path 'Y:' 'm5-load-only.txt'
+    Set-Content -LiteralPath $loadOnlyFile -Value 'load only' -Encoding utf8
+    if ((Get-Content -LiteralPath $loadOnlyFile -Raw).Trim() -ne 'load only') {
+        Fail 'the started Load Only volume did not accept a write'
+    }
+    Write-Host '  the started Load Only volume accepted a write'
+    # The checkpoint may still leave the runtime dirty (mounted filesystem
+    # metadata can write after the cut).  The stop below acknowledges losing
+    # whatever remains, so the worker must remove anyway.
     $probeCheckpoint = Invoke-Cli @('disk', 'checkpoint', $probeName)
     if ($probeCheckpoint.exit -ne 0) {
         Fail "the Load Only checkpoint failed: $($probeCheckpoint.output)"

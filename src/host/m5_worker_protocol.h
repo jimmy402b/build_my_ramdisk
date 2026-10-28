@@ -276,6 +276,12 @@ struct WorkerRemovalAuthorization final {
     bool writer_lock_proved{};
     bool device_match_proved{};
     bool bundle_identity_proved{};
+    // **The caller has accepted losing writes the removal will drop.**  A force
+    // stop carries this because the user passed `--accept-volatile-data-loss`;
+    // without it the runtime keeps its fail-closed refusal for a dirty runtime.
+    // It authorizes discarding data, not detecting it: the dirty check still
+    // runs and still flushes before deciding.
+    bool accept_data_loss{};
 
     bool operator==(const WorkerRemovalAuthorization&) const noexcept = default;
 };

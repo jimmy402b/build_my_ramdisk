@@ -80,6 +80,7 @@ WorkerRemovalAuthorization removal_authorization() {
     value.writer_lock_proved = true;
     value.device_match_proved = true;
     value.bundle_identity_proved = true;
+    value.accept_data_loss = true;
     return value;
 }
 
@@ -719,6 +720,10 @@ TEST_CASE(m5_worker_protocol_removal_authorization_round_trips_every_proof) {
     REQUIRE(decoded.value().removal->writer_lock_proved);
     REQUIRE(decoded.value().removal->device_match_proved);
     REQUIRE(decoded.value().removal->bundle_identity_proved);
+    // The data-loss acknowledgement is a fourth independent byte.  A removal
+    // that dropped it would keep refusing a dirty runtime the user explicitly
+    // allowed to be discarded.
+    REQUIRE(decoded.value().removal->accept_data_loss);
 }
 
 TEST_CASE(m5_require_removal_authorized_refuses_every_partial_proof) {

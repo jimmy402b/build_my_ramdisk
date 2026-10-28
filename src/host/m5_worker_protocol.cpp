@@ -616,6 +616,7 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         authorization.writer_lock_proved = reader.boolean();
         authorization.device_match_proved = reader.boolean();
         authorization.bundle_identity_proved = reader.boolean();
+        authorization.accept_data_loss = reader.boolean();
         if (!reader.ok()) {
             return Result<void>::failure(protocol_error(
                 static_cast<std::uint32_t>(
@@ -783,6 +784,7 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.u8(message.removal->writer_lock_proved ? 1 : 0);
         writer.u8(message.removal->device_match_proved ? 1 : 0);
         writer.u8(message.removal->bundle_identity_proved ? 1 : 0);
+        writer.u8(message.removal->accept_data_loss ? 1 : 0);
     }
     if (message.export_path.has_value())
         writer.text(*message.export_path);
