@@ -145,6 +145,9 @@ CliExitCode exit_code_for(const client::ServiceResponseWire& response) {
         case product::ServiceCoreError::state_rejected:
         case product::ServiceCoreError::operation_invalid:
         case product::ServiceCoreError::dependency_failure:
+        // The product said no, deliberately: that is a failure a script must be able to
+        // branch on, not "the service is unavailable" and not a usage error.
+        case product::ServiceCoreError::single_disk_violation:
             return CliExitCode::failure;
         }
         switch (static_cast<OperationErrorCode>(code)) {

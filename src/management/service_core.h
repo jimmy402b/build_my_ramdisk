@@ -856,6 +856,11 @@ enum class ServiceLogKind : std::uint8_t {
     // failed on the guest could not be diagnosed from the service log, the durable record
     // or the CLI at all.
     operation_failed,
+    // A command was refused before it became an operation, and this is where the reason
+    // is recorded.  An admitted operation has a durable record and a terminal event; a
+    // refused one has neither, so without this the service log would say only that the
+    // client was told no.  The first user is the single-disk admission guard.
+    admission_refused,
 };
 
 struct ServiceLogEvent final {
@@ -1235,6 +1240,23 @@ private:
     Result<OperationRecord> terminalize_unowned_admission(
         const OperationRecord& current,
         const wchar_t* operation);
+
+    // **The one enforcement point of "M5 is a single-disk product".**
+    //
+    // Refuses when any profile other than `excluded_profile` is up -- every runtime state
+    // except `stopped` counts -- or when another lifecycle/start operation is still
+    // pending.  A successful return is the *only* evidence a create or a start needs at
+    // admission; there is deliberately no boolean variant, because a caller that could
+    // ignore a bool would be the second place the rule is stated.
+    //
+    // `excluded_profile` exists for idempotent replays: a create replayed with the same
+    // request id derives the same profile id and must reach the durable operation record
+    // instead of being told a second disk exists.
+    Result<void> refuse_if_another_disk_is_up(
+        const product::Uuid& excluded_profile,
+        const product::Uuid& request_id,
+        const std::string& command,
+        const wchar_t* step);
 
     IServiceClock& clock_;
     IServiceProfileStore& profiles_;

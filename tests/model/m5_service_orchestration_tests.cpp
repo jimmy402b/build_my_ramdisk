@@ -23,6 +23,78 @@ product::Uuid id(std::string_view text) {
     return parsed.move_value();
 }
 
+// An elevated administrator, which is the only caller `disk create` admits.  The
+// fixture's own caller is authenticated but not an administrator, so a create test
+// has to name its caller explicitly rather than inherit one.
+ipc::CallerIdentity administrator(const std::wstring& sid) {
+    return {sid, true, false, false, true, true, false, false};
+}
+
+class RecordingLogger final : public IServiceLogger {
+public:
+    void write(const ServiceLogEvent& event) noexcept override {
+        events.push_back(event);
+    }
+    std::vector<ServiceLogEvent> events;
+};
+
+// The smallest registration store that lets a create reach admission.  `reserve` is
+// the only method a successful admission calls, and it returns what it was handed --
+// a real store would persist it, which this test does not need.  Every other method
+// fails loudly if a path under test starts depending on it.
+class Registrations final : public IServiceRegistrationStore {
+public:
+    Result<LifecycleRegistrationReservation> reserve(
+        const LifecycleRegistrationReservation& proposed) override {
+        ++reserve_calls;
+        return Result<LifecycleRegistrationReservation>::success(proposed);
+    }
+    Result<LifecycleRegistrationReservation> load_reservation(
+        const product::Uuid&) override {
+        return Result<LifecycleRegistrationReservation>::failure(
+            error(L"registrations.load_reservation"));
+    }
+    Result<LifecycleRegistrationReservation> update_reservation(
+        const LifecycleRegistrationReservation&,
+        const LifecycleRegistrationReservation&) override {
+        return Result<LifecycleRegistrationReservation>::failure(
+            error(L"registrations.update_reservation"));
+    }
+    Result<RegistrationMutationResult> publish_registration(
+        const LifecycleOperationIntent&, const profile::ProfileRecord&,
+        const BundleRegistrationEvidence&, const ProfileState&,
+        const OperationGateState&, std::uint64_t) override {
+        return Result<RegistrationMutationResult>::failure(
+            error(L"registrations.publish_registration"));
+    }
+    Result<RegistrationMutationResult> update_registration(
+        const ManagedProfileSnapshot&, const profile::ProfileRecord&,
+        const ProfileState&, const OperationGateState&) override {
+        return Result<RegistrationMutationResult>::failure(
+            error(L"registrations.update_registration"));
+    }
+    Result<RegistrationResolution> resolve_registration(
+        const product::Uuid&, const product::Uuid&) override {
+        return Result<RegistrationResolution>::failure(
+            error(L"registrations.resolve_registration"));
+    }
+    int reserve_calls{};
+};
+
+ServiceCommandRequest create_request(
+    std::string_view request_id,
+    const std::wstring& name,
+    const std::wstring& bundle,
+    const std::wstring& mount,
+    const std::wstring& owner_sid) {
+    ServiceCommandRequest request{};
+    request.request_id = id(request_id);
+    request.command = control::DiskCreateCommand{
+        name, bundle, 64ULL << 20, mount};
+    request.caller = administrator(owner_sid);
+    return request;
+}
+
 } // namespace
 
 TEST_CASE(m5_aggregate_projection_maps_lifecycle_states) {
@@ -295,6 +367,166 @@ TEST_CASE(m5_service_core_admits_and_executes_two_profiles_independently) {
     REQUIRE(!fixture.profiles.snapshot().operation_gate.active_operation_id);
     REQUIRE(!fixture.profiles.secondary_snapshot().operation_gate
         .active_operation_id);
+}
+
+// **STAB-01: M5 is a single-disk product, and a second create is refused.**
+//
+// The refusal has to be more than "it failed": it must be the stable product code, it must
+// happen before any durable work is admitted (no operation record, no registration
+// reservation), and the running disk must be untouched.  The last part is what this case
+// cannot observe through a fake profile store, so the guest e2e asserts it; here the
+// profile snapshot is compared before and after.
+TEST_CASE(m5_single_disk_refuses_a_create_while_another_disk_runs) {
+    Fixture fixture(product::PersistenceState::dirty);
+    const auto before = fixture.profiles.snapshot();
+    Registrations registrations;
+    RecordingLogger logger;
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+        fixture.worker, logger, fixture.ids, fixture.memory, &registrations);
+
+    const auto refused = core.dispatch(create_request(
+        "12121212-1212-4121-8121-121212121212", L"second",
+        L"C:\\m5\\second-bundle", L"S:",
+        before.record.profile.owner_sid));
+
+    REQUIRE(!refused.ok());
+    REQUIRE_EQ(refused.error().code,
+        static_cast<std::uint32_t>(
+            ServiceCoreError::single_disk_violation));
+    REQUIRE_EQ(refused.error().operation,
+        std::wstring(L"service_core.single_disk_create"));
+    REQUIRE(refused.error().message.find(L"single-disk")
+        != std::wstring::npos);
+    // **Refused at admission, not after provisioning.**  No operation was recorded and
+    // no lifecycle reservation was made, which is what "leaves no residue" means for a
+    // refused create.
+    REQUIRE_EQ(fixture.operations.records.size(), 0U);
+    REQUIRE_EQ(registrations.reserve_calls, 0);
+    // The refusal is recorded in the service log, because a refused command has no
+    // durable operation record to explain itself later.
+    REQUIRE_EQ(logger.events.size(), 1U);
+    REQUIRE_EQ(logger.events.front().kind,
+        ServiceLogKind::admission_refused);
+    REQUIRE_EQ(logger.events.front().command, std::string("disk.create"));
+    REQUIRE_EQ(logger.events.front().phase, std::string("single-disk"));
+    // The running disk is exactly as it was.
+    REQUIRE(fixture.profiles.snapshot() == before);
+}
+
+// **The window a profile-only check cannot see.**  A create publishes no profile until
+// its execution provisions one, so two creates issued back to back both see an empty
+// profile list; the first one's pending entry is what makes the second a second disk.
+TEST_CASE(m5_single_disk_refuses_a_create_while_the_first_is_still_pending) {
+    Fixture fixture(product::PersistenceState::clean);
+    // Nothing may be up for the *first* create to be admitted.  A stopped leftover is
+    // the realistic shape on a guest that has one registered profile; an empty store is
+    // not something this fixture can express, and it is not what matters here -- the
+    // second create is refused by the first one's pending entry, not by this profile.
+    auto primary = fixture.profiles.snapshot();
+    primary.state = registered_profile_state(
+        profile::ProfileLifecycle::ready,
+        product::DiskState{
+            product::RuntimeState::stopped,
+            product::ActivityState::idle,
+            product::PersistenceState::clean,
+            product::HealthState::healthy});
+    fixture.profiles.replace(primary);
+    Registrations registrations;
+    RecordingLogger logger;
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+        fixture.worker, logger, fixture.ids, fixture.memory, &registrations);
+    const auto owner = fixture.profiles.snapshot().record.profile.owner_sid;
+
+    const auto first = core.dispatch(create_request(
+        "13131313-1313-4131-8131-131313131313", L"first",
+        L"C:\\m5\\first-bundle", L"R:", owner));
+    REQUIRE(first.ok());
+    REQUIRE(first.value().operation_id.has_value());
+    REQUIRE_EQ(registrations.reserve_calls, 1);
+
+    const auto second = core.dispatch(create_request(
+        "14141414-1414-4141-8141-141414141414", L"second",
+        L"C:\\m5\\second-bundle", L"S:", owner));
+    REQUIRE(!second.ok());
+    REQUIRE_EQ(second.error().code,
+        static_cast<std::uint32_t>(
+            ServiceCoreError::single_disk_violation));
+    REQUIRE_EQ(second.error().operation,
+        std::wstring(L"service_core.single_disk_create"));
+    // Only the first create exists: the refused one reserved nothing.
+    REQUIRE_EQ(fixture.operations.records.size(), 1U);
+    REQUIRE_EQ(registrations.reserve_calls, 1);
+}
+
+// A start is the other way a second device comes into existence, and it has to be refused
+// for the same reason -- the running disk's generation, mount and worker are what the
+// guest e2e measures afterwards.
+TEST_CASE(m5_single_disk_refuses_a_start_while_another_disk_runs) {
+    Fixture fixture(product::PersistenceState::clean);
+    auto secondary = running_profile(product::PersistenceState::dirty);
+    secondary.record.profile.profile_uuid =
+        id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    secondary.record.profile.display_name = L"other";
+    secondary.record.profile.owner_sid =
+        L"S-1-5-21-100-200-300-1002";
+    secondary.record.profile.mount_target = L"S:";
+    secondary.state = registered_profile_state(
+        profile::ProfileLifecycle::ready,
+        product::DiskState{
+            product::RuntimeState::stopped,
+            product::ActivityState::idle,
+            product::PersistenceState::clean,
+            product::HealthState::healthy});
+    fixture.profiles.add_secondary(secondary);
+
+    RecordingLogger logger;
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+        fixture.worker, logger, fixture.ids, fixture.memory);
+
+    ServiceCommandRequest request{};
+    request.request_id = id("15151515-1515-4151-8151-151515151515");
+    request.command = control::DiskStartCommand{L"other"};
+    request.caller = administrator(secondary.record.profile.owner_sid);
+    const auto refused = core.dispatch(request);
+
+    REQUIRE(!refused.ok());
+    REQUIRE_EQ(refused.error().code,
+        static_cast<std::uint32_t>(
+            ServiceCoreError::single_disk_violation));
+    REQUIRE_EQ(refused.error().operation,
+        std::wstring(L"service_core.single_disk_start"));
+    REQUIRE_EQ(fixture.operations.records.size(), 0U);
+    // The stopped profile was not published as running: an admission that never
+    // happened must not leave a durable claim that it did.
+    REQUIRE_EQ(fixture.profiles.secondary_snapshot().state.disk.runtime,
+        product::RuntimeState::stopped);
+}
+
+// The guard must not become "starting refuses".  With nothing else up, starting a
+// stopped profile is the ordinary Load Only path and still works.
+TEST_CASE(m5_single_disk_allows_a_start_when_nothing_else_is_up) {
+    Fixture fixture(product::PersistenceState::clean);
+    auto primary = fixture.profiles.snapshot();
+    primary.state = registered_profile_state(
+        profile::ProfileLifecycle::ready,
+        product::DiskState{
+            product::RuntimeState::stopped,
+            product::ActivityState::idle,
+            product::PersistenceState::clean,
+            product::HealthState::healthy});
+    fixture.profiles.replace(primary);
+
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+        fixture.worker, fixture.logger, fixture.ids, fixture.memory);
+    ServiceCommandRequest request{};
+    request.request_id = id("16161616-1616-4161-8161-161616161616");
+    request.command = control::DiskStartCommand{L"work"};
+    request.caller = administrator(primary.record.profile.owner_sid);
+
+    const auto admitted = core.dispatch(request);
+    REQUIRE(admitted.ok());
+    REQUIRE(admitted.value().operation_id.has_value());
+    REQUIRE_EQ(fixture.operations.records.size(), 1U);
 }
 
 TEST_CASE(m5_service_core_rejects_same_profile_conflict_and_releases_gate) {

@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **对外稳定清单已落盘**：`docs/superpowers/plans/2026-10-29-m5-stability-plan.md`（P0 8 项 / P1 8 项 / P2）；按 P0 先做 **STAB-01 单盘硬保护、STAB-02 内存耗尽、STAB-04 CI 一键全量** |
+| **下一件事** | **H1 进行中**：STAB-01 单盘硬保护 **PASSED**（§3.199，客机 `cli_e2e` 连续两次）；下一步 **STAB-02 内存耗尽**，然后 **STAB-04 CI 一键全量**。产品二进制已变，release manifest 待 H1 收尾重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4595,3 +4595,45 @@ service `8f8f855d`、cli `ebdedbf6`、gui `744a68f5`、worker `7fb9032b`，valid
 verify 的 reading 是有效的。
 
 **结论**：G1 + G2 + G3 全部通过，全量回归的产品用例全部通过；只剩两条 `vswhere` 环境失败。
+
+### 3.199 2026-10-29 21:35：**STAB-01 单盘硬保护完成——第二块盘在准入阶段被拒**
+
+**问题**：M5 是单盘产品，但此前没有任何执行点。用户可以创建第二块盘；两块同时 running 时，第二块的
+拆卸不会真正移除设备（restart `no volume carries the recorded identity`、forget `device_absent=0`）。
+
+**修法**（完整落点表见 `docs/validation/m5-stab-01-single-disk.md`）：
+- 新错误码 `ServiceCoreError::single_disk_violation = 0x5609`（**追加**，旧编号不变）；
+- `ServiceCore::refuse_if_another_disk_is_up()` 是唯一执行点：pending 队列里的 create/import、pending
+  start，以及任何 `runtime != stopped` 的另一个 profile 都算“已有盘 up”；
+- `disk create` 在派生 profile id 之后、reservation/admission 之前拒绝（step `single_disk_create`）；
+  `disk start` 在 plan 为 allowed 时拒绝（step `single_disk_start`），幂等 `already_running` 不受影响；
+- 拒绝写 `ServiceLogKind::admission_refused`：被拒命令没有 durable operation 记录，原因必须进日志；
+- CLI 把 `0x5609` 映射为退出码 1（产品拒绝），不是 2（用法）或 3（不可达）。
+
+**本机**：`m5.service_orchestration` 新增 4 例（create/已有盘运行、create/第一个仍 pending、start/已有盘
+运行、start/无他盘的反向对照）；12 个受影响套件全绿（`m5.startup_sweep` 按设计拒绝在开发机跑）。
+
+**客机**（`Reset-M5Guest` 后，Release，`cli_e2e` 连续两次 109 s / 108 s）：
+
+```text
+--- STAB-01: a second disk is refused while the first one is running
+  second create on T: exit=1 in 13 ms
+  error: M5 is a single-disk product: only one disk may be up at a time. ...
+  command: disk.create
+  step: service_core.single_disk_create
+  code: 0x5609 domain 8
+PASS STAB-01: second create refused (code 0x5609), first disk unchanged (generation=2 mount=U: workers=1)
+  first disk forgotten; device_absent=1 proved
+PASS integration.m5.cli_e2e
+```
+
+第二次运行 16 ms，同一组 PASS 行。期间有一次**假失败**：断言用了 `-match`（PowerShell 默认不区分
+大小写），`disk.list: completed` 里的 `t:` 命中了 `T:`；拒绝本身当时就是正确的（16 ms、0x5609），
+断言改成 `-cmatch` 后通过。教训写进 validation 文档，不重复。
+
+**未做**：G3 未重跑——自动启动走 `admit_auto_starts`（先发布 stopped、再 dispatch start），guard 逻辑上
+通过；按“G3 已验证、不重做”的指示保留。历史遗留的两块 running 盘不会被自动拆除，guard 只阻止新的
+create/start。
+
+**发布影响**：产品二进制已变（service / cli 至少变化，worker 不变），`out/m5-evidence` 的 manifest 与
+二进制不再对应；H1（STAB-01 / 02 / 04）全部完成后再重新冻结并跑 validator。

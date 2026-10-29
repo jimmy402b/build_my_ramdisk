@@ -404,6 +404,115 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Write-Host "  wrote and read back $((Get-Item $probeFile).Length) bytes on $mount"
 
     # -----------------------------------------------------------------------
+    # STAB-01: M5 is a single-disk product, so a second disk is refused.
+    #
+    # The product used to *look* multi-disk and then strand a device: the second
+    # disk's teardown left its AIM proxy device behind, so a restart refused
+    # `no volume carries the recorded identity` and the forget refused
+    # `device_absent=0`.  The fix is an admission refusal with a stable code, and
+    # this block measures it from the CLI: refused, before any work, with the
+    # running disk's generation, mount and worker all unchanged.
+    #
+    # The refusal is asserted to be *quick* as well as correct.  A create that
+    # waited for provisioning and then failed would still be a refusal, but it
+    # would also have opened a second device first, which is the residue this
+    # guard exists to prevent.
+    # -----------------------------------------------------------------------
+    Write-Step 'STAB-01: a second disk is refused while the first one is running'
+    $secondMount = $null
+    foreach ($letter in @('T:', 'U:', 'V:', 'W:', 'X:', 'Y:', 'Z:')) {
+        if ($letter -eq $mount) { continue }
+        if ($occupied -contains $letter) { continue }
+        $buffer = New-Object System.Text.StringBuilder 512
+        if ([Myrd.DosDevice]::QueryDosDevice($letter, $buffer, 512) -ne 0) { continue }
+        $secondMount = $letter
+        break
+    }
+    if ($null -eq $secondMount) { Fail 'no second free drive letter is available' }
+
+    function Get-Generation([string]$text) {
+        $match = [regex]::Match($text, 'generation=(\d+)')
+        if (-not $match.Success) { return $null }
+        return [uint64]$match.Groups[1].Value
+    }
+
+    $firstBefore = Invoke-Cli @('disk', 'show', $profileName)
+    if ($firstBefore.exit -ne 0) {
+        Fail "disk show before the second create failed: $($firstBefore.output)"
+    }
+    $generationBefore = Get-Generation $firstBefore.output
+    if ($null -eq $generationBefore) {
+        Fail "disk show before the second create carried no generation: $($firstBefore.output)"
+    }
+    if ($firstBefore.output -notmatch 'runtime=Running') {
+        Fail "the first disk was not running before the second create: $($firstBefore.output)"
+    }
+    $workersBefore = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue |
+        Sort-Object Id | ForEach-Object { $_.Id })
+
+    $secondBundle = Join-Path $workRoot 'second-bundle'
+    $secondCreate = Invoke-Cli @('disk', 'create', '--name', "$profileName-second",
+        '--bundle', $secondBundle, '--size', '64MiB', '--mount', $secondMount, '--no-wait')
+    Write-Host "  second create on $secondMount exit=$($secondCreate.exit) in $($secondCreate.ms) ms"
+    Write-Host "  $($secondCreate.output.Trim())"
+    if ($secondCreate.exit -eq 0) {
+        Fail "a second disk create succeeded while $mount was running; M5 is a single-disk product"
+    }
+    if ($secondCreate.output -notmatch 'code: 0x5609') {
+        Fail ("the second create was not refused with the single-disk code (0x5609): " +
+            $secondCreate.output)
+    }
+    if ($secondCreate.output -notmatch 'single-disk') {
+        Fail ("the second-create refusal does not say M5 is a single-disk product: " +
+            $secondCreate.output)
+    }
+    if ($secondCreate.ms -ge 30000) {
+        Fail ("the second create took $($secondCreate.ms) ms to refuse; the guard must " +
+            'refuse at admission, before any device is opened')
+    }
+    # **No residue from the refused create.**  Its bundle directory must not exist:
+    # the refusal happened before a worker could provision anything.
+    if (Test-Path -LiteralPath $secondBundle) {
+        Fail "the refused create left a bundle directory behind: $secondBundle"
+    }
+
+    # **The first disk is untouched, not merely still present.**
+    $firstAfter = Invoke-Cli @('disk', 'show', $profileName)
+    if ($firstAfter.exit -ne 0) {
+        Fail "disk show after the second create failed: $($firstAfter.output)"
+    }
+    $generationAfter = Get-Generation $firstAfter.output
+    if ($generationAfter -ne $generationBefore) {
+        Fail ("the refused second create moved the first disk's generation: " +
+            "$generationBefore -> $generationAfter")
+    }
+    if ($firstAfter.output -notmatch [regex]::Escape($mount)) {
+        Fail "the first disk lost its mount $mount after the second create was refused"
+    }
+    if ($firstAfter.output -notmatch 'runtime=Running') {
+        Fail "the first disk stopped running after the second create was refused"
+    }
+    $workersAfter = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue |
+        Sort-Object Id | ForEach-Object { $_.Id })
+    $workersAdded = @($workersAfter | Where-Object { $workersBefore -notcontains $_ })
+    $workersLost = @($workersBefore | Where-Object { $workersAfter -notcontains $_ })
+    if ($workersAdded.Count -ne 0 -or $workersLost.Count -ne 0) {
+        Fail ("the refused second create changed the worker set: before [$($workersBefore -join ',')] " +
+            "after [$($workersAfter -join ',')]")
+    }
+    $listAfter = Invoke-Cli @('disk', 'list')
+    if ($listAfter.exit -ne 0) { Fail "disk list after the second create failed: $($listAfter.output)" }
+    # **Case-sensitive on purpose.**  `-match` is case-insensitive by default, and
+    # `disk.list: completed` contains a `t:` -- so a case-insensitive search for `T:`
+    # matches the disposition line and reports a phantom second disk.  Measured: the
+    # first run of this block failed here while the refusal itself was correct.
+    if ($listAfter.output -cmatch ([regex]::Escape($secondMount) + '\s')) {
+        Fail "the refused second disk appears in disk list at $secondMount"
+    }
+    Write-Host ("PASS STAB-01: second create refused (code 0x5609), first disk unchanged " +
+        "(generation=$generationAfter mount=$mount workers=$($workersAfter.Count))")
+
+    # -----------------------------------------------------------------------
     # T1-07: the memory the user came for, and UNMAP end to end.
     #
     # Two claims, both measured rather than asserted from a design: the running
@@ -740,6 +849,19 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId, '--wait')
     if ($forget.exit -ne 0) { Fail "disk forget failed: $($forget.output)" }
     Write-Host "  $($forget.output.Trim())"
+    # **STAB-01 keeps this reading.**  The refused second disk must not make the first
+    # disk's forget unsafe: a failed create can leave a device behind, and this is the
+    # assertion that would catch it.  Fail-closed forget only succeeds with the proof, so
+    # the proof is what is asserted -- not the exit code.
+    $firstForgetLog = if (Test-Path -LiteralPath $serviceLog) {
+        Get-Content -LiteralPath $serviceLog -Raw
+    } else { '' }
+    $firstProved = ($firstForgetLog -split "`n") |
+        Where-Object { $_ -match 'forget safety proved:' -and $_ -match 'device_absent=1' }
+    if (-not $firstProved) {
+        Fail 'the first disk''s forget did not record device_absent=1 in the service log'
+    }
+    Write-Host '  first disk forgotten; device_absent=1 proved'
     $empty = Invoke-Cli @('disk', 'list')
     if ($empty.exit -ne 0) { Fail "disk list failed after the removal: $($empty.output)" }
     if ($empty.output -match [regex]::Escape($profileId)) {

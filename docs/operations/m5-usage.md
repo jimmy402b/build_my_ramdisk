@@ -97,6 +97,12 @@ d75ddf8b-…  T:  ready  running  runtime=Running  activity=Idle
 
 ## 6. 目前不做的事（明确写出来，避免误解）
 
-- **多盘同时运行不在支持范围**：M5 是单盘产品；同时挂两块盘时，第二块的拆卸不会真正移除设备。
+- **多盘同时运行不在支持范围，而且是硬拒绝**：M5 是单盘产品。已经有一块盘在运行时，
+  `disk create` 和 `disk start` 都会在准入阶段被拒绝，返回稳定错误码 **`0x5609`**，
+  文案写明 “M5 is a single-disk product”，CLI 退出码 `1`。拒绝发生在任何 worker、
+  设备、bundle 或持久化记录产生之前，所以第二块盘**不会留下任何残留**。
+  要换一块盘：先 `disk stop`（或 `disk forget`）当前那块。
+  这条限制以前只是“没实现”，表现为第二块盘看起来能建、拆卸时却留下设备
+  （`no volume carries the recorded identity` / `device_absent=0`）；那个行为已经关闭。
 - `disk release-memory`（手动把内存还给系统）**尚未实现**。
 - 快照/克隆、网络共享、压缩都不在这条产品线的范围内。

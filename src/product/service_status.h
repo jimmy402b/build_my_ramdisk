@@ -52,6 +52,14 @@ enum class ServiceCoreError : std::uint32_t {
     operation_invalid,
     wait_protocol_invalid,
     dependency_failure,
+    // **M5 is a single-disk product, and this code is how that is said.**
+    //
+    // A second `disk create` / `disk import` or a `disk start` is refused while another
+    // disk is up.  It is part of the public contract for the same reason every code here
+    // is: a client maps it to an exit code and a sentence, and a client that could not
+    // name it would have to hard-code a number.  Appended so every existing code keeps
+    // the number already on the wire and in the durable records.
+    single_disk_violation,
 };
 enum class OperationState : std::uint8_t {
     queued = 0,

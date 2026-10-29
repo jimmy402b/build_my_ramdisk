@@ -1485,6 +1485,84 @@ Result<profile::MemoryPolicy> materialize_memory_policy(
         kAutomaticSnapshotCowLimitBytes});
 }
 
+// **Why this exists, in the product's own terms.**  M5 is a single-disk product (G4 is
+// deferred), and the measured consequence of letting a second disk exist was not "two
+// disks work": the second disk's teardown left its AIM proxy device behind, so a restart
+// refused with `no volume carries the recorded identity` and the forget refused with
+// `device_absent=0`.  That is worse than not supporting multi-disk -- the product looked
+// like it did, and then stranded a device.  Refusing the second disk at admission is the
+// honest behaviour, and it lives here rather than in the CLI so that every client (CLI,
+// GUI, a future one) gets the same answer and the same code.
+//
+// "Up" covers every runtime state except `stopped`.  `starting`, `running`, `stopping`
+// and `orphaned` all mean a device exists or is about to, and `orphaned` in particular is
+// exactly the leftover a second create must not race.  The durable state is the service's
+// own truth; a record that merely *says* running while its worker is gone is the startup
+// sweep's problem, not a reason to admit a second device.
+//
+// The pending queue closes the window the durable record cannot.  A create publishes no
+// profile until its execution provisions one, so two creates issued back to back would
+// both pass a profile-only check and both provision a device; the first one's pending
+// entry is what refuses the second.  A start, by contrast, publishes `running` at
+// admission -- its pending entry covers the moment that publication is still in flight.
+Result<void> ServiceCore::refuse_if_another_disk_is_up(
+    const product::Uuid& excluded_profile,
+    const product::Uuid& request_id,
+    const std::string& command,
+    const wchar_t* step) {
+    std::wstring reason;
+    {
+        std::scoped_lock lock(pending_mutex_);
+        for (const auto& pending : pending_) {
+            if (pending.lifecycle_intent.has_value()
+                && pending.lifecycle_intent->profile_id == excluded_profile) {
+                // This request's own create/import (an idempotent replay), not a
+                // second disk.
+                continue;
+            }
+            if (pending.lifecycle_intent.has_value()) {
+                reason = L"another disk is still being created";
+                break;
+            }
+            if (pending.plan.command == ManagementCommand::start) {
+                reason = L"another disk is starting";
+                break;
+            }
+        }
+    }
+    if (reason.empty()) {
+        auto listed = profiles_.list_profiles();
+        if (!listed.ok()) {
+            return Result<void>::failure(listed.error());
+        }
+        for (const auto& snapshot : listed.value()) {
+            if (snapshot.record.profile.profile_uuid == excluded_profile) {
+                continue;
+            }
+            if (snapshot.state.disk.runtime
+                != product::RuntimeState::stopped) {
+                reason = L"another disk is running";
+                break;
+            }
+        }
+    }
+    if (reason.empty()) return Result<void>::success();
+
+    logger_.write(ServiceLogEvent{
+        ServiceLogKind::admission_refused,
+        request_id,
+        std::nullopt,
+        excluded_profile,
+        command,
+        "single-disk",
+        "single-disk admission refused: " + narrow_ascii(reason)});
+    return Result<void>::failure(service_error(
+        ServiceCoreError::single_disk_violation,
+        step,
+        L"M5 is a single-disk product: only one disk may be up at a time. Stop the "
+        L"running disk before creating or starting another one."));
+}
+
 Result<ServiceResponse> ServiceCore::dispatch(
     const ServiceCommandRequest& request) {
     auto encoded = ipc::encode_command_payload(request.command);
@@ -1790,6 +1868,19 @@ Result<ServiceResponse> ServiceCore::dispatch(
         auto profile_id = derive_request_uuid(request_id, "profile");
         if (!profile_id.ok()) {
             return Result<ServiceResponse>::failure(profile_id.error());
+        }
+        // **A create is a second disk by definition.**  It is refused before anything is
+        // reserved or provisioned, so a refusal leaves no reservation, no profile, no
+        // worker and no device behind -- which is the whole point of the guard.  Import
+        // is not covered here: it publishes a stopped profile and brings no disk up, and
+        // starting that profile is where the same rule applies.
+        if (create != nullptr) {
+            auto single_disk = refuse_if_another_disk_is_up(
+                profile_id.value(), request_id, command,
+                L"service_core.single_disk_create");
+            if (!single_disk.ok()) {
+                return Result<ServiceResponse>::failure(single_disk.error());
+            }
         }
         std::optional<product::Uuid> expected_image_id;
         if (create != nullptr) {
@@ -2386,6 +2477,13 @@ Result<ServiceResponse> ServiceCore::dispatch(
         }
         if (management_command == ManagementCommand::start
             && plan.disposition == TransitionDisposition::allowed) {
+            // A dry run has to predict the refusal it would get, not just the plan.
+            auto single_disk = refuse_if_another_disk_is_up(
+                profile.value().record.profile.profile_uuid, request_id, command,
+                L"service_core.single_disk_start");
+            if (!single_disk.ok()) {
+                return Result<ServiceResponse>::failure(single_disk.error());
+            }
             auto physical_memory = memory_.query();
             if (!physical_memory.ok()) {
                 return Result<ServiceResponse>::failure(
@@ -2495,6 +2593,14 @@ Result<ServiceResponse> ServiceCore::dispatch(
     }
     if (management_command == ManagementCommand::start
         && plan.disposition == TransitionDisposition::allowed) {
+        // Refused before the gate, the durable admission or any runtime publication, so
+        // the running disk's generation, mount and worker are untouched by the attempt.
+        auto single_disk = refuse_if_another_disk_is_up(
+            profile.value().record.profile.profile_uuid, request_id, command,
+            L"service_core.single_disk_start");
+        if (!single_disk.ok()) {
+            return Result<ServiceResponse>::failure(single_disk.error());
+        }
         auto physical_memory = memory_.query();
         if (!physical_memory.ok()) {
             return Result<ServiceResponse>::failure(physical_memory.error());
