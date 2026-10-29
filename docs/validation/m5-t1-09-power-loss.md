@@ -74,3 +74,26 @@ PASS T1-09: the disk came back by itself at the committed generation
 所以三段是**一个整体**，用 `tools/m5vm/Test-M5PowerLoss.ps1` 一次跑完，不能拆开重复计数。
 一次完整三段通过 + 断电后的四次独立观察（服务自起、盘自起、generation 前进、标记一致）
 构成本增量的证据；`-Repeat N` 在这里等价于 N 次断电重启，时间成本约 3 分钟/次。
+
+## 5. 2026-10-29 修复：自动启动时卷已被 Windows 挂到 D:（G3 回归）
+
+**现象**：断电后服务自起，盘 `Ready stopped/configured`，`create-runtime` 失败在
+`assign_drive_letter`：`set-mount failed first=87 second=18`。
+
+**诊断**（失败行逐层加出来的决定性一条）：
+```text
+enum=4 match=1 same=1 own=1@0+63 qerr=2 cand=1@0+63 state=fs=NTFS paths=D:\ dos=none
+```
+记录 GUID 就是活动卷、extents 完全相同、文件系统是 NTFS；`paths=D:\` 说明开机把这块卷
+自动挂到了 `D:`。一个卷只能有一个盘符，`SetVolumeMountPointW(T:, 同一个卷)` 因此返回 87。
+
+**修复**：`Win32VolumeAdapter::assign_drive_letter` 在 Set 前用
+`GetVolumePathNamesForVolumeNameW` 列出该卷已有路径，释放**盘符形式**且不是请求盘符的路径
+（目录挂载点不动），再走原有 Set/采纳逻辑。
+
+**读数（连续两次完整三段）：**
+- pass 1：`T: Ready running generation=4`（cut 前提交 3），marker 65 字节一致，workers 1，aim 0；
+- pass 2：`T: Ready running generation=3`（cut 前提交 3），marker 65 字节一致，workers 1，aim 0。
+- 回归 `integration.m5.cli_e2e` 1/1（118 s）。
+
+**重新冻结**：`frozen_at 2026-10-29T10:05:04Z`，worker `7fb9032b`，validator `accepted`。

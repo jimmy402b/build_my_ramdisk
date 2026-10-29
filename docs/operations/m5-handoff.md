@@ -12,9 +12,9 @@
 | 基线 | `main` = `cb3df08`（干净 M4），**保持不动** |
 | **T1（G2/G3，单盘 + 断电恢复）** | T1-01…T1-11 **PASSED**；T1-05 `-Repeat 20` 20/20；**T1-09 断电三段客机通过**（`PASS integration.m5.powerloss`，prepare 52 s / verify 5 s） |
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
-| **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（数据丢失授权修完后重新冻结，§3.195） |
+| **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **M5 虚拟机验收**（G1 + G2 + G3）；T4 增量全部收口 |
+| **下一件事** | **G1/G2/G3 单例均已通过**（G3 连续两次，§3.197）；剩余：m1–m4/unit/model 全量回归未完整跑完，之后是最终验收 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4531,3 +4531,37 @@ kind=7 ... action=create-runtime code=21001 native=18 step=assign_drive_letter
 `second=18`（`ERROR_NO_MORE_FILES`）说明候选卷可能尚不可挂载，或者枚举没找到它。修完重跑
 `Test-M5PowerLoss.ps1 -SkipStage`，读数要求 `runtime=Running`、generation ≥ 提交值、标记字节
 一致、worker 恰好 1 个。
+### 3.197 2026-10-29 17:55：**G3 修复——自动启动把已被 Windows 挂到 `D:` 的卷重新挂回 `T:`**
+
+**诊断读数**（在 `assign_drive_letter` 的失败行里逐层加，最后一条是决定性的）：
+```text
+enum=4 match=1 same=1 own=1@0+63 qerr=2 cand=1@0+63 state=fs=NTFS paths=D:\ dos=none
+```
+- `same=1`：记录 GUID 就是活动卷，extents 完全相同 ⇒ 不是身份过期，也不是"找错卷"；
+- `state=fs=NTFS`：卷是活的 NTFS，不是 phantom/RAW；
+- `paths=D:\`：**开机时 Windows 把这块卷自动挂到了 `D:`**（原来的 `T:` 映射随旧设备一起死了）。
+
+**根因**：一个卷只能有一个盘符。`SetVolumeMountPointW(T:, 同一个卷)` 在卷已挂 `D:` 时返回
+**87**（`ERROR_INVALID_PARAMETER`），所以"按 extents 采纳活动卷"也救不了——它找的就是对的卷。
+
+**修法**（`Win32VolumeAdapter::assign_drive_letter`）：`GetVolumeNameForVolumeMountPointW(T:)`
+失败后、Set 之前，用 `GetVolumePathNamesForVolumeNameW(owned.volume_guid)` 列出这个卷已有的
+路径；对**盘符形式**且不是请求盘符的路径调用 `DeleteVolumeMountPointW` 释放，`Sleep(100)`，
+再走原有的 Set/采纳逻辑。目录挂载点不动（可能是用户自己建的），`C:` 不可能命中（卷是匹配出
+来的那块）。失败行同时保留 `enum/match/same/own/cand/state/paths/dos/released`，下一次同类
+问题不需要再猜。
+
+**客机读数（`Test-M5PowerLoss.ps1 -SkipStage` 连续两次通过）：**
+```text
+pass 1: T:  Ready running runtime=Running generation=4 (cut before: 3)
+        marker 65 chars match; workers: 1; aim-backed disks: 0
+pass 2: T:  Ready running runtime=Running generation=3 (cut before: 3)
+        marker 65 chars match; workers: 1; aim-backed disks: 0
+PASS integration.m5.powerloss
+```
+两次都是服务由 SCM 自起、verify 全程不启动任何东西；断电瞬间的脏写重放并提交成下一代。
+
+**回归**：`integration.m5.cli_e2e` 1/1（118 s，请求 `ed66e94e…`）；本机 12 个纯逻辑套件全绿。
+
+**重新冻结**：`frozen_at 2026-10-29T10:05:04Z`，4 binaries + 8 readings；只有 worker 变了
+（`7fb9032b`），service `8f8f855d`、cli `ebdedbf6`、gui `744a68f5` 不变；validator **`accepted`**。

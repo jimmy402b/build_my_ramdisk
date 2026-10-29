@@ -1167,6 +1167,39 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
     const DWORD error = GetLastError();
     if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
         return Result<void>::failure(failure(VolumeError::platform_error, L"assign_drive_letter", L"mount query failed", error));
+    // **A boot can give the recovered volume a different letter.**
+    //
+    // Measured after a hard cut: the volume came back as `D:\` (Windows mounted it at
+    // boot because its old `T:` mapping had died with the device).  A volume may have
+    // only one drive letter, so `SetVolumeMountPointW(T:, <that same volume>)` then
+    // failed 87 even though the GUID and extents were exact and the filesystem was
+    // NTFS.  Releasing the letter Windows chose is not a data operation: the volume is
+    // ours by GUID and extents, and the profile's letter is the one the product
+    // promised.  Only drive-letter paths are touched; a directory mount point (which a
+    // user may have made) is left alone, and `C:` is impossible here because the
+    // volume is the one we matched.
+    std::wstring released_letters;
+    std::array<wchar_t, 512> existing_paths{};
+    DWORD existing_needed = 0;
+    if (GetVolumePathNamesForVolumeNameW(
+            owned.volume_guid.c_str(), existing_paths.data(),
+            static_cast<DWORD>(std::size(existing_paths)), &existing_needed)) {
+        for (std::size_t at = 0; at < existing_paths.size() && existing_paths[at];) {
+            std::wstring_view path(existing_paths.data() + at);
+            at += path.size() + 1;
+            if (path.size() != 3 || path[1] != L':'
+                || towupper(path[0]) == towupper(drive_letter)) {
+                continue;
+            }
+            if (DeleteVolumeMountPointW(std::wstring(path).c_str())) {
+                released_letters += path;
+                released_letters += L' ';
+                // The mount manager processes the delete asynchronously; the Set that
+                // follows in the same instant can still see the old letter.
+                Sleep(100);
+            }
+        }
+    }
     // **A stale mapping at this letter has to be cleared before it can be set.**
     //
     // Measured after a hard power cut: `create-runtime` failed here with native=87
@@ -1180,6 +1213,12 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
         return Result<void>::success();
     }
     const DWORD first_error = GetLastError();
+    std::size_t live_count = 0;
+    std::size_t matched_count = 0;
+    std::size_t same_guid_count = 0;
+    std::wstring candidate_summary;
+    std::wstring candidate_state;
+    DWORD adopt_error = 0;
     // One retry: the delete above is asynchronous in the device stack, so a set issued in the same
     // instant can still see the old mapping.
     Sleep(100);
@@ -1203,6 +1242,7 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
             return left.disk_number == right.disk_number && left.starting_offset == right.starting_offset
                 && left.length_bytes == right.length_bytes;
         };
+        live_count = live.value().size();
         for (const auto& observation : live.value()) {
             const auto& candidate = observation.volume;
             if (candidate.extents.size() != owned.extents.size()) continue;
@@ -1210,18 +1250,85 @@ Result<void> Win32VolumeAdapter::assign_drive_letter(const ProductVolume& owned,
             for (std::size_t index = 0; index < candidate.extents.size(); ++index) {
                 if (!same_extent(candidate.extents[index], owned.extents[index])) { same = false; break; }
             }
-            if (!same || candidate.volume_guid == owned.volume_guid) continue;
+            if (!same) continue;
+            ++matched_count;
+            if (candidate_summary.empty() && !candidate.extents.empty()) {
+                const auto& first = candidate.extents.front();
+                candidate_summary = std::to_wstring(first.disk_number) + L"@" +
+                    std::to_wstring(first.starting_offset >> 20) + L"+" +
+                    std::to_wstring(first.length_bytes >> 20);
+                // **Is the volume we matched actually a live filesystem?**  After a
+                // hard cut a dead device can still be enumerated with the recorded
+                // GUID and extents, while the re-created volume has a new GUID.  The
+                // mount then fails 87 on the dead one.  "The filesystem answers" is
+                // the cheapest way to tell those two apart in the one log line.
+                wchar_t filesystem[16]{};
+                DWORD serial = 0;
+                DWORD max_component = 0;
+                DWORD flags = 0;
+                if (GetVolumeInformationW(candidate.volume_guid.c_str(), nullptr, 0,
+                                          &serial, &max_component, &flags, filesystem,
+                                          static_cast<DWORD>(std::size(filesystem)))) {
+                    candidate_state = std::wstring(L"fs=") + filesystem;
+                } else {
+                    candidate_state =
+                        L"fs=err" + std::to_wstring(GetLastError());
+                }
+            }
+            if (candidate.volume_guid == owned.volume_guid) { ++same_guid_count; continue; }
             DeleteVolumeMountPointW(mount.c_str());
             if (SetVolumeMountPointW(mount.c_str(), candidate.volume_guid.c_str())) {
                 return Result<void>::success();
             }
+            adopt_error = GetLastError();
         }
     }
-    std::wstring guid_text = owned.volume_guid;
-    if (guid_text.size() > 44) guid_text = guid_text.substr(0, 44);
-    const std::wstring detail = std::wstring(L"set-mount failed first=") +
-        std::to_wstring(first_error) + L" second=" + std::to_wstring(GetLastError()) +
-        L" guid=" + guid_text;
+    // **The counters are the diagnosis, not decoration.**  The recorded GUID failing to
+    // set says nothing about *why*: a re-created volume has different extents (disk
+    // number or offset moved), the only extents match may be the recorded GUID itself
+    // (so the volume exists but is not mountable), or enumeration found nothing.  Those
+    // three need different fixes, and the log line is the only place that survives the
+    // process.  Kept short because the writer caps the line.
+    std::wstring own_summary = L"none";
+    if (!owned.extents.empty()) {
+        const auto& first = owned.extents.front();
+        own_summary = std::to_wstring(first.disk_number) + L"@" +
+            std::to_wstring(first.starting_offset >> 20) + L"+" +
+            std::to_wstring(first.length_bytes >> 20);
+    }
+    // **Which letters does the live volume already have, and what is T: attached to?**
+    // `GetVolumeNameForVolumeMountPointW(T:)` failing and `SetVolumeMountPointW(T:)`
+    // returning 87 on a live NTFS volume means the *letter* is the problem, not the
+    // volume.  The decisive reading was `paths=D:\` with `dos=none`: Windows had
+    // mounted the volume at D: during boot, and a volume may hold only one drive
+    // letter, so the Set to T: had nowhere to go.  Both facts fit in the one line.
+    std::wstring paths_text = L"none";
+    std::array<wchar_t, 512> paths{};
+    DWORD paths_needed = 0;
+    if (GetVolumePathNamesForVolumeNameW(owned.volume_guid.c_str(), paths.data(),
+                                         static_cast<DWORD>(std::size(paths)),
+                                         &paths_needed)
+        && paths[0] != L'\0') {
+        paths_text = paths.data();
+        while (!paths_text.empty() && paths_text.back() == L'\0') paths_text.pop_back();
+    }
+    std::wstring dos_text = L"none";
+    std::array<wchar_t, 512> dos_target{};
+    const DWORD dos_length = QueryDosDeviceW(
+        L"T:", dos_target.data(), static_cast<DWORD>(std::size(dos_target)));
+    if (dos_length != 0) dos_text.assign(dos_target.data(), dos_length);
+    std::wstring detail = L"set-mount failed first=" + std::to_wstring(first_error) +
+        L" second=" + std::to_wstring(GetLastError()) +
+        L" enum=" + std::to_wstring(live_count) +
+        L" match=" + std::to_wstring(matched_count) +
+        L" same=" + std::to_wstring(same_guid_count) +
+        L" own=" + own_summary +
+        L" qerr=" + std::to_wstring(error);
+    if (!candidate_summary.empty()) detail += L" cand=" + candidate_summary;
+    if (!candidate_state.empty()) detail += L" state=" + candidate_state;
+    detail += L" paths=" + paths_text + L" dos=" + dos_text +
+        L" released=" + (released_letters.empty() ? L"none" : released_letters);
+    detail += L" adopt=" + std::to_wstring(adopt_error);
     return Result<void>::failure(
         failure(VolumeError::platform_error, L"assign_drive_letter", detail.c_str(), GetLastError()));
 #else
