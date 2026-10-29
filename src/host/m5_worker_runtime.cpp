@@ -226,12 +226,19 @@ persistence::RecoveryOptions default_recovery_options(
     // data plus the journal's own pre-image/overhead -- so "budget + 64 MiB" still
     // refused it.  The dirty set is capped by min(budget, capacity); the factor of two
     // is the measured worst case, and the floor/overhead keep small disks unchanged.
-    const std::uint64_t dirty_max = ram_limit_bytes == 0
-        ? (virtual_bytes == 0 ? kDefaultVirtualBytes : virtual_bytes)
-        : (std::min)(ram_limit_bytes,
-                     virtual_bytes == 0 ? ram_limit_bytes : virtual_bytes);
-    const std::uint64_t journal_bytes = (std::max)(
-        kJournalFloorBytes, dirty_max * 2 + kJournalOverheadBytes);
+    // **Scaled only when a budget was actually carried.**  A launch with no budget
+    // keeps the historical 64 MiB reader bound: that is the behaviour every existing
+    // bundle was written and read against, and the reconcile path in
+    // `m5.production_execution_backend` regressed when its reader bound changed for a
+    // profile whose memory policy is zero.  A create that *does* carry a budget (the
+    // STAB-02 path) scales to twice the dirty set plus overhead.
+    const std::uint64_t journal_bytes = ram_limit_bytes == 0
+        ? kJournalFloorBytes
+        : (std::max)(kJournalFloorBytes,
+                     (std::min)(ram_limit_bytes,
+                                virtual_bytes == 0 ? ram_limit_bytes : virtual_bytes)
+                             * 2
+                         + kJournalOverheadBytes);
     // Four records' worth of slack per 64 KiB of journal, with the historical floor,
     // so the record bound cannot be the next thing to refuse a legitimate journal.
     const std::uint64_t journal_records =
