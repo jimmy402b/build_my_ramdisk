@@ -249,6 +249,7 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     spec.session_nonce = reader.u64();
     const auto secret = reader.raw(spec.startup_secret.bytes.size());
     if (reader.boolean()) spec.volume_label = reader.text();
+    if (reader.boolean()) spec.ram_limit_bytes = reader.u64();
     if (!reader.ok() || !reader.exhausted()) {
         return Result<WorkerLaunchSpec>::failure(pipe_error(
             static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
@@ -318,6 +319,11 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     // absence explicit rather than inferring it from an empty string, which is a label someone could ask for.
     writer.boolean(spec.volume_label.has_value());
     if (spec.volume_label.has_value()) writer.text(*spec.volume_label);
+    // Appended after the label for the same reason: presence byte then value, so a spec
+    // encoded before this field existed decodes as "no budget" instead of a zero read
+    // from bytes that belong to something else.
+    writer.boolean(spec.ram_limit_bytes != 0);
+    if (spec.ram_limit_bytes != 0) writer.u64(spec.ram_limit_bytes);
     return Result<std::vector<std::byte>>::success(writer.take());
 }
 

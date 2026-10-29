@@ -47,6 +47,9 @@ struct WorkerRuntimeConfig final {
     persistence::RecoveryOptions recovery{};
     // The label to write once the volume has a path (T4-02).  Absent means "leave the volume as it is".
     std::optional<std::wstring> volume_label;
+    // The profile's RAM budget for the block store.  Zero means "no budget to impose",
+    // which is what an import asks for because its capacity is only discovered here.
+    std::uint64_t ram_limit_bytes{};
 };
 
 class DiskWorkerRuntime final : public WorkerRuntime {

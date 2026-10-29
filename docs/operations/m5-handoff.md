@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **H1 进行中**：STAB-01 单盘硬保护 **PASSED**（§3.199，客机 `cli_e2e` 连续两次）；下一步 **STAB-02 内存耗尽**，然后 **STAB-04 CI 一键全量**。产品二进制已变，release manifest 待 H1 收尾重新冻结 |
+| **下一件事** | **H1 进行中**：STAB-01 单盘硬保护 **PASSED**（§3.199）、STAB-02 内存耗尽 **PASSED**（§3.200，含四个创建缺陷的修复）；下一步 **STAB-04 CI 一键全量**。产品二进制已变，release manifest 待 H1 收尾重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4637,3 +4637,52 @@ create/start。
 
 **发布影响**：产品二进制已变（service / cli 至少变化，worker 不变），`out/m5-evidence` 的 manifest 与
 二进制不再对应；H1（STAB-01 / 02 / 04）全部完成后再重新冻结并跑 validator。
+
+### 3.200 2026-10-29 23:15：**STAB-02 完成——预算耗尽可预期，顺带修掉“>64 MiB 盘无法创建”的四层缺陷**
+
+**目标读数（客机，1 GiB 盘 / 256 MiB `--memory-hard-limit`，`tests/e2e/test-m5-memory-exhaustion.ps1 -Mode budget`）**：
+
+```text
+baseline:  generation=2  mem=6291456/268435456
+write 320 MiB in 4 MiB chunks -> written_mib=256  write_failed=yes
+           "由于 I/O 设备错误，无法运行此项请求。"（ERROR_IO_DEVICE，不是 ERROR_NOT_ENOUGH_MEMORY）
+after:     generation=2  mem=268435456/268435456  runtime=Running persistence=Clean health=Healthy  workers=1
+small write (23 B, 只改已提交块): succeeded
+checkpoint -> succeeded; generation 2 -> 4; mem 回落 67108864/268435456
+stop -> succeeded; service restart + disk start -> succeeded
+after restart: generation=5  file_length=268435456  committed_prefix 4 MiB 逐字节一致
+delete -> UNMAP -> mem=5505024/268435456 -> write_after_unmap=ok
+cleanup forget=ok; PASS
+```
+
+**策略**（完整表在 `docs/validation/m5-stab-02-memory-exhaustion.md`）：耗尽点是**预算**而不是物理
+RAM；automatic 预算 = min(物理/4, 容量)，所以正常使用不会把机器压到换页。需要新提交块的写失败，
+只改已提交块的小写可能成功；checkpoint 仍完成；最多丢“最后一次提交之后”的写入（默认 60 s / 64 MiB）。
+
+**途中发现的四个产品缺陷（全部阻塞 STAB-02，且都影响正常创建）**：
+
+1. **MSR 分区号写死**：`provision_volume.ps1` 用 `-PartitionNumber 1` 给盘符；GPT 盘上分区 1 是
+   16 MiB MSR，数据分区是 2。盘符挂到 MSR，数据卷永远没有盘符，创建在 `select_volume_for_disk`
+   失败。客机时间线（`1:1@V:\`、`1:2@\\?\Volume{…}` 无盘符）留档。修法：用 `New-Partition`
+   返回对象的 `PartitionNumber`；单测改为模拟 MSR 布局并钉住分区号。
+2. **`verify_volume` 的 2 MiB 上限**：MSR 使数据分区比虚拟盘小约 16 MiB，`extent_bytes=520028160
+   expected=536870912` 被拒。修法：上限 18 MiB（MSR + 对齐），GUID/所有权/长度检查不变。
+3. **worker 的 `max_virtual_bytes` 写死 64 MiB**：`default_recovery_options()` 让任何更大的 bundle
+   在 `record_bundle_identity` 被判 `slot_semantics;status=unsupported`。修法：用 worker 自己的
+   `virtual_bytes`。
+4. **内存预算从未到达 worker**：launch spec 不带 profile 的 memory policy，worker 永远开 1 GiB 默认
+   store，`--memory-mode fixed --memory-hard-limit` 是惰性的。修法：launch spec 追加可选
+   `ram_limit_bytes`（0 表示“无预算”，import 用），`make_launch_request` 从 profile / create intent
+   物化，worker → adapter → `store_options_for`。同时 `record_bundle_identity` 现在把拒绝的 code/step
+   和两个 slot 的 `safe_context` 写进错误，下次不必改代码取证。
+
+**回归**：本机 17 个受影响套件全绿（provision script、worker private pipe、service worker control、
+`m5.*` 模型、m4 checkpoint/recovery）；客机 `integration.m5.cli_e2e` **1/1 通过**（64 MiB 全流程 +
+STAB-01 断言）。**注意**：修 #3/#4 时对 worker 的恢复上限按“2×脏集 + 64 MiB”推导——一次 256 MiB
+脏集的 checkpoint 实测 journal 344 MiB；journal 随脏集线性增长这件事留给 STAB-03/STAB-11。
+
+**未测**：物理 RAM 真的不够（fixed 预算大于机器提交上限）。automatic 预算 ≤ 1/4 RAM，正常路径到不了；
+故意设 6–8 GiB 预算需要数分钟写入和巨量 journal，本轮没有做。不要把它说成已测。
+
+**发布影响**：产品二进制（service/worker）与内嵌的 provisioning 资源都变了，`out/m5-evidence` 的
+manifest 继续失效；H1（STAB-01/02/04）收尾统一重新冻结。

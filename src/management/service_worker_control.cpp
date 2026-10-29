@@ -163,6 +163,10 @@ Result<WorkerLaunchRequest> make_launch_request(
     // The label the profile carries, so a restart re-applies it: the volume remembers a label only until it is
     // re-created from the bundle, and re-creating is exactly what a recovery does.
     request.volume_label = record.volume_label;
+    // The budget the profile was registered with.  The worker's store is opened with it,
+    // so the memory policy the user asked for is the one enforced -- previously the
+    // worker always opened with its default and `--memory-hard-limit` was inert.
+    request.ram_limit_bytes = record.memory.hard_limit_bytes;
     return Result<WorkerLaunchRequest>::success(std::move(request));
 }
 
@@ -187,6 +191,20 @@ Result<WorkerLaunchRequest> make_launch_request(
         intent.kind == LifecycleOperationKind::create
             ? m5::WorkerVolumeMode::provision_new
             : m5::WorkerVolumeMode::adopt_existing};
+    // A create's budget is decided at admission and must reach the worker that opens the
+    // store; materializing it here uses the same rule the registration uses, so the
+    // profile record and the runtime cannot disagree about the limit.  An import's
+    // capacity is only known once the worker has inspected the bundle, so it stays zero.
+    if (intent.kind == LifecycleOperationKind::create
+        && intent.physical_memory.total_bytes != 0) {
+        auto memory = materialize_memory_policy(
+            intent.memory_mode, intent.memory_hard_limit_bytes,
+            intent.requested_capacity_bytes, intent.physical_memory);
+        if (!memory.ok()) {
+            return Result<WorkerLaunchRequest>::failure(memory.error());
+        }
+        request.ram_limit_bytes = memory.value().hard_limit_bytes;
+    }
     return Result<WorkerLaunchRequest>::success(std::move(request));
 }
 

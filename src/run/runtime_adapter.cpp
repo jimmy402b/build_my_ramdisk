@@ -503,7 +503,21 @@ Result<void> ProductionRuntimeAdapter::verify(const ProductVolume& volume,
             : volume.volume_guid);
     const auto extent_bytes =
         actual.extents.empty() ? 0ULL : actual.extents.front().length_bytes;
-    constexpr std::uint64_t kPartitionOverheadAllowance = 2ULL * 1024ULL * 1024ULL;
+    // **The data partition is not the whole disk on a disk large enough for an MSR.**
+    //
+    // `Initialize-Disk -PartitionStyle GPT` puts a 16 MiB Microsoft Reserved partition in
+    // front of the data partition, so the data volume's extent is necessarily ~16 MiB
+    // smaller than the virtual disk.  The old 2 MiB allowance called that "not our
+    // volume" and refused the create at `verify_volume` *after* the volume had been
+    // mounted correctly.  Measured on the guest with a 512 MiB disk:
+    // extent_bytes=520028160, expected=536870912 (16,842,752 bytes short), GUIDs equal,
+    // ownership and extents equal.  64 MiB disks have no MSR, which is why every existing
+    // test passed while every larger disk failed.
+    //
+    // The allowance is the MSR plus GPT alignment slack, not "18 MiB of anything": a
+    // volume that is genuinely truncated (a wrong partition, a stale smaller volume)
+    // still differs by far more than this.
+    constexpr std::uint64_t kPartitionOverheadAllowance = 18ULL * 1024ULL * 1024ULL;
     // **The physical-disk clause is gone, and the GUID clause is what makes that sound.**
     //
     // It compared the volume's disk number against the AIM device's, which required knowing which

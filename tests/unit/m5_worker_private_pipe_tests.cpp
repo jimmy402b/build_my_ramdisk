@@ -70,6 +70,9 @@ WorkerLaunchSpec launch_spec() {
     spec.private_pipe_name = L"\\\\.\\pipe\\MyRamDisk.M5.Worker.test";
     spec.session_nonce = kSessionNonce;
     spec.startup_secret = secret();
+    // A non-zero budget so the round-trip test carries the field.  Zero is a
+    // distinct instruction ("no budget to impose"), covered separately below.
+    spec.ram_limit_bytes = 64ull * 1024 * 1024;
     return spec;
 }
 
@@ -128,6 +131,31 @@ TEST_CASE(m5_launch_spec_distinguishes_an_absent_image_from_a_zero_one) {
     REQUIRE(back.ok());
     REQUIRE(back.value().image_id.has_value());
     REQUIRE(back.value().image_id->bytes[15] == std::byte{0x9C});
+}
+
+TEST_CASE(m5_launch_spec_carries_the_memory_budget_or_its_absence) {
+    // The budget the profile was registered with has to reach the worker that
+    // opens the block store; before this field existed the worker always opened
+    // with its default and `--memory-hard-limit` was recorded but never enforced.
+    auto spec = launch_spec();
+    spec.ram_limit_bytes = 0;
+    auto absent = encode_launch_spec(spec);
+    REQUIRE(absent.ok());
+    auto absent_back = decode_launch_spec(absent.value());
+    REQUIRE(absent_back.ok());
+    REQUIRE_EQ(absent_back.value().ram_limit_bytes, 0ULL);
+    REQUIRE(absent_back.value() == spec);
+
+    spec.ram_limit_bytes = 512ull * 1024 * 1024;
+    auto present = encode_launch_spec(spec);
+    REQUIRE(present.ok());
+    auto present_back = decode_launch_spec(present.value());
+    REQUIRE(present_back.ok());
+    REQUIRE_EQ(present_back.value().ram_limit_bytes, 512ull * 1024 * 1024);
+    REQUIRE(present_back.value() == spec);
+    // The presence bit is the difference between "64 MiB" and "no budget at
+    // all"; the encodings must differ by more than a zero would.
+    REQUIRE(present.value().size() > absent.value().size());
 }
 
 TEST_CASE(m5_launch_spec_refuses_a_volume_mode_it_does_not_define) {

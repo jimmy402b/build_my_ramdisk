@@ -130,7 +130,7 @@ function Invoke-FakeProvision {
     )
 
     $global:fakeCalls = [Collections.Generic.List[string]]::new()
-    $global:fakeContract = [pscustomobject]@{ GetDisk=$false; GetPartition=$false; GetVolume=$false; GetPSDrive=$false; SetDisk=$false; InitializeDisk=$false; NewPartition=$false; FormatVolume=$false; SetPartition=$false; SetVolume=$false }
+    $global:fakeContract = [pscustomobject]@{ GetDisk=$false; GetPartition=$false; GetVolume=$false; GetPSDrive=$false; SetDisk=$false; InitializeDisk=$false; NewPartition=$false; FormatVolume=$false; SetPartition=$false; SetPartitionNumber=$null; SetVolume=$false }
     $global:fakeDriveLetter = $DriveLetter
     $global:fakeDisk = [pscustomobject]@{
         Number = $DiskNumber; PartitionStyle = 'RAW'; NumberOfPartitions = 0
@@ -157,9 +157,14 @@ function Invoke-FakeProvision {
     function global:Get-PSDrive { param([char]$Name) $global:fakeContract.GetPSDrive = ($Name -ieq $global:fakeDriveLetter); $global:fakeCalls.Add('Get-PSDrive'); if ($global:fakeVolume) { [pscustomobject]@{ Name = $Name } } }
     function global:Set-Disk { param([UInt32]$Number, [bool]$IsOffline, [bool]$IsReadOnly, [Parameter(ValueFromRemainingArguments)]$Args) $global:fakeContract.SetDisk = ($Number -eq $DiskNumber -and $IsOffline -eq $false -and $IsReadOnly -eq $false); $global:fakeCalls.Add("Set-Disk:$Number") }
     function global:Initialize-Disk { param([UInt32]$Number, [string]$PartitionStyle, [Parameter(ValueFromRemainingArguments)]$Args) $global:fakeContract.InitializeDisk = ($Number -eq $DiskNumber -and $PartitionStyle -ceq 'GPT'); $global:fakeCalls.Add("Initialize-Disk:$PartitionStyle"); $global:fakeDisk.PartitionStyle = $PartitionStyle; $global:fakeDisk }
-    function global:New-Partition { param([UInt32]$DiskNumber, [switch]$UseMaximumSize, [char]$DriveLetter, [Parameter(ValueFromRemainingArguments)]$Args) $global:fakeContract.NewPartition = ($DiskNumber -eq 7 -and $UseMaximumSize); $global:fakeCalls.Add('New-Partition:single'); [pscustomobject]@{ Number = 1; DriveLetter = $null } }
+    # **The data partition is number 2 on purpose.**  On a disk large enough for one,
+    # `Initialize-Disk -PartitionStyle GPT` creates the 16 MiB MSR first, so the partition
+    # `New-Partition` returns is #2.  The helper used to hardcode #1 and assigned the
+    # letter to the MSR; this fake now models that layout so the mutation contract below
+    # pins the number the helper actually assigns.
+    function global:New-Partition { param([UInt32]$DiskNumber, [switch]$UseMaximumSize, [char]$DriveLetter, [Parameter(ValueFromRemainingArguments)]$Args) $global:fakeContract.NewPartition = ($DiskNumber -eq 7 -and $UseMaximumSize); $global:fakeCalls.Add('New-Partition:single'); [pscustomobject]@{ PartitionNumber = 2; Number = 1; DriveLetter = $null } }
     function global:Format-Volume { param([object]$Partition, [string]$FileSystem, [Parameter(ValueFromRemainingArguments)]$Args) $global:fakeContract.FormatVolume = ($FileSystem -ceq 'NTFS'); $global:fakeCalls.Add("Format-Volume:$FileSystem") }
-    function global:Set-Partition { param([UInt32]$DiskNumber, [UInt32]$PartitionNumber, [char]$NewDriveLetter, [char]$DriveLetter, [Parameter(ValueFromRemainingArguments)]$Args) $assigned = if ($PSBoundParameters.ContainsKey('NewDriveLetter')) { $NewDriveLetter } else { $DriveLetter }; $global:fakeContract.SetPartition = ($assigned -ieq $global:fakeDriveLetter); $global:fakeCalls.Add('Set-Partition:letter') }
+    function global:Set-Partition { param([UInt32]$DiskNumber, [UInt32]$PartitionNumber, [char]$NewDriveLetter, [char]$DriveLetter, [Parameter(ValueFromRemainingArguments)]$Args) $assigned = if ($PSBoundParameters.ContainsKey('NewDriveLetter')) { $NewDriveLetter } else { $DriveLetter }; $global:fakeContract.SetPartition = ($assigned -ieq $global:fakeDriveLetter); $global:fakeContract.SetPartitionNumber = $PartitionNumber; $global:fakeCalls.Add('Set-Partition:letter') }
     function global:Set-Volume { param([object]$InputObject, [char]$DriveLetter, [Parameter(ValueFromRemainingArguments)]$Args) $global:fakeContract.SetVolume = ($DriveLetter -ieq $global:fakeDriveLetter); $global:fakeCalls.Add('Set-Volume:letter') }
 
     try {
@@ -195,6 +200,11 @@ Require $valid.Contract.InitializeDisk 'Initialize-Disk must target requested di
 Require $valid.Contract.NewPartition 'New-Partition must target requested disk and full-size single partition'
 Require $valid.Contract.FormatVolume 'Format-Volume must format NTFS'
 Require ($valid.Contract.SetPartition -or $valid.Contract.SetVolume) 'drive-letter assignment must target requested letter'
+# **The letter must go to the partition that was just created, not to a hardcoded one.**
+# This is the assertion that catches the MSR bug: a disk with an MSR has its data
+# partition at #2, and the letter must follow the object `New-Partition` returned.
+Require ($valid.Contract.SetPartitionNumber -eq 2) `
+    "drive-letter assignment must target the created partition (#2 here), not a hardcoded number; got $($valid.Contract.SetPartitionNumber)"
 Require $valid.Contract.GetDisk 'Get-Disk must inspect the requested disk'
 Require $valid.Contract.GetPartition 'Get-Partition must inspect the requested disk'
 Require $valid.Contract.GetPSDrive 'drive-letter occupancy check must inspect requested letter'

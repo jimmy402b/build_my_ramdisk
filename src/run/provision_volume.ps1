@@ -81,7 +81,18 @@ try {
     Initialize-Disk -Number $DiskNumber -PartitionStyle GPT | Out-Null
     $partition = New-Partition -DiskNumber $DiskNumber -UseMaximumSize
     Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'MyRamDisk' -Confirm:$false -Force | Out-Null
-    Set-Partition -DiskNumber $DiskNumber -PartitionNumber 1 -NewDriveLetter $DriveLetter | Out-Null
+    # **The data partition is not always number 1.**
+    #
+    # `Initialize-Disk -PartitionStyle GPT` creates a 16 MiB MSR (Microsoft Reserved)
+    # partition first on a disk large enough for one, so `New-Partition` then creates the
+    # data partition as number **2**.  This used to hardcode `-PartitionNumber 1`: on a
+    # 512 MiB or 1 GiB disk the letter was assigned to the MSR, which Windows accepts
+    # without error, while the NTFS data volume stayed letterless.  The create then failed
+    # later at `select_volume_for_disk` with `no volume matches the requested drive letter`,
+    # and the stale access path on the MSR poisoned that letter until the next reboot.
+    # Measured on the guest: 64 MiB creates succeeded (no MSR), 512 MiB and 1 GiB always
+    # failed.  The created partition knows its own number; use it.
+    Set-Partition -DiskNumber $DiskNumber -PartitionNumber $partition.PartitionNumber -NewDriveLetter $DriveLetter | Out-Null
 }
 catch {
     # The adapter owns this exact RAW disk after Initialize-Disk succeeds.

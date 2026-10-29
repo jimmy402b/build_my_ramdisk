@@ -103,6 +103,11 @@ struct WorkerLaunchSpec final {
     // encoded order; the codec writes it as an appended tag, which needs no protocol minor bump because the
     // service and its worker ship together.
     std::optional<std::wstring> volume_label;
+    // The RAM budget the worker's block store must be opened with.  Zero keeps the
+    // worker's default.  Appended after the label for the same reason the label is
+    // appended: the durable profile's memory policy was previously recorded and then not
+    // carried anywhere the runtime could enforce it.
+    std::uint64_t ram_limit_bytes{};
 
     bool operator==(const WorkerLaunchSpec&) const noexcept = default;
 };

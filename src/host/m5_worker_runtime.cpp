@@ -191,16 +191,56 @@ WorkerCommitDisposition protocol_disposition(
     return WorkerCommitDisposition::commit_indeterminate;
 }
 
-persistence::RecoveryOptions default_recovery_options() {
+persistence::RecoveryOptions default_recovery_options(
+    const std::uint64_t virtual_bytes,
+    const std::uint64_t ram_limit_bytes) {
     // The worker is told its bundle and size by the service, but not its
     // recovery limits: those are a property of the reader, not of the operation.
     // These are the values the M4/M3 test paths use, written as literals so this
     // file does not have to reach into the journal and VHDX format headers for
     // their names.
+    //
+    // **`max_virtual_bytes` is the disk's size, not a constant.**  It used to be a
+    // hardcoded 64 MiB, which made every disk larger than that fail its *own* create
+    // with `the bundle holds no image this worker can verify` -- the manifest geometry
+    // was refused as "exceeds configured limit" before any other check ran.  Measured
+    // on the guest: 64 MiB creates succeeded, 512 MiB and 1 GiB always failed at
+    // `record_bundle_identity` with `slot=0/1 check=slot_semantics status=unsupported`.
+    // The limit has to describe the bundle this worker was launched for; the service
+    // already told it that size, so there is nothing to guess.
     constexpr std::uint64_t kMiB = 1024 * 1024;
+    constexpr std::uint64_t kDefaultVirtualBytes = 64 * kMiB;
+    constexpr std::uint64_t kJournalFloorBytes = 64 * kMiB;
+    constexpr std::uint64_t kJournalOverheadBytes = 64 * kMiB;
+    // **A committed journal can be as large as the dirty set, and the dirty set is
+    // bounded by the store's hard limit.**  The old constant was 64 MiB for every
+    // disk: a 256 MiB budget produced a checkpoint whose journal exceeded it, and the
+    // next start refused its own bundle with
+    // `slot=0/1 check=journal_committed_length status=corrupt`.  The limit is a
+    // reader bound, so it has to describe what this profile's writer can produce --
+    // the budget plus record and commit-record overhead.  A zero budget keeps the
+    // historical floor, which is what an import (whose capacity is discovered here)
+    // still uses.
+    // **Twice the dirty set, not once.**  Measured: a 256 MiB budget/1 GiB disk
+    // produced a 360,804,352-byte journal (≈344 MiB) for one checkpoint -- the dirty
+    // data plus the journal's own pre-image/overhead -- so "budget + 64 MiB" still
+    // refused it.  The dirty set is capped by min(budget, capacity); the factor of two
+    // is the measured worst case, and the floor/overhead keep small disks unchanged.
+    const std::uint64_t dirty_max = ram_limit_bytes == 0
+        ? (virtual_bytes == 0 ? kDefaultVirtualBytes : virtual_bytes)
+        : (std::min)(ram_limit_bytes,
+                     virtual_bytes == 0 ? ram_limit_bytes : virtual_bytes);
+    const std::uint64_t journal_bytes = (std::max)(
+        kJournalFloorBytes, dirty_max * 2 + kJournalOverheadBytes);
+    // Four records' worth of slack per 64 KiB of journal, with the historical floor,
+    // so the record bound cannot be the next thing to refuse a legitimate journal.
+    const std::uint64_t journal_records =
+        (std::max)(std::uint64_t{8192}, journal_bytes / (16 * 1024));
     persistence::RecoveryOptions options{};
-    options.limits = {64 * kMiB, 64 * kMiB, 8192, 64 * 4096, 64,
-                      64 * 4096, 64, 2 * kMiB, 2 * kMiB};
+    options.limits = {
+        virtual_bytes == 0 ? kDefaultVirtualBytes : virtual_bytes,
+        journal_bytes, journal_records, 64 * 4096, 64, 64 * 4096, 64,
+        2 * kMiB, 2 * kMiB};
     return options;
 }
 
@@ -292,7 +332,8 @@ Result<std::unique_ptr<DiskWorkerRuntime>> DiskWorkerRuntime::open(
                           L"the worker has no bundle to manage"));
     }
     if (config.recovery.limits.max_journal_committed_bytes == 0) {
-        config.recovery = default_recovery_options();
+        config.recovery = default_recovery_options(
+            config.virtual_bytes, config.ram_limit_bytes);
     }
     // Opening the provider is deferred to `start()`.  The worker must not touch
     // a bundle, an AIM device or a volume before the handshake completes
@@ -322,7 +363,8 @@ Result<void> DiskWorkerRuntime::start() {
     }
     ProductionRuntimeAdapter::Config adapter_config{
             impl.config.bundle, impl.config.virtual_bytes,
-            impl.config.drive_letter, impl.config.owner_token, 0,
+            impl.config.drive_letter, impl.config.owner_token,
+            impl.config.ram_limit_bytes,
             impl.config.image_id,
             // Only a provision creates a volume.  Recover and reclaim attach to one that already exists,
             // so neither needs the physical drive located -- and locating it is what blocked.
@@ -443,9 +485,43 @@ Result<void> DiskWorkerRuntime::record_bundle_identity() {
                                             inspect);
     if (!image.ok()) return Result<void>::failure(image.error());
     if (!image.value().selected.has_value()) {
+        // **Name the rejection, not just the verdict.**  "no image this worker can
+        // verify" is true for a missing manifest, a corrupt journal, an unsupported
+        // VHDX and a recovery limit refusal, and those want opposite fixes.  Measured
+        // cost: a 512 MiB create failed here with nothing in the service log or the
+        // operation record that said which check refused.
+        std::wstring detail =
+            L"the bundle holds no image this worker can verify";
+        if (image.value().rejection.has_value()) {
+            detail += L": code="
+                + std::to_wstring(image.value().rejection->code);
+            if (!image.value().rejection->operation.empty()) {
+                detail += L" step=" + image.value().rejection->operation;
+            }
+            if (!image.value().rejection->message.empty()) {
+                detail += L" detail=" + image.value().rejection->message;
+            }
+        }
+        // The per-slot diagnostics say *which* check refused; the rejection above only
+        // says that no slot survived.  `safe_context` is the redacted, path-free field
+        // the recovery engine already publishes for exactly this purpose.
+        for (const auto& diagnostic : image.value().diagnostics) {
+            detail += L" slot=" + std::to_wstring(diagnostic.slot_index)
+                + L" status="
+                + std::to_wstring(static_cast<unsigned>(diagnostic.status));
+            if (diagnostic.first_failed_check.has_value()) {
+                detail += L" failed="
+                    + std::to_wstring(static_cast<unsigned>(
+                        *diagnostic.first_failed_check));
+            }
+            if (!diagnostic.safe_context.empty()) {
+                detail += L" ctx=" + std::wstring(
+                    diagnostic.safe_context.begin(),
+                    diagnostic.safe_context.end());
+            }
+        }
         return Result<void>::failure(runtime_error(
-            L"DiskWorkerRuntime::record_bundle_identity",
-            L"the bundle holds no image this worker can verify"));
+            L"DiskWorkerRuntime::record_bundle_identity", detail.c_str()));
     }
     // A claim is verified; an absent one is adopted.  The difference is the
     // whole of what `read_only_inspection` means: an import records the bundle

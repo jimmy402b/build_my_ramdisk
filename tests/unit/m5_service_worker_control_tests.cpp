@@ -1,4 +1,4 @@
-#include "tests/support/test_framework.h"
+﻿#include "tests/support/test_framework.h"
 
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_observation.h"
@@ -279,6 +279,37 @@ TEST_CASE(m5_launch_request_takes_its_mode_from_the_profile_lifecycle) {
     REQUIRE(ready.value().volume_mode == m5::WorkerVolumeMode::adopt_existing);
 }
 
+TEST_CASE(m5_launch_request_carries_the_memory_budget_the_profile_recorded) {
+    // The worker opens the block store, so the profile's hard limit has to travel
+    // with the launch.  It used to stop at the durable record: the runtime opened
+    // every disk with its own default and `--memory-hard-limit` was inert.
+    auto profile = profile_record(profile::ProfileLifecycle::ready);
+    profile.profile.memory = profile::MemoryPolicy{
+        profile::MemoryMode::fixed, 256ull * 1024 * 1024, 230ull * 1024 * 1024,
+        192ull * 1024 * 1024, 4ull * 1024 * 1024};
+    auto from_profile = make_launch_request(profile);
+    REQUIRE(from_profile.ok());
+    REQUIRE_EQ(from_profile.value().ram_limit_bytes, 256ull * 1024 * 1024);
+
+    // A create has no durable record yet, so its budget is materialized from the
+    // intent with the same rule the registration uses -- one rule, two callers.
+    auto create = intent(LifecycleOperationKind::create);
+    create.memory_mode = control::MemoryMode::fixed;
+    create.memory_hard_limit_bytes = 32ull * 1024 * 1024;
+    create.physical_memory = PhysicalMemorySnapshot{16ull << 30, 8ull << 30};
+    auto from_intent = make_launch_request(create);
+    REQUIRE(from_intent.ok());
+    REQUIRE_EQ(from_intent.value().ram_limit_bytes, 32ull * 1024 * 1024);
+
+    // An intent with no physical-memory observation does not materialize a bogus
+    // limit; the worker's own default applies.
+    auto unobserved = intent(LifecycleOperationKind::create);
+    REQUIRE_EQ(unobserved.physical_memory.total_bytes, 0ULL);
+    auto fallback = make_launch_request(unobserved);
+    REQUIRE(fallback.ok());
+    REQUIRE_EQ(fallback.value().ram_limit_bytes, 0ULL);
+}
+
 TEST_CASE(m5_launch_request_refuses_a_mount_target_that_is_not_a_drive_letter) {
     // The worker takes a drive letter, so a target that is not one is refused
     // before a request exists -- and therefore before any process starts.  A
@@ -504,7 +535,7 @@ TEST_CASE(m5_observe_worker_runtime_combines_session_and_runtime_liveness) {
 }
 
 TEST_CASE(m5_observe_worker_runtime_carries_the_memory_gauges_only_while_alive) {
-    // M5 §7: the two numbers the CLI shows travel from the worker's own storage
+    // M5 搂7: the two numbers the CLI shows travel from the worker's own storage
     // gauges.  They are asserted here rather than only at the CLI so the *source*
     // is pinned: a later refactor that filled them from a process' working set, or
     // from the durable profile, would still pass an end-to-end display check.
@@ -526,3 +557,5 @@ TEST_CASE(m5_observe_worker_runtime_carries_the_memory_gauges_only_while_alive) 
     REQUIRE_EQ(stopped.resident_bytes, 0ull);
     REQUIRE_EQ(stopped.budget_bytes, 0ull);
 }
+
+

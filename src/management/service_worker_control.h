@@ -232,6 +232,15 @@ struct WorkerLaunchRequest final {
     // The label to write once the volume has a path (T4-02).  Declared last so the request's existing fields keep
     // their order for every caller that builds one.
     std::optional<std::wstring> volume_label;
+    // **The profile's RAM budget, which the worker's store must be opened with.**
+    //
+    // Zero means "no budget to impose" and leaves the worker's own default, which is what
+    // an import asks for: its capacity is only discovered when the worker inspects the
+    // bundle, so the service cannot materialize a limit for it.  Every other launch
+    // carries the durable profile's hard limit (or the create intent's materialized
+    // policy), because without it `--memory-hard-limit` was recorded in the profile and
+    // then ignored by the runtime that had to enforce it.
+    std::uint64_t ram_limit_bytes{};
 };
 
 // The two translations into a launch request.
