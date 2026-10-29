@@ -77,6 +77,41 @@ if ($null -eq $answered) {
 }
 Write-Host "  installed service is answering: $($answered.output.Trim())"
 
+# **Make the service registration durable before the cut.**  The power cut is meant to
+# test the product's recovery, not whether the Windows registry lazy writer happened to
+# flush the SCM database first.  Measured: with the full suite loading the guest, a
+# service installed 55 s before `vmrun stop ... hard` was gone at the next boot
+# (`sc query` 1060) while a file written at the same time survived -- and the same
+# sequence on an idle guest survives.  `RegFlushKey` on the service key forces the
+# SYSTEM hive to disk, so the experiment starts from a durable install every time.
+if (-not ([System.Management.Automation.PSTypeName]'Myrd.RegFlush').Type) {
+    Add-Type -Namespace Myrd -Name RegFlush -MemberDefinition @'
+[DllImport("advapi32.dll", SetLastError = true)]
+public static extern int RegOpenKeyEx(IntPtr hKey, string subKey, int options, int sam, out IntPtr result);
+[DllImport("advapi32.dll", SetLastError = true)]
+public static extern int RegFlushKey(IntPtr hKey);
+[DllImport("advapi32.dll", SetLastError = true)]
+public static extern int RegCloseKey(IntPtr hKey);
+'@
+}
+$hklm = [IntPtr](-2147483646)   # HKEY_LOCAL_MACHINE (0x80000002, sign-extended)
+$serviceKey = [IntPtr]::Zero
+$opened = [Myrd.RegFlush]::RegOpenKeyEx(
+    $hklm, "SYSTEM\CurrentControlSet\Services\$serviceName", 0, 0x20019,
+    [ref]$serviceKey)
+if ($opened -ne 0) {
+    Fail "the installed service key could not be opened for a durability flush (win32 $opened)"
+}
+try {
+    $flushed = [Myrd.RegFlush]::RegFlushKey($serviceKey)
+    if ($flushed -ne 0) {
+        Fail "the service registration could not be flushed to disk (win32 $flushed)"
+    }
+} finally {
+    [void][Myrd.RegFlush]::RegCloseKey($serviceKey)
+}
+Write-Host '  service registration flushed to disk before the cut'
+
 Write-Step 'create a disk with a 30 s checkpoint interval, and ask it to come back'
 # The interval is what makes the committed generation move without a client command;
 # `auto_start` is what tells the next boot to bring the disk up (T1-09's consumer).

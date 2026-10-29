@@ -243,9 +243,17 @@ persistence::RecoveryOptions default_recovery_options(
     // so the record bound cannot be the next thing to refuse a legitimate journal.
     const std::uint64_t journal_records =
         (std::max)(std::uint64_t{8192}, journal_bytes / (16 * 1024));
+    // **The old 64 MiB constant was a floor, not a ceiling.**  A disk smaller than that
+    // keeps the old bound: the production-backend recovery test runs on an 8 MiB
+    // bundle, and lowering the reader bound to the disk's own size made a checkpoint
+    // the direct inspector proves read back as unprovable.  The limit only has to be at
+    // least the bundle's geometry, and 64 MiB is the value every existing bundle was
+    // written against; larger disks raise it.
+    const std::uint64_t virtual_limit =
+        (std::max)(kDefaultVirtualBytes, virtual_bytes);
     persistence::RecoveryOptions options{};
     options.limits = {
-        virtual_bytes == 0 ? kDefaultVirtualBytes : virtual_bytes,
+        virtual_limit,
         journal_bytes, journal_records, 64 * 4096, 64, 64 * 4096, 64,
         2 * kMiB, 2 * kMiB};
     return options;
