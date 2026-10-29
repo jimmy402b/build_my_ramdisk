@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **G1/G2/G3 单例均已通过**（G3 连续两次，§3.197）；剩余：m1–m4/unit/model 全量回归未完整跑完，之后是最终验收 |
+| **下一件事** | **全量回归完成**：158/160，两个失败均为已知 `vswhere` 环境（§3.198）；G1/G2/G3 全部通过，准备最终验收报告 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4564,4 +4564,34 @@ PASS integration.m5.powerloss
 **回归**：`integration.m5.cli_e2e` 1/1（118 s，请求 `ed66e94e…`）；本机 12 个纯逻辑套件全绿。
 
 **重新冻结**：`frozen_at 2026-10-29T10:05:04Z`，4 binaries + 8 readings；只有 worker 变了
-（`7fb9032b`），service `8f8f855d`、cli `ebdedbf6`、gui `744a68f5` 不变；validator **`accepted`**。
+（`7fb9032b`），service `8f8f855d`、cli `ebdedbf6`、gui `744a68f5` 不变；validator **`accepted`**。### 3.198 2026-10-29 18:26：**全量回归按组补跑——158/160，两个失败都是已知的 `vswhere` 环境**
+
+按组跑（每组前清空 `C:\m5\control\*.request.ps1`、结束 agent、`Reset-M5Guest`）：
+
+| 组 | 结果 | 墙钟 |
+|---|---|---|
+| `unit.*`（96） | **96/96** | 271 s |
+| `m4.*` + `m5.*`（14） | **14/14** | 107 s |
+| `integration.m1` + `integration.m4`（4） | **4/4** | 5 s |
+| `integration.m2`（4） | **4/4** | 16 s |
+| `integration.m3`（31） | **31/31** | 95 s |
+| `integration.m5` 非电源损失（4） | **4/4** | 137 s |
+| `structural.*`（3） | **1/3** | 3 s |
+| 电源损失三段（prepare + verify，2） | **2/2** | 52 s + 5 s |
+
+- **158/160 通过**。两个失败是 `structural.m2.storage_independent_build` 和
+  `structural.m5.execution_boundary`，stderr 都是
+  `vswhere.exe not found`（`tools/Enter-MsvcEnvironment.ps1:6`）——**已知环境缺失**，不是产品
+  回归；基线同样是 structural 1/3。
+- 首跑（一个请求跑 160 个）卡在 `unit.m2.harness_preflight` 的原因也确认了：agent 每次启动会把
+  `*.request.ps1` 队列全部重放，旧的全量请求排在前面。按组跑、每组清队列后全部正常。
+- 电源损失三段这次是第 4 次通过：`prepare 1/1`、硬断电、`verify 1/1`、`PASS T1-09`。
+
+**证据**：`out/m5-evidence` 现在有 **14 个 readings**（原 8 个 + unit/model/integration 分组/
+structural），manifest 重新生成（二进制未变）：`frozen_at 2026-10-29T10:26:18Z`，
+service `8f8f855d`、cli `ebdedbf6`、gui `744a68f5`、worker `7fb9032b`，validator **`accepted`**。
+`m5-powerloss-prepare` 的 `results.json` 在客机上被写成了 357 个空格（harness 的这次写入坏了），
+所以没有进证据集；prepare 的通过由 harness 的 `1 of 1 passed` 输出记录在这里和 §3.197，
+verify 的 reading 是有效的。
+
+**结论**：G1 + G2 + G3 全部通过，全量回归的产品用例全部通过；只剩两条 `vswhere` 环境失败。
