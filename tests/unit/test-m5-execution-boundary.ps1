@@ -11,6 +11,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# **A guest without Visual Studio is an environment fact, not a boundary violation.**
+# `Enter-MsvcEnvironment.ps1` needs vswhere.exe (installed with the VS installer); the
+# two structural cases used to FAIL with `vswhere.exe not found`, which reads exactly
+# like a product regression.  Exit 77 is the suite's SKIP convention (CTest's
+# SKIP_RETURN_CODE and the guest runner's skip status).
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere)) {
+    Write-Output 'SKIP: vswhere.exe not found (Visual Studio build tools are not installed)'
+    exit 77
+}
+
 $sourceRoot = [System.IO.Path]::GetFullPath($SourceDirectory)
 $probeBaseRoot = [System.IO.Path]::GetFullPath($ProbeBaseDirectory)
 $expectedProbeBaseRoot = [System.IO.Path]::GetFullPath(

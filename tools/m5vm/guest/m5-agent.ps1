@@ -102,10 +102,28 @@ function Invoke-OneRequest([string]$id) {
 }
 
 function Invoke-PendingRequests {
+    # **One request per trigger, chosen by the host.**  The old drain ran every
+    # unfinished `*.request.ps1` in the queue, so a request left behind by an earlier
+    # run was replayed before the new one: measured, a full-suite request sat behind
+    # old requests and the host's 40-minute deadline expired while the guest was
+    # still working through them.  The host now writes `pending.id` before it
+    # triggers the task, and the agent processes only that id.  The fallback (no
+    # pending.id) keeps manual drain useful.
+    $only = $null
+    $pendingIdFile = Join-Path $ControlRoot 'pending.id'
+    if (Test-Path -LiteralPath $pendingIdFile) {
+        $only = ([string](Get-Content -LiteralPath $pendingIdFile -Raw)).Trim()
+        Remove-Item -LiteralPath $pendingIdFile -Force -ErrorAction SilentlyContinue
+        Write-Log "pending.id selects $only"
+    }
     $pending = Get-ChildItem -LiteralPath $ControlRoot -Filter '*.request.ps1' -ErrorAction SilentlyContinue
     $ran = 0
     foreach ($file in $pending) {
         $id = $file.Name -replace '\.request\.ps1$', ''
+        if ($null -ne $only -and $only -ne '' -and $id -ne $only) {
+            Write-Log "skipping $id (not the current request)"
+            continue
+        }
         if (Test-Path -LiteralPath (Join-Path $ControlRoot "$id.done")) { continue }
         Invoke-OneRequest -id $id
         $ran++

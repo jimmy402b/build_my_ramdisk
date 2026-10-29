@@ -472,6 +472,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# **A guest without Visual Studio is an environment fact, not a storage-boundary
+# violation.**  Enter-MsvcEnvironment.ps1 needs vswhere.exe (installed with the VS
+# installer); this case used to FAIL with `vswhere.exe not found`, which reads exactly
+# like a product regression.  77 is the suite's SKIP convention (CTest's
+# SKIP_RETURN_CODE and the guest runner's skip status).
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere)) {
+    Write-Output 'SKIP: vswhere.exe not found (Visual Studio build tools are not installed)'
+    exit 77
+}
+
 $sourceRoot = [System.IO.Path]::GetFullPath($SourceDirectory)
 $probeBaseRoot = [System.IO.Path]::GetFullPath($ProbeBaseDirectory)
 $expectedProbeBaseRoot = [System.IO.Path]::GetFullPath(
@@ -582,6 +593,7 @@ add_test(
             -Generator "${CMAKE_GENERATOR}"
             -Compiler "${CMAKE_CXX_COMPILER}")
 set_tests_properties(structural.m2.storage_independent_build PROPERTIES
+    SKIP_RETURN_CODE 77
     LABELS "m2-v1;m2-v2;m2-v3;m2-v4"
     RUN_SERIAL TRUE)
 
@@ -874,6 +886,7 @@ add_test(
             -SourceDirectory "${CMAKE_SOURCE_DIR}"
             -ProbeBaseDirectory "${CMAKE_SOURCE_DIR}/out/build/execution-boundary-probes")
 set_tests_properties(structural.m5.execution_boundary PROPERTIES
+    SKIP_RETURN_CODE 77
     RUN_SERIAL TRUE
     TIMEOUT 120)
 
@@ -1276,7 +1289,7 @@ set_tests_properties(unit.m2.json_verifier PROPERTIES
     LABELS "m2-v5"
     TIMEOUT 30)
 
-# ---- M3 checksum and codec tests (Task鈥?0) ----------------------------------
+# ---- M3 checksum and codec tests (Task閳?0) ----------------------------------
 add_executable(myrd_m3_checksum_codec_tests
     unit/m3_checksum_codec_tests.cpp
 )
@@ -1331,7 +1344,7 @@ set_tests_properties(unit.m3.persistence_path PROPERTIES
     LABELS "m3-v1"
     TIMEOUT 30)
 
-# ---- M3 persistence types tests (Task鈥?3, T13.1) -------------------------------
+# ---- M3 persistence types tests (Task閳?3, T13.1) -------------------------------
 add_executable(myrd_m3_persistence_types_tests
     unit/m3_persistence_types_tests.cpp
 )
@@ -1622,7 +1635,7 @@ set_tests_properties(integration.m3.lazy_backing PROPERTIES
     LABELS "m3-v3"
     TIMEOUT 120)
 
-# ---- M3 persistence boundary test (Task鈥?0) ----------------------------------
+# ---- M3 persistence boundary test (Task閳?0) ----------------------------------
 add_executable(myrd_persistence_boundary_tests
     unit/persistence_boundary_tests.cpp
 )

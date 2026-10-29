@@ -523,6 +523,14 @@ if ($Run) {
         Write-Host "request $id was submitted earlier; waiting for its response ..."
     } else {
         Copy-ToRemote -Local $requestLocal -Remote "$RemoteRoot/$id.request.ps1"
+        # **Tell the agent which request this trigger is for.**  Its drain used to run
+        # every unfinished request, so a stale one was replayed first and the new
+        # request sat behind it -- measured as a 40-minute host deadline expiring while
+        # the guest was still working through the old queue.  `pending.id` selects this
+        # request only; the agent deletes it after reading it.
+        $pendingLocal = Join-Path $OutDir "$id.pending.id"
+        Set-Content -LiteralPath $pendingLocal -Value $id -Encoding ascii -NoNewline
+        Copy-ToRemote -Local $pendingLocal -Remote "$RemoteRoot/pending.id"
         Invoke-Remote -Script "schtasks /run /tn '$TaskName' | Out-Null; 'triggered'" | Out-Null
         Write-Host "request $id submitted; waiting for response ..."
     }
@@ -552,22 +560,43 @@ if ($Run) {
     Get-Content -LiteralPath $responseLocal | ForEach-Object { Write-Host $_ }
 
     $resultsLocal = Join-Path $OutDir "$id.results.json"
-    try {
-        Copy-FromRemote -Remote "$RemoteRoot/$id.results.json" -Local $resultsLocal
-        # Normalised with an explicit loop for the same reason as on the guest:
-        # ConvertFrom-Json writes a JSON array as ONE object, so a single-case
-        # run would leave .Count null and print "0 of  passed".
-        $rawResults = Get-Content -LiteralPath $resultsLocal -Raw | ConvertFrom-Json
-        $results = New-Object System.Collections.ArrayList
-        foreach ($x in $rawResults) { [void]$results.Add($x) }
-        $failed = New-Object System.Collections.ArrayList
-        foreach ($x in $results) { if ($x.exit_code -ne 0) { [void]$failed.Add($x) } }
-        Write-Host ''
-        Write-Host ("{0} of {1} passed" -f ($results.Count - $failed.Count), $results.Count)
-        foreach ($x in $failed) { Write-Host ("  FAIL {0} (exit {1})" -f $x.name, $x.exit_code) -ForegroundColor Red }
-    } catch {
-        Write-Host "no results.json collected: $_" -ForegroundColor Yellow
+    Copy-FromRemote -Remote "$RemoteRoot/$id.results.json" -Local $resultsLocal
+    # **A results file that cannot be read is a failed run, not a result set.**  The
+    # old code printed "no results.json collected" and returned, which looked like a
+    # quiet yellow note; a 357-space file was once read as "0 of  passed".  Length,
+    # JSON parse and entry count are all checked, and every failure throws.
+    $resultsLength = (Get-Item -LiteralPath $resultsLocal).Length
+    if ($resultsLength -eq 0) {
+        throw "results.json is empty (0 bytes); the guest run did not report anything"
     }
+    try {
+        $rawResults = Get-Content -LiteralPath $resultsLocal -Raw | ConvertFrom-Json
+    } catch {
+        throw ("results.json is not valid JSON ({0} bytes); refusing to report a run " +
+               "whose results cannot be read: {1}" -f $resultsLength, $_)
+    }
+    # Normalised with an explicit loop for the same reason as on the guest:
+    # ConvertFrom-Json writes a JSON array as ONE object, so a single-case
+    # run would leave .Count null and print "0 of  passed".
+    $results = New-Object System.Collections.ArrayList
+    foreach ($x in $rawResults) { [void]$results.Add($x) }
+    if ($results.Count -eq 0) {
+        throw "results.json parsed but contains no entries"
+    }
+    $failed = New-Object System.Collections.ArrayList
+    $skipped = New-Object System.Collections.ArrayList
+    foreach ($x in $results) {
+        $status = if ($null -ne $x.status) { [string]$x.status } else { '' }
+        if ($status -eq 'skip') { [void]$skipped.Add($x) }
+        elseif ($status -in @('fail', 'timeout') -or $x.exit_code -ne 0) { [void]$failed.Add($x) }
+    }
+    Write-Host ''
+    Write-Host ("{0} of {1} passed" -f ($results.Count - $failed.Count - $skipped.Count), $results.Count)
+    if ($skipped.Count -ne 0) {
+        Write-Host ("{0} skipped" -f $skipped.Count) -ForegroundColor Yellow
+        foreach ($x in $skipped) { Write-Host ("  SKIP {0}" -f $x.name) -ForegroundColor Yellow }
+    }
+    foreach ($x in $failed) { Write-Host ("  FAIL {0} (exit {1})" -f $x.name, $x.exit_code) -ForegroundColor Red }
     Write-Host "`nartifacts in $OutDir"
     return
 }

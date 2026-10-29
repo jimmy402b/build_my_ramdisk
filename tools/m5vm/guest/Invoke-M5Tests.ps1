@@ -173,7 +173,7 @@ foreach ($t in $runs) {
 
     if (-not (Test-Path -LiteralPath $exe)) {
         [void]$results.Add([pscustomobject]@{
-            name = $name; exit_code = -1; seconds = 0.0
+            name = $name; status = 'fail'; exit_code = -1; seconds = 0.0
             stdout = $outFile; stderr = $errFile; note = "executable not staged: $exe"
         })
         Write-Host "        MISSING $exe" -ForegroundColor Red
@@ -239,7 +239,7 @@ foreach ($t in $runs) {
                 try { $orphan.Kill() } catch { }
             }
             [void]$results.Add([pscustomobject]@{
-                name = $name; exit_code = 'TIMEOUT'
+                name = $name; status = 'timeout'; exit_code = 'TIMEOUT'
                 seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
                 stdout = $outFile; stderr = $errFile; note = "exceeded ${timeout}s"
             })
@@ -261,20 +261,53 @@ foreach ($t in $runs) {
         if ($proc) { $proc.Dispose() }
     }
 
+    # **77 is the suite's SKIP convention.**  Two structural cases need Visual Studio
+    # (vswhere) and a guest without build tools used to look like a product regression;
+    # they now exit 77 and are counted separately instead of failing the run.
+    $status = if ($code -eq 77) { 'skip' } elseif ($code -ne 0) { 'fail' } else { 'pass' }
     [void]$results.Add([pscustomobject]@{
-        name = $name; exit_code = $code
+        name = $name; status = $status; exit_code = $code
         seconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
         stdout = $outFile; stderr = $errFile; note = ''
     })
-    if ($code -ne 0) { Write-Host "        FAIL exit=$code" -ForegroundColor Red }
+    if ($status -eq 'skip') { Write-Host "        SKIP exit=$code" -ForegroundColor Yellow }
+    elseif ($status -ne 'pass') { Write-Host "        FAIL exit=$code" -ForegroundColor Red }
 }
 
+# **Atomic, and validated.**  Measured failure mode: a `results.json` written by a
+# single `Set-Content` was once left as 357 spaces, and the host read it as an empty
+# result set instead of noticing the write had gone wrong.  Write a temporary file,
+# rename it into place (a rename is atomic on one volume), then read it back and
+# refuse to claim a run finished if it does not parse.
 $resultsPath = Join-Path $ControlRoot "$RequestId.results.json"
-$results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $resultsPath -Encoding utf8
+$temporaryPath = "$resultsPath.tmp"
+$json = $results | ConvertTo-Json -Depth 4
+Set-Content -LiteralPath $temporaryPath -Value $json -Encoding utf8
+Move-Item -LiteralPath $temporaryPath -Destination $resultsPath -Force
+# **Enumerated, not wrapped.**  PS 5.1's ConvertFrom-Json returns a top-level JSON
+# array as one object, so `@(...)` around it counts 1 no matter how many entries it
+# holds; the first version of this check therefore reported "wrote 96, read back 1"
+# on a perfectly good file.  `foreach` is what enumerates the array.
+$parsedBack = Get-Content -LiteralPath $resultsPath -Raw | ConvertFrom-Json
+$written = @(foreach ($entryBack in $parsedBack) { $entryBack })
+if ($written.Count -ne $results.Count) {
+    throw ("results.json did not round-trip: wrote {0} entries, read back {1}" -f
+        $results.Count, $written.Count)
+}
+foreach ($entry in @($written)) {
+    if ([string]::IsNullOrWhiteSpace([string]$entry.name)) {
+        throw 'results.json contains an entry without a name'
+    }
+}
 
-$failed = @($results | Where-Object { $_.exit_code -ne 0 })
+$failed = @($results | Where-Object { $_.status -in @('fail', 'timeout') })
+$skipped = @($results | Where-Object { $_.status -eq 'skip' })
 Write-Host ''
-Write-Host ("{0} of {1} passed" -f ($results.Count - $failed.Count), $results.Count)
+Write-Host ("{0} of {1} passed" -f ($results.Count - $failed.Count - $skipped.Count), $results.Count)
+if ($skipped.Count -ne 0) {
+    Write-Host ("{0} skipped" -f $skipped.Count) -ForegroundColor Yellow
+    $skipped | ForEach-Object { Write-Host ("  SKIP {0}" -f $_.name) -ForegroundColor Yellow }
+}
 $failed | ForEach-Object { Write-Host ("  FAIL {0} (exit {1})" -f $_.name, $_.exit_code) -ForegroundColor Red }
 Write-Host "results: $resultsPath"
 Write-Host "captures: $work"
