@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **H1 进行中**：STAB-01 单盘硬保护 **PASSED**（§3.199）、STAB-02 内存耗尽 **PASSED**（§3.200，含四个创建缺陷的修复）；下一步 **STAB-04 CI 一键全量**。产品二进制已变，release manifest 待 H1 收尾重新冻结 |
+| **下一件事** | **H1 收口**：STAB-01 **PASSED**（§3.199）、STAB-02 **PASSED**（§3.200，含四个创建缺陷的修复）、STAB-04 **PARTIAL**（§3.201：一条命令跑完 160，155/2/3）。先查 **powerloss 断电后服务注册丢失（`sc query` 1060）**，再判 **`m5.production_execution_backend`**（已用 `f933def` 基线复现，不是 STAB-02 回归）；两项关闭后连跑两次一键全量并重新冻结 manifest |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
