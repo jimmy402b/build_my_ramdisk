@@ -65,10 +65,20 @@ if (Test-Path -LiteralPath $EvidenceDirectory) {
         # produced 'Cannot convert System.Object[] to System.Int32'.  A reading is: how many cases, how many
         # failed, and the worst exit code.
         $cases = @($parsed)
-        $failed = @($cases | Where-Object { $null -ne $_.exit_code -and [int]$_.exit_code -ne 0 })
+        # **A SKIP is not a failure.**  The structural cases exit 77 when the guest has
+        # no Visual Studio (vswhere); counting that as `failed` put "structural: 2
+        # failed" into the release manifest while the guest report called it SKIP.  The
+        # runner's `status` field is authoritative when present; older readings predate
+        # it and keep the exit-code rule.
+        $skipped = @($cases | Where-Object {
+            $null -ne $_.status -and [string]$_.status -eq 'skip' })
+        $failed = @($cases | Where-Object {
+            ($null -eq $_.status -or [string]$_.status -ne 'skip') -and
+            $null -ne $_.exit_code -and [int]$_.exit_code -ne 0 })
         $readings += [ordered]@{
             artifact    = $file.Name
             cases       = $cases.Count
+            skipped     = $skipped.Count
             failed      = $failed.Count
             worst_exit  = if ($failed.Count -eq 0) { 0 } else { 1 }
             failing     = @($failed | ForEach-Object { $_.name })

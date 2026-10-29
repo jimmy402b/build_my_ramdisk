@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **H1 收口**：STAB-01 **PASSED**（§3.199）、STAB-02 **PASSED**（§3.200，含四个创建缺陷的修复）、STAB-04 **PARTIAL**（§3.201：一条命令跑完 160，155/2/3）。先查 **powerloss 断电后服务注册丢失（`sc query` 1060）**，再判 **`m5.production_execution_backend`**（已用 `f933def` 基线复现，不是 STAB-02 回归）；两项关闭后连跑两次一键全量并重新冻结 manifest |
+| **下一件事** | **H1 完成**：STAB-01（§3.199）、STAB-02（§3.200）、STAB-04（§3.202：一条命令连续两次 160/160、158 passed / 2 skipped / 0 failed）全部 **PASSED**；证据集已按本轮二进制重新冻结（4 binaries + 9 readings、`frozen_at 2026-10-29T18:23:10Z`、validator `accepted`）。下一步进入 **H2**：STAB-03 故障矩阵、STAB-05 平台/驱动、STAB-06 升级/回滚、STAB-07 安全审计、STAB-08 发布工程 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4726,3 +4726,47 @@ group/status/exit_code/seconds 都在 JSON 里。
 前 7 组的 `results.json` 不会写出。修法分别是 `foreach` 枚举、显式补组、捕获并记录该组失败。
 
 **发布影响**：只改 harness，产品二进制未变；manifest 仍待 H1（STAB-01/02 的产品改动）收尾时重新冻结。
+
+### 3.202 2026-10-30 02:25：**STAB-04 收口——连续两次一键全绿，两个失败源都是真因，证据集重新冻结**
+
+**连续两次（干净客机，一条命令，`-SkipStage`）**：
+
+| | Run A | Run B |
+|---|---|---|
+| 用例 | **160** | **160** |
+| passed / skipped / failed | **158 / 2 / 0** | **158 / 2 / 0** |
+| 总时长 | **837.5 s** | **829.4 s** |
+| 逐用例 name+status 差异 | — | **0** |
+
+`structural.*` 两次都是 `SKIP exit=77`（无 VS / 无 `vswhere`）；powerloss 三段两次都是 2/2。
+
+**失败源 1：`m5.production_execution_backend`——64 MiB 是恢复上限的下限，不是上限。**
+该用例的盘只有 **8 MiB**；上一轮把 worker 的 `max_virtual_bytes` 改成“worker 自己的 `virtual_bytes`”，
+把 8 MiB 盘的上限降到了 8 MiB，于是直接 inspection（硬编码 64 MiB）证明得了的 checkpoint，worker 的
+`prove_recovery` 报 `ownership_unprovable`。修法：`max(64 MiB, virtual_bytes)`——旧常量本来就是下限，
+小盘保持旧行为，大盘才提高（`src/host/m5_worker_runtime.cpp` `default_recovery_options()`）。单例与
+两次全量的 model 组（15/15）都通过。
+
+**失败源 2：powerloss verify——SCM 注册在硬断电时丢了。**
+prepare 通过并安装了 auto 服务，断电重启后 `sc query` 返回 1060；同一时刻写的文件还在。对照实验：
+空闲客机上同一 `myrd-service.exe` 建 auto 服务、60 s 后硬断电，服务**存活**。结论是全量套件负载下
+Windows 注册表 lazy writer 在约 55 s 内没有把 SCM 数据库刷盘。修法：
+`test-m5-powerloss-prepare.ps1` 在 `PREPARED` 之前对服务键调 `RegFlushKey`，强制 SYSTEM hive 落盘。
+断电实验测产品恢复，不测 Windows 刷盘时机。修后 `Test-M5PowerLoss.ps1 -SkipStage` 三段 PASS，两次
+全量的 powerloss 组 2/2。
+
+**发布证据（本轮重新冻结）**：`tools/New-M5ReleaseManifest.ps1` → `tools/Verify-M5Evidence.ps1` =
+**`accepted`**：
+
+```text
+frozen_at = 2026-10-29T18:23:10Z
+service eba14b75   cli 2dd2a28d   gui 57b599e4   worker b3226f5e
+4 binaries + 9 readings（unit 96 / model 15 / m1m4 5 / m2 4 / m3 31 / m5 4 /
+structural 3[skip 2] / powerloss prepare 1 + verify 1），全部 failed=0
+```
+
+旧的分组/单例 readings 移到 `out/m5-evidence/archive-*`，没有删除。manifest 生成器同时修了一处：
+`status=skip` 不再计入 `failed`（此前 structural 会显示 2 failed）。
+
+**H1 完成**：STAB-01 / STAB-02 / STAB-04 全部 PASSED。下一步进入 **H2**（STAB-03 故障矩阵、
+STAB-05 平台/驱动、STAB-06 升级/回滚、STAB-07 安全审计、STAB-08 发布工程）。
