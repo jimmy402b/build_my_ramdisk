@@ -1,4 +1,4 @@
-# One command for the whole M5 suite (STAB-04).
+﻿# One command for the whole M5 suite (STAB-04).
 #
 # The suite cannot be run as one agent request: the guest agent used to replay every
 # unfinished request before the new one, so a 160-case request sat behind stale work and
@@ -151,14 +151,22 @@ if (-not $SkipStage) {
 if (-not (Test-Path -LiteralPath $stagedTests)) {
     throw "staged tests.json not found: $stagedTests (run without -SkipStage first)"
 }
-$allTests = @(Get-Content -LiteralPath $stagedTests -Raw | ConvertFrom-Json)
+# **Enumerated, not wrapped.**  PS 5.1's ConvertFrom-Json returns a top-level JSON array
+# as one object, so `@(...)` produced a single-element list whose `name` was the whole
+# joined list: the completeness check then compared 1 against 1 and passed, and two tests
+# (`integration.shm`, `model.m3.checkpoint_crash`) belonged to no group without anyone
+# noticing.  The first full run reported 158 cases, not 160.
+$allTests = New-Object System.Collections.ArrayList
+foreach ($t in (Get-Content -LiteralPath $stagedTests -Raw | ConvertFrom-Json)) {
+    [void]$allTests.Add($t)
+}
 if ($allTests.Count -eq 0) { throw 'the staged tests.json is empty' }
 
 $assign = {
     param([string]$name)
     if ($name -match '^unit\.') { return 'unit' }
-    if ($name -match '^m4\.' -or $name -match '^m5\.') { return 'model' }
-    if ($name -match '^integration\.m1\.' -or $name -match '^integration\.m4\.') { return 'integration.m1m4' }
+    if ($name -match '^m4\.' -or $name -match '^m5\.' -or $name -match '^model\.') { return 'model' }
+    if ($name -match '^integration\.m1\.' -or $name -match '^integration\.m4\.' -or $name -match '^integration\.shm$') { return 'integration.m1m4' }
     if ($name -match '^integration\.m2\.') { return 'integration.m2' }
     if ($name -match '^integration\.m3\.') { return 'integration.m3' }
     if ($name -match '^integration\.m5\.powerloss') { return 'powerloss' }
@@ -184,8 +192,8 @@ foreach ($group in $byGroup.Keys) {
 
 $filters = [ordered]@{
     'unit'           = '^unit\.'
-    'model'          = '^(m4|m5)\.'
-    'integration.m1m4' = '^integration\.(m1|m4)\.'
+    'model'          = '^(m4|m5|model)\.'
+    'integration.m1m4' = '^integration\.(m1|m4)\.|^integration\.shm$'
     'integration.m2' = '^integration\.m2\.'
     'integration.m3' = '^integration\.m3\.'
     'integration.m5' = '^integration\.m5\.(?!powerloss)'
@@ -287,3 +295,4 @@ if ($totals.failed -ne 0 -or $totals.cases -ne $expectedTotal) {
     exit 1
 }
 exit 0
+

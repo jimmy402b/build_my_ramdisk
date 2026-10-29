@@ -4686,3 +4686,43 @@ STAB-01 断言）。**注意**：修 #3/#4 时对 worker 的恢复上限按“2�
 
 **发布影响**：产品二进制（service/worker）与内嵌的 provisioning 资源都变了，`out/m5-evidence` 的
 manifest 继续失效；H1（STAB-01/02/04）收尾统一重新冻结。
+
+### 3.201 2026-10-30 00:10：**STAB-04 一键全量落地，但只到 PARTIAL——160 例全覆盖，155/2/3**
+
+**一条命令**：`tools/m5vm/Invoke-M5FullSuite.ps1`（`-SkipStage` 复用已 stage 的树；`-Only` 调试）。
+组：unit / model / integration.m1+m4 / m2 / m3 / m5 / structural / powerloss（prepare → vmrun 硬断电
+→ 启动 → verify）。每组前经 agent 执行 `Reset-M5Guest` 并确认 `RESET`。
+
+**第二次运行读数（客机，Release）**：
+
+```text
+M5 full suite: 160 cases, 155 passed, 2 skipped, 3 failed in 1065.9 s
+  unit 96/0/0 231 s | model 14/0/1 103.4 s | m1m4 5/0/0 6.9 s | m2 4/0/0 17.8 s
+  m3 31/0/0 85 s | m5 4/0/0 138 s | structural 1/2/0 5.2 s | powerloss 0/0/2 438.2 s
+results: C:\tmp\m5-vm\full-suite\20261029-235529\results.json
+```
+
+**已落地**：`pending.id` 请求隔离（agent 只跑本次请求，旧队列不再重放）；`results.json` 临时文件 →
+rename → 回读校验（宿主拒绝 0 字节/非 JSON/空结果）；`vswhere` 缺失 → `exit 77` → SKIP（ctest
+`SKIP_RETURN_CODE 77`，guest runner 与宿主摘要单列）；powerloss 三段自动串起；总时长与逐用例
+group/status/exit_code/seconds 都在 JSON 里。
+
+**未达成验收（PARTIAL 的原因）**：
+
+1. **`m5.production_execution_backend` 稳定失败**（model 组）。失败点是 reconcile 的完成态；探针显示
+   同一 correlation 的直接 inspection 是 `verdict=2 mask=0`（可证明），而 worker 的 proof 是
+   `outcome=0`（不可证明）。**不是 STAB-02 回归**：切到 `f933def`、`--clean-first` 重建 worker 与
+   测试、同一客机重跑，同样失败。需要干净参考机再判；不要回滚已提交的 STAB-02 改动去“修”它。
+2. **powerloss verify**：prepare 通过（服务安装为 auto、64 MiB 盘 `T:`、committed generation 3、
+   `powerloss-state.txt` 已写、`PREPARED`）；硬断电重启后 `sc query` 返回 **1060（服务未安装）**，
+   `Wait-ForService 300` 超时。状态文件跨断电还在，服务注册却没了。两次一键运行同形态。这是下一次
+   接手的**第一件事**：先拿到“boot 后服务注册仍在”的读数（怀疑 SCM 注册在硬断电时未落盘，但未证实），
+   在此之前 powerloss 不能算通过。
+3. 还没有“连续两次结果一致”的比较。
+
+**本轮踩到的三个工具坑（都修了）**：PS 5.1 `ConvertFrom-Json` 把顶层数组当**一个对象**——guest 的
+回读校验把 96 条数成 1 条；宿主分组分配因此把 160 例看成 1 例，完整性检查形同虚设，两个用例
+（`integration.shm`、`model.m3.checkpoint_crash`）第一次没跑；powerloss 抛错时驱动器直接终止，
+前 7 组的 `results.json` 不会写出。修法分别是 `foreach` 枚举、显式补组、捕获并记录该组失败。
+
+**发布影响**：只改 harness，产品二进制未变；manifest 仍待 H1（STAB-01/02 的产品改动）收尾时重新冻结。
