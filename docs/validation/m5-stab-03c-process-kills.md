@@ -1,16 +1,17 @@
-# STAB-03c / R-04：worker / service 在 P4 窗口内被杀 —— **A PASSED（缺陷已修）；B/C 未测**
+# STAB-03c / R-04：worker / service 在 P4 窗口内被杀 —— **A、C PASSED；B 被产品缺陷阻塞**
 
-**结论分两段，不要合并读：**
+**结论分三段，不要合并读：**
 
 1. **R-04.A（P4 窗口内杀 worker）PASSED。** 修复后的产品在三次独立客机运行中给出同一读数：
    kill 后服务立刻应答（`disk list` 11–25 ms）、operation 停在设计上的 `reconciling`、worker 残留 0、
    `persistence=CommitIndeterminate`；服务重启后恢复把 operation 推到 **`succeeded`**，磁盘回到
    **候选代 generation=3** 并 `Running`，P4 前提交的 marker 字节完整。
-2. **R-04.B（P4 窗口内杀服务）与 R-04.C（连续 3 次硬断电）未测。** B 当前卡在两个具体条件上：
-   ① 恢复后的盘 `disk stop` 返回 `failed`（原因尚未提取，见 §4.1）；
-   ② 每次 kill 类实验之后客机存储栈/SSH 会退化，必须硬重启才能跑下一次（§4.2）。
-   C 的驱动 `tools/m5vm/Test-M5RepeatedPowerLoss.ps1` 已写，**没有跑过**。
-3. **R-02（P4/P5 定点断电）未测。** 装置（P4 暂停 + prepare/verify + 主机驱动）已落地；它落在这条
+2. **R-04.C（连续 3 次硬断电）PASSED。** `Test-M5RepeatedPowerLoss.ps1 -Cycles 3` → exit 0、
+   1037.7 s，三轮 prepare/cut/verify 全 PASS，每轮后无残留（§6）。
+3. **R-04.B（P4 窗口内杀服务）被产品缺陷阻塞。** 服务被强杀后，停在 P4 的 **worker 仍然活着**
+   （`FAIL: b left 1 worker(s) behind after 60 s`），继续持有 bundle 锁与 AIM 设备——job object
+   没有把 worker 带走。这是需要修产品的缺陷，不是测试问题（§4.1）。
+4. **R-02（P4/P5 定点断电）未测。** 装置（P4 暂停 + prepare/verify + 主机驱动）已落地；它落在这条
    已修好的恢复路径上，但**没有读数，不写成通过**。
 
 **客机**：`myrd-vm`，Windows 11 x64 26200，Release；每次运行前 reset（kill 类实验前硬重启）。
@@ -112,26 +113,42 @@ READING: a.data_intact=yes
 
 同一形态在请求 `6215a0f3…`、`4ea930fd…` 的两次运行里重复出现（`a.operation_state_after_restart=succeeded`）。
 
-## 4. B/C 为什么还没测（具体条件）
+## 4. R-04.B 为什么还没测（具体条件）
 
-### 4.1 B：恢复后的盘 `disk stop` 返回 failed
+**B 现在是独立用例**：`integration.m5.service_kill`（`test-m5-process-kills.ps1 -Part B`），
+不再和 A 串在一次运行里——A 或 B 任一 kill 之后，客机存储栈都需要硬重启，且恢复过的卷不能当
+下一次实验的对象。
 
-用例在 A 之后先 `disk stop` 第一块盘，operation 被准入（`b.part_a_stop_exit=0`）但终态
-**`b.part_a_stop_state=failed`**，用例据此失败。这说明：
+### 4.1 B 的实测阻塞：杀掉服务后 **worker 还活着**
 
-- A 的恢复把盘带到了 `Running`/候选代，但该盘的持久化状态可能仍是 `CommitIndeterminate` 一类，
-  于是紧随其后的 stop 在内部检查上失败；
-- 这是**另一个待查的产品问题**（不是测试装置问题）：一次成功的恢复之后，盘应当可以被正常停止。
-  下一步要读 `C:\m5\last-service.log` 的 `kind=7` 行拿 stop 的 code/step（本轮客机在测试收尾后
-  SSH 退化，没能取到）。
+请求 `c131cb7c…`（`--Part B`，1/1 FAIL，81 s）：
 
-### 4.2 客机在 kill 实验后退化
+```text
+READING: pause_marker=p4-commit generation=3 pid=1572
+READING: candidate_generation=3
+READING: killed_service_pid=3944
+FAIL: b left 1 worker(s) behind after 60 s
+```
+
+也就是说：服务进程被强杀、worker 正停在 P4 的暂停里，60 秒后 worker **仍然存在**。这说明
+服务给 worker 的 **job object 没有在服务进程死亡时把它带走**（或者 worker 从 job 里逃逸了）。
+后果是真实的：残留 worker 继续持有 bundle 的独占写锁与 AIM 设备，下一次 start/forget 会被它挡住，
+这正是 R-04 要防的“残留”。**这是 R-04.B 的阻塞点，需要修产品（job object 的 kill-on-close /
+breakaway 语义），不是改测试。**
+
+### 4.2 另一个观察：A 的恢复之后 `disk stop` 终态 failed
+
+早先 A+B 串跑的版本里，A 恢复后对同一块盘 `disk stop`，operation 被准入
+（`b.part_a_stop_exit=0`）但终态 `failed`。这与 4.1 不同：那次 worker 已被杀干净，stop 仍然失败，
+说明恢复后的 durable persistence 可能仍停在 indeterminate 一类。现在 B 已拆成独立用例，这个
+观察暂时不阻塞 R-04；等 4.1 修好后，用独立用例把它查清（读 `kind=7` 的 code/step）。
+
+### 4.3 客机在 kill 实验后退化
 
 每次跑完 kill 类用例，客机的存储栈/SSH 会退化（PowerShell over SSH 挂起、`cmd` 也超时），
-必须 `vmrun stop … hard` + 启动才能跑下一次。这是已知代价（lessons §5.2），但它意味着：
-**kill 类用例不能靠 `Reset-M5Guest` 串在同一组里跑**，每组前必须硬重启。全量脚本目前只在组间
-做 reset，不做重启；在把 R-04.B/C 放进任何门禁之前，先要有一个“每组前硬重启”的驱动（或把 B/C
-放在独立的 host 驱动里，像 powerloss 那样）。
+必须 `vmrun stop … hard` + 启动才能跑下一次。这是已知代价（lessons §5.2），所以 kill 类用例
+**不能靠 `Reset-M5Guest` 串在同一组里跑**：A 与 B 各自一个组，且组前应硬重启（当前驱动还是
+reset；把 B 放进门禁前，先给 fault 组加“组前硬重启”）。
 
 ## 5. 复现
 

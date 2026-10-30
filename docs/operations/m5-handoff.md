@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 / R-04.A / R-04.C / R-07 PASSED（§3.204、§3.206–§3.207）**。**未完成且有具体卡点**：R-04.B 卡在“恢复后 `disk stop` 终态 failed”（先读 `kind=7` 拿 code/step）与“kill 类实验后客机必须硬重启”；R-02/R-03 的装置已写未跑；R-05/R-08/R-09/R-10…R-19 未开始。**下一步**：① 查并修 stop-after-recovery；② 做“每组前硬重启”的 kill 驱动，跑 R-04.B 与 R-02；③ 跑 R-03 的 bundle 损坏矩阵；④ R-05 支持矩阵、R-08 升级/重装（R-07 已完成，前置满足）、R-10 发布工程。**manifest 仍无效**，R-19 收尾时重新冻结 |
+| **下一件事** | **R-01 / R-04.A / R-04.C / R-07 PASSED（§3.204、§3.206–§3.208）**。**R-04.B BLOCKED（产品缺陷）**：杀服务后停在 P4 的 worker 仍存活（`FAIL: b left 1 worker(s) behind after 60 s`），job object 没有 kill-on-close；`integration.m5.service_kill` 已独立成组。**下一步**：① 修 worker 的 job-object 生命周期（服务死则 worker 必须死）；② 给 fault 组加“组前硬重启”；③ 跑 R-02（`Test-M5P4P5PowerCut.ps1 -Cycles 3`）与 R-03（bundle 损坏矩阵）；④ R-05 支持矩阵、R-08 升级/重装（R-07 已完成）、R-10 发布工程。**manifest 仍无效**，R-19 收尾时重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4971,6 +4971,35 @@ candidate）；或让恢复 session 在本次动作链路内可被 P5 复用；�
 
 **R-04 现在只差 B**：A 与 C 已 PASSED；B 仍卡在“恢复后 `disk stop` 终态 failed”（需读 `kind=7`）
 与“kill 实验后客机必须硬重启”。R-02/R-03 未跑。
+
+---
+
+### 3.208 2026-10-30：**R-04.B 独立成例后暴露产品缺陷 —— 杀服务后 worker 仍存活**
+
+**做了什么**：把 `test-m5-process-kills.ps1` 参数化为 `-Part A|B`，并拆成两个 ctest：
+`integration.m5.process_kills`（A）与 `integration.m5.service_kill`（B），各自一个全量组
+（`fault` / `fault-service`）——一次 kill 实验之后客机存储栈需要硬重启，A/B 不能串在一次运行里。
+
+**R-04.B 的实测读数**（`integration.m5.service_kill`，请求 `c131cb7c…`，81 s，FAIL）：
+
+```text
+READING: pause_marker=p4-commit generation=3 pid=1572
+READING: candidate_generation=3
+READING: killed_service_pid=3944
+FAIL: b left 1 worker(s) behind after 60 s
+```
+
+**结论**：服务被强杀、worker 正停在 P4 的暂停里；60 秒后 **worker 仍然存活**。它继续持有 bundle
+的独占写锁与 AIM 设备，会挡住下一次 start/forget——这正是 R-04 要防的“残留”。原因是服务给 worker
+的 **job object 没有在服务进程死亡时把它带走**（kill-on-close 语义没有生效，或 worker 逃逸了 job）。
+**这是 R-04.B 的阻塞点，必须修产品，不是改测试。**
+
+**早先串跑版本里的另一个观察**（现在不阻塞）：A 恢复后对同一块盘 `disk stop`，operation 准入成功但
+终态 `failed`。等 4.1 的 job-object 问题修好后，用独立用例读 `kind=7` 的 code/step 再定性。
+
+**状态**：R-04.A PASSED、R-04.C PASSED、R-04.B BLOCKED（产品缺陷）。R-02/R-03 未跑。
+证据：`docs/validation/m5-stab-03c-process-kills.md` §4。
+
 
 
 

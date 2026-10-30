@@ -792,13 +792,21 @@ set_tests_properties(integration.m5.memory_exhaustion PROPERTIES
 # ---- M5 process kills inside the P4 window (R-04) ----------------------------
 # The deterministic half of the fault matrix: the worker pauses after a landed commit (P4)
 # and before the service publishes the epoch (P5), so a worker or service kill lands in the
-# window rather than near it.  Guest-only and serial for the same reason every real-disk
-# case is.
+# window rather than near it.  Two cases, not one, because after either kill the guest's
+# storage stack needs a hard reboot before another kill experiment; each is run in its own
+# group.  Guest-only and serial for the same reason every real-disk case is.
 add_test(
     NAME integration.m5.process_kills
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
-            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-process-kills.ps1")
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-process-kills.ps1" -Part A)
 set_tests_properties(integration.m5.process_kills PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+add_test(
+    NAME integration.m5.service_kill
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-process-kills.ps1" -Part B)
+set_tests_properties(integration.m5.service_kill PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 

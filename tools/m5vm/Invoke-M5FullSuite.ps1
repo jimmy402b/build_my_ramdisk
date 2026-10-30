@@ -189,6 +189,9 @@ foreach ($t in $allTests) {
     if ($t.name -eq 'integration.m5.process_kills' -and -not $wantFaultMatrix) {
         continue
     }
+    if ($t.name -eq 'integration.m5.service_kill' -and -not $wantFaultMatrix) {
+        continue
+    }
     if ($t.name -eq 'integration.m5.bundle_corruption' -and -not $wantFaultMatrix) {
         continue
     }
@@ -200,6 +203,7 @@ $assign = {
     param([string]$name)
     if ($name -eq 'integration.m5.memory_exhaustion') { return 'memory' }
     if ($name -eq 'integration.m5.process_kills') { return 'fault' }
+    if ($name -eq 'integration.m5.service_kill') { return 'fault-service' }
     if ($name -eq 'integration.m5.bundle_corruption') { return 'fault' }
     if ($name -match '^unit\.') { return 'unit' }
     if ($name -match '^m4\.' -or $name -match '^m5\.' -or $name -match '^model\.') { return 'model' }
@@ -239,10 +243,12 @@ $filters = [ordered]@{
 if ($wantFaultMatrix) {
     # R-04's process kills and R-03's bundle damages assume an empty service, so they get
     # their own guest reset instead of sharing the integration.m5 group's (whose earlier
-    # cases leave profiles).  Off by default while the recovery defect recorded in
-    # docs/validation/m5-stab-03c-process-kills.md is open: a known-red case in the default
-    # gate would make every run red and train people to ignore it.
+    # cases leave profiles).  The service kill gets a group of its own on top of that: after
+    # a kill experiment the guest's storage stack needs a hard reboot, so one kill per group
+    # is the most a reset can honestly separate.  Off by default while the R-04.B recovery
+    # question is open: a known-red case in the default gate trains people to ignore it.
     $filters['fault'] = '^integration\.m5\.(process_kills|bundle_corruption)$'
+    $filters['fault-service'] = '^integration\.m5\.service_kill$'
 }
 if ($wantMemoryExhaustion) {
     # R-01's one-command exhaustion experiment.  Its own group, so it gets a fresh guest
