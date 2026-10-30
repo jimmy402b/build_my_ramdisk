@@ -677,6 +677,9 @@ DiskMaintenanceStats ProductionRuntimeAdapter::maintenance_stats() const {
     // disk's size rather than the memory in use.
     result.resident_bytes = stats.committed_bytes;
     result.budget_bytes = impl_->aim_runtime->memory_budget_bytes();
+    // R-01: the store's own refusal counter, carried to `disk show`.  It is the one
+    // number that turns "a write failed" into "the budget was exhausted".
+    result.hard_limit_rejections = stats.hard_limit_rejections;
     return result;
 }
 

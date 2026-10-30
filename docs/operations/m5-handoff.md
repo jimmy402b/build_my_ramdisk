@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **H1 完成**（STAB-01/02/04 全 PASSED），六项范围裁定已定（§3.203）。剩余工作见 **[release-tasklist](superpowers/plans/2026-10-30-m5-release-tasklist.md)**：R-01…R-19，四个里程碑（M1 可重复故障结论 → M2 可交付 → M3 可审计 → M4 可承诺），约 38–60 人日。**第一条：R-01**（按决策 1：fixed 预算 > 机器提交上限在创建时拒绝；预算拒绝可观测；耗尽实验入一条命令）。新会话先 `--clean-first` 重建（§3.203 末尾） |
+| **下一件事** | **R-01 PASSED（2026-10-30，§3.204）**：超提交上限的 fixed 预算在创建准入被拒（`0x560A`）、`budget_rejections=` 可观测、耗尽实验 = `Invoke-M5FullSuite.ps1 -Only memory` 一条命令（1/1，118 s）。**下一步：R-02 / R-03 / R-04 故障矩阵**（先读 [release-tasklist](superpowers/plans/2026-10-30-m5-release-tasklist.md) §3 的任务说明；R-07 仍必须先于 R-08）。**manifest 现在无效**（产品二进制已改）——R-19 收尾时重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4797,3 +4797,56 @@ adapter → 脚本），不是从零写格式化引擎。
 **本轮状态**：只改了文档；`src/` 与 `tests/` 已恢复到 `d8c2a87` 的内容。**下一次会话先做
 `cmake --build out/build/msvc --config Release --clean-first`**——本轮收尾时有一次 clean build 被中止，
 `out/build` 里可能留着与源码不一致的中间产物。第一条任务：**R-01**。
+
+---
+
+### 3.204 2026-10-30：**R-01 完成 —— M5 不 over-commit，且拒绝可自证**
+
+**结论**：`R-01 / STAB-02R` **PASSED**。按裁定 1，fixed 预算超过机器提交上限的创建请求在**准入阶段**
+被拒绝；预算拒绝在 `disk show` 里可见；耗尽实验成为一条可重跑的命令。证据：
+`docs/validation/m5-stab-02b-memory-limits.md`。
+
+**产品改动（4 层 + 1 条可观测链）**
+
+- `PhysicalMemorySnapshot` 追加 `commit_limit_bytes`；`SystemPhysicalMemoryQuery` 用
+  `MEMORYSTATUSEX::ullTotalPageFile`（= 物理内存 + 页面文件）填充。**不持久化**：这是准入时刻的事实，
+  每次 create 重新读；冻进 durable record 会把“机器改配置”变成“请求变了”。
+- 新稳定错误码 `ServiceCoreError::memory_budget_exceeds_commit_limit = 0x560A`（追加，旧编号不动）；
+  CLI 映射到退出码 1（产品拒绝）。
+- `ServiceCore::refuse_over_commit_budget()`：只在 `fixed` 且请求 > 上限时拒绝；`commit_limit == 0`
+  **fail-closed**（拒绝而不是放行）。调用点在 create 的 `memory_.query()` 之后、intent/reservation/
+  admission 之前；日志 `kind=admission_refused, phase=memory-budget`，消息带
+  `requested=` / `commit_limit=`。
+- `hard_limit_rejections` 全链路：store stats → `DiskMaintenanceStats` → worker 线格式（追加 u64）→
+  `WorkerRuntimeObservation` → `ServiceProfileProjection` → 客户端线格式（追加 u64）→
+  `disk show` 的 `budget_rejections=`（0 不显示）。
+- 实验入套件：`tests/CMakeLists.txt` 注册 `integration.m5.memory_exhaustion`（guest-only）；全量脚本
+  新增 `-IncludeMemoryExhaustion` / `-Only memory` 组。**默认全量仍是 160 例**，`-Only memory` 是 1 例。
+  `expected_cases` 改成按“本次实际选择的组”计数。
+
+**本机读数**：`m5.service_orchestration` 新增 2 例（拒绝 + 等于上限放行）；`unit.m5.worker_protocol`、
+`unit.m5.service_worker_control`、`m5.cli` 各加计数断言；13 个受影响套件 **13/13 绿**（`--clean-first` 后）。
+
+**客机读数**（`myrd-vm`，Release，`Reset-M5Guest` 后）：
+
+- `integration.m5.cli_e2e` 的 R-01 段：64 GiB/64 GiB 请求被拒，`code 0x560A`，消息含
+  “M5 does not over-commit” 与服务自报提交上限 **9,125,646,336 B**（与独立读取
+  `TotalVirtualMemorySize = 8,911,764 KB` 逐字节一致）；无 profile / operation / bundle / worker。
+- `integration.m5.memory_exhaustion`（1 GiB 盘 / 256 MiB 预算 / 320 MiB 写）：
+  写失败于 256 MiB（13.4 s，`0x80131501`）；`budget_rejections` 基线 **0** → 失败后 **43** →
+  checkpoint 后 **228**；checkpoint 2→3；重启 generation **4**，文件 268,435,456 B，前 4 MiB 一致；
+  重启后计数 **0**（runtime 计数，不 durable）；UNMAP 后写恢复；forget ok。
+- 一条命令：`tools/m5vm/Invoke-M5FullSuite.ps1 -SkipStage -Only memory` → **1/1 passed，118 s，exit 0**。
+- 同组回归：`-Only integration.m5` → `cli_e2e` / `checkpoint_inspection` / `gui_workflow` /
+  `install_uninstall` **4/4，152.6 s**。
+
+**踩到的坑（已修）**：`response_view.cpp` 的 `kProfileFixedBytes` 是手工维护的定长前缀，新增 u64 后
+没更新，`m5.cli` / `m5.service_host` 双红（mount 长度从错误偏移读）；`decode_profile` 的位置初始化
+也把新字段放到了 `checkpoints_since_compaction` 的位置。两处都修好后复跑全绿。
+
+**manifest 状态**：产品二进制已改，`2026-10-29T18:23:10Z` 的冻结**已失效**；R-19 收尾时重新生成并
+`Verify-M5Evidence.ps1` 接受。
+
+**边界**：物理 RAM 真耗尽按裁定 1 不做、不支持；运行中改页面文件不在范围；`budget_rejections` 是
+per-runtime 计数，重启归零（有意）。
+

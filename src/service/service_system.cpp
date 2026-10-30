@@ -1,4 +1,4 @@
-﻿#include "src/service/service_system.h"
+#include "src/service/service_system.h"
 #include "src/service/service_host.h"
 
 #include <windows.h>
@@ -45,9 +45,15 @@ SystemPhysicalMemoryQuery::query() {
              L"physical memory could not be queried",
              GetLastError()});
     }
+    // `ullTotalPageFile` is the commit limit -- the physical memory the OS can back with
+    // RAM plus what it can back with paging files.  It is the number a fixed memory budget
+    // must not exceed, because past it a commit is refused no matter how much RAM is free.
+    // `ullTotalPhys` stays the separate reading it always was: the admission policy for
+    // `automatic` is defined against physical memory and must not silently change.
     return Result<management::PhysicalMemorySnapshot>::success(
         {static_cast<std::uint64_t>(status.ullTotalPhys),
-         static_cast<std::uint64_t>(status.ullAvailPhys)});
+         static_cast<std::uint64_t>(status.ullAvailPhys),
+         static_cast<std::uint64_t>(status.ullTotalPageFile)});
 }
 
 void StderrServiceLogger::write(

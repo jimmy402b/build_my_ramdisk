@@ -39,7 +39,8 @@ product::ServiceDiskView view_of(const ServiceProfileProjection& projection) {
         projection.budget_bytes,
         projection.volume_serial,
         projection.successful_compactions,
-        projection.checkpoints_since_compaction};
+        projection.checkpoints_since_compaction,
+        projection.hard_limit_rejections};
 }
 
 product::ServiceOperationView view_of(const ServiceOperationProjection& projection) {
@@ -74,6 +75,10 @@ product::ServiceDiskView project_profile(const ManagedProfileSnapshot& snapshot)
         projection.resident_bytes = snapshot.runtime_observation->resident_bytes;
         projection.budget_bytes = snapshot.runtime_observation->budget_bytes;
         projection.volume_serial = snapshot.runtime_observation->volume_serial;
+        // R-01: a live fact, like the gauges around it.  A stopped disk reports zero --
+        // the count belongs to the runtime that refused the commits.
+        projection.hard_limit_rejections =
+            snapshot.runtime_observation->hard_limit_rejections;
     }
     // The counters are durable rather than observed, so they are filled whether or not a worker is alive: a
     // stopped disk still knows how many compactions it has completed.

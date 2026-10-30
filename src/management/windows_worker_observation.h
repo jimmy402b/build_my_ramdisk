@@ -47,6 +47,7 @@ inline WorkerRuntimeObservation observe_worker_runtime(
         observation.resident_bytes = status.resident_bytes;
         observation.budget_bytes = status.budget_bytes;
         observation.dirty_bytes = status.dirty_bytes;
+        observation.hard_limit_rejections = status.hard_limit_rejections;
         if (status.bundle.has_value()) {
             observation.volume_serial = status.bundle->volume_serial;
         }

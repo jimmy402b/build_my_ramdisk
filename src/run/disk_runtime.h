@@ -93,6 +93,14 @@ struct DiskMaintenanceStats final {
     // engine boundary stays free of storage headers, so the adapter fills them.
     std::uint64_t resident_bytes{};
     std::uint64_t budget_bytes{};
+    // **R-01: how many commits the store refused for want of budget.**
+    //
+    // The count the storage engine already keeps.  Without it a user whose write fails
+    // with a generic I/O error has no way to tell "the budget I chose was too small" from
+    // "the disk is broken" -- measured in H1 as the one gap that made a budget exhaustion
+    // unexplainable from `disk show`.  Zero means no refusal, which is the truth for a
+    // runtime that never ran out.
+    std::uint64_t hard_limit_rejections{};
 };
 
 // M5 two-phase checkpoint boundary (design spec 3.3/3.4).

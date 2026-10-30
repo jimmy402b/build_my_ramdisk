@@ -56,6 +56,9 @@ WorkerRuntimeStatus status() {
     // infer them from a process' working set.
     value.resident_bytes = 19'660'800;
     value.budget_bytes = 1'073'741'824;
+    // R-01: the budget-refusal counter travels with the status, because it is the only
+    // number that explains a failed write as "out of budget" rather than "broken disk".
+    value.hard_limit_rejections = 7;
     return value;
 }
 
@@ -183,6 +186,7 @@ TEST_CASE(m5_worker_protocol_status_round_trips_the_strict_observation) {
     // reading two zeroes as "this disk holds nothing".
     REQUIRE_EQ(decoded.value().status->resident_bytes, 19'660'800ULL);
     REQUIRE_EQ(decoded.value().status->budget_bytes, 1'073'741'824ULL);
+    REQUIRE_EQ(decoded.value().status->hard_limit_rejections, 7ULL);
 }
 
 WorkerCheckpointCommitReply commit_reply(

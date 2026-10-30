@@ -1241,8 +1241,11 @@ public:
 class Memory final : public IPhysicalMemoryQuery {
 public:
     Result<PhysicalMemorySnapshot> query() override {
+        // R-01: 16 GiB of RAM, 8 GiB free, and a 20 GiB commit limit -- a machine with a
+        // pagefile, so the limit and the RAM are deliberately different numbers.  A fixed
+        // budget above 20 GiB must be refused at admission and one at or below it admitted.
         return Result<PhysicalMemorySnapshot>::success(
-            {16ULL << 30, 8ULL << 30});
+            {16ULL << 30, 8ULL << 30, 20ULL << 30});
     }
 };
 

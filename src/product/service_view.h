@@ -217,6 +217,11 @@ struct ServiceDiskView final {
     // disk that has never needed one.
     std::uint64_t successful_compactions{};
     std::uint64_t checkpoints_since_compaction{};
+    // **R-01: why a write failed.**  The store's budget-refusal count.  It is what makes
+    // "the disk is out of budget" distinguishable from "the disk is broken" without
+    // reading the service log on the machine that owns it.  Zero is the truth for a disk
+    // that never exhausted its budget.
+    std::uint64_t hard_limit_rejections{};
     bool operator==(const ServiceDiskView&) const noexcept = default;
 };
 

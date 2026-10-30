@@ -1,4 +1,4 @@
-﻿# One command for the whole M5 suite (STAB-04).
+# One command for the whole M5 suite (STAB-04).
 #
 # The suite cannot be run as one agent request: the guest agent used to replay every
 # unfinished request before the new one, so a 160-case request sat behind stale work and
@@ -16,6 +16,7 @@
 # error rather than silently skipped):
 #   unit / model (m4.*+m5.*) / integration.m1+m4 / integration.m2 / integration.m3 /
 #   integration.m5 non-powerloss / structural / powerloss (three phases)
+#   memory (only with -IncludeMemoryExhaustion: the destructive R-01 experiment)
 #
 # Environment (same as every other harness entry point):
 #   M5VM_HOST, M5VM_USER, M5VM_KEY, and for powerloss M5VM_VMX, M5VM_PASSWORD.
@@ -28,7 +29,13 @@ param(
     [string]$OutDir = 'C:\tmp\m5-vm\full-suite',
     [switch]$SkipStage,
     # Run only these groups (comma separated).  Debugging aid; the release gate uses all.
-    [string[]]$Only
+    [string[]]$Only,
+    # R-01: the budget-exhaustion experiment.  Destructive by design (it fills the disk's
+    # fixed budget and, in `ram` mode, the machine's memory), so it is not part of the
+    # default gate.  One switch makes it a repeatable step: it runs as its own group with
+    # a guest reset before it, and its case count is added to `expected_cases` only when
+    # it is selected.
+    [switch]$IncludeMemoryExhaustion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -162,8 +169,22 @@ foreach ($t in (Get-Content -LiteralPath $stagedTests -Raw | ConvertFrom-Json)) 
 }
 if ($allTests.Count -eq 0) { throw 'the staged tests.json is empty' }
 
+# R-01: the budget-exhaustion case is staged like every other one, and is part of the
+# suite only when the caller asks for it.  Filtering the *selection* here (rather than
+# skipping it later) keeps `expected_cases` honest for both modes: 160 by default, 161
+# with `-IncludeMemoryExhaustion`.
+$wantMemoryExhaustion = $IncludeMemoryExhaustion -or ($Only -contains 'memory')
+$selectedTests = New-Object System.Collections.ArrayList
+foreach ($t in $allTests) {
+    if ($t.name -eq 'integration.m5.memory_exhaustion' -and -not $wantMemoryExhaustion) {
+        continue
+    }
+    [void]$selectedTests.Add($t)
+}
+
 $assign = {
     param([string]$name)
+    if ($name -eq 'integration.m5.memory_exhaustion') { return 'memory' }
     if ($name -match '^unit\.') { return 'unit' }
     if ($name -match '^m4\.' -or $name -match '^m5\.' -or $name -match '^model\.') { return 'model' }
     if ($name -match '^integration\.m1\.' -or $name -match '^integration\.m4\.' -or $name -match '^integration\.shm$') { return 'integration.m1m4' }
@@ -175,16 +196,16 @@ $assign = {
     return 'unassigned'
 }
 $byGroup = @{}
-foreach ($t in $allTests) {
+foreach ($t in $selectedTests) {
     $group = & $assign $t.name
     if ($group -eq 'unassigned') { throw "test '$($t.name)' belongs to no group" }
     if (-not $byGroup.ContainsKey($group)) { $byGroup[$group] = New-Object System.Collections.ArrayList }
     [void]$byGroup[$group].Add($t.name)
 }
-$expectedTotal = $allTests.Count
+$selectedTotal = $selectedTests.Count
 $assignedTotal = ($byGroup.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
-if ($assignedTotal -ne $expectedTotal) {
-    throw "group assignment covers $assignedTotal of $expectedTotal tests"
+if ($assignedTotal -ne $selectedTotal) {
+    throw "group assignment covers $assignedTotal of $selectedTotal tests"
 }
 foreach ($group in $byGroup.Keys) {
     Write-Host ("  {0}: {1} case(s)" -f $group, $byGroup[$group].Count)
@@ -196,8 +217,13 @@ $filters = [ordered]@{
     'integration.m1m4' = '^integration\.(m1|m4)\.|^integration\.shm$'
     'integration.m2' = '^integration\.m2\.'
     'integration.m3' = '^integration\.m3\.'
-    'integration.m5' = '^integration\.m5\.(?!powerloss)'
+    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion)'
     'structural'     = '^structural\.'
+}
+if ($wantMemoryExhaustion) {
+    # R-01's one-command exhaustion experiment.  Its own group, so it gets a fresh guest
+    # and its failure cannot take another group with it.
+    $filters['memory'] = '^integration\.m5\.memory_exhaustion$'
 }
 if ($Only.Count -ne 0) {
     foreach ($name in $Only) {
@@ -211,6 +237,22 @@ $groups = New-Object System.Collections.ArrayList
 foreach ($name in $filters.Keys) {
     if ($Only.Count -ne 0 -and $Only -notcontains $name) { continue }
     [void]$groups.Add((Invoke-Group $name $filters[$name]))
+}
+
+# **`expected_cases` describes this run, not the staged list.**  `-Only` selects groups,
+# and the memory case exists in the staged list whether or not it was asked for -- so
+# counting the *groups actually executed* is the only total that stays meaningful in all
+# three modes (default 160, `-IncludeMemoryExhaustion` 161, `-Only memory` 1).  The
+# alternative, counting the staged list, is what made a passing `-Only memory` run report
+# "1 cases reported, 161 expected" and exit non-zero.
+$expectedTotal = 0
+foreach ($name in $filters.Keys) {
+    if ($Only.Count -ne 0 -and $Only -notcontains $name) { continue }
+    if ($byGroup.ContainsKey($name)) { $expectedTotal += $byGroup[$name].Count }
+}
+if ($Only.Count -eq 0 -or $Only -contains 'powerloss') {
+    # The power-cut phase is two guest cases summarised from one host-driven transcript.
+    $expectedTotal += 2
 }
 
 if ($Only.Count -eq 0 -or $Only -contains 'powerloss') {

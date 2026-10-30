@@ -290,6 +290,58 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Write-Host "  the test volume will be mounted at $mount"
 
     # -----------------------------------------------------------------------
+    # R-01 / decision 1: M5 does not over-commit.
+    #
+    # A fixed budget above the machine's commit limit is refused *at admission*: the
+    # answer is a product code with the two numbers in it, and nothing durable or real
+    # exists afterwards.  Measured from the outside, because the model test can only
+    # assert the core's decision -- not that no worker, bundle or profile was left behind.
+    # -----------------------------------------------------------------------
+    Write-Step 'R-01: a fixed budget above the machine commit limit is refused at admission'
+    if ((Invoke-Cli @('disk', 'list')).output -match 'generation=') {
+        Fail 'a profile exists before the R-01 step; this case measures an empty service'
+    }
+    $overBundle = Join-Path 'C:\m5' ($profileName + '-over-commit')
+    $overName = $profileName + '-over-commit'
+    $over = Invoke-Cli @('disk', 'create', '--name', $overName, '--bundle', $overBundle,
+        '--size', '64GiB', '--mount', $mount,
+        '--memory-mode', 'fixed', '--memory-hard-limit', '64GiB', '--no-wait')
+    if ($over.exit -ne 1) {
+        Fail ("the over-commit create did not fail with exit 1 (exit=$($over.exit)): " +
+            $over.output)
+    }
+    if ($over.output -notmatch 'code: 0x560A') {
+        Fail "the over-commit create did not carry the R-01 code 0x560A: $($over.output)"
+    }
+    if ($over.output -notmatch 'M5 does not over-commit') {
+        Fail "the over-commit refusal does not state the rule: $($over.output)"
+    }
+    $limitMatch = [regex]::Match($over.output, 'commit limit of (\d+) bytes')
+    if (-not $limitMatch.Success) {
+        Fail "the over-commit refusal does not name the machine's commit limit: $($over.output)"
+    }
+    Write-Host "  commit limit reported by the service: $($limitMatch.Groups[1].Value) bytes"
+    # **No residue.**  A refusal at admission may not leave a profile, an operation, a
+    # bundle or a worker behind -- each of those is what makes a later attempt fail for
+    # a reason that has nothing to do with what the user just asked for.
+    $overList = Invoke-Cli @('disk', 'list')
+    if ($overList.output -match 'generation=') {
+        Fail "the refused create left a profile: $($overList.output)"
+    }
+    if ($over.output -match 'operation [0-9a-f]{8}-') {
+        Fail "the refused create left an operation: $($over.output)"
+    }
+    if (Test-Path -LiteralPath $overBundle) {
+        Fail "the refused create left a bundle directory: $overBundle"
+    }
+    $overWorkers = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue).Count
+    if ($overWorkers -ne 0) {
+        Fail "the refused create left $overWorkers worker(s) behind"
+    }
+    Write-Host ("PASS R-01: over-commit budget refused at admission (code 0x560A, " +
+        'commit limit named, no profile/operation/bundle/worker)')
+
+    # -----------------------------------------------------------------------
     # T1-04: a list during a create.
     # -----------------------------------------------------------------------
     Write-Step 'T1-04: create, and time `disk list` while it is in progress'

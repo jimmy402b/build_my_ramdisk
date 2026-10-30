@@ -1,4 +1,4 @@
-﻿add_library(myrd_test_support STATIC
+add_library(myrd_test_support STATIC
     support/test_main.cpp
 )
 target_include_directories(myrd_test_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support")
@@ -769,6 +769,25 @@ add_test(
 set_tests_properties(integration.m5.powerloss_verify PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1200)
+
+# ---- M5 budget-exhaustion experiment (R-01) -----------------------------------
+# The one case that measures the *supported* exhaustion path: the product's own fixed
+# budget is reached while the machine still has RAM, and everything after the first
+# failed write has to stay predictable (checkpoint, restart, generation, UNMAP recovery).
+#
+# Registered so it can be run with one command -- `Invoke-M5FullSuite.ps1
+# -IncludeMemoryExhaustion`, or `Invoke-M5Vm.ps1 -Run -Filter
+# '^integration\.m5\.memory_exhaustion$'` -- but deliberately NOT part of the default
+# 160-case gate: it fills RAM on purpose, and a gate that does that on every run is a
+# gate nobody runs twice.  The default suite's count is unaffected; the optional group
+# is what R-01 requires to be repeatable.
+add_test(
+    NAME integration.m5.memory_exhaustion
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-memory-exhaustion.ps1")
+set_tests_properties(integration.m5.memory_exhaustion PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 2400)
 
 # ---- M5 worker sweep policy (T1-03) -----------------------------------------
 # The startup sweep's *decisions*, with no job object and no processes in them:

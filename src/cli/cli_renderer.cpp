@@ -76,6 +76,12 @@ std::string profile_line(const product::ServiceDiskView& profile) {
     if (profile.successful_compactions != 0) {
         text << "  compactions=" << profile.successful_compactions;
     }
+    // R-01: a failed write caused by the budget must be explainable from the same line
+    // the user already reads.  Shown only when it happened, so an ordinary disk's line
+    // stays as short as it was.
+    if (profile.hard_limit_rejections != 0) {
+        text << "  budget_rejections=" << profile.hard_limit_rejections;
+    }
     return text.str();
 }
 
@@ -148,6 +154,10 @@ CliExitCode exit_code_for(const client::ServiceResponseWire& response) {
         // The product said no, deliberately: that is a failure a script must be able to
         // branch on, not "the service is unavailable" and not a usage error.
         case product::ServiceCoreError::single_disk_violation:
+        // R-01: an over-commit budget is a preflight verdict, not a malformed command.
+        // The user asked for something the machine cannot commit; exiting 2 would say
+        // "you typed it wrong", which is not what happened.
+        case product::ServiceCoreError::memory_budget_exceeds_commit_limit:
             return CliExitCode::failure;
         }
         switch (static_cast<OperationErrorCode>(code)) {

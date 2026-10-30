@@ -744,6 +744,9 @@ Result<WorkerRuntimeStatus> DiskWorkerRuntime::observe() {
         status.resident_bytes = stats.resident_bytes;
         status.budget_bytes = stats.budget_bytes;
         status.dirty_bytes = stats.dirty_bytes;
+        // R-01: the counter that explains a budget refusal.  Reported from the live
+        // runtime; a torn-down runtime reports zero, which is the truth for it.
+        status.hard_limit_rejections = stats.hard_limit_rejections;
         // Reported from the runtime that holds it, not inferred from the fact
         // that a freeze was once requested: the two answers differ exactly when
         // it matters, which is when a stop has to know whether the removal it is

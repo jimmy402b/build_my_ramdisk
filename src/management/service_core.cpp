@@ -1563,6 +1563,66 @@ Result<void> ServiceCore::refuse_if_another_disk_is_up(
         L"running disk before creating or starting another one."));
 }
 
+Result<void> ServiceCore::refuse_over_commit_budget(
+    const control::MemoryMode mode,
+    const std::optional<std::uint64_t> requested_hard_limit_bytes,
+    const PhysicalMemorySnapshot& memory,
+    const product::Uuid& request_id,
+    const std::string& command) {
+    // Only a fixed budget makes a promise that can exceed the machine.  `automatic` is
+    // `min(physical / 4, capacity)` and is therefore always below the commit limit.
+    if (mode != control::MemoryMode::fixed) return Result<void>::success();
+    // A fixed request without a number is a malformed request; `materialize_memory_policy`
+    // names it.  This guard has nothing to compare and must not invent a number.
+    if (!requested_hard_limit_bytes.has_value()) {
+        return Result<void>::success();
+    }
+    if (memory.commit_limit_bytes == 0) {
+        // Fail closed.  The caller asked for a fixed budget and the machine did not say
+        // what it can commit; admitting that request would be exactly the unchecked
+        // over-commit the decision forbids.
+        logger_.write(ServiceLogEvent{
+            ServiceLogKind::admission_refused,
+            request_id,
+            std::nullopt,
+            std::nullopt,
+            command,
+            "memory-budget",
+            "memory-budget admission failed: the machine's commit limit is unobserved"});
+        return Result<void>::failure(service_error(
+            ServiceCoreError::dependency_failure,
+            L"service_core.memory_commit_limit",
+            L"The machine's commit limit could not be observed, so a fixed memory "
+            L"budget cannot be admitted."));
+    }
+    if (requested_hard_limit_bytes.value() <= memory.commit_limit_bytes) {
+        return Result<void>::success();
+    }
+    // The numbers travel in the log because they are what makes the refusal checkable by
+    // the person who has to change the request.
+    const auto detail = std::string("requested=")
+        + std::to_string(requested_hard_limit_bytes.value())
+        + " commit_limit=" + std::to_string(memory.commit_limit_bytes);
+    logger_.write(ServiceLogEvent{
+        ServiceLogKind::admission_refused,
+        request_id,
+        std::nullopt,
+        std::nullopt,
+        command,
+        "memory-budget",
+        "memory-budget admission refused: M5 does not over-commit (" + detail + ")"});
+    const auto message = std::wstring(
+        L"M5 does not over-commit: a fixed memory budget of ")
+        + std::to_wstring(requested_hard_limit_bytes.value())
+        + L" bytes exceeds this machine's commit limit of "
+        + std::to_wstring(memory.commit_limit_bytes)
+        + L" bytes. Use a smaller --memory-hard-limit, or --memory-mode automatic.";
+    return Result<void>::failure(service_error(
+        ServiceCoreError::memory_budget_exceeds_commit_limit,
+        L"service_core.memory_commit_limit",
+        message.c_str()));
+}
+
 Result<ServiceResponse> ServiceCore::dispatch(
     const ServiceCommandRequest& request) {
     auto encoded = ipc::encode_command_payload(request.command);
@@ -1893,6 +1953,20 @@ Result<ServiceResponse> ServiceCore::dispatch(
         auto memory = memory_.query();
         if (!memory.ok()) {
             return Result<ServiceResponse>::failure(memory.error());
+        }
+        if (create != nullptr) {
+            // **Decision 1: M5 does not over-commit.**  Refused before the durable
+            // reservation and before any provisioning request, so a refused budget leaves
+            // no profile, no reservation, no bundle and no worker behind.
+            auto over_commit = refuse_over_commit_budget(
+                create->memory_mode.value_or(control::MemoryMode::automatic),
+                create->memory_hard_limit_bytes,
+                memory.value(),
+                request_id,
+                command);
+            if (!over_commit.ok()) {
+                return Result<ServiceResponse>::failure(over_commit.error());
+            }
         }
         LifecycleOperationIntent intent{
             create != nullptr ? LifecycleOperationKind::create

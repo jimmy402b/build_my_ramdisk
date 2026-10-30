@@ -163,11 +163,16 @@ function Show-Disk([string]$label) {
     if ($line -match 'health=(\w+)') { $health = $Matches[1] }
     $mem = '?'
     if ($line -match 'mem=(\d+/\d+)') { $mem = $Matches[1] }
+    # R-01: the budget-refusal counter is the reading that makes an exhaustion
+    # self-explanatory.  Absent means zero (the CLI omits it until it happens).
+    $rejections = 0
+    if ($line -match 'budget_rejections=(\d+)') { $rejections = [uint64]$Matches[1] }
     Write-Reading "$label.runtime" $runtime
     Write-Reading "$label.persistence" $persistence
     Write-Reading "$label.health" $health
     Write-Reading "$label.generation" ([string](Get-Generation $line))
     Write-Reading "$label.mem" $mem
+    Write-Reading "$label.budget_rejections" ([string]$rejections)
     return $line
 }
 
@@ -340,6 +345,20 @@ try {
     # 2. The product still answers, and a small write fails the same way.
     # ------------------------------------------------------------------
     $afterFailure = Show-Disk 'after_failure'
+    # **R-01's observability half.**  Before this counter existed, the only evidence a
+    # budget refusal had happened was the generic I/O error the write returned; `disk
+    # show` said `mem=X/budget` and nothing else.  A refused commit must now be visible
+    # as a number, and that number must be greater than zero after a measured refusal.
+    $rejectionsAfterFailure = 0
+    if ($afterFailure -match 'budget_rejections=(\d+)') {
+        $rejectionsAfterFailure = [uint64]$Matches[1]
+    }
+    Write-Reading 'budget_rejections_after_failure' ([string]$rejectionsAfterFailure)
+    if ($rejectionsAfterFailure -eq 0) {
+        Fail ('the write failed but disk show reported no budget refusal ' +
+            "(budget_rejections=0): the failure the user meets cannot be explained " +
+            'by the product')
+    }
     $workersAlive = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue).Count
     Write-Reading 'workers_after_failure' $workersAlive
     if ($workersAlive -ne 1) { Fail "expected exactly one worker after the failure, found $workersAlive" }
@@ -483,7 +502,7 @@ try {
         Remove-Item -LiteralPath $bundlePath -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    Write-Host 'PASS: memory exhaustion behaved as documented'
+    Write-Host 'PASS integration.m5.memory_exhaustion: budget exhaustion behaved as documented'
     Write-Reading 'result' 'PASS'
 } finally {
     Stop-WorkerAndService

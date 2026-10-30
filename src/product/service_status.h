@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // **Two enumerations that were in the management library and belong to the contracts.**
 //
@@ -60,6 +60,14 @@ enum class ServiceCoreError : std::uint32_t {
     // name it would have to hard-code a number.  Appended so every existing code keeps
     // the number already on the wire and in the durable records.
     single_disk_violation,
+    // **A fixed memory budget the machine cannot commit is refused, not attempted.**
+    //
+    // Decision 1: M5 does not over-commit.  A create whose fixed `--memory-hard-limit`
+    // exceeds the machine's commit limit is refused before any worker, bundle, device or
+    // durable record exists, so the failure is a preflight verdict rather than an
+    // I/O error the user would meet later at the first write.  Appended for the same
+    // reason as the code above.
+    memory_budget_exceeds_commit_limit,
 };
 enum class OperationState : std::uint8_t {
     queued = 0,

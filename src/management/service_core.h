@@ -405,6 +405,10 @@ struct WorkerRuntimeObservation final {
     // policy's dirty threshold is a byte count, so the observation has to carry one.
     std::uint64_t dirty_bytes{};
     std::uint64_t volume_serial{};
+    // **R-01: budget refusals the store counted.**  A live fact like the gauges above,
+    // and meaningless when `worker_alive` is false.  Appended so every existing aggregate
+    // initializer keeps its meaning.
+    std::uint64_t hard_limit_rejections{};
 
     bool operator==(const WorkerRuntimeObservation&) const noexcept = default;
 };
@@ -513,6 +517,18 @@ inline constexpr std::uint64_t kAutomaticSnapshotCowLimitBytes =
 struct PhysicalMemorySnapshot final {
     std::uint64_t total_bytes{};
     std::uint64_t available_bytes{};
+    // **The machine's commit limit (R-01, decision 1).**
+    //
+    // Physical RAM is not the number that decides whether a fixed budget can be honoured:
+    // Windows will back commits with the pagefile, and it refuses a commit past
+    // `physical + pagefile`.  M5 therefore refuses a fixed budget above this value at
+    // creation, which is what "M5 does not over-commit" means in the product's own terms.
+    //
+    // Deliberately *not* persisted: it is an admission-time fact, re-read on every create,
+    // and a durable record that froze a machine's pagefile size would turn a machine
+    // reconfiguration into an apparent request change.  Zero means "not observed", and the
+    // admission guard treats that as a failed preflight rather than as an unlimited budget.
+    std::uint64_t commit_limit_bytes{};
 };
 
 enum class LifecycleOperationKind : std::uint8_t {
@@ -719,6 +735,11 @@ struct ServiceProfileProjection final {
     // Durable compaction counters (T4-03), appended with defaults like their neighbours.
     std::uint64_t successful_compactions{};
     std::uint64_t checkpoints_since_compaction{};
+    // R-01: the live budget-refusal counter, appended for the same reason.  Zero is the
+    // honest answer for a disk that is stopped, for one that never ran out, and for a
+    // service that could not observe its worker -- a client that wants more certainty
+    // reads `runtime`.
+    std::uint64_t hard_limit_rejections{};
     bool operator==(const ServiceProfileProjection&) const noexcept = default;
 };
 
@@ -1257,6 +1278,23 @@ private:
         const product::Uuid& request_id,
         const std::string& command,
         const wchar_t* step);
+
+    // **The one enforcement point of "M5 does not over-commit" (R-01, decision 1).**
+    //
+    // A fixed budget is a promise that the store's commits fit; the machine refuses a
+    // commit past its commit limit, so a request past that limit cannot be honoured and is
+    // refused *here* -- before a pending entry, a durable reservation, a bundle or a
+    // worker exists.  `automatic` is not checked: it is derived from physical memory and
+    // is by construction below the limit.
+    //
+    // An unobserved limit (zero) is a failed preflight, not permission: skipping the check
+    // would be the one way this guard could silently stop guarding.
+    Result<void> refuse_over_commit_budget(
+        control::MemoryMode mode,
+        std::optional<std::uint64_t> requested_hard_limit_bytes,
+        const PhysicalMemorySnapshot& memory,
+        const product::Uuid& request_id,
+        const std::string& command);
 
     IServiceClock& clock_;
     IServiceProfileStore& profiles_;

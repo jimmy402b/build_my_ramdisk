@@ -413,6 +413,103 @@ TEST_CASE(m5_single_disk_refuses_a_create_while_another_disk_runs) {
     REQUIRE(fixture.profiles.snapshot() == before);
 }
 
+// **R-01 / decision 1: M5 does not over-commit.**
+//
+// A fixed budget is a promise, and the machine refuses commits past its commit limit.
+// The refusal must be the stable product code, must be explained by numbers the operator
+// can act on, and must leave no durable or device-producing work behind.  The fixture's
+// machine has a 20 GiB commit limit, so 24 GiB is the smallest request that over-commits.
+TEST_CASE(m5_over_commit_fixed_budget_is_refused_at_admission) {
+    Fixture fixture(product::PersistenceState::clean);
+    auto primary = fixture.profiles.snapshot();
+    primary.state = registered_profile_state(
+        profile::ProfileLifecycle::ready,
+        product::DiskState{
+            product::RuntimeState::stopped,
+            product::ActivityState::idle,
+            product::PersistenceState::clean,
+            product::HealthState::healthy});
+    fixture.profiles.replace(primary);
+    const auto before = fixture.profiles.snapshot();
+    Registrations registrations;
+    RecordingLogger logger;
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+        fixture.worker, logger, fixture.ids, fixture.memory, &registrations);
+
+    ServiceCommandRequest request{};
+    request.request_id = id("17171717-1717-4171-8171-171717171717");
+    request.command = control::DiskCreateCommand{
+        L"over-commit", L"C:\\m5\\over-commit-bundle", 32ULL << 30, L"Q:"};
+    auto& create = std::get<control::DiskCreateCommand>(request.command);
+    create.memory_mode = control::MemoryMode::fixed;
+    create.memory_hard_limit_bytes = 24ULL << 30;
+    request.caller = administrator(before.record.profile.owner_sid);
+
+    const auto refused = core.dispatch(request);
+
+    REQUIRE(!refused.ok());
+    REQUIRE_EQ(refused.error().code,
+        static_cast<std::uint32_t>(
+            ServiceCoreError::memory_budget_exceeds_commit_limit));
+    REQUIRE_EQ(refused.error().operation,
+        std::wstring(L"service_core.memory_commit_limit"));
+    // The message has to say both what the rule is and the two numbers that disagree.
+    REQUIRE(refused.error().message.find(L"M5 does not over-commit")
+        != std::wstring::npos);
+    REQUIRE(refused.error().message.find(L"25769803776")
+        != std::wstring::npos);
+    REQUIRE(refused.error().message.find(L"21474836480")
+        != std::wstring::npos);
+    // Refused at admission: no operation record, no registration reservation, no
+    // provisioning request, and the profile store is exactly as it was.
+    REQUIRE_EQ(fixture.operations.records.size(), 0U);
+    REQUIRE_EQ(registrations.reserve_calls, 0);
+    REQUIRE(fixture.profiles.snapshot() == before);
+    // The refusal is explained in the service log, because a refused command has no
+    // durable operation record to explain itself later.
+    REQUIRE_EQ(logger.events.size(), 1U);
+    REQUIRE_EQ(logger.events.front().kind,
+        ServiceLogKind::admission_refused);
+    REQUIRE_EQ(logger.events.front().phase, std::string("memory-budget"));
+    REQUIRE(logger.events.front().message.find("M5 does not over-commit")
+        != std::string::npos);
+}
+
+// The other half of the guard: a budget the machine *can* commit is not refused.  Without
+// this, "refuses everything" would pass the case above and the feature would be unusable.
+TEST_CASE(m5_a_fixed_budget_at_the_commit_limit_is_admitted) {
+    Fixture fixture(product::PersistenceState::clean);
+    auto primary = fixture.profiles.snapshot();
+    primary.state = registered_profile_state(
+        profile::ProfileLifecycle::ready,
+        product::DiskState{
+            product::RuntimeState::stopped,
+            product::ActivityState::idle,
+            product::PersistenceState::clean,
+            product::HealthState::healthy});
+    fixture.profiles.replace(primary);
+    Registrations registrations;
+    RecordingLogger logger;
+    ServiceCore core(fixture.clock, fixture.profiles, fixture.operations,
+        fixture.worker, logger, fixture.ids, fixture.memory, &registrations);
+
+    ServiceCommandRequest request{};
+    request.request_id = id("18181818-1818-4181-8181-181818181818");
+    request.command = control::DiskCreateCommand{
+        L"at-the-limit", L"C:\\m5\\at-the-limit-bundle", 32ULL << 30, L"Q:"};
+    auto& create = std::get<control::DiskCreateCommand>(request.command);
+    create.memory_mode = control::MemoryMode::fixed;
+    create.memory_hard_limit_bytes = 20ULL << 30;
+    request.caller = administrator(primary.record.profile.owner_sid);
+
+    const auto admitted = core.dispatch(request);
+
+    REQUIRE(admitted.ok());
+    REQUIRE(admitted.value().operation_id.has_value());
+    REQUIRE_EQ(fixture.operations.records.size(), 1U);
+    REQUIRE_EQ(registrations.reserve_calls, 1);
+}
+
 // **The window a profile-only check cannot see.**  A create publishes no profile until
 // its execution provisions one, so two creates issued back to back both see an empty
 // profile list; the first one's pending entry is what makes the second a second disk.

@@ -1,4 +1,4 @@
-﻿#include "tests/support/test_framework.h"
+#include "tests/support/test_framework.h"
 
 #include "src/management/service_worker_control.h"
 #include "src/management/windows_worker_observation.h"
@@ -543,11 +543,14 @@ TEST_CASE(m5_observe_worker_runtime_carries_the_memory_gauges_only_while_alive) 
     status.worker_alive = true;
     status.resident_bytes = 19'660'800;
     status.budget_bytes = 1'073'741'824;
+    // R-01: the refusal counter is a live fact and is carried with the same condition.
+    status.hard_limit_rejections = 7;
 
     const auto live = observe_worker_runtime(status, true);
     REQUIRE(live.worker_alive);
     REQUIRE_EQ(live.resident_bytes, 19'660'800ull);
     REQUIRE_EQ(live.budget_bytes, 1'073'741'824ull);
+    REQUIRE_EQ(live.hard_limit_rejections, 7ull);
 
     // A torn-down runtime holds nothing, so it reports nothing.  Carrying the last
     // numbers forward would make a stopped disk look allocated.
@@ -556,6 +559,7 @@ TEST_CASE(m5_observe_worker_runtime_carries_the_memory_gauges_only_while_alive) 
     const auto stopped = observe_worker_runtime(torn_down, true);
     REQUIRE_EQ(stopped.resident_bytes, 0ull);
     REQUIRE_EQ(stopped.budget_bytes, 0ull);
+    REQUIRE_EQ(stopped.hard_limit_rejections, 0ull);
 }
 
 

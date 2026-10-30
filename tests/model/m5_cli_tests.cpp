@@ -39,7 +39,8 @@ product::ServiceDiskView profile(const char* id,
                                              const product::AggregateStatus
                                                  aggregate,
                                              const std::uint64_t resident = 0,
-                                             const std::uint64_t budget = 0) {
+                                             const std::uint64_t budget = 0,
+                                             const std::uint64_t rejections = 0) {
     auto projection = product::ServiceDiskView{
         uuid(id),
         product::ServiceLifecycle::ready,
@@ -52,6 +53,7 @@ product::ServiceDiskView profile(const char* id,
         std::optional<std::string>(mount)};
     projection.resident_bytes = resident;
     projection.budget_bytes = budget;
+    projection.hard_limit_rejections = rejections;
     return projection;
 }
 
@@ -64,7 +66,7 @@ management::ServiceResponseWire list_response() {
         std::nullopt,
         {profile("22222222-2222-4222-8222-222222222222", "X:",
                  management::AggregateStatus::running, 19'660'800ull,
-                 1'073'741'824ull),
+                 1'073'741'824ull, 11ull),
          profile("33333333-3333-4333-8333-333333333333", "Y:",
                  management::AggregateStatus::blocked_needs_attention)},
         {},
@@ -114,6 +116,9 @@ TEST_CASE(cli_wire_round_trips_a_list_response) {
     // have to survive the codec.  The figures are the ones a measured run reported.
     REQUIRE_EQ(decoded.value().profiles.front().resident_bytes, 19'660'800ULL);
     REQUIRE_EQ(decoded.value().profiles.front().budget_bytes, 1'073'741'824ULL);
+    // R-01: the budget-refusal counter has to survive the codec, because it is what lets
+    // a client explain a failed write without asking the service log.
+    REQUIRE_EQ(decoded.value().profiles.front().hard_limit_rejections, 11ULL);
     // The second profile's verdict is what a client renders; a projection that lost it
     // would show a blocked disk as a healthy one.
     REQUIRE(decoded.value().profiles.back().aggregate
@@ -336,6 +341,22 @@ TEST_CASE(cli_renders_resident_memory_against_its_budget) {
     const auto wire = list_response();
     const auto text = cli::render_response(wire);
     REQUIRE(text.find("mem=19660800/1073741824") != std::string::npos);
+}
+
+TEST_CASE(cli_renders_the_budget_refusal_counter_only_when_it_happened) {
+    // R-01: after a budget exhaustion, the disk's line has to say so.  Before one, the
+    // line must stay as short as it was -- a `budget_rejections=0` on every disk would
+    // be noise, and would make the counter look like a permanent property instead of an
+    // event.
+    const auto wire = list_response();
+    const auto text = cli::render_response(wire);
+    REQUIRE(text.find("budget_rejections=11") != std::string::npos);
+    REQUIRE(text.find("budget_rejections=0") == std::string::npos);
+
+    auto quiet = list_response();
+    quiet.profiles.front().hard_limit_rejections = 0;
+    REQUIRE(cli::render_response(quiet).find("budget_rejections=")
+        == std::string::npos);
 }
 
 TEST_CASE(cli_maps_responses_to_the_documented_exit_codes) {

@@ -419,6 +419,13 @@ struct WorkerRuntimeStatus final {
     // carried only `dirty` (a bool) and `dirty_epoch` (a per-process counter) could
     // not answer the question the policy asks.
     std::uint64_t dirty_bytes{};
+    // **R-01: budget refusals the store has counted for this runtime.**
+    //
+    // The store already increments `hard_limit_rejections` on every commit it refuses for
+    // want of budget; nothing above it read the counter, so a user meeting the resulting
+    // generic I/O error could not tell a too-small budget from a broken disk.  Appended
+    // with a default so every existing aggregate initializer keeps its meaning.
+    std::uint64_t hard_limit_rejections{};
 
     bool operator==(const WorkerRuntimeStatus&) const noexcept = default;
 };
