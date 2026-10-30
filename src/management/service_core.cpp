@@ -5817,6 +5817,14 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     // worker candidate without recording the matching service
                     // truth before publish-ready.
                     || provisioning_start)) {
+                // **R-04: was this evidence read by a recovery inspection?**  A recovered
+                // checkpoint whose commit already landed is proved by `reconcile_checkpoint`,
+                // which launches a read-only inspection and closes it as soon as it answers
+                // (that is what ends an inspection).  The P5 epoch publication below would
+                // then ask for a bound session that deliberately no longer exists.  The flag
+                // makes that difference explicit; the publication itself still runs from the
+                // same durable correlation, so nothing is confirmed that was not proved.
+                bool evidence_from_inspection = false;
                 if (checkpoint_cancelled_before_boundary) {
                     if (pending_plan.command == ManagementCommand::compact) {
                         auto cancelled_compaction =
@@ -6074,6 +6082,7 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         return park_checkpoint_reconciliation();
                     }
                     evidence = resolved.value().checkpoint.value();
+                    evidence_from_inspection = true;
                     checkpoint_state = current_profile->checkpoint;
                     checkpoint_state.phase =
                         CheckpointDurablePhase::evidence_recorded;
@@ -6247,11 +6256,19 @@ Result<OperationRecord> ServiceCore::execute_operation(
                 }
                 current_profile = pending_epoch.move_value();
 
-                auto epoch_publication = worker_.publish_checkpoint_epoch(
-                    worker_request,
-                    evidence.correlation,
-                    [&](const CheckpointEpochObservation& observation)
-                        -> Result<void> {
+                // **P5 from a recovery inspection (R-04).**  A recovered checkpoint whose
+                // boundary is already durable is proved by `reconcile_checkpoint`, and two
+                // paths reach that proof: the action itself (recovering a post-boundary
+                // checkpoint) and the in-flight indeterminate disposition.  Both close
+                // their inspection before returning, so no session is bound on purpose and
+                // `publish_checkpoint_epoch` would fail `execution_not_bound`, leaving the
+                // operation `running` forever (measured).  The proof was read from this
+                // bundle by this service and its correlation matches, so the same
+                // publication runs from it instead of from a second worker round trip.  A
+                // read-only inspection cannot hold unpersisted writes, hence
+                // `post_commit_dirty = false`.
+                auto publish_epoch = [&](const CheckpointEpochObservation& observation)
+                    -> Result<void> {
                         // **Only the identity is ordered here; the epoch is not.**
                         //
                         // A successful commit resets the dirty epoch, so the value observed
@@ -6437,7 +6454,13 @@ Result<OperationRecord> ServiceCore::execute_operation(
                             evidence.generation,
                             observation.live_dirty_epoch);
                         return Result<void>::success();
-                    });
+                    };
+                auto epoch_publication = (evidence_from_inspection
+                        || recovering_checkpoint_from_m3)
+                    ? publish_epoch(CheckpointEpochObservation{
+                          evidence.correlation, evidence.observed_dirty_epoch, false})
+                    : worker_.publish_checkpoint_epoch(
+                          worker_request, evidence.correlation, publish_epoch);
                 if (!epoch_publication.ok()) {
                     return Result<OperationRecord>::failure(
                         epoch_publication.error());

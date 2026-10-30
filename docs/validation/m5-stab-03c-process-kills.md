@@ -1,18 +1,19 @@
-# STAB-03c / R-04：worker / service 在 P4 窗口内被杀 —— **BLOCKED（产品恢复路径缺陷）**
+# STAB-03c / R-04：worker / service 在 P4 窗口内被杀 —— **A PASSED（缺陷已修）；B/C 未测**
 
-**结论**：R-04 **未通过**，且阻塞点是产品缺陷，不是测试装置：
+**结论分两段，不要合并读：**
 
-- 在 P4 窗口内杀掉 worker 后，**服务本身没有挂死**（`disk list` 14 ms 应答、operation 停在设计上的
-  `reconciling`、worker 残留 0、`persistence=CommitIndeterminate`）——这部分读数成立。
-- **服务重启后的恢复路径失败**：恢复执行重新跑到 P5，`publish_checkpoint_epoch` 返回
-  `0x5C02`（`ServiceWorkerControlError::execution_not_bound`，"No runtime is bound to this profile
-  to adopt"），operation 此后**永远停在 `running`**（实测 ≥300 s），磁盘无法自动回到可用状态。
-  同一状态在每次服务重启时重复出现（诊断重启复现两次）。
+1. **R-04.A（P4 窗口内杀 worker）PASSED。** 修复后的产品在三次独立客机运行中给出同一读数：
+   kill 后服务立刻应答（`disk list` 11–25 ms）、operation 停在设计上的 `reconciling`、worker 残留 0、
+   `persistence=CommitIndeterminate`；服务重启后恢复把 operation 推到 **`succeeded`**，磁盘回到
+   **候选代 generation=3** 并 `Running`，P4 前提交的 marker 字节完整。
+2. **R-04.B（P4 窗口内杀服务）与 R-04.C（连续 3 次硬断电）未测。** B 当前卡在两个具体条件上：
+   ① 恢复后的盘 `disk stop` 返回 `failed`（原因尚未提取，见 §4.1）；
+   ② 每次 kill 类实验之后客机存储栈/SSH 会退化，必须硬重启才能跑下一次（§4.2）。
+   C 的驱动 `tools/m5vm/Test-M5RepeatedPowerLoss.ps1` 已写，**没有跑过**。
+3. **R-02（P4/P5 定点断电）未测。** 装置（P4 暂停 + prepare/verify + 主机驱动）已落地；它落在这条
+   已修好的恢复路径上，但**没有读数，不写成通过**。
 
-因此 R-04 的验收句“operation 到终态；重启可恢复”**不成立**。R-02 依赖同一条恢复路径，**未测**，
-在缺陷修复前不应声称通过。
-
-**客机**：`myrd-vm`，Windows 11 x64 26200，Release；每次运行前 `Reset-M5Guest`。
+**客机**：`myrd-vm`，Windows 11 x64 26200，Release；每次运行前 reset（kill 类实验前硬重启）。
 
 ---
 
@@ -30,127 +31,120 @@
 | `MYRD_M5_TEST_PAUSE_ARM=<path>` | 可选：该文件存在时才暂停 |
 
 **为什么要 ARM**：`disk create` 自己会做第一次 checkpoint。服务启动时就武装暂停，会把 **create**
-冻结在 P4（实测：create 在 `reconciling` 停满整个暂停时长）。ARM 让测试在 create 完成后再打开窗口。
+冻结在 P4（实测：create 在 `reconciling` 停满整个暂停时长，直到测试侧 300 s 超时）。ARM 让测试在
+create 完成后再打开窗口，并在恢复前解除（`Stop-ServiceProcess` 删除 arm 文件），这样恢复的提交
+不会再次停住。
 
 暂停是**有界 sleep 循环**，marker 写失败则不暂停（“没有证据就不制造窗口”）。它编进产品，但只由
-安装器不会设置的环境变量触发；R-09 审计时应把它记为“管理员可用的测试 seam”。
+安装器不会设置的环境变量触发；R-09 审计时应记为“管理员可用的测试 seam”。
 
 ### 1.2 R-04 的客机用例
 
-`tests/e2e/test-m5-process-kills.ps1`（`integration.m5.process_kills`）：
+`tests/e2e/test-m5-process-kills.ps1`（`integration.m5.process_kills`，opt-in 组 `fault`）：
 
 - **A**：create 64 MiB 盘 → 写 marker → `disk checkpoint --no-wait` → 等 P4 marker → 杀 worker →
   记录 operation 状态 / `disk list` 延迟 / 残留 worker / persistence → 重启服务 → 期望恢复把
-  checkpoint 解到终态并把盘带回可启动 → 校验 generation 与 marker 字节。
-- **B**：同样在 P4 杀**服务**，验证 worker 不残留、重启后的恢复可用。
-- **C**（连续 3 次硬断电）不在这里：客机不能给自己断电。
+  checkpoint 解到终态、盘回到候选代 → 校验数据。
+- **B**：停掉 A 的盘 → 在第二个盘上重复同一窗口，这次杀**服务** → 验证 worker 不残留 → 重启后恢复。
 
-### 1.3 R-02 的装置（已写，未取得读数）
+### 1.3 其它已落地但未测的装置
 
-- `tests/e2e/test-m5-p4p5-powercut-prepare.ps1`：在 P4 暂停、写状态文件、**退出时故意不清理**
-  （服务和被暂停的 worker 留给主机断电）。
-- `tests/e2e/test-m5-p4p5-powercut-verify.ps1`：断电重启后启动服务，断言恢复代 ∈
-  {最后提交代, P4 候选代}，并校验候选代的 marker 字节。
-- `tools/m5vm/Test-M5P4P5PowerCut.ps1`：prepare → `vmrun stop hard` → 启动 → 等 SSH → verify；
-  每轮之间 `Reset-M5Guest`，支持 `-Cycles N`。
+- `tests/e2e/test-m5-p4p5-powercut-prepare.ps1` / `-verify.ps1` +
+  `tools/m5vm/Test-M5P4P5PowerCut.ps1`（R-02，`-Cycles N`）。
+- `tools/m5vm/Test-M5RepeatedPowerLoss.ps1`（R-04.C，三次 `Test-M5PowerLoss.ps1`，每轮 reset）。
+- `tests/e2e/test-m5-bundle-corruption.ps1`（R-03 第一部分：manifest 截断/翻位、base 截断、journal
+  翻位；每次损坏后要求显式失败且 bundle 字节不变，再恢复文件证明同一块盘能重新启动）。
+- 全量脚本：`-IncludeFaultMatrix`（R-04/R-03 的 opt-in 组）、`-IncludeMemoryExhaustion`（R-01）；
+  `p4p5_*` 永不进默认选择（需要主机断电）。
 
-这三个文件与 `p4p5_prepare`/`p4p5_verify` 两个 ctest 项已经落地，但**没有跑过**（先后被同一个
-恢复缺陷挡住）；任务状态保持 NOT_STARTED/BLOCKED，不写 PASSED。
+## 2. 根因与修复（R-04.A）
 
-## 2. 客机读数
+**原症状**：kill 后重启，恢复执行把 checkpoint 重跑到 P5，`publish_checkpoint_epoch` 返回
+`0x5C02 execution_not_bound`（`step=service_worker_control.require_session`，
+`detail=No runtime is bound to this profile to adopt`），`execute_claimed_operation` 只写一条
+`operation_failed` 日志，**不把 operation 终态化**，于是它永远 `running`（实测 ≥300 s，每次重启复现）。
 
-### 2.1 杀 worker 之后（R-04.A 的前半，成立）
+**根因（定位到函数）**：恢复一个已过 P4 的 checkpoint 时，`execute_operation` 走
+`recovering_checkpoint_from_m3` 分支，用 `worker_.reconcile_checkpoint(...)` 做**只读 inspection**
+（`ServiceWorkerControl::reconcile_checkpoint`）。inspection 回答完即关闭（代码里的注释写明“关闭通道
+就是结束 inspection”），所以**没有绑定 session**。随后 P5 的 `publish_checkpoint_epoch` 在
+`require_session(..., true)` 上找不到可采纳的 runtime，返回 `execution_not_bound`；失败沿
+`execute_operation` 冒泡，operation 停在 `running`。
+
+**修复**（`src/management/service_core.cpp`）：P5 的发布体抽成局部 `publish_epoch`；
+当 `recovering_checkpoint_from_m3`（或走 in-flight `reconcile_checkpoint` 的那条 indeterminate 路径）
+为真时，直接用**inspection 已经证明的** `evidence.correlation` / `observed_dirty_epoch` 调它，而不
+再向 worker 要一次 epoch 观测；`post_commit_dirty=false`（只读 inspection 不可能持有未提交写）。
+这不是放宽校验：证明来自同一 bundle、同一 correlation，且 `valid_checkpoint_evidence(..., true)` 已在
+inspection 返回处校验过。
+
+**为什么不是“忽略错误”**：只对“证据来自 inspection”这一种形态走直发；正常路径（有绑定 session）
+仍是原来的 `publish_checkpoint_epoch`，包括 correlation 比对与 cleanliness 判定。
+
+## 3. 客机读数（R-04.A，修复后三次独立运行）
+
+三次运行的形态完全一致，摘录最后一次（请求 `9c67b095…`）：
 
 ```text
-READING: a.pause_marker=p4-commit generation=3 pid=5796
+READING: a.pause_marker=p4-commit generation=3 pid=3320
 READING: a.candidate_generation=3
-READING: a.killed_worker_pid=5796
+READING: a.killed_worker_pid=3320
 READING: a.operation_state_after_kill=reconciling
 READING: a.list_exit=0
-READING: a.list_ms=14
+READING: a.list_ms=13
 READING: a.runtime_after_kill=Running
 READING: a.persistence_after_kill=CommitIndeterminate
 READING: a.workers_left=0
+--- A: restart the service and let its recovery resolve the checkpoint
+READING: a.operation_state_after_restart=succeeded
+READING: a.start_exit=0
+READING: a.generation_after_recovery=3
+READING: a.data_intact=yes
 ```
 
-对着服务日志：`scheduler: execute returned` 在 kill 后立刻发生，说明执行线程没有被 worker 的死拖住；
-operation 进入设计上的 `reconciling`（“不知道提交有没有落地，只有恢复路径能回答”），**不是挂死**。
+| 判据 | 读数 |
+|---|---|
+| kill 不挂死服务 | `disk list` 11–25 ms，exit 0 |
+| operation 有确定答案 | kill 后 `reconciling`（设计上的“不知道”），重启后 `succeeded` |
+| 无残留 | `workers_left=0` |
+| 重启可恢复 | `start_exit=0`、`generation=3`（= P4 候选）、`Running` |
+| 已提交数据不丢 | `data_intact=yes` |
 
-### 2.2 服务重启之后（R-04.A 的后半，失败）
+同一形态在请求 `6215a0f3…`、`4ea930fd…` 的两次运行里重复出现（`a.operation_state_after_restart=succeeded`）。
 
-重启后的服务 trace（`trace-a2.log`）：
+## 4. B/C 为什么还没测（具体条件）
 
-```text
-worker: runtime open, serving
-worker: command received / command handled / reply written
-p5: evidence profile state published
-p5: operations_.write begin / done
-service: execute_operation returned a failure
-scheduler: execute FAILED code=23554
-```
+### 4.1 B：恢复后的盘 `disk stop` 返回 failed
 
-`23554 = 0x5C02 = execution_not_bound`；服务日志给出完整原因：
+用例在 A 之后先 `disk stop` 第一块盘，operation 被准入（`b.part_a_stop_exit=0`）但终态
+**`b.part_a_stop_state=failed`**，用例据此失败。这说明：
 
-```text
-kind=7 ... execute_operation failed: code=23554 native=0
-  step=service_worker_control.require_session
-  detail=No runtime is bound to this profile to adopt
-```
+- A 的恢复把盘带到了 `Running`/候选代，但该盘的持久化状态可能仍是 `CommitIndeterminate` 一类，
+  于是紧随其后的 stop 在内部检查上失败；
+- 这是**另一个待查的产品问题**（不是测试装置问题）：一次成功的恢复之后，盘应当可以被正常停止。
+  下一步要读 `C:\m5\last-service.log` 的 `kind=7` 行拿 stop 的 code/step（本轮客机在测试收尾后
+  SSH 退化，没能取到）。
 
-测试侧读数：
+### 4.2 客机在 kill 实验后退化
 
-```text
-READING: a.operation_state_after_restart  -> (never left running)
-FAIL: the checkpoint after the service restart did not reach a terminal state within 300 s
-      (last state: running)
-```
+每次跑完 kill 类用例，客机的存储栈/SSH 会退化（PowerShell over SSH 挂起、`cmd` 也超时），
+必须 `vmrun stop … hard` + 启动才能跑下一次。这是已知代价（lessons §5.2），但它意味着：
+**kill 类用例不能靠 `Reset-M5Guest` 串在同一组里跑**，每组前必须硬重启。全量脚本目前只在组间
+做 reset，不做重启；在把 R-04.B/C 放进任何门禁之前，先要有一个“每组前硬重启”的驱动（或把 B/C
+放在独立的 host 驱动里，像 powerloss 那样）。
 
-**第二次诊断**（手动再启动服务）复现同一序列：`started, state=running recovered=2` →
-`disk.checkpoint ... evidence-recorded profile state published` → 同一 `0x5C02`。说明不是一次性时序，
-而是每次启动都重复的循环。
-
-### 2.3 失败形态为什么重要
-
-- operation 既不是终态、也不再前进：客户端 `operation wait` 会一直等到超时，`disk start` 也没有
-  可靠入口（profile 停在 post-P4 的中间相）。
-- 这正是 R-04 要防的“挂死/残留”：盘没有丢已提交数据（P4 已落地），但**产品不能自己把它带回可用**。
-
-## 3. 根因定位（到函数，不到行号结论）
-
-1. 恢复路径（`ServiceCore::recover_after_restart`）把非终态 checkpoint 操作重新放进 pending，
-   scheduler 重新执行它；这条路径本身是设计的“重启恢复”。
-2. 重新执行时，P4 的 durable correlation 已存在，动作重跑到 P5：先把
-   `checkpoint.phase = evidence_recorded` 发布成功，然后调用
-   `worker_.publish_checkpoint_epoch(worker_request, evidence.correlation, ...)`。
-3. `publish_checkpoint_epoch` 内部走 `require_session(profile)`，要求“这个 profile 现在有一个
-   **已绑定**的 worker session”。恢复执行用的 worker 是这次执行临时拉起/采纳的，**没有进绑定表**，
-   于是返回 `execution_not_bound`。
-4. 该失败从 `execute_operation` 直接冒泡到 scheduler；`execute_claimed_operation` 只写一条
-   `operation_failed` 日志并返回错误，**没有把 operation 变成终态**，也没有把 profile 标成
-   needs-attention，于是 operation 永远 `running`。
-
-**修复方向（下一轮从这里接）**：P5 在无绑定 session 时应当走 T1-06 已有的
-`reconcile_checkpoint`（只读 inspection worker 证明 candidate），用它证明 P4 之后发布 P5；或者让
-恢复执行产生的 session 在本次动作链路内可被 P5 复用。两条都要补一条客机用例：
-“杀 worker 于 P4 → 服务重启 → operation 终态 + 盘可 start + 数据在候选代”。
-同时检查 `execute_claimed_operation` 在“P4 之后失败”时是否必须终态化/标 needs-attention，
-避免任何未来错误重复出现“永久 running”。
-
-## 4. 复现命令
+## 5. 复现
 
 ```powershell
-# 客机上（或经 harness）
-tools/m5vm/Invoke-M5FullSuite.ps1 -SkipStage -IncludeFaultMatrix
-# 或单例（先 Reset 客机）：
+# A（需要一块刚硬重启并 reset 过的客机）
+tools/m5vm/Invoke-M5Vm.ps1 -Stage -Configuration Release
 tools/m5vm/Invoke-M5Vm.ps1 -Run -Filter '^integration\.m5\.process_kills$' -MinTimeoutSeconds 900
+
+# C（已写未跑）
+tools/m5vm/Test-M5RepeatedPowerLoss.ps1 -SkipStage -Cycles 3
+
+# R-02（已写未跑）
+tools/m5vm/Test-M5P4P5PowerCut.ps1 -SkipStage -Cycles 3
 ```
 
 失败时读 `C:\m5\last-service.log` 的 `kind=7` 行与 `C:\m5\process-kill-*\trace-a2.log`。
-
-## 5. 明确没有覆盖的
-
-- **R-04.B**（杀服务）与 **R-04.C**（连续 3 次硬断电）：脚本/驱动已写，但 A 失败后没有继续跑；
-  B 是否同样卡在 `execution_not_bound` **未测**。
-- **R-02**（P4/P5 定点断电）：装置已写，**未跑**；它落在同一条恢复路径上，修复前不应期待通过。
-- 杀 worker 后**同一进程内**的即时恢复（不重启服务）：设计上唯一出口是 `resolve_commit`，本轮没有
-  测量它的 CLI 入口（`disk repair-profile` 在服务起不来时也没能验证）。

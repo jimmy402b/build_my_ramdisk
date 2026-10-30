@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 PASSED（§3.204）；R-04 BLOCKED（§3.205）**——P4 窗口杀 worker 后，服务不挂死，但重启恢复在 P5 撞 `0x5C02 execution_not_bound`，operation 永远 `running`；R-02 同路径未测、R-04.B/C 未测。**下一步两条线**：① 修恢复路径（P5 无绑定 session 时走 `reconcile_checkpoint` 只读证明，或让恢复 session 在动作链路内可复用；`execute_claimed_operation` 在 P4 后失败必须终态化/标 needs-attention）；② 同时推进 R-03（bundle 损坏/卷满/ACL，独立于该缺陷）。R-07 仍必须先于 R-08。**manifest 仍无效**，R-19 收尾时重新冻结 |
+| **下一件事** | **R-01 PASSED（§3.204）；R-04.A PASSED（§3.206）**——P4 窗口杀 worker 后重启恢复已修好（inspection 证明直发 P5），operation `succeeded`、generation=候选、数据完整。**未测且有具体卡点**：R-04.B 卡在“恢复后 `disk stop` 终态 failed”（先读 `kind=7` 拿 code/step）与“kill 类实验后客机必须硬重启”；R-04.C/R-02/R-03 的装置已写未跑。**下一步**：① 查并修 stop-after-recovery；② 给 kill 类用例做“每组前硬重启”的驱动，跑 B/C 与 R-02；③ 跑 R-03 的 bundle 损坏矩阵。R-07 仍必须先于 R-08。**manifest 仍无效**，R-19 收尾时重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4887,5 +4887,51 @@ candidate）；或让恢复 session 在本次动作链路内可被 P5 复用；�
 **因此未测**：R-04.B（杀服务）、R-04.C（连续 3 次硬断电）、R-02（P4/P5 定点断电，落在同一恢复路径）。
 **下一步**：先修恢复路径，再把 R-04.A/B/C 与 R-02（`-Cycles 3`）跑成读数；R-03 可以并行做（独立于
 这条路径）。
+
+---
+
+### 3.206 2026-10-30：**R-04.A PASSED —— P5 恢复缺陷已修；B/C 与 R-02/R-03 未测**
+
+**结论**：`R-04.A`（P4 窗口内杀 worker）**三次独立客机运行 PASSED**；`STAB-03` 记为 **PARTIAL**。
+证据：`docs/validation/m5-stab-03c-process-kills.md`。
+
+**缺陷（R-04 自己暴露的）**：恢复一个已过 P4 的 checkpoint 时，`execute_operation` 用
+`worker_.reconcile_checkpoint()` 做只读 inspection；inspection 回答完即关闭（没有绑定 session）。
+随后 P5 的 `publish_checkpoint_epoch` 在 `require_session(..., true)` 上返回
+**`0x5C02 execution_not_bound`**，失败只在 `execute_claimed_operation` 记一条日志，**operation 永远
+`running`**（实测 ≥300 s，每次服务重启复现）。
+
+**修复（`src/management/service_core.cpp`）**：P5 的发布体抽成局部 `publish_epoch`；当
+`recovering_checkpoint_from_m3`（或 in-flight `reconcile_checkpoint` 的 indeterminate 路径）为真时，
+用 inspection 已证明的 `evidence.correlation` / `observed_dirty_epoch` 直接发布，
+`post_commit_dirty=false`。正常路径（有绑定 session）不变，仍走 `publish_checkpoint_epoch`。
+
+**客机读数（三次同形态）**：kill 后 `disk list` **11–25 ms**、operation `reconciling`、
+`workers_left=0`、`persistence=CommitIndeterminate`；重启后 `operation_state_after_restart=succeeded`、
+`start_exit=0`、`generation_after_recovery=3`（= P4 候选）、`Running`、`data_intact=yes`。
+
+**未测及卡点**：
+
+- **R-04.B**（杀服务）：用例在 A 之后 `disk stop` 第一块盘，operation 被准入但终态 **`failed`**
+  （`b.part_a_stop_exit=0`、`b.part_a_stop_state=failed`）。这是另一个待查产品问题：一次成功的恢复
+  之后，盘应当可以被正常停止。下一步读该次 `C:\m5\last-service.log` 的 `kind=7` 拿 code/step。
+- **kill 实验后客机退化**：每次 kill 类用例跑完，PowerShell over SSH / `cmd` 会挂起，必须
+  `vmrun stop … hard` + 启动才能跑下一次。所以 B/C 不能靠组间 `Reset-M5Guest` 串跑，需要“每组前
+  硬重启”的驱动（或像 powerloss 那样放独立 host 驱动）。
+- **R-04.C**：`tools/m5vm/Test-M5RepeatedPowerLoss.ps1` 已写（3 次 `Test-M5PowerLoss.ps1`，每轮
+  reset），**未跑**。
+- **R-02**：`test-m5-p4p5-powercut-prepare/verify.ps1` + `Test-M5P4P5PowerCut.ps1`（`-Cycles N`）
+  已写，**未跑**；它落在同一条已修好的恢复路径上。
+- **R-03**：`tests/e2e/test-m5-bundle-corruption.ps1`（manifest 截断/翻位、base 截断、journal 翻位，
+  每次要求显式失败、bundle 字节不变、恢复后同盘可启动）已写，**未跑**；已注册为 opt-in `fault` 组。
+
+**本机**：修复后 `m4.checkpoint_operation`、`m5.service_orchestration`、`m5.service_host`、
+`m5.execution_scheduler`、`m5.service_maintenance`、`unit.m5.service_worker_control`、
+`unit.m5.worker_protocol` **7/7 绿**。
+
+**全量状态**：默认仍是 160 例（`-IncludeFaultMatrix` 才加 fault 组；`p4p5_*` 永不进默认）。本轮没有
+重跑两次全量；上一次带 `-IncludeFaultMatrix` 的全量在 unit/model/m1m4/m2/m3/integration.m5/structural
+全绿，fault 组按当时的旧代码红，powerloss 组在客机退化后未完成——不要把它当作发布级全量证据。
+
 
 

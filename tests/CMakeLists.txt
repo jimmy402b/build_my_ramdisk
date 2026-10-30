@@ -802,6 +802,19 @@ set_tests_properties(integration.m5.process_kills PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- M5 bundle corruption (R-03 part 1) --------------------------------------
+# Four damages to a stopped disk's bundle (manifest truncation and bit-flip, base
+# truncation, journal bit-flip), each of which must be refused explicitly without rewriting
+# the bundle, and each followed by a restore that proves the same disk starts again.
+# Guest-only; part of the opt-in fault group while R-03 is being brought to green.
+add_test(
+    NAME integration.m5.bundle_corruption
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-bundle-corruption.ps1")
+set_tests_properties(integration.m5.bundle_corruption PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
 # ---- M5 P4/P5 power cut (R-02) -----------------------------------------------
 # Two guest halves with a host-driven hard power cut between them; the driver is
 # `tools/m5vm/Test-M5P4P5PowerCut.ps1`.  They are registered so the harness can run each

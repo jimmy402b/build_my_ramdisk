@@ -189,6 +189,9 @@ foreach ($t in $allTests) {
     if ($t.name -eq 'integration.m5.process_kills' -and -not $wantFaultMatrix) {
         continue
     }
+    if ($t.name -eq 'integration.m5.bundle_corruption' -and -not $wantFaultMatrix) {
+        continue
+    }
     if ($t.name -match '^integration\.m5\.p4p5_') { continue }
     [void]$selectedTests.Add($t)
 }
@@ -197,6 +200,7 @@ $assign = {
     param([string]$name)
     if ($name -eq 'integration.m5.memory_exhaustion') { return 'memory' }
     if ($name -eq 'integration.m5.process_kills') { return 'fault' }
+    if ($name -eq 'integration.m5.bundle_corruption') { return 'fault' }
     if ($name -match '^unit\.') { return 'unit' }
     if ($name -match '^m4\.' -or $name -match '^m5\.' -or $name -match '^model\.') { return 'model' }
     if ($name -match '^integration\.m1\.' -or $name -match '^integration\.m4\.' -or $name -match '^integration\.shm$') { return 'integration.m1m4' }
@@ -233,12 +237,12 @@ $filters = [ordered]@{
     'structural'     = '^structural\.'
 }
 if ($wantFaultMatrix) {
-    # R-04's process kills assume an empty service, so they get their own guest reset
-    # instead of sharing the integration.m5 group's (whose earlier cases leave profiles).
-    # Off by default while the recovery defect recorded in
+    # R-04's process kills and R-03's bundle damages assume an empty service, so they get
+    # their own guest reset instead of sharing the integration.m5 group's (whose earlier
+    # cases leave profiles).  Off by default while the recovery defect recorded in
     # docs/validation/m5-stab-03c-process-kills.md is open: a known-red case in the default
     # gate would make every run red and train people to ignore it.
-    $filters['fault'] = '^integration\.m5\.process_kills$'
+    $filters['fault'] = '^integration\.m5\.(process_kills|bundle_corruption)$'
 }
 if ($wantMemoryExhaustion) {
     # R-01's one-command exhaustion experiment.  Its own group, so it gets a fresh guest

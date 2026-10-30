@@ -91,6 +91,33 @@ function Get-DiskLine([string]$letter) {
         Select-Object -First 1)
 }
 
+# A letter that is free *and* not the one a stopped profile still names as its mount target.
+# Two profiles may not share a letter in this test, because `disk list` would otherwise be
+# ambiguous for every helper that looks a disk up by its mount.
+function Select-OtherFreeLetter([string]$exclude) {
+    if (-not ([System.Management.Automation.PSTypeName]'Myrd.DosDeviceKill').Type) {
+        Add-Type -Namespace Myrd -Name DosDeviceKill -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+public static extern int QueryDosDevice(string name, System.Text.StringBuilder target, int max);
+'@
+    }
+    $occupied = @()
+    foreach ($volume in (Get-CimInstance -ClassName Win32_Volume -ErrorAction Stop)) {
+        if ($volume.DriveLetter) { $occupied += $volume.DriveLetter.ToUpper() }
+    }
+    foreach ($disk in (Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop)) {
+        if ($disk.DeviceID) { $occupied += $disk.DeviceID.ToUpper() }
+    }
+    foreach ($letter in @('U:', 'V:', 'W:', 'X:', 'Y:', 'Z:', 'T:')) {
+        if ($letter -eq $exclude) { continue }
+        if ($occupied -contains $letter) { continue }
+        $buffer = New-Object System.Text.StringBuilder 512
+        if ([Myrd.DosDeviceKill]::QueryDosDevice($letter, $buffer, 512) -ne 0) { continue }
+        return $letter
+    }
+    return $null
+}
+
 function Get-Field([string]$line, [string]$name) {
     if ($null -eq $line) { return $null }
     $match = [regex]::Match($line, $name + '=([^\s]+)')
@@ -116,6 +143,10 @@ function Stop-ServiceProcess {
         Stop-Process -Id $serviceProcess.Id -Force -ErrorAction SilentlyContinue
     }
     $serviceProcess = $null
+    # Disarm before the next service starts.  The pause checks the arm file at the moment a
+    # commit lands, not at process start, so removing it is what keeps the *recovery*
+    # commits from pausing in the window this test is trying to measure.
+    Remove-Item -LiteralPath $arm -Force -ErrorAction SilentlyContinue
     Wait-Helper 2
 }
 
@@ -295,15 +326,63 @@ try {
     Write-Reading 'a.data_intact' 'yes'
 
     # ------------------------------------------------------------------
-    # B. kill the service inside P4
+    # B. kill the service inside P4, on a fresh disk
     # ------------------------------------------------------------------
-    Write-Step 'B: kill the service inside the P4 window'
+    # **A fresh disk, deliberately.**  Part A leaves a volume that was recovered from an
+    # indeterminate commit, and re-using it made this half hang before its checkpoint was
+    # even sent (measured: the capture stopped after the section banner and the service log
+    # never saw a `disk.checkpoint`).  The kill being measured is still a kill of the same
+    # service process; what changes is that the volume under it has no recovery history.
+    Write-Step 'B: stop the first disk'
+    $stopA = Invoke-GuestCli @('disk', 'stop', $profileId)
+    Write-Reading 'b.part_a_stop_exit' ([string]$stopA.exit)
+    if ($stopA.exit -ne 0) { Fail "could not stop the part-A disk: $($stopA.output)" }
+    $stopAId = Get-UuidFromText $stopA.output
+    if ($null -ne $stopAId) {
+        $stopAState = Wait-ForTerminalOrFail $stopAId 300 'the part-A stop'
+        Write-Reading 'b.part_a_stop_state' $stopAState
+        if ($stopAState -ne 'succeeded') { Fail "the part-A stop ended $stopAState" }
+    }
+    # **Deliberately not forgotten.**  A stopped profile does not block a new create (the
+    # single-disk guard is about disks that are *up*), and a profile whose last commit is
+    # indeterminate may refuse `forget` by design -- measured: `disk.forget` answered
+    # `0x5605 state_rejected` right after the recovery.  The part-B disk is a separate
+    # profile with a separate bundle, so leaving the first one registered is honest.
+
+    $mountB = Select-OtherFreeLetter $mount
+    if ($null -eq $mountB) { Fail 'no free drive letter for the part-B disk' }
+    $mount = $mountB
+    Write-Reading 'b.mount' $mountB
+    $profileBName = $profileName + '-b'
+    $bundleB = Join-Path $workRoot 'bundle-b'
+
+    Write-Step "B: create a 64 MiB disk at $mountB"
+    $createB = Invoke-GuestCli @('disk', 'create', '--name', $profileBName,
+        '--bundle', $bundleB, '--size', '64MiB', '--mount', $mountB,
+        '--checkpoint-interval', '30m')
+    if ($createB.exit -ne 0) { Fail "the part-B create failed: $($createB.output)" }
+    $createBId = Get-UuidFromText $createB.output
+    if ($null -eq $createBId) { Fail 'the part-B create carried no operation id' }
+    if ((Wait-ForTerminalOrFail $createBId 300 'the part-B create') -ne 'succeeded') {
+        Fail 'the part-B create did not succeed'
+    }
+    $profileBLine = Get-DiskLine $mountB
+    if ($null -eq $profileBLine) { Fail "disk list did not report $mountB" }
+    $profileBId = Get-UuidFromText $profileBLine
+    Write-Reading 'b.profile_id' $profileBId
+
+    Write-Step 'B: write and flush the marker, then start the checkpoint'
+    # Re-arm: `Stop-ServiceProcess` disarmed the pause for the recovery in part A, and this
+    # is a fresh window rather than a continuation of that one.
+    Set-Content -LiteralPath $arm -Value 'armed' -Encoding ascii
     $payloadB = 'committed before the service kill ' + [guid]::NewGuid().ToString('N')
-    [System.IO.File]::WriteAllText($filePath, $payloadB, [System.Text.Encoding]::UTF8)
-    $writeStream = [System.IO.File]::Open($filePath, 'Open', 'ReadWrite', 'Read')
+    $filePathB = Join-Path ($mountB + '\') 'p4-marker-b.txt'
+    [System.IO.File]::WriteAllText($filePathB, $payloadB, [System.Text.Encoding]::UTF8)
+    $writeStream = [System.IO.File]::Open($filePathB, 'Open', 'ReadWrite', 'Read')
     try { $writeStream.Flush($true) } finally { $writeStream.Dispose() }
+    Write-Step 'B: flush done; arming the P4 window and sending the checkpoint'
     Clear-PauseMarker
-    $checkpointB = Invoke-GuestCli @('disk', 'checkpoint', $profileId, '--no-wait')
+    $checkpointB = Invoke-GuestCli @('disk', 'checkpoint', $profileBId, '--no-wait')
     if ($checkpointB.exit -ne 0) { Fail "checkpoint B failed to start: $($checkpointB.output)" }
     $checkpointBId = Get-UuidFromText $checkpointB.output
     if ($null -eq $checkpointBId) { Fail 'checkpoint B carried no operation id' }
@@ -325,7 +404,7 @@ try {
     if ($null -eq (Wait-ForService 120)) { Fail 'the service did not come back after being killed' }
     $resolvedB = Wait-ForTerminalOrFail $checkpointBId 300 'the checkpoint after the service restart'
     Write-Reading 'b.operation_state_after_restart' $resolvedB
-    $startB = Invoke-GuestCli @('disk', 'start', $profileId)
+    $startB = Invoke-GuestCli @('disk', 'start', $profileBId)
     Write-Reading 'b.start_exit' ([string]$startB.exit)
     if ($startB.exit -ne 0) { Fail "disk start after the service kill failed: $($startB.output)" }
     $startBId = Get-UuidFromText $startB.output
@@ -336,17 +415,17 @@ try {
     if ($generationAfterB -lt $candidateB) {
         Fail "recovery went below the candidate generation: candidate $candidateB, recovered $generationAfterB"
     }
-    if (-not (Test-Path -LiteralPath $filePath)) { Fail 'the committed file is missing after the service-kill recovery' }
-    if ((Get-Content -LiteralPath $filePath -Raw) -ne $payloadB) { Fail 'the committed file changed across the service-kill recovery' }
+    if (-not (Test-Path -LiteralPath $filePathB)) { Fail 'the committed file is missing after the service-kill recovery' }
+    if ((Get-Content -LiteralPath $filePathB -Raw) -ne $payloadB) { Fail 'the committed file changed across the service-kill recovery' }
     Write-Reading 'b.data_intact' 'yes'
 
-    Write-Step 'cleanup: stop and forget the disk'
-    $stop = Invoke-GuestCli @('disk', 'stop', $profileId)
+    Write-Step 'cleanup: stop and forget the second disk'
+    $stop = Invoke-GuestCli @('disk', 'stop', $profileBId)
     if ($stop.exit -eq 0) {
         $stopId = Get-UuidFromText $stop.output
         if ($null -ne $stopId) { [void](Wait-ForTerminalOrFail $stopId 300 'the cleanup stop') }
     }
-    $forget = Invoke-GuestCli @('disk', 'forget', $profileId, '--confirmation', $profileId)
+    $forget = Invoke-GuestCli @('disk', 'forget', $profileBId, '--confirmation', $profileBId)
     Write-Reading 'cleanup_forget' ([string]$forget.exit)
 
     Write-Host 'PASS integration.m5.process_kills: worker and service killed inside P4, both recovered'
