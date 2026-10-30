@@ -789,6 +789,39 @@ set_tests_properties(integration.m5.memory_exhaustion PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 2400)
 
+# ---- M5 process kills inside the P4 window (R-04) ----------------------------
+# The deterministic half of the fault matrix: the worker pauses after a landed commit (P4)
+# and before the service publishes the epoch (P5), so a worker or service kill lands in the
+# window rather than near it.  Guest-only and serial for the same reason every real-disk
+# case is.
+add_test(
+    NAME integration.m5.process_kills
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-process-kills.ps1")
+set_tests_properties(integration.m5.process_kills PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
+# ---- M5 P4/P5 power cut (R-02) -----------------------------------------------
+# Two guest halves with a host-driven hard power cut between them; the driver is
+# `tools/m5vm/Test-M5P4P5PowerCut.ps1`.  They are registered so the harness can run each
+# half by name, but they are deliberately not part of the default full suite: running them
+# back to back without the cut between would measure nothing.
+add_test(
+    NAME integration.m5.p4p5_prepare
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-p4p5-powercut-prepare.ps1")
+set_tests_properties(integration.m5.p4p5_prepare PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+add_test(
+    NAME integration.m5.p4p5_verify
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-p4p5-powercut-verify.ps1")
+set_tests_properties(integration.m5.p4p5_verify PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
 # ---- M5 worker sweep policy (T1-03) -----------------------------------------
 # The startup sweep's *decisions*, with no job object and no processes in them:
 # which orphans are ours, which may be terminated, and which leftovers may be

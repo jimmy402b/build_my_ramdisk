@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 PASSED（2026-10-30，§3.204）**：超提交上限的 fixed 预算在创建准入被拒（`0x560A`）、`budget_rejections=` 可观测、耗尽实验 = `Invoke-M5FullSuite.ps1 -Only memory` 一条命令（1/1，118 s）。**下一步：R-02 / R-03 / R-04 故障矩阵**（先读 [release-tasklist](superpowers/plans/2026-10-30-m5-release-tasklist.md) §3 的任务说明；R-07 仍必须先于 R-08）。**manifest 现在无效**（产品二进制已改）——R-19 收尾时重新冻结 |
+| **下一件事** | **R-01 PASSED（§3.204）；R-04 BLOCKED（§3.205）**——P4 窗口杀 worker 后，服务不挂死，但重启恢复在 P5 撞 `0x5C02 execution_not_bound`，operation 永远 `running`；R-02 同路径未测、R-04.B/C 未测。**下一步两条线**：① 修恢复路径（P5 无绑定 session 时走 `reconcile_checkpoint` 只读证明，或让恢复 session 在动作链路内可复用；`execute_claimed_operation` 在 P4 后失败必须终态化/标 needs-attention）；② 同时推进 R-03（bundle 损坏/卷满/ACL，独立于该缺陷）。R-07 仍必须先于 R-08。**manifest 仍无效**，R-19 收尾时重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4849,4 +4849,43 @@ adapter → 脚本），不是从零写格式化引擎。
 
 **边界**：物理 RAM 真耗尽按裁定 1 不做、不支持；运行中改页面文件不在范围；`budget_rejections` 是
 per-runtime 计数，重启归零（有意）。
+
+---
+
+### 3.205 2026-10-30：**R-04 BLOCKED —— P4 之后的重启恢复撞 `execution_not_bound`，operation 永久 running**
+
+**结论**：`R-04 / STAB-03` **BLOCKED（产品缺陷）**。证据：`docs/validation/m5-stab-03c-process-kills.md`。
+
+**做出来的东西（保留，下一轮直接用）**
+
+- 产品里的确定性 P4 窗口：`m5_worker_runtime.cpp` 的 `pause_at_p4_for_testing()`，
+  `MYRD_M5_TEST_PAUSE_AT=p4-commit` + `_FILE` / `_SECONDS` / `_ARM`。ARM 文件是必须的——
+  `disk create` 有自己的第一次 checkpoint，服务启动即武装会把 create 冻住（实测 create 在
+  `reconciling` 停满整个暂停）。
+- `tests/e2e/test-m5-process-kills.ps1`（`integration.m5.process_kills`）：A 杀 worker、B 杀服务、
+  在 P4 窗口内；断言 operation settle、`disk list` 延迟、worker 残留、重启后恢复代与数据。
+- R-02 装置：`test-m5-p4p5-powercut-prepare.ps1`、`-verify.ps1`、
+  `tools/m5vm/Test-M5P4P5PowerCut.ps1`（prepare → `vmrun stop hard` → boot → verify，支持
+  `-Cycles N`）。**已写、未跑**。
+- 全量脚本：`-IncludeFaultMatrix`（R-04，opt-in，默认不跑，避免已知红污染门禁）、
+  `-IncludeMemoryExhaustion`（R-01）；`p4p5_*` 永不进默认选择（需要主机断电）。
+
+**读数（R-04.A 前半成立）**：kill 后 `disk list` 14 ms、operation `reconciling`、worker 0、
+`persistence=CommitIndeterminate`；服务日志 `scheduler: execute returned` 立刻出现。
+
+**失败（后半）**：重启后的恢复重新执行 checkpoint，发布 `evidence_recorded` 后调用
+`publish_checkpoint_epoch`，命中 `0x5C02 execution_not_bound`
+（`step=service_worker_control.require_session`，`detail=No runtime is bound to this profile to adopt`）；
+`execute_claimed_operation` 只写 `operation_failed` 日志，**不把 operation 终态化**，于是它永远
+`running`（实测 ≥300 s），每次重启重复同一序列（手动重启复现）。
+
+**根因**：P5 需要“产生 P4 证据的同一个已绑定 session”，而恢复路径临时拉起/采纳的 worker 不在
+绑定表里。**修法方向**：P5 无绑定 session 时走 T1-06 的 `reconcile_checkpoint`（只读 inspection 证明
+candidate）；或让恢复 session 在本次动作链路内可被 P5 复用；并检查 P4 之后失败时 operation 必须
+终态化或 profile 标 needs-attention。
+
+**因此未测**：R-04.B（杀服务）、R-04.C（连续 3 次硬断电）、R-02（P4/P5 定点断电，落在同一恢复路径）。
+**下一步**：先修恢复路径，再把 R-04.A/B/C 与 R-02（`-Cycles 3`）跑成读数；R-03 可以并行做（独立于
+这条路径）。
+
 

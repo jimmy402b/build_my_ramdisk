@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace myrd::m5 {
@@ -31,6 +33,83 @@ void reclaim_trace(const wchar_t* step) {
                             nullptr, nullptr);
     if (converted <= 0) return;
     diagnostic_trace(name);
+}
+
+// **The one deterministic P4 window (R-02 / R-04).**
+//
+// P4 is "the commit landed durably"; P5 is "the service recorded the evidence and published
+// the epoch".  The window between them is where a power cut produces the state the
+// recovery path exists for, and it lasts milliseconds -- polling `operation show` can only
+// find it by luck.  So the worker offers a *repeatable* pause there:
+//
+//   MYRD_M5_TEST_PAUSE_AT=p4-commit     enable the pause
+//   MYRD_M5_TEST_PAUSE_FILE=<path>      write the marker here, then pause
+//   MYRD_M5_TEST_PAUSE_SECONDS=<n>      bounded pause (default 180)
+//   MYRD_M5_TEST_PAUSE_ARM=<path>       optional: pause only while this file exists
+//
+// The ARM file exists because the *create* performs its own first checkpoint: a service
+// that armed the pause at launch would freeze the create itself, which is measured (the
+// create sat in `reconciling` for the whole pause).  With an arm path, the harness arms the
+// window only after the create is done and disarms it again by deleting the file.
+//
+// The marker is written *before* the wait and is the only thing a harness may trust: no
+// marker means the window was not reached, and the harness must say so rather than cut at
+// a guessed moment.  The wait is bounded so a stray environment variable cannot hang a
+// worker forever, and it is a sleep loop rather than a file watch because the experiment
+// ends by killing this process or the machine -- neither of which runs cleanup.
+//
+// It is compiled into the product (the test seams are part of the release build here, like
+// `MYRD_TRACE_FILE`), but it is inert unless a variable that no install sets is present.
+// R-09 audits it as an accepted, admin-only testing seam.
+void pause_at_p4_for_testing(const std::uint64_t generation) {
+    wchar_t mode[32]{};
+    const auto mode_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_AT", mode, 32);
+    if (mode_length == 0 || mode_length >= 32) return;
+    if (std::wstring_view(mode, mode_length) != L"p4-commit") return;
+    wchar_t file[512]{};
+    const auto file_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_FILE", file, 512);
+    if (file_length == 0 || file_length >= 512) return;
+
+    // Optional arming: the create's own first checkpoint must not be paused, so a harness
+    // that needs the window creates this file only after the create has finished.
+    wchar_t arm[512]{};
+    const auto arm_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_ARM", arm, 512);
+    if (arm_length > 0 && arm_length < 512
+        && GetFileAttributesW(arm) == INVALID_FILE_ATTRIBUTES) {
+        return;
+    }
+
+    // The marker is the assertion that the window was reached, so a failure to write it
+    // must mean "do not pause" -- pausing without the evidence would be a cut at a guessed
+    // moment, which is the one thing this seam exists to prevent.
+    const std::string text = "p4-commit generation=" + std::to_string(generation)
+        + " pid=" + std::to_string(GetCurrentProcessId()) + "\n";
+    const HANDLE marker = CreateFileW(file, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (marker == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    static_cast<void>(WriteFile(marker, text.data(),
+                                static_cast<DWORD>(text.size()), &written, nullptr));
+    CloseHandle(marker);
+    diagnostic_trace(("test pause: p4-commit reached generation="
+        + std::to_string(generation)).c_str());
+
+    std::uint32_t seconds = 180;
+    wchar_t raw[16]{};
+    const auto raw_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_SECONDS", raw, 16);
+    if (raw_length > 0 && raw_length < 16) {
+        const auto parsed = wcstoul(raw, nullptr, 10);
+        if (parsed > 0 && parsed <= 3600) seconds = static_cast<std::uint32_t>(parsed);
+    }
+    const ULONGLONG deadline = GetTickCount64()
+        + static_cast<ULONGLONG>(seconds) * 1000ULL;
+    while (GetTickCount64() < deadline) {
+        Sleep(50);
+    }
 }
 
 // Wraps the reclaim's start sequence so each step is recorded before and after it runs.
@@ -846,6 +925,10 @@ Result<WorkerCheckpointCommitReply> DiskWorkerRuntime::commit_checkpoint(
     // defect this replaces.
     reply.disposition = protocol_disposition(result.disposition);
     reply.generation = result.generation;
+    // The P4 window: the commit has landed and the service has not been told yet.  A cut
+    // here is "P4 done, P5 not done", which is exactly what R-02 injects and R-04 kills
+    // the worker/service inside.
+    if (reply.landed()) pause_at_p4_for_testing(reply.generation);
     if (!reply.landed()) {
         // A commit that did not cleanly land must carry the failure that decided
         // it; the service validates its own durable evidence against this

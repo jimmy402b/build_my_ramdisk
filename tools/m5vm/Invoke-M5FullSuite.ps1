@@ -17,6 +17,7 @@
 #   unit / model (m4.*+m5.*) / integration.m1+m4 / integration.m2 / integration.m3 /
 #   integration.m5 non-powerloss / structural / powerloss (three phases)
 #   memory (only with -IncludeMemoryExhaustion: the destructive R-01 experiment)
+#   fault  (only with -IncludeFaultMatrix: R-04's process kills)
 #
 # Environment (same as every other harness entry point):
 #   M5VM_HOST, M5VM_USER, M5VM_KEY, and for powerloss M5VM_VMX, M5VM_PASSWORD.
@@ -35,7 +36,10 @@ param(
     # default gate.  One switch makes it a repeatable step: it runs as its own group with
     # a guest reset before it, and its case count is added to `expected_cases` only when
     # it is selected.
-    [switch]$IncludeMemoryExhaustion
+    [switch]$IncludeMemoryExhaustion,
+    # R-04: the process-kill case.  Opt-in while its recorded recovery defect is open; it
+    # is a real-disk case and is serialised in its own group with a guest reset.
+    [switch]$IncludeFaultMatrix
 )
 
 $ErrorActionPreference = 'Stop'
@@ -169,22 +173,30 @@ foreach ($t in (Get-Content -LiteralPath $stagedTests -Raw | ConvertFrom-Json)) 
 }
 if ($allTests.Count -eq 0) { throw 'the staged tests.json is empty' }
 
-# R-01: the budget-exhaustion case is staged like every other one, and is part of the
-# suite only when the caller asks for it.  Filtering the *selection* here (rather than
-# skipping it later) keeps `expected_cases` honest for both modes: 160 by default, 161
-# with `-IncludeMemoryExhaustion`.
+# R-01/R-04: cases that are staged like every other one but are part of the suite only when
+# the caller asks for them.  Filtering the *selection* here (rather than skipping them
+# later) keeps `expected_cases` honest: 160 by default, 161 with `-IncludeMemoryExhaustion`
+# or `-IncludeFaultMatrix`.  The `p4p5_*` pair is never selected here at all: it needs the
+# host to cut the power between its two halves and is driven by
+# `tools/m5vm/Test-M5P4P5PowerCut.ps1`.
 $wantMemoryExhaustion = $IncludeMemoryExhaustion -or ($Only -contains 'memory')
+$wantFaultMatrix = $IncludeFaultMatrix -or ($Only -contains 'fault')
 $selectedTests = New-Object System.Collections.ArrayList
 foreach ($t in $allTests) {
     if ($t.name -eq 'integration.m5.memory_exhaustion' -and -not $wantMemoryExhaustion) {
         continue
     }
+    if ($t.name -eq 'integration.m5.process_kills' -and -not $wantFaultMatrix) {
+        continue
+    }
+    if ($t.name -match '^integration\.m5\.p4p5_') { continue }
     [void]$selectedTests.Add($t)
 }
 
 $assign = {
     param([string]$name)
     if ($name -eq 'integration.m5.memory_exhaustion') { return 'memory' }
+    if ($name -eq 'integration.m5.process_kills') { return 'fault' }
     if ($name -match '^unit\.') { return 'unit' }
     if ($name -match '^m4\.' -or $name -match '^m5\.' -or $name -match '^model\.') { return 'model' }
     if ($name -match '^integration\.m1\.' -or $name -match '^integration\.m4\.' -or $name -match '^integration\.shm$') { return 'integration.m1m4' }
@@ -217,8 +229,16 @@ $filters = [ordered]@{
     'integration.m1m4' = '^integration\.(m1|m4)\.|^integration\.shm$'
     'integration.m2' = '^integration\.m2\.'
     'integration.m3' = '^integration\.m3\.'
-    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion)'
+    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion|process_kills|p4p5_)'
     'structural'     = '^structural\.'
+}
+if ($wantFaultMatrix) {
+    # R-04's process kills assume an empty service, so they get their own guest reset
+    # instead of sharing the integration.m5 group's (whose earlier cases leave profiles).
+    # Off by default while the recovery defect recorded in
+    # docs/validation/m5-stab-03c-process-kills.md is open: a known-red case in the default
+    # gate would make every run red and train people to ignore it.
+    $filters['fault'] = '^integration\.m5\.process_kills$'
 }
 if ($wantMemoryExhaustion) {
     # R-01's one-command exhaustion experiment.  Its own group, so it gets a fresh guest
