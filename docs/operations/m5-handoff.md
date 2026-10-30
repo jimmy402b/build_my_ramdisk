@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 PASSED（§3.204）；R-04.A PASSED（§3.206）**——P4 窗口杀 worker 后重启恢复已修好（inspection 证明直发 P5），operation `succeeded`、generation=候选、数据完整。**未测且有具体卡点**：R-04.B 卡在“恢复后 `disk stop` 终态 failed”（先读 `kind=7` 拿 code/step）与“kill 类实验后客机必须硬重启”；R-04.C/R-02/R-03 的装置已写未跑。**下一步**：① 查并修 stop-after-recovery；② 给 kill 类用例做“每组前硬重启”的驱动，跑 B/C 与 R-02；③ 跑 R-03 的 bundle 损坏矩阵。R-07 仍必须先于 R-08。**manifest 仍无效**，R-19 收尾时重新冻结 |
+| **下一件事** | **R-01 / R-04.A / R-04.C / R-07 PASSED（§3.204、§3.206–§3.207）**。**未完成且有具体卡点**：R-04.B 卡在“恢复后 `disk stop` 终态 failed”（先读 `kind=7` 拿 code/step）与“kill 类实验后客机必须硬重启”；R-02/R-03 的装置已写未跑；R-05/R-08/R-09/R-10…R-19 未开始。**下一步**：① 查并修 stop-after-recovery；② 做“每组前硬重启”的 kill 驱动，跑 R-04.B 与 R-02；③ 跑 R-03 的 bundle 损坏矩阵；④ R-05 支持矩阵、R-08 升级/重装（R-07 已完成，前置满足）、R-10 发布工程。**manifest 仍无效**，R-19 收尾时重新冻结 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4932,6 +4932,46 @@ candidate）；或让恢复 session 在本次动作链路内可被 P5 复用；�
 **全量状态**：默认仍是 160 例（`-IncludeFaultMatrix` 才加 fault 组；`p4p5_*` 永不进默认）。本轮没有
 重跑两次全量；上一次带 `-IncludeFaultMatrix` 的全量在 unit/model/m1m4/m2/m3/integration.m5/structural
 全绿，fault 组按当时的旧代码红，powerloss 组在客机退化后未完成——不要把它当作发布级全量证据。
+
+---
+
+### 3.207 2026-10-30：**R-04.C PASSED（3 次连续硬断电）+ R-07 PASSED（版本/changelog）**
+
+**R-04.C（连续 3 次硬断电）PASSED。** `tools/m5vm/Test-M5RepeatedPowerLoss.ps1 -SkipStage
+-Cycles 3` → **exit 0、1037.7 s**。每轮 `Reset-M5Guest` → `Test-M5PowerLoss.ps1`（prepare →
+`vmrun stop … hard` → 启动 → verify）：
+
+| 轮 | prepare | 断电 | verify | verify 后 |
+|---|---|---|---|---|
+| 1 | 1/1 | hard | 1/1 | workers=0 services=0 disks=1 |
+| 2 | 1/1 | hard（客机首次未答 SSH，按驱动约定再 power-cycle） | 1/1 | 同上 |
+| 3 | 1/1 | hard | 1/1 | 同上 |
+
+每轮判定来自 `PASS integration.m5.powerloss`（盘由 SCM 自动拉起、恢复到最后一提交代、marker 一致）。
+`disks=1` 是宿主 NVMe。驱动的 “committed generation” 汇总字段打印 `?`（正则没看嵌套输出），不影响
+判定——generation 由 verify 内部断言。
+
+**R-07（语义化版本 + `--version` + changelog）PASSED。** `myrd-cli` / `myrd-service` / `myrd-gui`
+都支持 `--version`，统一打印 `myrd::product::kProductVersion`；客机安装用例
+（`integration.m5.install_uninstall`，1/1，11 s）读数：
+
+```text
+--- the service, the CLI and the GUI report the same version (R-07)
+  cli: 1.0.0
+  service: 1.0.0
+  gui: 1.0.0
+  consistent version: 1.0.0 (matches product_version.h)
+```
+
+实现在 `service_main.cpp` / `gui_main.cpp`（GUI 的 `--version` 在 `--self-check` 之前，不需要桌面）；
+一致性检查加在安装用例里（只有那里拿得到“已安装的三个二进制”），不改变全量 160 例的构成。
+`CHANGELOG.md` 已建立：1.0.0 条目 + 提交映射（单盘准入 `2a1f125`、预算 `fcd7da1`/`1dbc476`、
+全量套件 `46308ec`…`3a13308`、裁定 `ae915d0`、R-01 `c8b3d63`、P4 装置 `b12b449`、P5 修复 `6393a89`）。
+证据：`docs/validation/m5-stab-08-version.md`、`CHANGELOG.md`。
+
+**R-04 现在只差 B**：A 与 C 已 PASSED；B 仍卡在“恢复后 `disk stop` 终态 failed”（需读 `kind=7`）
+与“kill 实验后客机必须硬重启”。R-02/R-03 未跑。
+
 
 
 

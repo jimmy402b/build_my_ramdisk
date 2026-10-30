@@ -18,6 +18,7 @@
 #include "src/control/command.h"
 #include "src/gui/gui_client.h"
 #include "src/gui/gui_view_model.h"
+#include "src/product/product_version.h"
 
 #include <chrono>
 #include <cstdio>
@@ -444,6 +445,14 @@ int run_window_check() {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     g_instance = instance;
+    // **`--version` before anything else (R-07).**  It must work without a desktop, so it is
+    // answered before the window class is registered: the install test compares this output with
+    // the CLI's and the service's, and all three print the same `kProductVersion`.
+    if (std::wcsstr(GetCommandLineW(), L"--version") != nullptr) {
+        std::printf("myrd-gui %s\n", myrd::product::kProductVersion);
+        std::fflush(stdout);
+        return 0;
+    }
     // A GUI process started with `--self-check` prints and exits; everything else is the window.
     if (std::wcsstr(GetCommandLineW(), L"--self-check") != nullptr) {
         return run_self_check();

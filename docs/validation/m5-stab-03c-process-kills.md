@@ -148,3 +148,23 @@ tools/m5vm/Test-M5P4P5PowerCut.ps1 -SkipStage -Cycles 3
 ```
 
 失败时读 `C:\m5\last-service.log` 的 `kind=7` 行与 `C:\m5\process-kill-*\trace-a2.log`。
+
+## 6. R-04.C：连续 3 次硬断电 —— **PASSED**
+
+`tools/m5vm/Test-M5RepeatedPowerLoss.ps1 -SkipStage -Cycles 3` → **exit 0，1037.7 s**。每轮先
+`Reset-M5Guest`，再跑 `Test-M5PowerLoss.ps1`（prepare → `vmrun stop … hard` → 启动 → verify）：
+
+| 轮 | prepare | 断电 | verify | verify 后的残留 |
+|---|---|---|---|---|
+| 1 | **1/1 passed** | hard | **1/1 passed** | `workers=0 services=0 disks=1` |
+| 2 | **1/1 passed** | hard（客机第一次没答 SSH，按驱动约定再 power-cycle 一次） | **1/1 passed** | `workers=0 services=0 disks=1` |
+| 3 | **1/1 passed** | hard | **1/1 passed** | `workers=0 services=0 disks=1` |
+
+每轮的判定来自 `PASS integration.m5.powerloss: the disk came back by itself after a hard power
+cut`，其内部断言是：盘由 SCM 自动拉起、恢复到最后一提交代、committed marker 内容一致。
+`disks=1` 是宿主 NVMe；AIM 盘与 worker 都没有残留。三轮 `PASS` 说明“连续 3 次”没有累积残留。
+
+**驱动的已知瑕疵（不影响判定）**：汇总表里的 `committed generation` 打印 `?`——正则只看了
+`Test-M5PowerLoss.ps1` 的顶层输出，而 “committed generation: N” 在嵌套的 prepare 记录里。
+generation 本身由 powerloss_verify 断言，下一轮把正则修到嵌套输出即可。
+

@@ -1,4 +1,4 @@
-﻿# T4-01: install, run, and uninstall, on the guest.
+# T4-01: install, run, and uninstall, on the guest.
 #
 # What this proves is the shipped path rather than the test harness's own `sc create`: the installer
 # copies a release, checks the driver instead of installing it, gives the durable directories an
@@ -93,6 +93,55 @@ try {
     $listing = & $cli disk list 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { Fail "the installed client cannot list: $listing" }
     Write-Host "  $($listing.Trim())"
+
+    # ---- R-07: one version, three binaries -------------------------------------------------
+    # The version check rides on the install case because that is where the *shipped* binaries
+    # exist: the service, the CLI and the GUI all print `product::kProductVersion`, and the
+    # header they print is compared too, so "they agree" cannot be true merely because all three
+    # were built from the same stale copy.
+    Step 'the service, the CLI and the GUI report the same version (R-07)'
+    $versionPattern = 'myrd-[a-z]+ (\d+\.\d+\.\d+)'
+    $reported = @{}
+    foreach ($piece in @(
+            @{ name = 'cli'; file = 'myrd-cli.exe' },
+            @{ name = 'service'; file = 'myrd-service.exe' },
+            @{ name = 'gui'; file = 'myrd-gui.exe' })) {
+        $exe = Join-Path $installDir $piece.file
+        # **Start-Process for all three.**  The GUI is a Windows-subsystem binary, so PowerShell
+        # cannot capture its stdout through `&`; redirecting to a file works for every subsystem,
+        # which keeps the three measurements identical instead of special-casing one.
+        $outFile = Join-Path $env:TEMP ("m5-version-" + $piece.name + ".txt")
+        $errFile = "$outFile.err"
+        $process = Start-Process -FilePath $exe -ArgumentList '--version' `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+            -NoNewWindow -Wait -PassThru
+        $output = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue
+        if ($null -eq $output) { $output = '' }
+        if ($process.ExitCode -ne 0) {
+            Fail ("$($piece.name) --version exited $($process.ExitCode): " +
+                (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue))
+        }
+        $match = [regex]::Match($output, $versionPattern)
+        if (-not $match.Success) {
+            Fail "$($piece.name) --version printed no version (exit $($process.ExitCode)): $output"
+        }
+        $reported[$piece.name] = $match.Groups[1].Value
+        Write-Host "  $($piece.name): $($reported[$piece.name])"
+    }
+    $distinct = @($reported.Values | Sort-Object -Unique)
+    if ($distinct.Count -ne 1) {
+        Fail ("the shipped binaries disagree on the version: " +
+            (($reported.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '))
+    }
+    $headerPath = Join-Path $repo 'src/product/product_version.h'
+    $header = Get-Content -LiteralPath $headerPath -Raw
+    $expected = [regex]::Match($header, 'kProductVersion = "([^"]+)"')
+    if (-not $expected.Success) { Fail "could not read kProductVersion from $headerPath" }
+    if ($distinct[0] -ne $expected.Groups[1].Value) {
+        Fail ("the binaries report $($distinct[0]) but the source says " +
+            "$($expected.Groups[1].Value)")
+    }
+    Write-Host ("  consistent version: {0} (matches product_version.h)" -f $distinct[0])
 
     Step 'uninstall removes the service and the files, and keeps the record'
     $uninstall = Invoke-Script -Path $uninstallScript -Arguments @()

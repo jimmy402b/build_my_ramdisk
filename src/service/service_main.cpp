@@ -13,6 +13,7 @@
 // calls, so a service that works in one mode works in the other.
 
 #include "src/common/result.h"
+#include "src/product/product_version.h"
 #include "src/service/service_host.h"
 #include "src/service/service_runtime.h"
 #include "src/service/service_system.h"
@@ -378,6 +379,15 @@ int run_console_entry() {
 
 int wmain(const int argc, wchar_t** argv) {
     for (int index = 1; index < argc; ++index) {
+        if (std::wcscmp(argv[index], L"--version") == 0) {
+            // **One version, one constant (R-07).**  The CLI, the GUI and this binary all print
+            // `myrd::product::kProductVersion`, so "the shipped pieces agree" is a property of the
+            // build rather than a fact someone has to keep re-checking by hand.  The install test
+            // compares the three outputs and the header they come from.
+            std::printf("myrd-service %s\n", myrd::product::kProductVersion);
+            std::fflush(stdout);
+            return 0;
+        }
         if (std::wcscmp(argv[index], L"--console") == 0) {
             return run_console_entry();
         }
