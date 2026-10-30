@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **H1 完成**（STAB-01/02/04 全 PASSED，§3.199/§3.200/§3.202）。剩余工作见 **[release-tasklist](superpowers/plans/2026-10-30-m5-release-tasklist.md)**：R-01…R-19，四个里程碑（M1 可重复故障结论 → M2 可交付 → M3 可审计 → M4 可承诺），约 37–58 人日。**第一条：R-01**（关闭 H1 技术债——物理 RAM 耗尽决策/读数、预算拒绝可观测、耗尽实验入一条命令）。6 个待拍板决策见该文档 §7 |
+| **下一件事** | **H1 完成**（STAB-01/02/04 全 PASSED），六项范围裁定已定（§3.203）。剩余工作见 **[release-tasklist](superpowers/plans/2026-10-30-m5-release-tasklist.md)**：R-01…R-19，四个里程碑（M1 可重复故障结论 → M2 可交付 → M3 可审计 → M4 可承诺），约 38–60 人日。**第一条：R-01**（按决策 1：fixed 预算 > 机器提交上限在创建时拒绝；预算拒绝可观测；耗尽实验入一条命令）。新会话先 `--clean-first` 重建（§3.203 末尾） |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4770,3 +4770,30 @@ structural 3[skip 2] / powerloss prepare 1 + verify 1），全部 failed=0
 
 **H1 完成**：STAB-01 / STAB-02 / STAB-04 全部 PASSED。下一步进入 **H2**（STAB-03 故障矩阵、
 STAB-05 平台/驱动、STAB-06 升级/回滚、STAB-07 安全审计、STAB-08 发布工程）。
+
+### 3.203 2026-10-30：**六项范围裁定落盘（只改文档，未改产品代码）**
+
+用户在 2026-10-30 对发布前六个待决点作出裁定，已写进
+`docs/superpowers/plans/2026-10-30-m5-release-tasklist.md` §0.1 / §7，tasklist 的 STAB 行同步：
+
+| # | 裁定 | 对任务的影响 |
+|---|---|---|
+| 1 | **不允许** fixed 预算超过机器提交上限 | R-01 改为“创建时拒绝 + 可观测 + 实验入套件”；不做物理 RAM 耗尽实验 |
+| 2 | **没有签名证书** | R-10 明确“未签名发布”，保留 SHA-256/可重复构建，发布说明写 SmartScreen 后果 |
+| 3 | 卷标**直接不支持** | R-14 缩小为“入口拒绝并说明 + 文档 + 死代码隔离”，不做换路实现 |
+| 4 | **只支持 Win11** | R-06 取消第二平台测试；R-18 移出 Win10；矩阵把 Win10/Server 标“不支持” |
+| 5 | 回滚：**代码里没有** ⇒ 只支持重装 | R-08 用“重装”替代“回滚”，安装器/文档统一写“不支持回滚” |
+| 6 | 簇大小**做** | R-17 拆成 R-17a（跨层实现，create-only）+ R-17b（测试路径） |
+
+**裁定 5 的代码依据**：全树 `rollback|downgrade|previous version` 只命中事务性回滚
+（`release_commit_reservation(rollback)`、stop 失败回滚、`rollback_metadata_preimage`）；
+profile/bundle 没有格式版本字段，安装器也没有版本回退动作。所以可承诺的恢复路径只有“重装”。
+
+**裁定 6 的代码依据**：旧文档“全树无格式化代码”已过时——`provision_volume.ps1` 在 create 的
+`provision_new` 路径调用 `Format-Volume -FileSystem NTFS`。簇大小可通过 `Format-Volume -ClusterSize`
+在 create 时生效，属于跨层加字段（CLI → command/IPC → intent/durable → profile → worker launch →
+adapter → 脚本），不是从零写格式化引擎。
+
+**本轮状态**：只改了文档；`src/` 与 `tests/` 已恢复到 `d8c2a87` 的内容。**下一次会话先做
+`cmake --build out/build/msvc --config Release --clean-first`**——本轮收尾时有一次 clean build 被中止，
+`out/build` 里可能留着与源码不一致的中间产物。第一条任务：**R-01**。
