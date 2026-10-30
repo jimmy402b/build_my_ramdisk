@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **H1 完成**：STAB-01（§3.199）、STAB-02（§3.200）、STAB-04（§3.202：一条命令连续两次 160/160、158 passed / 2 skipped / 0 failed）全部 **PASSED**；证据集已按本轮二进制重新冻结（4 binaries + 9 readings、`frozen_at 2026-10-29T18:23:10Z`、validator `accepted`）。下一步进入 **H2**：STAB-03 故障矩阵、STAB-05 平台/驱动、STAB-06 升级/回滚、STAB-07 安全审计、STAB-08 发布工程 |
+| **下一件事** | **H1 完成**（STAB-01/02/04 全 PASSED，§3.199/§3.200/§3.202）。剩余工作见 **[release-tasklist](superpowers/plans/2026-10-30-m5-release-tasklist.md)**：R-01…R-19，四个里程碑（M1 可重复故障结论 → M2 可交付 → M3 可审计 → M4 可承诺），约 37–58 人日。**第一条：R-01**（关闭 H1 技术债——物理 RAM 耗尽决策/读数、预算拒绝可观测、耗尽实验入一条命令）。6 个待拍板决策见该文档 §7 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
