@@ -108,6 +108,27 @@ function Wait-ForSsh([int]$seconds) {
     return $false
 }
 
+# **ssh answering is not scp answering.**  Measured twice: right after a post-cut boot
+# `ssh echo up` succeeds while the very next `scp` closes the connection, which killed the
+# verify submission.  This probes the actual channel the harness uses before it is needed.
+function Wait-ForScp([int]$seconds) {
+    $probe = Join-Path 'C:\tmp\m5-vm' 'scp-probe.txt'
+    Set-Content -LiteralPath $probe -Value 'probe' -Encoding ascii
+    $until = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $until) {
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & scp.exe -q @sshArgs $probe "${sshTarget}:$remoteRoot/scp-probe.txt" 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $previous
+        }
+        if ($LASTEXITCODE -eq 0) { return $true }
+        Start-Sleep -Seconds 5
+    }
+    return $false
+}
+
 # The guest reset is the same request the full-suite runner uses: the agent owns service
 # control because it needs an elevated, non-network logon.
 function Reset-Guest {
@@ -118,12 +139,33 @@ $ErrorActionPreference = 'Continue'
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $local -Encoding utf8
-    & scp.exe -q @sshArgs $local "${sshTarget}:$remoteRoot/$id.request.ps1"
-    if ($LASTEXITCODE -ne 0) { throw 'could not copy the reset request' }
-    $pending = Join-Path 'C:\tmp\m5-vm' "$id.pending.id"
-    Set-Content -LiteralPath $pending -Value $id -Encoding ascii -NoNewline
-    & scp.exe -q @sshArgs $pending "${sshTarget}:$remoteRoot/pending.id"
-    if ($LASTEXITCODE -ne 0) { throw 'could not copy pending.id' }
+    # **`2>&1` is not enough to keep a native-command failure from throwing.**  With
+    # `$ErrorActionPreference = 'Stop'`, scp writing to stderr raises NativeCommandError and
+    # the retry below never runs (measured: experiment 3 aborted before its first phase).
+    # The calls run under `Continue`, and `$LASTEXITCODE` decides.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & scp.exe -q @sshArgs $local "${sshTarget}:$remoteRoot/$id.request.ps1"
+        if ($LASTEXITCODE -ne 0) {
+            # One retry: a freshly booted guest can close the first scp before its share is up.
+            Start-Sleep -Seconds 10
+            & scp.exe -q @sshArgs $local "${sshTarget}:$remoteRoot/$id.request.ps1"
+        }
+        $requestCopied = $LASTEXITCODE -eq 0
+        $pending = Join-Path 'C:\tmp\m5-vm' "$id.pending.id"
+        Set-Content -LiteralPath $pending -Value $id -Encoding ascii -NoNewline
+        if ($requestCopied) {
+            & scp.exe -q @sshArgs $pending "${sshTarget}:$remoteRoot/pending.id"
+            $pendingCopied = $LASTEXITCODE -eq 0
+        } else {
+            $pendingCopied = $false
+        }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if (-not $requestCopied) { throw 'could not copy the reset request' }
+    if (-not $pendingCopied) { throw 'could not copy pending.id' }
     Invoke-Remote "schtasks /run /tn 'MyRamDisk-M5-Agent' | Out-Null; 'triggered'" | Out-Null
     $deadline = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $deadline) {
@@ -160,6 +202,20 @@ if (-not $SkipStage) {
 $results = New-Object System.Collections.ArrayList
 for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
     Write-Host "`n############ cycle $cycle of $Cycles"
+    # **A real boot before every cycle, not just a reset.**  After a hard cut the guest's
+    # storage stack can be left degraded (lessons 5.2): ssh and the guest agent start
+    # timing out, and the reset request then never completes.  Measured on the first
+    # three-cycle attempt: cycle 1 was fine and the next reset never answered.  Every cycle
+    # is an independent experiment, and an independent experiment starts from a boot.
+    & $vmrun -T ws -vp $VmPassword stop $Vmx hard | Out-Null
+    Start-Sleep -Seconds 8
+    & $vmrun -T ws -vp $VmPassword start $Vmx nogui | Out-Null
+    if (-not (Wait-ForSsh $BootTimeoutSeconds)) {
+        throw "cycle ${cycle}: the guest did not answer ssh after the pre-cycle boot"
+    }
+    # ssh answering is not the same as the agent's share being ready: measured as
+    # "scp: Connection closed" when the reset request was copied immediately after the boot.
+    Start-Sleep -Seconds 20
     Reset-Guest
 
     $prepareText = Invoke-Phase -What "prepare($cycle)" -Arguments @{
@@ -188,7 +244,11 @@ for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
             throw "cycle ${cycle}: the guest did not answer ssh after a second boot"
         }
     }
-    Start-Sleep -Seconds 20
+    Write-Host '=== waiting for the scp channel the verify phase needs'
+    if (-not (Wait-ForScp 180)) {
+        throw "cycle ${cycle}: scp never became available after the cut"
+    }
+    Start-Sleep -Seconds 5
 
     $verifyText = Invoke-Phase -What "verify($cycle)" -Arguments @{
         Run = $true

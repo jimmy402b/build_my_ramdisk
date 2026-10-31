@@ -36,9 +36,13 @@
 | 必需驱动 | `phdskmnt`（AIM），服务名 `phdskmnt`，必须 Running |
 | 实测/冻结版本 | **1.2.28.93**（`phdskmnt.sys` FileVersion，M0 冻结证据 `docs/validation/m0-environment.md`） |
 | 版本下限 | **1.2.28.93**；低于此版本不支持 |
-| 缺失/未运行 | **R-06 未完成**：产品目前没有启动前的驱动预检，缺驱动时的报错来自 AIM 调用失败而非“驱动缺失”。在 R-06 落地前，这一行按“未实现”读 |
+| 缺失/未运行 | **安装器明确拒绝**：服务不存在 → “the AIM driver (phdskmnt) is not installed …”；存在但未运行 → “installed (x.y.z) but not running. Start it with `sc start phdskmnt`”。服务本身没有启动前预检——**安装器是边界**（R-06） |
+| 低于下限 | **安装器明确拒绝**：“the AIM driver is phdskmnt $parsed, and this release requires 1.2.28.93 or newer” |
 
 **纪律**：本仓库不安装/替换/升级/卸载 `phdskmnt`，也不分发 AIM 二进制（`AGENTS.md` §4）。
+**未复现的分支**：驱动缺失/过旧/未运行这三个拒绝分支在本客机上无法复现（不允许卸载或降级驱动），
+它们的判定逻辑在 `tools/install/Install-MyRamDisk.ps1` 里是三个显式条件；正路径（1.2.28.93 通过）
+由每次安装读数证明。
 
 ## 4. 卷与磁盘
 

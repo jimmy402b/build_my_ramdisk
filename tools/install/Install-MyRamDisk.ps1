@@ -1,4 +1,4 @@
-﻿# Installs MyRamDisk: binaries, the service, its durable directories, and the one prerequisite it
+# Installs MyRamDisk: binaries, the service, its durable directories, and the one prerequisite it
 # refuses to install for you.
 #
 # **`phdskmnt` is checked, never installed.**  It is the AIM driver that presents the volumes, it
@@ -45,7 +45,31 @@ if ($driver -match '1060') {
     Fail ("the AIM driver (phdskmnt) is not installed.  It is a signed storage driver and this " +
         "installer will not install it for you; see the M5 usage document for the driver package.")
 }
-Write-Host "  phdskmnt present"
+# **Present is not enough, and running is not enough (R-06).**  The product was built and
+# frozen against phdskmnt 1.2.28.93 (the M0 evidence), so an older signed driver is refused
+# by version rather than failing later inside an AIM call.  The floor lives here, next to
+# the presence check, because this is the only place that can stop the install cleanly.
+$driverFloor = [version]'1.2.28.93'
+$driverFile = Join-Path $env:SystemRoot 'System32\drivers\phdskmnt.sys'
+if (-not (Test-Path -LiteralPath $driverFile)) {
+    Fail ("the AIM driver service exists but $driverFile is missing; the driver installation " +
+        "is incomplete and will be refused.")
+}
+$driverVersion = (Get-Item -LiteralPath $driverFile).VersionInfo.FileVersion
+$parsed = $null
+if (-not [version]::TryParse(($driverVersion -replace '[^0-9.]', ''), [ref]$parsed)) {
+    Fail ("the AIM driver version could not be read (FileVersion='$driverVersion'); " +
+        "this release requires phdskmnt $driverFloor or newer.")
+}
+if ($parsed -lt $driverFloor) {
+    Fail ("the AIM driver is phdskmnt $parsed, and this release requires $driverFloor or newer. " +
+        "Update the driver package before installing; this installer will not replace it.")
+}
+if ($driver -notmatch 'RUNNING') {
+    Fail ("the AIM driver (phdskmnt) is installed ($parsed) but not running. Start it with " +
+        "`sc start phdskmnt` and run this installer again.")
+}
+Write-Host "  phdskmnt $parsed present and running (floor $driverFloor)"
 
 if ($WhatIfOnly) {
     Write-Host "WOULD INSTALL from $source to $InstallDirectory"

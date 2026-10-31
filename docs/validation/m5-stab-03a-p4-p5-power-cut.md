@@ -1,4 +1,4 @@
-# STAB-03a / R-02：P4/P5 定点断电 —— **3 个 cycle 全部落到合法代（进行中，读数追加中）**
+# STAB-03a / R-02：P4/P5 定点断电 —— **3 次独立断电全部落到合法代（PASSED）**
 
 **结论（先说口径）**：R-02 的验收不是“每次都必须恢复到候选代”，而是“**每次都必须落到一个合法代**
 （候选代或最后已提交代），且事后盘能启动、能读回**”。断电发生在 P4 之后、P5 之前，恢复时：
@@ -51,9 +51,25 @@ PASS integration.m5.p4p5_verify: the P4/P5 cut recovered to a legal generation
 **观察（不阻塞 R-02）**：`cleanup_forget=1`——恢复后的 start 是成功的，但随后的 `disk forget` 被
 拒。这与 R-04 的同类观察一致，归入“恢复后 stop/forget 终态”的清理项。
 
-## 2. 三个 cycle
+## 2. 三个独立 cycle —— 全部 PASSED
 
-（跑完后追加：每个 cycle 的 candidate/recovered/outcome/residue。）
+| # | 怎么跑 | candidate | recovered | outcome | 结果 |
+|---|---|---|---|---|---|
+| 1 | `-Cycles 1`（早期驱动） | 3 | 2 | `last_committed` | exit 0，102.1 s |
+| 2 | `-Cycles 1`（加固后：cycle 前真启动 + scp 就绪等待） | 3 | 2 | `last_committed` | exit 0 |
+| 3 | 第二次加固后调用（同一个 guest，独立断电） | 3 | 2 | `last_committed` | exit 0 |
+
+三次都是同一形态：`survivors_after_cut=0`、`recovered_generation=2`、
+`recovery_outcome=last_committed`、`checkpoint_operation_state=succeeded`、`start_exit=0`、
+`disk_running=True`、`marker_present=False`（P4 候选里的写本来就没提交）、`residue=[]`。
+
+**为什么“恢复 2 而不是 3”算通过**：断电点在 P4 之后、P5 之前；P4 的提交没有 durable，所以恢复必须
+丢弃候选、回到最后已提交代 2，并且 operation 收成 `succeeded`、盘能启动。三次都满足，没有第三态。
+
+**没计入的尝试**：一次 `-Cycles 3` 在 cycle 2 的 reset 卡住（P4 断电后 agent/存储栈退化），
+一次在 reset 的 scp 上 `Connection closed` 而没进入 prepare。两次都**没有进入实验**，不计入通过；
+相应加固（cycle 前真启动、scp 就绪探测、scp 在 `Continue` 下跑 + 重试）已写进驱动。
+因此 R-02 的读数是**三次独立的单 cycle 调用**，不是一次 `-Cycles 3`。
 
 ## 3. 这一轮修掉的测试装置缺陷（都不是产品问题）
 
@@ -64,3 +80,9 @@ PASS integration.m5.p4p5_verify: the P4/P5 cut recovered to a legal generation
    （MissingEndParenthesis），改为运算符放行尾。
 3. **`Join-Path 'T:\' ...` 在盘还不存在时抛 `DriveNotFoundException`**：断电后 T: 要等恢复才出现，
    改用字符串拼接。
+4. **reset 的 scp 在 `$ErrorActionPreference='Stop'` 下抛 `NativeCommandError`**，重试分支根本执行
+   不到；改成 `Continue` + `$LASTEXITCODE` 判定。
+5. **cycle 之间只 reset 不够**：P4 断电会让 guest 的存储栈/agent 退化，下一次 reset 等不到 agent。
+   驱动改为**每个 cycle 前真断电重启**（`vmrun stop hard` + `start` + 等 scp 就绪）。
+6. **ssh 能答 ≠ scp 能答**：断电后 `ssh echo up` 成功、紧接着的 scp 被关闭；驱动在 verify 前先
+   用 1 字节文件探测 scp 通道（最多 180 s）。

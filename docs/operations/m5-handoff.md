@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 / R-04 A·B·C / R-07 / R-03 三段全部 PASSED（§3.204、§3.206–§3.213）**。**下一步**：① R-02（`Test-M5P4P5PowerCut.ps1 -Cycles 1` 先取一次读数，再 `-Cycles 3`）；② R-05/R-06 支持矩阵与驱动版本下限；③ R-08 升级/重装；④ R-10 发布工程（SHA-256、SmartScreen 说明）；⑤ R-09、R-11…R-19。**manifest 仍无效** |
+| **下一件事** | **STAB-03 全部 PASSED**：R-02（3 次定点断电，§3.214）、R-03 三段（§3.211–§3.213）、R-04 A/B/C（§3.206–§3.209）。**R-05 支持矩阵已写**（`docs/operations/m5-support-matrix.md`）；**R-06 安装器已加驱动版本下限/运行检查**（负分支不可复现，已注明）；**R-14 入口拒绝已实现**（单测绿，客机 e2e 待跑）。**下一步**：① 跑一次 `install_uninstall` 拿 R-06 正路径与 R-14 的客机读数；② R-08 升级/覆盖安装/重装/脏卸载；③ R-10 发布工程；④ R-09、R-11…R-19。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5182,6 +5182,45 @@ R-19 前的清理项评估——它不影响磁盘状态，只影响卷上的垃
 空间用 `[System.IO.DriveInfo]::AvailableFreeSpace`（PSDrive 对象不保证刷新）。
 
 **下一步**：R-02（`Test-M5P4P5PowerCut.ps1`，先 1 cycle 再 3 cycles）。
+
+---
+
+### 3.214 2026-11-01：**R-02 PASSED —— 三次独立定点断电，全部落到合法代**
+
+**结论**：`R-02` 完成。证据：`docs/validation/m5-stab-03a-p4-p5-power-cut.md`。**STAB-03 至此全部
+PASSED**（R-02 + R-03 三段 + R-04 A/B/C）。
+
+**三次独立断电**（1 次早期驱动 + 2 次加固后），每次同一形态：
+
+```text
+survivors_after_cut=0
+recovered_generation=2      (last committed; the P4 candidate 3 was not durable)
+recovery_outcome=last_committed
+checkpoint_operation_state=succeeded
+start_exit=0  start_state=succeeded  disk_running=True
+marker_present=False        (the write was inside the uncommitted P4 candidate)
+residue=[]
+```
+
+**为什么不是“恢复到候选代”**：断电点在 P4 之后、P5 之前；P4 的提交没有 durable，所以恢复的正确结果
+是丢弃候选、回到最后已提交代 2，并把 operation 收成 `succeeded`。三次都没有出现第三态。
+
+**驱动加固（都是装置问题，不是产品问题）**：
+1. 在 verdict 文本里找 `P4_REACHED` 找不到 → 从 `captures:` 目录读 `<case>.stdout.txt`；
+2. verify 用例行首 `-and` 在 PS 5.1 解析失败；
+3. `Join-Path 'T:\'` 在盘未出现时抛 `DriveNotFoundException`；
+4. reset 的 scp 在 `$ErrorActionPreference='Stop'` 下抛 `NativeCommandError`，重试分支不执行；
+5. cycle 之间只 reset 不够（P4 断电让 guest 存储栈/agent 退化）→ **每 cycle 前真断电重启**；
+6. ssh 能答 ≠ scp 能答 → verify 前用 1 字节文件探测 scp 通道（≤180 s）。
+
+**没计入的尝试**：一次 `-Cycles 3` 在 cycle 2 的 reset 卡住、一次在 reset 的 scp 上失败，都没有进入
+实验；因此读数是三次**独立的单 cycle 调用**，不是一次三连。
+
+**R-06 顺带**：安装器现在检查 `phdskmnt` 的**存在、运行状态与版本下限 1.2.28.93**（低于下限/未运行
+/缺失都是明确拒绝）；缺/旧/停三个负分支在本客机不可复现（不允许卸载或降级驱动），已在
+`docs/operations/m5-support-matrix.md` 注明；每次安装读数会打出 `phdskmnt x.y.z present and running
+(floor 1.2.28.93)`。
+
 
 
 
