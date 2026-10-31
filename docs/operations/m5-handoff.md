@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 / R-04 A·B·C / R-07 PASSED（§3.204、§3.206–§3.209）**。**R-03 第 1 部分半程**（§3.210）：manifest 截断行为正确；双槽翻位后 `disk stop` 终态 failed、`--force` 被拒，C/D 与卷满/ACL 未跑。**下一步**：① 定性/修复 stop-after-restore（干净复现、读 `kind=7`/`last-trace.log`）；② 跑完 R-03 损坏矩阵 → 卷满 → ProgramData ACL；③ R-02（`Test-M5P4P5PowerCut.ps1`）；④ R-05/R-08/R-10，然后 R-09、R-11…R-19。**manifest 仍无效** |
+| **下一件事** | **R-01 / R-04 A·B·C / R-07 / R-03 损坏矩阵 PASSED（§3.204、§3.206–§3.209、§3.211）**。**R-03 剩余**：bundle 卷满、ProgramData ACL 两段还没写脚本。**下一步**：① 写并跑 R-03 卷满与 ACL；② R-02（`Test-M5P4P5PowerCut.ps1`）；③ R-05/R-08/R-10，然后 R-09、R-11…R-19。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5077,6 +5077,44 @@ b.forced_stop_state=refused
 **下一轮**：干净复现 B（stop 前不要杀服务进程），读 `kind=7` 与 `last-trace.log`，重点看 stop 的
 最终 checkpoint 在“恢复后的持久化/gate”上是怎么失败的；定性后再跑 C/D。**R-03 的卷满与 ACL
 两段还没写脚本**（计划见 validation 文档 §3）。
+
+---
+
+### 3.211 2026-10-30：**R-03 损坏矩阵 PASSED —— 上一轮的“stop 失败”是测试用旧备份**
+
+**结论**：`integration.m5.bundle_corruption` **1/1，48 s**。证据：
+`docs/validation/m5-stab-03b-hostile-environment.md` §1。
+
+**四个用例全绿**（每个都是同一套判据：start 的 operation 终态 `failed`、无 worker、盘不 Running、
+bundle 逐文件长度+SHA-256 不变、恢复后同盘可启动且 marker 完整、stop 成功）：
+
+| 用例 | 损坏 | start 终态 | stop |
+|---|---|---|---|
+| A | `disk.rdm` 截断到 32 B | failed（112 ms） | succeeded |
+| B | `disk.rdm` 双槽翻位（2048/6144） | failed（185 ms） | succeeded |
+| C | `base-0000.vhdx` 4 MiB → 3 MiB | failed（214 ms） | succeeded |
+| D | journal 头+尾翻位（64 / 10117120） | failed（88 ms） | succeeded |
+
+`cleanup_forget=0`。
+
+**上一轮“修复后 stop 失败”的真相**：用例只在开头做了一次 bundle 快照，之后每案恢复同一份旧快照。
+每次成功 stop 都会推进 generation，第二次恢复把 bundle 倒回旧代，durable profile 却已在
+`confirmed=5`，于是 stop 的 checkpoint boundary 拒绝：
+
+```text
+kind=7 command=disk.stop ... message=checkpoint boundary refused: ... prior=4 confirmed=5 candidate=5
+kind=7 command=disk.stop ... code=22022 step=service_core.checkpoint_boundary
+  detail=The worker checkpoint correlation is invalid
+```
+
+修法：**每案损坏前单独备份那个文件、只恢复它**（A/B 各备份 `disk.rdm`，C 备份 base，D 备份 journal）。
+
+**观测缺口（已修）**：该用例漏了 `New-Item $workRoot`，而 `Start-Process` 的重定向不会创建目录，
+所以 `service.log` 从未生成——`kind=7` 就是这样丢的。现在服务启动前显式建目录，失败时把
+`kind=7` 打进 capture。这条同样适用于以后新写的 guest 用例。
+
+**R-03 剩余**：bundle 卷满、ProgramData ACL 两段，测试脚本还没写。
+
 
 
 

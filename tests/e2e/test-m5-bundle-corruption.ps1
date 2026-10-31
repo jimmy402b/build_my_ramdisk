@@ -51,11 +51,14 @@ foreach ($path in @($serviceExe, $cliExe)) {
 
 $workRoot = 'C:\m5\bundle-corrupt-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $bundlePath = Join-Path $workRoot 'bundle'
-$backupPath = Join-Path $workRoot 'backup'
 $profileName = 'corrupt-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $serviceLog = Join-Path $workRoot 'service.log'
 $traceLog = Join-Path $workRoot 'trace.log'
 $serviceProcess = $null
+# **The directory must exist before the service is started.**  `Start-Process`'s redirects
+# into a missing directory do not create it; measured here as a run whose service.log and
+# service.out.log never appeared, which is exactly the evidence the failing stop needed.
+New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
 
 function Write-Reading([string]$key, [string]$value) {
     Write-Host "READING: $key=$value"
@@ -230,6 +233,14 @@ function Stop-DiskForNextCase([string]$profileId, [string]$label) {
         }
         Write-Host "--- ${label}: disk list line"
         Write-Host ("  " + [string](Get-DiskLine $script:mount))
+        if (Test-Path -LiteralPath $serviceLog) {
+            Write-Host "--- ${label}: service log kind=7"
+            Get-Content -LiteralPath $serviceLog -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match 'kind=7' } |
+                Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
+        } else {
+            Write-Host "--- ${label}: service log MISSING at $serviceLog"
+        }
         if (Test-Path -LiteralPath $traceLog) {
             Write-Host "--- ${label}: trace tail"
             Get-Content -LiteralPath $traceLog -ErrorAction SilentlyContinue |
@@ -291,7 +302,13 @@ try {
     foreach ($file in (Get-ChildItem -LiteralPath $bundlePath -File)) {
         Write-Reading ("bundle." + $file.Name) ([string]$file.Length)
     }
-    Copy-Item -LiteralPath $bundlePath -Destination $backupPath -Recurse -Force
+    # **Each case backs up the file it is about to damage, right before damaging it.**
+    # One snapshot taken here and restored repeatedly is wrong: every successful stop can
+    # advance the bundle's generation, so restoring the old snapshot rewinds the bundle
+    # behind the profile's confirmed generation.  Measured cost of the wrong version: the
+    # second repair start adopted an older bundle and the next stop cut a checkpoint whose
+    # correlation (prior=4, candidate=5) could not match the profile (confirmed=5), which
+    # looked like a stop defect until the service log named the boundary refusal.
 
     # ------------------------------------------------------------------
     # A. manifest truncated
@@ -300,14 +317,15 @@ try {
     $manifest = Get-BundleFile 'disk.rdm'
     if ($manifest.Count -ne 1) { Fail "expected one manifest, found $($manifest.Count)" }
     $original = $manifest[0].FullName
-    $originalHash = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+    $manifestBackupA = Join-Path $workRoot 'disk.rdm.a.orig'
+    Copy-Item -LiteralPath $original -Destination $manifestBackupA -Force
     $bytes = [System.IO.File]::ReadAllBytes($original)
     [System.IO.File]::WriteAllBytes($original, $bytes[0..31])
     Write-Reading 'a.manifest_bytes' ([string](Get-Item -LiteralPath $original).Length)
     $before = Get-BundleSnapshot
     Start-ExpectExplicitFailure $profileId 'a'
     Compare-BundleSnapshot $before (Get-BundleSnapshot) 'a'
-    Copy-Item -LiteralPath (Join-Path $backupPath 'disk.rdm') -Destination $original -Force
+    Copy-Item -LiteralPath $manifestBackupA -Destination $original -Force
     Start-ExpectSuccess $profileId 'a'
     if ((Get-Content -LiteralPath $markerPath -Raw) -ne $payload) { Fail 'A: the marker bytes changed after the manifest restore' }
     Write-Reading 'a.marker_intact' 'yes'
@@ -321,6 +339,8 @@ try {
     # active one and must ignore damage in the other.  Corrupting one slot therefore proves
     # only that the fallback works, so this case damages both and asserts that *no* intact
     # copy remains -- the product must refuse rather than pick a damaged generation.
+    $manifestBackupB = Join-Path $workRoot 'disk.rdm.b.orig'
+    Copy-Item -LiteralPath $original -Destination $manifestBackupB -Force
     $bytes = [System.IO.File]::ReadAllBytes($original)
     if ($bytes.Length -lt 8192) { Fail "the manifest is unexpectedly small: $($bytes.Length) bytes" }
     $offsets = @([int]($bytes.Length / 4), [int]($bytes.Length * 3 / 4))
@@ -332,7 +352,7 @@ try {
     $before = Get-BundleSnapshot
     Start-ExpectExplicitFailure $profileId 'b'
     Compare-BundleSnapshot $before (Get-BundleSnapshot) 'b'
-    Copy-Item -LiteralPath (Join-Path $backupPath 'disk.rdm') -Destination $original -Force
+    Copy-Item -LiteralPath $manifestBackupB -Destination $original -Force
     Start-ExpectSuccess $profileId 'b'
     Write-Reading 'b.marker_intact' $(if ((Get-Content -LiteralPath $markerPath -Raw) -eq $payload) { 'yes' } else { 'NO' })
     Stop-DiskForNextCase $profileId 'b'
@@ -347,13 +367,15 @@ try {
     $baseFile = $base[0].FullName
     $baseLength = $base[0].Length
     if ($baseLength -le 2MB) { Fail "the base image is unexpectedly small: $baseLength bytes" }
+    $baseBackup = Join-Path $workRoot ($baseName + '.orig')
+    Copy-Item -LiteralPath $baseFile -Destination $baseBackup -Force
     $stream = [System.IO.File]::Open($baseFile, 'Open', 'ReadWrite', 'None')
     try { $stream.SetLength($baseLength - 1MB) } finally { $stream.Dispose() }
     Write-Reading 'c.base_bytes' ([string](Get-Item -LiteralPath $baseFile).Length)
     $before = Get-BundleSnapshot
     Start-ExpectExplicitFailure $profileId 'c'
     Compare-BundleSnapshot $before (Get-BundleSnapshot) 'c'
-    Copy-Item -LiteralPath (Join-Path $backupPath $baseName) -Destination $baseFile -Force
+    Copy-Item -LiteralPath $baseBackup -Destination $baseFile -Force
     Start-ExpectSuccess $profileId 'c'
     Write-Reading 'c.marker_intact' $(if ((Get-Content -LiteralPath $markerPath -Raw) -eq $payload) { 'yes' } else { 'NO' })
     Stop-DiskForNextCase $profileId 'c'
@@ -369,6 +391,8 @@ try {
     if ($journal.Count -ne 1) { Fail "expected one journal, found $($journal.Count)" }
     $journalName = $journal[0].Name
     $journalFile = $journal[0].FullName
+    $journalBackup = Join-Path $workRoot ($journalName + '.orig')
+    Copy-Item -LiteralPath $journalFile -Destination $journalBackup -Force
     $stream = [System.IO.File]::Open($journalFile, 'Open', 'ReadWrite', 'None')
     try {
         $offsets = @([int64]64, [int64]($stream.Length - 4096))
@@ -384,7 +408,7 @@ try {
     $before = Get-BundleSnapshot
     Start-ExpectExplicitFailure $profileId 'd'
     Compare-BundleSnapshot $before (Get-BundleSnapshot) 'd'
-    Copy-Item -LiteralPath (Join-Path $backupPath $journalName) -Destination $journalFile -Force
+    Copy-Item -LiteralPath $journalBackup -Destination $journalFile -Force
     Start-ExpectSuccess $profileId 'd'
     Write-Reading 'd.marker_intact' $(if ((Get-Content -LiteralPath $markerPath -Raw) -eq $payload) { 'yes' } else { 'NO' })
     Stop-DiskForNextCase $profileId 'd'
