@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 / R-04.A / R-04.C / R-07 PASSED（§3.204、§3.206–§3.208）**。**R-04.B BLOCKED（产品缺陷）**：杀服务后停在 P4 的 worker 仍存活（`FAIL: b left 1 worker(s) behind after 60 s`），job object 没有 kill-on-close；`integration.m5.service_kill` 已独立成组。**下一步**：① 修 worker 的 job-object 生命周期（服务死则 worker 必须死）；② 给 fault 组加“组前硬重启”；③ 跑 R-02（`Test-M5P4P5PowerCut.ps1 -Cycles 3`）与 R-03（bundle 损坏矩阵）；④ R-05 支持矩阵、R-08 升级/重装（R-07 已完成）、R-10 发布工程。**manifest 仍无效**，R-19 收尾时重新冻结 |
+| **下一件事** | **R-01 / R-04 A·B·C / R-07 PASSED（§3.204、§3.206–§3.209）**。**未测**：R-02（P4/P5 定点断电）与 R-03（bundle 损坏/卷满/ACL）的装置已写未跑；R-05/R-08/R-09/R-10…R-19 未开始。**下一步**：① 跑 R-03 的 bundle 损坏矩阵（`integration.m5.bundle_corruption`）；② 跑 R-02（`Test-M5P4P5PowerCut.ps1 -Cycles 3`）；③ R-05 支持矩阵、R-08 升级/重装、R-10 发布工程；④ 收尾时重新冻结 manifest。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -4999,6 +4999,51 @@ FAIL: b left 1 worker(s) behind after 60 s
 
 **状态**：R-04.A PASSED、R-04.C PASSED、R-04.B BLOCKED（产品缺陷）。R-02/R-03 未跑。
 证据：`docs/validation/m5-stab-03c-process-kills.md` §4。
+
+---
+
+### 3.209 2026-10-30：**R-04.B PASSED —— 修掉 job 生命周期与 sweep 升级策略**
+
+**结论**：`R-04` **A/B/C 全部 PASSED**。B 的证据：`integration.m5.service_kill` 1/1，23 s。
+
+**先纠正上一节的判断**：杀服务后 worker 存活**不是缺陷**，是设计（`windows_worker_job.h`：故意不设
+`KILL_ON_JOB_CLOSE`，让 worker 能完成有序收尾；命名 job 就是给重启后的服务找它用的）。真正的缺陷在
+下一层：
+
+1. **job 随服务一起消失**：worker 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 进入 job，但不持有句柄；
+   服务一死，最后一个句柄关闭、job 销毁；重启后的服务用同名新建一个空 job，`observe_orphans`
+   按 `IsProcessInJob` 过滤 → 看不见任何孤儿 → sweep 无事可做，worker 继续持有 bundle 锁/设备。
+   修复：launch 时把 job 句柄 `DuplicateHandle` 成可继承并加进 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`，
+   worker 拿一个 **0 权限**句柄只为续命 job；父进程在 `CreateProcessW` 后立即关掉自己的副本。
+2. **生产 sweep 不升级**：`WorkerSweepOptions::force_when_unreachable` 默认 false，服务死亡留下的
+   孤儿按构造不可达（私有通道/启动秘密随服务消失），于是永远 left-alone。修复：
+   `service_runtime.cpp` 显式设 `true`；sweep 先结束进程，再由**资源半边**（reclaimer）用 durable
+   身份清盘符/设备——死掉的 worker 做不了的有序收尾由为它而设计的组件接走。
+
+**客机读数**（`integration.m5.service_kill`，请求 `dda564f6…`，1/1 PASS）：
+
+```text
+READING: pause_marker=p4-commit generation=3 pid=6012
+READING: killed_service_pid=5312
+READING: workers_after_service_kill=1
+READING: recovery.workers_left=0
+READING: recovery.operation_state=succeeded
+READING: recovery.start_exit=0
+READING: recovery.generation=3
+READING: recovery.data_intact=yes
+PASS integration.m5.process_kills: the service was killed inside P4 and recovery reached the candidate generation
+```
+
+**顺带观察（不阻塞）**：`cleanup_forget=1`——恢复后的盘 stop 能过、随后的 forget 被状态机拒绝。
+R-04.B 的验收（重启 reconcile 到确定状态、盘可启动、数据完整）三条都成立。该观察归入“恢复后 stop
+终态”那条旧账，R-08 的升级/重装路径开始前应读 `kind=7` 定性。
+
+**本机验证**：`service_core`/pipe/job 改动后全量构建通过；受影响的本机套件在改动前 7/7，绿；
+kill 类用例只在客机跑。
+
+**R-04 完成后的剩余**：R-02（P4/P5 定点断电，装置已写）、R-03（bundle 损坏/卷满/ACL，损坏用例
+已写）、R-05、R-06、R-08、R-09、R-10、R-11…R-19。
+
 
 
 

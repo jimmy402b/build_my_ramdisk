@@ -177,9 +177,26 @@ Result<std::unique_ptr<ServiceRuntime>> ServiceRuntime::create(
     // *same* registration store the sweep proved the identity from, which is what makes the
     // reclaim act on the profile as it is now rather than on the sweep's older reading of it.
     runtime->resource_reclaimer_.emplace(*runtime->registrations_, *runtime->worker_);
+    // **Escalate to a forced end when an orphan cannot be reached (R-04.B).**
+    //
+    // A worker that outlived its service can never be *asked* to leave: the private
+    // channel and its startup secret died with the service that created them, so
+    // `request_cooperative_exit` cannot reach it -- by construction, not by accident.
+    // With the default `force_when_unreachable = false` the sweep reports such a worker
+    // as left alone, and that worker keeps the bundle's exclusive write lock and its AIM
+    // device for as long as it lives.  Measured (R-04.B): after a service kill inside the
+    // P4 window the worker survived, and the restarted service could not reconcile the
+    // disk it was holding.
+    //
+    // The teardown the dead worker can no longer perform is the sweep's *resource half*,
+    // which runs after the process half and reclaims the proven device/letter from the
+    // durable identity.  So forcing the process end does not skip the ordered teardown;
+    // it hands it to the component that was composed to do it without the worker.
+    management::WorkerSweepOptions sweep_options{};
+    sweep_options.force_when_unreachable = true;
     runtime->startup_sweep_.emplace(*runtime->processes_,
                                     *runtime->expected_bindings_,
-                                    management::WorkerSweepOptions{},
+                                    sweep_options,
                                     &*runtime->resource_identities_,
                                     &*runtime->resource_reclaimer_);
 

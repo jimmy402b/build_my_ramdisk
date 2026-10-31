@@ -1,18 +1,19 @@
-# STAB-03c / R-04：worker / service 在 P4 窗口内被杀 —— **A、C PASSED；B 被产品缺陷阻塞**
+# STAB-03c / R-04：worker / service 在 P4 窗口内被杀 —— **A、B、C 全部 PASSED**
 
-**结论分三段，不要合并读：**
+**结论分四段，不要合并读：**
 
 1. **R-04.A（P4 窗口内杀 worker）PASSED。** 修复后的产品在三次独立客机运行中给出同一读数：
    kill 后服务立刻应答（`disk list` 11–25 ms）、operation 停在设计上的 `reconciling`、worker 残留 0、
    `persistence=CommitIndeterminate`；服务重启后恢复把 operation 推到 **`succeeded`**，磁盘回到
    **候选代 generation=3** 并 `Running`，P4 前提交的 marker 字节完整。
-2. **R-04.C（连续 3 次硬断电）PASSED。** `Test-M5RepeatedPowerLoss.ps1 -Cycles 3` → exit 0、
+2. **R-04.B（P4 窗口内杀服务）PASSED。** worker 按设计活过服务（`workers_after_service_kill=1`）；
+   重启后的启动 sweep 结束不可达的孤儿（`recovery.workers_left=0`），恢复把 operation 推到
+   `succeeded`、盘回到候选代、数据完整。途中修掉两处：worker 不再让 job 随服务消失（继承一个
+   0 权限的 job 句柄），生产 sweep 打开 `force_when_unreachable`（§4）。
+3. **R-04.C（连续 3 次硬断电）PASSED。** `Test-M5RepeatedPowerLoss.ps1 -Cycles 3` → exit 0、
    1037.7 s，三轮 prepare/cut/verify 全 PASS，每轮后无残留（§6）。
-3. **R-04.B（P4 窗口内杀服务）被产品缺陷阻塞。** 服务被强杀后，停在 P4 的 **worker 仍然活着**
-   （`FAIL: b left 1 worker(s) behind after 60 s`），继续持有 bundle 锁与 AIM 设备——job object
-   没有把 worker 带走。这是需要修产品的缺陷，不是测试问题（§4.1）。
-4. **R-02（P4/P5 定点断电）未测。** 装置（P4 暂停 + prepare/verify + 主机驱动）已落地；它落在这条
-   已修好的恢复路径上，但**没有读数，不写成通过**。
+4. **R-02（P4/P5 定点断电）与 R-03（bundle 损坏/卷满/ACL）未测。** 装置已落地（P4 暂停 +
+   prepare/verify + 主机驱动；bundle 损坏用例），但**没有读数，不写成通过**。
 
 **客机**：`myrd-vm`，Windows 11 x64 26200，Release；每次运行前 reset（kill 类实验前硬重启）。
 
@@ -113,42 +114,72 @@ READING: a.data_intact=yes
 
 同一形态在请求 `6215a0f3…`、`4ea930fd…` 的两次运行里重复出现（`a.operation_state_after_restart=succeeded`）。
 
-## 4. R-04.B 为什么还没测（具体条件）
+## 4. R-04.B：杀服务 —— **PASSED（修掉 job 生命周期）**
 
 **B 现在是独立用例**：`integration.m5.service_kill`（`test-m5-process-kills.ps1 -Part B`），
 不再和 A 串在一次运行里——A 或 B 任一 kill 之后，客机存储栈都需要硬重启，且恢复过的卷不能当
 下一次实验的对象。
 
-### 4.1 B 的实测阻塞：杀掉服务后 **worker 还活着**
+### 4.1 设计事实：worker **本来就该活过服务**
 
-请求 `c131cb7c…`（`--Part B`，1/1 FAIL，81 s）：
+`windows_worker_job.h` 写明：job 对象**故意不设** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。一个被
+`TerminateProcess` 掉的 worker 没法移除盘符、卸载卷、停 AIM；所以服务死了以后，worker 要能活着
+完成自己的有序收尾，而**命名 job** 的作用是让重启后的服务找到它。
+
+**最初的失败读数（请求 `c131cb7c…`）**：
 
 ```text
-READING: pause_marker=p4-commit generation=3 pid=1572
-READING: candidate_generation=3
-READING: killed_service_pid=3944
+READING: workers_after_service_kill=1
 FAIL: b left 1 worker(s) behind after 60 s
 ```
 
-也就是说：服务进程被强杀、worker 正停在 P4 的暂停里，60 秒后 worker **仍然存在**。这说明
-服务给 worker 的 **job object 没有在服务进程死亡时把它带走**（或者 worker 从 job 里逃逸了）。
-后果是真实的：残留 worker 继续持有 bundle 的独占写锁与 AIM 设备，下一次 start/forget 会被它挡住，
-这正是 R-04 要防的“残留”。**这是 R-04.B 的阻塞点，需要修产品（job object 的 kill-on-close /
-breakaway 语义），不是改测试。**
+当时的结论写成“job object 没带走 worker”，这是**错的**——那正是设计。真正的问题在下一层：
 
-### 4.2 另一个观察：A 的恢复之后 `disk stop` 终态 failed
+### 4.2 真正的缺陷：job 随服务一起消失，重启后的 sweep 看不见孤儿
 
-早先 A+B 串跑的版本里，A 恢复后对同一块盘 `disk stop`，operation 被准入
-（`b.part_a_stop_exit=0`）但终态 `failed`。这与 4.1 不同：那次 worker 已被杀干净，stop 仍然失败，
-说明恢复后的 durable persistence 可能仍停在 indeterminate 一类。现在 B 已拆成独立用例，这个
-观察暂时不阻塞 R-04；等 4.1 修好后，用独立用例把它查清（读 `kind=7` 的 code/step）。
+job 对象在**最后一个句柄关闭时销毁**。worker 通过 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 进入 job，
+但**不持有 job 句柄**；`CreateProcessW(bInheritHandles=TRUE)` 的继承列表里也只有启动管道。
+所以服务一死，job 就没了；重启后的服务用同一个名字**新建**了一个空 job，
+`observe_orphans`（按 `IsProcessInJob` 过滤）看不到任何孤儿，sweep 什么也没做，worker 继续持有
+bundle 独占锁与 AIM 设备。
 
-### 4.3 客机在 kill 实验后退化
+**修复（两处，缺一不可）**：
+
+1. `src/host/m5_worker_private_pipe.cpp`：launch 时把 job 句柄 `DuplicateHandle` 成**可继承**，
+   加进 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`。worker 从不使用它，拿着它只是让命名 job 活到
+   worker 退出。访问掩码是 0（句柄只引用对象，不给 worker 任何 job 权限）。
+2. `src/service/service_runtime.cpp`：生产 sweep 用
+   `WorkerSweepOptions{ .force_when_unreachable = true }`。服务死亡留下的孤儿**按构造不可达**
+   （私有通道和启动秘密随服务一起消失），默认的 `false` 会把它标成 left-alone 永远留着；
+   打开升级后 sweep 先结束进程，再走**资源半边**（reclaimer 用 durable 身份清盘符/设备）——
+   死掉的 worker 做不了的那部分收尾，由为它而存在的组件完成。
+
+### 4.3 修复后的客机读数（`integration.m5.service_kill`，请求 `dda564f6…`，1/1 PASS，23 s）
+
+```text
+READING: pause_marker=p4-commit generation=3 pid=6012
+READING: killed_service_pid=5312
+READING: workers_after_service_kill=1        <- 设计：worker 活过服务
+--- restart the service and let its recovery resolve the checkpoint
+READING: recovery.workers_left=0             <- 重启后的 sweep 结束了不可达的孤儿
+READING: recovery.operation_state=succeeded
+READING: recovery.start_exit=0
+READING: recovery.generation=3               <- P4 候选代
+READING: recovery.data_intact=yes
+PASS integration.m5.process_kills: the service was killed inside P4 and recovery reached the candidate generation
+```
+
+**已知观察（不阻塞 R-04.B）**：`cleanup_forget=1`——恢复后的盘 `disk stop` 成功、但随后的
+`disk forget` 被状态机拒绝。这是“恢复后 stop 的终态”那条旧观察的另一面；R-04.B 的验收只要求
+重启后 reconcile 到确定状态、盘可启动、数据完整，这三条都成立。下一步用它自己的用例读
+`kind=7` 定性（见 §4.4），再决定是否要在 R-08 的升级/重装路径之前修。
+
+### 4.4 客机在 kill 实验后退化
 
 每次跑完 kill 类用例，客机的存储栈/SSH 会退化（PowerShell over SSH 挂起、`cmd` 也超时），
 必须 `vmrun stop … hard` + 启动才能跑下一次。这是已知代价（lessons §5.2），所以 kill 类用例
 **不能靠 `Reset-M5Guest` 串在同一组里跑**：A 与 B 各自一个组，且组前应硬重启（当前驱动还是
-reset；把 B 放进门禁前，先给 fault 组加“组前硬重启”）。
+reset；把 fault 组放进默认门禁前，先给组加“组前硬重启”）。
 
 ## 5. 复现
 

@@ -312,15 +312,27 @@ try {
         Stop-Process -Id $serviceId -Force
         Write-Reading 'killed_service_pid' ([string]$serviceId)
         $serviceProcess = $null
-        # The worker is a child of the service's job object; losing the service must not leave
-        # a worker that owns the bundle.
-        Assert-NoWorkers 'b'
+        Start-Sleep -Seconds 2
+        # **The worker is expected to outlive the service by design.**  There is no
+        # KILL_ON_JOB_CLOSE: a worker that lost its service must still be able to finish its
+        # ordered teardown, and the job is named so the next service instance can find it.
+        # What must not happen is that it survives the *restarted* service's startup sweep --
+        # that is asserted right after the restart, not here.
+        $workersAfterKill = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue).Count
+        Write-Reading 'workers_after_service_kill' ([string]$workersAfterKill)
+        if ($workersAfterKill -lt 1) {
+            Fail ('the worker was expected to outlive the service by design (no ' +
+                'KILL_ON_JOB_CLOSE); it vanished instead')
+        }
     }
 
     Write-Step "restart the service and let its recovery resolve the checkpoint"
     Stop-ServiceProcess
     $serviceProcess = Start-GuestService 'trace-recovery.log'
     if ($null -eq (Wait-ForService 120)) { Fail 'the restarted service never answered' }
+    # The startup sweep runs before the service answers.  For Part B it is the component
+    # that must end the unreachable orphan; for Part A there must be nothing left to end.
+    Assert-NoWorkers 'recovery'
     $resolvedA = Wait-ForTerminalOrFail $checkpointAId 300 'the checkpoint after the service restart'
     Write-Reading 'recovery.operation_state' $resolvedA
     # The disk may come back by itself (its create intent asked for auto-start) or need the

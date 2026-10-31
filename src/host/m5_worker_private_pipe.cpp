@@ -833,13 +833,43 @@ Result<LaunchedWorker> launch_private_worker(
             L"the handle-inheritance list could not be created",
             GetLastError()));
     }
-    HANDLE inherited[1] = {static_cast<HANDLE>(child_read)};
+    // **The worker keeps the job object alive (R-04.B).**
+    //
+    // The job is named so that a restarted service can find the workers its predecessor
+    // left behind, and that only works if the job *exists* after the service dies.  Job
+    // objects are destroyed when their last handle closes; a process assigned through
+    // `PROC_THREAD_ATTRIBUTE_JOB_LIST` does not hold a handle to the job, so without this
+    // the service's death destroyed the job and the orphan became invisible to every later
+    // sweep -- measured: after a service kill inside the P4 window the worker survived and
+    // the restarted service's sweep reported no orphans at all.
+    //
+    // So the worker inherits one extra handle: the job itself.  It never uses it; holding
+    // it is the whole job (the handle keeps the named object alive until the worker exits,
+    // which is exactly when the last orphan is gone).  The access mask is deliberately
+    // empty -- a handle with no rights still references the object, and a worker has no
+    // business querying or terminating the job it belongs to.
+    HANDLE inherited_job = nullptr;
+    if (DuplicateHandle(GetCurrentProcess(), static_cast<HANDLE>(worker_job),
+                        GetCurrentProcess(), &inherited_job, 0, TRUE,
+                        DUPLICATE_SAME_ACCESS)
+        == FALSE) {
+        const auto native = GetLastError();
+        DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+        close_startup_handle(child_read);
+        close_startup_handle(parent_write);
+        return Result<LaunchedWorker>::failure(pipe_error(
+            0, L"launch_private_worker",
+            L"the worker job handle could not be made inheritable", native));
+    }
+
+    HANDLE inherited[2] = {static_cast<HANDLE>(child_read), inherited_job};
     const BOOL listed = UpdateProcThreadAttribute(
         startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
         inherited, sizeof(inherited), nullptr, nullptr);
     if (!listed) {
         const auto native = GetLastError();
         DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+        CloseHandle(inherited_job);
         close_startup_handle(child_read);
         close_startup_handle(parent_write);
         return Result<LaunchedWorker>::failure(pipe_error(
@@ -861,6 +891,7 @@ Result<LaunchedWorker> launch_private_worker(
     if (!jobed) {
         const auto native = GetLastError();
         DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+        CloseHandle(inherited_job);
         close_startup_handle(child_read);
         close_startup_handle(parent_write);
         return Result<LaunchedWorker>::failure(pipe_error(
@@ -881,6 +912,9 @@ Result<LaunchedWorker> launch_private_worker(
         nullptr, &startup_info.StartupInfo, &child.info);
     const auto start_error = GetLastError();
     DeleteProcThreadAttributeList(startup_info.lpAttributeList);
+    // The child has its own copy now; the parent's duplicate must not outlive this call,
+    // or the service would keep the job alive after the last worker is gone.
+    CloseHandle(inherited_job);
     // Closed in the parent as soon as the child exists: holding the read end
     // open would mean the child never sees end-of-file on the spec channel.
     close_startup_handle(child_read);
