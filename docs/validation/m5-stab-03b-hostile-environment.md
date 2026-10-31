@@ -1,19 +1,19 @@
-# STAB-03b / R-03：敌意环境（bundle 损坏 / 卷满 / ACL）—— **损坏矩阵 + ACL PASSED；卷满未测**
+# STAB-03b / R-03：敌意环境（bundle 损坏 / 卷满 / ACL）—— **三段全部 PASSED**
 
 **结论分段：**
 
-1. **bundle 损坏矩阵（R-03 第 1 部分）PASSED**：`integration.m5.bundle_corruption` **1/1，48 s**，
-   A/B/C/D 四种损坏全部“明确失败 + 无 worker + bundle 逐文件不变 + 恢复后可启动且数据完整 +
-   stop 成功”。
+1. **bundle 损坏矩阵 PASSED**：`integration.m5.bundle_corruption` **1/1，48 s**，A/B/C/D 四种损坏
+   全部“明确失败 + 无 worker + bundle 逐文件不变 + 恢复后可启动且数据完整 + stop 成功”。
 2. **ProgramData ACL 被改坏 PASSED**：`integration.m5.hostile_acl` **1/1，87 s**，保护位被清掉后
    `disk list`/`disk start` 都明确失败（`0x4905`、`profile_store.directory_acl`、 “not protected”）、
    无 worker；恢复后同一块盘可启动、marker 完整、stop 成功。
-3. **上一轮报的“修复后 stop 失败”是测试自身的缺陷，不是产品缺陷**：用例拿**一份最初的备份**
-   反复恢复，而每次成功的 stop 都会推进 bundle 的 generation；于是第二次恢复把 bundle 倒回到
-   旧代，与 durable profile 的 confirmed generation 分裂，stop 的 checkpoint boundary 自然被判
-   `correlation invalid`（`prior=4 confirmed=5 candidate=5`）。改成**每次损坏前单独备份那个文件、
-   只恢复它**之后，四个用例全绿。这段保留在这里，因为“用旧备份恢复”很容易再犯。
-4. **bundle 卷满（bundle 所在卷写满）**：**未测**，测试脚本还没写。
+3. **bundle 卷满 PASSED**：`integration.m5.volume_full` **1/1，97 s**，64 MiB VHD 填到只剩约 5 MiB
+   后 `create` 的 operation 明确 `failed`、0 worker、0 注册 profile；删掉填充文件后同一请求成功、
+   checkpoint 成功、marker 完整、stop 与 forget 成功。
+4. **上一轮报的“修复后 stop 失败”是测试自身的缺陷**：用例拿一份最初的备份反复恢复，而每次成功
+   stop 都会推进 bundle 的 generation；第二次恢复把 bundle 倒回旧代，与 durable profile 的
+   confirmed generation 分裂，stop 的 checkpoint boundary 被判 `correlation invalid`
+   （`prior=4 confirmed=5 candidate=5`）。改成**每次损坏前单独备份那个文件、只恢复它**后全绿。
 
 **客机**：`myrd-vm`，Windows 11 x64 26200，Release；每次运行前 `Reset-M5Guest`（损坏实验前硬重启）。
 
@@ -76,7 +76,44 @@ kind=7 command=disk.stop phase=running message=action=checkpoint code=22022
   单次“损坏→拒→修复→启动→stop”闭环。它单独跑 **1/1 PASS**，与损坏矩阵一起把“修复后 stop
   失败”的假象钉死在测试的旧备份上（§1.2）。
 
-## 3. ProgramData ACL 被改坏 —— **PASSED**（`integration.m5.hostile_acl`，1/1，87 s）
+## 3. bundle 卷满 —— **PASSED**（`integration.m5.volume_full`，1/1，97 s）
+
+用例：diskpart 建 64 MiB 固定 VHD → 挂成 V: → NTFS quick 格式化 → 填充到只剩约 5 MiB → 启动
+console service → `disk create --bundle V:\bundle-first ...` 必须明确失败 → 删填充文件 → 用新的
+`V:\bundle-second` 重新 create 并成功 → 写 marker → checkpoint → stop → forget → detach VHD。
+
+```text
+READING: volume.free_before_fill=53628928
+READING: volume.filler_bytes=48234496
+READING: volume.free_after_fill=5394432        <- 约 5 MiB
+READING: full.create_exit=0
+READING: full.create_output=disk.create: operation queued
+READING: full.create_state=failed             <- 操作终态明确失败
+READING: full.workers_left=0
+READING: full.list_exit=0
+READING: full.profiles_left=0                 <- 没有留下注册 profile
+READING: full.bundle_dir_exists=True          <- 失败前建的 bundle 目录仍在（残留观察，见下）
+READING: volume.free_after_delete=48234496
+READING: second.profile_id=444ee9b4-…
+READING: second.checkpoint_state=succeeded
+READING: second.marker_intact=yes
+READING: second.stop_state=succeeded
+READING: cleanup_forget=0
+```
+
+判定：卷满时 create **明确失败**（operation `failed`，不是静默成功、不是挂死），且没有注册 profile
+或 worker 残留；腾出空间后同一请求成功，checkpoint / marker / stop / forget 全部正常。
+
+**残留观察**：失败的 create 在 `V:\bundle-first` 留下了目录（`bundle_dir_exists=True`）。这是
+“失败后不注册、但也不清理已建目录”的行为；R-03 的验收口径（明确失败、不静默成功、可恢复）已经
+满足。要不要在失败路径里删掉这个目录，留给 R-19 前的清理项评估——它不影响磁盘状态，只影响卷上
+的垃圾文件。
+
+**一个测试坑（已修）**：填充文件一开始写在 `C:\m5\...`，V: 的可用空间根本不下降，循环写了
+120 MB 后报错；填充文件必须落在 V: 上，且可用空间用 `[System.IO.DriveInfo]::AvailableFreeSpace`
+读（PSDrive 对象不保证刷新）。
+
+## 4. ProgramData ACL 被改坏 —— **PASSED**（`integration.m5.hostile_acl`，1/1，87 s）
 
 用例：创建盘 → 写 marker → checkpoint → stop；把 `C:\ProgramData\MyRamDisk\profiles\<id>` 的 DACL
 保护位清掉（`SetAccessRuleProtection($false,$false)`）；跑 `disk list` 与 `disk start`；再用原 SDDL
@@ -107,8 +144,6 @@ READING: cleanup_forget=0
 `AI` 控制位），所以断言用 **`AreAccessRulesProtected`** 与“盘能起来”这两个语义判据，而不是字符串
 相等——字符串相等会误报。
 
-## 4. 未测的部分（明确写出来）
+## 5. 未测的部分（明确写出来）
 
-- **bundle 卷满**：未写脚本。计划是一个 64 MiB 的 VHD 挂成 V:，bundle 放上去，填满到只剩几 MiB，
-  触发 create/checkpoint 失败；期望明确失败、最后提交代仍可恢复，腾出空间后恢复。需要 diskpart
-  建 VHD，属于会创建真实卷的操作，只能在客机上做。
+- 无。R-03 的三段（损坏、ACL、卷满）都已有客机读数。

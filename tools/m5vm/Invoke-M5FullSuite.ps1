@@ -201,6 +201,9 @@ foreach ($t in $allTests) {
     if ($t.name -eq 'integration.m5.hostile_acl' -and -not $wantFaultMatrix) {
         continue
     }
+    if ($t.name -eq 'integration.m5.volume_full' -and -not $wantFaultMatrix) {
+        continue
+    }
     if ($t.name -match '^integration\.m5\.p4p5_') { continue }
     [void]$selectedTests.Add($t)
 }
@@ -213,6 +216,7 @@ $assign = {
     if ($name -eq 'integration.m5.bundle_corruption') { return 'fault' }
     if ($name -eq 'integration.m5.stop_after_restore') { return 'fault' }
     if ($name -eq 'integration.m5.hostile_acl') { return 'fault' }
+    if ($name -eq 'integration.m5.volume_full') { return 'fault' }
     if ($name -match '^unit\.') { return 'unit' }
     if ($name -match '^m4\.' -or $name -match '^m5\.' -or $name -match '^model\.') { return 'model' }
     if ($name -match '^integration\.m1\.' -or $name -match '^integration\.m4\.' -or $name -match '^integration\.shm$') { return 'integration.m1m4' }
@@ -255,7 +259,7 @@ if ($wantFaultMatrix) {
     # a kill experiment the guest's storage stack needs a hard reboot, so one kill per group
     # is the most a reset can honestly separate.  Off by default while the R-04.B recovery
     # question is open: a known-red case in the default gate trains people to ignore it.
-    $filters['fault'] = '^integration\.m5\.(process_kills|bundle_corruption|stop_after_restore|hostile_acl)$'
+    $filters['fault'] = '^integration\.m5\.(process_kills|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$'
     $filters['fault-service'] = '^integration\.m5\.service_kill$'
 }
 if ($wantMemoryExhaustion) {

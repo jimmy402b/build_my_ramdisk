@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 / R-04 A·B·C / R-07 / R-03 损坏矩阵 + ACL PASSED（§3.204、§3.206–§3.209、§3.211–§3.212）**。**R-03 剩余**：bundle 卷满一段还没写脚本。**下一步**：① 写并跑 R-03 卷满（64 MiB VHD 挂 V:，填满后 create/checkpoint 明确失败、腾空间后恢复）；② R-02（`Test-M5P4P5PowerCut.ps1`）；③ R-05/R-08/R-10，然后 R-09、R-11…R-19。**manifest 仍无效** |
+| **下一件事** | **R-01 / R-04 A·B·C / R-07 / R-03 三段全部 PASSED（§3.204、§3.206–§3.213）**。**下一步**：① R-02（`Test-M5P4P5PowerCut.ps1 -Cycles 1` 先取一次读数，再 `-Cycles 3`）；② R-05/R-06 支持矩阵与驱动版本下限；③ R-08 升级/重装；④ R-10 发布工程（SHA-256、SmartScreen 说明）；⑤ R-09、R-11…R-19。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5144,6 +5144,45 @@ cleanup_forget = 0
 `AreAccessRulesProtected` + “盘能起来”，不用字符串相等——否则会误报。
 
 **R-03 剩余**：bundle 卷满一段（64 MiB VHD 挂 V:，填满后 create/checkpoint 明确失败、腾空间后恢复）。
+
+---
+
+### 3.213 2026-10-31：**R-03 卷满段 PASSED —— R-03 三段全部完成**
+
+**结论**：`integration.m5.volume_full` **1/1，97 s**。证据：
+`docs/validation/m5-stab-03b-hostile-environment.md` §3。
+
+用例：diskpart 建 64 MiB 固定 VHD → 挂 V: → NTFS quick → 填充到只剩约 5 MiB → console service →
+`disk create --bundle V:\bundle-first` → 必须明确失败 → 删填充文件 → 新路径 `V:\bundle-second`
+重新 create → 写 marker → checkpoint → stop → forget → detach VHD。
+
+**读数**：
+
+```text
+volume.free_after_fill = 5,394,432        （约 5 MiB）
+full.create_state      = failed          （operation 终态明确失败）
+full.workers_left      = 0
+full.profiles_left     = 0               （没有注册 profile 残留）
+full.bundle_dir_exists = True            （失败前建的目录仍在：残留观察）
+volume.free_after_delete = 48,234,496
+second.profile_id      = 444ee9b4-…
+second.checkpoint_state= succeeded
+second.marker_intact   = yes
+second.stop_state      = succeeded
+cleanup_forget         = 0
+```
+
+**判定**：卷满时 create 明确失败、不挂死、不静默成功、不注册 profile、不留 worker；腾出空间后同一
+请求成功并完整走完 checkpoint/stop/forget。R-03 的三段（损坏、ACL、卷满）至此全部有客机读数。
+
+**残留观察（不阻塞）**：失败的 create 在卷上留下 `V:\bundle-first` 目录。是否在失败路径清理，留给
+R-19 前的清理项评估——它不影响磁盘状态，只影响卷上的垃圾文件。
+
+**测试坑（已修）**：填充文件最初写在 C: 的 workRoot，V: 的可用空间不下降；必须写在 V: 上，且可用
+空间用 `[System.IO.DriveInfo]::AvailableFreeSpace`（PSDrive 对象不保证刷新）。
+
+**下一步**：R-02（`Test-M5P4P5PowerCut.ps1`，先 1 cycle 再 3 cycles）。
+
 
 
 
