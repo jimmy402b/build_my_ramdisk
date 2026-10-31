@@ -823,6 +823,18 @@ set_tests_properties(integration.m5.bundle_corruption PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- M5 stop after a repaired bundle (R-03 follow-up) -------------------------
+# A disk that was started again from a repaired manifest must still stop.  This is its own
+# case because the corruption matrix depends on that stop, and because "the disk will not
+# stop" is a release-gate failure on its own.  Guest-only; opt-in with the fault group.
+add_test(
+    NAME integration.m5.stop_after_restore
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-stop-after-restore.ps1")
+set_tests_properties(integration.m5.stop_after_restore PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
 # ---- M5 P4/P5 power cut (R-02) -----------------------------------------------
 # Two guest halves with a host-driven hard power cut between them; the driver is
 # `tools/m5vm/Test-M5P4P5PowerCut.ps1`.  They are registered so the harness can run each

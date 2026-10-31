@@ -54,9 +54,37 @@ FAIL: b: the disk could not be stopped (plain: failed, forced: refused)
 `--force` 被状态机拒绝。客机随后退化（PowerShell over SSH / `cmd` 挂起），只能硬重启；服务日志
 在强制结束前没留下 `kind=7`（`service.log` 为空），因此**原因尚未定性**。
 
-**下一轮必须做的**：用一次干净的 B 复现，在 stop 之前不要杀服务进程，读 `kind=7` 的 code/step 与
-`last-trace.log`；重点看 stop 的最终 checkpoint 是否因为“恢复后的 durable persistence/gate”而失败。
-在定性之前，C/D 与“卷满”用例都不应继续在这条状态上叠。
+**第二次复现（请求 `beac3cfd…`，带诊断 dump）把范围缩小了**：
+
+```text
+b.stop_state=failed
+b.runtime_after_failed_stop=Running
+--- operation show
+  operation c0e89e06-…: failed (phase terminal)
+--- disk list line
+  1768a597-…  T:  Ready  running  runtime=Running activity=Idle
+              persistence=Clean health=Healthy generation=5 mem=1048576/67108864
+--- trace tail
+  （只有每秒一次的 worker status 轮询，来自测试的 disk list；
+   没有任何 quiesce/freeze/flush/remove/stop 的 worker 动作）
+```
+
+两个新事实：
+
+1. **stop 在碰 worker 之前就失败了**：盘仍 `Running`、`generation=5` 不变、`persistence=Clean`，
+   trace 里没有任何 stop 计划的 worker 动作（quiesce/freeze/flush/remove/stop 一个都没有）。
+   失败点在 `execute_operation` 的前置/第一个动作（`quiesce_mutations` 或绑定校验），不是
+   checkpoint 写失败。
+2. **之后 `--force` 被拒**：很可能是失败的那次 stop 仍持着 profile 的 operation gate，于是
+   force_stop 在准入时被判 `state_rejected`。也就是说“失败的操作没有把 gate 放掉”本身是第二个问题。
+
+**服务日志为什么读不到**：该用例把 console service 的 stderr 重定向到 `workRoot\service.log`，
+但失败后用 `Get-ChildItem -File` 只看得到 `trace.log`（`service.log`、`service.out.log` 都不存在），
+所以 `kind=7` 无从取。下一轮先修这个观测缺口（例如让 service 用 `cmd /c ... > log 2>&1` 启动，
+或确认 Start-Process 的重定向在 harness 会话里确实生效），再做一次干净复现。
+
+**下一轮必须做的**：用一次干净复现拿到 `kind=7` 的 code/step；同时看失败 stop 的 gate 是否被释放
+（`disk show`/日志里的 operation_gate）。在定性之前，C/D 与“卷满”用例都不应继续在这条状态上叠。
 
 ## 2. 已经写好的东西
 
@@ -66,8 +94,12 @@ FAIL: b: the disk could not be stopped (plain: failed, forced: refused)
   ② 无 worker 残留、盘不显示 Running；
   ③ bundle 逐文件长度+SHA-256 不变（不静默重建/重格式化）；
   ④ 恢复文件后同一块盘可启动、marker 字节一致、能正常 stop。
-- 用例里已加 `Stop-DiskForNextCase`：普通 stop 失败时尝试 `--force` 并把两种终态都打成读数，
-  避免把“盘停不下来”伪装成测试脚本错误。
+- 用例里已加 `Stop-DiskForNextCase`：普通 stop 失败时尝试 `--force`、再按可观测量（runtime）判定，
+  并在仍然 Running 时**先把 operation show / disk list / trace tail dump 出来再失败**——之前两次
+  失败都被 harness 先杀掉服务，导致没有证据可读。
+- 另外新增 `integration.m5.stop_after_restore`（`tests/e2e/test-m5-stop-after-restore.ps1`）：
+  单次“损坏→拒→修复→启动→stop”闭环。它单独跑 **1/1 PASS**，说明单次修复后 stop 是好的；
+  R-03 的 B 是**第二轮**修复后才失败，所以触发条件与“重复修复/启动”有关，而不是修复本身。
 
 ## 3. 未测的部分（明确写出来）
 

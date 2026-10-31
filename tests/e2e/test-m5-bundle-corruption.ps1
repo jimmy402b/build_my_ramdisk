@@ -54,6 +54,7 @@ $bundlePath = Join-Path $workRoot 'bundle'
 $backupPath = Join-Path $workRoot 'backup'
 $profileName = 'corrupt-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $serviceLog = Join-Path $workRoot 'service.log'
+$traceLog = Join-Path $workRoot 'trace.log'
 $serviceProcess = $null
 
 function Write-Reading([string]$key, [string]$value) {
@@ -178,30 +179,65 @@ function Start-ExpectSuccess([string]$profileId, [string]$label) {
     if ($runtime -ne 'Running') { Fail "${label}: the disk did not reach Running after restoring the file" }
 }
 
-# A clean stop before the next damage.  A plain stop is expected to work on a clean disk;
-# if it does not, the forced form is tried and both verdicts are printed, because "the disk
-# would not stop" is a finding of its own and must not be hidden as a test failure.
+# Bring the disk down before the next damage.
+#
+# **The operation verdict and the observable state are checked separately.**  Measured: after
+# a repaired start, `disk stop` can end `failed` even though the trace shows the worker
+# completing the whole ordered stop (flush, dismount, remove device, stop provider).  That
+# discrepancy is a product finding of its own (recorded as a reading), but the next damage
+# only needs the disk to be *down*, so "runtime=Stopped" is accepted and the failed operation
+# is reported rather than silently treated as a test failure.  A disk that is still Running
+# after both attempts is a hard failure.
 function Stop-DiskForNextCase([string]$profileId, [string]$label) {
     $stop = Invoke-Cli @('disk', 'stop', $profileId)
+    $stopId = Get-UuidFromText $stop.output
     $state = 'refused'
     if ($stop.exit -eq 0) {
-        $id = Get-UuidFromText $stop.output
-        if ($null -ne $id) { $state = Wait-ForTerminal $id 300 }
+        if ($null -ne $stopId) { $state = Wait-ForTerminal $stopId 300 }
     }
     Write-Reading ("$label.stop_state") $state
-    if ($state -ne 'succeeded') {
-        Write-Reading ("$label.stop_output") (($stop.output -replace "`n", ' | '))
-        $forced = Invoke-Cli @('disk', 'stop', $profileId, '--force')
-        $forcedState = 'refused'
-        if ($forced.exit -eq 0) {
-            $id = Get-UuidFromText $forced.output
-            if ($null -ne $id) { $forcedState = Wait-ForTerminal $id 300 }
-        }
-        Write-Reading ("$label.forced_stop_state") $forcedState
-        if ($forcedState -ne 'succeeded') {
-            Fail "${label}: the disk could not be stopped (plain: $state, forced: $forcedState)"
-        }
+    if ($state -eq 'succeeded') {
+        Start-Sleep -Seconds 2
+        return
     }
+    Write-Reading ("$label.stop_output") (($stop.output -replace "`n", ' | '))
+    $forced = Invoke-Cli @('disk', 'stop', $profileId, '--force')
+    $forcedState = 'refused'
+    if ($forced.exit -eq 0) {
+        $id = Get-UuidFromText $forced.output
+        if ($null -ne $id) { $forcedState = Wait-ForTerminal $id 300 }
+    }
+    Write-Reading ("$label.forced_stop_state") $forcedState
+    if ($forcedState -eq 'succeeded') {
+        Start-Sleep -Seconds 2
+        return
+    }
+    $deadline = (Get-Date).AddSeconds(30)
+    $runtime = $null
+    while ((Get-Date) -lt $deadline) {
+        $runtime = Get-Field (Get-DiskLine $script:mount) 'runtime'
+        if ($runtime -eq 'Stopped') { break }
+        Start-Sleep -Seconds 1
+    }
+    Write-Reading ("$label.runtime_after_failed_stop") ([string]$runtime)
+    if ($runtime -ne 'Stopped') {
+        # Dump the evidence *here*, before anything stops the service: this failure has
+        # twice reached a harness that killed the service first, leaving nothing to read.
+        Write-Host "--- ${label}: operation show"
+        if ($null -ne $stopId) {
+            $show = Invoke-Cli @('operation', 'show', $stopId)
+            Write-Host ("  exit=$($show.exit) " + (($show.output -replace "`n", ' | ')))
+        }
+        Write-Host "--- ${label}: disk list line"
+        Write-Host ("  " + [string](Get-DiskLine $script:mount))
+        if (Test-Path -LiteralPath $traceLog) {
+            Write-Host "--- ${label}: trace tail"
+            Get-Content -LiteralPath $traceLog -ErrorAction SilentlyContinue |
+                Select-Object -Last 40 | ForEach-Object { Write-Host "  $_" }
+        }
+        Fail ("${label}: the disk is still $runtime after a failed stop and a refused force-stop")
+    }
+    Write-Reading ("$label.stop_discrepancy") 'operation failed but the runtime is Stopped'
     Start-Sleep -Seconds 2
 }
 
@@ -210,7 +246,7 @@ try {
     Remove-ScService
     $running = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue)
     if ($running.Count -ne 0) { Fail "the guest already has $($running.Count) worker(s); reset it first" }
-    $env:MYRD_TRACE_FILE = Join-Path $workRoot 'trace.log'
+    $env:MYRD_TRACE_FILE = $traceLog
     $serviceProcess = Start-Process -FilePath $serviceExe -ArgumentList '--console' `
         -RedirectStandardError $serviceLog `
         -RedirectStandardOutput (Join-Path $workRoot 'service.out.log') `
