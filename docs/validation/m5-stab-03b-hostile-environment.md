@@ -1,16 +1,19 @@
-# STAB-03b / R-03：敌意环境（bundle 损坏 / 卷满 / ACL）—— **第 1 部分 PASSED；卷满/ACL 未测**
+# STAB-03b / R-03：敌意环境（bundle 损坏 / 卷满 / ACL）—— **损坏矩阵 + ACL PASSED；卷满未测**
 
 **结论分段：**
 
 1. **bundle 损坏矩阵（R-03 第 1 部分）PASSED**：`integration.m5.bundle_corruption` **1/1，48 s**，
    A/B/C/D 四种损坏全部“明确失败 + 无 worker + bundle 逐文件不变 + 恢复后可启动且数据完整 +
    stop 成功”。
-2. **上一轮报的“修复后 stop 失败”是测试自身的缺陷，不是产品缺陷**：用例拿**一份最初的备份**
+2. **ProgramData ACL 被改坏 PASSED**：`integration.m5.hostile_acl` **1/1，87 s**，保护位被清掉后
+   `disk list`/`disk start` 都明确失败（`0x4905`、`profile_store.directory_acl`、 “not protected”）、
+   无 worker；恢复后同一块盘可启动、marker 完整、stop 成功。
+3. **上一轮报的“修复后 stop 失败”是测试自身的缺陷，不是产品缺陷**：用例拿**一份最初的备份**
    反复恢复，而每次成功的 stop 都会推进 bundle 的 generation；于是第二次恢复把 bundle 倒回到
    旧代，与 durable profile 的 confirmed generation 分裂，stop 的 checkpoint boundary 自然被判
    `correlation invalid`（`prior=4 confirmed=5 candidate=5`）。改成**每次损坏前单独备份那个文件、
    只恢复它**之后，四个用例全绿。这段保留在这里，因为“用旧备份恢复”很容易再犯。
-3. **卷满（bundle 所在卷写满）与 ProgramData ACL 被改坏**：**未测**，测试脚本还没写。
+4. **bundle 卷满（bundle 所在卷写满）**：**未测**，测试脚本还没写。
 
 **客机**：`myrd-vm`，Windows 11 x64 26200，Release；每次运行前 `Reset-M5Guest`（损坏实验前硬重启）。
 
@@ -73,10 +76,39 @@ kind=7 command=disk.stop phase=running message=action=checkpoint code=22022
   单次“损坏→拒→修复→启动→stop”闭环。它单独跑 **1/1 PASS**，与损坏矩阵一起把“修复后 stop
   失败”的假象钉死在测试的旧备份上（§1.2）。
 
-## 3. 未测的部分（明确写出来）
+## 3. ProgramData ACL 被改坏 —— **PASSED**（`integration.m5.hostile_acl`，1/1，87 s）
+
+用例：创建盘 → 写 marker → checkpoint → stop；把 `C:\ProgramData\MyRamDisk\profiles\<id>` 的 DACL
+保护位清掉（`SetAccessRuleProtection($false,$false)`）；跑 `disk list` 与 `disk start`；再用原 SDDL
+恢复；最后同一块盘重新 start、读 marker、stop。
+
+```text
+READING: acl.sddl_before=...D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)
+READING: acl.sddl_damaged=...D:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)
+READING: damaged.list_exit=1
+READING: damaged.list_output=error: A profile directory ACL is not protected
+ |   command: disk.list
+ |   step: profile_store.directory_acl
+ |   code: 0x4905 domain 2
+READING: damaged.start_exit=1   （同上，command: disk.start）
+READING: damaged.workers_left=0
+READING: acl.protected_after_restore=True
+READING: restored.runtime=Running
+READING: restored.marker_intact=yes
+READING: restored.stop_state=succeeded
+READING: cleanup_forget=0
+```
+
+判定：ACL 被放宽后，**打开 profile 的命令明确失败**（`0x4905`、`profile_store.directory_acl`、
+消息直接说 “not protected”），不是静默成功、不是挂死、不留 worker；恢复保护位后同一块盘可启动、
+已提交数据完整、能正常 stop。
+
+**一个测试细节（值得记住）**：恢复 SDDL 后 `Get-Acl .Sddl` 字符串与原始不完全相同（Windows 会补
+`AI` 控制位），所以断言用 **`AreAccessRulesProtected`** 与“盘能起来”这两个语义判据，而不是字符串
+相等——字符串相等会误报。
+
+## 4. 未测的部分（明确写出来）
 
 - **bundle 卷满**：未写脚本。计划是一个 64 MiB 的 VHD 挂成 V:，bundle 放上去，填满到只剩几 MiB，
-  触发 checkpoint/写入失败；期望明确失败、最后提交代仍可恢复，腾出空间后恢复。需要 diskpart 建
-  VHD，属于会创建真实卷的操作，只能在客机上做。
-- **ProgramData ACL 被改坏**：未写脚本。计划是去掉 `C:\ProgramData\MyRamDisk` 上 SYSTEM 的访问，
-  重启服务，期望服务启动明确报错（不是静默降级）；恢复 ACL 后服务恢复。
+  触发 create/checkpoint 失败；期望明确失败、最后提交代仍可恢复，腾出空间后恢复。需要 diskpart
+  建 VHD，属于会创建真实卷的操作，只能在客机上做。

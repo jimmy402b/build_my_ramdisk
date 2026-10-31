@@ -835,6 +835,18 @@ set_tests_properties(integration.m5.stop_after_restore PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- M5 hostile ProgramData ACL (R-03) ---------------------------------------
+# A profile directory whose DACL has been loosened must be refused explicitly, and
+# restoring the original SDDL must bring the same disk back.  Guest-only; opt-in with the
+# fault group.
+add_test(
+    NAME integration.m5.hostile_acl
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-hostile-acl.ps1")
+set_tests_properties(integration.m5.hostile_acl PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
 # ---- M5 P4/P5 power cut (R-02) -----------------------------------------------
 # Two guest halves with a host-driven hard power cut between them; the driver is
 # `tools/m5vm/Test-M5P4P5PowerCut.ps1`.  They are registered so the harness can run each
