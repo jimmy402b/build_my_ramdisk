@@ -118,21 +118,40 @@ function Stop-ServiceProcess {
     Start-Sleep -Seconds 2
 }
 
-# Run `disk start` once and require a clean, explicit product failure: exit 1 (not 3
-# "service unavailable"), an error line, and no worker left behind.
+# Run `disk start` once and require a clean, explicit product failure.
+#
+# **The start is asynchronous.**  A healthy start answers "operation queued" with exit 0 and
+# the failure only appears when the operation runs; so "a corrupt bundle is refused" means
+# the *operation* reaches `failed`, not that the CLI refused the request.  A refusal before
+# admission (exit 1 with an error line) is accepted too -- either shape is a product verdict
+# rather than a hang or a silently successful start.
 function Start-ExpectExplicitFailure([string]$profileId, [string]$label) {
     $start = Invoke-Cli @('disk', 'start', $profileId)
     Write-Reading "$label.start_exit" ([string]$start.exit)
     Write-Reading "$label.start_ms" ([string]$start.ms)
-    if ($start.exit -ne 1) {
-        Fail ("${label}: a corrupt bundle must be a product failure (exit 1); got exit " +
-            "$($start.exit): $($start.output)")
+    if ($start.exit -eq 0) {
+        $operationId = Get-UuidFromText $start.output
+        if ($null -eq $operationId) {
+            Fail "${label}: the start was admitted without an operation id: $($start.output)"
+        }
+        $state = Wait-ForTerminal $operationId 300
+        Write-Reading "$label.operation_state" $state
+        if ($state -ne 'failed') {
+            Fail ("${label}: a corrupt bundle must fail the start operation; it ended " +
+                "$state -- the damage was accepted")
+        }
+    } elseif ($start.exit -eq 1) {
+        if ($start.output -notmatch 'error:') {
+            Fail "${label}: the refusal carried no error line: $($start.output)"
+        }
+        $message = (($start.output -split "`n") |
+            Where-Object { $_ -match 'error:|step:|code:' }) -join ' | '
+        Write-Reading "$label.error" $message
+        Write-Reading "$label.operation_state" 'refused-before-admission'
+    } else {
+        Fail ("${label}: a corrupt bundle must be a product failure (exit 0 then failed " +
+            "operation, or exit 1); got exit $($start.exit): $($start.output)")
     }
-    if ($start.output -notmatch 'error:') {
-        Fail "${label}: the failure carried no error line: $($start.output)"
-    }
-    $message = (($start.output -split "`n") | Where-Object { $_ -match 'error:|step:|code:' }) -join ' | '
-    Write-Reading "$label.error" $message
     Start-Sleep -Seconds 2
     $workers = @(Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue).Count
     Write-Reading "$label.workers_left" ([string]$workers)
@@ -141,6 +160,9 @@ function Start-ExpectExplicitFailure([string]$profileId, [string]$label) {
     Write-Reading "$label.runtime" ([string](Get-Field $line 'runtime'))
     Write-Reading "$label.health" ([string](Get-Field $line 'health'))
     Write-Reading "$label.persistence" ([string](Get-Field $line 'persistence'))
+    if ((Get-Field $line 'runtime') -eq 'Running') {
+        Fail "${label}: the disk reports Running over a bundle that failed to open"
+    }
 }
 
 function Start-ExpectSuccess([string]$profileId, [string]$label) {
@@ -154,6 +176,33 @@ function Start-ExpectSuccess([string]$profileId, [string]$label) {
     $runtime = Get-Field (Get-DiskLine $script:mount) 'runtime'
     Write-Reading "$label.restored_runtime" ([string]$runtime)
     if ($runtime -ne 'Running') { Fail "${label}: the disk did not reach Running after restoring the file" }
+}
+
+# A clean stop before the next damage.  A plain stop is expected to work on a clean disk;
+# if it does not, the forced form is tried and both verdicts are printed, because "the disk
+# would not stop" is a finding of its own and must not be hidden as a test failure.
+function Stop-DiskForNextCase([string]$profileId, [string]$label) {
+    $stop = Invoke-Cli @('disk', 'stop', $profileId)
+    $state = 'refused'
+    if ($stop.exit -eq 0) {
+        $id = Get-UuidFromText $stop.output
+        if ($null -ne $id) { $state = Wait-ForTerminal $id 300 }
+    }
+    Write-Reading ("$label.stop_state") $state
+    if ($state -ne 'succeeded') {
+        Write-Reading ("$label.stop_output") (($stop.output -replace "`n", ' | '))
+        $forced = Invoke-Cli @('disk', 'stop', $profileId, '--force')
+        $forcedState = 'refused'
+        if ($forced.exit -eq 0) {
+            $id = Get-UuidFromText $forced.output
+            if ($null -ne $id) { $forcedState = Wait-ForTerminal $id 300 }
+        }
+        Write-Reading ("$label.forced_stop_state") $forcedState
+        if ($forcedState -ne 'succeeded') {
+            Fail "${label}: the disk could not be stopped (plain: $state, forced: $forcedState)"
+        }
+    }
+    Start-Sleep -Seconds 2
 }
 
 try {
@@ -226,34 +275,31 @@ try {
     Start-ExpectSuccess $profileId 'a'
     if ((Get-Content -LiteralPath $markerPath -Raw) -ne $payload) { Fail 'A: the marker bytes changed after the manifest restore' }
     Write-Reading 'a.marker_intact' 'yes'
-    $stopA = Invoke-Cli @('disk', 'stop', $profileId)
-    if ($stopA.exit -eq 0) {
-        $id = Get-UuidFromText $stopA.output
-        if ($null -ne $id) { [void](Wait-ForTerminal $id 300) }
-    }
-    Start-Sleep -Seconds 2
+    Stop-DiskForNextCase $profileId 'a'
 
     # ------------------------------------------------------------------
     # B. manifest byte flipped
     # ------------------------------------------------------------------
-    Write-Step 'B: flip one byte inside the manifest'
+    Write-Step 'B: flip one byte inside *each* manifest slot'
+    # **Both slots, on purpose.**  The manifest keeps two generations; a start reads the
+    # active one and must ignore damage in the other.  Corrupting one slot therefore proves
+    # only that the fallback works, so this case damages both and asserts that *no* intact
+    # copy remains -- the product must refuse rather than pick a damaged generation.
     $bytes = [System.IO.File]::ReadAllBytes($original)
-    $offset = [int]($bytes.Length / 2)
-    $bytes[$offset] = $bytes[$offset] -bxor 0xFF
+    if ($bytes.Length -lt 8192) { Fail "the manifest is unexpectedly small: $($bytes.Length) bytes" }
+    $offsets = @([int]($bytes.Length / 4), [int]($bytes.Length * 3 / 4))
+    foreach ($offset in $offsets) {
+        $bytes[$offset] = $bytes[$offset] -bxor 0xFF
+    }
     [System.IO.File]::WriteAllBytes($original, $bytes)
-    Write-Reading 'b.manifest_flip_offset' ([string]$offset)
+    Write-Reading 'b.manifest_flip_offsets' ($offsets -join ',')
     $before = Get-BundleSnapshot
     Start-ExpectExplicitFailure $profileId 'b'
     Compare-BundleSnapshot $before (Get-BundleSnapshot) 'b'
     Copy-Item -LiteralPath (Join-Path $backupPath 'disk.rdm') -Destination $original -Force
     Start-ExpectSuccess $profileId 'b'
     Write-Reading 'b.marker_intact' $(if ((Get-Content -LiteralPath $markerPath -Raw) -eq $payload) { 'yes' } else { 'NO' })
-    $stopB = Invoke-Cli @('disk', 'stop', $profileId)
-    if ($stopB.exit -eq 0) {
-        $id = Get-UuidFromText $stopB.output
-        if ($null -ne $id) { [void](Wait-ForTerminal $id 300) }
-    }
-    Start-Sleep -Seconds 2
+    Stop-DiskForNextCase $profileId 'b'
 
     # ------------------------------------------------------------------
     # C. base image truncated
@@ -274,42 +320,38 @@ try {
     Copy-Item -LiteralPath (Join-Path $backupPath $baseName) -Destination $baseFile -Force
     Start-ExpectSuccess $profileId 'c'
     Write-Reading 'c.marker_intact' $(if ((Get-Content -LiteralPath $markerPath -Raw) -eq $payload) { 'yes' } else { 'NO' })
-    $stopC = Invoke-Cli @('disk', 'stop', $profileId)
-    if ($stopC.exit -eq 0) {
-        $id = Get-UuidFromText $stopC.output
-        if ($null -ne $id) { [void](Wait-ForTerminal $id 300) }
-    }
-    Start-Sleep -Seconds 2
+    Stop-DiskForNextCase $profileId 'c'
 
     # ------------------------------------------------------------------
     # D. journal byte flipped
     # ------------------------------------------------------------------
-    Write-Step 'D: flip one byte near the end of the journal'
+    Write-Step 'D: flip one byte in the journal header and one near its end'
+    # **The header, not only the tail.**  The journal's final sector may be padding, and a
+    # flip there proves nothing; the header carries the magic and the CRC that every reader
+    # checks first.  Damaging both ends is the honest "this journal is corrupt" case.
     $journal = Get-BundleFile 'journal-*.rdj'
     if ($journal.Count -ne 1) { Fail "expected one journal, found $($journal.Count)" }
     $journalName = $journal[0].Name
     $journalFile = $journal[0].FullName
     $stream = [System.IO.File]::Open($journalFile, 'Open', 'ReadWrite', 'None')
     try {
-        $offset = $stream.Length - 4096
-        $stream.Position = $offset
-        $one = $stream.ReadByte()
-        $stream.Position = $offset
-        $stream.WriteByte([byte]($one -bxor 0xFF))
+        $offsets = @([int64]64, [int64]($stream.Length - 4096))
+        foreach ($offset in $offsets) {
+            $stream.Position = $offset
+            $one = $stream.ReadByte()
+            $stream.Position = $offset
+            $stream.WriteByte([byte]($one -bxor 0xFF))
+        }
         $stream.Flush($true)
     } finally { $stream.Dispose() }
-    Write-Reading 'd.journal_flip_offset' ([string]$offset)
+    Write-Reading 'd.journal_flip_offsets' ($offsets -join ',')
     $before = Get-BundleSnapshot
     Start-ExpectExplicitFailure $profileId 'd'
     Compare-BundleSnapshot $before (Get-BundleSnapshot) 'd'
     Copy-Item -LiteralPath (Join-Path $backupPath $journalName) -Destination $journalFile -Force
     Start-ExpectSuccess $profileId 'd'
     Write-Reading 'd.marker_intact' $(if ((Get-Content -LiteralPath $markerPath -Raw) -eq $payload) { 'yes' } else { 'NO' })
-    $stopD = Invoke-Cli @('disk', 'stop', $profileId)
-    if ($stopD.exit -eq 0) {
-        $id = Get-UuidFromText $stopD.output
-        if ($null -ne $id) { [void](Wait-ForTerminal $id 300) }
-    }
+    Stop-DiskForNextCase $profileId 'd'
 
     Write-Step 'cleanup: forget the disk'
     $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId)

@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **R-01 / R-04 A·B·C / R-07 PASSED（§3.204、§3.206–§3.209）**。**未测**：R-02（P4/P5 定点断电）与 R-03（bundle 损坏/卷满/ACL）的装置已写未跑；R-05/R-08/R-09/R-10…R-19 未开始。**下一步**：① 跑 R-03 的 bundle 损坏矩阵（`integration.m5.bundle_corruption`）；② 跑 R-02（`Test-M5P4P5PowerCut.ps1 -Cycles 3`）；③ R-05 支持矩阵、R-08 升级/重装、R-10 发布工程；④ 收尾时重新冻结 manifest。**manifest 仍无效** |
+| **下一件事** | **R-01 / R-04 A·B·C / R-07 PASSED（§3.204、§3.206–§3.209）**。**R-03 第 1 部分半程**（§3.210）：manifest 截断行为正确；双槽翻位后 `disk stop` 终态 failed、`--force` 被拒，C/D 与卷满/ACL 未跑。**下一步**：① 定性/修复 stop-after-restore（干净复现、读 `kind=7`/`last-trace.log`）；② 跑完 R-03 损坏矩阵 → 卷满 → ProgramData ACL；③ R-02（`Test-M5P4P5PowerCut.ps1`）；④ R-05/R-08/R-10，然后 R-09、R-11…R-19。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5043,6 +5043,41 @@ kill 类用例只在客机跑。
 
 **R-04 完成后的剩余**：R-02（P4/P5 定点断电，装置已写）、R-03（bundle 损坏/卷满/ACL，损坏用例
 已写）、R-05、R-06、R-08、R-09、R-10、R-11…R-19。
+
+---
+
+### 3.210 2026-10-30：**R-03 第 1 部分半程 —— bundle 损坏矩阵被“恢复后 stop 失败”挡住**
+
+**结论**：`integration.m5.bundle_corruption`（opt-in `fault` 组）**PARTIAL**。证据：
+`docs/validation/m5-stab-03b-hostile-environment.md`。
+
+**A（manifest 截断到 32 B）行为正确**：
+
+```text
+a.operation_state=failed    a.workers_left=0    a.bundle_unchanged=yes
+a.restored_runtime=Running  a.marker_intact=yes a.stop_state=succeeded
+```
+
+明确失败、不挂死、不重写 bundle（逐文件长度+SHA-256 对比）；恢复原文件后同一块盘可启动、marker
+完整、能正常 stop。这一条已经满足 R-03 对“截断”的验收口径。
+
+**B（manifest 双槽各翻一字节）拒绝正确，但恢复后停不下来**：双槽损坏时 start 的 operation
+`failed`（正确——单槽损坏时产品用完好槽启动也是正确回退，所以用例必须两个槽都翻）。恢复文件、
+start 成功、marker 完整，然后：
+
+```text
+b.stop_state=failed
+b.stop_output=... operation ...: running (phase admitting)
+b.forced_stop_state=refused
+```
+
+`--force` 被状态机拒绝，盘保持 Running，客机随后退化（SSH/`cmd` 挂起），只能硬重启；强杀服务前
+`service.log` 没有 `kind=7`，原因**未定性**。C（base 截断）/D（journal 头尾翻位）因此没跑。
+
+**下一轮**：干净复现 B（stop 前不要杀服务进程），读 `kind=7` 与 `last-trace.log`，重点看 stop 的
+最终 checkpoint 在“恢复后的持久化/gate”上是怎么失败的；定性后再跑 C/D。**R-03 的卷满与 ACL
+两段还没写脚本**（计划见 validation 文档 §3）。
+
 
 
 
