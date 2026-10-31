@@ -269,6 +269,17 @@ TEST_CASE(cli_parses_disk_create_into_the_typed_command) {
     REQUIRE(invocation.request.wait);
 }
 
+TEST_CASE(cli_refuses_volume_labels_with_a_reason) {
+    // R-14: a label is a refused feature.  The message must name it, so a caller cannot
+    // mistake "unknown option" for "the label was applied".
+    const auto invocation = cli::parse_command_line(words(
+        {L"disk", L"create", L"--name", L"work", L"--bundle", L"C:\\bundles\\work",
+         L"--size", L"64MiB", L"--mount", L"X:", L"--label", L"DATA"}));
+    REQUIRE(!invocation.usage_error.empty());
+    REQUIRE(invocation.usage_error.find("--label") != std::string::npos);
+    REQUIRE(invocation.usage_error.find("not supported") != std::string::npos);
+}
+
 TEST_CASE(cli_refuses_a_command_line_it_cannot_express) {
     // An unknown switch is refused rather than dropped: a client that ignored an option
     // would do something other than what was asked.

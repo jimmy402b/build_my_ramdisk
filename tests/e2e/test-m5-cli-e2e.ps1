@@ -1132,6 +1132,23 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Write-Host "  installed service stopped cleanly"
     Invoke-Sc @('delete', $serviceName) | Out-Null
 
+    # R-14: a volume label is a refused feature, and the refusal names it.  The CLI rejects
+    # it before any request goes to the wire, so this needs no service and leaves nothing
+    # behind -- it proves the message a caller actually sees.
+    Write-Step 'a volume label is refused by name (R-14)'
+    $labelAttempt = Invoke-Cli @('disk', 'create', '--name', 'label-check',
+        '--bundle', (Join-Path $workRoot 'label-bundle'), '--size', '64MiB',
+        '--mount', 'T:', '--label', 'DATA')
+    Write-Host ("READING: label.exit=" + [string]$labelAttempt.exit)
+    Write-Host ("READING: label.output=" + (($labelAttempt.output -replace "`n", ' | ')))
+    if ($labelAttempt.exit -ne 1) {
+        Fail "a volume label must be a usage failure (exit 1); got exit $($labelAttempt.exit)"
+    }
+    if ($labelAttempt.output -notmatch '--label is not supported') {
+        Fail "the label refusal did not name the option: $($labelAttempt.output)"
+    }
+    Write-Host 'READING: label.result=refused-by-name'
+
     Write-Host 'PASS integration.m5.cli_e2e'
     exit 0
 } finally {

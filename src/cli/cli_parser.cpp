@@ -111,7 +111,8 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
     const std::vector<std::wstring> value_options{
         L"--name", L"--bundle", L"--size", L"--mount", L"--owner",
         L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval", L"--compaction-threshold",
-        L"--confirmation", L"--expected-image", L"--timeout", L"--pipe", L"--output"};
+        L"--confirmation", L"--expected-image", L"--timeout", L"--pipe", L"--output",
+        L"--label"};
     const std::vector<std::wstring> switch_options{
         L"--no-start", L"--force", L"--accept-volatile-data-loss", L"--wait",
         L"--no-wait", L"--dry-run", L"--from-previous", L"--help", L"-h",
@@ -288,6 +289,15 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
                 return invocation;
             }
             create.size_bytes = parsed_size.value();
+            // **Volume labels are a refused feature, not an ignored option (R-14).**
+            // The release decision is that this version does not set a volume label, so the
+            // entry has to say so by name; falling through to "unknown option" would leave
+            // the caller guessing whether the label was applied.
+            if (value_of(L"--label").has_value()) {
+                invocation.usage_error =
+                    "--label is not supported: this release does not set volume labels";
+                return invocation;
+            }
             if (auto owner = value_of(L"--owner"); owner.has_value()) {
                 create.owner_sid = std::move(owner.value());
             }

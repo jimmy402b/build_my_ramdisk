@@ -66,6 +66,19 @@ function Invoke-Phase {
     return [string]$text
 }
 
+# **The case's own stdout is not in the harness verdict.**  `Invoke-M5Vm.ps1 -Run` prints
+# only "N of N passed" and the capture path; the readings (P4_REACHED, the generation
+# numbers) live in the capture directory.  Measured: the first run of this driver passed the
+# prepare phase and then declared "the prepare phase did not report P4_REACHED" because it
+# searched the verdict text.
+function Get-PhaseCapture {
+    param([string]$PhaseText, [string]$CaseName)
+    $match = [regex]::Match([string]$PhaseText, 'captures:\s*(\S+)')
+    if (-not $match.Success) { throw 'the phase verdict did not print its capture directory' }
+    $path = $match.Groups[1].Value.TrimEnd('\') + '\' + $CaseName + '.stdout.txt'
+    return ((Invoke-Remote "if (Test-Path -LiteralPath '$path') { Get-Content -LiteralPath '$path' -Raw }") -join "`n")
+}
+
 function Invoke-Remote([string]$script) {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -155,8 +168,10 @@ for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
         MinTimeoutSeconds = 900
         TimeoutSeconds = 1800
     }
-    if ($prepareText -notmatch 'P4_REACHED') {
-        throw "cycle ${cycle}: the prepare phase did not report P4_REACHED:`n$prepareText"
+    $prepareCapture = Get-PhaseCapture $prepareText 'integration.m5.p4p5_prepare'
+    Write-Host $prepareCapture
+    if ($prepareCapture -notmatch 'P4_REACHED') {
+        throw "cycle ${cycle}: the prepare phase did not report P4_REACHED:`n$prepareCapture"
     }
 
     Write-Host '=== cutting the power (vmrun stop ... hard) while the worker is paused at P4'
@@ -181,13 +196,15 @@ for ($cycle = 1; $cycle -le $Cycles; $cycle++) {
         MinTimeoutSeconds = 900
         TimeoutSeconds = 1800
     }
-    if ($verifyText -notmatch 'PASS integration\.m5\.p4p5_verify') {
-        throw "cycle ${cycle}: the verify phase did not report PASS:`n$verifyText"
+    $verifyCapture = Get-PhaseCapture $verifyText 'integration.m5.p4p5_verify'
+    Write-Host $verifyCapture
+    if ($verifyCapture -notmatch 'PASS integration\.m5\.p4p5_verify') {
+        throw "cycle ${cycle}: the verify phase did not report PASS:`n$verifyCapture"
     }
 
-    $candidate = [regex]::Match($verifyText, 'READING: candidate_generation=(\d+)')
-    $recovered = [regex]::Match($verifyText, 'READING: recovered_generation=(\d+)')
-    $outcome = [regex]::Match($verifyText, 'READING: recovery_outcome=(\S+)')
+    $candidate = [regex]::Match($verifyCapture, 'READING: candidate_generation=(\d+)')
+    $recovered = [regex]::Match($verifyCapture, 'READING: recovered_generation=(\d+)')
+    $outcome = [regex]::Match($verifyCapture, 'READING: recovery_outcome=(\S+)')
     if (-not $candidate.Success -or -not $recovered.Success -or -not $outcome.Success) {
         throw "cycle ${cycle}: the verify phase did not print the generation readings"
     }
@@ -211,6 +228,9 @@ foreach ($row in $results) {
         $row.cycle, $row.candidate, $row.recovered, $row.outcome, $row.residue)
 }
 $candidates = @($results | Where-Object { $_.outcome -eq 'candidate' }).Count
-Write-Host ("  {0} of {1} cycles recovered to the P4 candidate generation" -f $candidates, $results.Count)
+$legal = @($results | Where-Object {
+    $_.outcome -eq 'candidate' -or $_.outcome -eq 'last_committed' }).Count
+Write-Host ("  {0} of {1} cycles recovered to a legal generation ({2} to the P4 candidate)" -f
+    $legal, $results.Count, $candidates)
 Write-Host 'PASS integration.m5.p4p5_powercut: the P4/P5 cut always recovered to a legal generation'
 exit 0

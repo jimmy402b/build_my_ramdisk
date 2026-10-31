@@ -50,7 +50,10 @@ $generationBefore = [uint64]$state.generation_before
 $candidate = [uint64]$state.candidate_generation
 $checkpointId = [string]$state.checkpoint_operation
 $payload = [string]$state.marker_payload
-$markerPath = Join-Path ($mount + '\') 'p4p5-marker.txt'
+# **Plain string, not `Join-Path`.**  `Join-Path 'T:\' ...` validates that the drive
+# exists, and after the power cut it does not until recovery starts the disk -- measured as
+# a DriveNotFoundException before the first reading was taken.
+$markerPath = $mount.TrimEnd('\') + '\p4p5-marker.txt'
 $workRoot = Split-Path -Parent $bundlePath
 $serviceProcess = $null
 
@@ -106,8 +109,11 @@ try {
             $value = Get-Field $line 'generation'
             if ($null -ne $value) { $generation = [uint64]$value }
             $runtime = Get-Field $line 'runtime'
-            if ($null -ne $generation -and $generation -ge $generationBefore
-                -and $runtime -ne 'Orphaned') { break }
+            # PowerShell 5.1 cannot parse a line that *starts* with a binary operator;
+            # the operator has to end the previous line.
+            if ($null -ne $generation -and
+                $generation -ge $generationBefore -and
+                $runtime -ne 'Orphaned') { break }
         }
         Start-Sleep -Seconds 1
     }
