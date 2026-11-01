@@ -25,6 +25,13 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 
 ## 2. 客机两次全量（连续两次一致）
 
+**发布全量 = `^(?!structural\.)`**：`structural.*` 三个用例需要 MSVC 工具链去配置一次性工程
+（`ExecutionBoundary.cmake` 的接受/拒绝实验），客机没有 Visual Studio，它们在客机上会失败而
+不是跳过。它们在**开发机**上全绿（`ctest -R "^structural\."` → 3/3），本手册把它们作为构建
+纪律的证据单独记录，不放进客机证据集。`structural.m5.execution_boundary` 声明了
+`SKIP_RETURN_CODE 77`，但 guest runner 的 results 里 skip 也是一个非零 exit code，validator 会
+拒绝，所以不能靠 skip。
+
 ```powershell
 $env:M5VM_HOST='myrd-vm'; $env:M5VM_USER='usr'
 $env:M5VM_KEY="$env:USERPROFILE\.ssh\id_ed25519"
@@ -35,14 +42,18 @@ $env:M5VM_PASSWORD='12345678'
 # C:\m5\Reset-M5Guest.ps1  →  profiles: 0 entries left / RESET
 
 tools\m5vm\Invoke-M5Vm.ps1 -Stage -Configuration Release
-$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 $run1 | Select-String 'passed|FAIL'
 # 记录 request id 与 results 路径（输出里 `results: C:\m5\control\<id>.results.json`）
 # 重置客机，再跑第二次，结果必须与第一次逐项一致
-$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 ```
 
 “一致”的判据：两次的 `passed` 数相同、失败集合为空、`results.json` 的 case 名单相同。
+
+**已知间发用例**（H1 记录，约 1/3 次运行出现一次）：`m5.production_execution_backend`（“runtime
+stands dirty”签名）与 `unit.m2.backing_generation`（`0xC0000409`）。出现时**整轮作废**，重跑
+整轮；不许只重跑该用例后拼证据。两次连续的干净全量才算数。
 
 把两次 results 拉回宿主机证据目录：
 
