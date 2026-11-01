@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_paths.h"
 
 #include "src/common/sha256_stream.h"
 #include "src/persistence/journal_format.h"
@@ -221,7 +222,7 @@ int hex_nibble(char value) {
 }
 
 JournalHeaderBytes load_sparse_header_fixture() {
-    std::ifstream input{MYRD_M3_JOURNAL_HEADER_FIXTURE_PATH};
+    std::ifstream input{MYRD_TEST_PATH(MYRD_M3_JOURNAL_HEADER_FIXTURE_PATH)};
     REQUIRE(input.good());
     JournalHeaderBytes bytes{};
     std::array<bool, kJournalAlignment> assigned{};
@@ -282,7 +283,7 @@ std::vector<std::byte> load_sparse_fixture(const char* path,
 }
 
 Sha256Digest load_digest_fixture() {
-    std::ifstream input{MYRD_M3_JOURNAL_DIGEST_FIXTURE_PATH};
+    std::ifstream input{MYRD_TEST_PATH(MYRD_M3_JOURNAL_DIGEST_FIXTURE_PATH)};
     REQUIRE(input.good());
     std::string line;
     while (std::getline(input, line)) {
@@ -798,15 +799,15 @@ TEST_CASE(journal_v1_block_builders_match_frozen_fixtures) {
     REQUIRE_EQ(independent_block_golden(
                    sample_block_record(JournalRecordType::Data),
                    payload, geometry),
-               load_sparse_fixture(MYRD_M3_JOURNAL_DATA_FIXTURE_PATH,
+               load_sparse_fixture(MYRD_TEST_PATH(MYRD_M3_JOURNAL_DATA_FIXTURE_PATH),
                                    kJournalAlignment + kM2BlockSize));
     REQUIRE_EQ(independent_block_golden(
                    sample_block_record(JournalRecordType::Zero), {}, geometry),
-               load_sparse_fixture(MYRD_M3_JOURNAL_ZERO_FIXTURE_PATH,
+               load_sparse_fixture(MYRD_TEST_PATH(MYRD_M3_JOURNAL_ZERO_FIXTURE_PATH),
                                    kJournalAlignment));
     REQUIRE_EQ(independent_block_golden(
                    sample_block_record(JournalRecordType::Discard), {}, geometry),
-               load_sparse_fixture(MYRD_M3_JOURNAL_DISCARD_FIXTURE_PATH,
+               load_sparse_fixture(MYRD_TEST_PATH(MYRD_M3_JOURNAL_DISCARD_FIXTURE_PATH),
                                    kJournalAlignment));
 }
 
@@ -1035,11 +1036,11 @@ TEST_CASE(journal_v1_block_decoder_rejects_semantic_mutations_with_valid_crc) {
 TEST_CASE(journal_v1_index_commit_and_digest_match_frozen_fixtures) {
     const auto sample = independent_sample_checkpoint();
     const auto index_fixture = load_sparse_fixture(
-        MYRD_M3_JOURNAL_INDEX_FIXTURE_PATH, kIndexNodeBytes);
+        MYRD_TEST_PATH(MYRD_M3_JOURNAL_INDEX_FIXTURE_PATH), kIndexNodeBytes);
     REQUIRE(std::equal(sample.index.begin(), sample.index.end(),
                        index_fixture.begin(), index_fixture.end()));
     const auto commit_fixture = load_sparse_fixture(
-        MYRD_M3_JOURNAL_COMMIT_FIXTURE_PATH, kJournalAlignment);
+        MYRD_TEST_PATH(MYRD_M3_JOURNAL_COMMIT_FIXTURE_PATH), kJournalAlignment);
     REQUIRE(std::equal(sample.commit_bytes.begin(),
                        sample.commit_bytes.end(),
                        commit_fixture.begin(), commit_fixture.end()));

@@ -4,6 +4,7 @@
 #include <bcrypt.h>
 
 #include "test_framework.h"
+#include "test_paths.h"
 
 #include "src/persistence/commit_resolver.h"
 #include "src/persistence/file_io.h"
@@ -64,7 +65,7 @@ std::string load_text(const char* path) {
 }
 
 std::string load_matrix_json() {
-    return load_text(MYRD_M3_CHECKPOINT_CRASH_MATRIX_PATH);
+    return load_text(MYRD_TEST_PATH(MYRD_M3_CHECKPOINT_CRASH_MATRIX_PATH));
 }
 
 std::vector<Scenario> parse_matrix(const std::string& json) {
@@ -1147,7 +1148,7 @@ TEST_CASE(checkpoint_crash_matrix_fixture_is_present_and_versioned) {
     const auto scenarios = parse_matrix(json);
     REQUIRE_EQ(count_occurrences(json, "\"id\""), scenarios.size());
     const auto registry_json =
-        load_text(MYRD_M3_FAULT_PHASE_REGISTRY_PATH);
+        load_text(MYRD_TEST_PATH(MYRD_M3_FAULT_PHASE_REGISTRY_PATH));
     const auto registry = parse_registry(registry_json);
     REQUIRE_EQ(count_occurrences(registry_json, "\"id\""),
                registry.size());
@@ -1157,7 +1158,7 @@ TEST_CASE(checkpoint_crash_matrix_fixture_is_present_and_versioned) {
 TEST_CASE(checkpoint_crash_matrix_rejects_classification_and_order_mutations) {
     const auto scenarios = parse_matrix(load_matrix_json());
     const auto registry = parse_registry(
-        load_text(MYRD_M3_FAULT_PHASE_REGISTRY_PATH));
+        load_text(MYRD_TEST_PATH(MYRD_M3_FAULT_PHASE_REGISTRY_PATH)));
     REQUIRE(matrix_matches_transaction_rules(scenarios, registry));
 
     auto wrong_commit = scenarios;
@@ -1183,7 +1184,7 @@ TEST_CASE(checkpoint_crash_matrix_rejects_classification_and_order_mutations) {
 TEST_CASE(checkpoint_crash_clones_recover_only_old_or_new_complete_maps) {
     const auto scenarios = parse_matrix(load_matrix_json());
     const auto registry = parse_registry(
-        load_text(MYRD_M3_FAULT_PHASE_REGISTRY_PATH));
+        load_text(MYRD_TEST_PATH(MYRD_M3_FAULT_PHASE_REGISTRY_PATH)));
     REQUIRE(matrix_matches_transaction_rules(scenarios, registry));
     CrashBundle bundle;
     for (const auto& scenario : scenarios) {
@@ -1207,7 +1208,7 @@ TEST_CASE(checkpoint_crash_clones_recover_only_old_or_new_complete_maps) {
 TEST_CASE(checkpoint_crash_clones_cover_short_and_all_sector_torn_cuts) {
     const auto scenarios = parse_matrix(load_matrix_json());
     const auto registry = parse_registry(
-        load_text(MYRD_M3_FAULT_PHASE_REGISTRY_PATH));
+        load_text(MYRD_TEST_PATH(MYRD_M3_FAULT_PHASE_REGISTRY_PATH)));
     CrashBundle bundle;
     for (const auto& phase : registry) {
         if (!phase.short_write || !phase.kill) continue;

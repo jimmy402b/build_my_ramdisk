@@ -313,8 +313,12 @@ schtasks /create /tn MyRamDisk-M5-Agent /f `
   "runtime stands dirty" 签名）与 `unit.m2.backing_generation`（`0xC0000409` 硬崩溃）。
   两者都在 3 次全套里各出现 1 次。用 `-Filter` 各跑 10 次统计复现率，复现时保留现场。
   见 `docs/validation/m5-current-state.md` §4。
-- **测试硬编码开发机绝对路径**（`MYRD_M3_*_FIXTURE_PATH`、`MYRD_PRODUCT_EXE_PATH`）。
-  目前靠在客机上镜像开发机路径布局绕过；长期正解是让测试从环境变量或相对路径取。
+- ~~测试硬编码开发机绝对路径~~：**已完成（R-17b）**。`MYRD_M3_*_FIXTURE_PATH` 与
+  `MYRD_PRODUCT_EXE_PATH` 仍是配置期常量，但测试运行时经 `tests/support/test_paths.h` 用
+  `MYRD_TEST_ROOT` 重定位；`Invoke-M5Vm.ps1` 在 guest 会话里设置该变量，并把 `tests.json`
+  的命令/工作目录按 `M5VM_GUEST_REPO` 重写。默认仍落在开发机路径（历史行为不变），
+  设 `M5VM_GUEST_REPO=C:\m5repo\m5-lifecycle` 即可在非镜像布局跑。读数见
+  `docs/validation/m5-stab-15b-test-paths.md`。
 - ~~客机 IP 固化~~：**已完成**，见 §6（`192.168.180.129` / 别名 `myrd-vm`）。
 - ~~stage `src/` 与 `cmake/`~~：**已完成**（Stage 的复制列表已改为枚举，避免再漏）。
 - ~~客机缺 git~~：**已完成**（Git 2.53 宿主机直传 + 镜像 git 元数据；客机 `rev-parse HEAD`

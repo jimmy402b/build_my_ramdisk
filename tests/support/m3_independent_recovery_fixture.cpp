@@ -4,6 +4,8 @@
 
 #include "m3_independent_recovery_fixture.h"
 
+#include "test_paths.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -294,12 +296,12 @@ std::vector<std::byte> frozen_journal() {
         const auto fixture = load_sparse_fixture(path, size);
         std::copy(fixture.begin(), fixture.end(), journal.begin() + offset);
     };
-    install(MYRD_M3_RECOVERY_HEADER_FIXTURE_PATH, 4096, 0);
-    install(MYRD_M3_RECOVERY_DATA_FIXTURE_PATH, 69632, kDataOffset);
-    install(MYRD_M3_RECOVERY_ZERO_FIXTURE_PATH, 4096, kZeroOffset);
-    install(MYRD_M3_RECOVERY_DISCARD_FIXTURE_PATH, 4096, kDiscardOffset);
-    install(MYRD_M3_RECOVERY_INDEX_FIXTURE_PATH, 4096, kRootOffset);
-    install(MYRD_M3_RECOVERY_COMMIT_FIXTURE_PATH, 4096, kCommitOffset);
+    install(MYRD_TEST_PATH(MYRD_M3_RECOVERY_HEADER_FIXTURE_PATH), 4096, 0);
+    install(MYRD_TEST_PATH(MYRD_M3_RECOVERY_DATA_FIXTURE_PATH), 69632, kDataOffset);
+    install(MYRD_TEST_PATH(MYRD_M3_RECOVERY_ZERO_FIXTURE_PATH), 4096, kZeroOffset);
+    install(MYRD_TEST_PATH(MYRD_M3_RECOVERY_DISCARD_FIXTURE_PATH), 4096, kDiscardOffset);
+    install(MYRD_TEST_PATH(MYRD_M3_RECOVERY_INDEX_FIXTURE_PATH), 4096, kRootOffset);
+    install(MYRD_TEST_PATH(MYRD_M3_RECOVERY_COMMIT_FIXTURE_PATH), 4096, kCommitOffset);
     if (get_u32(journal, kRootOffset + 32) != kRootCrc ||
         get_u32(journal, kCommitOffset + 32) != kCommitCrc ||
         !std::equal(kCheckpointDigest.begin(), kCheckpointDigest.end(),

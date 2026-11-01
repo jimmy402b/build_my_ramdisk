@@ -252,18 +252,39 @@ if ($Stage) {
     $build = Join-Path $repo 'out/build/msvc'
     if (-not (Test-Path $build)) { throw "build tree not found: $build" }
 
-    # The staged tree mirrors the DEV-MACHINE layout, because several tests bake
-    # absolute paths into the binary at configure time and a binary's constants
-    # cannot be rewritten on the way to the guest:
+    # **The guest tree does not have to sit at the dev path (R-17b).**
+    #
+    # `M5VM_GUEST_REPO` moves it.  Three things then have to agree, and all three do:
+    #   1. the payload is extracted at this path (below);
+    #   2. the command lines in tests.json are rewritten from the dev path to it (below);
+    #   3. the test binaries rebase their configure-time constants through MYRD_TEST_ROOT,
+    #      which `-Run` sets in the guest session (tests/support/test_paths.h).
+    #
+    # Refuse to aim a recursive delete at anything that is not this project's worktree.  This
+    # runs on the GUEST over ssh, but a wrong value here would still be destructive, so it is
+    # checked rather than assumed.
+    $guestRepoWin = if (-not [string]::IsNullOrWhiteSpace($env:M5VM_GUEST_REPO)) {
+        $env:M5VM_GUEST_REPO.TrimEnd('\')
+    } else {
+        $repo
+    }
+    if ([string]::IsNullOrWhiteSpace($guestRepoWin) -or
+        $guestRepoWin -notmatch '^[A-Za-z]:\\' -or
+        $guestRepoWin -notmatch 'm5-lifecycle\s*$') {
+        throw "refusing to clean an unexpected guest path: '$guestRepoWin'"
+    }
+
+    # Several tests bake absolute paths into the binary at configure time, and a binary's
+    # constants cannot be rewritten on the way to the guest:
     #
     #   MYRD_M3_*_FIXTURE_PATH   = ${CMAKE_SOURCE_DIR}/tests/fixtures/m3/...
     #   MYRD_M3_*_MATRIX_PATH    = ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/m3/...
     #   MYRD_PRODUCT_EXE_PATH    = $<TARGET_FILE:myrd>   (an absolute build path)
     #
-    # Mirroring the layout makes every one of those resolve, and it means the
-    # command lines travel VERBATIM -- no rewriting, so no rewriting bugs.
-    # The alternative (rewriting paths and patching the tests) is recorded as a
-    # follow-up in the harness document; it is the better long-term fix.
+    # Those are rebased at runtime through MYRD_TEST_ROOT (R-17b, see
+    # tests/support/test_paths.h), which `-Run` sets in the guest session.  The default
+    # guest path is still the dev path, so the historical run is unchanged; setting
+    # M5VM_GUEST_REPO moves the tree and everything above follows.
     $stageDir = Join-Path $OutDir 'stage'
     Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -349,7 +370,9 @@ if ($Stage) {
     if ($LASTEXITCODE -ne 0) { throw 'ctest --show-only=json-v1 failed' }
     $spec = ($json -join "`n") | ConvertFrom-Json
 
-    # Commands travel verbatim: the mirrored layout makes the baked paths valid.
+    # Commands are rewritten from the dev path to the guest path (R-17b).  When the two are
+    # the same -- the default -- this is a no-op, so the historical "verbatim" behaviour is
+    # preserved exactly.
     #
     # WORKING_DIRECTORY travels too.  It was missing at first, so the runner used
     # the executable's own directory -- a different launch context than CTest's
@@ -360,32 +383,30 @@ if ($Stage) {
     # so the reading is not trustworthy without this.
     $tests = foreach ($t in $spec.tests) {
         $props = $t.properties
+        # **Two spellings.**  ctest reports paths with forward slashes
+        # (`C:/Users/...`), while the host's own `$repo` is a Windows path; replacing only
+        # the backslash form left every command pointing at the dev tree (measured: a
+        # non-mirror run reported MISSING at the dev path).
+        $repoForward = $repo.Replace('\', '/')
+        $guestForward = $guestRepoWin.Replace('\', '/')
+        $command = @($t.command | ForEach-Object {
+            ([string]$_).Replace($repoForward, $guestForward).Replace($repo, $guestRepoWin)
+        })
+        $workingDirectory = if ($props) {
+            ([string](($props | Where-Object { $_.name -eq 'WORKING_DIRECTORY' }).value)).
+                Replace($repoForward, $guestForward).Replace($repo, $guestRepoWin)
+        } else { $null }
         [pscustomobject]@{
             name             = $t.name
-            command          = @($t.command)
+            command          = $command
             timeout          = if ($props) { ($props | Where-Object { $_.name -eq 'TIMEOUT' }).value } else { $null }
-            workingDirectory = if ($props) { ($props | Where-Object { $_.name -eq 'WORKING_DIRECTORY' }).value } else { $null }
+            workingDirectory = $workingDirectory
         }
     }
     $tests | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stageDir 'tests.json') -Encoding utf8
     Write-Host "staged $($tests.Count) tests -> $stageDir"
 
     Invoke-Remote -Script "New-Item -ItemType Directory -Force -Path '$RemoteRoot' | Out-Null; 'ok'" | Out-Null
-
-    # The tree lands at the DEV path on the guest, because that is what the
-    # baked-in constants point at.
-    $guestRepoWin = $repo
-    # Refuse to aim a recursive delete at anything that is not this project's
-    # checkout path.  This runs on the GUEST over ssh, but a wrong value here
-    # would still be destructive, so it is checked rather than assumed.
-    if ([string]::IsNullOrWhiteSpace($guestRepoWin) -or
-        $guestRepoWin -notmatch 'build_my_ramdisk' -or
-        $guestRepoWin -notmatch 'm5-lifecycle\s*$') {
-        throw "refusing to clean an unexpected guest path: '$guestRepoWin'"
-    }
-    if ($guestRepoWin -notmatch '^[A-Za-z]:\\') {
-        throw "guest repo path must be an absolute Windows path: '$guestRepoWin'"
-    }
 
     # Remove the previous tree first.  A layout change would otherwise leave
     # stale binaries that look like this run's and never get overwritten, which
@@ -487,10 +508,18 @@ if ($Run) {
         $id = [guid]::NewGuid().ToString('N')
     }
     $requestLocal = Join-Path $OutDir "$id.request.ps1"
+    # **Tell the test binaries where the tree is (R-17b).**  The configure-time constants
+    # point at the dev path; tests/support/test_paths.h rebases them onto this root when it
+    # is set.  The guest path is the same one staging used, so a non-mirror run resolves.
+    $runRepo = if (-not [string]::IsNullOrWhiteSpace($env:M5VM_GUEST_REPO)) {
+        $env:M5VM_GUEST_REPO.TrimEnd('\')
+    } else {
+        Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    }
     # The request body does one thing: call the guest's test executor.  The
     # agent owns bounded execution and the response envelope; how tests run is
     # Invoke-M5Tests.ps1's business.
-    $call = "& 'C:/m5/agent/Invoke-M5Tests.ps1' -ControlRoot '$RemoteRoot' -RequestId '$id' -TestsJson 'tests.json'"
+    $call = "`$env:MYRD_TEST_ROOT = '$runRepo'; & 'C:/m5/agent/Invoke-M5Tests.ps1' -ControlRoot '$RemoteRoot' -RequestId '$id' -TestsJson 'tests.json'"
     if (-not [string]::IsNullOrWhiteSpace($Filter)) {
         # Single quotes are the safe delimiter here: the filter is a regex the
         # guest's PowerShell will parse, and only an embedded quote could end it.

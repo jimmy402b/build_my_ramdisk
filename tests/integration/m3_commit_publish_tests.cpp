@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_paths.h"
 
 #include "src/persistence/commit_resolver.h"
 #include "tests/support/fault_file.h"
@@ -99,7 +100,7 @@ PublishOperationLease enter_resolution(
 }
 
 TEST_CASE(commit_publish_registry_freezes_all_manifest_boundaries) {
-    std::ifstream input{MYRD_M3_FAULT_PHASE_REGISTRY_PATH,
+    std::ifstream input{MYRD_TEST_PATH(MYRD_M3_FAULT_PHASE_REGISTRY_PATH),
                         std::ios::binary};
     REQUIRE(input.good());
     const std::string json{std::istreambuf_iterator<char>{input},

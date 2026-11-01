@@ -1,4 +1,5 @@
 #include "tests/support/test_framework.h"
+#include "test_paths.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -55,7 +56,7 @@ ProcessResult run_product(const std::wstring_view arguments,
     REQUIRE(SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0) != FALSE);
     REQUIRE(SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0) != FALSE);
 
-    std::wstring command = quote(MYRD_PRODUCT_EXE_PATH);
+    std::wstring command = quote(MYRD_TEST_PATH_W(MYRD_PRODUCT_EXE_PATH));
     command.push_back(L' ');
     command.append(arguments);
     STARTUPINFOW startup{};

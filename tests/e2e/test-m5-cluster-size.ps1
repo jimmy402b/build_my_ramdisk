@@ -1,4 +1,4 @@
-﻿# integration.m5.cluster_size -- a create can choose the NTFS cluster size, and the volume it
+# integration.m5.cluster_size -- a create can choose the NTFS cluster size, and the volume it
 # formats really has that size (R-17a).
 #
 # **Guest-only.**  It creates a real worker, AIM disk and NTFS volume, and reads the cluster
@@ -57,11 +57,8 @@ function Wait-ForTerminal([string]$operationId, [int]$seconds) {
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
         $show = Invoke-Cli @('operation', 'show', $operationId)
-        if ($show.exit -ne 0) { Fail "operation show failed: $($show.output)" }
-        # **Match the operation line, not any `: word` in the output.**  The show output also
-        # prints a disposition, and "disposition: completed" was read as a successful state
-        # while the operation had failed -- which is how this case reported success for a
-        # create whose provisioning had thrown.
+        # **A failed operation makes `operation show` exit 1; that is the answer, not an
+        # error.**  The state is still in the output, so it is parsed either way.
         $match = [regex]::Match($show.output,
             '(?m)^operation\s+\S+:\s+(succeeded|completed|failed|cancelled)\b')
         if ($match.Success) {
@@ -71,6 +68,16 @@ function Wait-ForTerminal([string]$operationId, [int]$seconds) {
         Start-Sleep -Milliseconds 200
     }
     return 'timeout'
+}
+
+function Wait-ForRunning([string]$id, [int]$seconds) {
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $deadline) {
+        $show = Invoke-Cli @('disk', 'show', $id)
+        if ($show.output -match 'running') { return $true }
+        Start-Sleep -Milliseconds 300
+    }
+    return $false
 }
 
 try {
@@ -130,18 +137,117 @@ try {
     }
     Write-Reading 'volume.cluster_size_match' 'yes'
 
-    Write-Step 'cleanup: stop and forget'
+    # **`fsutil` prints in the OS language, so its text is not parsed here.**  Measured on
+    # this zh-CN guest: the label is `每簇字节数`, and a regex over it kept missing (the
+    # child's output crosses two code pages).  `Win32_Volume.BlockSize` is the same number,
+    # locale-independent, and comes from the volume itself rather than from the Storage
+    # module's cached view, so the reading is still independent of `Get-Volume`.
+    $cimVolume = Get-CimInstance -ClassName Win32_Volume `
+        -Filter "DriveLetter='$($letter):'" -ErrorAction SilentlyContinue
+    if ($null -eq $cimVolume) { Fail "Win32_Volume did not report the volume at $mount" }
+    Write-Reading 'cim.block_size' ([string]$cimVolume.BlockSize)
+    if ([uint32]$cimVolume.BlockSize -ne [uint32]($ClusterSizeKiB * 1024)) {
+        Fail ("Win32_Volume.BlockSize is $($cimVolume.BlockSize), expected " +
+            "$($ClusterSizeKiB * 1024)")
+    }
+    Write-Reading 'cim.cluster_size_match' 'yes'
+
+    Write-Step 'a stop and start keeps the formatted cluster size (adopt, not reformat)'
     $line = Invoke-Cli @('disk', 'list')
     $profileId = Get-UuidFromText $line.output
-    if ($null -ne $profileId) {
-        $stop = Invoke-Cli @('disk', 'stop', $profileId)
-        if ($stop.exit -eq 0) {
-            $id = Get-UuidFromText $stop.output
-            if ($null -ne $id) { [void](Wait-ForTerminal $id 300) }
-        }
-        $forget = Invoke-Cli @('disk', 'forget', $profileId, '--confirmation', $profileId)
-        Write-Reading 'cleanup_forget' ([string]$forget.exit)
+    if ($null -eq $profileId) { Fail 'the created disk is not listed' }
+    $stop = Invoke-Cli @('disk', 'stop', $profileId)
+    if ($stop.exit -ne 0) { Fail "stop failed: $($stop.output)" }
+    $stopId = Get-UuidFromText $stop.output
+    if ($null -ne $stopId) {
+        $stopState = Wait-ForTerminal $stopId 300
+        if ($stopState -ne 'succeeded') { Fail "stop ended $stopState" }
     }
+    $start = Invoke-Cli @('disk', 'start', $profileId)
+    if ($start.exit -ne 0) { Fail "start failed: $($start.output)" }
+    $startId = Get-UuidFromText $start.output
+    if ($null -ne $startId) {
+        $startState = Wait-ForTerminal $startId 300
+        if ($startState -ne 'succeeded') { Fail "start ended $startState" }
+    }
+    # A stop immediately after a start can be admitted while the runtime is still coming up;
+    # wait for the disk to report running before asking it to stop.
+    if (-not (Wait-ForRunning $profileId 30)) { Fail 'the disk did not report running after start' }
+    $restartedVolume = $null
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        $restartedVolume = Get-Volume -DriveLetter $letter -ErrorAction SilentlyContinue
+        if ($null -ne $restartedVolume) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($null -eq $restartedVolume) { Fail "no volume at $mount after the restart" }
+    Write-Reading 'restart.allocation_unit_bytes' ([string]$restartedVolume.AllocationUnitSize)
+    if ([uint32]$restartedVolume.AllocationUnitSize -ne [uint32]($ClusterSizeKiB * 1024)) {
+        Fail ("after a restart the allocation unit is $($restartedVolume.AllocationUnitSize), " +
+            "expected $($ClusterSizeKiB * 1024)")
+    }
+    Write-Reading 'restart.cluster_size_match' 'yes'
+
+    Write-Step 'a create without the option keeps the Windows default (4 KiB)'
+    # Single-disk: the restarted disk has to be stopped before a second create is admitted.
+    $stopFirst = Invoke-Cli @('disk', 'stop', $profileId)
+    if ($stopFirst.exit -ne 0) { Fail "stopping the first disk failed: $($stopFirst.output)" }
+    $stopFirstId = Get-UuidFromText $stopFirst.output
+    if ($null -ne $stopFirstId) {
+        $stopFirstState = Wait-ForTerminal $stopFirstId 300
+        if ($stopFirstState -ne 'succeeded') { Fail "the first stop ended $stopFirstState" }
+    }
+    # **Not the first disk's letter.**  `Select-FreeLetter` legitimately returns it once the
+    # volume is gone, but the stopped profile still owns that mount target and the
+    # registration then refuses with "mount target is already registered to another disk".
+    $defaultMount = $null
+    foreach ($candidate in @('P:', 'Q:', 'U:', 'V:', 'W:', 'X:', 'Y:', 'Z:')) {
+        if ($candidate -eq $mount) { continue }
+        if (Test-Path "$candidate\") { continue }
+        if ($null -ne (Get-Volume -DriveLetter $candidate.TrimEnd(':') -ErrorAction SilentlyContinue)) { continue }
+        $defaultMount = $candidate
+        break
+    }
+    if ($null -eq $defaultMount) { Fail 'no free drive letter for the default disk' }
+    $defaultCreate = Invoke-Cli @('disk', 'create', '--name', 'cluster-default',
+        '--bundle', (Join-Path $workRoot 'bundle-default'), '--size', '64MiB',
+        '--mount', $defaultMount, '--checkpoint-interval', '30m')
+    if ($defaultCreate.exit -ne 0) { Fail "the default create failed: $($defaultCreate.output)" }
+    $defaultId = Get-UuidFromText $defaultCreate.output
+    if ($null -eq $defaultId) { Fail 'the default create carried no operation id' }
+    $defaultState = Wait-ForTerminal $defaultId 300
+    if ($defaultState -ne 'succeeded') { Fail "the default create ended $defaultState" }
+    $defaultLetter = $defaultMount.TrimEnd(':')
+    $defaultVolume = $null
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        $defaultVolume = Get-Volume -DriveLetter $defaultLetter -ErrorAction SilentlyContinue
+        if ($null -ne $defaultVolume) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($null -eq $defaultVolume) { Fail "no volume appeared at $defaultMount" }
+    Write-Reading 'default.allocation_unit_bytes' ([string]$defaultVolume.AllocationUnitSize)
+    if ([uint32]$defaultVolume.AllocationUnitSize -ne 4096) {
+        Fail ("the default create formatted with $($defaultVolume.AllocationUnitSize), not 4096")
+    }
+    Write-Reading 'default.cluster_size_match' 'yes'
+
+    Write-Step 'cleanup: stop and forget both disks'
+    $forgotten = 0
+    foreach ($row in @((Invoke-Cli @('disk', 'list')).output)) {
+        foreach ($match in [regex]::Matches($row,
+                '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')) {
+            $id = $match.Value
+            $stopOne = Invoke-Cli @('disk', 'stop', $id)
+            if ($stopOne.exit -eq 0) {
+                $opId = Get-UuidFromText $stopOne.output
+                if ($null -ne $opId) { [void](Wait-ForTerminal $opId 300) }
+            }
+            $forget = Invoke-Cli @('disk', 'forget', $id, '--confirmation', $id)
+            if ($forget.exit -eq 0) { $forgotten++ }
+        }
+    }
+    Write-Reading 'cleanup_forget_count' ([string]$forgotten)
 
     Write-Host 'PASS integration.m5.cluster_size: the create formats with the requested cluster size'
     Write-Reading 'result' 'PASS'

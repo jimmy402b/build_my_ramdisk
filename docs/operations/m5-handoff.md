@@ -5374,3 +5374,41 @@ READING: cleanup_forget=0
 支持矩阵与发布说明的“簇大小”行已改。
 
 **仍剩**：R-17b、R-18、R-11、R-13、R-15、R-16、R-19。
+
+---
+
+### 3.220 2026-11-01：**R-17b PASSED（测试路径改为运行时根，非镜像布局可跑）**
+
+任务清单 §8 的最后一项：测试在配置期把开发机绝对路径编进二进制
+（`MYRD_M3_*_FIXTURE_PATH`、`MYRD_PRODUCT_EXE_PATH`），所以客机必须镜像开发机布局。
+
+**做法**：`tests/support/test_paths.h` 在运行时用 `MYRD_TEST_ROOT` 把路径里
+`tests\fixtures\` 或 `out\build\` 之后的部分重定位（未设置时原样返回，开发机行为不变）；
+6 个文件 23 处宏引用改为 `MYRD_TEST_PATH(...)`/`MYRD_TEST_PATH_W(...)`；
+`tools/m5vm/Invoke-M5Vm.ps1` 支持 `M5VM_GUEST_REPO`，并把 `tests.json` 的命令与
+`WORKING_DIRECTORY` 从开发机路径改写到客机路径（**两种斜杠写法都要替换**——ctest 用正斜杠，
+只替反斜杠会留下开发机路径，实测表现为 `MISSING ... C:/Users/...`）。
+
+**客机读数**：
+
+```text
+staged to usr@myrd-vm:C:\m5repo\m5-lifecycle
+filter '^(unit\.m3\.journal_format|unit\.m3\.persistence_types)$': 2 of 173 cases selected
+2 of 2 passed
+```
+
+这两个用例必须读 `${CMAKE_SOURCE_DIR}/tests/fixtures/m3/*`；测试前已把旧镜像树删掉，
+所以通过不是“旧树还在”。非镜像布局下的 e2e `integration.m5.install_uninstall` 也 1/1。
+默认布局（不设 `M5VM_GUEST_REPO`）同样 2/2，历史行为不变。
+
+**同时把 R-17a 的验收补齐**（同一轮）：`integration.m5.cluster_size` 现在测
+4 件事：64 KiB create → `Get-Volume=65536` 与 `Win32_Volume.BlockSize=65536`；
+stop/start 后仍 65536（adopt 不重格式化）；不传选项的 create → 4096；非法值 exit 2。
+`fsutil` 输出是本地化文本（zh-CN），解析改用与语言无关的 `Win32_Volume.BlockSize`。
+`disk show` 不显示簇大小，是“create-only、不进记录”的直接结果，已在验证文档里写成明确偏离。
+
+**本地已知失败**（与本项无关，改动前后相同，`git stash` 对照）：
+`integration.m4.product_composition`、`integration.m3.recovery_oracle`、
+`model.m3.checkpoint_crash` 各一例未捕获异常。
+
+**仍剩**：R-18、R-11、R-13、R-15、R-16、R-19。

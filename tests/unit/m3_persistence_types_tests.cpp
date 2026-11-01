@@ -5,6 +5,7 @@
 ///        error context, exhaustive enum coverage per SPEC and PLAN.
 
 #include "test_framework.h"
+#include "test_paths.h"
 
 #include "src/common/sha256.h"
 #include "src/persistence/persistence_types.h"
@@ -1317,7 +1318,7 @@ TEST_CASE(unknown_stable_enum_wire_values_fail_closed) {
 }
 
 TEST_CASE(fault_phase_registry_has_frozen_schema_and_complete_records) {
-    std::ifstream input{MYRD_M3_FAULT_PHASE_REGISTRY_PATH,
+    std::ifstream input{MYRD_TEST_PATH(MYRD_M3_FAULT_PHASE_REGISTRY_PATH),
                         std::ios::binary};
     REQUIRE(input.good());
     const std::string json{std::istreambuf_iterator<char>{input},

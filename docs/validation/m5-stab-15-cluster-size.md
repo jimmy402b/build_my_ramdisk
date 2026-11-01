@@ -60,7 +60,10 @@ CLI --cluster-size
 - 三个 e2e 的 `Wait-ForTerminal` 用 `': (succeeded|completed|failed|cancelled)'` 匹配，会把
   `disposition: completed` 当成成功状态；现在只匹配 `^operation <id>: <state>`。
 
-## 4. 客机读数（`integration.m5.cluster_size` 1/1，83 s）
+## 4. 客机读数（`integration.m5.cluster_size` 1/1，93 s）
+
+任务清单的验收要求“`fsutil` 每簇字节 == 配置、默认 4K 不变、恢复后不变”。本用例现在把这四件事
+都测了：
 
 ```text
 READING: mount=T:
@@ -70,11 +73,23 @@ READING: create.state=succeeded
 READING: volume.filesystem=NTFS
 READING: volume.allocation_unit_bytes=65536
 READING: volume.cluster_size_match=yes
-READING: cleanup_forget=0
+READING: cim.block_size=65536
+READING: cim.cluster_size_match=yes
+READING: restart.allocation_unit_bytes=65536
+READING: restart.cluster_size_match=yes
+READING: default.allocation_unit_bytes=4096
+READING: default.cluster_size_match=yes
+READING: cleanup_forget_count=2
 PASS integration.m5.cluster_size: the create formats with the requested cluster size
 ```
 
-同一用例用 8 KiB 也验证过（`volume.allocation_unit_bytes=8192`），证明不是“恰好等于默认值”。
+- **`fsutil` 的替代读数**：这台客机是 zh-CN，`fsutil fsinfo ntfsinfo` 输出中文标签
+  （`每簇字节数`），跨两层代码页后正则反复漏配。改用 `Win32_Volume.BlockSize`（同样的数字、
+  与语言无关、来自卷本身而不是 Storage 模块的缓存视图）作为第二条独立读数；两条都等于 65536。
+- **`disk show` 不显示簇大小**：这是决策 6 “create-only、不进 profile 记录”的直接结果——记录里
+  没有这个字段可显示。验收的“一致性”由卷本身的两种读数（`Get-Volume` 与 `Win32_Volume`）
+  以及重启后的读数承担；这一点是对任务清单该行措辞的**明确偏离**，不是遗漏。
+- 同一用例用 8 KiB 也验证过（`volume.allocation_unit_bytes=8192`），证明不是“恰好等于默认值”。
 
 另有独立探针：在客机上对 64 MiB 的临时 VHD 直接
 `Format-Volume -Partition $p -FileSystem NTFS -AllocationUnitSize 8192`，读回 `au=8192`，
