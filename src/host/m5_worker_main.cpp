@@ -101,7 +101,57 @@ Result<WorkerBinding> self_binding(const WorkerLaunchSpec& spec) {
                       spec.profile_id});
 }
 
+// **A worker's failure also goes to a file.**  The launcher's handle list does not include the
+// worker's std handles, so an installed worker's stderr goes nowhere; measured while closing
+// B1: a worker that refused its pipe died with no readable message and the service only saw
+// ERROR_BROKEN_PIPE.  `logs\worker.log` is the same durable, management-only directory the
+// service's startup failures use.
+void log_worker_failure(const std::wstring& line) {
+    wchar_t program_data[MAX_PATH]{};
+    const DWORD length =
+        GetEnvironmentVariableW(L"ProgramData", program_data, MAX_PATH);
+    std::wstring path;
+    if (length != 0 && length < MAX_PATH) {
+        path.assign(program_data);
+        path += L"\\MyRamDisk\\logs\\worker.log";
+    }
+    // **A fallback for the case this exists for.**  In a console run the durable directory may
+    // not exist yet, and then the one diagnostic a refused worker has would be lost again.
+    // `%TEMP%` is always writable by the account the worker runs as.
+    wchar_t temp[MAX_PATH]{};
+    const DWORD temp_length = GetTempPathW(MAX_PATH, temp);
+    const std::wstring fallback =
+        temp_length != 0 && temp_length < MAX_PATH
+        ? std::wstring(temp) + L"myrd-m5-worker.log"
+        : std::wstring();
+    auto open = [](const std::wstring& p) {
+        return p.empty() ? INVALID_HANDLE_VALUE
+                         : CreateFileW(p.c_str(), FILE_APPEND_DATA,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       nullptr, OPEN_ALWAYS,
+                                       FILE_ATTRIBUTE_NORMAL, nullptr);
+    };
+    HANDLE file = open(path);
+    if (file == INVALID_HANDLE_VALUE) file = open(fallback);
+    if (file == INVALID_HANDLE_VALUE) return;
+    const std::wstring text = L"myrd-m5-worker: " + line + L"\n";
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                          static_cast<int>(text.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes > 0) {
+        std::string utf8(static_cast<std::size_t>(bytes), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                            static_cast<int>(text.size()), utf8.data(), bytes,
+                            nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written,
+                  nullptr);
+    }
+    CloseHandle(file);
+}
+
 int fail(const wchar_t* message) {
+    log_worker_failure(std::wstring(message));
     std::fwprintf(stderr, L"myrd-m5-worker: %s\n", message);
     return 1;
 }
@@ -111,10 +161,12 @@ int fail(const wchar_t* message) {
 // consequence rather than the cause -- which, when the channel simply closed,
 // is the only record of what the teardown actually hit.
 int fail_with(const wchar_t* message, const Error& error) {
-    std::fwprintf(stderr,
-                  L"myrd-m5-worker: %s (op=%ls msg=%ls native=%u code=%u)\n",
+    wchar_t line[1024]{};
+    std::swprintf(line, 1024, L"%s (op=%ls msg=%ls native=%u code=%u)",
                   message, error.operation.c_str(), error.message.c_str(),
                   error.native_code, error.code);
+    log_worker_failure(std::wstring(line));
+    std::fwprintf(stderr, L"myrd-m5-worker: %s\n", line);
     return 1;
 }
 

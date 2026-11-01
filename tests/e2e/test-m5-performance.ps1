@@ -132,7 +132,18 @@ try {
         if ($null -ne $profileId) { break }
         Start-Sleep -Milliseconds 500
     }
-    if ($null -eq $profileId) { Fail "the created profile never appeared in disk list: $($listing.output)" }
+    if ($null -eq $profileId) {
+        # Dump what the process cannot see from the client: the durable profile directories and
+        # their owners, plus the service's own log.  "The list is empty" has two very different
+        # causes -- a projection that lags and a profile the service refuses to load.
+        $dirs = @(Get-ChildItem 'C:\ProgramData\MyRamDisk\profiles' -Directory `
+            -ErrorAction SilentlyContinue | ForEach-Object {
+                $_.Name + '|owner=' + (Get-Acl -LiteralPath $_.FullName).Owner })
+        Write-Host ("READING: profile_dirs=" + ($dirs -join ';'))
+        Write-Host ("READING: service_log_tail=" + (((Get-Content -LiteralPath $serviceLog -ErrorAction SilentlyContinue |
+            Select-Object -Last 8) -join ' | ')))
+        Fail "the created profile never appeared in disk list: $($listing.output)"
+    }
     Write-Reading 'profile_id' $profileId
 
     Write-Step 'start'
