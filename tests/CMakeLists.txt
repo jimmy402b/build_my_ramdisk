@@ -2333,6 +2333,16 @@ set_tests_properties(integration.m5.compatibility PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- R-13: soak round --------------------------------------------------------
+# One round of the 24 h soak (or the post-cut verify), driven by tools/m5vm/Test-M5Soak.ps1.
+# Guest-only: real service, worker, volume and power cuts.
+add_test(
+    NAME integration.m5.soak
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-soak.ps1")
+set_tests_properties(integration.m5.soak PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 3600)
 # ---- R-15: support bundle ----------------------------------------------------
 # A real failure (a create whose bundle directory is not empty) then one command; the case
 # asserts the archive explains it and leaks no user/computer identity.  Guest-only: it creates
