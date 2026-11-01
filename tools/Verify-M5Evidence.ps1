@@ -53,31 +53,6 @@ function Check-Evidence([string]$directory) {
     foreach ($name in $script:required) {
         $path = Join-Path $directory $name
         if (-not (Require-File $path $name)) { continue }
-        if ($name -like '*.results.json') {
-            # A results file is only evidence if the case it names passed, and if it is the shape the
-            # harness writes rather than a hand-written summary.
-            try {
-                $parsed = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            } catch {
-                Refuse "$name is not JSON: $($_.Exception.Message)"
-                continue
-            }
-            # **The artifact is an array of per-case results, not one object.**  Measured against the files
-            # the runner actually writes: each element carries its own exit_code, so "the run passed" means
-            # every element is zero -- and a single non-zero element is a refusal that names the case.
-            $cases = @($parsed)
-            if ($cases.Count -eq 0) {
-                Refuse "$name contains no cases"
-                continue
-            }
-            $failed = @($cases | Where-Object { $null -ne $_.exit_code -and [int]$_.exit_code -ne 0 })
-            if ($failed.Count -ne 0) {
-                $names = ($failed | ForEach-Object { $_.name }) -join ', '
-                Refuse "$name records $($failed.Count) failing case(s): $names"
-            }
-            # The request id ties the file to one run; the runner writes it beside the results and in
-            # the manifest, and a file with none cannot be attributed.
-        }
         if ($name -eq 'release-manifest.json') {
             try {
                 $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
@@ -93,6 +68,34 @@ function Check-Evidence([string]$directory) {
             if ($readingCount -lt $script:minimumReadings) {
                 Refuse "the manifest carries $readingCount reading(s); at least $($script:minimumReadings) are required"
             }
+        }
+    }
+    # **Every results file in the set is checked, not only the manifest.**  Measured: this file
+    # used to loop over `$script:required` alone, which contains only `release-manifest.json`,
+    # so a `.results.json` whose case failed was never inspected -- a set with a genuinely
+    # failing case was accepted as long as the manifest was well-formed.  The scan below is
+    # what makes "accepted" mean "every case in the set passed".
+    $resultFiles = @(Get-ChildItem -LiteralPath $directory -Filter '*.results.json' -File -ErrorAction SilentlyContinue)
+    foreach ($file in $resultFiles) {
+        try {
+            $parsed = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+        } catch {
+            Refuse "$($file.Name) is not JSON: $($_.Exception.Message)"
+            continue
+        }
+        $cases = @($parsed)
+        if ($cases.Count -eq 0) {
+            Refuse "$($file.Name) contains no cases"
+            continue
+        }
+        $missing = @($cases | Where-Object { $null -eq $_.exit_code })
+        if ($missing.Count -ne 0) {
+            Refuse "$($file.Name) records $($missing.Count) case(s) with no exit_code"
+        }
+        $failed = @($cases | Where-Object { $null -ne $_.exit_code -and [int]$_.exit_code -ne 0 })
+        if ($failed.Count -ne 0) {
+            $names = ($failed | ForEach-Object { $_.name }) -join ', '
+            Refuse "$($file.Name) records $($failed.Count) failing case(s): $names"
         }
     }
 }
@@ -126,10 +129,25 @@ if ($SelfTest) {
         }
     }
 
+    # The results artifact is an **array** of per-case objects, like the harness writes; a
+    # single object would be accepted by @() but would not be the shape being defended.
     $writeResults = {
         param($case, $exit, $id)
-        $content = @{ exit_code = $exit; request_id = $id } | ConvertTo-Json
+        $content = '[' + (@{ name = 'm5.cli_e2e'; status = 'pass'; exit_code = $exit;
+            request_id = $id } | ConvertTo-Json) + ']'
         Set-Content -LiteralPath (Join-Path $case 'm5-cli-e2e.results.json') -Value $content
+    }
+    $writeManifest = {
+        param($case, [bool]$withBinaries, [int]$readings)
+        # **Built as JSON text on purpose.**  Measured: `ConvertTo-Json` turns an empty array
+        # coming out of `$(if ... else { @() })` into `{}`, which is truthy, so the "freezes
+        # nothing" fixture was accepted while the validator was told to defend against exactly
+        # that shape.
+        $binariesJson = if ($withBinaries) { '[{"name":"myrd-cli.exe","sha256":"x"}]' } else { '[]' }
+        $listing = for ($i = 0; $i -lt $readings; $i++) { '{"file":"readings-' + $i + '.results.json","sha256":"x"}' }
+        $manifest = '{"frozen_at":"2026-10-27T00:00:00Z","binaries":' + $binariesJson +
+            ',"readings":[' + ($listing -join ',') + ']}'
+        Set-Content -LiteralPath (Join-Path $case 'release-manifest.json') -Value $manifest
     }
 
     Expect-Refusal 'an empty directory' { param($case) }
@@ -139,15 +157,29 @@ if ($SelfTest) {
             Set-Content -LiteralPath (Join-Path $case $name) -Value ''
         }
     }
+    # The manifest is valid here on purpose: the only defect is the failing case, so a
+    # refusal proves the results files are inspected (measured: this fixture used to be
+    # refused only because the manifest was missing).
     Expect-Refusal 'a results file whose case failed' {
         param($case)
         & $writeResults $case 1 '00000000-0000-0000-0000-000000000001'
+        & $writeManifest $case $true 3
+    }
+    Expect-Refusal 'a results file whose case has no exit code' {
+        param($case)
+        '[{"name":"m5.cli_e2e","status":"unknown"}]' |
+            Set-Content -LiteralPath (Join-Path $case 'm5-cli-e2e.results.json')
+        & $writeManifest $case $true 3
     }
     Expect-Refusal 'a manifest that freezes nothing' {
         param($case)
         & $writeResults $case 0 '00000000-0000-0000-0000-000000000001'
-        $manifest = @{ frozen_at = '2026-10-27T00:00:00Z'; files = @() } | ConvertTo-Json
-        Set-Content -LiteralPath (Join-Path $case 'release-manifest.json') -Value $manifest
+        & $writeManifest $case $false 3
+    }
+    Expect-Refusal 'a manifest with too few readings' {
+        param($case)
+        & $writeResults $case 0 '00000000-0000-0000-0000-000000000001'
+        & $writeManifest $case $true 1
     }
 
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

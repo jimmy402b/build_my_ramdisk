@@ -108,6 +108,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\New-M5ReleaseManifest.
 
 ## 5. 校验 accepted
 
+**validator 检查的是"每一个 results 文件里的每一个 case"**（`*.results.json` 全扫描，缺 `exit_code`
+或 `exit_code != 0` 都会拒绝）。这条是 R-19 准备阶段发现并修掉的：旧版只检查 `release-manifest.json`
+本身，一个含失败 case 的证据集照样会被 “accepted”。现在自检 6 个坏证据集全部按**各自的原因**被拒。
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\Verify-M5Evidence.ps1 `
   -EvidenceDirectory out\m5-evidence
