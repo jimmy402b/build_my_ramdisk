@@ -112,7 +112,7 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
         L"--name", L"--bundle", L"--size", L"--mount", L"--owner",
         L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval", L"--compaction-threshold",
         L"--confirmation", L"--expected-image", L"--timeout", L"--pipe", L"--output",
-        L"--label"};
+        L"--label", L"--volume-label"};
     const std::vector<std::wstring> switch_options{
         L"--no-start", L"--force", L"--accept-volatile-data-loss", L"--wait",
         L"--no-wait", L"--dry-run", L"--from-previous", L"--help", L"-h",
@@ -291,11 +291,13 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
             create.size_bytes = parsed_size.value();
             // **Volume labels are a refused feature, not an ignored option (R-14).**
             // The release decision is that this version does not set a volume label, so the
-            // entry has to say so by name; falling through to "unknown option" would leave
-            // the caller guessing whether the label was applied.
-            if (value_of(L"--label").has_value()) {
+            // entry has to say so by name.  Both spellings are refused with the same message:
+            // the release tasklist names `--volume-label`, and `--label` is the shorter form a
+            // user would try first.
+            if (value_of(L"--label").has_value()
+                || value_of(L"--volume-label").has_value()) {
                 invocation.usage_error =
-                    "--label is not supported: this release does not set volume labels";
+                    "--volume-label is not supported: this release does not set volume labels";
                 return invocation;
             }
             if (auto owner = value_of(L"--owner"); owner.has_value()) {

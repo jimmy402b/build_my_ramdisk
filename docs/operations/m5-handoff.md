@@ -5317,3 +5317,13 @@ forget 0。**256 MiB 口径的一次尝试把客机卡死**（写+checkpoint 后
 - `integration.m5.install_uninstall` 1/1（含新加的 ACL 读回）；
 - `integration.m5.upgrade` 1/1（覆盖/保留数据卸载/重装/脏卸载）；
 - `integration.m5.bundle_corruption` 1/1（四种损坏的拒绝与恢复）。
+
+---
+
+### 3.218 2026-11-01：**R-14 收口 —— 选项名对齐 `--volume-label`**
+
+发布任务清单写的是 `--volume-label`，而上一版只拒了短写 `--label`。现在两种拼写都在 CLI 入口被拒，
+消息统一为 `--volume-label is not supported: this release does not set volume labels`，exit 2。
+客机读数：`integration.m5.cli_e2e` 1/1，`label.exit=2`、`label.result=refused-by-name`；`m5.cli` 单测
+覆盖两种拼写。wire/record 里的 `volume_label` 字段按“死代码隔离”保留，CLI 不可达，不做换路实现。
+`docs/operations/m5-support-matrix.md` 的卷标一行已同步。

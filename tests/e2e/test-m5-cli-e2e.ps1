@@ -1132,19 +1132,19 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
     Write-Host "  installed service stopped cleanly"
     Invoke-Sc @('delete', $serviceName) | Out-Null
 
-    # R-14: a volume label is a refused feature, and the refusal names it.  The CLI rejects
-    # it before any request goes to the wire, so this needs no service and leaves nothing
-    # behind -- it proves the message a caller actually sees.
+    # R-14: a volume label is a refused feature, and the refusal names it.  The release
+    # tasklist spells the option `--volume-label`; the CLI rejects it before any request goes
+    # to the wire, so this needs no service and leaves nothing behind.
     Write-Step 'a volume label is refused by name (R-14)'
     $labelAttempt = Invoke-Cli @('disk', 'create', '--name', 'label-check',
         '--bundle', (Join-Path $workRoot 'label-bundle'), '--size', '64MiB',
-        '--mount', 'T:', '--label', 'DATA')
+        '--mount', 'T:', '--volume-label', 'DATA')
     Write-Host ("READING: label.exit=" + [string]$labelAttempt.exit)
     Write-Host ("READING: label.output=" + (($labelAttempt.output -replace "`n", ' | ')))
     if ($labelAttempt.exit -ne 2) {
         Fail "a volume label must be a usage failure (exit 2); got exit $($labelAttempt.exit)"
     }
-    if ($labelAttempt.output -notmatch '--label is not supported') {
+    if ($labelAttempt.output -notmatch '--volume-label is not supported') {
         Fail "the label refusal did not name the option: $($labelAttempt.output)"
     }
     Write-Host 'READING: label.result=refused-by-name'
