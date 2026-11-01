@@ -60,7 +60,17 @@ $modeFile = Join-Path $SoakRoot 'mode.txt'
 $mode = if (Test-Path -LiteralPath $modeFile) {
     (Get-Content -LiteralPath $modeFile -Raw).Trim()
 } else { 'round' }
+# **Who is calling?**  The 24 h driver leaves one service running across rounds on purpose.  A
+# plain ctest invocation (the release suite) must not: it would leave a console service behind
+# and the next case that installs or starts a service would be running against it.  The driver
+# writes `driver.txt`; anything else is standalone and cleans up what it started.
+$driverFile = Join-Path $SoakRoot 'driver.txt'
+$driver = if (Test-Path -LiteralPath $driverFile) {
+    (Get-Content -LiteralPath $driverFile -Raw).Trim()
+} else { 'standalone' }
 Write-Host "READING: soak.mode=$mode"
+Write-Host "READING: soak.driver=$driver"
+$serviceStartedHere = $false
 
 $workRoot = Join-Path $SoakRoot ('run-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $serviceLog = Join-Path $workRoot 'service.log'
@@ -188,6 +198,7 @@ try {
             -RedirectStandardOutput (Join-Path $workRoot 'service.out.log') `
             -WindowStyle Hidden -PassThru
         if ($null -eq (Wait-ForService 90)) { Fail-Soak 'the service never answered' }
+        $serviceStartedHere = $true
         Write-Reading 'soak.service' 'started'
     }
     # **The soak owns the guest.**  Leftover profiles from an earlier run collide on the disk
@@ -300,6 +311,11 @@ try {
     Write-Reading 'result' 'PASS'
     Set-Content -LiteralPath (Join-Path $SoakRoot 'last.txt') -Value (("PASS`n" + ($script:readingLines -join "`n"))) -Encoding UTF8
 } finally {
-    # The service is deliberately left running: the next round reuses it and the readings then
-    # describe one long-lived process.  `stop-service` mode ends it at the end of the soak.
+    # Under the soak driver the service is deliberately left running: the next round reuses it
+    # and the readings describe one long-lived process (`stop-service` ends it at the end).
+    # Everywhere else, a service this case started is stopped again.
+    if ($serviceStartedHere -and $driver -ne 'soak') {
+        Get-Process -Name 'myrd-service' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process -Name 'myrd-m5-worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
 }

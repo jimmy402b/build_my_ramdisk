@@ -105,6 +105,13 @@ function Wait-ForScp([int]$seconds) {
     return $false
 }
 
+function Set-SoakDriver([string]$value) {
+    # Tells the guest case that the 24 h driver is calling: it then keeps one service alive
+    # across rounds instead of stopping what it started.
+    Invoke-Remote ("New-Item -ItemType Directory -Force -Path 'C:\m5\soak' | Out-Null; " +
+        "Set-Content -LiteralPath 'C:\m5\soak\driver.txt' -Value '$value' -Encoding ASCII; 'ok'") | Out-Null
+}
+
 function Set-SoakMode([string]$mode) {
     Invoke-Remote ("New-Item -ItemType Directory -Force -Path 'C:\m5\soak' | Out-Null; " +
         "Set-Content -LiteralPath 'C:\m5\soak\mode.txt' -Value '$mode' -Encoding ASCII; 'ok'") | Out-Null
@@ -158,6 +165,7 @@ try {
     Write-Log 'resetting the guest before the soak'
     Invoke-Remote ("& powershell.exe -NoProfile -ExecutionPolicy Bypass -File " +
         "'C:\m5\Reset-M5Guest.ps1' 2>&1 | Out-String") | ForEach-Object { Write-Log ("  reset: " + $_.Trim()) }
+    Set-SoakDriver 'soak'
     Set-SoakMode 'round'
 
     $deadline = (Get-Date).AddHours($Hours)
@@ -216,6 +224,10 @@ try {
     Set-SoakMode 'stop-service'
     $stopped = Invoke-SoakRound 'stop-service'
     if ($null -eq $stopped) { $failures++; Write-Log 'stopping: the service did not stop cleanly' }
+    # Leave no stale mode behind: a later ctest invocation of the case must default to a round
+    # and clean up after itself, not re-run `stop-service` because a file survived the soak.
+    Invoke-Remote ("Remove-Item -LiteralPath 'C:\m5\soak\mode.txt','C:\m5\soak\driver.txt' " +
+        "-Force -ErrorAction SilentlyContinue; 'ok'") | Out-Null
     $duration = if ($null -ne $first) { $round } else { 0 }
     $lines = @(
         "soak finished: rounds=$round cuts=$cuts failures=$failures",
