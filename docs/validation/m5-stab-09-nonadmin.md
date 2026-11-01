@@ -43,6 +43,19 @@
    再叠加受限令牌；当前证据表明问题在令牌/会话组合，而不是参数。
 3. 保留本页的失败表；重复上面任一机制前先读它。
 
+## 3b. 2026-11-01 第二轮机制排查（在 24h soak 期间，空闲时段做只读探针）
+
+| 机制 | 结果 |
+|---|---|
+| `vmrun -gu <标准用户> -gp <密码> runProgramInGuest` + `powershell -File step.ps1` | **能启动进程**（`whoami /user` 显示 `v\m5limited`，`myrd-cli --version` exit 0 且输出 `myrd-cli 1.0.0`）。但它是 **network logon**：`disk list` 得到 **exit 3**（`the service is not available`），与 SSH 会话语义一致——公有管道的 `(D;;GA;;;NU)` 明确拒绝网络登录。**因此它不能当 CLI 客户端。** |
+| `Start-Process -Credential`（CreateProcessWithLogonW） | 连 `myrd-cli --version` 都是 **0xC0000142**（STATUS_DLL_INIT_FAILED），不只是 GUI。 |
+| 计划任务 `-RunLevel Limited` + 用户密码 | 起初 `LastTaskResult=267011`（从不运行）。**给该用户补 `SeBatchLogonRight` 后运行成功**：`last_result=0`、`LastRunTime` 是当前时间、`whoami /user` 显示 `v\m5limited`（标准用户 SID）。这是目前唯一能在客机后台拿到“非提权 + batch logon”的方式。 |
+| 补权限的做法 | `secedit /export /cfg before.inf /areas USER_RIGHTS` → 在 `SeBatchLogonRight` 追加该用户 SID → `secedit /configure /db secpol.sdb /cfg after.inf /areas USER_RIGHTS`（本机返回 1，但检查导出已含该用户，任务随即能跑）。 |
+
+**待验证**：通过该计划任务运行 `disk list` 时，soak 正占着同一个 service，命令没有在 40 s 内返回（只看到进程在跑、没有输出文件）。**必须在 service 空闲时重测**：若 batch logon 仍被管道拒绝（exit 3），则 R-11 的客机读数在这个客机上不可达，只能记录为环境限制；若返回 0，则 R-11 机制成立，按下面的脚本取得五条读数。
+
+`tools/m5vm/Test-M5NonAdmin.ps1` 目前用 vmrun 实现；重测后若计划任务可用，将改为计划任务机制（同一套 prepare/cleanup 与断言不变）。
+
 ## 4. 复现（已完成部分）
 
 ```powershell
