@@ -33,6 +33,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
 include(cmake/Warnings.cmake)
 include(cmake/ExecutionBoundary.cmake)
+
+# **Reproducible binaries (R-10).**  MSVC writes a build timestamp into every PE unless
+# `/Brepro` is on, which makes "same commit, same source, different SHA-256" the default.  The
+# release promise is SHA-256 based, so the build has to be deterministic: `/Brepro` replaces
+# the timestamp with a hash of the inputs for both the compiler and the linker.
+if(MSVC)
+    add_compile_options(/Brepro)
+    add_link_options(/Brepro)
+endif()
+
 add_subdirectory(src)
 if(BUILD_TESTING)
     add_subdirectory(tests)
