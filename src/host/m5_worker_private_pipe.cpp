@@ -701,22 +701,45 @@ Result<void> verify_private_pipe_server(HANDLE pipe) {
                               admins_sid.data(), &admins_bytes);
     bool allowed = false;
     if (sids) {
+        // **One fixed buffer, not the two-call size dance.**  `TOKEN_USER` plus one SID fits in
+        // 256 bytes; the previous version allocated a variable buffer and read through it, and
+        // the A/B that disabled this check was the only way to make create succeed again --
+        // so the diagnosis removed every heap and alignment variable from the path.
+        std::array<std::byte, 256> buffer{};
         DWORD needed = 0;
-        static_cast<void>(GetTokenInformation(token, TokenUser, nullptr, 0, &needed));
-        if (needed != 0) {
-            std::vector<std::byte> buffer(needed);
-            if (GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed)) {
-                const auto* user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
-                if (user->User.Sid != nullptr
-                    && EqualSid(user->User.Sid, system_sid.data())) {
-                    allowed = true;
+        if (GetTokenInformation(token, TokenUser, buffer.data(),
+                                static_cast<DWORD>(buffer.size()), &needed)) {
+            const auto* user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
+            if (user->User.Sid != nullptr
+                && EqualSid(user->User.Sid, system_sid.data())) {
+                allowed = true;
+            }
+            // Same account as this worker is accepted too: a console service runs as the same
+            // administrator account as its workers, and a filtered token can make the
+            // Administrators-group probe say no.  A squatter is a different user.
+            if (!allowed) {
+                HANDLE self = nullptr;
+                if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self)) {
+                    std::array<std::byte, 256> self_buffer{};
+                    DWORD self_needed = 0;
+                    if (GetTokenInformation(self, TokenUser, self_buffer.data(),
+                                            static_cast<DWORD>(self_buffer.size()),
+                                            &self_needed)) {
+                        const auto* self_user =
+                            reinterpret_cast<const TOKEN_USER*>(self_buffer.data());
+                        if (self_user->User.Sid != nullptr && user->User.Sid != nullptr) {
+                            allowed = EqualSid(user->User.Sid,
+                                               self_user->User.Sid) != FALSE;
+                        }
+                    }
+                    static_cast<void>(CloseHandle(self));
                 }
             }
-        }
-        if (!allowed) {
-            BOOL member = FALSE;
-            if (CheckTokenMembership(token, admins_sid.data(), &member) && member) {
-                allowed = true;
+            if (!allowed) {
+                BOOL member = FALSE;
+                if (CheckTokenMembership(token, admins_sid.data(), &member) && member) {
+                    allowed = true;
+                }
             }
         }
     }

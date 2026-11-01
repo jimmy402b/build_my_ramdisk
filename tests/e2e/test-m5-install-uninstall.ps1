@@ -87,6 +87,22 @@ try {
     if ($profilesAcl -match 'BUILTIN\\Users' -or $profilesAcl -match 'S-1-5-32-545') {
         Fail "the profiles directory is readable by Users, which the store refuses:`n$profilesAcl"
     }
+    # **R-09 runtime checks that need an installed product.**  The audit asked for the owner of
+    # the durable root and for the log directory's readers; both are recorded here because this
+    # is the only case that installs.  The log used to be Users-readable while failure messages
+    # carried full bundle paths (B4).
+    $rootAcl = Get-Acl -LiteralPath $dataDir
+    $logsAcl = Get-Acl -LiteralPath (Join-Path $dataDir 'logs')
+    $installAcl = Get-Acl -LiteralPath $installDir
+    Write-Host ("READING: data_root.owner=" + $rootAcl.Owner)
+    Write-Host ("READING: data_root.sddl=" + $rootAcl.Sddl)
+    Write-Host ("READING: logs.sddl=" + $logsAcl.Sddl)
+    Write-Host ("READING: install_dir.sddl=" + $installAcl.Sddl)
+    $logsText = & icacls.exe (Join-Path $dataDir 'logs') 2>&1 | Out-String
+    if ($logsText -match 'BUILTIN\\Users' -or $logsText -match 'S-1-5-32-545') {
+        Fail "the logs directory is readable by Users:`n$logsText"
+    }
+    Write-Host '  logs are management-only'
 
     Step 'the installed service serves its own client'
     $cli = Join-Path $installDir 'myrd-cli.exe'

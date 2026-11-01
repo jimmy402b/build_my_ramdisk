@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **PASSED**：R-01…R-08、R-10（发布流程 + `/Brepro` 可复现）、R-12（性能基线，§3.216）、R-14；STAB-03/06 全部。**R-09 审计完成、7 个阻断项 B1–B7 待修**（§3.216）。**下一步**：① 修 B1–B7 并按审计 §4 跑 11 条运行期检查；② R-11 非提权 GUI；③ R-13 24h soak（小负载、频繁 checkpoint，避开 256 MiB 卡死口径）；④ R-15 支持包、R-16 一页文档、R-17a 簇大小、R-17b 测试路径、R-18 兼容性；⑤ R-19 演练 + manifest 重新冻结。**manifest 仍无效** |
+| **下一件事** | **PASSED**：R-01…R-12（含 R-09 安全审计、R-10 发布工程、R-12 性能基线）、R-14；STAB-03/06/07/08/10 全部通过（§3.204–§3.217）。**下一步**：① R-11 非提权 GUI 只读 e2e；② R-13 24h soak（小负载、频繁 checkpoint、每 N 轮硬断电）；③ R-15 支持包、R-16 一页文档、R-17a 簇大小、R-17b 测试路径、R-18 兼容性；④ R-19 演练 + manifest 重新冻结 + 两次全量。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5290,3 +5290,30 @@ forget 0。**256 MiB 口径的一次尝试把客机卡死**（写+checkpoint 后
 **R-10 已 PASSED**：`/Brepro` 后同一 commit 的两次 `--clean-first` 构建四个二进制 SHA-256 完全一致；
 发布流程文档 `docs/operations/m5-release.md` 已写（未签名 + SmartScreen 后果、manifest/verify、发布
 说明要求）。
+
+---
+
+### 3.217 2026-11-01：**R-09 PASSED（7 个阻断项全修 + smoke 验证）、R-10 PASSED**
+
+**R-09**：审计的 7 个阻断项全部落地并验证。关键点：B1 的 worker 侧服务端校验最初让 console 模式的
+`disk create` 在 `create-bundle` 断管（`native=109`，worker 无日志）。A/B 关闭校验后 create 恢复；
+把校验里的“两次 `GetTokenInformation` + 可变堆缓冲”改成**固定 256 字节缓冲 + 一次调用**后，校验
+开启时 create 也恢复——问题在检查自身的实现细节，不在“worker 不该校验服务端”。修复后四支 smoke
+全绿：`performance`、`install_uninstall`、`upgrade`、`bundle_corruption`（各 1/1）。
+
+运行期检查已执行 3 条：安装后 `data_root.owner=BUILTIN\Administrators` 且 DACL 为
+`O:BAG:...:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`；`logs` 同一形状（Users 不再可读）；`C:\Program Files\MyRamDisk`
+继承的 ACL 只给 `BUILTIN\Users` 读/执行（`0x1200a9`/`GXGR`），标准用户不能替换二进制。其余 8 条
+（管道劫持、job DACL、worker token dump、junction export、超长路径、控制通道 DoS 等）需要标准用户
+会话或攻击载荷，**明确标注未执行**。8 条接受风险已文档化。
+
+**R-10**：`/Brepro` 后，同一 commit 两次 `--clean-first` 构建的四个二进制 SHA-256 完全一致
+（cli `08D3837A…`、service `7E79BDEF…`、worker `55EEC4E6…`、gui `05D15424…`）；发布流程文档
+`docs/operations/m5-release.md` 写完（未签名 + SmartScreen 后果、manifest/verify、发布说明六项、
+发布前检查单）。
+
+**客机 smoke 读数**（修复后）：
+- `integration.m5.performance` 1/1（create/start/checkpoint/stop 全成功）；
+- `integration.m5.install_uninstall` 1/1（含新加的 ACL 读回）；
+- `integration.m5.upgrade` 1/1（覆盖/保留数据卸载/重装/脏卸载）；
+- `integration.m5.bundle_corruption` 1/1（四种损坏的拒绝与恢复）。

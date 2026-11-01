@@ -260,7 +260,17 @@ int wmain(const int argc, wchar_t** argv) {
         // stop and the service never hearing a failure, four minutes later -- so the gap is one of these two calls.
         // 'command handled' without 'reply written' is a channel problem; neither is a block inside the action.
         diagnostic_trace("worker: command handled");
-        if (!reply.ok()) break;
+        if (!reply.ok()) {
+            // A failed action used to end the loop silently, so the service saw only a broken
+            // pipe and the reason was lost.  Record it before leaving; the reply cannot be
+            // sent because the action produced an error rather than a message.
+            log_worker_failure(
+                std::wstring(L"command failed: op=") + reply.error().operation +
+                L" msg=" + reply.error().message + L" native=" +
+                std::to_wstring(reply.error().native_code) + L" code=" +
+                std::to_wstring(reply.error().code));
+            break;
+        }
         auto written = client.value()->write(context_for(kHandshakeTimeout),
                                              reply.value());
         diagnostic_trace("worker: reply written");

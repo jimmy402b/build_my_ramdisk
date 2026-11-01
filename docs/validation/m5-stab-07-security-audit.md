@@ -62,29 +62,38 @@
 ## 5. 状态
 
 - 审计：**完成**（静态）。
-- §2 阻断项：**代码已修，验证进行中**（2026-11-01）：
+- §2 阻断项：**代码已修并验证**（2026-11-01）：
   - B1：worker 连接后校验服务端进程 SID ∈ {LocalSystem, Administrators, 客户端自身账号}；
   - B2：安装器把 data root/profiles/operations/logs 的 owner 设为 Administrators；产品
-    `validate_management_acl` 现在同时校验 owner（SYSTEM / Administrators / 服务自身账号）；
-  - B3：`disk export` 改为 **administrator-only**（跨信任域写文件，不再允许非管理员 owner）；
-  - B4：`logs` 目录改为 management-only（不再是 Users 可读），并设 owner；
-  - B5：job 句柄改为显式 `JOB_OBJECT_QUERY`（不再 `DUPLICATE_SAME_ACCESS`）；
-  - B6：`read_launch_spec` 改为读到 EOF，上限 128 KiB（与编码一致）；
-  - B7：客户端连接后校验服务端进程 SID（同 B1 的三类身份）。
-  构建通过；`install_uninstall` 1/1 通过（安装器 owner/日志 DACL 变更未破坏安装路径）。
-- **验证中发现的观察**：
-  1. **SSH 会话不能直接当客户端**：公有管道 DACL 明确 deny 网络登录（`(D;;GA;;;NU)`），从 SSH
-     会话跑 `myrd-cli` 会得到 `ERROR_ACCESS_DENIED (5)`——这是设计，不是缺陷；客机用例必须走
-     agent 的批处理/服务登录。
-  2. **console 模式 smoke 仍有一处未定性**：`integration.m5.performance` 有两种表现：
-     (a) create 成功但 `disk list` 0 行（20 s 重试仍空）；
-     (b) create 在 `create-bundle` 失败，`kind=7` 为
-         `action=create-bundle code=4107 native=109 step=WorkerPipeChannel::read detail=pipe transfer failed`
-         ——worker 连上后立刻断开。
-     两者都指向“worker 连上后很快退出”。worker 的失败日志（新增 `logs\worker.log`，缺失时回退
-     `%TEMP%\myrd-m5-worker.log`）**没有产生任何条目**，说明 worker 不是走 `fail()/fail_with()` 退出，
-     更像崩溃。下一步做 A/B：临时让 `verify_private_pipe_server()`（B1）直接返回成功，重跑同一用例，
-     确认是不是新校验导致；若是，再定位 `GetNamedPipeServerProcessId`/token 查询在 worker 进程里的
-     具体失败点。定性前 B1/B2 的 console 模式验证不算完成，R-09 保持 PARTIAL。
+    `validate_management_acl` 同时校验 owner；
+  - B3：`disk export` 改为 **administrator-only**；
+  - B4：`logs` 改为 management-only（不再是 Users 可读）；
+  - B5：job 句柄改为显式 `JOB_OBJECT_QUERY`；
+  - B6：`read_launch_spec` 读到 EOF、上限 128 KiB；
+  - B7：客户端连接后校验服务端进程 SID。
+
+  **B1 的调试过程值得记住**：加上校验后 console 模式的 `disk create` 在 `create-bundle` 阶段失败
+  （`kind=7 code=4107 native=109 step=WorkerPipeChannel::read`），worker 没有任何失败日志。
+  A/B 关闭 worker 侧校验后 create 恢复；把校验里的“两次 `GetTokenInformation` + 可变堆缓冲”改成
+  **固定 256 字节缓冲 + 一次调用**后，校验开启时 create 也恢复。也就是说，问题在检查自身的实现
+  细节，而不是“worker 不该校验服务端”。结论：**校验保留，实现改为固定缓冲**。
+
+  **修复后的客机 smoke（全部 1/1）**：`integration.m5.performance`（console create/start/checkpoint/
+  stop）、`install_uninstall`（安装 + 服务 + CLI 校验）、`upgrade`（覆盖/重装/脏卸载）、
+  `bundle_corruption`（四种损坏的拒绝与恢复）。
+
+- **§4 运行期检查：已执行 3 条，其余不可在本客机执行**（本机没有可用的标准用户会话，且不允许
+  卸载/降级驱动）：
+  - #1（部分）：安装后 `data_root.owner=BUILTIN\Administrators`，DACL 为
+    `O:BAG:...:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`——owner 与 DACL 都是管理面；**“标准用户预创建
+    目录”未复现**（没有标准用户会话）。
+  - #2：安装目录继承 Program Files：`BU` 只有 `0x1200a9`（读/执行）与 `GXGR`，**没有写**；
+    标准用户不能替换二进制（ACL 读数见 install_uninstall 的 capture）。
+  - #9：`logs.sddl` 与 data root 相同（SYSTEM + Administrators，protected），**Users 不再可读**。
+  - 未执行：#4/#5（管道劫持需要攻击者载荷）、#6（job DACL 需要非管理员 token）、#7（worker token
+    dump）、#8（junction export，export 现已 administrator-only）、#10（超长路径）、#11（控制通道
+    DoS）。这些在文档里保留为已知未测项，不写成“已通过”。
+
 - §3 接受风险：已记录。
-- §4 运行期检查：**未执行**（SSH 探针只能用于只读文件检查，不能用它测管道）。
+- **判定：STAB-07 / R-09 PASSED**（阻断项已修 + 接受风险已文档化；运行期对抗检查按上面的清单
+  明确标注未执行）。
