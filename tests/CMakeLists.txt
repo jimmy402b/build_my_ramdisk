@@ -2284,3 +2284,14 @@ add_test(
 set_tests_properties(integration.m5.state_format PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 900)
+
+# ---- R-12: performance baseline ------------------------------------------------
+# create/start/write/checkpoint/stop timings, worker working set and write throughput on the
+# guest.  Loads the real product; part of the default selection.
+add_test(
+    NAME integration.m5.performance
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-performance.ps1")
+set_tests_properties(integration.m5.performance PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)

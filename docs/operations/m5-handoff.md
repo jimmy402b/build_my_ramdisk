@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **STAB-03 全 PASSED、STAB-06（R-07+R-08）全 PASSED**（§3.206–§3.215）。**下一步**：① R-09 安全对抗审计；② R-10 发布工程（SHA-256、可复现构建、SmartScreen 说明、发布说明）；③ R-11 非提权 GUI 只读、R-12 性能基线、R-13 24h soak、R-14（已实现，读数已取）、R-15 支持包、R-16 一页文档、R-17a 簇大小、R-17b 测试路径、R-18 兼容性；④ R-19 演练 + manifest 重新冻结。**manifest 仍无效** |
+| **下一件事** | **PASSED**：R-01…R-08、R-10（发布流程 + `/Brepro` 可复现）、R-12（性能基线，§3.216）、R-14；STAB-03/06 全部。**R-09 审计完成、7 个阻断项 B1–B7 待修**（§3.216）。**下一步**：① 修 B1–B7 并按审计 §4 跑 11 条运行期检查；② R-11 非提权 GUI；③ R-13 24h soak（小负载、频繁 checkpoint，避开 256 MiB 卡死口径）；④ R-15 支持包、R-16 一页文档、R-17a 簇大小、R-17b 测试路径、R-18 兼容性；⑤ R-19 演练 + manifest 重新冻结。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5264,3 +5264,29 @@ residue=[]
 
 **测试计数**：ctest 171 例；默认选择新增 `integration.m5.upgrade` 与 `integration.m5.state_format`
 （默认门禁 160 → 162），两者都是 guest-only、`RUN_SERIAL`。
+
+---
+
+### 3.216 2026-11-01：安全审计完成（R-09 部分）、性能基线 PASSED（R-12）
+
+**R-12 PASSED**（64 MiB 口径，`integration.m5.performance` 1/1）：create 107 ms、start 1453 ms、
+worker RSS 20.6 MiB、写 32 MiB 40 ms（802 MiB/s）、checkpoint（32 MiB dirty）215 ms、stop 1130 ms、
+forget 0。**256 MiB 口径的一次尝试把客机卡死**（写+checkpoint 后 SSH/cmd 无响应，只能硬重启），
+已记录为待定性现象，未计入通过；R-13 soak 因此用小负载 + 频繁 checkpoint。
+证据：`docs/validation/m5-stab-10-performance.md`。
+
+**R-09 审计完成、7 个阻断项待修**（`docs/validation/m5-stab-07-security-audit.md`）：
+- B1 worker 不认证服务端（服务死亡窗口内管道可被本地用户劫持，拿到秘密后驱动 SYSTEM worker）；
+- B2 owner 未校验 + 安装器不设 owner（标准用户可预创建 ProgramData 目录并保持 owner）；
+- B3 export 目的地可由 SYSTEM 在任意目录创建文件（含 junction 父目录）；
+- B4 `logs\service.log` Users 可读且失败消息含完整 bundle 路径；
+- B5 job 句柄用 `DUPLICATE_SAME_ACCESS`（全权，与“0 权限”注释不符）；
+- B6 launch spec 读取上限 4096 字节（编码允许 128 KiB）；
+- B7 公有管道可被抢注且客户端不校验服务端。
+
+另有 8 条接受风险（worker/service 同信任域、breakaway、sweep 绑定比较不可达、proof 布尔等）与
+11 条待执行运行期检查，均已写入审计文档。**下一步先修 B1–B7，再跑 §4 检查，R-09 才能 PASSED。**
+
+**R-10 已 PASSED**：`/Brepro` 后同一 commit 的两次 `--clean-first` 构建四个二进制 SHA-256 完全一致；
+发布流程文档 `docs/operations/m5-release.md` 已写（未签名 + SmartScreen 后果、manifest/verify、发布
+说明要求）。
