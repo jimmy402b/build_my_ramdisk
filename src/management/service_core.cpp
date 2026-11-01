@@ -2435,6 +2435,17 @@ Result<ServiceResponse> ServiceCore::dispatch(
             L"service_core.authorize",
             L"The caller is not authorized for this profile"));
     }
+    // **`caller_filtered` means "the caller's own profiles" (R-11).**  The authorization rule
+    // cannot see the resource, so it can only say "allowed, filtered"; the comparison against
+    // the profile's owner has to happen here, where the owner is loaded.  Without it a
+    // non-elevated caller could read any profile by id.
+    if (authorization.visibility == ipc::AuthorizationVisibility::caller_only
+        && profile.value().record.profile.owner_sid != request.caller.primary_sid) {
+        return Result<ServiceResponse>::failure(service_error(
+            ServiceCoreError::authorization_denied,
+            L"service_core.authorize_owner",
+            L"The profile belongs to another user"));
+    }
     if (force_stop_requested
         && !(request.caller.local_system
              || request.caller.service_identity

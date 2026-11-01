@@ -166,8 +166,13 @@ std::optional<AuthorizationRule> public_command_authorization_rule(
     case CommandId::disk_list:
     case CommandId::operation_list:
     case CommandId::diagnostics_collect:
-        return AuthorizationRule::caller_filtered;
+        // **`disk_show` is a read of one profile, so a non-elevated caller that owns it may
+        // see it (R-11).**  The rule says "caller filtered"; the service compares the
+        // profile's owner with the caller and refuses anyone else -- the rule alone cannot
+        // see the resource, so the comparison has to happen where the profile is loaded.
+        // Without that check this would be an information leak, not a permission.
     case CommandId::disk_show:
+        return AuthorizationRule::caller_filtered;
     case CommandId::disk_start:
     case CommandId::disk_stop:
     case CommandId::disk_checkpoint:

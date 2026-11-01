@@ -138,6 +138,21 @@ myrd_enable_warnings(myrd_m5_registration_codec_tests)
 add_test(NAME unit.m5.registration_codec
          COMMAND myrd_m5_registration_codec_tests)
 
+# ---- M5 public-command authorization (R-11) ---------------------------------
+# The rule table and the visibility each rule produces, with hand-built caller identities:
+# `disk_show` is caller-filtered (the service compares the owner), mutations stay
+# administrator-only, and an unauthenticated or network caller is refused outright.
+add_executable(myrd_m5_authorization_tests
+    unit/m5_authorization_tests.cpp
+)
+target_link_libraries(myrd_m5_authorization_tests PRIVATE
+    myrd_test_support myrd_product_ipc)
+target_include_directories(myrd_m5_authorization_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}")
+myrd_enable_warnings(myrd_m5_authorization_tests)
+add_test(NAME unit.m5.authorization
+         COMMAND myrd_m5_authorization_tests)
+
 # ---- M5 execution backend against a real worker (Task 5) --------------------
 # The suite that executes the launcher, the session provider and the adapter.
 # It starts a real `myrd-m5-worker` process, so the binary is passed in as a
@@ -2329,3 +2344,4 @@ add_test(
 set_tests_properties(integration.m5.support_bundle PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
+

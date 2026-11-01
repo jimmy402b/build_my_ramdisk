@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **PASSED**：R-01…R-12（含 R-09 安全审计、R-10 发布工程、R-12 性能基线）、R-14；STAB-03/06/07/08/10 全部通过（§3.204–§3.217）。**下一步**：① R-11 非提权 GUI 只读 e2e；② R-13 24h soak（小负载、频繁 checkpoint、每 N 轮硬断电）；③ R-15 支持包、R-16 一页文档、R-17a 簇大小、R-17b 测试路径、R-18 兼容性；④ R-19 演练 + manifest 重新冻结 + 两次全量。**manifest 仍无效** |
+| **下一件事** | **PASSED**：R-01…R-10、R-12、R-14、R-15…R-18；STAB-03/06/07/08/10/12/13/14/15/16。**R-11 PARTIAL**：产品侧完成（`disk_show` caller_filtered + 服务端 owner 比较，`unit.m5.authorization` 5/5）；客机进程级非提权读数未取得（六种启动机制失败于启动前，见 §3.224 与 `m5-stab-09-nonadmin.md`）。**下一步**：① R-13 24h soak（小负载 + 频繁 checkpoint + 周期硬断电）；② R-19 演练 + manifest 重新冻结 + 两次全量 + 8 条 gate；③ R-11 客机读数换机制（交互式会话/`--print-caller` 诊断入口）。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5499,3 +5499,31 @@ READING: redaction.offenders=0
 **未测**：非管理员运行（日志目录 management-only，包会标 `(absent: …)`）、`-IncludePaths` 路径。
 
 **仍剩**：R-11（非提权 GUI）、R-13（24h soak）、R-19（演练）。
+
+---
+
+### 3.224 2026-11-01：**R-11 产品侧完成（caller_filtered show + owner 比较）；客机进程级读数未取得**
+
+`disk_show` 原是 `administrator_only`，非提权连自己的盘都读不到。改为 **caller_filtered**，
+并在 `service_core` 里比较 `profile.owner_sid` 与 `caller.primary_sid`：规则看不到资源，所以
+“allowed, filtered”必须在加载 profile 的地方变成拒绝，否则按 id 就能读别人的盘。
+
+证据：`unit.m5.authorization`（本机 5/5）——show/list caller_filtered；create/import/forget/
+export/repair/rebind administrator_only（标准用户与“过滤后的管理员”都拒）；start/stop/
+checkpoint/compact owner_or_administrator（owner 过、外人拒）；未认证与网络登录直接拒。
+
+**客机进程级 e2e 没做成**，六种机制全部失败在“被测进程启动之前”：
+
+| 机制 | 实际结果 |
+|---|---|
+| `Start-Process -Credential` | `0xC0000142`（STATUS_DLL_INIT_FAILED） |
+| 计划任务 `-RunLevel Limited` | 从不运行，`LastTaskResult=267011`、`LastRunTime=1999` |
+| `net user … /add` | 挂起 20 min（`net`+`net1` 无输出），触发 host 1800 s 截止 |
+| `runas` + `.cmd` wrapper | `echo %ERRORLEVEL%>` 写出空值；重定向失败即中止批处理 |
+| `runas` + `.ps1` wrapper | 手工探针可用；e2e 捕获目录里写探针不产 exit 文件 |
+| `CreateProcessAsUser` + 受限令牌 | 子进程 `0xC0000005`（disable/restrict 两种写法都一样） |
+
+失败表、判断与下一步都写进 `docs/validation/m5-stab-09-nonadmin.md`。tasklist STAB-09 记
+**PARTIAL**，不写成通过。
+
+**仍剩**：R-13（24h soak）、R-19（演练）；R-11 待换机制补客机读数。
