@@ -5448,3 +5448,22 @@ READING: system.disk_number=0
 验证文档 `docs/validation/m5-stab-16-compatibility.md`。
 
 **仍剩**：R-11（非提权 GUI）、R-13（24h soak）、R-15（支持包）、R-16（一页文档）、R-19（演练）。
+
+---
+
+### 3.222 2026-11-01：**R-16 PASSED（一页支持说明 + 错误入口指向它）**
+
+`docs/operations/m5-support.md`：六节——支持范围、已知限制（逐条给测试或“未测”）、数据丢失上限、
+备份与导出、安装/卸载注意、出问题先看哪里。README 顶部加 “M5 support” 入口。
+
+**错误指向它**：安装器 5 条驱动相关拒绝（未安装/安装不完整/版本读不出/过旧/未运行）都追加
+`docs/operations/m5-support.md`（`support_pointer_count=5`）；产品 `driver_unavailable` 的消息改为
+`phdskmnt is disabled or absent; the driver requirement and the other known limits are on docs/operations/m5-support.md`。
+
+**读数**：消息改动后 `integration.m5.install_uninstall` 仍 1/1（16 s）。**未测**（写进验证文档）：
+驱动缺失/过旧两个拒绝分支（客机不允许停用驱动）；`driver_unavailable` 的产品文本（唯一覆盖它的
+`integration.m4.product_composition` 用例有既有未捕获异常，`git stash` 对照与本轮无关）。
+
+逐条依据与文档评审表：`docs/validation/m5-stab-14-support-page.md`。
+
+**仍剩**：R-15（支持包）、R-11（非提权 GUI）、R-13（24h soak）、R-19（演练）。

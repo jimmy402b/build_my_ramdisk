@@ -7,7 +7,8 @@ namespace {
 constexpr wchar_t kServiceName[] = L"phdskmnt";
 Result<void> unavailable() {
     return Result<void>::failure({ErrorDomain::usage, 1, L"driver_unavailable",
-                                  L"phdskmnt is disabled or absent"});
+                                  L"phdskmnt is disabled or absent; the driver requirement and "
+                                  L"the other known limits are on docs/operations/m5-support.md"});
 }
 bool query_config(SC_HANDLE service, DWORD& type) {
     DWORD needed{};

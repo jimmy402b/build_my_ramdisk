@@ -1,5 +1,11 @@
 # MyRamDisk
 
+## M5 support
+
+Supported scope, known limits, the data-loss bound, backup/export, the driver requirement and
+uninstall notes are on one page: [`docs/operations/m5-support.md`](docs/operations/m5-support.md).
+The installer's refusals and the CLI's driver-unavailable message point there.
+
 ## M4 offline evidence verification
 
 After the manual Windows VM cases complete, run the read-only evidence verifier:

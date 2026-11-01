@@ -43,7 +43,7 @@ Step 'check the AIM driver, do not install it'
 $driver = & sc.exe query phdskmnt 2>&1 | Out-String
 if ($driver -match '1060') {
     Fail ("the AIM driver (phdskmnt) is not installed.  It is a signed storage driver and this " +
-        "installer will not install it for you; see the M5 usage document for the driver package.")
+        "installer will not install it for you; the driver requirement is on docs/operations/m5-support.md.")
 }
 # **Present is not enough, and running is not enough (R-06).**  The product was built and
 # frozen against phdskmnt 1.2.28.93 (the M0 evidence), so an older signed driver is refused
@@ -53,21 +53,21 @@ $driverFloor = [version]'1.2.28.93'
 $driverFile = Join-Path $env:SystemRoot 'System32\drivers\phdskmnt.sys'
 if (-not (Test-Path -LiteralPath $driverFile)) {
     Fail ("the AIM driver service exists but $driverFile is missing; the driver installation " +
-        "is incomplete and will be refused.")
+        "is incomplete and will be refused; see docs/operations/m5-support.md.")
 }
 $driverVersion = (Get-Item -LiteralPath $driverFile).VersionInfo.FileVersion
 $parsed = $null
 if (-not [version]::TryParse(($driverVersion -replace '[^0-9.]', ''), [ref]$parsed)) {
     Fail ("the AIM driver version could not be read (FileVersion='$driverVersion'); " +
-        "this release requires phdskmnt $driverFloor or newer.")
+        "this release requires phdskmnt $driverFloor or newer; see docs/operations/m5-support.md.")
 }
 if ($parsed -lt $driverFloor) {
     Fail ("the AIM driver is phdskmnt $parsed, and this release requires $driverFloor or newer. " +
-        "Update the driver package before installing; this installer will not replace it.")
+        "Update the driver package before installing; this installer will not replace it.  See docs/operations/m5-support.md.")
 }
 if ($driver -notmatch 'RUNNING') {
     Fail ("the AIM driver (phdskmnt) is installed ($parsed) but not running. Start it with " +
-        "`sc start phdskmnt` and run this installer again.")
+        "`sc start phdskmnt` and run this installer again; see docs/operations/m5-support.md.")
 }
 Write-Host "  phdskmnt $parsed present and running (floor $driverFloor)"
 
