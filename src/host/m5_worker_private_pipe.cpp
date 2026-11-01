@@ -39,6 +39,9 @@ constexpr std::uint16_t kLaunchSpecVersion = 2;
 constexpr std::size_t kFrameHeaderBytes = 4;
 // Comfortably above one encoded message and one launch spec.
 constexpr std::uint32_t kPipeBufferBytes = 128U * 1024U;
+// The encoder's bound for a launch spec.  `read_launch_spec` reads until EOF and refuses
+// anything larger, so the parent and the child agree on the ceiling (B6).
+constexpr std::size_t kLaunchSpecMaxBytes = 128U * 1024U;
 
 Error pipe_error(const std::uint32_t code, const wchar_t* operation,
                  const wchar_t* message, const std::uint32_t native_code = 0) {
@@ -408,22 +411,36 @@ Result<WorkerLaunchSpec> read_launch_spec(void* inherited_handle) {
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"read_launch_spec", L"no startup handle was inherited"));
     }
-    std::array<std::byte, 4096> buffer{};
-    DWORD total = 0;
-    // The spec is a single bounded write followed by EOF, so one read that
-    // reports a short count *is* the whole message.
-    if (!ReadFile(static_cast<HANDLE>(inherited_handle), buffer.data(),
-                  static_cast<DWORD>(buffer.size()), &total, nullptr)) {
-        return Result<WorkerLaunchSpec>::failure(
-            win32_error(L"read_launch_spec", L"ReadFile failed on the startup channel"));
+    // **Read until EOF, not one 4096-byte read (B6).**  The startup channel carries one
+    // unframed message and then closes; the encoder accepts up to 128 KiB, so a single read
+    // into 4096 bytes treated a long-but-valid spec as a short one and the worker refused a
+    // launch the service had every reason to expect to work.
+    std::vector<std::byte> spec;
+    std::array<std::byte, 4096> chunk{};
+    for (;;) {
+        DWORD read = 0;
+        if (!ReadFile(static_cast<HANDLE>(inherited_handle), chunk.data(),
+                      static_cast<DWORD>(chunk.size()), &read, nullptr)) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE || error == ERROR_HANDLE_EOF) break;
+            return Result<WorkerLaunchSpec>::failure(win32_error(
+                L"read_launch_spec", L"ReadFile failed on the startup channel"));
+        }
+        if (read == 0) break;
+        spec.insert(spec.end(), chunk.begin(), chunk.begin() + read);
+        if (spec.size() > kLaunchSpecMaxBytes) {
+            return Result<WorkerLaunchSpec>::failure(pipe_error(
+                static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
+                L"read_launch_spec",
+                L"the launch spec is larger than the protocol allows"));
+        }
     }
-    if (total == 0 || total > buffer.size()) {
+    if (spec.empty()) {
         return Result<WorkerLaunchSpec>::failure(pipe_error(
             static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
             L"read_launch_spec", L"the startup channel carried no usable launch spec"));
     }
-    return decode_launch_spec(
-        std::span<const std::byte>(buffer.data(), total));
+    return decode_launch_spec(std::span<const std::byte>(spec.data(), spec.size()));
 }
 
 void close_startup_handle(void* handle) noexcept {
@@ -640,6 +657,87 @@ WorkerPrivatePipeServer::accept_and_handshake(
 // WorkerPrivatePipeClient
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// **The worker verifies the far end of its private pipe (B1).**  The pipe name is
+// predictable by construction (profile id + session generation), and the worker sends the
+// startup secret in its first message.  Without checking who owns the server end, a service
+// that dies between `CreateProcessW` and the worker's connect leaves that name free: a local
+// user can own it, receive the secret, and then drive a SYSTEM worker.  The server must be
+// LocalSystem (the installed service) or run with an Administrators token (the console
+// service the harness starts); anything else is refused before the secret is sent.
+Result<void> verify_private_pipe_server(HANDLE pipe) {
+    ULONG server_pid = 0;
+    if (!GetNamedPipeServerProcessId(pipe, &server_pid) || server_pid == 0) {
+        return Result<void>::failure(pipe_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"WorkerPrivatePipeClient::connect",
+            L"the private pipe's server process could not be identified"));
+    }
+    HANDLE process =
+        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_pid);
+    if (process == nullptr) {
+        return Result<void>::failure(win32_error(
+            L"WorkerPrivatePipeClient::connect",
+            L"the private pipe's server process could not be opened"));
+    }
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+        // Build the error before closing the process: `win32_error` reads the thread's last
+        // error, and a successful CloseHandle must not be what that call sees.
+        auto error = win32_error(
+            L"WorkerPrivatePipeClient::connect",
+            L"the private pipe server's token could not be opened");
+        static_cast<void>(CloseHandle(process));
+        return Result<void>::failure(error);
+    }
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> system_sid{};
+    DWORD system_bytes = static_cast<DWORD>(system_sid.size());
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> admins_sid{};
+    DWORD admins_bytes = static_cast<DWORD>(admins_sid.size());
+    const bool sids = CreateWellKnownSid(WinLocalSystemSid, nullptr,
+                                         system_sid.data(), &system_bytes)
+        && CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+                              admins_sid.data(), &admins_bytes);
+    bool allowed = false;
+    if (sids) {
+        DWORD needed = 0;
+        static_cast<void>(GetTokenInformation(token, TokenUser, nullptr, 0, &needed));
+        if (needed != 0) {
+            std::vector<std::byte> buffer(needed);
+            if (GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed)) {
+                const auto* user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
+                if (user->User.Sid != nullptr
+                    && EqualSid(user->User.Sid, system_sid.data())) {
+                    allowed = true;
+                }
+            }
+        }
+        if (!allowed) {
+            BOOL member = FALSE;
+            if (CheckTokenMembership(token, admins_sid.data(), &member) && member) {
+                allowed = true;
+            }
+        }
+    }
+    static_cast<void>(CloseHandle(token));
+    static_cast<void>(CloseHandle(process));
+    if (!sids) {
+        return Result<void>::failure(win32_error(
+            L"WorkerPrivatePipeClient::connect",
+            L"the management SIDs could not be built"));
+    }
+    if (!allowed) {
+        return Result<void>::failure(pipe_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"WorkerPrivatePipeClient::connect",
+            L"the private pipe is not owned by the service"));
+    }
+    return Result<void>::success();
+}
+
+} // namespace
+
 WorkerPrivatePipeClient::WorkerPrivatePipeClient(
     WorkerPipeChannel channel) noexcept
     : channel_(std::move(channel)) {}
@@ -662,6 +760,12 @@ WorkerPrivatePipeClient::connect(const OperationContext& context,
         return Result<std::unique_ptr<WorkerPrivatePipeClient>>::failure(
             win32_error(L"WorkerPrivatePipeClient::connect",
                         L"opening the private worker pipe failed"));
+    }
+    auto server = verify_private_pipe_server(handle);
+    if (!server.ok()) {
+        static_cast<void>(CloseHandle(handle));
+        return Result<std::unique_ptr<WorkerPrivatePipeClient>>::failure(
+            server.error());
     }
     return Result<std::unique_ptr<WorkerPrivatePipeClient>>::success(
         std::unique_ptr<WorkerPrivatePipeClient>(
@@ -845,13 +949,14 @@ Result<LaunchedWorker> launch_private_worker(
     //
     // So the worker inherits one extra handle: the job itself.  It never uses it; holding
     // it is the whole job (the handle keeps the named object alive until the worker exits,
-    // which is exactly when the last orphan is gone).  The access mask is deliberately
-    // empty -- a handle with no rights still references the object, and a worker has no
-    // business querying or terminating the job it belongs to.
+    // which is exactly when the last orphan is gone).  **`JOB_OBJECT_QUERY`, not
+    // `DUPLICATE_SAME_ACCESS` (B5):** the latter ignores the desired-access argument and
+    // handed the worker `JOB_OBJECT_ALL_ACCESS`, so it could terminate or reconfigure the
+    // job shared by every profile -- the opposite of the least privilege this handle exists
+    // to express.  A handle with any access still keeps the object alive.
     HANDLE inherited_job = nullptr;
     if (DuplicateHandle(GetCurrentProcess(), static_cast<HANDLE>(worker_job),
-                        GetCurrentProcess(), &inherited_job, 0, TRUE,
-                        DUPLICATE_SAME_ACCESS)
+                        GetCurrentProcess(), &inherited_job, JOB_OBJECT_QUERY, TRUE, 0)
         == FALSE) {
         const auto native = GetLastError();
         DeleteProcThreadAttributeList(startup_info.lpAttributeList);

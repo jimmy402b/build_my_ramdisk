@@ -181,6 +181,105 @@ std::uint32_t read_payload_length(
 
 } // namespace
 
+namespace {
+
+// **The client verifies the server (B7).**  The public pipe has a fixed name, so a standard
+// user can create it before the service starts; the service's first instance then fails with
+// FILE_FLAG_FIRST_PIPE_INSTANCE and a client would talk to the squatter.  Requiring the server
+// side to be LocalSystem or to hold an Administrators token makes a squatter useless: a
+// standard user cannot create a process with either identity.  The GUI is the case that
+// matters, because it runs without elevation.
+Result<void> verify_public_pipe_server(HANDLE pipe) {
+    ULONG server_pid = 0;
+    if (!GetNamedPipeServerProcessId(pipe, &server_pid) || server_pid == 0) {
+        return transport_error<void>(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"pipe.connect", L"the pipe's server process could not be identified");
+    }
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_pid);
+    if (process == nullptr) {
+        return transport_error<void>(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"pipe.connect", L"the pipe's server process could not be opened");
+    }
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+        const DWORD native = GetLastError();
+        static_cast<void>(CloseHandle(process));
+        return transport_error<void>(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"pipe.connect", L"the pipe server's token could not be opened", native);
+    }
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> system_sid{};
+    DWORD system_bytes = static_cast<DWORD>(system_sid.size());
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> admins_sid{};
+    DWORD admins_bytes = static_cast<DWORD>(admins_sid.size());
+    const bool sids = CreateWellKnownSid(WinLocalSystemSid, nullptr,
+                                         system_sid.data(), &system_bytes)
+        && CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+                              admins_sid.data(), &admins_bytes);
+    bool allowed = false;
+    if (sids) {
+        DWORD needed = 0;
+        static_cast<void>(GetTokenInformation(token, TokenUser, nullptr, 0, &needed));
+        if (needed != 0) {
+            std::vector<std::byte> buffer(needed);
+            if (GetTokenInformation(token, TokenUser, buffer.data(), needed, &needed)) {
+                const auto* user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
+                if (user->User.Sid != nullptr
+                    && EqualSid(user->User.Sid, system_sid.data())) {
+                    allowed = true;
+                }
+                // **Same account as this client is accepted too.**  The console service the
+                // harness starts runs as the invoking administrator; if that token is
+                // filtered, the Administrators-group probe can say no even though the server
+                // is the same account as the client.  A squatter runs as a *different*
+                // (standard) user than an elevated client, so this does not reopen B7 for the
+                // case that matters; and a standard user squatting on their own GUI is that
+                // user attacking themselves.
+                if (!allowed && user->User.Sid != nullptr) {
+                    HANDLE self = nullptr;
+                    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self)) {
+                        DWORD self_needed = 0;
+                        static_cast<void>(GetTokenInformation(
+                            self, TokenUser, nullptr, 0, &self_needed));
+                        if (self_needed != 0) {
+                            std::vector<std::byte> self_buffer(self_needed);
+                            if (GetTokenInformation(self, TokenUser, self_buffer.data(),
+                                                    self_needed, &self_needed)) {
+                                const auto* self_user =
+                                    reinterpret_cast<const TOKEN_USER*>(self_buffer.data());
+                                if (self_user->User.Sid != nullptr) {
+                                    allowed =
+                                        EqualSid(user->User.Sid, self_user->User.Sid) != FALSE;
+                                }
+                            }
+                        }
+                        static_cast<void>(CloseHandle(self));
+                    }
+                }
+            }
+        }
+        if (!allowed) {
+            BOOL member = FALSE;
+            if (CheckTokenMembership(token, admins_sid.data(), &member) && member) {
+                allowed = true;
+            }
+        }
+    }
+    static_cast<void>(CloseHandle(token));
+    static_cast<void>(CloseHandle(process));
+    if (!allowed) {
+        return transport_error<void>(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"pipe.connect",
+            L"the control pipe is not owned by the MyRamDisk service");
+    }
+    return Result<void>::success();
+}
+
+} // namespace
+
 PipeTransport::PipeTransport(void* native_handle) noexcept
     : handle_(native_handle) {}
 
@@ -209,6 +308,12 @@ Result<std::unique_ptr<PipeTransport>> PipeTransport::connect(
             0, nullptr,
             OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (handle != INVALID_HANDLE_VALUE) {
+            auto server = verify_public_pipe_server(handle);
+            if (!server.ok()) {
+                static_cast<void>(CloseHandle(handle));
+                return Result<std::unique_ptr<PipeTransport>>::failure(
+                    server.error());
+            }
             DWORD mode = PIPE_READMODE_BYTE;
             if (!SetNamedPipeHandleState(handle, &mode, nullptr, nullptr)) {
                 const auto error = GetLastError();

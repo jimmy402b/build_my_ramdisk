@@ -172,13 +172,19 @@ std::optional<AuthorizationRule> public_command_authorization_rule(
     case CommandId::disk_stop:
     case CommandId::disk_checkpoint:
     case CommandId::disk_compact:
-    case CommandId::disk_export:
     case CommandId::disk_config_get:
     case CommandId::disk_config_set:
     case CommandId::operation_show:
     case CommandId::operation_wait:
     case CommandId::operation_cancel:
         return AuthorizationRule::owner_or_administrator;
+    // **Export is administrator-only (B3).**  The file is created by the SYSTEM worker at a
+    // path the caller names, after only a lexical absolute-path check; a profile owner who is
+    // not an administrator could therefore make SYSTEM create a file in a directory the owner
+    // cannot write (including through a junction parent).  Requiring an administrator removes
+    // that escalation: the export feature writes across a trust boundary, so it belongs in the
+    // same group as create/import/forget rather than in the owner-scoped group.
+    case CommandId::disk_export:
     case CommandId::disk_create:
     case CommandId::disk_import:
     case CommandId::disk_repair_profile:

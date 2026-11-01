@@ -1,4 +1,4 @@
-﻿#include "src/cli/cli_parser.h"
+#include "src/cli/cli_parser.h"
 #include "src/cli/cli_renderer.h"
 
 #include "src/common/operation_context.h"
@@ -145,9 +145,17 @@ int wmain(const int argc, wchar_t** argv) {
             ? std::wstring_view(ipc::kPublicControlPipeName)
             : std::wstring_view(request.pipe_name));
     if (!connected.ok()) {
+        // **The reason is printed, not just the verdict.**  "not available" alone made a
+        // legitimate client-side refusal (the pipe's server was not the service) look
+        // identical to "nothing is listening"; the operator needs the distinction.
         std::fprintf(stderr,
                      "myrd-cli: the service is not available (is it installed and "
                      "running?)\n");
+        if (!connected.error().message.empty()) {
+            std::fprintf(stderr, "myrd-cli: %ls (native=%u)\n",
+                         connected.error().message.c_str(),
+                         connected.error().native_code);
+        }
         return static_cast<int>(cli::CliExitCode::unavailable);
     }
 

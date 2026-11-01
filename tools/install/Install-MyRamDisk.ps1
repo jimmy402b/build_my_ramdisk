@@ -141,6 +141,14 @@ function Set-ManagementAcl([string]$path, [bool]$readableByUsers) {
             $users, $read, $inheritance, $propagation, $allow)))
     }
     Set-Acl -LiteralPath $path -AclObject $security
+    # **The owner is set explicitly too (B2).**  An owner implicitly holds WRITE_DAC, so a
+    # directory planted by a standard user (C:\ProgramData grants Users create-child and
+    # CREATOR OWNER full control) would keep passing a DACL-only check while its owner could
+    # re-DACL it later.  Setting the owner to the Administrators group, and the product
+    # refusing any other owner, closes that chain.
+    $owners = Get-Acl -LiteralPath $path
+    $owners.SetOwner((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+    Set-Acl -LiteralPath $path -AclObject $owners
 }
 
 # **The data root is checked too.**  Measured: with profiles/operations/logs protected but the
@@ -151,10 +159,13 @@ Set-ManagementAcl $DataDirectory $false
 foreach ($child in @('profiles', 'operations')) {
     Set-ManagementAcl (Join-Path $DataDirectory $child) $false
 }
-# The log directory is different on purpose: an operator has to be able to read why something failed
-# without being able to rewrite the record of it, and the store does not police this one.
-Set-ManagementAcl (Join-Path $DataDirectory 'logs') $true
-Write-Host "  DACL: profiles/operations service-only; logs readable by Users"
+# **The log directory is management-only too (B4).**  It was deliberately Users-readable so an
+# operator could read failures without elevation; the audit showed the service writes failure
+# messages that contain full bundle paths (and a PID), which disclosed one user's paths to
+# every local user.  Reading the log is an administrator/operator action, so the directory now
+# carries the same DACL and owner as the record.
+Set-ManagementAcl (Join-Path $DataDirectory 'logs') $false
+Write-Host "  DACL: profiles/operations/logs management-only (owner: Administrators)"
 
 Step "register the service $ServiceName"
 $existing = & sc.exe query $ServiceName 2>&1 | Out-String

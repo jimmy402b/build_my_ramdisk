@@ -1,4 +1,4 @@
-﻿# integration.m5.performance -- the performance baseline R-12 asks for, measured on the guest
+# integration.m5.performance -- the performance baseline R-12 asks for, measured on the guest
 # rather than asserted from a spec.
 #
 # **Guest-only.**  It creates a real worker, a real AIM disk and a real Windows volume, writes
@@ -95,7 +95,16 @@ try {
         -RedirectStandardOutput (Join-Path $workRoot 'service.out.log') `
         -WindowStyle Hidden -PassThru
     $listed = Wait-ForService 90
-    if ($null -eq $listed) { Fail 'the service never answered' }
+    if ($null -eq $listed) {
+        # Dump the client's own refusal before failing: "the service did not answer" hides
+        # whether the pipe was missing, the server check refused, or the service died.
+        $probe = Invoke-Cli @('disk', 'list')
+        Write-Host ("READING: probe.exit=" + [string]$probe.exit)
+        Write-Host ("READING: probe.output=" + (($probe.output -replace "`n", ' | ')))
+        Write-Host ("READING: service_log=" + ((Get-Content -LiteralPath $serviceLog -Raw -ErrorAction SilentlyContinue) -replace "`n", ' | '))
+        Write-Host ("READING: service_alive=" + [string]($null -ne $serviceProcess -and -not $serviceProcess.HasExited))
+        Fail 'the service never answered'
+    }
     $profiles = @(($listed.output -split "`n") | Where-Object { $_ -match 'generation=' })
     if ($profiles.Count -ne 0) { Fail "the guest already has $($profiles.Count) profile(s); reset it first" }
 

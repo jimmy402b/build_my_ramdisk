@@ -1,4 +1,4 @@
-﻿#include "src/common/diagnostic_trace.h"
+#include "src/common/diagnostic_trace.h"
 #include "src/profile/profile_store.h"
 #include "src/profile/profile_codec.h"
 #include "src/profile/profile_types.h"
@@ -321,10 +321,12 @@ Result<void> validate_directory_identity(
 
 Result<void> validate_management_acl(HANDLE handle) {
     PACL dacl = nullptr;
+    PSID owner = nullptr;
     PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
     const DWORD status = GetSecurityInfo(
-        handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-        nullptr, nullptr, &dacl, nullptr, &raw_descriptor);
+        handle, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+        &owner, nullptr, &dacl, nullptr, &raw_descriptor);
     if (status != ERROR_SUCCESS) {
         return store_error(
             ProfileStoreError::io_failure,
@@ -360,6 +362,40 @@ Result<void> validate_management_acl(HANDLE handle) {
             ProfileStoreError::io_failure,
             L"profile_store.directory_acl",
             L"Failed to construct a management SID", error);
+    }
+
+    // **The owner matters, not just the DACL (B2).**  An owner implicitly holds READ_CONTROL
+    // and WRITE_DAC, so a directory owned by a non-administrator can be re-DACLed into a shape
+    // that then passes this check.  Accepted owners: SYSTEM, the Administrators group, and the
+    // account this service runs as -- the console service the harness starts runs as an
+    // administrator account, and its profile directories are owned by that account, not by
+    // SYSTEM.  A directory planted by a standard user is owned by that user and is refused.
+    bool owner_ok = owner != nullptr
+        && (EqualSid(owner, system_sid.data()) || EqualSid(owner, admin_sid.data()));
+    if (!owner_ok) {
+        HANDLE token = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+            DWORD needed = 0;
+            static_cast<void>(GetTokenInformation(token, TokenUser, nullptr, 0, &needed));
+            if (needed != 0) {
+                std::vector<std::byte> buffer(needed);
+                if (GetTokenInformation(token, TokenUser, buffer.data(), needed,
+                                        &needed)) {
+                    const auto* user =
+                        reinterpret_cast<const TOKEN_USER*>(buffer.data());
+                    if (user->User.Sid != nullptr && owner != nullptr) {
+                        owner_ok = EqualSid(owner, user->User.Sid) != FALSE;
+                    }
+                }
+            }
+            static_cast<void>(CloseHandle(token));
+        }
+    }
+    if (!owner_ok) {
+        return store_error(
+            ProfileStoreError::unsafe_acl,
+            L"profile_store.directory_acl",
+            L"A profile directory is owned by an unexpected account");
     }
 
     ACL_SIZE_INFORMATION size{};

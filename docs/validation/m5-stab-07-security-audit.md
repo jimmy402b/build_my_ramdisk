@@ -62,6 +62,24 @@
 ## 5. 状态
 
 - 审计：**完成**（静态）。
-- §2 阻断项：**未修**（下一步逐条修 + 对应运行期检查）。
-- §3 接受风险：已在此记录。
-- §4 运行期检查：**未执行**。
+- §2 阻断项：**代码已修，验证进行中**（2026-11-01）：
+  - B1：worker 连接后校验服务端进程 SID ∈ {LocalSystem, Administrators, 客户端自身账号}；
+  - B2：安装器把 data root/profiles/operations/logs 的 owner 设为 Administrators；产品
+    `validate_management_acl` 现在同时校验 owner（SYSTEM / Administrators / 服务自身账号）；
+  - B3：`disk export` 改为 **administrator-only**（跨信任域写文件，不再允许非管理员 owner）；
+  - B4：`logs` 目录改为 management-only（不再是 Users 可读），并设 owner；
+  - B5：job 句柄改为显式 `JOB_OBJECT_QUERY`（不再 `DUPLICATE_SAME_ACCESS`）；
+  - B6：`read_launch_spec` 改为读到 EOF，上限 128 KiB（与编码一致）；
+  - B7：客户端连接后校验服务端进程 SID（同 B1 的三类身份）。
+  构建通过；`install_uninstall` 1/1 通过（安装器 owner/日志 DACL 变更未破坏安装路径）。
+- **验证中发现的观察**：
+  1. **SSH 会话不能直接当客户端**：公有管道 DACL 明确 deny 网络登录（`(D;;GA;;;NU)`），从 SSH
+     会话跑 `myrd-cli` 会得到 `ERROR_ACCESS_DENIED (5)`——这是设计，不是缺陷；客机用例必须走
+     agent 的批处理/服务登录。
+  2. **console 模式 smoke 仍有一处未定性**：`integration.m5.performance` 在 create 成功后
+     `disk list` 返回 0 行（`disk.list: completed`），20 s 重试仍为空；同一用例在安全修复前是通过的。
+     需要下一次带着 `kind=7`/trace 定位（怀疑点：profile 目录 owner 校验对 console 服务创建的
+     目录判定过严，使 list 把该 profile 当作不可读而略过）。
+  在 (2) 定性之前，B1/B2 的 console 模式验证不算完成，R-09 保持 PARTIAL。
+- §3 接受风险：已记录。
+- §4 运行期检查：**未执行**（SSH 探针只能用于只读文件检查，不能用它测管道）。
