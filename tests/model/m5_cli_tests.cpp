@@ -283,6 +283,34 @@ TEST_CASE(cli_refuses_volume_labels_with_a_reason) {
     }
 }
 
+TEST_CASE(cli_accepts_only_a_valid_cluster_size) {
+    // R-17a: the create-only cluster size.  The accepted set is 4 KiB to 64 KiB in powers of
+    // two; the wire decoder refuses the same values, so the CLI is not the only gate.
+    auto parse = [](const wchar_t* size) {
+        return cli::parse_command_line(words(
+            {L"disk", L"create", L"--name", L"work", L"--bundle", L"C:\\bundles\\work",
+             L"--size", L"64MiB", L"--mount", L"X:", L"--cluster-size", size}));
+    };
+    const auto accepted = parse(L"64KiB");
+    REQUIRE(accepted.usage_error.empty());
+    const auto& create = std::get<control::DiskCreateCommand>(
+        accepted.request.command);
+    REQUIRE(create.cluster_size_bytes.has_value());
+    REQUIRE_EQ(*create.cluster_size_bytes, 65536U);
+    REQUIRE(parse(L"4KiB").usage_error.empty());
+    // The option also takes a bare byte count, which is what an operator who knows the
+    // NTFS sizes tends to type.
+    const auto bare = parse(L"65536");
+    REQUIRE(bare.usage_error.empty());
+    const auto& bare_create = std::get<control::DiskCreateCommand>(
+        bare.request.command);
+    REQUIRE_EQ(*bare_create.cluster_size_bytes, 65536U);
+    REQUIRE(!parse(L"10000").usage_error.empty());   // not a power of two
+    REQUIRE(parse(L"10000").usage_error.find("power of two") != std::string::npos);
+    REQUIRE(!parse(L"2KiB").usage_error.empty());    // below the floor
+    REQUIRE(!parse(L"128KiB").usage_error.empty());  // above the ceiling
+}
+
 TEST_CASE(cli_refuses_a_command_line_it_cannot_express) {
     // An unknown switch is refused rather than dropped: a client that ignored an option
     // would do something other than what was asked.

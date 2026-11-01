@@ -175,13 +175,15 @@ public:
     // stream; only the exact child PID may be terminated on failure.
     [[nodiscard]] Result<void> provision_new_volume(
         std::uint32_t disk_number, wchar_t drive_letter,
-        std::uint32_t timeout_ms) const;
+        std::uint32_t cluster_size_bytes, std::uint32_t timeout_ms) const;
     // Provision and then adopt the one volume whose exact physical extent is
     // backed by disk_number.  The returned identity is suitable for all
     // subsequent ownership checks; no caller-supplied GUID is trusted.
+    // `cluster_size_bytes` is the NTFS cluster size (R-17a); zero means the Windows default.
     [[nodiscard]] Result<ProductVolume> provision_and_adopt_volume(
         std::uint32_t disk_number, wchar_t drive_letter,
-        std::wstring owner_token, std::uint32_t timeout_ms) const;
+        std::wstring owner_token, std::uint32_t cluster_size_bytes,
+        std::uint32_t timeout_ms) const;
     // Recovery is attach-only: enumerate existing volumes and adopt exactly
     // one candidate mounted at drive_letter.
     //

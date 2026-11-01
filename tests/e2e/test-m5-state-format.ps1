@@ -101,7 +101,10 @@ function Wait-ForTerminal([string]$operationId, [int]$seconds) {
     while ((Get-Date) -lt $deadline) {
         $show = Invoke-InstalledCli @('operation', 'show', $operationId)
         if ($show.exit -ne 0) { Fail "operation show failed: $($show.output)" }
-        $match = [regex]::Match($show.output, ': (succeeded|completed|failed|cancelled)')
+        # The operation line, not any `: word` in the output: a disposition line such as
+        # "disposition: completed" must not be read as a successful state.
+        $match = [regex]::Match($show.output,
+            '(?m)^operation\s+\S+:\s+(succeeded|completed|failed|cancelled)\b')
         if ($match.Success) {
             if ($match.Groups[1].Value -eq 'completed') { return 'succeeded' }
             return $match.Groups[1].Value

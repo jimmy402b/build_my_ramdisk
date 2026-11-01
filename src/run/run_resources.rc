@@ -1,3 +1,11 @@
+// The provisioning helper the worker runs as a child process.
+//
+// **`provision_volume.ps1` is a dependency of the compiled resource, but CMake only tracks
+// this .rc file.**  Measured while adding the create-only cluster size (R-17a): the script
+// gained a parameter and the worker kept running the old embedded copy, so the helper failed
+// with NamedParameterNotFound even though the source was correct.  `src/CMakeLists.txt` now
+// declares the dependency; this comment forces one recompile of the resource in the session
+// that changed the script.
 #include <windows.h>
 
 1 RCDATA "provision_volume.ps1"

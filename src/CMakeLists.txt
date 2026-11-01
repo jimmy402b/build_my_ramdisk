@@ -1,4 +1,11 @@
-﻿# Source directory ??targets added in later tasks.
+# Source directory ??targets added in later tasks.
+
+# **The embedded provisioning script is a build dependency of its resource.**  Without this,
+# editing `run/provision_volume.ps1` leaves the old copy inside `myrd-m5-worker` (CMake only
+# tracks the .rc file), and the helper keeps failing with NamedParameterNotFound after the
+# script has gained a parameter.  Measured while adding the cluster size (R-17a).
+set_property(SOURCE run/run_resources.rc PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/run/provision_volume.ps1")
 
 add_library(myrd_m4_run STATIC
     run/cli.cpp run/cli.h

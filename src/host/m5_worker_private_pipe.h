@@ -108,6 +108,10 @@ struct WorkerLaunchSpec final {
     // appended: the durable profile's memory policy was previously recorded and then not
     // carried anywhere the runtime could enforce it.
     std::uint64_t ram_limit_bytes{};
+    // The create-only NTFS cluster size (R-17a).  Zero means the Windows default.  Appended
+    // last for the same reason as the fields above: the launch spec is written and read by
+    // one build, so the codec needs no protocol window.
+    std::uint32_t cluster_size_bytes{};
 
     bool operator==(const WorkerLaunchSpec&) const noexcept = default;
 };

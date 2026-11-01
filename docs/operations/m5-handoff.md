@@ -5327,3 +5327,50 @@ forget 0。**256 MiB 口径的一次尝试把客机卡死**（写+checkpoint 后
 客机读数：`integration.m5.cli_e2e` 1/1，`label.exit=2`、`label.result=refused-by-name`；`m5.cli` 单测
 覆盖两种拼写。wire/record 里的 `volume_label` 字段按“死代码隔离”保留，CLI 不可达，不做换路实现。
 `docs/operations/m5-support-matrix.md` 的卷标一行已同步。
+
+---
+
+### 3.219 2026-11-01：**R-17a PASSED（可选簇大小，create-only）**
+
+`disk create --cluster-size` 落地：4/8/16/32/64 KiB（2 的幂；`64KiB` 或裸字节 `65536`），缺省为
+Windows 默认 4 KiB。簇大小是“格式化”的属性，因此**只走 create 的 operation intent，不写 profile
+记录**；重启/恢复是 adopt 已有卷，没有需要重新施加的东西。四道闸门拒绝非法值：CLI → wire 字段 13
+→ helper 参数检查 → provisioning 脚本。
+
+客机读数（`integration.m5.cluster_size` 1/1、83 s）：
+
+```text
+READING: invalid.exit=2
+READING: invalid.output=myrd-cli: --cluster-size must be a power of two between 4KiB and 64KiB
+READING: create.state=succeeded
+READING: volume.filesystem=NTFS
+READING: volume.allocation_unit_bytes=65536
+READING: volume.cluster_size_match=yes
+READING: cleanup_forget=0
+```
+
+8 KiB 也单独跑过（`8192`），证明不是“恰好默认值”。另用临时 VHD 直接
+`Format-Volume -AllocationUnitSize 8192` 读回 `au=8192`，确认 Windows 侧行为正常。
+
+**这条“看起来只是加参数”的工作暴露了四个真实断路，全部已修**：
+
+1. `write_lifecycle_intent` 不写 `volume_label`/`compaction_checkpoint_threshold`/
+   `cluster_size_bytes` → 执行时“内存 intent vs 持久 intent”比较失败（`code=22022`）。
+   现在三字段追加写入，读取端按剩余字节做版本兼容。
+2. 嵌入的 `provision_volume.ps1` 不随源文件重建（CMake 只跟踪 `.rc`）→ helper 报
+   `NamedParameterNotFound`。现在 `src/CMakeLists.txt` 给 `.rc` 声明
+   `OBJECT_DEPENDS .../provision_volume.ps1`。
+3. create 先注册 profile 再绑 worker，绑定用 record 版请求，record 里没有簇大小 → 值丢失。
+   现在 `bind_worker` 从 `request.lifecycle_intent->cluster_size_bytes` 补上。
+4. `m5_worker_main.cpp` 没把 `spec.cluster_size_bytes` 交给 `config` → 值到 worker 就停了
+   （实测 spec=8192、卷=4096）。已补。
+
+另修：`Format-Volume` 的参数名是 `-AllocationUnitSize`（不是 `-ClusterSize`）；三个 e2e 的
+`Wait-ForTerminal` 会把 `disposition: completed` 误当成功状态，现在只匹配 `^operation <id>: <state>`。
+
+**回归**：provisioning 改动影响所有 create，故重跑 `performance`（1/1、81 s）、
+`install_uninstall`（1/1、9 s）、`cli_e2e`（1/1、118 s）。局部单测 `m5.cli` 与
+`unit.m4.provision_script` 通过。文档：`docs/validation/m5-stab-15-cluster-size.md`；
+支持矩阵与发布说明的“簇大小”行已改。
+
+**仍剩**：R-17b、R-18、R-11、R-13、R-15、R-16、R-19。

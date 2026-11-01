@@ -531,7 +531,7 @@ constexpr std::array<FieldDescriptor, 4> kImportFields{{
 constexpr CommandSchema kImportSchema{
     static_cast<std::uint32_t>(CommandId::disk_import), 4, kImportFields};
 
-constexpr std::array<FieldDescriptor, 12> kCreateFields{{
+constexpr std::array<FieldDescriptor, 13> kCreateFields{{
     {1, FieldKind::string_utf8, FieldRequirement::required, FieldDisposition::consume, 0, 4096, 0},
     {2, FieldKind::path_local, FieldRequirement::required, FieldDisposition::consume, 0, 131072, 0},
     {3, FieldKind::uint64_le, FieldRequirement::required, FieldDisposition::consume, 0, 8, 0},
@@ -549,9 +549,12 @@ constexpr std::array<FieldDescriptor, 12> kCreateFields{{
     // Field 12 is the compaction threshold (T4-03).  Array size, row and schema count are three numbers that must
     // agree; this session has paid for getting that wrong twice.
     {12, FieldKind::uint32_le, FieldRequirement::optional, FieldDisposition::consume, 0, 4, 0},
+    // Field 13 is the create-only NTFS cluster size (R-17a).  Optional: absent means the
+    // Windows default, and a client that predates the field simply sends nothing.
+    {13, FieldKind::uint32_le, FieldRequirement::optional, FieldDisposition::consume, 0, 4, 0},
 }};
 constexpr CommandSchema kCreateSchema{
-    static_cast<std::uint32_t>(CommandId::disk_create), 12, kCreateFields};
+    static_cast<std::uint32_t>(CommandId::disk_create), 13, kCreateFields};
 
 Result<std::wstring> decode_target(std::span<const std::byte> payload,
                                    std::uint16_t minor) {
@@ -986,6 +989,10 @@ Result<EncodedCommand> encode_command_payload(const control::Command& command) {
                                                  FieldRequirement::optional);
                 if (!label.ok()) return Result<EncodedCommand>::failure(label.error());
             }
+            if (value.cluster_size_bytes) {
+                append_u32_field(payload, 13, *value.cluster_size_bytes,
+                                 FieldRequirement::optional);
+            }
             return Result<EncodedCommand>::success(
                 EncodedCommand{CommandId::disk_create, std::move(payload)});
         } else {
@@ -1288,12 +1295,24 @@ Result<control::Command> decode_command_payload(
         if (label_value.has_value() && (label_value->empty() || label_value->size() > 32)) {
             return codec_error<control::Command>(L"Volume label must be 1 to 32 characters");
         }
+        // Field 13: the create-only NTFS cluster size (R-17a).  Checked at the boundary as
+        // well as in the CLI: a peer that sends 10000 would otherwise reach Format-Volume.
+        auto cluster_size = optional_u32_from_field(fields.value(), 13);
+        if (cluster_size.has_value()) {
+            const auto value = *cluster_size;
+            const bool power_of_two = value != 0 && (value & (value - 1)) == 0;
+            if (!power_of_two || value < control::kMinimumClusterSize
+                || value > control::kMaximumClusterSize) {
+                return codec_error<control::Command>(
+                    L"Cluster size must be a power of two between 4096 and 65536");
+            }
+        }
 
         return Result<control::Command>::success(control::DiskCreateCommand{
             name.move_value(), bundle.move_value(), size.value(),
             mount.move_value(), owner.move_value(), no_start.value(), memory_mode,
             hard_limit, checkpoint, dirty_threshold, volume_label.move_value(),
-            compaction_threshold});
+            compaction_threshold, cluster_size});
     }
     return codec_error<control::Command>(L"Command ID is unknown or unsupported");
 }

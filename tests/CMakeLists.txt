@@ -2295,3 +2295,14 @@ add_test(
 set_tests_properties(integration.m5.performance PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
+
+# ---- R-17a: the create-only NTFS cluster size --------------------------------
+# A create with --cluster-size must format the volume with that allocation unit; the refusal
+# for an invalid value and the actual Get-Volume reading are both measured.  Guest-only.
+add_test(
+    NAME integration.m5.cluster_size
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-cluster-size.ps1")
+set_tests_properties(integration.m5.cluster_size PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)

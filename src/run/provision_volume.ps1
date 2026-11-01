@@ -2,7 +2,11 @@ param(
     [Parameter(Mandatory = 1)]
     [UInt32]$DiskNumber,
     [Parameter(Mandatory = 1)]
-[char]$DriveLetter
+[char]$DriveLetter,
+    # The NTFS cluster size for a create (R-17a).  Zero keeps the Windows default; the
+    # accepted set is enforced here as well as in the CLI, the wire decoder and the helper
+    # launch, because this is the process that actually calls Format-Volume.
+    [UInt32]$ClusterSize = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +14,12 @@ $ErrorActionPreference = 'Stop'
 if ($DiskNumber -eq [UInt32]::MaxValue) { throw 'invalid disk number' }
 if ($DriveLetter -notmatch '^[A-Za-z]$') { throw 'invalid drive letter' }
 $DriveLetter = [char]::ToUpperInvariant($DriveLetter)
+if ($ClusterSize -ne 0) {
+    if ($ClusterSize -lt 4096 -or $ClusterSize -gt 65536 -or
+        ($ClusterSize -band ($ClusterSize - 1)) -ne 0) {
+        throw "invalid cluster size: $ClusterSize (expected 4096..65536, power of two)"
+    }
+}
 
 $diskResults = @(Get-Disk -Number $DiskNumber)
 $disk = $diskResults[$diskResults.Count - 1]
@@ -80,7 +90,11 @@ try {
     $mutationStarted = $true
     Initialize-Disk -Number $DiskNumber -PartitionStyle GPT | Out-Null
     $partition = New-Partition -DiskNumber $DiskNumber -UseMaximumSize
-    Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'MyRamDisk' -Confirm:$false -Force | Out-Null
+    if ($ClusterSize -ne 0) {
+        Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'MyRamDisk' -AllocationUnitSize $ClusterSize -Confirm:$false -Force | Out-Null
+    } else {
+        Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'MyRamDisk' -Confirm:$false -Force | Out-Null
+    }
     # **The data partition is not always number 1.**
     #
     # `Initialize-Disk -PartitionStyle GPT` creates a 16 MiB MSR (Microsoft Reserved)

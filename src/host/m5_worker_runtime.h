@@ -50,6 +50,9 @@ struct WorkerRuntimeConfig final {
     // The profile's RAM budget for the block store.  Zero means "no budget to impose",
     // which is what an import asks for because its capacity is only discovered here.
     std::uint64_t ram_limit_bytes{};
+    // The NTFS cluster size to format with (R-17a).  Zero means the Windows default.  Only a
+    // create reads it; an adopt has a volume already.
+    std::uint32_t cluster_size_bytes{};
 };
 
 class DiskWorkerRuntime final : public WorkerRuntime {

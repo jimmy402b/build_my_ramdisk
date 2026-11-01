@@ -236,6 +236,10 @@ int wmain(const int argc, wchar_t** argv) {
     // The budget the service recorded for this profile.  Zero is "the launch has no
     // budget", which the runtime keeps as its own default.
     config.ram_limit_bytes = spec.value().ram_limit_bytes;
+    // **The create-only cluster size (R-17a).**  The spec carries it; the runtime hands it to
+    // the provisioning helper.  Without this line the value reached the worker and stopped
+    // here (measured: the spec said 8192 and the volume was formatted with 4096).
+    config.cluster_size_bytes = spec.value().cluster_size_bytes;
     config.drive_letter =
         spec.value().mount_target.empty() ? L'\0' : spec.value().mount_target[0];
     config.owner_token = L"myrd:worker:" + std::to_wstring(GetCurrentProcessId());

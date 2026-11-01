@@ -241,6 +241,10 @@ struct WorkerLaunchRequest final {
     // policy), because without it `--memory-hard-limit` was recorded in the profile and
     // then ignored by the runtime that had to enforce it.
     std::uint64_t ram_limit_bytes{};
+    // The NTFS cluster size a create formats with (R-17a).  Declared last, like its
+    // neighbours.  Absent means the Windows default; only the intent-based translation can
+    // set it, because the cluster size is a create-only property that the record never holds.
+    std::optional<std::uint32_t> cluster_size_bytes;
 };
 
 // The two translations into a launch request.

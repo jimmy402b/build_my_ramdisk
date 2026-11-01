@@ -78,7 +78,8 @@ struct FakeInstance final {
             REQUIRE_EQ(ledger->started_aim_disks.erase(aim_disk), 1u);
             return Result<void>::success();
         };
-        ops.provision_new_volume = [this](std::uint64_t, wchar_t letter) {
+        ops.provision_new_volume = [this](std::uint64_t, wchar_t letter,
+                                          std::uint32_t) {
             events.push_back("provision");
             REQUIRE_EQ(letter, drive);
             REQUIRE(ledger->assigned_letters.insert(letter).second);

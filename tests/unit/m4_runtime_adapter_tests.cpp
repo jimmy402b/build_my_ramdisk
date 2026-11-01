@@ -38,12 +38,15 @@ struct FakeBackend final : WindowsVolumeOperations, M3RuntimeOperations {
     std::uint64_t observed_recover_bytes{};
     std::uint64_t observed_verify_bytes{};
     wchar_t observed_letter{};
+    std::uint32_t observed_cluster_size{};
 
     // ---- WindowsVolumeOperations ----
     Result<ProductVolume> provision(const std::uint64_t,
-                                    const wchar_t letter) override {
+                                    const wchar_t letter,
+                                    const std::uint32_t cluster_size) override {
         events->push_back("provision");
         observed_letter = letter;
+        observed_cluster_size = cluster_size;
         return Result<ProductVolume>::success(
             ProductVolume{L"owner", L"\\\\?\\Volume{x}", {}, letter, true, true});
     }

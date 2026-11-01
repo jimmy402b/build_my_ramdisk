@@ -56,10 +56,19 @@ constexpr DWORD kProvisionOutputCap = 64u * 1024u;
 
 Result<void> run_provisioning_helper(std::uint32_t disk_number,
                                      wchar_t drive_letter,
+                                     std::uint32_t cluster_size_bytes,
                                      std::uint32_t timeout_ms) {
     if (!valid_letter(drive_letter) || timeout_ms == 0 || timeout_ms > 120000)
         return Result<void>::failure(failure(VolumeError::platform_error,
             L"provision_new_volume", L"invalid provisioning helper arguments"));
+    // R-17a: only the documented NTFS range reaches the script.  The CLI and the wire
+    // decoder already enforce it; this is the third gate, at the process boundary.
+    if (cluster_size_bytes != 0
+        && (cluster_size_bytes < 4096 || cluster_size_bytes > 65536
+            || (cluster_size_bytes & (cluster_size_bytes - 1)) != 0)) {
+        return Result<void>::failure(failure(VolumeError::platform_error,
+            L"provision_new_volume", L"invalid cluster size for provisioning"));
+    }
 
     // Resolve resources from the final executable explicitly.  This code is
     // linked through a static library; passing a null module handle relies on
@@ -124,6 +133,9 @@ Result<void> run_provisioning_helper(std::uint32_t disk_number,
         L" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
         script_path + L"\" -DiskNumber " + std::to_wstring(disk_number) +
         L" -DriveLetter " + drive_letter;
+    // Zero is passed explicitly so the script has one code path: it applies
+    // `-ClusterSize` only when the value is non-zero, which is the Windows default.
+    command += L" -ClusterSize " + std::to_wstring(cluster_size_bytes);
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     HANDLE out_read{}, out_write{}, err_read{}, err_write{};
     auto close_pipes = [&] {
@@ -540,7 +552,7 @@ Result<void> flush_with_identity_checks(const FlushIdentityCheck& verify_before,
 
 Result<void> Win32VolumeAdapter::provision_new_volume(
     std::uint32_t disk_number, wchar_t drive_letter,
-    std::uint32_t timeout_ms) const {
+    std::uint32_t cluster_size_bytes, std::uint32_t timeout_ms) const {
 #ifdef _WIN32
     if (!valid_letter(drive_letter)) {
         return Result<void>::failure(failure(
@@ -562,9 +574,11 @@ Result<void> Win32VolumeAdapter::provision_new_volume(
             VolumeError::occupied_drive_letter, L"provision_new_volume",
             L"requested drive letter is occupied"));
     }
-    return run_provisioning_helper(disk_number, drive_letter, timeout_ms);
+    return run_provisioning_helper(disk_number, drive_letter, cluster_size_bytes,
+                                   timeout_ms);
 #else
-    (void)disk_number; (void)drive_letter; (void)timeout_ms;
+    (void)disk_number; (void)drive_letter; (void)cluster_size_bytes;
+    (void)timeout_ms;
     return Result<void>::failure(failure(VolumeError::platform_error,
         L"provision_new_volume", L"Win32 volume adapter unavailable"));
 #endif
@@ -580,8 +594,10 @@ inline constexpr std::uint32_t kPublishBudgetMs = 10'000;
 
 Result<ProductVolume> Win32VolumeAdapter::provision_and_adopt_volume(
     std::uint32_t disk_number, wchar_t drive_letter,
-    std::wstring owner_token, std::uint32_t timeout_ms) const {
-    auto provisioned = provision_new_volume(disk_number, drive_letter, timeout_ms);
+    std::wstring owner_token, std::uint32_t cluster_size_bytes,
+    std::uint32_t timeout_ms) const {
+    auto provisioned = provision_new_volume(disk_number, drive_letter,
+                                            cluster_size_bytes, timeout_ms);
     if (!provisioned.ok()) return Result<ProductVolume>::failure(provisioned.error());
 #ifdef _WIN32
     // Provisioning is a transactional boundary: once the helper reports

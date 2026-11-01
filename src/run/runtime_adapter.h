@@ -36,8 +36,11 @@ class WindowsVolumeOperations {
 public:
     virtual ~WindowsVolumeOperations() = default;
 
-    virtual Result<ProductVolume> provision(std::uint64_t bytes,
-                                            wchar_t letter) = 0;
+    // `cluster_size` is the NTFS cluster size for a create; zero means the Windows default
+    // (R-17a).  It rides this call rather than the durable record because it describes the
+    // one formatting the volume will ever get.
+    virtual Result<ProductVolume> provision(std::uint64_t bytes, wchar_t letter,
+                                            std::uint32_t cluster_size) = 0;
     virtual Result<ProductVolume> find(wchar_t letter) = 0;
     virtual Result<void> verify(const ProductVolume& volume,
                                 std::uint64_t bytes) = 0;
@@ -199,8 +202,8 @@ public:
     [[nodiscard]] const Config& config() const noexcept { return config_; }
 
     // WindowsVolumeOperations
-    Result<ProductVolume> provision(std::uint64_t bytes,
-                                    wchar_t letter) override;
+    Result<ProductVolume> provision(std::uint64_t bytes, wchar_t letter,
+                                    std::uint32_t cluster_size) override;
     Result<ProductVolume> find(wchar_t letter) override;
     Result<void> verify(const ProductVolume& volume,
                         std::uint64_t bytes) override;

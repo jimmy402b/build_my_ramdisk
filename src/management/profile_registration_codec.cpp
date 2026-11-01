@@ -577,6 +577,18 @@ void write_lifecycle_intent(Writer& w, const LifecycleOperationIntent& v) {
     });
     w.u64(v.physical_memory.total_bytes); w.u64(v.physical_memory.available_bytes);
     w.u64(v.created_unix_ms);
+    // **Appended after the original body (R-17a).**  The execution path compares the decoded
+    // durable intent with the in-memory one, so every field that can differ between two
+    // creates has to survive the round trip.  These three were missing, which made any create
+    // that used one of them fail with "the in-memory lifecycle plan does not match durable
+    // intent" as soon as it started executing.  Appending keeps a reservation written before
+    // them decodable: the reader consumes them only when bytes remain.
+    write_optional(w, v.volume_label,
+                   [](Writer& out, const std::wstring& value) { out.wide(value); });
+    write_optional(w, v.compaction_checkpoint_threshold,
+                   [](Writer& out, const std::uint32_t value) { out.u32(value); });
+    write_optional(w, v.cluster_size_bytes,
+                   [](Writer& out, const std::uint32_t value) { out.u32(value); });
 }
 
 bool read_lifecycle_intent(Reader& r, LifecycleOperationIntent& v) {
@@ -596,6 +608,18 @@ bool read_lifecycle_intent(Reader& r, LifecycleOperationIntent& v) {
             return in.boolean(value.enabled) && in.u64(value.bytes);
         }) || !r.u64(v.physical_memory.total_bytes)
         || !r.u64(v.physical_memory.available_bytes) || !r.u64(v.created_unix_ms)) return false;
+    // The appended intent fields (see `write_lifecycle_intent`).  A reservation from before
+    // them ends exactly here, and absence decodes as "absent" rather than as a mismatch.
+    if (!r.done()) {
+        if (!read_optional(r, v.volume_label,
+                           [](Reader& in, std::wstring& value) { return in.wide(value); })
+            || !read_optional(r, v.compaction_checkpoint_threshold,
+                              [](Reader& in, std::uint32_t& value) { return in.u32(value); })
+            || !read_optional(r, v.cluster_size_bytes,
+                              [](Reader& in, std::uint32_t& value) { return in.u32(value); })) {
+            return false;
+        }
+    }
     return !v.owner_sid.empty() && !v.display_name.empty() && !v.bundle_path.empty()
         && !v.mount_target.empty();
 }

@@ -253,6 +253,7 @@ Result<WorkerLaunchSpec> decode_launch_spec_body(
     const auto secret = reader.raw(spec.startup_secret.bytes.size());
     if (reader.boolean()) spec.volume_label = reader.text();
     if (reader.boolean()) spec.ram_limit_bytes = reader.u64();
+    if (reader.boolean()) spec.cluster_size_bytes = reader.u32();
     if (!reader.ok() || !reader.exhausted()) {
         return Result<WorkerLaunchSpec>::failure(pipe_error(
             static_cast<std::uint32_t>(OperationErrorCode::protocol_malformed),
@@ -327,6 +328,9 @@ Result<std::vector<std::byte>> encode_launch_spec(const WorkerLaunchSpec& spec) 
     // from bytes that belong to something else.
     writer.boolean(spec.ram_limit_bytes != 0);
     if (spec.ram_limit_bytes != 0) writer.u64(spec.ram_limit_bytes);
+    // The create-only cluster size (R-17a), appended with the same presence-byte shape.
+    writer.boolean(spec.cluster_size_bytes != 0);
+    if (spec.cluster_size_bytes != 0) writer.u32(spec.cluster_size_bytes);
     return Result<std::vector<std::byte>>::success(writer.take());
 }
 

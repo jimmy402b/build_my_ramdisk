@@ -241,7 +241,10 @@ bool lifecycle_intent_equal(
         && left.created_unix_ms == right.created_unix_ms
         // The label is part of the intent's identity: two creates that differ only by label are not the
         // same request, and treating them as equal would let one be answered by the other's operation.
-        && left.volume_label == right.volume_label;
+        && left.volume_label == right.volume_label
+        // Same reasoning for the create-only cluster size (R-17a): two creates that differ only
+        // by how the volume is formatted are different requests.
+        && left.cluster_size_bytes == right.cluster_size_bytes;
 }
 
 bool reservation_equal(
@@ -1989,7 +1992,8 @@ Result<ServiceResponse> ServiceCore::dispatch(
             memory.value(),
             clock_.unix_time_ms(),
             create != nullptr ? create->volume_label : std::nullopt,
-            create != nullptr ? create->compaction_checkpoint_threshold : std::nullopt};
+            create != nullptr ? create->compaction_checkpoint_threshold : std::nullopt,
+            create != nullptr ? create->cluster_size_bytes : std::nullopt};
         if (create != nullptr) {
             auto materialized = materialize_memory_policy(
                 intent.memory_mode,

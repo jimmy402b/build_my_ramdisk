@@ -173,7 +173,8 @@ Result<void> DiskRuntime::start() {
         if (!operations_.provision_new_volume)
             return fail(missing_void(L"provision_new_volume"));
         auto provisioned = operations_.provision_new_volume(
-            options_.virtual_bytes, options_.drive_letter);
+            options_.virtual_bytes, options_.drive_letter,
+            options_.cluster_size_bytes);
         if (!provisioned.ok()) {
             (void)shutdown_clean_locked();
             return Result<void>::failure(provisioned.error());

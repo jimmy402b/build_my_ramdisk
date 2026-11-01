@@ -62,6 +62,7 @@ struct FakeRuntime final {
     std::uint64_t observed_provision_size{};
     std::uint64_t observed_verify_size{};
     wchar_t observed_provision_letter{};
+    std::uint32_t observed_cluster_size{};
     wchar_t observed_find_letter{};
     wchar_t observed_assign_letter{};
     bool generation_zero_ready{};
@@ -136,9 +137,11 @@ struct FakeRuntime final {
             return fail_stop_aim ? Result<void>::failure(runtime_error())
                                  : Result<void>::success();
         };
-        ops.provision_new_volume = [this](std::uint64_t bytes, wchar_t letter) {
+        ops.provision_new_volume = [this](std::uint64_t bytes, wchar_t letter,
+                                          std::uint32_t cluster_size) {
             events.push_back("provision");
             provision_called = true;
+            observed_cluster_size = cluster_size;
             if (fail_provision) return Result<ProductVolume>::failure(runtime_error());
             REQUIRE(generation_zero_ready || recovered_image_ready);
             REQUIRE(aim_running);

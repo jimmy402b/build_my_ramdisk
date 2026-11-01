@@ -237,8 +237,9 @@ Result<DiskRuntimeOperations> make_runtime_operations(
     operations.start_aim = [&m3] { return m3.start(); };
     operations.stop_aim = [&m3] { return m3.stop(); };
     operations.provision_new_volume =
-        [&volumes](const std::uint64_t bytes, const wchar_t letter) {
-            return volumes.provision(bytes, letter);
+        [&volumes](const std::uint64_t bytes, const wchar_t letter,
+                   const std::uint32_t cluster_size) {
+            return volumes.provision(bytes, letter, cluster_size);
         };
     operations.find_recovered_volume = [&volumes](const wchar_t letter) {
         return volumes.find(letter);
@@ -409,12 +410,12 @@ Result<void> ProductionRuntimeAdapter::stop() {
     return stopped;
 }
 
-Result<ProductVolume> ProductionRuntimeAdapter::provision(const std::uint64_t,
-                                                          const wchar_t letter) {
+Result<ProductVolume> ProductionRuntimeAdapter::provision(
+    const std::uint64_t, const wchar_t letter, const std::uint32_t cluster_size) {
     const auto disk = aim_disk_number(L"provision_new_volume");
     if (!disk.ok()) return Result<ProductVolume>::failure(disk.error());
     return impl_->volume_adapter.provision_and_adopt_volume(
-        disk.value(), letter, impl_->owner_token, 120000);
+        disk.value(), letter, impl_->owner_token, cluster_size, 120000);
 }
 
 Result<ProductVolume> ProductionRuntimeAdapter::find(const wchar_t letter) {

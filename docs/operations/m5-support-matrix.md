@@ -49,7 +49,7 @@
 | 项 | 规则 |
 |---|---|
 | 文件系统 | NTFS |
-| 簇大小 | 1.0.0 **固定为 Windows 默认（4 KiB）**；用户可选簇大小是 R-17a，**未实现** |
+| 簇大小 | **可选**（决策 6，R-17a，**仅 create**）：`disk create --cluster-size 64KiB`（或裸字节 `65536`），接受 4/8/16/32/64 KiB（2 的幂）。客机读数（`integration.m5.cluster_size` 1/1）：`volume.allocation_unit_bytes=65536`、`volume.cluster_size_match=yes`；非法值 exit 2，消息 `--cluster-size must be a power of two between 4KiB and 64KiB`。不传时为 Windows 默认 4 KiB；簇大小不写入 profile，重启走 adopt |
 | 卷标 | **不支持**（裁定 3）：`disk create --volume-label …`（短写 `--label` 同样）在入口被拒（usage 失败，**exit 2**），消息 `--volume-label is not supported: this release does not set volume labels`。客机读数（`integration.m5.cli_e2e`）：`label.exit=2`、`label.result=refused-by-name`；`m5.cli` 单测覆盖两种拼写 |
 | 盘符 | 每次 start 重新分配，不保证跨重启不变 |
 | 数据格式版本 | 1（bundle：`disk.rdm` 8 KiB + `base-0000.vhdx` 4 MiB + `journal-e0001.rdj`） |
@@ -66,7 +66,7 @@
 ## 6. 不在支持范围
 
 - 物理内存耗尽（over-commit）：裁定 1，固定预算超 commit limit 在 create 拒绝。
-- 卷标、Windows 10、Windows Server、ARM64、in-place 回滚、用户可选簇大小（R-17a 之前）。
+- 卷标、Windows 10、Windows Server、ARM64、in-place 回滚。
 - 非管理员运行 GUI：GUI 以只读方式工作（R-11）；CLI 管理命令需要管理员。
 
 ## 7. 这张表怎么用

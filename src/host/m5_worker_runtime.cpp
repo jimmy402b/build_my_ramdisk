@@ -525,6 +525,7 @@ Result<void> DiskWorkerRuntime::start() {
     options.virtual_bytes = impl.config.virtual_bytes;
     options.drive_letter = impl.config.drive_letter;
     options.volume_label = impl.config.volume_label;
+    options.cluster_size_bytes = impl.config.cluster_size_bytes;
     options.resume_existing_create = resume_existing_create;
     // Which lifecycle this worker runs, chosen by the launch and not by what it finds:
     // `DiskRuntime` independently requires the bundle's own kind to match the mode, so a

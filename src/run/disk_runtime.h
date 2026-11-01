@@ -144,6 +144,9 @@ struct DiskRuntimeOptions final {
     // (the worker verifies the image identity before setting it), so a create
     // cannot adopt a stranger's bundle by accident.
     bool resume_existing_create{};
+    // The NTFS cluster size a create formats with (R-17a).  Zero keeps the Windows default;
+    // an adopt ignores it because the volume already exists.
+    std::uint32_t cluster_size_bytes{};
 };
 
 // T06 deliberately exposes callbacks instead of production objects.  This
@@ -199,7 +202,8 @@ struct DiskRuntimeOperations final {
     std::function<Result<void>()> start_aim;
     std::function<Result<void>()> stop_aim;
 
-    std::function<Result<ProductVolume>(std::uint64_t, wchar_t)>
+    // (bytes, drive letter, cluster size -- zero means the Windows default; R-17a).
+    std::function<Result<ProductVolume>(std::uint64_t, wchar_t, std::uint32_t)>
         provision_new_volume;
     // **Selects a volume for adoption.  Bounded, but the selection must be identity-based.**
     //

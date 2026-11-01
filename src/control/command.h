@@ -13,6 +13,12 @@
 
 namespace myrd::control {
 
+// The NTFS cluster sizes a create accepts (R-17a): 4096 is the Windows default, 65536 is
+// NTFS's maximum, and everything between is required to be a power of two.  Declared here so
+// the CLI, the wire decoder and the worker side refuse exactly the same set.
+inline constexpr std::uint32_t kMinimumClusterSize = 4096;
+inline constexpr std::uint32_t kMaximumClusterSize = 65536;
+
 struct DiskShowCommand {
     std::wstring target;
 };
@@ -93,6 +99,11 @@ struct DiskCreateCommand {
     // The checkpoint count that makes a compaction due (T4-03).  Declared last so the fields the command already
     // had keep their encoded order; absent means "use the profile's policy default".
     std::optional<std::uint32_t> compaction_checkpoint_threshold;
+    // The NTFS cluster size for the volume a create formats (R-17a).  Create-only on purpose:
+    // a cluster size is a property of the formatted volume, not of the record, so there is
+    // nothing to re-apply on a restart and nothing to migrate.  Absent means the Windows
+    // default (4 KiB).
+    std::optional<std::uint32_t> cluster_size_bytes;
 };
 
 using Command = std::variant<StatusCommand, DiskListCommand, DiskShowCommand,

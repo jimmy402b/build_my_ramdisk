@@ -556,6 +556,9 @@ struct LifecycleOperationIntent final {
     std::optional<std::wstring> volume_label;
     // Declared last, like its neighbours, so every existing positional initializer keeps its meaning (T4-03).
     std::optional<std::uint32_t> compaction_checkpoint_threshold;
+    // The create-only NTFS cluster size (R-17a).  Not part of the durable record: it describes
+    // how the volume was formatted, and a restart adopts the existing volume.
+    std::optional<std::uint32_t> cluster_size_bytes;
 };
 
 enum class RecoveryOperationKind : std::uint8_t {

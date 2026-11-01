@@ -56,7 +56,7 @@ myrd-gui.exe        05D15424B7E53CF23180B98FE5C6C6BFA1682128D349937FE119E71B28A6
 
 1. 版本与 `CHANGELOG.md` 链接；
 2. 支持范围与明确不支持项（引用 `m5-support-matrix.md`）：仅 Win11 x64、无卷标、无 over-commit、
-   无版本回滚（只支持重装）、簇大小固定为默认（R-17a 之前）；
+   无版本回滚（只支持重装）、簇大小**可选但仅限 create**（`--cluster-size 4KiB..64KiB`，不传为默认 4 KiB）；
 3. 数据丢失上限：已提交（checkpoint 完成）的数据在断电后保留；未提交的写入可能丢失，最多是最后一次
    成功 checkpoint 之后的内容；
 4. 驱动要求：`phdskmnt` ≥ 1.2.28.93，安装器只检查不安装；

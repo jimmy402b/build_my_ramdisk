@@ -4,6 +4,7 @@
 #include "src/product/uuid.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <cwctype>
 #include <map>
@@ -112,7 +113,7 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
         L"--name", L"--bundle", L"--size", L"--mount", L"--owner",
         L"--memory-mode", L"--memory-hard-limit", L"--checkpoint-interval", L"--compaction-threshold",
         L"--confirmation", L"--expected-image", L"--timeout", L"--pipe", L"--output",
-        L"--label", L"--volume-label"};
+        L"--label", L"--volume-label", L"--cluster-size"};
     const std::vector<std::wstring> switch_options{
         L"--no-start", L"--force", L"--accept-volatile-data-loss", L"--wait",
         L"--no-wait", L"--dry-run", L"--from-previous", L"--help", L"-h",
@@ -302,6 +303,39 @@ CliInvocation parse_command_line(const std::span<const std::wstring> arguments) 
             }
             if (auto owner = value_of(L"--owner"); owner.has_value()) {
                 create.owner_sid = std::move(owner.value());
+            }
+            // **The cluster size is a create-only option (R-17a).**  It is a property of the
+            // volume the create formats, so it never enters the record; the accepted set is
+            // the one the wire decoder and the worker also enforce.
+            if (auto cluster = value_of(L"--cluster-size"); cluster.has_value()) {
+                // A cluster size is small enough that both spellings are natural: `64KiB`
+                // and a bare `65536`.  The shared size parser requires a unit, so a bare
+                // digit string is read as bytes here -- otherwise `65536` would be refused
+                // as "not a size" while `10000` would never reach the power-of-two message
+                // that actually explains what is wrong.
+                std::uint64_t bytes = 0;
+                auto parsed_cluster = product::parse_binary_size(narrow(cluster.value()));
+                if (parsed_cluster.ok()) {
+                    bytes = parsed_cluster.value();
+                } else {
+                    wchar_t* end = nullptr;
+                    errno = 0;
+                    const auto bare = std::wcstoull(cluster.value().c_str(), &end, 10);
+                    if (end == cluster.value().c_str() || *end != L'\0' || errno != 0) {
+                        invocation.usage_error =
+                            "--cluster-size is not a size (for example 64KiB or 65536)";
+                        return invocation;
+                    }
+                    bytes = bare;
+                }
+                const bool power_of_two = bytes != 0 && (bytes & (bytes - 1)) == 0;
+                if (!power_of_two || bytes < control::kMinimumClusterSize
+                    || bytes > control::kMaximumClusterSize) {
+                    invocation.usage_error =
+                        "--cluster-size must be a power of two between 4KiB and 64KiB";
+                    return invocation;
+                }
+                create.cluster_size_bytes = static_cast<std::uint32_t>(bytes);
             }
 
             create.no_start = has_flag(L"--no-start");

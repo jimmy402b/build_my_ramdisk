@@ -41,14 +41,20 @@ Require ($parseErrors.Count -eq 0) `
 $paramAst = $ast.ParamBlock
 Require ($null -ne $paramAst) 'script must declare a parameter block'
 $paramNames = @($paramAst.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-Require ($paramNames.Count -eq 2) `
-    "provisioning script must expose exactly two parameters; found: $($paramNames -join ', ')"
-Require (($paramNames -ccontains 'DiskNumber') -and ($paramNames -ccontains 'DriveLetter')) `
-    'provisioning parameters must be exactly DiskNumber and DriveLetter'
+# R-17a added one optional parameter: the NTFS cluster size.  It has no
+# [Parameter(Mandatory)] attribute on purpose (zero means the Windows default), so the
+# mandatory loop below skips it; the disk and the letter stay mandatory.
+Require ($paramNames.Count -eq 3) `
+    "provisioning script must expose exactly three parameters; found: $($paramNames -join ', ')"
+Require (($paramNames -ccontains 'DiskNumber') -and ($paramNames -ccontains 'DriveLetter') -and
+         ($paramNames -ccontains 'ClusterSize')) `
+    'provisioning parameters must be exactly DiskNumber, DriveLetter and ClusterSize'
 Require ($paramAst.Parameters[0].Name.VariablePath.UserPath -eq 'DiskNumber' -and
-        $paramAst.Parameters[1].Name.VariablePath.UserPath -eq 'DriveLetter') `
-    'provisioning parameters must be ordered DiskNumber, DriveLetter'
+        $paramAst.Parameters[1].Name.VariablePath.UserPath -eq 'DriveLetter' -and
+        $paramAst.Parameters[2].Name.VariablePath.UserPath -eq 'ClusterSize') `
+    'provisioning parameters must be ordered DiskNumber, DriveLetter, ClusterSize'
 foreach ($parameter in $paramAst.Parameters) {
+    if ($parameter.Name.VariablePath.UserPath -eq 'ClusterSize') { continue }
     $parameterAttribute = @($parameter.Attributes | Where-Object {
         $_.TypeName.Name -ieq 'Parameter'
     }) | Select-Object -First 1
@@ -63,6 +69,8 @@ foreach ($parameter in $paramAst.Parameters) {
 }
 Require ($source -match '\[UInt32\]\s*\$DiskNumber') 'DiskNumber must be UInt32'
 Require ($source -match '\[char\]\s*\$DriveLetter') 'DriveLetter must be char'
+Require ($source -match '\[UInt32\]\s*\$ClusterSize\s*=\s*0') `
+    'ClusterSize must be an optional UInt32 that defaults to 0 (the Windows default)'
 Require ($source -match '(?im)^\s*\$ErrorActionPreference\s*=\s*["'']Stop["'']') `
     'provisioning script must use terminating errors'
 Require ($source -notmatch '(?im)(?:Set-Disk|Initialize-Disk|New-Partition|Format-Volume|Set-Partition|Set-Volume)[^\r\n]*-ErrorAction\s+SilentlyContinue') `

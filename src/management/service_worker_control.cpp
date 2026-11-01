@@ -205,6 +205,11 @@ Result<WorkerLaunchRequest> make_launch_request(
         }
         request.ram_limit_bytes = memory.value().hard_limit_bytes;
     }
+    // The create-only cluster size travels with the operation, not the record: the worker
+    // formats the volume once, and a later start adopts what was formatted (R-17a).
+    if (intent.kind == LifecycleOperationKind::create) {
+        request.cluster_size_bytes = intent.cluster_size_bytes;
+    }
     return Result<WorkerLaunchRequest>::success(std::move(request));
 }
 
@@ -391,6 +396,15 @@ Result<WorkerActionResult> ServiceWorkerControl::bind_worker(
     auto launch_request = make_launch_request(request.durable_profile.value());
     if (!launch_request.ok()) {
         return Result<WorkerActionResult>::failure(launch_request.error());
+    }
+    // **The create-only cluster size rides the operation's intent, not the record (R-17a).**
+    // A create registers its profile before the worker that provisions the volume is bound,
+    // so the record-based launch above cannot know how the volume should be formatted.  The
+    // intent is still in the request; copying the one field here is what makes
+    // `--cluster-size` reach the provisioning helper.
+    if (request.lifecycle_intent.has_value()) {
+        launch_request.value().cluster_size_bytes =
+            request.lifecycle_intent->cluster_size_bytes;
     }
     auto launched = sessions_.launch(launch_request.value(), context());
     if (!launched.ok()) {

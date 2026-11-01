@@ -60,6 +60,7 @@ WindowsWorkerSessionProvider::launch(const WorkerLaunchRequest& request,
     spec.volume_guid = request.volume_guid;
     spec.volume_label = request.volume_label;
     spec.ram_limit_bytes = request.ram_limit_bytes;
+    spec.cluster_size_bytes = request.cluster_size_bytes.value_or(0);
     spec.bundle_path = request.bundle_path;
     // Absent for an import, and absent is a different instruction from a zero
     // uuid: the worker adopts whatever the bundle holds instead of refusing one

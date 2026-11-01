@@ -85,7 +85,13 @@ Result<std::uint64_t> parse_binary_size(std::string_view text) {
     std::uint64_t multiplier = 0;
     std::size_t suffix_length = 0;
 
-    if (text.ends_with("MiB")) {
+    if (text.ends_with("KiB")) {
+        // R-17a: a cluster size is naturally written in KiB (4KiB..64KiB), and the same
+        // parser serves every binary-size option, so the unit is simply understood here
+        // rather than split into a second parser for one option.
+        multiplier = 1ULL << 10;
+        suffix_length = 3;
+    } else if (text.ends_with("MiB")) {
         multiplier = 1ULL << 20;
         suffix_length = 3;
     } else if (text.ends_with("GiB")) {
@@ -95,7 +101,7 @@ Result<std::uint64_t> parse_binary_size(std::string_view text) {
         multiplier = 1ULL << 40;
         suffix_length = 3;
     } else {
-        return invalid_size(L"Size must end with MiB, GiB, or TiB");
+        return invalid_size(L"Size must end with KiB, MiB, GiB, or TiB");
     }
 
     const auto digits = text.substr(0, text.size() - suffix_length);
