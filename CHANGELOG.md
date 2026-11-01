@@ -46,10 +46,50 @@ rollback**: reinstalling is the supported way back; the installer and the docs s
   the recovery inspection's proof. (`6393a89`, evidence
   `docs/validation/m5-stab-03c-process-kills.md`)
 
+### Release engineering, support and newer scope (R-09 … R-19)
+
+- **Security audit (R-09)**: seven blocking findings fixed -- the worker and the client verify
+  the private pipe's server identity, the profile store checks the directory owner, `disk
+  export` is administrator-only, the log directory is management-only, the job handle asks only
+  for `JOB_OBJECT_QUERY`, the launch spec is read to EOF with a 128 KiB cap, and the client
+  verifies the public pipe's server. (`6f93816`, evidence
+  `docs/validation/m5-stab-07-security-audit.md`)
+- **Reproducible builds (R-10)**: `/Brepro` on compile and link; two clean builds of the same
+  commit produce byte-identical binaries. (`0ff3b03`)
+- **Non-elevated read path (R-11)**: `disk show` is caller-filtered and the service compares the
+  profile's owner with the caller, so a user can read its own disk without elevation while
+  another user's profile is refused. (`edd562b`)
+- **Cluster size (R-17a)**: `disk create --cluster-size` accepts 4/8/16/32/64 KiB as powers of
+  two, create-only; absent keeps the Windows default. (`bfdaff1`, evidence
+  `docs/validation/m5-stab-15-cluster-size.md`)
+- **Support bundle (R-15)**: `tools/New-M5SupportBundle.ps1` writes one redacted archive with
+  versions, OS, driver, service state, disks, recent operations, profile manifests and log
+  tails, plus a `failure.json` naming the most recent failed operation. (`3bdd01e`, evidence
+  `docs/validation/m5-stab-13-support-bundle.md`)
+- **One support page (R-16)**: `docs/operations/m5-support.md` states the supported scope, the
+  known limits (each with a test or an explicit "not measured"), the data-loss bound,
+  backup/export, the driver requirement and uninstall notes; installer refusals and the
+  product's `driver_unavailable` message point at it. (`73efbc4`)
+- **Compatibility (R-18)**: a compressed bundle directory, an EFS-encrypted one, Defender with
+  real-time protection on, and a non-system AIM disk with 512/512 sectors all measured with a
+  full create/write/checkpoint/stop cycle. (`310247d`, evidence
+  `docs/validation/m5-stab-16-compatibility.md`)
+- **Sustained operation (R-13)**: `integration.m5.soak` plus `tools/m5vm/Test-M5Soak.ps1` run a
+  24 h cycle with periodic hard power cuts, measuring handles, worker count, working set and the
+  committed-data hash every round. (`b51973d`, `a8c1da5`, `fc489ec`)
+- **Non-mirror test layout (R-17b)**: configure-time test paths are rebased at run time through
+  `MYRD_TEST_ROOT`, so the suite runs from a checkout that is not at the dev path. (`2646539`)
+- **Release rehearsal (R-19)**: `docs/operations/m5-release-rehearsal.md` is the runbook for one
+  commit, a frozen manifest, a clean VM, two consecutive full runs and the eight release gates.
+  (`db90b4c`)
 ### Known limits in 1.0.0
 
 - Volume labels are **not supported**: AIM volumes do not complete `SetVolumeLabel`; the
-  entry point refuses and explains (decision 3).
+  entry point refuses and explains (decision 3).  The refusal names the option:
+  `--volume-label is not supported: this release does not set volume labels` (the short
+  `--label` is refused with the same message).
+- Cluster size is a **create-only** choice (4 KiB..64 KiB); a formatted volume keeps the size
+  it was created with and there is no re-format command.
 - One disk at a time (G4 multi-disk is deferred).
 - Physical RAM exhaustion is **not** a supported path: budgets above the machine's commit
   limit are refused at creation (decision 1).
@@ -68,6 +108,17 @@ rollback**: reinstalling is the supported way back; the installer and the docs s
 | Over-commit refusal + budget rejections (R-01) | `c8b3d63` |
 | Deterministic P4 window (R-04 apparatus) | `b12b449` |
 | P5 from the recovery inspection's proof | `6393a89` |
+| Security audit, seven blocking findings (R-09) | `6f93816` |
+| Reproducible builds with /Brepro (R-10) | `0ff3b03` |
+| Volume-label refusal by name (R-14) | `cf976f8` |
+| Create-only cluster size (R-17a) | `bfdaff1` |
+| Support bundle (R-15) | `3bdd01e` |
+| One support page and error pointers (R-16) | `73efbc4` |
+| Compatibility measurements (R-18) | `310247d` |
+| Non-elevated `disk show` with owner check (R-11) | `edd562b` |
+| 24 h soak apparatus (R-13) | `b51973d`, `fc489ec` |
+| Non-mirror test layout (R-17b) | `2646539` |
+| Release rehearsal runbook (R-19) | `db90b4c` |
 
 `[1.0.0]` is a release candidate until the R-19 rehearsal completes; the manifest and the
 checksums are produced by `tools/New-M5ReleaseManifest.ps1` and checked by
