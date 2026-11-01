@@ -64,4 +64,4 @@ over-commit（固定预算超 commit limit 在 create 被拒）、BitLocker/SMB 
 2. `%ProgramData%\MyRamDisk\logs\worker.log`：worker 启动/命令失败的原因。
 3. `myrd-cli disk list` / `operation show <id>`：当前状态与操作终态。
    注意 `operation show` 对失败操作返回 exit 1，这是结果而不是命令错误。
-4. 支持包：`tools/New-M5SupportBundle.ps1`（R-15；见 `m5-support.md` 同目录工具说明）。
+4. 支持包：管理员运行 `powershell -ExecutionPolicy Bypass -File tools\New-M5SupportBundle.ps1 -Output .\MyRamDisk-support.zip`；默认脱敏（计算机名/用户路径/绝对路径），包里的 `failure.json` 直接指向最近一次失败操作。

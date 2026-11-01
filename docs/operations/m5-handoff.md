@@ -5467,3 +5467,35 @@ READING: system.disk_number=0
 逐条依据与文档评审表：`docs/validation/m5-stab-14-support-page.md`。
 
 **仍剩**：R-15（支持包）、R-11（非提权 GUI）、R-13（24h soak）、R-19（演练）。
+
+---
+
+### 3.223 2026-11-01：**R-15 PASSED（支持包一条命令，默认脱敏）**
+
+`tools/New-M5SupportBundle.ps1`：一条命令生成 zip，内容 environment/versions/driver/service/
+disk list+show/operations/`failure.json`/profiles+`disk.rdm`/日志尾/`manifest.json`（每文件 SHA-256、
+`failure`、`redacted`）。默认脱敏：计算机名 → `%COMPUTERNAME%`、用户 profile → `%USERPROFILE%`、
+其余绝对路径 → `<path>`；`-IncludePaths` 才保留。脱敏在写盘前完成，哈希对已脱敏内容计算。
+
+客机 `integration.m5.support_bundle` 1/1、74 s：先制造真实失败（bundle 目录非空 → create failed），
+再让“陌生用户”跑工具：
+
+```text
+READING: failure.operation_state=failed
+READING: tool.exit=0
+READING: archive.bytes=3870
+READING: manifest.files=10
+READING: manifest.redacted=True
+READING: manifest.failure.operation=3e9a9b8a-…   (等于失败操作)
+READING: logs.service_bytes=3337
+READING: redaction.offenders=0
+```
+
+**调试记录**：① CLI 没有 `status`/`driver status`/`operation list`（第一版工具按直觉调用，客机报
+`unknown command 'status'`）；改为 `disk list`/`disk show`/`operation show`/`--version`，
+操作 id 从 `operations/*.myop` 文件名枚举。② 原生 stderr 在 `$ErrorActionPreference='Stop'` 下是
+终止错误，而 CLI 的拒绝正是要记录的内容；调用期间降为 `Continue` 并显式取 `$LASTEXITCODE`。
+
+**未测**：非管理员运行（日志目录 management-only，包会标 `(absent: …)`）、`-IncludePaths` 路径。
+
+**仍剩**：R-11（非提权 GUI）、R-13（24h soak）、R-19（演练）。
