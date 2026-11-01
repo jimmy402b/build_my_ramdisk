@@ -5,6 +5,11 @@
 
 ## 0. 前置
 
+**本机自检要在管理员 shell 里跑。** 实测：非提权 shell 里 `ctest -E "integration\.m5\."` 会有
+36 例失败（`unit.m4.profile_store`、`m5.service_operation_store` 等以 `exception` 在 0.02 s 内
+失败），因为那些用例要打开受保护的 `C:\ProgramData\MyRamDisk` 链或真实资源；这不是回归。
+`([Security.Principal.WindowsPrincipal]…).IsInRole(Administrator)` 必须为 `True` 再下结论。
+
 - 工作树干净（`git status --porcelain` 为空），分支 `feature/m5-lifecycle`。
 - 客机空闲、已重置（`C:\m5\Reset-M5Guest.ps1` → `profiles: 0 entries left`、`RESET`）。
 - 24h soak（R-13）已完成并留下 `C:\tmp\m5-soak\...\summary.txt`。
