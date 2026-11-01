@@ -121,11 +121,44 @@ void report(SERVICE_STATUS_HANDLE handle, SERVICE_STATUS& status,
 // Records a host failure in the exit code the SCM will show an operator, and
 // says which call failed.  In service mode there is no console, so the exit code
 // is what survives -- and it is deliberately not `NO_ERROR`.
-DWORD failure_exit_code(const char* what, const myrd::Error& error) {
-    std::fprintf(stderr, "myrd-service: %s failed: op=%ls msg=%ls native=%u\n",
-                 what, error.operation.c_str(), error.message.c_str(),
-                 error.native_code);
+//
+// **A service has no stderr, so the line also goes to the durable log.**  Measured
+// (R-08): an installed service that refused an unsupported durable schema died with a
+// non-zero exit code and no readable message anywhere -- `sc query` shows 1066 and that is
+// all.  The same line is appended to `<ProgramData>\MyRamDisk\logs\service.log`, the file
+// the installer made readable to Users, so an operator can read why it refused to start.
+void log_startup_failure(const char* line) {
+    std::fprintf(stderr, "%s", line);
     std::fflush(stderr);
+    wchar_t program_data[MAX_PATH]{};
+    const DWORD length =
+        GetEnvironmentVariableW(L"ProgramData", program_data, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return;
+    std::wstring path(program_data);
+    path += L"\\MyRamDisk\\logs\\service.log";
+    const HANDLE file = CreateFileW(
+        path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME now{};
+    GetSystemTime(&now);
+    char stamp[64]{};
+    std::snprintf(stamp, sizeof(stamp), "%04u-%02u-%02uT%02u:%02u:%02uZ ",
+                  now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+                  now.wSecond);
+    DWORD written = 0;
+    WriteFile(file, stamp, static_cast<DWORD>(strlen(stamp)), &written, nullptr);
+    WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
+    CloseHandle(file);
+}
+
+DWORD failure_exit_code(const char* what, const myrd::Error& error) {
+    char line[1024]{};
+    std::snprintf(line, sizeof(line),
+                  "myrd-service: %s failed: op=%ls msg=%ls native=%u\n", what,
+                  error.operation.c_str(), error.message.c_str(),
+                  error.native_code);
+    log_startup_failure(line);
     return ERROR_SERVICE_SPECIFIC_ERROR;
 }
 

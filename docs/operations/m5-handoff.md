@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **STAB-03 全部 PASSED**：R-02（3 次定点断电，§3.214）、R-03 三段（§3.211–§3.213）、R-04 A/B/C（§3.206–§3.209）。**R-05 支持矩阵已写**（`docs/operations/m5-support-matrix.md`）；**R-06 安装器已加驱动版本下限/运行检查**（负分支不可复现，已注明）；**R-14 入口拒绝已实现**（单测绿，客机 e2e 待跑）。**下一步**：① 跑一次 `install_uninstall` 拿 R-06 正路径与 R-14 的客机读数；② R-08 升级/覆盖安装/重装/脏卸载；③ R-10 发布工程；④ R-09、R-11…R-19。**manifest 仍无效** |
+| **下一件事** | **STAB-03 全 PASSED、STAB-06（R-07+R-08）全 PASSED**（§3.206–§3.215）。**下一步**：① R-09 安全对抗审计；② R-10 发布工程（SHA-256、可复现构建、SmartScreen 说明、发布说明）；③ R-11 非提权 GUI 只读、R-12 性能基线、R-13 24h soak、R-14（已实现，读数已取）、R-15 支持包、R-16 一页文档、R-17a 簇大小、R-17b 测试路径、R-18 兼容性；④ R-19 演练 + manifest 重新冻结。**manifest 仍无效** |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5231,3 +5231,36 @@ residue=[]
 
 
 
+
+---
+
+### 3.215 2026-11-01：**STAB-06 PASSED —— R-07 + R-08 全部路径有客机读数**
+
+**结论**：`STAB-06` 完成。证据：`docs/validation/m5-stab-06-upgrade.md`。
+
+**R-08（`integration.m5.upgrade` 1/1，33 s）**：覆盖安装后同盘仍注册、可启动、marker 完整；保留数据
+卸载（`install_dir_exists=False`、`data_dir_exists=True`）后重装同盘可启动；**运行中卸载**先停盘
+（`processes_left=0`、`volume_gone=True`、记录保留），重装后数据完整。
+
+**R-08 数据格式版本（`integration.m5.state_format` 1/1，30 s）**：把 durable 记录的 schema major 从 1
+改成 32767，已安装服务拒绝启动（`refusal.service_running=False`），并在
+`C:\ProgramData\MyRamDisk\logs\service.log` 写下：
+
+```text
+2026-11-01T05:56:22Z myrd-service: start failed:
+  op=profile-registration.state.decode msg=Record schema major is unsupported native=0
+```
+
+恢复原始字节后服务恢复、`disk list` 正常。
+
+**途中修掉的两个产品缺陷**：
+1. **覆盖安装被旧服务占用文件**：`Copy-Item` 对运行中的 `myrd-service.exe` 报“文件正被使用”。安装器
+   现在在复制**之前**停掉并删除旧服务（等 STOPPED，最多 120 s），复制后再注册启动。
+2. **服务启动失败没有用户可读的消息**：服务模式没有 stderr，`sc query` 只有 1066。`failure_exit_code`
+   现在把同一行追加到 `logs\service.log`（安装器已把该文件设为 Users 可读）。
+
+**R-07 保持 PASSED**：`install_uninstall` 1/1，三处 `--version` 一致 1.0.0；驱动检查正路径
+`phdskmnt 1.2.28.93 present and running (floor 1.2.28.93)` 也由这一次安装读数证明（R-06 正路径）。
+
+**测试计数**：ctest 171 例；默认选择新增 `integration.m5.upgrade` 与 `integration.m5.state_format`
+（默认门禁 160 → 162），两者都是 guest-only、`RUN_SERIAL`。

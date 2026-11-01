@@ -50,7 +50,7 @@
 |---|---|
 | 文件系统 | NTFS |
 | 簇大小 | 1.0.0 **固定为 Windows 默认（4 KiB）**；用户可选簇大小是 R-17a，**未实现** |
-| 卷标 | **不支持**（裁定 3）：`disk create --label …` 在入口被拒，消息 `--label is not supported: this release does not set volume labels`（`m5.cli` 单测已覆盖；客机 e2e 步骤已加，读数待跑） |
+| 卷标 | **不支持**（裁定 3）：`disk create --label …` 在入口被拒（usage 失败，**exit 2**），消息 `--label is not supported: this release does not set volume labels`。客机读数（`integration.m5.cli_e2e`）：`label.exit=2`、`label.result=refused-by-name`；`m5.cli` 单测覆盖同一消息 |
 | 盘符 | 每次 start 重新分配，不保证跨重启不变 |
 | 数据格式版本 | 1（bundle：`disk.rdm` 8 KiB + `base-0000.vhdx` 4 MiB + `journal-e0001.rdj`） |
 

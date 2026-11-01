@@ -2260,3 +2260,27 @@ add_test(
 set_tests_properties(integration.m5.install_uninstall PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 900)
+
+# ---- R-08: the upgrade paths the release ships with --------------------------
+# Overwrite install over a live install, uninstall that keeps the record, reinstall, and a
+# dirty uninstall that takes a running disk down first.  Guest-only (installs a service and
+# creates a real disk); part of the default selection because it is a release gate.
+add_test(
+    NAME integration.m5.upgrade
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-upgrade.ps1")
+set_tests_properties(integration.m5.upgrade PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
+
+# ---- R-08: the durable record's data format version --------------------------
+# The state record declares a schema major; patching it must produce an explicit refusal that
+# names the schema, and restoring it must bring the service back.  Guest-only (uses the real
+# C:\ProgramData\MyRamDisk store).
+add_test(
+    NAME integration.m5.state_format
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-state-format.ps1")
+set_tests_properties(integration.m5.state_format PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 900)

@@ -76,6 +76,30 @@ if ($WhatIfOnly) {
     exit 0
 }
 
+# **An overwrite install has to stop the old service before it copies (R-08).**  Measured: with
+# the service running, Copy-Item failed with "the file is in use" on myrd-service.exe.  The old
+# service is stopped and removed here, before the binaries are replaced; the registration block
+# further down re-creates and starts it.  Stopping it is also what takes any running disk down
+# through the product's own stop path rather than leaving a worker on a replaced binary.
+$existingService = & sc.exe query $ServiceName 2>&1 | Out-String
+if ($existingService -notmatch '1060') {
+    Step "stop and remove the existing service $ServiceName before replacing its binaries"
+    & sc.exe stop $ServiceName 2>&1 | Out-Null
+    $state = $existingService
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        $state = & sc.exe query $ServiceName 2>&1 | Out-String
+        if ($state -match 'STOPPED' -or $state -match '1060') { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($state -notmatch 'STOPPED' -and $state -notmatch '1060') {
+        Fail ("the existing service $ServiceName did not stop, so its binaries are still in use: " +
+            ($state -replace "`n", ' '))
+    }
+    & sc.exe delete $ServiceName 2>&1 | Out-Null
+    Start-Sleep -Seconds 1
+}
+
 Step "install the binaries to $InstallDirectory"
 New-Item -ItemType Directory -Force -Path $InstallDirectory | Out-Null
 foreach ($file in $files) {

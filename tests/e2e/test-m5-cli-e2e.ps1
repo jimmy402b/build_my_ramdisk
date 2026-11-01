@@ -1141,8 +1141,8 @@ public static extern int QueryDosDevice(string name, System.Text.StringBuilder t
         '--mount', 'T:', '--label', 'DATA')
     Write-Host ("READING: label.exit=" + [string]$labelAttempt.exit)
     Write-Host ("READING: label.output=" + (($labelAttempt.output -replace "`n", ' | ')))
-    if ($labelAttempt.exit -ne 1) {
-        Fail "a volume label must be a usage failure (exit 1); got exit $($labelAttempt.exit)"
+    if ($labelAttempt.exit -ne 2) {
+        Fail "a volume label must be a usage failure (exit 2); got exit $($labelAttempt.exit)"
     }
     if ($labelAttempt.output -notmatch '--label is not supported') {
         Fail "the label refusal did not name the option: $($labelAttempt.output)"
