@@ -2333,6 +2333,17 @@ set_tests_properties(integration.m5.compatibility PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- R-11: host-driven non-elevated e2e --------------------------------------
+# The agent prepares two profiles (one owned by a standard user), the host runs the GUI/CLI as
+# that user through vmrun guest operations, then the case cleans up.  Host-driven like the
+# power-loss pairs, so it is outside the release suite.
+add_test(
+    NAME integration.m5.nonadmin_prepare
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-nonadmin-prepare.ps1")
+set_tests_properties(integration.m5.nonadmin_prepare PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
 # ---- R-13: soak round --------------------------------------------------------
 # One round of the 24 h soak (or the post-cut verify), driven by tools/m5vm/Test-M5Soak.ps1.
 # Guest-only: real service, worker, volume and power cuts.
