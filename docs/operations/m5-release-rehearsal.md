@@ -30,12 +30,24 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 
 ## 2. 客机两次全量（连续两次一致）
 
-**发布全量 = `^(?!structural\.)`**：`structural.*` 三个用例需要 MSVC 工具链去配置一次性工程
-（`ExecutionBoundary.cmake` 的接受/拒绝实验），客机没有 Visual Studio，它们在客机上会失败而
-不是跳过。它们在**开发机**上全绿（`ctest -R "^structural\."` → 3/3），本手册把它们作为构建
-纪律的证据单独记录，不放进客机证据集。`structural.m5.execution_boundary` 声明了
-`SKIP_RETURN_CODE 77`，但 guest runner 的 results 里 skip 也是一个非零 exit code，validator 会
-拒绝，所以不能靠 skip。
+**发布全量 = 169 / 177 例**，一条命令：
+
+```text
+^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion)$)
+```
+
+排除的 8 例及理由：
+
+| 排除 | 理由 | 它的证据在哪 |
+|---|---|---|
+| `structural.*`（3 例） | 需要 MSVC 工具链配置一次性工程（`ExecutionBoundary.cmake` 的接受/拒绝实验）；客机没有 Visual Studio，会失败而不是跳过。`structural.m5.execution_boundary` 有 `SKIP_RETURN_CODE 77`，但 guest runner 的 results 里 skip 也是非零 exit code，validator 会拒绝 | 开发机 `ctest -R "^structural\."` → **3/3**，记在本手册 |
+| `integration.m5.powerloss_prepare` / `*_verify` | 一对 host 驱动用例：prepare 布好现场后由宿主机 `vmrun stop hard` 断电，verify 在重启后检查；顺序套件里跑 prepare 会留下未完成的现场 | `docs/validation/m5-stab-03a-p4-p5-power-cut.md`（R-02） |
+| `integration.m5.p4p5_prepare` / `*_verify` | 同上，P4/P5 专用的一对 | 同上 |
+| `integration.m5.memory_exhaustion` | **opt-in**：需要把机器内存压到 commit limit 附近，不能和其它用例共用一个客机 | R-01 的预算拒绝读数 + `m5-stab-02` |
+
+**多轮验证的代价**：169 例里包含 `bundle_corruption`、`volume_full`、`hostile_acl`、
+`stop_after_restore`、`process_kills`、`service_kill`、`soak`、`performance`、`compatibility`、
+`support_bundle` 等重用例；它们各自都单独通过过，全量里一起跑是第一次。
 
 ```powershell
 $env:M5VM_HOST='myrd-vm'; $env:M5VM_USER='usr'
@@ -47,11 +59,11 @@ $env:M5VM_PASSWORD='12345678'
 # C:\m5\Reset-M5Guest.ps1  →  profiles: 0 entries left / RESET
 
 tools\m5vm\Invoke-M5Vm.ps1 -Stage -Configuration Release
-$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)' -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 $run1 | Select-String 'passed|FAIL'
 # 记录 request id 与 results 路径（输出里 `results: C:\m5\control\<id>.results.json`）
 # 重置客机，再跑第二次，结果必须与第一次逐项一致
-$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)' -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 ```
 
 “一致”的判据：两次的 `passed` 数相同、失败集合为空、`results.json` 的 case 名单相同。
