@@ -46,6 +46,8 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 | `integration.m5.memory_exhaustion` | **opt-in**：需要把机器内存压到 commit limit 附近，不能和其它用例共用一个客机 | R-01 的预算拒绝读数 + `m5-stab-02` |
 | `integration.m5.nonadmin_prepare` | host 驱动的一对（prepare/cleanup）：agent 准备两个 profile，宿主机用 `vmrun` 以标准用户跑 GUI/CLI，再清理 | `docs/validation/m5-stab-09-nonadmin.md`（R-11） |
 
+**不使用 `tools/m5vm/Invoke-M5FullSuite.ps1` 作为发布门禁**：它的分组规则早于 R-15…R-18（新用例会被判为未分组错误），默认还排除 fault 组；发布门禁就是上面这条 `-Run -Filter`——一条命令、169 例、同一份 `results.json` 形状。
+
 **多轮验证的代价**：169 例里包含 `bundle_corruption`、`volume_full`、`hostile_acl`、
 `stop_after_restore`、`process_kills`、`service_kill`、`soak`、`performance`、`compatibility`、
 `support_bundle` 等重用例；它们各自都单独通过过，全量里一起跑是第一次。
