@@ -5412,3 +5412,39 @@ stop/start 后仍 65536（adopt 不重格式化）；不传选项的 create → 
 `model.m3.checkpoint_crash` 各一例未捕获异常。
 
 **仍剩**：R-18、R-11、R-13、R-15、R-16、R-19。
+
+---
+
+### 3.221 2026-11-01：**R-18 PASSED（压缩/EFS/Defender/非系统盘）**
+
+`integration.m5.compatibility` 在客机跑完整轮（1/1、100 s）。三件“用户实际会遇到的环境”都做了
+create → 卷出现 → 写 1 MiB → checkpoint → stop 的整轮动作：
+
+```text
+READING: defender.realtime=True
+READING: compressed.attribute=Directory, Compressed
+READING: compressed.create=succeeded
+READING: compressed.checkpoint=succeeded
+READING: compressed.stop=succeeded
+READING: efs.cipher_exit=0
+READING: efs.attribute=Directory, Archive, Encrypted
+READING: encrypted.create=succeeded
+READING: encrypted.checkpoint=succeeded
+READING: encrypted.stop=succeeded
+READING: aim.disk_number=1
+READING: aim.is_system=False
+READING: aim.is_boot=False
+READING: aim.logical_sector_bytes=512
+READING: aim.physical_sector_bytes=512
+READING: aim.bus_type=Fibre Channel
+READING: system.disk_number=0
+```
+
+**结论**：压缩目录与 EFS 加密目录上的 bundle **都支持**；Defender 实时保护下整轮正常；AIM 盘是
+非系统盘（系统盘 0、AIM 1）。没有证书的环境走 `efs.result=platform-unavailable` 分支（不挂死），
+每个子动作都有 300 s 上限，`timeout` 即判失败，所以“不支持”只会是明确状态。
+
+**未测**（矩阵不承诺）：4Kn 介质、BitLocker、SMB 路径。矩阵 §4 新增五行并引用本页读数；
+验证文档 `docs/validation/m5-stab-16-compatibility.md`。
+
+**仍剩**：R-11（非提权 GUI）、R-13（24h soak）、R-15（支持包）、R-16（一页文档）、R-19（演练）。

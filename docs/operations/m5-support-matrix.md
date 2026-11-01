@@ -53,6 +53,11 @@
 | 卷标 | **不支持**（裁定 3）：`disk create --volume-label …`（短写 `--label` 同样）在入口被拒（usage 失败，**exit 2**），消息 `--volume-label is not supported: this release does not set volume labels`。客机读数（`integration.m5.cli_e2e`）：`label.exit=2`、`label.result=refused-by-name`；`m5.cli` 单测覆盖两种拼写 |
 | 盘符 | 每次 start 重新分配，不保证跨重启不变 |
 | 数据格式版本 | 1（bundle：`disk.rdm` 8 KiB + `base-0000.vhdx` 4 MiB + `journal-e0001.rdj`） |
+| bundle 放在**压缩**目录 | **支持**（R-18）。客机读数：`compressed.attribute=Directory, Compressed`，create/写 1 MiB/checkpoint/stop 全 `succeeded` |
+| bundle 放在 **EFS 加密**目录 | **支持**（R-18）。`cipher /e` 后 `efs.attribute=Directory, Archive, Encrypted`，同样的整轮动作全 `succeeded`；没有证书时 `cipher` 失败会记 `efs.result=platform-unavailable` 而不是挂死 |
+| Defender 实时保护 | **支持**（R-18，整个用例在 `defender.realtime=True` 下完成） |
+| 非系统盘 | AIM 盘就是非系统盘：`aim.disk_number=1`、`aim.is_system=False`、`aim.is_boot=False`（系统盘为 0） |
+| 扇区大小 | AIM 盘读数：`aim.logical_sector_bytes=512`、`aim.physical_sector_bytes=512`（4Kn 介质未在客机复现，不承诺） |
 
 ## 5. 安装、升级、签名
 

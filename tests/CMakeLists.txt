@@ -2306,3 +2306,14 @@ add_test(
 set_tests_properties(integration.m5.cluster_size PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
+
+# ---- R-18: the environments the matrix answers for ---------------------------
+# A compressed bundle, an EFS directory (or the platform's refusal), Defender running, and the
+# AIM disk's own identity/sector sizes.  Guest-only, like every case that creates a volume.
+add_test(
+    NAME integration.m5.compatibility
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-compatibility.ps1")
+set_tests_properties(integration.m5.compatibility PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
