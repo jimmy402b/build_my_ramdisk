@@ -35,7 +35,7 @@ myrd-m5-worker.exe  7b689347e79f30afbe8a9fb33b0528d05b85948c308b4fddac0e3d8b3c63
 |---|---|
 | 主套件 A（158 例） | **158/158**，跑两遍（`d38fe444…`、`c0af55f6…`；首次 `afc36e3f…` 157/158 为 `m5.startup_sweep` 间歇，整轮重跑通过） |
 | 后置 B（性能/簇大小/兼容性/soak/support-bundle） | **5/5**（`5785e2fd…`） |
-| fault 组（6 例） | 逐例 reset 后 **6/6**（`50663eb2…`、`765f5091…`、`38045f04…`、`7160e9c7…`、`08ae3e67…`、`4efba65e…`）；单命令分组运行器 `tools/m5vm/Invoke-M5FaultGroup.ps1` 已实现，端到端执行受客机不稳影响未完成 |
+| fault 组（6 例） | **单命令 6/6**（`tools/m5vm/Invoke-M5FaultGroup.ps1`，2026-11-02T19:50:44Z，`READING: fault_group.result=PASS`；每例前硬重启 VM） |
 | soak | **19 h 14 min / 526 轮 / 13 次硬断电**，0 失败；句柄 166/119 不变；worker 33.7 MB 恒定；service 工作集 9.1–12.9 MB（有界漂移，重启归零） |
 | 非提权 | 5/5（只读可用、越权 exit 4） |
 | 盘符 | create 指定；stop/start、服务重启、VM 硬重启后均为同一字母 |
@@ -67,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File install\Uninstall-MyRamDisk.ps1
 
 1. `m5.startup_sweep`（`orphans_observed == 1`）与 `unit.m3.vhdx_reader`（`current_cache_entries == 0`）
    偶发失败，单独/重跑通过——**定性工作安排在发布后**。
-2. fault 组的**单命令端到端运行**尚未在稳定客机上完成（逐例读数已 6/6）；运行器已交付。
+2. fault 用例后客机可能卡死（`cmd` 可用、`powershell` 启动挂起），必须每例一次硬重启；若 reset 在挂起前没跑到 DACL 保护步骤，下次启动服务会以 `profile_store.directory_acl` 拒绝启动（不是产品数据路径失败，但会把后续用例变成"确定性失败"）。发布后改 reset 顺序。
 3. soak 为 19 h 14 min（任务清单要求 24 h，用户裁定 19 h 级已足够）。
 4. 驱动缺失/旧驱动分支、start 时字母被**卷**占用的分支未做破坏性实测（约束/环境原因）。
 5. service 工作集在单个生命周期内 +1–2 MB、重启归零（有界漂移，接受风险）。

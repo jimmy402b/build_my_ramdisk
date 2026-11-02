@@ -75,14 +75,17 @@ function Get-RemoteText([string]$path) {
 }
 
 function Test-Ssh {
+    # **PowerShell must answer, not just cmd.**  Measured: right after a hard reset `cmd /c echo`
+    # answers while `powershell -Command 42` hangs for minutes (and a case started in that window
+    # hangs with it).  A case is a PowerShell script, so the readiness probe has to be one too.
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $probe = & ssh.exe @sshArgs $sshTarget 'cmd /c echo READY' 2>&1 | Out-String
+        $probe = & ssh.exe @sshArgs $sshTarget 'cmd /c powershell -NoProfile -Command Write-Output READY_PS' 2>&1 | Out-String
     } finally {
         $ErrorActionPreference = $previous
     }
-    return ($probe -match 'READY')
+    return ($probe -match 'READY_PS')
 }
 
 function Wait-Ssh([int]$seconds) {
@@ -137,7 +140,7 @@ function HardReset-Vm([string]$reason) {
     } finally {
         $ErrorActionPreference = $previous
     }
-    return (Wait-Ssh 300)
+    return (Wait-Ssh 600)
 }
 
 function Invoke-FaultCase([string]$name) {
@@ -188,6 +191,20 @@ try {
     $results = @()
     foreach ($name in $cases) {
         Write-Log "case $name"
+        # **A fresh boot before every case.**  Measured: after a fault case that kills the service
+        # or a worker while a device is attached, the guest's mount manager wedges; a guest reset
+        # then hangs for ever (SSH answers `cmd /c echo`, PowerShell does not), and the next case
+        # fails for a reason that is not the product.  Booting the VM first is the only reliable
+        # clean state, and it is what the six individual readings were taken on.
+        if (-not (HardReset-Vm "fresh boot before $name")) {
+            # One more boot attempt: a cold boot was measured at 5+ minutes twice today, and
+            # giving up there would report a product failure for a slow machine.
+            Write-Log "  the guest did not answer in 10 minutes; booting it once more"
+            if (-not (HardReset-Vm "second boot attempt before $name")) {
+                $results += [pscustomobject]@{ case = $name; passed = $false; attempts = 0; request = $null; exits = @(); note = 'guest unreachable' }
+                continue
+            }
+        }
         if (-not (Reset-Guest "before $name")) {
             if (-not (HardReset-Vm "the guest stopped answering before $name")) {
                 $results += [pscustomobject]@{ case = $name; passed = $false; attempts = 0; request = $null; exits = @(); note = 'guest unreachable' }

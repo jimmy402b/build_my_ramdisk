@@ -230,9 +230,21 @@ drive_letter.reboot_result=PASS
 改读最新 results 产物）；reset 在卡死客机上永久挂起（→ job + 120 s 上限）；`start /b` 子进程随
 SSH 会话死亡（→ 有界阻塞）。
 
-**端到端执行状态**：**未完成**。客机在连续 fault 用例后反复卡死（reset 挂起 → 硬重启 → SSH 未起），
-最后一次硬重启 + GUI 启动后仍 ping 不通、无快照可回滚。fault 组的逐例读数仍是当天单独跑的 **6/6**
-（`50663eb2…`/`765f5091…`/`38045f04…`/`7160e9c7…`/`08ae3e67…`/`4efba65e…`）。
+**端到端执行状态**：**完成（2026-11-02T19:10:56Z–19:50:44Z，一次命令）**：`Invoke-M5FaultGroup.ps1`
+跑完 **6/6**，`READING: fault_group.result=PASS`：
+
+```text
+process_kills       PASS (attempts 1)
+service_kill        PASS (attempts 1)
+bundle_corruption   PASS (attempts 1)
+stop_after_restore  PASS (attempts 1)
+hostile_acl         PASS (attempts 1)
+volume_full         PASS (attempts 1)
+```
+
+关键前提：**每例前硬重启 VM + 用 PowerShell（不是 cmd）做就绪探针**。实测：fault 用例杀进程后客机
+挂载管理器会卡住，`cmd /c echo` 能答而 `powershell -Command` 挂起；用 cmd 探针会在这种窗口里启动用例，
+用例随之挂死。冷启动偶发 >10 min，运行器为此加了一次重试（本次 process_kills 与 hostile_acl 各用了一次）。
 
 **1.0 打包**：`tools/New-M5ReleasePackage.ps1` 生成
 `out/release/MyRamDisk-1.0.0-win11-x64/`（`bin/`、`install/`、`docs/`、`README.txt`、

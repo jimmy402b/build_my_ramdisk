@@ -5613,3 +5613,21 @@ WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
   端到端执行未完成**：客机在多次 fault 用例后反复卡死（reset 挂起 → 硬重启 → SSH 未起），最后一次硬重启后
   8 分钟内未恢复。逐例读数仍是 6/6（当天单独跑）。
 - 发布后待办：间歇测试定性；客机恢复后跑一次 fault 组单命令；补 24h soak（可选）。
+
+---
+
+### 3.229 2026-11-03：fault 组单命令 **6/6** + 卡死根因
+
+**fault 组（方案 B）完成**：`tools/m5vm/Invoke-M5FaultGroup.ps1` 一条命令 6/6
+（2026-11-02T19:10:56Z–19:50:44Z，`READING: fault_group.result=PASS`）。前提：**每例前硬重启 VM**、
+**用 PowerShell 做就绪探针**（`cmd` 能答而 `powershell` 挂起时启动用例 = 用例挂死）；冷启动偶发 >10 min，
+运行器有一次重试。
+
+**卡死根因（与"间歇测试"同源）**：fault 用例把 service/worker 杀在设备仍挂着的时刻 → 客机挂载管理器卡住
+（`cmd` 可用、`powershell`/`Get-CimInstance` 挂起）→ reset 挂起 → reset 最后一步的 DACL 保护没执行 →
+`C:\ProgramData\MyRamDisk\profiles\workers` 变成 unprotected → 服务按设计拒绝启动
+（`profile_store.directory_acl: A profile directory ACL is not protected`）→ 依赖服务的用例确定性失败。
+实测：恢复 protected 后 `m5.worker_binding_store`+`m5.startup_sweep` 2/2、`cli_e2e` 1/1 通过。
+**因此 `m5.startup_sweep` 的"偶发"是状态依赖，不是产品竞态**；`unit.m3.vhdx_reader` 与客机无关，仍待定性。
+
+**发布**：v1.0.0 包与 tag 不变（fault 组结果已回填发布说明 §2）。
