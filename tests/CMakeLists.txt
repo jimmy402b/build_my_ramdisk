@@ -2344,6 +2344,15 @@ add_test(
 set_tests_properties(integration.m5.nonadmin_prepare PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
+# ---- R-19 follow-up: drive-letter stability ---------------------------------
+# Host-driven (the reboot half is outside a guest case), so it is outside the release gate.
+add_test(
+    NAME integration.m5.drive_letter
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-drive-letter.ps1")
+set_tests_properties(integration.m5.drive_letter PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 1800)
 # ---- R-13: soak round --------------------------------------------------------
 # One round of the 24 h soak (or the post-cut verify), driven by tools/m5vm/Test-M5Soak.ps1.
 # Guest-only: real service, worker, volume and power cuts.

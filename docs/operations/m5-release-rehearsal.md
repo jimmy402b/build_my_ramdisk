@@ -198,3 +198,25 @@ myrd-m5-worker.exe  1524224  sha256=7b689347e79f30afbe8a9fb33b0528d05b85948c308b
 
 **校验**：`tools/Verify-M5Evidence.ps1 -EvidenceDirectory out/m5-evidence` → `accepted`（每个
 `*.results.json` 的每个 case `exit_code` 都是 0；共 9 份读数）。
+---
+
+## 10. 盘符：指定与跨重启稳定（2026-11-02 补验）
+
+问题：盘符能否指定、重启后是否稳定。结论与读数：
+
+```text
+stability.letter=T:
+first_start_letter=T:   first_start_volume=yes
+restart_letter=T:       restart_volume=yes        (stop -> start)
+service_restart_letter=T:                         (sc stop/start 服务后再 start)
+reboot.letter=T:        reboot.volume_present=yes reboot.list_mounts=T
+drive_letter.reboot_result=PASS
+```
+
+- 实现：`mount_target` 记录在 profile，`m5_worker_main.cpp:243` 传给 worker，`disk_runtime.cpp:218`
+  每次 start 赋给卷；新建路径在 `provision_volume.ps1:76-83` 检查字母占用。
+- 用例：`integration.m5.drive_letter`（stability / after-reboot 两半）；
+  host 驱动 `tools/m5vm/Test-M5DriveLetter.ps1`（重启半步不能在 guest 用例里做），因此**不在** 163 例门禁内。
+- 实测注意：`subst` 占字母**不会**让 start 拒绝（它不是卷挂载点），start 仍成功并拿到同一字母；
+  真正被卷占用的 start 分支未做破坏性实测。
+- 文档：`docs/validation/m5-drive-letter.md`；`m5-support.md` 的“挂载”行已按实测改写（原句“不保证跨重启不变”已删除）。
