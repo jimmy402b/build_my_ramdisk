@@ -5576,3 +5576,26 @@ C   6/6      process_kills 50663eb2, service_kill 765f5091, bundle_corruption 38
 **仍存在的已知限制**（写进发布记录，不隐藏）：R-13 实际 19 h 14 min（tasklist 要求 24h，用户裁定）；
 service 工作集在每个 service 生命周期内 +1–2 MB、重启归零（有界漂移）；volumelabel 与 cluster-size
 的产品限制不变。
+
+---
+
+### 3.227 2026-11-02：**R-05 / STAB-05 补齐（最后一个非 PASSED 项）**
+
+复查 STAB 表时发现 STAB-05（支持矩阵与驱动前置，R-05/R-06）仍是 `NOT_STARTED`：矩阵与支持页
+早已成文，但**客机读数与验证页缺失**。补齐后：
+
+```text
+driver_file=True
+driver_version=1.2.28.93
+service=RUNNING
+--- check the AIM driver, do not install it
+  phdskmnt 1.2.28.93 present and running (floor 1.2.28.93)
+WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
+--- exit=0 ---
+```
+
+三条拒绝路径（未安装 / 文件缺失 / 版本过低）都在写文件前拒绝并指向 `docs/operations/m5-support.md`；
+缺失/旧驱动的**破坏性**验证按工作区约束（不得卸载/替换 phdskmnt）不做，已在验证页如实标注。Defender
+冒烟由 STAB-16 的 `integration.m5.compatibility` 覆盖。→ `docs/validation/m5-stab-05-support-matrix.md`。
+
+至此 STAB 表 16 项全部 PASSED。
