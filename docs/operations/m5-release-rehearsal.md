@@ -220,3 +220,22 @@ drive_letter.reboot_result=PASS
 - 实测注意：`subst` 占字母**不会**让 start 拒绝（它不是卷挂载点），start 仍成功并拿到同一字母；
   真正被卷占用的 start 分支未做破坏性实测。
 - 文档：`docs/validation/m5-drive-letter.md`；`m5-support.md` 的“挂载”行已按实测改写（原句“不保证跨重启不变”已删除）。
+---
+
+## 11. fault 组方案 B 与 1.0 打包（2026-11-03）
+
+**方案 B**：`tools/m5vm/Invoke-M5FaultGroup.ps1` —— 一条命令跑 6 例，逐例 reset，失败或客机不应答时
+硬重启 VM 后重试一次，汇总 `fault-group.json` / `fault-group.summary.txt`，6/6 才 exit 0。
+实现过程中修掉三处工具缺陷：harness 的 `MYRD_VM_REQUEST_ID` 走 `Write-Host`（普通管道抓不到 →
+改读最新 results 产物）；reset 在卡死客机上永久挂起（→ job + 120 s 上限）；`start /b` 子进程随
+SSH 会话死亡（→ 有界阻塞）。
+
+**端到端执行状态**：**未完成**。客机在连续 fault 用例后反复卡死（reset 挂起 → 硬重启 → SSH 未起），
+最后一次硬重启 + GUI 启动后仍 ping 不通、无快照可回滚。fault 组的逐例读数仍是当天单独跑的 **6/6**
+（`50663eb2…`/`765f5091…`/`38045f04…`/`7160e9c7…`/`08ae3e67…`/`4efba65e…`）。
+
+**1.0 打包**：`tools/New-M5ReleasePackage.ps1` 生成
+`out/release/MyRamDisk-1.0.0-win11-x64/`（`bin/`、`install/`、`docs/`、`README.txt`、
+`release-manifest.json`、`SHA256SUMS`）；生成时先核对 4 个二进制与冻结 manifest 的 SHA-256，一致才复制；
+`SHA256SUMS` 覆盖 10 个文件并已复算（0 mismatch）。tag **`v1.0.0`**；发布说明
+`docs/operations/m5-release-1.0.0.md`。
