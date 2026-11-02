@@ -468,8 +468,8 @@ create_public_pipe_security_descriptor(
             L"(A;;GA;;;SY)"
             L"(A;;GA;;;" + std::wstring(kMyRamDiskServiceSid) + L")"
             L"(A;;GA;;;" + process_sid.value() + L")"
-            L"(A;;0x00100183;;;BA)"
-            L"(A;;0x00100183;;;AU)";
+            L"(A;;0x00120183;;;BA)"
+            L"(A;;0x00120183;;;AU)";
         if (mandatory_label == PublicPipeMandatoryLabel::include) {
             sddl += L"S:P(ML;;NW;;;ME)";
         }

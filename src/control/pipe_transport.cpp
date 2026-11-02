@@ -2,6 +2,7 @@
 
 #define NOMINMAX
 #include <Windows.h>
+#include <aclapi.h>
 
 #include <algorithm>
 #include <array>
@@ -183,21 +184,63 @@ std::uint32_t read_payload_length(
 
 namespace {
 
+// **The pipe's owner is the fallback identity check (B7, R-11).**  A standard user can read a
+// pipe's security descriptor but cannot open the server *process*: measured, the installed
+// service runs as LocalSystem and `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` from a
+// non-elevated client fails with access denied, which made every non-admin CLI/GUI connection
+// answer "the pipe's server process could not be opened" even though the pipe was the real
+// service.  The owner is what the squatter cannot fake: a squatted pipe belongs to the user who
+// created it, while the service's pipe is owned by LocalSystem (installed) or Administrators
+// (an elevated console service).
+bool pipe_owned_by_management(HANDLE pipe) {
+    PSID owner = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD status = GetSecurityInfo(
+        pipe, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr,
+        &descriptor);
+    if (status != ERROR_SUCCESS || owner == nullptr) {
+        if (descriptor != nullptr) {
+            static_cast<void>(LocalFree(descriptor));
+        }
+        return false;
+    }
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> system_sid{};
+    DWORD system_bytes = static_cast<DWORD>(system_sid.size());
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> admins_sid{};
+    DWORD admins_bytes = static_cast<DWORD>(admins_sid.size());
+    const bool built = CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid.data(),
+                                          &system_bytes)
+        && CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admins_sid.data(),
+                              &admins_bytes);
+    const bool allowed = built
+        && (EqualSid(owner, system_sid.data()) != FALSE
+            || EqualSid(owner, admins_sid.data()) != FALSE);
+    static_cast<void>(LocalFree(descriptor));
+    return allowed;
+}
+
 // **The client verifies the server (B7).**  The public pipe has a fixed name, so a standard
 // user can create it before the service starts; the service's first instance then fails with
 // FILE_FLAG_FIRST_PIPE_INSTANCE and a client would talk to the squatter.  Requiring the server
 // side to be LocalSystem or to hold an Administrators token makes a squatter useless: a
 // standard user cannot create a process with either identity.  The GUI is the case that
-// matters, because it runs without elevation.
+// matters, because it runs without elevation -- and a non-elevated client cannot open the
+// service process at all, so the pipe's owner is accepted as the same proof.
 Result<void> verify_public_pipe_server(HANDLE pipe) {
     ULONG server_pid = 0;
     if (!GetNamedPipeServerProcessId(pipe, &server_pid) || server_pid == 0) {
+        if (pipe_owned_by_management(pipe)) {
+            return Result<void>::success();
+        }
         return transport_error<void>(
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"pipe.connect", L"the pipe's server process could not be identified");
     }
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server_pid);
     if (process == nullptr) {
+        if (pipe_owned_by_management(pipe)) {
+            return Result<void>::success();
+        }
         return transport_error<void>(
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"pipe.connect", L"the pipe's server process could not be opened");
@@ -206,6 +249,9 @@ Result<void> verify_public_pipe_server(HANDLE pipe) {
     if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
         const DWORD native = GetLastError();
         static_cast<void>(CloseHandle(process));
+        if (pipe_owned_by_management(pipe)) {
+            return Result<void>::success();
+        }
         return transport_error<void>(
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"pipe.connect", L"the pipe server's token could not be opened", native);

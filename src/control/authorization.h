@@ -14,9 +14,13 @@ inline constexpr std::wstring_view kMyRamDiskServiceSid =
     L"S-1-5-80-1675415408-3648040842-263802843-130580959-3433450740";
 
 // FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES |
-// FILE_WRITE_ATTRIBUTES | SYNCHRONIZE. In particular this excludes
+// FILE_WRITE_ATTRIBUTES | SYNCHRONIZE | READ_CONTROL. In particular this excludes
 // FILE_CREATE_PIPE_INSTANCE and all generic rights.
-inline constexpr std::uint32_t kPublicPipeClientAccessMask = 0x00100183U;
+//
+// **READ_CONTROL is there for the client's server-identity check (B7, R-11).**  A non-elevated
+// client cannot open the service's process, so it falls back to the pipe's *owner*; reading the
+// owner needs READ_CONTROL on the pipe, and nothing else is granted by it.
+inline constexpr std::uint32_t kPublicPipeClientAccessMask = 0x00120183U;
 
 enum class PublicPipeMandatoryLabel : std::uint8_t {
     include,

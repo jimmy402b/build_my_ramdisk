@@ -62,3 +62,48 @@
 # 本机
 ctest --test-dir out/build/msvc -C Release -R "^unit\.m5\.authorization$"   # 5/5
 ```
+
+---
+
+## 6. 2026-11-02：**R-11 PASSED**（batch logon + 已安装服务）
+
+**机制**（前六种都失败，最终成立的组合是两条）：
+
+1. **非提权进程**：计划任务 `-RunLevel Limited` + `SeBatchLogonRight`（`secedit` 导出→追加该用户
+   SID→导入）。未授予该权限时任务从不运行（`LastTaskResult=267011`）；授予后以标准用户运行。
+2. **服务必须在用例之外存活**：agent 用例里 `Start-Process` 启动的控制台服务会随 agent 的 job
+   对象一起被杀（实测：每步都答 `the service is not running`）。改为 **安装服务**（SCM 托管，
+   LocalSystem），步骤之间持续可用。
+
+**客机读数**（`tools/m5vm/Test-M5NonAdmin.ps1` 一次完整运行，5/5 断言通过）：
+
+```text
+gui-selfcheck: exit=0
+  self-check: 1 disk(s) | T: stopped/configured Stopped generation 1 not running serial=- | tray: MyRamDisk: 1 disk
+cli-list: exit=0
+  disk.list: completed | bdc1c962-…  T:  Ready ... | 1 disk(s)        (只有自己的盘，没有管理员的 357c9701-…)
+cli-show-own: exit=0
+  disk.show: completed | bdc1c962-…
+cli-show-other: exit=4
+  error: The profile belongs to another user
+  command: disk.show  step: service_core.authorize_owner  code: 0x5603
+cli-create: exit=4
+  error: Only an elevated administrator may register a profile
+  command: disk.create  step: service_core.authorize_registration  code: 0x5603
+PASS: the standard user reads its own disk, is refused elsewhere, and nothing crashed
+READING: nonadmin.result=PASS
+```
+
+**这条用例抓出并修掉两个真实产品缺陷**：
+
+1. **B7 的客户端校验让非提权客户端永远连不上**：`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
+   对 LocalSystem 的服务进程返回拒绝，客户端报 `the pipe's server process could not be opened`。
+   现在 `OpenProcess`/`OpenProcessToken` 失败时回退到**管道 owner**（SYSTEM 或 Administrators），
+   这是抢占者伪造不了的属性；进程路径仍优先使用。
+2. **公有管道没给 AU/BA `READ_CONTROL`**：owner 校验需要读安全描述符，而客户端访问掩码只有
+   `0x00100183`。现在掩码与 SDDL 的 AU/BA ACE 都改为 `0x00120183`（只多了 READ_CONTROL，
+   不放开数据/实例权限）；`kPublicPipeClientAccessMask` 的注释写明原因。
+
+**交付物**：`tests/e2e/test-m5-nonadmin-prepare.ps1`（agent：装服务、建两个 profile、cleanup 忘盘+卸载）、
+`tools/m5vm/Test-M5NonAdmin.ps1`（host：建标准用户+授权、调度任务跑 GUI/CLI、断言、清理）。
+发布全量排除该 host 驱动用例（169/178 口径不变）。
