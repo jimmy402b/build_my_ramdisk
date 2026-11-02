@@ -38,7 +38,7 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 | B | `integration.m5.(performance\|cluster_size\|compatibility\|soak\|support_bundle)` | **5** | 实测：紧跟 `install_uninstall`/`upgrade`/`state_format` 之后跑会 `the service never answered`（安装器家族的卸载刚结束），reset 后 5/5 通过 |
 | C | `integration.m5.(process_kills\|service_kill\|bundle_corruption\|stop_after_restore\|hostile_acl\|volume_full)` | **6** | 用例开头要求空客机（`the guest already has 1 profile(s); reset it first`），R-04 的读数是 reset 后单独一遍取得的 |
 
-合计 **158 + 5 + 6 = 169** 例，仍是发布全量的覆盖；A 跑两遍，B/C 各一遍。
+合计 **158 + 5 + 6 = 169** 例，仍是发布全量的覆盖；A 跑两遍，B/C 各一遍。另有 host 驱动用例 `integration.m5.drive_letter`（盘符稳定性/跨重启，§10）与 `integration.m5.nonadmin_prepare`（R-11），均不在门禁内。
 
 **A 的命令**：
 
