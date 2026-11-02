@@ -137,11 +137,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\Verify-M5Evidence.ps1 
 
 | # | 条件 | 证据（本轮之前已完成） |
 |---|---|---|
-| 1 | 受支持平台按文档安装；驱动缺失/过旧有可操作提示 | `m5-stab-04`（R-05/R-06）、`install_uninstall` 读数；**驱动缺失/过旧分支未实测**（客机不允许停用驱动） |
+| 1 | 受支持平台按文档安装；驱动缺失/过旧有可操作提示 | `m5-stab-05`（支持矩阵 + 客机 `driver_version=1.2.28.93`、`-WhatIfOnly` 读数）、`m5-stab-04`、`install_uninstall`；**驱动缺失/过旧分支未实测**（客机不允许停用驱动） |
 | 2 | 单盘在正常停止/硬断电/worker 崩溃/service 崩溃/bundle 损坏/磁盘满/权限错误下可预测 | `m5-stab-03a`（P4/P5 断电）、`03b`（损坏/ACL/卷满）、`03c`（process kills） |
 | 3 | 第二块盘被明确拒绝 | H1 + `integration.m5.*` 单盘拒绝读数 |
 | 4 | `--accept-volatile-data-loss` 两侧语义一致 | `m5-stab-03b`、`cli_e2e` 的易失盘读数 |
-| 5 | 一条命令全量、连续两次一致、manifest 冻结、干净 VM 安装/卸载/升级读数 | 本手册 §2–§5 |
+| 5 | 一条命令全量、连续两次一致、manifest 冻结、干净 VM 安装/卸载/升级读数 | 本手册 §2–§5 与 **§9**（A1/A2 各 158/158、B 5/5、fault 6/6；manifest `frozen_at=2026-11-02T10:21:08Z`；validator `accepted`） |
 | 6 | 已知限制写进文档 | `docs/operations/m5-support.md`、`m5-support-matrix.md`（R-14/R-16） |
 | 7 | 升级/覆盖/重装/脏盘卸载读数 | `integration.m5.upgrade` 1/1（§3） |
 | 8 | 安全边界审计：阻断项已修、接受风险已文档化 | `m5-stab-07-security-audit.md`（R-09） |
