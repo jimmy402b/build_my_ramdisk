@@ -5599,3 +5599,17 @@ WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
 冒烟由 STAB-16 的 `integration.m5.compatibility` 覆盖。→ `docs/validation/m5-stab-05-support-matrix.md`。
 
 至此 STAB 表 16 项全部 PASSED。
+
+---
+
+### 3.228 2026-11-03：**v1.0.0 打包完成**
+
+- 用户裁定：不再跑 24h soak（19 h 14 min 已足够）；只做 fault 组方案 B；随后发布 1.0；间歇测试定性推迟到发布后。
+- 交付物：`out/release/MyRamDisk-1.0.0-win11-x64/`（`bin/`、`install/`、`docs/`、`release-manifest.json`、
+  `SHA256SUMS`、`README.txt`），由 `tools/New-M5ReleasePackage.ps1` 生成；生成时**先核对**四个二进制与冻结
+  manifest 的 SHA-256 一致，不一致即拒绝。
+- 发布说明 `docs/operations/m5-release-1.0.0.md`；tag `v1.0.0`。
+- fault 组方案 B：`tools/m5vm/Invoke-M5FaultGroup.ps1`（逐例 reset + 失败重试一次 + 汇总 JSON）。**实现完成，
+  端到端执行未完成**：客机在多次 fault 用例后反复卡死（reset 挂起 → 硬重启 → SSH 未起），最后一次硬重启后
+  8 分钟内未恢复。逐例读数仍是 6/6（当天单独跑）。
+- 发布后待办：间歇测试定性；客机恢复后跑一次 fault 组单命令；补 24h soak（可选）。
