@@ -30,13 +30,23 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 
 ## 2. 客机两次全量（连续两次一致）
 
-**发布全量 = 169 / 178 例**，一条命令：
+**发布门禁 = 四条命令**（2026-11-02 实测后定稿；每条都在 reset 后的空客机上跑）：
+
+| # | 范围 | 例数 | 为什么单独一遍 |
+|---|---|---|---|
+| A（主门禁） | 全部 − 3 structural − 4 prepare/verify − memory_exhaustion − nonadmin_prepare − 6 fault − 5 后置用例 | **158** | 其余都互不干扰；**跑两遍**（A1/A2）要求结果一致 |
+| B | `integration.m5.(performance\|cluster_size\|compatibility\|soak\|support_bundle)` | **5** | 实测：紧跟 `install_uninstall`/`upgrade`/`state_format` 之后跑会 `the service never answered`（安装器家族的卸载刚结束），reset 后 5/5 通过 |
+| C | `integration.m5.(process_kills\|service_kill\|bundle_corruption\|stop_after_restore\|hostile_acl\|volume_full)` | **6** | 用例开头要求空客机（`the guest already has 1 profile(s); reset it first`），R-04 的读数是 reset 后单独一遍取得的 |
+
+合计 **158 + 5 + 6 = 169** 例，仍是发布全量的覆盖；A 跑两遍，B/C 各一遍。
+
+**A 的命令**：
 
 ```text
-^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare)$)
+^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$)
 ```
 
-排除的 9 例及理由：
+排除的 15 例及理由：
 
 | 排除 | 理由 | 它的证据在哪 |
 |---|---|---|
@@ -45,6 +55,7 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 | `integration.m5.p4p5_prepare` / `*_verify` | 同上，P4/P5 专用的一对 | 同上 |
 | `integration.m5.memory_exhaustion` | **opt-in**：需要把机器内存压到 commit limit 附近，不能和其它用例共用一个客机 | R-01 的预算拒绝读数 + `m5-stab-02` |
 | `integration.m5.nonadmin_prepare` | host 驱动的一对（prepare/cleanup）：agent 准备两个 profile，宿主机用 `vmrun` 以标准用户跑 GUI/CLI，再清理 | `docs/validation/m5-stab-09-nonadmin.md`（R-11） |
+| `integration.m5.process_kills` 等 6 例 fault 组 | **需要空客机**：用例开头检查 `the guest already has 1 profile(s); reset it first`；实测在 169 例里紧跟在 `cli_e2e` 之后时 6 例全部 exit 1，并把后面的 service 卡死（`the service never answered` ×5）。R-04 的读数是**单独一遍**（reset 后 `-Filter` 这 6 例）取得的，发布证据里同样单列这一遍 |
 
 **不使用 `tools/m5vm/Invoke-M5FullSuite.ps1` 作为发布门禁**：它的分组规则早于 R-15…R-18（新用例会被判为未分组错误），默认还排除 fault 组；发布门禁就是上面这条 `-Run -Filter`——一条命令、169 例、同一份 `results.json` 形状。
 
@@ -62,11 +73,11 @@ $env:M5VM_PASSWORD='12345678'
 # C:\m5\Reset-M5Guest.ps1  →  profiles: 0 entries left / RESET
 
 tools\m5vm\Invoke-M5Vm.ps1 -Stage -Configuration Release
-$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 $run1 | Select-String 'passed|FAIL'
 # 记录 request id 与 results 路径（输出里 `results: C:\m5\control\<id>.results.json`）
 # 重置客机，再跑第二次，结果必须与第一次逐项一致
-$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 ```
 
 “一致”的判据：两次的 `passed` 数相同、失败集合为空、`results.json` 的 case 名单相同。
