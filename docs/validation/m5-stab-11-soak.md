@@ -41,10 +41,25 @@ soak finished: rounds=6 cuts=1 failures=0
 3. **driver 读不到 `Write-Host` 输出**：case 把状态与读数写到 `C:\m5\soak\last.txt`，driver
    以该文件为准。
 
-## 4. 24 h 正式跑
+## 4. 正式跑：19 h 14 min / 526 轮 / 13 次硬断电（用户裁定提前结束）
 
-- 命令：`tools\m5vm\Test-M5Soak.ps1 -Hours 24 -CutEveryRounds 40 -SkipStage -OutDir C:\tmp\m5-soak\2026-11-01`
-- 节奏：约 2 min/轮，每 40 轮（约 80 min）一次硬断电 + verify。
-- 判定（跑完后填）：无泄漏（handle/工作集不随轮次单调增长）、内存回基线、每次断电后
-  `verify` 通过且 `workers=0`、每轮 `verified=True`。
-- 本页在跑完后补 §5 的首末读数与趋势，并把 tasklist 的 STAB-11 从 IN PROGRESS 改为最终状态。
+- 时间：2026-11-01 10:56:57Z 开始，2026-11-02 06:11Z 结束，**19 h 14 min**；**526 轮全部
+  `passed`、0 failures**；每轮 `data_verified=True`（已提交数据的 SHA-256 与写前一致）。
+- 硬断电：**13 次**（每 40 轮一次），13 次 `verify` 全部 `passed`，13 次 `post-cut workers=0`。
+- 句柄：service **166 → 166**、worker **119 → 119**，526 轮**完全不变**。
+- 内存：worker 工作集 **33.7 MB**（最大 33.8），526 轮不变；service 工作集 9.1–12.9 MB，
+  每个 service 生命周期内从 ~10.2 MB 缓慢漂到 ~11–12 MB（40–80 轮），**断电重启后回到 ~10 MB**
+  ——有界、不跨重启累积，但**不是严格“每轮回基线”**。
+- 结论：**恢复正确、句柄与 worker 内存无泄漏**；service 存在每次运行内的小幅漂移（约 +1–2 MB /
+  40–80 轮，重启归零），记为已知行为/接受风险，而不是“完全无增长”。
+
+**偏离**：任务清单 R-13 要求 24h；用户在 2026-11-02 裁定“现在就停，按当前轮数收口”，因此本次为
+**19 h 14 min**，剩余约 4.7h 未跑。发布记录必须如实写这个时长，不能写成 24h。
+
+## 5. 判定
+
+- `integration.m5.soak` 的单轮语义（提交/不提交写入、stop/start 校验、forget）在 526 次里没有
+  一次失败；13 次硬断电全部恢复且无残留 worker。
+- “每轮恢复正确”：**满足**。
+- “无泄漏”：句柄与 worker 内存**满足**；service 内存为**有界漂移**，按上面记录为接受风险。
+- 时长：19 h 14 min（偏离 24h，经用户裁定）。

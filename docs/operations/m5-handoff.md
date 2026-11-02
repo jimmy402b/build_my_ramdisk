@@ -5527,3 +5527,25 @@ checkpoint/compact owner_or_administrator（owner 过、外人拒）；未认证
 **PARTIAL**，不写成通过。
 
 **仍剩**：R-13（24h soak）、R-19（演练）；R-11 待换机制补客机读数。
+
+---
+
+### 3.225 2026-11-02：**R-13 PASSED（19 h 14 min soak，526 轮 / 13 次硬断电）**
+
+24h soak 从 2026-11-01 10:56:57Z 跑到 2026-11-02 06:11Z；用户裁定提前收口，实际 **19 h 14 min**。
+
+```text
+526 rounds passed, 0 failures
+13 power cuts, 13 verifies passed, 13 × post-cut workers=0
+every round data_verified=True (committed-data SHA-256 matches)
+service handles 166 -> 166, worker handles 119 -> 119
+worker working set 33.7 MB -> 33.7 MB (max 33.8)
+service working set 9.1..12.9 MB: ~10.2 at each service lifetime start,
+  drifting to ~11-12 MB within 40-80 rounds, back to ~10 MB after a cut (bounded, reset by restart)
+```
+
+判定：恢复正确、句柄与 worker 内存无泄漏；service 内存是**有界漂移**（每个 service 生命周期
++1–2 MB，重启归零），记为**接受风险**，不写成“完全无增长”。时长偏离 24h 已写进
+`docs/validation/m5-stab-11-soak.md` 与 tasklist STAB-11。
+
+**仍剩**：R-11（客机读数，机制已找到：batch logon + SeBatchLogonRight）与 R-19 发布演练。
