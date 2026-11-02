@@ -5549,3 +5549,30 @@ service working set 9.1..12.9 MB: ~10.2 at each service lifetime start,
 `docs/validation/m5-stab-11-soak.md` 与 tasklist STAB-11。
 
 **仍剩**：R-11（客机读数，机制已找到：batch logon + SeBatchLogonRight）与 R-19 发布演练。
+
+---
+
+### 3.226 2026-11-02：**R-19 完成，R-01…R-19 全部 PASSED**
+
+构建 `41ed3de`（R-11 的两个产品修复之后只有文档提交 `26c0578`）。门禁是四条命令、每条前 reset
+客机（fault 组逐例 reset）：
+
+```text
+A1 158/158   request d38fe44476ab4b5cb291ab9c984b02f4
+A2 158/158   request c0af55f60c9f422dbc0cce8f643ae476   (first try afc36e3f: 157/158, m5.startup_sweep intermittent, rerun green)
+B   5/5      request 5785e2fd31cf458583cafa68ffdd9955
+C   6/6      process_kills 50663eb2, service_kill 765f5091, bundle_corruption 38045f04,
+             stop_after_restore 7160e9c7, hostile_acl 08ae3e67, volume_full 4efba65e
+```
+
+冻结：`out/m5-evidence/release-manifest.json`，`frozen_at=2026-11-02T10:21:08Z`；`myrd-service.exe`
+`69d9166a…`、`myrd-cli.exe` `a00678e1…`、`myrd-gui.exe` `f54a12fc…`、`myrd-m5-worker.exe` `7b689347…`；
+9 份读数。`Verify-M5Evidence.ps1` → **`accepted`**。
+
+**已知间歇/注意**：`m5.startup_sweep`（`orphans_observed == 1`）与 `unit.m3.vhdx_reader`
+（`current_cache_entries == 0`）偶发失败，单独/重跑通过；`bundle_corruption` 在客机有残留时
+会卡住 >30 min，干净 reset/重启后 44 s 通过——fault 组必须逐例 reset（必要时硬重启 VM）。
+
+**仍存在的已知限制**（写进发布记录，不隐藏）：R-13 实际 19 h 14 min（tasklist 要求 24h，用户裁定）；
+service 工作集在每个 service 生命周期内 +1–2 MB、重启归零（有界漂移）；volumelabel 与 cluster-size
+的产品限制不变。

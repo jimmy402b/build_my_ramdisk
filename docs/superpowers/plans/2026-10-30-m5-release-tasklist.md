@@ -102,7 +102,7 @@ profile/bundle 没有格式版本字段，安装器也没有回滚动作。因�
 | R-17a | STAB-15 | **实现簇大小（决策 6）**：CLI `--cluster-size` → command/IPC → intent/durable → profile 字段 → worker launch → `provision_volume.ps1` 的 `Format-Volume -ClusterSize`；`disk show` 显示；create-only | — | 4–6 | 客机：create 带 64K 后 `fsutil fsinfo ntfsinfo` 的每簇字节 == 配置，`disk show` 一致；默认 4K 不变；恢复后不变 |
 | R-17b | STAB-15 | §8 另一项：测试里的源码树绝对路径改环境变量/相对路径 | — | 1–2 | 非镜像布局也能跑 |
 | R-18 | STAB-16 | 兼容性扩展（**Win10 已移出，决策 4**）：NTFS 压缩/加密目录上的 bundle、Defender 开启、非系统盘/不同扇区（若支持） | R-05 | 2–4 | 矩阵更新；不支持项有明确错误而不是挂死 |
-| R-19 | — | 发布演练：构建 → 冻结 → 校验和（未签名声明）→ 干净 VM 安装 → 冒烟 → 升级 → **重装** → 卸载；全量两次；发布决策 | R-01…R-18 | 2–3 | 所有产物可追溯到同一 commit；门禁全打勾 |
+| R-19 | **PASSED** | 发布演练：同一 commit 构建 → 冻结 manifest/校验和 → 干净 VM 安装/冒烟/升级/重装/卸载 → 两次全量一致 → validator accepted | 2026-11-02：构建 `41ed3de`（文档 `26c0578`）；门禁 4 条命令、每条前 reset 客机：**A1 158/158**（`d38fe444…`）、**A2 158/158**（`c0af55f6…`；第一次 `afc36e3f…` 157/158 为 `m5.startup_sweep` 间歇，整轮重跑通过）、**B 5/5**（`5785e2fd…`）、**fault 6/6**（逐例 reset：`50663eb2…`/`765f5091…`/`38045f04…`/`7160e9c7…`/`08ae3e67…`/`4efba65e…`）。manifest `out/m5-evidence/release-manifest.json` `frozen_at=2026-11-02T10:21:08Z`：4 个二进制 + 9 份读数；`Verify-M5Evidence.ps1` → **`accepted`**。已知间歇：`m5.startup_sweep`、`unit.m3.vhdx_reader`；`bundle_corruption` 需干净 reset（否则卡住）→ `docs/operations/m5-release-rehearsal.md` §9 |
 
 **合计约 38–60 人日**（一人 + 一台客机；不含等待证书的时间）。
 

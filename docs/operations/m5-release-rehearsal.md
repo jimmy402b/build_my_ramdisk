@@ -158,3 +158,43 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\Verify-M5Evidence.ps1 
 - 驱动缺失/过旧的两个拒绝分支**未实测**（`AGENTS.md` §4 禁止停用/降级驱动）。
 - R-11 的客机进程级非提权读数**未取得**（见 `m5-stab-09-nonadmin.md`）；产品侧授权有单测。
 - 4Kn 介质、BitLocker、SMB 上的 bundle 未测（`m5-stab-16`）。
+
+---
+
+## 9. 2026-11-02 执行记录（R-19 完成）
+
+**构建**：`41ed3de`（含 R-11 的两个产品修复），之后只有文档提交 `26c0578`；四个二进制取自
+`out/build/msvc/src/Release`。
+
+**门禁运行**（每条之前都 reset 客机）：
+
+| 运行 | 请求 id | 例数 | 结果 |
+|---|---|---|---|
+| A1 | `d38fe44476ab4b5cb291ab9c984b02f4` | 158 | **158/158 passed**（08:06–08:16Z） |
+| A2（第一次） | `afc36e3f463c46cea89a427455a75ccb` | 158 | 157/158：`m5.startup_sweep` 失败（`orphans_observed == 1`）——**已知间歇**，整轮重跑 |
+| A2（重跑） | `c0af55f60c9f422dbc0cce8f643ae476` | 158 | **158/158 passed**（08:26–08:37Z） |
+| B | `5785e2fd31cf458583cafa68ffdd9955` | 5 | **5/5 passed**（08:37–08:44Z） |
+| C（fault） | 见下 | 6 | **6/6 passed**（逐例 reset 后单独跑） |
+
+C 的六个请求：`50663eb2…` process_kills、`765f5091…` service_kill、`38045f04…` bundle_corruption、
+`7160e9c7…` stop_after_restore、`08ae3e67…` hostile_acl、`4efba65e…` volume_full。
+
+**已知间歇**（两次全量里各出现一次，单独/重跑均通过）：
+- `m5.startup_sweep`：`last_report()->orphans_observed == 1U` 偶发不成立（A2 第一次）。
+- `unit.m3.vhdx_reader`：`current_cache_entries == 0ULL` 偶发不成立（169 例那轮），单独 `-Repeat 3` 3/3 通过。
+
+**`integration.m5.bundle_corruption` 的注意事项**：它会短暂制造坏 bundle；如果客机里还有上一例的残留
+（未 reset 或服务未完全退出），用例会卡住 >30 min 并把 SSH 一起拖住。**干净 reset / 重启后 44 s 通过**。
+所以 fault 组必须逐例 reset（必要时 `vmrun stop hard` + start）后再跑。
+
+**冻结**：`out/m5-evidence/release-manifest.json`，`frozen_at=2026-11-02T10:21:08Z`，4 个二进制、9 份读数：
+
+```text
+myrd-service.exe    1143808  sha256=69d9166aa9a2a325b5120f7f11f92942751948a2b01b67acc6156642a4adcc73
+myrd-cli.exe         192000  sha256=a00678e1318e4080ffcd451a5a7b765188b9abd2178ed340dc0dd93cdff40c35
+myrd-gui.exe         166400  sha256=f54a12fcc5cad4726b0b0bae76647860c36d455eaff583968fef0eb2377ab3cb
+myrd-m5-worker.exe  1524224  sha256=7b689347e79f30afbe8a9fb33b0528d05b85948c308b4fddac0e3d8b3c63fb69
+```
+
+**校验**：`tools/Verify-M5Evidence.ps1 -EvidenceDirectory out/m5-evidence` → `accepted`（每个
+`*.results.json` 的每个 case `exit_code` 都是 0；共 9 份读数）。

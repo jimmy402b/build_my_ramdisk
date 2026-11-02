@@ -5,6 +5,35 @@ All notable changes to MyRamDisk are recorded here. The project follows
 
 **This file is part of the release contract (R-07).** Every shipped version names the
 commits its behaviour came from, so "what is in 1.0.0" can be answered without reading the
+
+## Release status (2026-11-02)
+
+**R-19 passed; R-01 … R-19 are all PASSED.** The release was rehearsed from one build
+(`41ed3de`, followed only by documentation commits up to `26c0578`):
+
+| Run | Cases | Result |
+|---|---|---|
+| A1 (main suite) | 158 | 158/158 passed |
+| A2 (main suite, rerun) | 158 | 158/158 passed |
+| B (performance, cluster size, compatibility, soak, support bundle) | 5 | 5/5 passed |
+| C (fault matrix, one case per clean reset) | 6 | 6/6 passed |
+
+Frozen evidence: `out/m5-evidence/release-manifest.json`, `frozen_at=2026-11-02T10:21:08Z`,
+four binaries and nine readings; `tools/Verify-M5Evidence.ps1` answers **accepted**. Hashes:
+
+```text
+myrd-service.exe    69d9166aa9a2a325b5120f7f11f92942751948a2b01b67acc6156642a4adcc73
+myrd-cli.exe        a00678e1318e4080ffcd451a5a7b765188b9abd2178ed340dc0dd93cdff40c35
+myrd-gui.exe        f54a12fcc5cad4726b0b0bae76647860c36d455eaff583968fef0eb2377ab3cb
+myrd-m5-worker.exe  7b689347e79f30afbe8a9fb33b0528d05b85948c308b4fddac0e3d8b3c63fb69
+```
+
+Known limits recorded with the release: the soak ran 19 h 14 min (the tasklist asks for 24 h;
+the user closed it early), the service working set drifts up 1–2 MB within one service lifetime
+and returns to baseline on restart, `integration.m5.startup_sweep` and `unit.m3.vhdx_reader` are
+intermittent (green on their own and on full reruns), and `integration.m5.bundle_corruption`
+must run on a cleanly reset guest or it hangs. See `docs/operations/m5-release-rehearsal.md` §9.
+
 whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
 ## [1.0.0] - 2026-10-30 (release candidate)
