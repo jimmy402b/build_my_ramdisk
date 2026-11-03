@@ -342,10 +342,21 @@ Result<void> validate_management_acl(HANDLE handle) {
         || dacl->AclRevision != ACL_REVISION
         || (control & SE_DACL_PRESENT) == 0
         || (control & SE_DACL_PROTECTED) == 0) {
+        // **Name the directory.**  Measured: the bare message "A profile directory ACL is not
+        // protected" sent the reader looking at every managed directory; the actual offender was
+        // `...\profiles\workers`, created unprotected by an interrupted reset.  The handle knows
+        // its own path, so the refusal says which one and what shape is expected.
+        std::wstring offender = normalized_handle_path(handle);
+        if (offender.empty()) {
+            offender = L"<unknown path>";
+        }
+        const std::wstring message =
+            L"A profile directory ACL is not protected: " + offender +
+            L" (expected a protected DACL owned by SYSTEM or Administrators)";
         return store_error(
             ProfileStoreError::unsafe_acl,
             L"profile_store.directory_acl",
-            L"A profile directory ACL is not protected");
+            message.c_str());
     }
 
     std::array<std::byte, SECURITY_MAX_SID_SIZE> system_sid{};

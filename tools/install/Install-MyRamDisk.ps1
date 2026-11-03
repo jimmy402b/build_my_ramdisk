@@ -111,6 +111,10 @@ foreach ($child in @('profiles', 'operations', 'logs')) {
     $path = Join-Path $DataDirectory $child
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
+# **The worker-binding leaf needs the same protection when it exists.**  Measured: an interrupted
+# reset can leave `profiles\workers` with an inherited (unprotected) DACL, and the service then
+# refuses to start with `profile_store.directory_acl`; reinstalling is the natural repair path.
+$workersLeaf = Join-Path (Join-Path $DataDirectory 'profiles') 'workers'
 # **The durable directories are for the service alone, and their DACL must be *protected*.**
 #
 # The profile store refuses to operate on a directory whose ACL has any entry that is not SYSTEM or
@@ -165,6 +169,10 @@ foreach ($child in @('profiles', 'operations')) {
 # every local user.  Reading the log is an administrator/operator action, so the directory now
 # carries the same DACL and owner as the record.
 Set-ManagementAcl (Join-Path $DataDirectory 'logs') $false
+if (Test-Path -LiteralPath $workersLeaf) {
+    Set-ManagementAcl $workersLeaf $false
+    Write-Host "  repaired the existing workers ACL"
+}
 Write-Host "  DACL: profiles/operations/logs management-only (owner: Administrators)"
 
 Step "register the service $ServiceName"

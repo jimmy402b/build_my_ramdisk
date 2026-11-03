@@ -85,6 +85,12 @@ foreach ($child in @('profiles', 'operations')) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
         Write-Host "  created $directory"
     }
+    # **Protect immediately, not only at the end.**  Measured: when the reset hangs after this
+    # point (a wedged guest), the end-of-script protection pass never runs and the service then
+    # refuses to start with `profile_store.directory_acl`; every test that needs the service
+    # fails for a reason that is not the product's.  Protecting each directory as it is created
+    # is idempotent with the final pass and leaves a usable state even after an interrupted run.
+    Protect-ManagementDirectory $directory
     $remaining = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue)
     Write-Host ("  {0}: {1} entries left" -f $child, $remaining.Count)
     if ($remaining.Count -ne 0) {
@@ -100,6 +106,7 @@ if (-not (Test-Path -LiteralPath $workers)) {
     New-Item -ItemType Directory -Force -Path $workers | Out-Null
     Write-Host "  created $workers"
 }
+Protect-ManagementDirectory $workers
 if ($PurgeData -and (Test-Path -LiteralPath $DataDirectory)) {
     Remove-Item -LiteralPath $DataDirectory -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "  purged $DataDirectory"
