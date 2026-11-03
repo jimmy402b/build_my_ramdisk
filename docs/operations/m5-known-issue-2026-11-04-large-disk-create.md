@@ -343,5 +343,17 @@ bounded wait`。8 GiB 的 checkpoint 实测 98 s，16 GiB 123 s；之后 `record
 - 验收 §3（写 > 上限 → 驱逐 → checkpoint → 硬断电 → 数据校验）**没有通过**；
 - 因此全量门禁、manifest 重新冻结、打包、tag v1.0.1 **都没有做**。
 
+**下一步的调查线索**（2026-11-04 05:00 读代码得到，尚未验证）：
+
+- AIM 的数据通路不是内存直映射，而是走 `proxy` 的请求协议：`kMappingSize = 4 KiB 头
+  + 8 MiB 数据区`（`src/proxy/imdproxy_protocol.h:25-27`），由 `ShmProxySession` 的 request
+  线程持续服务（`src/proxy/shm_proxy_session.cpp:60-90`）；`RequestProcessor::process` 用一把
+  互斥量串行化，且**只返回错误、不阻塞**（`request_processor.cpp`）。
+- 所以挂住的位置只剩两处：① `device_.write()`（M3 store 的写/分配路径）阻塞；② 驱动侧在等
+  一个永远不会来的完成。worker 工作集恒为 ~16.7 MB 更支持"请求还没进到分配就卡住"。
+- 建议下一步：给 request 线程加 per-request trace（序号/offset/length/返回码），或直接抓 worker
+  线程栈（`procdump -ma -h`）看 request 线程卡在 `device_.write`、`WaitForSingleObject` 还是
+  驱动 IOCTL；再用 256 MiB / 1 GiB / 2 GiB 卷做容量二分，找第一个会挂的档位。
+
 **需要人决定**：是先把范围收窄成"只发 create 修复"（仍然缺压力/断电读数与全量门禁），
 还是先投入定位这个写入停顿。建议：**先不要发 1.0.1**，把写停顿定性后再走完整门禁。
