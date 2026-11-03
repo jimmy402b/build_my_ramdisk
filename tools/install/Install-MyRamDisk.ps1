@@ -105,6 +105,12 @@ New-Item -ItemType Directory -Force -Path $InstallDirectory | Out-Null
 foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path $source $file) -Destination $InstallDirectory -Force
 }
+# The uninstaller has to live next to the binaries: the installed-programs entry points at it, and
+# the release folder it came from will not be there later.
+$uninstaller = Join-Path $PSScriptRoot 'Uninstall-MyRamDisk.ps1'
+if (Test-Path -LiteralPath $uninstaller) {
+    Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $InstallDirectory 'Uninstall-MyRamDisk.ps1') -Force
+}
 
 Step "create the durable directories under $DataDirectory with an explicit DACL"
 foreach ($child in @('profiles', 'operations', 'logs')) {
@@ -204,6 +210,46 @@ $cli = Join-Path $InstallDirectory 'myrd-cli.exe'
 $listed = & $cli disk list 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { Fail "the installed service does not answer: $listed" }
 Write-Host "  service answers: $($listed.Trim())"
+
+# **Make it a real installed program.**  Measured: the installer left no entry in Settings > Apps, so
+# the only way to remove the product was to remember where the script came from.  The entry points
+# the uninstaller at the copy beside the binaries; it deliberately has no Modify/Repair button
+# because this product repairs by reinstalling.
+Step 'register MyRamDisk in the installed-programs list'
+try {
+    $cli = Join-Path $InstallDirectory 'myrd-cli.exe'
+    $version = '1.0.0'
+    if (Test-Path -LiteralPath $cli) {
+        $reported = (& $cli --version 2>&1 | Out-String)
+        if ($reported -match '(\d+\.\d+\.\d+)') { $version = $matches[1] }
+    }
+    $estimated = 0
+    foreach ($file in $files) {
+        $path = Join-Path $InstallDirectory $file
+        if (Test-Path -LiteralPath $path) { $estimated += [int]((Get-Item -LiteralPath $path).Length / 1KB) }
+    }
+    $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MyRamDisk'
+    New-Item -Path $uninstallKey -Force | Out-Null
+    $values = [ordered]@{
+        DisplayName     = 'MyRamDisk'
+        DisplayVersion  = $version
+        Publisher       = 'MyRamDisk project'
+        InstallLocation = $InstallDirectory
+        DisplayIcon     = (Join-Path $InstallDirectory 'myrd-gui.exe')
+        UninstallString = ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' +
+            (Join-Path $InstallDirectory 'Uninstall-MyRamDisk.ps1') + '"')
+        NoModify        = 1
+        NoRepair        = 1
+        EstimatedSize   = $estimated
+    }
+    foreach ($name in $values.Keys) {
+        $type = if ($values[$name] -is [int]) { 'DWord' } else { 'String' }
+        New-ItemProperty -Path $uninstallKey -Name $name -Value $values[$name] -PropertyType $type -Force | Out-Null
+    }
+    Write-Host "  installed-programs entry written (MyRamDisk $version)"
+} catch {
+    Write-Host "  WARNING: the installed-programs entry could not be written: $($_.Exception.Message)"
+}
 
 Write-Host "INSTALLED $ServiceName from $source"
 exit 0

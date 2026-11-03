@@ -79,6 +79,14 @@ if ($servicePresent) {
     Write-Host "  the service was not registered"
 }
 
+# The installed-programs entry is removed even when the files are kept for diagnosis: an entry that
+# points at a missing uninstaller is worse than no entry at all.
+Step 'remove the installed-programs entry'
+$uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MyRamDisk'
+if (Test-Path -LiteralPath $uninstallKey) {
+    Remove-Item -LiteralPath $uninstallKey -Recurse -Force
+}
+
 Step "remove $InstallDirectory"
 if (Test-Path -LiteralPath $InstallDirectory) {
     Remove-Item -LiteralPath $InstallDirectory -Recurse -Force
