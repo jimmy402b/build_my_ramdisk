@@ -5631,3 +5631,18 @@ WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
 **因此 `m5.startup_sweep` 的"偶发"是状态依赖，不是产品竞态**；`unit.m3.vhdx_reader` 与客机无关，仍待定性。
 
 **发布**：v1.0.0 包与 tag 不变（fault 组结果已回填发布说明 §2）。
+
+---
+
+### 3.231 2026-11-03：修复 DACL 缺陷后重新冻结并发布 v1.0.0
+
+提交 `5381402`：
+1. `Reset-M5Guest.ps1` 在**创建目录时**就设 protected DACL（不再依赖 reset 末尾的统一设置，挂起时也不会留下 unprotected 目录）；
+2. `Install-MyRamDisk.ps1` 重装时修复已存在的 `profiles\workers` ACL；
+3. `profile_store.cpp` 的拒绝信息点名具体目录与期望形状。
+
+客机验证：删除 workers → reset 重建且 protected；未保护 + 安装器 → `repaired the existing workers ACL` → 服务 RUNNING；未保护 + 服务启动 → 错误信息带 `\\?\c:\programdata\myramdisk\profiles\workers`。
+
+**门禁复跑（修复后）**：A1 `a17909af…` 158/158、A2 `8090d832…` 158/158、B `ef8020c1…` 5/5、fault 6/6（08:04–08:34Z）。manifest 重新冻结 `2026-11-03T08:35:31Z`（9 份读数，`myrd-service.exe c2b44138…`），validator **accepted**，发布包重新生成并复算一致。
+
+**卡死**：定性为“fault 注入后 Windows WMI/PowerShell 被拖住、原生程序正常”，驱动服务不支持 `sc stop`（1052），只能重启 VM；fault 运行器固定为每例一次干净重启 + PowerShell 就绪探针。产品侧无改动。

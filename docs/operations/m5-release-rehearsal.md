@@ -38,12 +38,12 @@ Get-FileHash out\build\msvc\src\Release\myrd-{service,cli,gui,m5-worker}.exe -Al
 | B | `integration.m5.(performance\|cluster_size\|compatibility\|soak\|support_bundle)` | **5** | 实测：紧跟 `install_uninstall`/`upgrade`/`state_format` 之后跑会 `the service never answered`（安装器家族的卸载刚结束），reset 后 5/5 通过 |
 | C | `integration.m5.(process_kills\|service_kill\|bundle_corruption\|stop_after_restore\|hostile_acl\|volume_full)` | **6** | 用例开头要求空客机（`the guest already has 1 profile(s); reset it first`），R-04 的读数是 reset 后单独一遍取得的 |
 
-合计 **158 + 5 + 6 = 169** 例，仍是发布全量的覆盖；A 跑两遍，B/C 各一遍。另有 host 驱动用例 `integration.m5.drive_letter`（盘符稳定性/跨重启，§10）与 `integration.m5.nonadmin_prepare`（R-11），均不在门禁内。
+合计 **158 + 5 + 6 = 169** 例，仍是发布全量的覆盖；A 跑两遍，B/C 各一遍。另有 host 驱动用例 `integration.m5.drive_letter`（盘符稳定性/跨重启，§10）与 `integration.m5.nonadmin_prepare`（R-11），均不在门禁内（过滤器里显式排除）。
 
 **A 的命令**：
 
 ```text
-^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$)
+^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full|drive_letter|performance|cluster_size|compatibility|soak|support_bundle)$)
 ```
 
 排除的 15 例及理由：
@@ -73,11 +73,11 @@ $env:M5VM_PASSWORD='12345678'
 # C:\m5\Reset-M5Guest.ps1  →  profiles: 0 entries left / RESET
 
 tools\m5vm\Invoke-M5Vm.ps1 -Stage -Configuration Release
-$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run1 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full|drive_letter|performance|cluster_size|compatibility|soak|support_bundle)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 $run1 | Select-String 'passed|FAIL'
 # 记录 request id 与 results 路径（输出里 `results: C:\m5\control\<id>.results.json`）
 # 重置客机，再跑第二次，结果必须与第一次逐项一致
-$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
+$run2 = tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^(?!structural\.)(?!integration\.m5\.(powerloss_prepare|powerloss_verify|p4p5_prepare|p4p5_verify|memory_exhaustion|nonadmin_prepare|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full|drive_letter|performance|cluster_size|compatibility|soak|support_bundle)$)' -MinTimeoutSeconds 1800 2>&1 | Out-String
 ```
 
 “一致”的判据：两次的 `passed` 数相同、失败集合为空、`results.json` 的 case 名单相同。
@@ -251,3 +251,32 @@ volume_full         PASS (attempts 1)
 `release-manifest.json`、`SHA256SUMS`）；生成时先核对 4 个二进制与冻结 manifest 的 SHA-256，一致才复制；
 `SHA256SUMS` 覆盖 10 个文件并已复算（0 mismatch）。tag **`v1.0.0`**；发布说明
 `docs/operations/m5-release-1.0.0.md`。
+---
+
+## 12. 2026-11-03 修复后复跑（发布前最后一轮）
+
+**修复提交** `5381402`（DACL 保护顺序、安装器自愈、错误信息点名目录）。修复验证（客机实测）：
+
+```text
+workers 目录删除后 reset         -> 重建且 protected=True
+workers 未保护 + 安装器          -> "repaired the existing workers ACL" -> 服务 RUNNING
+workers 未保护 + 服务启动        -> build_state failed: ... not protected: \\?\c:\programdata\myramdisk\profiles\workers
+                                    (expected a protected DACL owned by SYSTEM or Administrators)
+```
+
+**门禁复跑**（每条前 reset 客机）：
+
+| 运行 | 请求 id | 例数 | 结果 |
+|---|---|---|---|
+| A1 | `a17909afcfca4b45aef30563a73da96a` | 158 | **158/158**（07:33–07:45Z） |
+| A2 | `8090d8320b8049899044e7d7e6b3cee8` | 158 | **158/158**（07:45–07:57Z） |
+| B | `ef8020c130e7403d838e422144a61ec2` | 5 | **5/5**（07:57–08:04Z） |
+| fault | `Invoke-M5FaultGroup.ps1` | 6 | **6/6**（08:04–08:34Z；两例遇到慢启动，用了第二次启动重试） |
+
+**冻结**：`out/m5-evidence/release-manifest.json`，`frozen_at=2026-11-03T08:35:31Z`，4 个二进制 + 9 份读数
+（`myrd-service.exe` 哈希变为 `c2b44138…`，其余三个不变）；`Verify-M5Evidence.ps1` → **accepted**；
+发布包由 `New-M5ReleasePackage.ps1` 重新生成，`SHA256SUMS` 10 条复算一致。
+
+**卡死**：产品侧无需（也无法）修改——fault 注入后 Windows WMI/PowerShell 被拖住，而原生程序
+（`cmd`、`myrd-cli`）正常；驱动服务不支持 `sc stop`（1052），只能重启 VM。运行器已按“每例一次
+干净重启 + PowerShell 就绪探针”固定下来。
