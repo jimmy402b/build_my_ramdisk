@@ -1,6 +1,6 @@
 # M5 交接：从这里开�?
 
-**最后更新：2026-10-28**（状态有变化先改这里，再�?tasklist�?
+**最后更新：2026-11-04**（状态有变化先改这里，再�?tasklist�?
 
 ---
 
@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **PASSED**：R-01…R-10、R-12、R-14、R-15…R-18；STAB-03/06/07/08/10/12/13/14/15/16。**R-11 PARTIAL**：产品侧完成（`disk_show` caller_filtered + 服务端 owner 比较，`unit.m5.authorization` 5/5）；客机进程级非提权读数未取得（六种启动机制失败于启动前，见 §3.224 与 `m5-stab-09-nonadmin.md`）。**下一步**：① R-13 24h soak（小负载 + 频繁 checkpoint + 周期硬断电）；② R-19 演练 + manifest 重新冻结 + 两次全量 + 8 条 gate；③ R-11 客机读数换机制（交互式会话/`--print-caller` 诊断入口）。**manifest 仍无效** |
+| **下一件事** | **1.0.0 已发布；实用中发现 ≥8 GiB 盘 create 卡死（4 GiB 正常）** —— 下一个会话专职修复，入口 `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md`（§3.232 有摘要）。修复后发 1.0.1。 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5646,3 +5646,27 @@ WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
 **门禁复跑（修复后）**：A1 `a17909af…` 158/158、A2 `8090d832…` 158/158、B `ef8020c1…` 5/5、fault 6/6（08:04–08:34Z）。manifest 重新冻结 `2026-11-03T08:35:31Z`（9 份读数，`myrd-service.exe c2b44138…`），validator **accepted**，发布包重新生成并复算一致。
 
 **卡死**：定性为“fault 注入后 Windows WMI/PowerShell 被拖住、原生程序正常”，驱动服务不支持 `sc stop`（1052），只能重启 VM；fault 运行器固定为每例一次干净重启 + PowerShell 就绪探针。产品侧无改动。
+
+---
+
+### 3.232 2026-11-04：**1.0.0 实用发现新缺陷 —— ≥8 GiB 盘 create 卡死**（下个会话专职修）
+
+在宿主机（Win11 26200，63.66 GB RAM，`phdskmnt` 1.2.28.93）装 1.0.0 实测：
+
+| 容量 | 结果 |
+|---|---|
+| 4 GiB（automatic） | ✅ 成功 |
+| 8 GiB（automatic） | ❌ 卡 create-bundle；CLI `the control pipe exchange failed`（约 30 s）；卷已挂载但 operation 一直 running；worker CPU/IO = 0；`base-0000.vhdx` 停在 4 MiB |
+| 16 GiB（automatic） | ❌ `M3Provider::open provider limits are invalid` |
+| 16 GiB（fixed 8/16 GiB） | ❌ 卡 create-bundle；`code=4107 step=WorkerPipeChannel::read detail=pipe transfer exceeded its bounded wait`；随后 profile 处于 `Provisioning/CommitIndeterminate/NeedsAttention`，连 `disk forget` 都 `control pipe exchange failed` |
+
+**已排除**：内存不足（空闲 49.6 GB、零 CPU/零 IO）、盘符冲突（残留 Z: 卷，`mountvol /d` 后仍卡）、慢写入（镜像不增长）。
+**发布覆盖**：1.0.0 验证的是 64 MiB–1 GiB，4 GiB 是本次首次成功，**≥8 GiB 属未测区间**。
+
+**环境已就绪**：宿主机已卸载干净；客机 `myrd-vm` 已调 **20 GB** 内存（memsize=20480，`.vmx` 备份
+`Windows 11 x64.vmx.bak-20261104-013944`）；仓库 `f710583` 干净；v1.0.0 已推送 GitHub。
+
+**修复入口**：`docs/operations/m5-known-issue-2026-11-04-large-disk-create.md`
+（含复现命令、精确日志、代码位置、建议调查路径：`store_options_for`、automatic 预算、
+`WorkerPipeChannel::read` 的 deadline、`record_bundle_identity`；先建 `integration.m5.bigdisk` 用例）。
+修好后按发布流程重跑门禁（A1/A2 158、B 5、fault 6）→ 重新冻结 manifest → 打包 → **v1.0.1**。

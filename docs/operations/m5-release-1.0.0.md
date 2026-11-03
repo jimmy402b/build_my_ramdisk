@@ -82,12 +82,13 @@ powershell -ExecutionPolicy Bypass -File install\Uninstall-MyRamDisk.ps1
 
 ## 6. 发布时已知的未完成项（不隐藏）
 
-1. `unit.m3.vhdx_reader`（`current_cache_entries == 0`）偶发失败，单独跑 5/5 通过——**定性安排在发布后**。
-2. fault 注入后 Windows WMI/PowerShell 会被拖住，fault 组必须每例一次硬重启；这是环境限制，
+1. **≥8 GiB 的盘 create 会卡死**（4 GiB 已验证可用；8/16 GiB 在宿主机与客机均可复现，见 `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md`）——**修复中，目标 1.0.1**。发布验证覆盖 64 MiB–1 GiB。
+2. `unit.m3.vhdx_reader`（`current_cache_entries == 0`）偶发失败，单独跑 5/5 通过——**定性安排在发布后**。
+3. fault 注入后 Windows WMI/PowerShell 会被拖住，fault 组必须每例一次硬重启；这是环境限制，
    不是产品数据路径失败（原生 CLI 在同样状态下正常）。
-3. soak 为 19 h 14 min（任务清单要求 24 h，用户裁定 19 h 级已足够）。
-4. 驱动缺失/旧驱动分支、start 时字母被**卷**占用的分支未做破坏性实测（约束/环境原因）。
-5. service 工作集在单个生命周期内 +1–2 MB、重启归零（有界漂移，接受风险）。
+4. soak 为 19 h 14 min（任务清单要求 24 h，用户裁定 19 h 级已足够）。
+5. 驱动缺失/旧驱动分支、start 时字母被**卷**占用的分支未做破坏性实测（约束/环境原因）。
+6. service 工作集在单个生命周期内 +1–2 MB、重启归零（有界漂移，接受风险）。
 
 ## 7. 回滚/重装
 
