@@ -416,6 +416,17 @@ private:
     // not borrow this bound, which is why it is a separate function rather than a change to
     // `context()`.
     [[nodiscard]] OperationContext reclaim_context() const;
+    // The deadline a **bundle-creating** action is given.
+    //
+    // **A create is not a control round-trip.**  `context()`'s bound is right for an action that
+    // changes a running disk's state; a create formats a new volume and commits its
+    // generation-zero checkpoint, and both scale with the disk.  Measured on the guest:
+    // checkpoint 98 s at 8 GiB and 123 s at 16 GiB, plus ~20-40 s to read the journal back in
+    // `record_bundle_identity` -- so a 120 s bound abandoned a worker that was still working,
+    // the operation ended `CommitIndeterminate`, and the profile needed attention.  The host
+    // reading of the same defect is the same `code=4107 WorkerPipeChannel::read` timeout.  This
+    // is a bound, not an expectation: a genuinely wedged create still fails, just later.
+    [[nodiscard]] OperationContext provisioning_context() const;
     [[nodiscard]] ServiceWorkerSession* find_session(
         const product::Uuid& profile_id) noexcept;
     // The session for this profile, adopting an existing worker when none is

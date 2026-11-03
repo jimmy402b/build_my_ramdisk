@@ -45,10 +45,14 @@ Result<void> ServiceWorkerSession::require_bounded(
     const auto remaining =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             context.deadline - std::chrono::steady_clock::now());
+    // The session's absolute cap is the provisioning ceiling, not the ordinary command bound:
+    // a create legitimately exceeds the latter (see the constant's comment).  Every other caller
+    // still builds its context from `kDefaultWorkerControlTimeoutMs`, so this widens what is
+    // *possible* to ask for, not what an ordinary command actually waits.
     if (context.deadline != std::chrono::steady_clock::time_point::max() &&
         remaining.count() > 0 &&
         static_cast<std::uint64_t>(remaining.count()) >
-            kMaximumWorkerCommandTimeoutMs) {
+            kProvisioningWorkerCommandTimeoutMs) {
         return Result<void>::failure(session_error(
             static_cast<std::uint32_t>(OperationErrorCode::invalid_range),
             L"ServiceWorkerSession",

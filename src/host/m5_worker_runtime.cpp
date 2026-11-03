@@ -230,9 +230,86 @@ void trace_reclaim_steps(DiskRuntimeOperations& operations) {
     }
 }
 
+// Wraps a create's own sequence, for the same reason the reclaim gets one.
+//
+// **A create that blocks cannot say where either.**  The 1.0.0 large-disk reading showed the
+// volume mounted and the worker idle, which places the block somewhere after provisioning --
+// but "after provisioning" is `verify_volume`, the volume flush, the generation-zero checkpoint
+// and `record_bundle_identity`, and those want opposite fixes.  The create's steps are therefore
+// named in the same terms the reclaim's are, and a step that logs a begin and no ok is the one
+// that hung.
+void trace_create_steps(DiskRuntimeOperations& operations) {
+    if (operations.create_generation_zero_image) {
+        auto inner = operations.create_generation_zero_image;
+        operations.create_generation_zero_image = [inner](const std::uint64_t bytes) {
+            reclaim_trace(L"create_generation_zero_image: begin");
+            auto result = inner(bytes);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.start_aim) {
+        auto inner = operations.start_aim;
+        operations.start_aim = [inner] {
+            reclaim_trace(L"start_aim: begin");
+            auto result = inner();
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.provision_new_volume) {
+        auto inner = operations.provision_new_volume;
+        operations.provision_new_volume =
+            [inner](const std::uint64_t bytes, const wchar_t letter,
+                    const std::uint32_t cluster_size) {
+                reclaim_trace(L"provision_new_volume: begin");
+                auto result = inner(bytes, letter, cluster_size);
+                reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+                return result;
+            };
+    }
+    if (operations.verify_volume) {
+        auto inner = operations.verify_volume;
+        operations.verify_volume = [inner](const ProductVolume& volume,
+                                           const std::uint64_t bytes) {
+            reclaim_trace(L"verify_volume: begin");
+            auto result = inner(volume, bytes);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.flush_volume) {
+        auto inner = operations.flush_volume;
+        operations.flush_volume = [inner](const ProductVolume& volume,
+                                          std::optional<LockedVolume>& held) {
+            reclaim_trace(L"flush_volume: begin");
+            auto result = inner(volume, held);
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+    if (operations.checkpoint) {
+        auto inner = operations.checkpoint;
+        operations.checkpoint = [inner] {
+            reclaim_trace(L"checkpoint: begin");
+            auto result = inner();
+            reclaim_trace(result.ok() ? L"  ok" : L"  refused");
+            return result;
+        };
+    }
+}
+
 } // namespace
 
-constexpr auto kWorkerOperationTimeout = std::chrono::minutes(5);
+// The worker's own deadline for one command.
+//
+// **It has to cover the service's create budget, or the two disagree about who gave up.**  A
+// create's generation-zero checkpoint is proportional to the disk (measured: 98 s at 8 GiB,
+// 123 s at 16 GiB) and the service now gives that action the provisioning ceiling
+// (`kProvisioningWorkerCommandTimeoutMs`, 15 minutes).  A five-minute worker bound would abort a
+// create the service was still waiting for, which is the same failure in a different place.
+// Everything else is still bounded by the service's own per-command budget, which is unchanged.
+constexpr auto kWorkerOperationTimeout = std::chrono::minutes(15);
 
 OperationContext context() {
     return {{}, std::chrono::steady_clock::now() + kWorkerOperationTimeout};
@@ -497,6 +574,12 @@ Result<void> DiskWorkerRuntime::start() {
     if (impl.config.volume_mode == WorkerVolumeMode::reclaim_existing) {
         trace_reclaim_steps(operations.value());
     }
+    // A create gets the same per-step trace, for the same reason: a create that blocks cannot
+    // report which step it blocked in.  Gated on the same `MYRD_TRACE_FILE`.
+    if (impl.config.volume_mode == WorkerVolumeMode::provision_new) {
+        trace_create_steps(operations.value());
+        reclaim_trace(L"create: start sequence");
+    }
     // **Copied before the operations are moved into the runtime.**  The label is applied after `start()` returns,
     // not inside the device pipeline: measured, writing it immediately after the mount blocked the volume and the
     // create never reached a terminal state.
@@ -546,11 +629,13 @@ Result<void> DiskWorkerRuntime::start() {
 
     auto started = impl.runtime->start();
     if (!started.ok()) {
+        reclaim_trace(L"runtime.start: refused");
         // A failed start owns no later resources, but it may own earlier ones;
         // the runtime's own cleanup is reverse-order and idempotent.
         static_cast<void>(impl.runtime->shutdown_clean());
         return started;
     }
+    reclaim_trace(L"runtime.start: ok");
 
     // The volume is mounted and the runtime's step work is finished here, which is the moment a label can be
     // written without standing in front of the device pipeline.
@@ -570,6 +655,7 @@ Result<void> DiskWorkerRuntime::start() {
 
 Result<void> DiskWorkerRuntime::record_bundle_identity() {
     auto& impl = *impl_;
+    reclaim_trace(L"record_bundle_identity: begin");
     // The identity is taken from the bundle's own bytes, never from the claim.
     // A worker that took the service's word for which image it is running could
     // then be asked to remove resources belonging to a different one.
@@ -639,6 +725,7 @@ Result<void> DiskWorkerRuntime::record_bundle_identity() {
     impl.observed_bundle_generation =
         image.value().selected->checkpoint_generation;
     impl.bundle_evidence = evidence.move_value();
+    reclaim_trace(L"record_bundle_identity: ok");
     return Result<void>::success();
 }
 

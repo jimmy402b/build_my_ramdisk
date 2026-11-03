@@ -2374,4 +2374,19 @@ add_test(
 set_tests_properties(integration.m5.support_bundle PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
+# ---- large-disk create (the >= 8 GiB deadlock found in real use) --------------
+# 1.0.0 was validated on 64 MiB-1 GiB disks; a real 8 GiB create mounts its volume and then
+# never leaves `create-bundle`.  This case is the reproduction and the regression: it drives
+# `disk create --wait` with a size/memory policy read from C:\m5\bigdisk, samples the
+# operation every 5 s, and preserves the scene on a stall instead of cleaning up.
+# Guest-only: it installs the service and creates a real worker, AIM disk and volume.
+# Not part of the default release gate -- the disk is measured in GiB and the case is run
+# on demand while the large-disk defect is being fixed and re-verified.
+add_test(
+    NAME integration.m5.bigdisk
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-bigdisk.ps1")
+set_tests_properties(integration.m5.bigdisk PROPERTIES
+    RUN_SERIAL TRUE
+    TIMEOUT 3600)
 

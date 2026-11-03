@@ -34,6 +34,19 @@ namespace myrd::management {
 // session refuses to send one rather than discovering that as a timeout.
 inline constexpr std::uint64_t kMaximumWorkerCommandTimeoutMs = 120'000;
 
+// The absolute bound the session will ever put on a worker request.
+//
+// **Only a bundle-creating action asks for more than the ordinary bound**, and it has to: its
+// cost is set by the disk, not by the adapter.  Measured on the guest, a create's generation-zero
+// checkpoint takes 98 s at 8 GiB and 123 s at 16 GiB, and reading that journal back to verify the
+// bundle's identity adds ~20-40 s -- so the 120 s ordinary bound abandoned a worker that was
+// still working and the operation ended `CommitIndeterminate`.  The host reading of the same
+// defect is `code=4107 step=WorkerPipeChannel::read detail=pipe transfer exceeded its bounded
+// wait`.  A request longer than this is still refused before it is sent (`require_bounded`), and
+// the worker's own command deadline is the same value, so neither side can be waiting on a
+// request the other has already abandoned.
+inline constexpr std::uint64_t kProvisioningWorkerCommandTimeoutMs = 900'000;
+
 class ServiceWorkerSession final {
 public:
     // The channel must already be authenticated: `WorkerPrivatePipeServer::

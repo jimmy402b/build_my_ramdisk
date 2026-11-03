@@ -1853,7 +1853,16 @@ Result<ServiceResponse> ServiceCore::dispatch(
                 {}};
             return Result<ServiceResponse>::success(std::move(response));
         }
-        constexpr std::uint64_t kMaximumWaitMs = 30'000;
+        // **Strictly below the client's exchange budget, or the two time out together.**
+        //
+        // `myrd-cli --wait` gives each `operation wait` exchange at most 30 s
+        // (`cli_main.cpp`, `wait_for_operation`), and this handler used to hold a request for the
+        // same 30 s before answering `wait_timeout`.  Measured on the guest: every create longer
+        // than 30 s made the CLI print `the control pipe exchange failed` and exit, even though
+        // the operation went on to succeed -- the client's timer and the service's reply were
+        // racing to the same instant.  Twenty seconds leaves a margin a slow round-trip can use;
+        // the waiter simply asks again, which the loop is built for.
+        constexpr std::uint64_t kMaximumWaitMs = 20'000;
         const auto requested_wait = (std::min)(
             request.wait_timeout_ms.value_or(kMaximumWaitMs),
             kMaximumWaitMs);

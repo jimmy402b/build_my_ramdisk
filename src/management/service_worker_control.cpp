@@ -241,6 +241,18 @@ OperationContext ServiceWorkerControl::reclaim_context() const {
     return value;
 }
 
+OperationContext ServiceWorkerControl::provisioning_context() const {
+    OperationContext value{};
+    // See the declaration: a create's cost is set by the disk, so it gets the provisioning
+    // ceiling rather than the ordinary command bound.  `max` keeps a service configured with an
+    // even larger budget from being narrowed here.
+    const auto budget = std::max<std::uint64_t>(
+        control_timeout_ms_, kProvisioningWorkerCommandTimeoutMs);
+    value.deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(budget);
+    return value;
+}
+
 bool ServiceWorkerControl::begins_noncancellable(const ActionKind) const noexcept {
     // Deliberately nothing.  Every mutation this adapter performs is either
     // already forced noncancellable by ServiceCore's own stop-removal-boundary
@@ -1018,7 +1030,12 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
     if (!launch_request.ok()) {
         return Result<WorkerActionResult>::failure(launch_request.error());
     }
-    auto launched = sessions_.launch(launch_request.value(), context());
+    // The bundle action's own budget follows what it is about to do.  A create builds and then
+    // provisions, so it gets the provisioning ceiling; an inspection opens an existing bundle
+    // and stays on the ordinary command bound.
+    const bool creating = source == BundleEvidenceSource::created_and_verified;
+    const auto action_context = creating ? provisioning_context() : context();
+    auto launched = sessions_.launch(launch_request.value(), action_context);
     if (!launched.ok()) {
         return Result<WorkerActionResult>::failure(launched.error());
     }
@@ -1028,10 +1045,9 @@ Result<WorkerActionResult> ServiceWorkerControl::register_bundle(
     // The command follows the source, because they are one decision seen from
     // two sides: a bundle that was created is brought up and provisioned, and a
     // bundle that was found is opened and left alone.
-    const bool creating = source == BundleEvidenceSource::created_and_verified;
     auto observed = creating
-        ? session->create_bundle(context(), request.operation_id)
-        : session->inspect_bundle(context(), request.operation_id);
+        ? session->create_bundle(action_context, request.operation_id)
+        : session->inspect_bundle(action_context, request.operation_id);
     if (!observed.ok()) {
         // Nothing this adapter holds may be left behind on a failed
         // registration.  The session is dropped either way, which closes the

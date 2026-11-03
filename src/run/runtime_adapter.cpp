@@ -47,11 +47,31 @@ DynamicBlockStoreOptions store_options_for(const std::uint64_t ram_limit_bytes) 
     // policy, and every `start()` it ever attempted died in `M3Provider::open`
     // with "provider limits are invalid" before reaching a bundle.
     if (ram_limit_bytes == 0) return result;
-    // The parser guarantees at least 64 MiB and power-of-two byte units, so
-    // these limits remain block-aligned and satisfy the M3 strict ordering.
-    result.hard_limit_bytes = ram_limit_bytes;
-    result.soft_limit_bytes = ram_limit_bytes / 2;
-    result.eviction_low_watermark_bytes = ram_limit_bytes / 4;
+    // **All three limits are block-aligned, not just the hard one.**
+    //
+    // Measured (the 1.0.1 large-disk defect): the automatic policy is
+    // `min(physical memory / 4, capacity)` rounded down to 64 KiB -- the profile's own alignment,
+    // which is the same value as the store's block -- so it is usually an *odd* multiple of a
+    // block: 5,368,381,440 B for an 8 GiB disk on a 20 GiB guest, 15.9 GiB for 16 GiB on a
+    // 63.6 GiB host.  Halving and quartering that produced soft/low limits that were not
+    // block-aligned, and `validate_dynamic_block_store_options` refused the whole store with
+    // "provider limits are invalid" before the bundle was opened.  A 4 GiB disk happened to get
+    // a power-of-two budget and therefore aligned, which is why every disk up to 4 GiB passed
+    // and 8 GiB and above did not.  The hard limit is aligned too: the caller's value is only
+    // guaranteed to be 64 KiB-aligned at best, and `soft < hard` must survive the rounding.
+    const auto align_down = [](const std::uint64_t value) {
+        return value - value % kBlockSizeBytes;
+    };
+    const auto hard = align_down(ram_limit_bytes);
+    const auto soft = align_down(hard / 2);
+    const auto low = align_down(hard / 4);
+    // A budget too small to produce an ordered, block-aligned set is not a budget this store
+    // can honour; the production defaults are the honest answer and were the behaviour before
+    // any budget was carried at all.
+    if (soft <= kBlockSizeBytes || low == 0) return result;
+    result.hard_limit_bytes = hard;
+    result.soft_limit_bytes = soft;
+    result.eviction_low_watermark_bytes = low;
     return result;
 }
 
@@ -378,7 +398,26 @@ Result<void> ProductionRuntimeAdapter::start() {
     factory.provider.manifest_name = "disk.rdm";
     factory.provider.recovery.limits =
         persistence::production_persistence_limits(config_.virtual_bytes);
-    factory.provider.store = store_options_for(impl_->ram_limit_bytes);
+    // **What the worker actually asked the store for.**  The 1.0.0 large-disk defect had two
+    // opposite halves -- an automatic budget that M3 refused as invalid, and a create that
+    // opened and then stopped making progress -- and neither the service log nor the operation
+    // carried the numbers the refusal was decided on.  One line per start makes the first half
+    // answerable from the reading; it is inert unless MYRD_TRACE_FILE is set.
+    const auto store = store_options_for(impl_->ram_limit_bytes);
+    {
+        const std::string line =
+            "M4Adapter.start: virtual=" + std::to_string(config_.virtual_bytes)
+            + " ram_limit=" + std::to_string(impl_->ram_limit_bytes)
+            + " hard=" + std::to_string(store.hard_limit_bytes)
+            + " soft=" + std::to_string(store.soft_limit_bytes)
+            + " low=" + std::to_string(store.eviction_low_watermark_bytes)
+            + " journal_limit="
+            + std::to_string(factory.provider.recovery.limits.max_journal_committed_bytes)
+            + " journal_records="
+            + std::to_string(factory.provider.recovery.limits.max_journal_records);
+        diagnostic_trace(line.c_str());
+    }
+    factory.provider.store = store;
     factory.provider.request_timeout = std::chrono::seconds(30);
     // Attach-only runtimes do not locate the physical drive: see the field's declaration for why that
     // is the fix for the eleven-second block rather than an optimization.
@@ -665,6 +704,18 @@ std::uint64_t dirty_bytes_from_block_counts(
 DiskMaintenanceStats ProductionRuntimeAdapter::maintenance_stats() const {
     if (!impl_->aim_runtime) return {};
     const auto stats = impl_->aim_runtime->storage_stats();
+    // **The eviction counters, in the reading that asks about pressure.**  `disk show` carries
+    // resident/budget and the hard-limit refusals, but nothing that says whether the store is
+    // actually evicting -- and the large-disk acceptance is exactly "write past the soft limit
+    // and prove it did".  The store's own gauges are the direct evidence, so they go to the
+    // trace file, which is inert unless MYRD_TRACE_FILE is set.
+    diagnostic_trace(("worker.stats: resident=" + std::to_string(stats.committed_bytes)
+        + " budget=" + std::to_string(impl_->aim_runtime->memory_budget_bytes())
+        + " evicted=" + std::to_string(stats.evicted_blocks_total)
+        + " backing_reads=" + std::to_string(stats.backing_reads_total)
+        + " hard_rejections=" + std::to_string(stats.hard_limit_rejections)
+        + " dirty_blocks=" + std::to_string(stats.resident_dirty_blocks)
+        + " clean_blocks=" + std::to_string(stats.resident_clean_blocks)).c_str());
     // `reserved_bytes` is RAM committed by clean as well as dirty blocks;
     // checkpoint scheduling is driven only by mutations that have not yet
     // reached the M3 journal.

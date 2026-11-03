@@ -1,5 +1,6 @@
 #include "src/m3/m3_provider.h"
 
+#include "src/common/diagnostic_trace.h"
 #include "src/persistence/checkpoint_coordinator.h"
 #include "src/persistence/compaction_coordinator.h"
 #include "src/persistence/image_paths.h"
@@ -590,9 +591,33 @@ Result<std::unique_ptr<M3Provider>> M3Provider::open_impl(
     if (!live.ok()) {
         return Result<std::unique_ptr<M3Provider>>::failure(live.error());
     }
-    if (validate_limits(config.recovery.limits) != LimitsStatus::Ok ||
-        !validate_dynamic_block_store_options(config.store).ok() ||
+    const auto recovery_limits = validate_limits(config.recovery.limits);
+    const auto store_options = validate_dynamic_block_store_options(config.store);
+    if (recovery_limits != LimitsStatus::Ok || !store_options.ok() ||
         config.request_timeout.count() <= 0) {
+        // **Which of the three, with the numbers it was decided on.**  The single message
+        // "provider limits are invalid" covered a recovery bound, a store bound and a timeout,
+        // and the 1.0.0 large-disk report had to treat all three as possible causes at once.
+        // The line goes to the trace file; the message the operation carries is unchanged.
+        const std::string line =
+            "M3Provider::open: invalid limits recovery_status="
+            + std::to_string(static_cast<unsigned>(recovery_limits))
+            + " store_error=" + std::to_string(static_cast<unsigned>(store_options.error))
+            + " timeout_ms=" + std::to_string(config.request_timeout.count())
+            + " virtual=" + std::to_string(config.recovery.limits.max_virtual_bytes)
+            + " journal_bytes="
+            + std::to_string(config.recovery.limits.max_journal_committed_bytes)
+            + " journal_records=" + std::to_string(config.recovery.limits.max_journal_records)
+            + " index_bytes=" + std::to_string(config.recovery.limits.max_index_cache_bytes)
+            + " index_entries=" + std::to_string(config.recovery.limits.max_index_cache_entries)
+            + " bat_bytes=" + std::to_string(config.recovery.limits.max_bat_cache_bytes)
+            + " bat_entries=" + std::to_string(config.recovery.limits.max_bat_cache_entries)
+            + " hard=" + std::to_string(config.store.hard_limit_bytes)
+            + " soft=" + std::to_string(config.store.soft_limit_bytes)
+            + " low=" + std::to_string(config.store.eviction_low_watermark_bytes)
+            + " snapshot_batch=" + std::to_string(config.store.max_snapshot_batch_bytes)
+            + " stripes=" + std::to_string(config.store.lock_stripe_count);
+        diagnostic_trace(line.c_str());
         return Result<std::unique_ptr<M3Provider>>::failure(
             provider_error(L"M3Provider::open", L"provider limits are invalid"));
     }
