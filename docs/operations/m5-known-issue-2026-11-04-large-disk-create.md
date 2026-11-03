@@ -1,6 +1,7 @@
 # 已知缺陷：≥8 GiB 的盘在 create 阶段卡死（2026-11-04 实用发现）
 
-**状态**：开放（Open） · **影响版本**：1.0.0 · **发现方式**：宿主机实际安装使用
+**状态**：**create 部分已修复（`7a1d4d1`，2026-11-04，客机三组读数通过）**；压力/断电验收被**另一个写入停顿**挡住（§12），1.0.1 **尚未发布**
+**影响版本**：1.0.0 · **发现方式**：宿主机实际安装使用
 **严重性**：高（8 GiB 及以上容量无法创建；4 GiB 正常） · **发现日期**：2026-11-04
 
 ## 1. 摘要
@@ -243,3 +244,94 @@ ssh -i $env:USERPROFILE\.ssh\id_ed25519 usr@myrd-vm "powershell -NoProfile -Exec
    A1/A2 各 158、B 5、fault 组 6（每例干净重启）。
 3. 重新冻结 manifest → `Verify-M5Evidence.ps1` accepted → 重新打包 → tag **v1.0.1** → 更新
    `m5-release-1.0.0.md`（或新建 1.0.1 说明）、INDEX、handoff。
+
+## 11. 修复（2026-11-04，`7a1d4d1`）：三个独立缺陷，每个都有读数
+
+调查用的是新增的 `integration.m5.bigdisk` 用例（`tests/e2e/test-m5-bigdisk.ps1`，在
+`tests/CMakeLists.txt` 注册，**不进默认门禁**）加 `MYRD_TRACE_FILE` 逐步骤 trace
+（`M4Adapter.start` 打 hard/soft/low/journal 限额；create 各步骤 begin/ok；
+`M3Provider::open` 拒绝时打是哪一项、什么值）。
+
+### 11.1 automatic 预算不是块对齐的 → `provider limits are invalid`
+
+客机 20 GiB 内存、8 GiB automatic，trace 第一行就是答案：
+
+```text
+M4Adapter.start: virtual=8589934592 ram_limit=5368381440 hard=5368381440
+                 soft=2684190720 low=1342095360 journal_limit=2147483648 journal_records=524287
+```
+
+`materialize_memory_policy` 的 automatic 是 `min(物理内存/4, 容量)` 再按 **64 KiB**
+（`kProfileMemoryAlignmentBytes`，恰好等于 store 的 `kBlockSizeBytes`）向下取整，所以它通常是
+块的**奇数倍**（这里是 `65,536 × 81,915`）。`store_options_for()` 直接把它除以 2 和 4，
+soft/low 就不再是 64 KiB 对齐；`validate_dynamic_block_store_options` 返回
+`LimitNotBlockAligned`，`M3Provider::open` 报 `provider limits are invalid`。
+4 GiB 盘拿到的是 2 的幂预算（4 GiB），除 2 除 4 仍然对齐——这就是"≤4 GiB 全过、8 GiB 失败"的全部原因。
+宿主机 16 GiB automatic 的 `15.9 GiB` 也是奇数倍，同一个错误。
+
+**修复**：`store_options_for` 对 hard/soft/low 三者都做 `align_down(kBlockSizeBytes)`
+（`src/run/runtime_adapter.cpp`）。
+
+### 11.2 create 是一条 worker 命令，而它的 generation-zero checkpoint 随盘大小增长 → `4107`
+
+客机 16 GiB fixed:12GiB 的 trace：
+
+```text
+18:11:15.293 checkpoint: begin          <- 之后 123 s 没有任何 trace
+18:13:08.056 service: worker action returned
+```
+
+service.log 同时是 `code=4107 step=WorkerPipeChannel::read detail=pipe transfer exceeded its
+bounded wait`。8 GiB 的 checkpoint 实测 98 s，16 GiB 123 s；之后 `record_bundle_identity`
+还要把整本 journal 读回来校验（8 GiB 约 20 s、16 GiB 约 40 s）。而服务给每条 worker 命令的
+上限是 `kMaximumWorkerCommandTimeoutMs = 120 s`（`service_worker_session.h`），
+`register_bundle` 用的就是它。于是 worker 还在干活、服务已经放弃：operation 进
+`CommitIndeterminate`、profile 进 NeedsAttention——和宿主机 16 GiB 的观察一致。
+
+**修复**：新增 `kProvisioningWorkerCommandTimeoutMs = 15 min`，只给
+`create_and_verify_bundle`（`ServiceWorkerControl::provisioning_context()`），
+普通命令仍是 120 s；session 的绝对上限同步到 15 min，worker 自己的命令 deadline 也从 5 min
+提到 15 min，避免两边对"谁先放弃"有不同答案。
+
+### 11.3 CLI 的 30 s 交换预算和服务的 30 s wait 上限撞在同一刻
+
+`myrd-cli --wait` 每次 `operation wait` 最多等 30 s（`cli_main.cpp`），而
+`ServiceCore` 对 `operation wait` 的 `kMaximumWaitMs` 也是 30 s——服务在恰好 30 s 时回
+`wait_timeout`，客户端先超时，打印 `the control pipe exchange failed` 并以 3 退出，而
+**operation 之后其实成功了**。4 GiB 在客机上 69 s、8 GiB 125 s，所以每次都会撞上。
+
+**修复**：服务侧 `kMaximumWaitMs` 降到 20 s，给客户端留 10 s 余量；等待者本来就会重问。
+
+### 11.4 修复后的客机读数（`integration.m5.bigdisk`，`--wait`，exit=0）
+
+| 配置 | create 耗时 | operation | 卷 | budget |
+|---|---|---|---|---|
+| 8 GiB automatic | 125 s | succeeded | 8,572,104,704 B NTFS `MyRamDisk` | 5,368,381,440 |
+| 16 GiB fixed:12GiB | 314 s | succeeded | 17,162,039,296 B NTFS | 12,884,901,888 |
+| 16 GiB automatic | 327 s | succeeded | 17,162,039,296 B NTFS | 5,368,381,440 |
+
+三组都是 CLI exit 0、`disk list` 可见、`mem=` 正常；`journal-e0001.rdj` 分别写到
+560,250,880 / 1,117,429,760 B 后由 checkpoint 提交。
+
+## 12. 未完成：压力/断电阶段被一个**独立的写入停顿**挡住（2026-11-04 04:00）
+
+16 GiB fixed:12GiB 创建成功后，`integration.m5.bigdisk` 的 `pressure` 阶段（向 `Z:` 写 7 GiB）：
+
+- **普通缓存写**：1 GiB 用 1 s 写进文件缓存，然后 `WriteFile` 阻塞 **>25 min**；
+  worker 工作集停在 **16.8 MB**（说明字节根本没到 store），journal 停在
+  **1,117,429,760 B**（创建时的大小，不再增长）；`cmd /c dir Z:\` 同样阻塞；
+  WMI/PowerShell 查询挂起 >5 min。客机存储栈被拖住。
+- **hard reset 后重新 start（recovery）**：64 MiB 的 write-through 写仍挂；连
+  `echo > Z:\tiny.txt`（16 字节）也挂——说明"挂载成功之后写路径就不可用"。
+- **新建一块 16 GiB automatic 盘**：16 字节写**成功**（0 s）；随后 3 GiB 写再次把客机
+  存储栈挂住（ssh 命令超时）。
+
+结论：create 死锁已经修好并有读数，但"写到一定体量 / 恢复后写"会挂住是**另一个缺陷**
+（`hard_limit` 12 GiB 与 20 GiB 客机的提交上限、AIM 共享内存映射、或 store 的驱逐路径都还是
+候选，尚未定性）。在它定性之前：
+
+- 验收 §3（写 > 上限 → 驱逐 → checkpoint → 硬断电 → 数据校验）**没有通过**；
+- 因此全量门禁、manifest 重新冻结、打包、tag v1.0.1 **都没有做**。
+
+**需要人决定**：是先把范围收窄成"只发 create 修复"（仍然缺压力/断电读数与全量门禁），
+还是先投入定位这个写入停顿。建议：**先不要发 1.0.1**，把写停顿定性后再走完整门禁。

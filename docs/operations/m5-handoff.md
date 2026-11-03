@@ -14,7 +14,7 @@
 | **T3（GUI）** | T3-01…T3-05 **完成**，客机 `PASS T3-05`（`serial=5A42-9D28`） |
 | **T4 进度** | T4-01 **PASSED**；**T4-02 PASSED**（卷序列号 / 易失盘保护（含 dirty force-stop 的 `accept_data_loss` 授权）/ Load Only 的 create + start / 单文件 VHDX 导出，§3.191、§3.194）；**T4-03 PASSED**；**T4-04 PASSED**（G3 修复后重新冻结，§3.197） |
 | **客机基线（安静客机）** | unit 96/96 275 s；model/m5 13/13 114 s；cli_e2e 87 s；install 9 s；gui 25 s；integration m1/m2/m3/m4 = 1/4/31/3 全绿；structural 1/3（两条 `vswhere` 环境） |
-| **下一件事** | **1.0.0 已发布；实用中发现 ≥8 GiB 盘 create 卡死（4 GiB 正常）** —— 下一个会话专职修复，入口 `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md`（§3.232 有摘要）。修复后发 1.0.1。 |
+| **下一件事** | **≥8 GiB create 已修（`7a1d4d1`）并有三组客机读数**；但**压力/断电验收被一个独立的写入停顿挡住**（写 7 GiB 阻塞 >25 min、worker 工作集 16.8 MB、journal 不增长；恢复后连 16 字节写也挂）——全量门禁/重新冻结/打包/**v1.0.1 都还没做**。见 §3.233 与 `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md` §12；**需要先决定**是否收窄发布范围或先定位写停顿。 |
 
 **顺序**：T1-05 收尾�?*已完成，§3.14**）→ T1-06 �?T1-07 �?T1-08 �?T1-09 �?T1-10 �?T3（GUI）→ T4（产品化）�?
 T2 鍦?G4 鎭㈠鍓嶄笉鍔ㄣ€?
@@ -5670,3 +5670,44 @@ WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
 （含复现命令、精确日志、代码位置、建议调查路径：`store_options_for`、automatic 预算、
 `WorkerPipeChannel::read` 的 deadline、`record_bundle_identity`；先建 `integration.m5.bigdisk` 用例）。
 修好后按发布流程重跑门禁（A1/A2 158、B 5、fault 6）→ 重新冻结 manifest → 打包 → **v1.0.1**。
+
+---
+
+### 3.233 2026-11-04 04:00：**≥8 GiB create 已修（`7a1d4d1`）；压力/断电验收被独立的写入停顿挡住**
+
+**做完了**：新增 `integration.m5.bigdisk`（`tests/e2e/test-m5-bigdisk.ps1`，`tests/CMakeLists.txt`
+注册，不进默认门禁；支持 run/write/pressure/verify/probe/cleanup 六种模式），并用它 + `MYRD_TRACE_FILE`
+逐步骤 trace 在客机（20 GiB）上定位到**三个独立缺陷**：
+
+1. **automatic 预算不是块对齐的**。trace 首行：`ram_limit=5368381440 hard=5368381440
+   soft=2684190720 low=1342095360`。`materialize_memory_policy` 只按 64 KiB 向下取整，值是块的
+   **奇数倍**（`65,536 × 81,915`）；`store_options_for` 再除 2/4，soft/low 不再对齐，
+   `validate_dynamic_block_store_options` 返回 `LimitNotBlockAligned` → `M3Provider::open`
+   报 `provider limits are invalid`。4 GiB 盘拿到 2 的幂预算，所以一直正常——这就是"≤4 GiB 全过、
+   ≥8 GiB 失败"的全部原因。**修**：hard/soft/low 三者都 `align_down(kBlockSizeBytes)`。
+2. **create 是一条 worker 命令，但其 generation-zero checkpoint 随盘增长**：8 GiB 98 s、16 GiB
+   123 s，另加 `record_bundle_identity` 读回 journal 20–40 s；服务的 `kMaximumWorkerCommandTimeoutMs
+   = 120 s` 在 worker 还在干活时放弃 → `code=4107 WorkerPipeChannel::read`、`CommitIndeterminate`。
+   **修**：只给 create 15 min（`provisioning_context()`），普通命令仍 120 s；session 绝对上限与
+   worker 自身 deadline 同步到 15 min。
+3. **CLI 30 s 交换预算 vs 服务 30 s wait 上限**：服务恰在 30 s 回 `wait_timeout`，客户端先超时，
+   打印 `the control pipe exchange failed` 并 exit 3，而 operation 之后成功。**修**：服务侧上限降到 20 s。
+
+**客机读数（修复后，`disk create --wait`，全部 exit 0）**：
+
+| 配置 | 耗时 | 卷 | budget |
+|---|---|---|---|
+| 8 GiB automatic | 125 s | 8,572,104,704 B NTFS | 5,368,381,440 |
+| 16 GiB fixed:12GiB | 314 s | 17,162,039,296 B NTFS | 12,884,901,888 |
+| 16 GiB automatic | 327 s | 17,162,039,296 B NTFS | 5,368,381,440 |
+
+**卡点（未做验收 §3/门禁/发布）**：`pressure` 阶段向 16 GiB/12 GiB 盘写 7 GiB：
+普通缓存写 1 GiB 用 1 s，随后 `WriteFile` 阻塞 >25 min；worker 工作集 **16.8 MB**（数据没到 store）、
+journal 停在 1,117,429,760 B；`dir Z:` 与 WMI 一起挂住。hard reset 后重新 start，64 MiB
+write-through 仍挂，连 `echo > Z:\tiny.txt`（16 B）也挂。新开一块 16 GiB automatic 盘：16 B 写成功，
+3 GiB 写再次把存储栈挂住。**这是与 create 不同的另一个缺陷，尚未定性**（候选：12 GiB budget 与
+20 GiB 客机提交上限、AIM 共享内存映射、store 驱逐路径）。
+
+**下一步（需要人决定）**：① 先定位写停顿再走完整验收；或 ② 把 1.0.1 范围收窄为"create 修复"
+（仍缺压力/断电读数与全量门禁）。在选定之前**不重新冻结 manifest、不打包、不打 tag**。
+工作树：`feature/m5-lifecycle` @ `7a1d4d1`（干净），客机已 hard reset 到可用状态。
