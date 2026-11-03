@@ -149,3 +149,97 @@ service.log: action=create-bundle code=4107 step=WorkerPipeChannel::read
 
 1.0.0 已发布，此缺陷属于**未覆盖容量区间**（发布验证 64 MiB–1 GiB）。修复后应发布 **1.0.1**，
 并在 `m5-release-1.0.0.md` 的已知限制中写明；本文档是修复会话的入口。
+
+## 10. 调查 checklist（可直接执行，建议按顺序）
+
+> 每条命令的工作目录都是 `C:\Users\JimmyLin\Desktop\build_my_ramdisk\.worktrees\m5-lifecycle`。
+> 客机命令统一用 `ssh`（别名 `myrd-vm`，密钥 `%USERPROFILE%\.ssh\id_ed25519`）。
+> 宿主机提权命令用 `Start-Process -Verb RunAs`（会弹 UAC，需要有人在桌面上点“是”）。
+
+### 阶段 0：环境确认（~10 分钟）
+
+```powershell
+# 0.1 仓库干净、HEAD、tag
+cd C:\Users\JimmyLin\Desktop\build_my_ramdisk\.worktrees\m5-lifecycle
+git status --short; git log --oneline -1; git describe --tags --exact-match
+
+# 0.2 客机在跑、内存 20 GB
+& 'C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe' -T ws -vp 12345678 list
+ssh -o BatchMode=yes -i $env:USERPROFILE\.ssh\id_ed25519 usr@myrd-vm "powershell -NoProfile -Command (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB"
+
+# 0.3 干净构建（改过头文件就加 --clean-first；这是仓库 AGENTS.md 的硬规则）
+. .\tools\Enter-MsvcEnvironment.ps1
+cmake --build out/build/msvc --config Release --clean-first
+
+# 0.4 重新 stage（179 用例）
+tools\m5vm\Invoke-M5Vm.ps1 -Stage -Configuration Release
+```
+
+### 阶段 1：写复现用例 `integration.m5.bigdisk`（~30–45 分钟）
+
+要求（照 `tools/m5vm/Test-M5NonAdmin.ps1` + `tests/e2e/test-m5-nonadmin-prepare.ps1` 的写法）：
+
+1. `tests/e2e/test-m5-bigdisk.ps1`（guest，agent 执行）：
+   - 读 `C:\m5\bigdisk\size.txt`（如 `16GiB`）和 `memory.txt`（如 `fixed:12GiB` / `automatic`）；
+   - 确保服务已安装并 RUNNING（复用 drive_letter 用例的 `Ensure-Service`）；
+   - `disk create --name bigdisk --bundle C:\m5\bigdisk\bundle --size <size> --mount Z: --wait --timeout 1800`（按 memory 追加 `--memory-mode/--memory-hard-limit`）；
+   - 每 5 s 打印一次：operation 状态、bundle 文件大小、worker CPU/IO（最多 120 s），然后**保留现场**退出（不要自动清理）；
+   - `cleanup` 模式：停盘 → forget → 卸载服务 → 删 `C:\m5\bigdisk`。
+2. `tests/CMakeLists.txt` 注册 `integration.m5.bigdisk`（guest-only，`RUN_SERIAL`，排除在发布门禁之外）。
+3. 跑法：
+
+```powershell
+# 写配置（客机）
+ssh -i $env:USERPROFILE\.ssh\id_ed25519 usr@myrd-vm "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force C:\m5\bigdisk | Out-Null; Set-Content C:\m5\bigdisk\mode.txt stability; Set-Content C:\m5\bigdisk\size.txt 16GiB; Set-Content C:\m5\bigdisk\memory.txt fixed:12GiB\""
+# 跑
+tools\m5vm\Invoke-M5Vm.ps1 -Run -Filter '^integration\.m5\.bigdisk$' -MinTimeoutSeconds 1800 -DeadlineSeconds 2400
+# 抓现场
+ssh -i $env:USERPROFILE\.ssh\id_ed25519 usr@myrd-vm "powershell -NoProfile -Command \"Get-Content C:\ProgramData\MyRamDisk\logs\service.log -Tail 40; Get-Process myrd* | Select Name,Id,CPU\""
+```
+
+### 阶段 2：在 20 GB 客机上复现（~15 分钟）
+
+依次跑 **4 GiB（对照，应成功）→ 8 GiB → 16 GiB fixed:12GiB → 16 GiB automatic**，每次先 `Reset-M5Guest.ps1`（或 bigdisk 的 cleanup）清场：
+
+```powershell
+ssh -i $env:USERPROFILE\.ssh\id_ed25519 usr@myrd-vm "powershell -NoProfile -ExecutionPolicy Bypass -File C:\m5\Reset-M5Guest.ps1"
+```
+
+记录：哪一步开始卡、卡在 create-bundle 的哪个子步（用阶段 3 的 trace）、automatic 16 GiB 是否仍报 `provider limits are invalid`。
+
+### 阶段 3：定位卡点（~1–3 小时，关键）
+
+1. **加 trace**（临时、可回滚）：在 `src/host/m5_worker_runtime.cpp` 的 create-bundle 动作各步骤前后、
+   `src/run/runtime_adapter.cpp` 的 `store_options_for`/provisioning 调用前后、`record_bundle_identity`
+   前后，各写一行到 `C:\ProgramData\MyRamDisk\logs\worker-trace.log`（用 `std::ofstream` 追加，别忘了 flush），
+   把算出的 `hard/soft/low` 值也打出来。
+2. 重建 + stage + 重跑 16 GiB，读 trace：最后一行就是卡住的那一步。
+3. 如果 trace 不够，抓 worker 调用栈：
+   - 若装了 Sysinternals：`procdump -ma -h <worker-pid> C:\tmp\worker.dmp`，再用 WinDbg `~*k` / `!analyze -v`；
+   - 没有 procdump：`Get-Process -Id <pid> | Select-Object -ExpandProperty Threads | Select Id,WaitReason,ThreadState`，
+     看是不是全部 `Wait`/`UserRequest`。
+4. 对照服务侧 deadline：`src/host/m5_worker_private_pipe.cpp:140` 的 `remaining_ms(context)` 来自
+   create 操作的 `OperationContext`；在 `src/management/service_core.cpp` 找 create 的 context 构造处，
+   确认 300 s 之类的上限（这决定“卡死”还是“超时”）。
+
+### 阶段 4：逐条验证假设（每条 ~15 分钟）
+
+| # | 假设 | 快速判别 |
+|---|---|---|
+| H2 | store 预算 < 镜像创建所需 | 8 GiB 盘 + `--memory-mode fixed --memory-hard-limit 1GiB`：若成功→预算相关；若照卡→不是 |
+| H3 | automatic 大容量算出非法 limits | 加 trace 打印 limits；或直接跑 16 GiB automatic 抓 `provider limits are invalid` 前的值 |
+| 阈值 | 4 GiB 行、8 GiB 不行 | 依次测 5/6/7 GiB，找第一个失败的容量 |
+| 格式 | Format-Volume 太慢 | 16 GiB + `--cluster-size 64KiB`；若仍卡→与格式无关 |
+| 残留 | 半成品 bundle 影响 | 每次先删 `C:\m5\bigdisk\bundle` 再跑 |
+
+### 阶段 5：修复与验收
+
+1. 修复后 `integration.m5.bigdisk` 必须覆盖：
+   - 8 GiB、16 GiB（fixed 12 GiB、automatic）create 成功、卷挂载、`disk list` 可见；
+   - 写 > 内存上限（如 6 GiB）→ 观察 `evicted_blocks_total` 增长、worker 工作集不越上限；
+   - checkpoint → `vmrun stop hard` → 重启 → 数据校验；
+   - 单盘语义：第二块盘仍被拒。
+2. 全量门禁（按 `docs/operations/m5-release-rehearsal.md` §9）：
+   A1/A2 各 158、B 5、fault 组 6（每例干净重启）。
+3. 重新冻结 manifest → `Verify-M5Evidence.ps1` accepted → 重新打包 → tag **v1.0.1** → 更新
+   `m5-release-1.0.0.md`（或新建 1.0.1 说明）、INDEX、handoff。
