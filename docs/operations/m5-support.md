@@ -28,6 +28,7 @@ over-commit（固定预算超 commit limit 在 create 被拒）、BitLocker/SMB 
 | 导出只支持**已停止**的盘 | `integration.m5.cli_e2e`：停止盘 `export exit=0`、第二次 `exit=1`（拒绝覆盖）、generation 不变 |
 | 升级只有覆盖安装/重装，没有版本回滚（决策 5） | `integration.m5.upgrade`：覆盖安装/保留数据卸载/重装/脏卸载四条读数 |
 | over-commit 被拒，错误码 `0x560A`（决策 1） | `integration.m5.*` 的预算拒绝读数 |
+| **≥8 GiB 的盘 create 会卡死**（1.0.0 已知缺陷；4 GiB 已验证可用） | `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md` |
 | 驱动缺失/过旧时安装器拒绝 | 三个显式条件在 `tools/install/Install-MyRamDisk.ps1`；**客机无法卸载驱动，这三个分支未实测** |
 | 没有签名证书 → 未签名发布（决策 2） | 发布说明必须写 SmartScreen 后果；`docs/operations/m5-release.md` |
 
