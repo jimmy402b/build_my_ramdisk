@@ -325,10 +325,20 @@ bounded wait`。8 GiB 的 checkpoint 实测 98 s，16 GiB 123 s；之后 `record
   `echo > Z:\tiny.txt`（16 字节）也挂——说明"挂载成功之后写路径就不可用"。
 - **新建一块 16 GiB automatic 盘**：16 字节写**成功**（0 s）；随后 3 GiB 写再次把客机
   存储栈挂住（ssh 命令超时）。
+- **换 8 GiB 盘 + 4 GiB 预算**（2026-11-04 04:50）：create 成功（192 s）；
+  create 后写 1 GiB → 挂 >7 min；hard reset 后 `disk start` 成功，再写 **64 MiB** → 又挂
+  >4 min。挂住时 worker 工作集仍是 **16.7 MB**，服务侧 interval checkpoint 的 `flush-volume`
+  同样以 `4107` 超时；期间 `cmd`/`tasklist` 可用，而 PowerShell/`Get-Process` 直接挂起。
+- 反证：同一客机、同一二进制，`integration.m5.cli_e2e`（**256 MiB** 盘，写 marker）
+  1/1 PASS（101 s）。
 
-结论：create 死锁已经修好并有读数，但"写到一定体量 / 恢复后写"会挂住是**另一个缺陷**
-（`hard_limit` 12 GiB 与 20 GiB 客机的提交上限、AIM 共享内存映射、或 store 的驱逐路径都还是
-候选，尚未定性）。在它定性之前：
+结论：create 死锁已经修好并有读数，但"写到一定体量 / 恢复后写"会挂住是**另一个缺陷**，
+且 2026-11-04 04:50 的对照把它收窄了：**与预算无关**（4 GiB 预算同样挂）、**与 16 GiB 无关**
+（8 GiB 盘写 64 MiB 就挂）、**与写入大小无关**（64 MiB 就够），只与**卷容量档位**有关
+（256 MiB 卷写 marker 正常）。挂住时 worker 工作集停在 ~16.7 MB，说明字节没有到达 store；
+`flush-volume` 也跟着 4107，PowerShell/`Get-Process` 挂起而 `cmd` 仍可用——像是 AIM
+驱动/共享内存侧的写路径在大卷上停住（候选：大卷的共享内存窗口/块分配路径、驱动的队列）。
+尚未定性。在它定性之前：
 
 - 验收 §3（写 > 上限 → 驱逐 → checkpoint → 硬断电 → 数据校验）**没有通过**；
 - 因此全量门禁、manifest 重新冻结、打包、tag v1.0.1 **都没有做**。

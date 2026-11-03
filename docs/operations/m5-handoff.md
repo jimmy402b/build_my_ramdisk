@@ -5704,10 +5704,13 @@ WOULD INSTALL from <build> ... to C:\Program Files\MyRamDisk
 **卡点（未做验收 §3/门禁/发布）**：`pressure` 阶段向 16 GiB/12 GiB 盘写 7 GiB：
 普通缓存写 1 GiB 用 1 s，随后 `WriteFile` 阻塞 >25 min；worker 工作集 **16.8 MB**（数据没到 store）、
 journal 停在 1,117,429,760 B；`dir Z:` 与 WMI 一起挂住。hard reset 后重新 start，64 MiB
-write-through 仍挂，连 `echo > Z:\tiny.txt`（16 B）也挂。新开一块 16 GiB automatic 盘：16 B 写成功，
-3 GiB 写再次把存储栈挂住。**这是与 create 不同的另一个缺陷，尚未定性**（候选：12 GiB budget 与
-20 GiB 客机提交上限、AIM 共享内存映射、store 驱逐路径）。
+write-through 仍挂，连 `echo > Z:\tiny.txt`（16 B）也挂。后续对照把范围收窄了：**与预算无关**
+（8 GiB 盘 + 4 GiB 预算，写 64 MiB 也挂）、**与 16 GiB 无关**、**与写入大小无关**（64 MiB 就够），
+只与**卷容量档位**有关——同一客机 `cli_e2e` 的 **256 MiB** 盘写 marker 1/1 PASS（101 s）。
+挂住时 worker 工作集恒为 ~16.7 MB，interval checkpoint 的 `flush-volume` 也 4107，
+PowerShell/`Get-Process` 挂起而 `cmd` 可用。**这是与 create 不同的另一个缺陷，尚未定性**
+（候选：AIM 大卷的共享内存窗口/块分配路径、驱动队列）。
 
-**下一步（需要人决定）**：① 先定位写停顿再走完整验收；或 ② 把 1.0.1 范围收窄为"create 修复"
+**下一步（需要人决定）**：① 先定位写停顿再走完整验收（建议）；或 ② 把 1.0.1 范围收窄为"create 修复"
 （仍缺压力/断电读数与全量门禁）。在选定之前**不重新冻结 manifest、不打包、不打 tag**。
-工作树：`feature/m5-lifecycle` @ `7a1d4d1`（干净），客机已 hard reset 到可用状态。
+工作树：`feature/m5-lifecycle` @ 本提交（干净），客机已 hard reset 到可用状态（1 盘、0 worker）。
