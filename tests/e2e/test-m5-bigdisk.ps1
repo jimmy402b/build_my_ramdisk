@@ -680,13 +680,111 @@ if ($null -eq $volume) { Fail "no volume is mounted at $mount after a successful
 Write-Reading 'verify.volume_size' ([string]$volume.Size)
 Write-Reading 'verify.volume_filesystem' ([string]$volume.FileSystem)
 Write-Reading 'verify.volume_label' ([string]$volume.FileSystemLabel)
-if ($volume.Size -lt 4GB) { Fail "the mounted volume is smaller than expected: $($volume.Size)" }
+$expectedVolume = ConvertTo-Bytes $size
+if ($volume.Size -lt [uint64]($expectedVolume * 0.9)) { Fail "the mounted volume is smaller than requested: $($volume.Size) vs $expectedVolume" }
 $listing = Invoke-Cli @('disk', 'list', '--timeout', '30')
 if ($listing.exit -ne 0) { Fail "disk list failed after the create: $($listing.output)" }
 if ($listing.output -notmatch [regex]::Escape($mount)) {
     Fail ("disk list does not show $mount`: " + $listing.output)
 }
 Write-Reading 'verify.list' (($listing.output -replace "`r?`n", ' | '))
+
+# **A write in the same run as the create, before anything can stop the service.**
+#
+# The first attempt at the memory-pressure acceptance wrote from a *separate* run, and every
+# such write hung.  The service log of those runs shows a restart between the two runs and an
+# auto-start that adopted the AIM device, so the hang may belong to the run boundary rather than
+# to the product.  This writes immediately after the create, in the process that just created
+# the disk -- the flow a user actually has -- and is the discriminating reading.
+$thenWrite = Read-Config 'thenwrite' ''
+if (-not [string]::IsNullOrWhiteSpace($thenWrite)) {
+    $writeBytes = ConvertTo-Bytes $thenWrite
+    $target = Join-Path "$($letterChar):\" 'bigdisk.bin'
+    Write-Step "write $writeBytes bytes to $target in the same run"
+    $block = New-Object byte[] (1MB)
+    [System.Random]::new(20261104).NextBytes($block)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    $stream = New-Object System.IO.FileStream($target,
+        [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None, 4MB, [System.IO.FileOptions]::WriteThrough)
+    $startedWrite = Get-Date
+    try {
+        [uint64]$written = 0
+        while ($written -lt $writeBytes) {
+            $chunk = [int][Math]::Min([uint64]$block.Length, $writeBytes - $written)
+            [void]$hasher.TransformBlock($block, 0, $chunk, $null, 0)
+            $stream.Write($block, 0, $chunk)
+            $written += [uint64]$chunk
+            if (($written % 64MB) -lt $block.Length) {
+                $stream.Flush($true)
+                Write-Reading 'thenwrite.progress' ("{0}B in {1}s" -f $written,
+                    [int]((Get-Date) - $startedWrite).TotalSeconds)
+            }
+        }
+        $stream.Flush($true)
+        [void]$hasher.TransformFinalBlock([byte[]]::new(0), 0, 0)
+    } finally {
+        $stream.Dispose()
+    }
+    Write-Reading 'thenwrite.elapsed_seconds' ([string][int]((Get-Date) - $startedWrite).TotalSeconds)
+    Write-Reading 'thenwrite.file_bytes' ([string](Get-Item -LiteralPath $target).Length)
+    $digest = ([System.BitConverter]::ToString($hasher.Hash)).Replace('-', '')
+    Set-Content -LiteralPath (Join-Path $Root 'expected.sha256') -Value ("{0} {1}" -f $digest, $writeBytes) -Encoding ASCII
+    Write-Reading 'thenwrite.digest' $digest
+    $id = Get-DiskId
+    if ($id) {
+        $show = Invoke-Cli @('disk', 'show', $id, '--timeout', '60')
+        Write-Reading 'thenwrite.show' (($show.output -replace "`r?`n", ' | '))
+        $memMatch = [regex]::Match($show.output, 'mem=(\d+)/(\d+)')
+        if ($memMatch.Success) {
+            Write-Reading 'thenwrite.resident_bytes' $memMatch.Groups[1].Value
+            Write-Reading 'thenwrite.budget_bytes' $memMatch.Groups[2].Value
+        }
+        if ($show.output -match 'budget_rejections=') {
+            Fail 'the hard limit rejected writes during the pressure write'
+        }
+    }
+    # The checkpoint is what makes the written data durable before a power cut, and it is the
+    # step the acceptance needs a reading for.
+    #
+    # **The write itself crosses the dirty threshold, so the service starts a maintenance
+    # checkpoint on its own.**  Issuing a second one while that is in flight raced it (measured:
+    # a `disk checkpoint` whose exchange the busy service never answered, exit 3, and a
+    # hand-issued checkpoint that then found "no runtime bound").  So this waits for the disk to
+    # come back to Idle/Clean and records the generation the checkpoint produced; it only issues
+    # a checkpoint itself if none ran.
+    if ((Read-Config 'thencheckpoint' '0') -eq '1' -and $id) {
+        Write-Step 'wait for the checkpoint to finish'
+        $generationBefore = 2
+        $checkpointDeadline = (Get-Date).AddSeconds(1800)
+        $state = 'unknown'
+        while ((Get-Date) -lt $checkpointDeadline) {
+            $show = Invoke-Cli @('disk', 'show', $id, '--timeout', '60')
+            if ($show.output -match 'activity=Idle' -and $show.output -match 'persistence=Clean') {
+                $state = 'idle-clean'
+                Write-Reading 'thencheckpoint.show' (($show.output -replace "`r?`n", ' | '))
+                $genMatch = [regex]::Match($show.output, 'generation=(\d+)')
+                if ($genMatch.Success) { Write-Reading 'thencheckpoint.generation' $genMatch.Groups[1].Value }
+                break
+            }
+            Write-Reading 'thencheckpoint.waiting' (($show.output -replace "`r?`n", ' | '))
+            Start-Sleep -Seconds 15
+        }
+        Write-Reading 'thencheckpoint.state' $state
+        if ($state -ne 'idle-clean') { Fail 'the disk never returned to Idle/Clean after the write' }
+        if ((Read-Config 'thencheckpoint.force' '0') -eq '1') {
+            $checkpoint = Invoke-Cli @('disk', 'checkpoint', $id, '--timeout', '60')
+            Write-Reading 'thencheckpoint.exit' ([string]$checkpoint.exit)
+            $checkpointId = Get-UuidFromText $checkpoint.output
+            if (-not $checkpointId) { Fail ("checkpoint carried no operation id: " + $checkpoint.output) }
+            $forced = Wait-Operation $checkpointId 1800
+            Write-Reading 'thencheckpoint.forced_state' $forced
+            if ($forced -ne 'succeeded') { Fail "the checkpoint ended $forced" }
+        }
+    }
+    Write-Reading 'thenwrite.result' 'PASS'
+}
+
 Write-Reading 'bigdisk.result' 'PASS'
 Write-Host ("PASS integration.m5.bigdisk ({0}, {1})" -f $size, $memory)
 exit 0

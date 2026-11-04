@@ -2,8 +2,19 @@
 #include "proxy_error.h"
 #include "range_normalizer.h"
 
+#include "src/common/diagnostic_trace.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace myrd::proxy {
@@ -94,6 +105,34 @@ ProcessOutcome RequestProcessor::process(
         }
 
         RequestMetadata meta{req_code.value(), 0, 0};
+
+        // **Sampled, and deliberately not one line per request.**
+        //
+        // A line per request on this path was measured wedging the guest: every line is an
+        // open/append/flush performed under this processor's lock, and an 8 GiB create went from
+        // 192 s to more than ten minutes before the machine stopped answering.  What the large-
+        // volume write stall needs is only "did the writes reach this processor, and did the one
+        // that stopped return" -- so this logs the first request after a 500 ms idle gap (which
+        // is what a stall looks like from here) and every 256th request, and nothing else.
+        //
+        // Function-local because the sampling state is diagnostic: a second processor instance
+        // sharing it would only change which requests are sampled, never what they do.
+        static std::uint64_t sampled_requests = 0;
+        static std::uint64_t last_trace_tick = 0;
+        const std::uint64_t now_tick = GetTickCount64();
+        const bool trace_this_request =
+            (now_tick - last_trace_tick >= 500 || ((sampled_requests++) & 255) == 0);
+        if (trace_this_request) {
+            last_trace_tick = now_tick;
+            diagnostic_trace(("proxy.request: begin code="
+                + std::to_string(req_code.value())).c_str());
+        }
+        struct RequestDoneTrace {
+            bool active;
+            ~RequestDoneTrace() {
+                if (active) diagnostic_trace("proxy.request: done");
+            }
+        } request_done_trace{trace_this_request};
 
         switch (req_code.value()) {
 

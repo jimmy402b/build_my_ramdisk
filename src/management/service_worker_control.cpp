@@ -688,7 +688,17 @@ ServiceWorkerControl::cut_candidate(ServiceWorkerSession& session,
             L"The live runtime serves a different product image"));
     }
 
-    auto prepared = session.prepare_checkpoint(context(), request.operation_id);
+    // **The cut is a data-heavy action, so it gets the provisioning ceiling.**
+    //
+    // `prepare_checkpoint` flushes the mounted volume, takes a consistent snapshot and writes
+    // the dirty set into the journal -- and every one of those scales with the disk.  Measured
+    // on the guest: a 7 GiB write into a 16 GiB disk crossed the dirty threshold, the
+    // maintenance checkpoint's `flush-volume` was abandoned at the ordinary 120 s bound
+    // (`code=4107`), and the whole checkpoint was then refused.  The ceiling is the same one a
+    // create gets, because it is the same kind of work.  A genuinely wedged worker still fails,
+    // just later.
+    auto prepared = session.prepare_checkpoint(provisioning_context(),
+                                               request.operation_id);
     if (!prepared.ok()) {
         return Result<HeldCandidate>::failure(prepared.error());
     }
@@ -1379,8 +1389,10 @@ Result<WorkerActionResult> ServiceWorkerControl::checkpoint_across_boundary(
     // and the digest -- because the worker refuses anything else and leaves the
     // candidate prepared.  The slot and digest come from the held candidate
     // rather than from the boundary evidence, which does not carry them.
+    // The commit finalises the journal and publishes the manifest, which is bounded by the same
+    // dirty set the cut had to write, so it uses the same ceiling (see `cut_candidate`).
     auto committed = session.value()->commit_checkpoint(
-        context(), request.operation_id,
+        provisioning_context(), request.operation_id,
         m5::WorkerCheckpointCommit{
             held->prepared.native_operation_id,
             held->prepared.manifest_slot,
