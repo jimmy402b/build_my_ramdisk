@@ -426,13 +426,33 @@ if ($mode -eq 'verify') {
     $id = Get-DiskId
     if ($null -eq $id) { Fail 'no profile survived the power cut' }
     Write-Reading 'verify.id' $id
-    $started = Invoke-Cli @('disk', 'start', $id, '--timeout', '60')
-    if ($started.exit -ne 0) { Fail ("start failed: " + $started.output) }
-    $startId = Get-UuidFromText $started.output
-    if (-not $startId) { Fail "start carried no operation id: $($started.output)" }
-    $state = Wait-Operation $startId 900
+    # **The service may already have started it.**  A profile that was running when the power
+    # was cut comes back through the startup sweep's auto-start, so issuing `disk start` here
+    # would be refused as a second start (measured: 0x5605 `service_core.plan` while the
+    # auto-start was still `Starting/Recovering`).  What this phase is for is the *data*, not who
+    # started the disk, so it waits for the recovery to finish and only starts a stopped disk.
+    $showBefore = Invoke-Cli @('disk', 'show', $id, '--timeout', '60')
+    Write-Reading 'verify.show_before' (($showBefore.output -replace "`r?`n", ' | '))
+    $recoveryDeadline = (Get-Date).AddSeconds(900)
+    $state = 'unknown'
+    while ((Get-Date) -lt $recoveryDeadline) {
+        if ($showBefore.output -match 'runtime=Running' -and $showBefore.output -notmatch 'activity=Recovering') {
+            $state = 'already-running'
+            break
+        }
+        if ($showBefore.output -match 'runtime=Stopped') {
+            $started = Invoke-Cli @('disk', 'start', $id, '--timeout', '60')
+            if ($started.exit -ne 0) { Fail ("start failed: " + $started.output) }
+            $startId = Get-UuidFromText $started.output
+            if (-not $startId) { Fail "start carried no operation id: $($started.output)" }
+            $state = Wait-Operation $startId 1800
+            break
+        }
+        Start-Sleep -Seconds 5
+        $showBefore = Invoke-Cli @('disk', 'show', $id, '--timeout', '60')
+    }
     Write-Reading 'verify.start_state' $state
-    if ($state -ne 'succeeded') { Fail "start ended $state" }
+    if ($state -ne 'already-running' -and $state -ne 'succeeded') { Fail "the disk did not come up (state=$state)" }
     if ($null -eq (Get-Volume -DriveLetter $volumeLetter -ErrorAction SilentlyContinue)) {
         Fail "no volume at $mount after the restart"
     }
