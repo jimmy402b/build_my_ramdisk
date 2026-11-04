@@ -1,4 +1,4 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
 #include "src/common/diagnostic_trace.h"
@@ -12,6 +12,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -398,6 +399,30 @@ Result<void> ProductionRuntimeAdapter::start() {
     factory.provider.manifest_name = "disk.rdm";
     factory.provider.recovery.limits =
         persistence::production_persistence_limits(config_.virtual_bytes);
+    // **The reader bound has to describe what this profile's writer can produce.**
+    //
+    // `production_persistence_limits` fixes `max_journal_committed_bytes` at 2 GiB, but a
+    // checkpoint's journal is as large as the store's dirty set, and the dirty set is bounded by
+    // the memory budget -- 12 GiB of budget produced a **7 GiB** journal in the 16 GiB/12 GiB
+    // acceptance run.  Recovery then read that bundle with a 2 GiB bound and never left
+    // `Starting/Recovering` (measured: more than forty minutes, `mem=0`, generation still 2):
+    // the checkpoint that had just succeeded was unrecoverable by its own reader.  The worker's
+    // own `default_recovery_options()` already scales this bound to twice the dirty set plus
+    // overhead; the adapter has to agree with it, or the two answer "how big may a legal journal
+    // be?" differently and the disk only breaks after a power cut.
+    if (impl_->ram_limit_bytes != 0 && config_.virtual_bytes != 0) {
+        const std::uint64_t dirty_bound =
+            (std::min)(impl_->ram_limit_bytes, config_.virtual_bytes);
+        const std::uint64_t journal_bytes = (std::max)(
+            factory.provider.recovery.limits.max_journal_committed_bytes,
+            dirty_bound * 2 + 64ULL * 1024ULL * 1024ULL);
+        factory.provider.recovery.limits.max_journal_committed_bytes = journal_bytes;
+        // Same ratio the worker uses (one record per 16 KiB of journal), kept as a floor so a
+        // plain production bundle's record bound is unchanged.
+        factory.provider.recovery.limits.max_journal_records = (std::max)(
+            factory.provider.recovery.limits.max_journal_records,
+            journal_bytes / (16ULL * 1024ULL));
+    }
     // **What the worker actually asked the store for.**  The 1.0.0 large-disk defect had two
     // opposite halves -- an automatic budget that M3 refused as invalid, and a create that
     // opened and then stopped making progress -- and neither the service log nor the operation
