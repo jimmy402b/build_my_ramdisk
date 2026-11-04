@@ -5952,8 +5952,7 @@ Result<OperationRecord> ServiceCore::execute_operation(
                     current_operation.command_scope,
                     current_operation.phase,
                     "checkpoint: disposition="
-                        + std::to_string(static_cast<int>(
-                            evidence.disposition))
+                        + std::string(to_string(evidence.disposition))
                         + " observed_dirty_epoch="
                         + std::to_string(evidence.observed_dirty_epoch)
                         + " generation=" + std::to_string(evidence.generation)
@@ -6317,26 +6316,46 @@ Result<OperationRecord> ServiceCore::execute_operation(
                         // No comparison against the durable `current_dirty_epoch`
                         // is made here: that value may come from a previous
                         // worker process and be numerically larger, and the epoch
-                        // is only meaningful within one session.  The live epoch
-                        // was already checked against this checkpoint's own cut
-                        // above, which is the comparison that has an order.
+                        // is only meaningful within one session.  Nor is the live
+                        // epoch compared with this checkpoint's cut: the commit
+                        // re-baselines it, so the record below carries it and the
+                        // block-level answer decides.
                         // **Cleanliness is a fact about the worker's blocks, not
                         // about an epoch ordering.**  A successful commit resets
-                        // the dirty epoch, so `live == cut` was false after every
-                        // real commit: `create` passed only because its first cut
-                        // was generation zero, and every `stop` failed right
-                        // here with 22022.
+                        // the dirty epoch, so `live == cut` is false after every
+                        // real commit.  The stop path was corrected to ask the
+                        // worker whether it still holds unpersisted writes; the
+                        // non-stop path kept the epoch comparison and was
+                        // measured wrong in the 16 GiB/12 GiB acceptance: the
+                        // worker's `observe()` never sets `dirty_epoch` (it is a
+                        // wire field only `m5_worker_protocol.cpp` reads), so
+                        // `live` is always zero while `cut` is the backing
+                        // generation -- a checkpoint after any write therefore
+                        // committed (`generation 2 -> 15`) and was still recorded
+                        // `succeeded_dirty`, leaving `persistence=Dirty` and
+                        // dispatching the next maintenance checkpoint forever.
                         //
-                        // The non-stop path is deliberately left on the old
-                        // expression for now.  It compares a stubbed epoch that is
-                        // always zero, which for a create is indistinguishable
-                        // from "clean"; correcting the epoch pipeline is T1-06 /
-                        // T1-07 work, and folding it into this stop fix would
-                        // change create's published persistence by accident.
-                        const auto clean = normal_stop
-                            ? !observation.post_commit_dirty
-                            : observation.live_dirty_epoch
-                                == evidence.correlation.cut_dirty_epoch;
+                        // Both paths now use the same block-level fact.  It is
+                        // the one the worker can answer from the store it owns,
+                        // and "could not ask" is a failure above, never "clean".
+                        logger_.write(ServiceLogEvent{
+                            ServiceLogKind::operation_running,
+                            current_operation.request_id,
+                            current_operation.operation_id,
+                            current_operation.profile_id,
+                            current_operation.command_scope,
+                            current_operation.phase,
+                            "checkpoint: epoch cut="
+                                + std::to_string(
+                                    evidence.correlation.cut_dirty_epoch)
+                                + " live="
+                                + std::to_string(observation.live_dirty_epoch)
+                                + " post_commit_dirty="
+                                + std::to_string(
+                                    observation.post_commit_dirty ? 1 : 0)
+                                + " normal_stop="
+                                + std::to_string(normal_stop ? 1 : 0)});
+                        const auto clean = !observation.post_commit_dirty;
                         // A stop must not "complete" here.  This is one step of a
                         // seven-step plan and `stop` has three steps left (remove
                         // the mount, remove the device, stop the runtime), so the
@@ -7941,6 +7960,69 @@ Result<std::vector<OperationRecord>> ServiceCore::recover_after_restart() {
                 std::nullopt,
                 true});
         } else if (!is_terminal(record.state)
+                   && record.command_scope == "disk.start") {
+            // **A start interrupted by the power cut has nothing to resume.**
+            //
+            // Its worker was a child of the previous service process, so the volume it
+            // was opening no longer exists.  Leaving the record reconciling kept the
+            // profile's operation gate held forever: measured after a cut that landed
+            // inside the auto-start's `Starting/Recovering` window -- every later
+            // `disk start` was refused with 0x5605 "Another exclusive profile operation
+            // is active" while `disk show` still said health=Healthy, and
+            // `disk repair-profile` had no path out (it cannot encode a command against
+            // the held gate).  Terminalize the record and release the gate; the
+            // auto-start sweep then retires `starting` and dispatches a fresh start.
+            auto start_profile = profiles_.load(record.profile_id);
+            if (!start_profile.ok()) {
+                return Result<std::vector<OperationRecord>>::failure(
+                    start_profile.error());
+            }
+            auto snapshot = start_profile.move_value();
+            if (snapshot.operation_gate.active_operation_id
+                == std::optional<product::Uuid>(record.operation_id)) {
+                auto released = release_operation_gate(
+                    snapshot.operation_gate, record.operation_id);
+                if (!released.accepted()) {
+                    return Result<std::vector<OperationRecord>>::failure(
+                        service_error(
+                            ServiceCoreError::operation_invalid,
+                            L"service_core.recover_start",
+                            L"An interrupted start owns an invalid gate"));
+                }
+                auto published = profiles_.publish_runtime(
+                    snapshot, snapshot.state, released.after);
+                if (!published.ok()) {
+                    return Result<std::vector<OperationRecord>>::failure(
+                        published.error());
+                }
+            }
+            auto terminal = record;
+            ++terminal.revision;
+            terminal.state = OperationState::failed;
+            terminal.phase = "terminal";
+            terminal.updated_unix_ms = (std::max)(
+                terminal.updated_unix_ms, clock_.unix_time_ms());
+            terminal.terminal_unix_ms = terminal.updated_unix_ms;
+            terminal.cancellable = false;
+            terminal.terminal_result = {
+                std::byte{'M'}, std::byte{'Y'}, std::byte{'R'}, std::byte{'D'},
+                std::byte{'I'}, std::byte{'N'}, std::byte{'T'}, std::byte{'R'}};
+            auto written = operations_.write(record.revision, terminal);
+            if (!written.ok()) {
+                return Result<std::vector<OperationRecord>>::failure(
+                    written.error());
+            }
+            record = std::move(terminal);
+            logger_.write(ServiceLogEvent{
+                ServiceLogKind::operation_terminal,
+                record.request_id,
+                record.operation_id,
+                record.profile_id,
+                record.command_scope,
+                record.phase,
+                "restart: an interrupted start was terminalized and its profile gate "
+                "released"});
+        } else if (!is_terminal(record.state)
                    && (record.command_scope == "disk.rebind"
                        || record.command_scope
                            == "disk.repair-profile")) {
@@ -8926,7 +9008,16 @@ Result<std::vector<product::Uuid>> ServiceCore::admit_auto_starts() {
     std::vector<product::Uuid> admitted;
     for (const auto& snapshot : listed.value()) {
         const auto& profile = snapshot.record.profile;
-        if (snapshot.state.disk.runtime != product::RuntimeState::running) {
+        // **A durable `starting` is as stale as a durable `running`.**  A worker is a child
+        // of this process, so neither state can describe *this* moment.  Retiring only
+        // `running` left a hole measured on the guest: a power cut that landed inside the
+        // auto-start's `Starting/Recovering` window left the record at `starting` with no
+        // worker, and the next boot skipped the profile entirely -- it stayed
+        // `Starting/Recovering`, `mem=0/0`, and the 9.1 GiB checkpoint it held was never
+        // read back.
+        const auto durable_runtime = snapshot.state.disk.runtime;
+        if (durable_runtime != product::RuntimeState::running &&
+            durable_runtime != product::RuntimeState::starting) {
             continue;
         }
         // **A durable `running` with no worker is stale, and it has to be retired first.**

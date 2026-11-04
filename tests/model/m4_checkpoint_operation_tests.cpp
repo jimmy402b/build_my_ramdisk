@@ -1097,7 +1097,7 @@ public:
         }
         if (before_epoch_publish) before_epoch_publish();
         return publish(CheckpointEpochObservation{
-            correlation, live_dirty_epoch});
+            correlation, live_dirty_epoch, post_commit_dirty});
     }
 
     Result<std::optional<std::uint64_t>> current_dirty_epoch(
@@ -1135,6 +1135,10 @@ public:
 
     bool refuse_forget_proof{};
     std::uint64_t live_dirty_epoch{11};
+    // Whether the worker still holds writes the commit did not persist.  This is
+    // the fact the service uses to decide cleanliness; `live_dirty_epoch` is
+    // recorded but not compared, because a commit re-baselines it.
+    bool post_commit_dirty{};
     std::uint64_t checkpoint_cut_dirty_epoch{11};
     std::uint32_t failure_code{15};
     std::uint32_t compaction_failure_code{15};
@@ -1850,6 +1854,11 @@ TEST_CASE(checkpoint_unresolved_indeterminate_retains_gate_and_attention) {
 
 TEST_CASE(checkpoint_write_after_cut_remains_dirty_for_next_checkpoint) {
     Fixture fixture(product::PersistenceState::dirty);
+    // Writes that landed after the cut are not in this checkpoint's journal, so
+    // the worker answers that it still holds unpersisted writes.  The epoch is
+    // not the fact that says this: a commit re-baselines it, and the worker's
+    // status never carries it -- `post_commit_dirty` is the block-level answer.
+    fixture.worker.post_commit_dirty = true;
     fixture.worker.live_dirty_epoch = 12;
     ServiceCore core(
         fixture.clock, fixture.profiles, fixture.operations, fixture.worker,

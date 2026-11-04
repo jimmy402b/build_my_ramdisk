@@ -1,5 +1,6 @@
 #include "tests/support/test_framework.h"
 
+#include "src/persistence/production_policy.h"
 #include "src/run/m4_persistence_adapter.h"
 
 #include <filesystem>
@@ -8,6 +9,40 @@ namespace {
 
 using myrd::M4PersistenceAdapter;
 using myrd::M4PersistenceOptions;
+
+// The reader bound is not a constant when the writer has a memory budget: a
+// checkpoint's journal is as large as the dirty set, so a 12 GiB budget can
+// legitimately produce a 9.1 GiB journal.  Measured: the M3 provider accepted
+// that journal, and the next start's M4 recovery refused it at
+// `journal bound readback=9111699456 limit=2147483648 file=9111707648` because
+// this adapter still used the unbudgeted 2 GiB floor.  One rule, applied by
+// every reader, is the fix.
+TEST_CASE(recovery_bounds_scale_with_the_memory_budget) {
+    using myrd::persistence::LimitsStatus;
+    using myrd::persistence::production_persistence_limits;
+    using myrd::persistence::recovery_persistence_limits;
+    using myrd::persistence::validate_limits;
+    constexpr std::uint64_t gib = 1024ULL * 1024ULL * 1024ULL;
+
+    const auto unbudgeted = production_persistence_limits(16 * gib);
+    REQUIRE_EQ(unbudgeted.max_journal_committed_bytes, 2 * gib);
+    REQUIRE_EQ(
+        recovery_persistence_limits(16 * gib, 0).max_journal_committed_bytes,
+        unbudgeted.max_journal_committed_bytes);
+
+    const auto scaled = recovery_persistence_limits(16 * gib, 12 * gib);
+    REQUIRE_EQ(scaled.max_journal_committed_bytes,
+               24 * gib + 64ULL * 1024ULL * 1024ULL);
+    REQUIRE(scaled.max_journal_records >=
+            scaled.max_journal_committed_bytes / (16 * 1024));
+    REQUIRE_EQ(validate_limits(scaled), LimitsStatus::Ok);
+
+    // A budget whose dirty set is smaller than the floor must not lower it.
+    const auto small = recovery_persistence_limits(16 * gib, 256ULL * 1024 * 1024);
+    REQUIRE_EQ(small.max_journal_committed_bytes,
+               unbudgeted.max_journal_committed_bytes);
+    REQUIRE_EQ(small.max_journal_records, unbudgeted.max_journal_records);
+}
 
 TEST_CASE(m4_persistence_adapter_rejects_invalid_geometry_before_create) {
     M4PersistenceOptions options{};

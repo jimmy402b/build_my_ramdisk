@@ -720,6 +720,22 @@ $thenWrite = Read-Config 'thenwrite' ''
 if (-not [string]::IsNullOrWhiteSpace($thenWrite)) {
     $writeBytes = ConvertTo-Bytes $thenWrite
     $target = Join-Path "$($letterChar):\" 'bigdisk.bin'
+    # **The checkpoint has to be observed to have *finished*, not merely to be absent.**
+    # The durable `persistence` stays Clean until a checkpoint has run, so "Idle + Clean"
+    # is also true in the window between the last write and the maintenance checkpoint --
+    # measured in the first 16 GiB/12 GiB run: the gate opened at generation 2 with
+    # 7,518,027,776 bytes still unpersisted, the harness then stopped the service, and the
+    # power-cut verification would have had nothing durable to check.  A checkpoint that
+    # counted must advance the confirmed generation past the one read here.
+    $id = Get-DiskId
+    $generationBefore = 0
+    if ($id) {
+        $beforeWrite = Invoke-Cli @('disk', 'show', $id, '--timeout', '60')
+        if ($beforeWrite.output -match 'generation=(\d+)') {
+            $generationBefore = [int]$Matches[1]
+        }
+        Write-Reading 'thenwrite.generation_before' ([string]$generationBefore)
+    }
     Write-Step "write $writeBytes bytes to $target in the same run"
     $block = New-Object byte[] (1MB)
     [System.Random]::new(20261104).NextBytes($block)
@@ -774,20 +790,24 @@ if (-not [string]::IsNullOrWhiteSpace($thenWrite)) {
     # come back to Idle/Clean and records the generation the checkpoint produced; it only issues
     # a checkpoint itself if none ran.
     if ((Read-Config 'thencheckpoint' '0') -eq '1' -and $id) {
-        Write-Step 'wait for the checkpoint to finish'
-        $generationBefore = 2
+        Write-Step 'wait for the checkpoint to finish and to have counted'
         $checkpointDeadline = (Get-Date).AddSeconds(1800)
         $state = 'unknown'
         while ((Get-Date) -lt $checkpointDeadline) {
             $show = Invoke-Cli @('disk', 'show', $id, '--timeout', '60')
-            if ($show.output -match 'activity=Idle' -and $show.output -match 'persistence=Clean') {
+            $generation = -1
+            if ($show.output -match 'generation=(\d+)') {
+                $generation = [int]$Matches[1]
+            }
+            if ($generation -gt $generationBefore -and
+                $show.output -match 'activity=Idle' -and
+                $show.output -match 'persistence=Clean') {
                 $state = 'idle-clean'
                 Write-Reading 'thencheckpoint.show' (($show.output -replace "`r?`n", ' | '))
-                $genMatch = [regex]::Match($show.output, 'generation=(\d+)')
-                if ($genMatch.Success) { Write-Reading 'thencheckpoint.generation' $genMatch.Groups[1].Value }
+                Write-Reading 'thencheckpoint.generation' ([string]$generation)
                 break
             }
-            Write-Reading 'thencheckpoint.waiting' (($show.output -replace "`r?`n", ' | '))
+            Write-Reading 'thencheckpoint.waiting' (("generation={0} (started at {1}) " -f $generation, $generationBefore) + ($show.output -replace "`r?`n", ' | '))
             Start-Sleep -Seconds 15
         }
         Write-Reading 'thencheckpoint.state' $state

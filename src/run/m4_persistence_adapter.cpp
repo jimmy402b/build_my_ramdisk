@@ -102,7 +102,8 @@ Result<RecoveredImage> make_generation_zero_request(
     }
     const auto payloads = payload_base + 1;
     request.vhdx_limits = {payloads, payloads, kVhdxDataBlockBytes};
-    request.recovery.limits = production_persistence_limits(options.virtual_bytes);
+    request.recovery.limits = recovery_persistence_limits(
+        options.virtual_bytes, options.ram_limit_bytes);
     return create_generation_zero_image(context, request);
 }
 
@@ -123,7 +124,8 @@ M4PersistenceAdapter::recover_complete(const OperationContext& context) const {
     if (!valid.ok()) return Result<persistence::RecoveredImage>::failure(valid.error());
     auto outcome = persistence::recover_complete_image(
         context, options_.bundle_root, options_.manifest_name,
-        {persistence::production_persistence_limits(options_.virtual_bytes)});
+        {recovery_persistence_limits(options_.virtual_bytes,
+                                     options_.ram_limit_bytes)});
     if (!outcome.ok() || !outcome.image.has_value()) {
         return Result<persistence::RecoveredImage>::failure(outcome.error.value_or(
             adapter_error(ErrorDomain::persistence,

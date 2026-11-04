@@ -144,7 +144,15 @@ try {
         }
     }
     $versions = Get-Content -LiteralPath (Join-Path $extract 'versions.json') -Raw | ConvertFrom-Json
-    if ($versions.cli -notmatch '1\.0\.0') { Fail "the cli version is not in the archive: $($versions.cli)" }
+    # **Ask the binary that shipped, not a constant.**  The check is that the archive records
+    # the version *this build* reports.  A hardcoded "1.0.0" made the case fail on the 1.0.1
+    # build while the archive was correct: "the cli version is not in the archive: myrd-cli
+    # 1.0.1".  The tool was given `-InstallDir $bin`, so `$cliExe` is the binary it asked.
+    $expectedVersion = (& $cliExe --version | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($expectedVersion)) { Fail 'the cli reports no version' }
+    if ($versions.cli -ne $expectedVersion) {
+        Fail "the cli version is not in the archive: $($versions.cli) (expected $expectedVersion)"
+    }
     $serviceLogText = Get-Content -LiteralPath (Join-Path $extract 'logs/service.log') -Raw
     Write-Reading 'logs.service_bytes' ([string]$serviceLogText.Length)
 

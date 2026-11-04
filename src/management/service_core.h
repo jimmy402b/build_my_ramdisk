@@ -44,6 +44,25 @@ enum class CheckpointCommitDisposition : std::uint8_t {
     committed_needs_reconciliation,
 };
 
+// The service's own disposition, named.  A bare number in the log is not a reading: the run
+// layer's `DiskCheckpointDisposition` orders the same four facts differently (committed is
+// zero there, two here), so "disposition=2" has already been read as `commit_indeterminate`
+// when it meant `committed`.  Print the name, never the ordinal.
+inline std::string_view to_string(
+    const CheckpointCommitDisposition disposition) noexcept {
+    switch (disposition) {
+    case CheckpointCommitDisposition::not_committed:
+        return "not_committed";
+    case CheckpointCommitDisposition::commit_indeterminate:
+        return "commit_indeterminate";
+    case CheckpointCommitDisposition::committed:
+        return "committed";
+    case CheckpointCommitDisposition::committed_needs_reconciliation:
+        return "committed_needs_reconciliation";
+    }
+    return "unknown";
+}
+
 enum class CheckpointDurablePhase : std::uint8_t {
     stable = 0,
     admitted,

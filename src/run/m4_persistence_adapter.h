@@ -30,6 +30,11 @@ struct M4PersistenceOptions final {
     // `GenerationZeroCreateRequest` field: carrying the product uuid here would
     // only add a conversion between two sixteen-byte encodings.
     std::optional<persistence::ImageUuid> image_uuid;
+    // The store budget this bundle's writer was opened with, when the caller
+    // carries one.  It is not used by the adapter itself; it decides the
+    // *reader* bound, because a checkpoint's journal is as large as the dirty
+    // set the budget allows.  Zero keeps the unbudgeted production floor.
+    std::uint64_t ram_limit_bytes{};
 };
 
 class M4PersistenceAdapter final {

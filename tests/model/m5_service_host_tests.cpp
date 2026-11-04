@@ -640,6 +640,45 @@ TEST_CASE(m5_host_auto_starts_the_profiles_that_were_running) {
     REQUIRE(host.stop().ok());
 }
 
+TEST_CASE(m5_host_auto_starts_a_profile_left_starting_by_a_power_cut) {
+    // **The window the first power-cut acceptance landed in.**  A cut inside the
+    // auto-start's Starting/Recovering phase leaves a durable `starting` record and no
+    // worker.  Measured on the guest: the next boot skipped that profile -- only `running`
+    // was retired -- so it stayed `Starting/Recovering`, `mem=0/0`, and the 9.1 GiB
+    // checkpoint it held was never read back.  A worker is a child of this process, so a
+    // `starting` record at boot is exactly as stale as a `running` one.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    auto durable = running_profile(product::PersistenceState::clean);
+    durable.state.disk.runtime = product::RuntimeState::starting;
+    durable.state.disk.activity = product::ActivityState::recovering;
+    durable.record.profile.auto_start = true;
+    Profiles profiles(durable);
+    Operations operations;
+    Worker worker;
+    WorkerRuntimeObservation live{};
+    live.worker_alive = true;
+    live.committed_generation = 5;
+    worker.observation = live;
+    CapturingLogger logger;
+    Ids ids;
+    for (std::uint32_t index = 0; index < 8; ++index) {
+        char text[40]{};
+        std::snprintf(text, sizeof(text),
+                      "44444444-4444-4444-8444-4444444401%02u", index);
+        ids.values.push_back(uuid(text));
+    }
+    Memory memory;
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    ServiceHost host(clock, core, scheduler);
+
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.diagnostics().auto_started_operations, 1U);
+    REQUIRE(!operations.records.empty());
+    REQUIRE_EQ(operations.records.back().command_scope, std::string("disk.start"));
+    REQUIRE(host.stop().ok());
+}
+
 TEST_CASE(m5_host_does_not_auto_start_a_profile_that_asked_not_to_be) {
     // The other side of the same policy: `auto_start == false` is a disk a human wants
     // left alone across a reboot, and starting it anyway would be the service deciding

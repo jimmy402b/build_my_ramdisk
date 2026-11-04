@@ -1,5 +1,6 @@
 #include "src/persistence/commit_resolver.h"
 
+#include "src/common/diagnostic_trace.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/manifest_selector.h"
 #include "src/persistence/recovery_engine.h"
@@ -378,6 +379,18 @@ CommitResolutionOutcome resolve_indeterminate_commit_impl(
     }();
     if (!evidence.ok()) {
         return fail(CommitDisposition::CommitIndeterminate, evidence.error());
+    }
+    // **Which of the three answers recovery gave, and for which pair of generations.**  A
+    // resolver that returns indeterminate after reading the bundle is not the same fact as one
+    // that could not read it at all; without this line the two are the same error text.
+    {
+        const std::string line =
+            "resolve_indeterminate_commit: finding="
+            + std::to_string(static_cast<unsigned>(evidence.value().finding))
+            + " old=" + std::to_string(old_generation)
+            + " attempted=" + std::to_string(attempted_generation)
+            + " slot=" + std::to_string(attempted_slot_index);
+        diagnostic_trace(line.c_str());
     }
     switch (evidence.value().finding) {
     case CommitRecoveryFinding::NewGenerationComplete:

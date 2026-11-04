@@ -1,7 +1,9 @@
 # 已知缺陷：≥8 GiB 的盘在 create 阶段卡死（2026-11-04 实用发现）
 
-**状态**：**create 部分已修复（`7a1d4d1`，2026-11-04，客机三组读数通过）**；压力/断电验收被**另一个写入停顿**挡住（§12），1.0.1 **尚未发布**
-**影响版本**：1.0.0 · **发现方式**：宿主机实际安装使用
+**状态**：**已修复，1.0.1 候选**。§11 create 三处缺陷（`7a1d4d1`）；§13 是本轮对 §12 的收尾：
+写入停顿的真实原因是 checkpoint 分类与恢复的四个缺陷（非 AIM 写路径），客机 16 GiB/12 GiB
+全流程（create → 7 GiB 写 → checkpoint → 硬断电 → verify）已有读数。
+**影响版本**：1.0.0 · **发现方式**：宿主机实际安装使用 · **修复目标**：1.0.1
 **严重性**：高（8 GiB 及以上容量无法创建；4 GiB 正常） · **发现日期**：2026-11-04
 
 ## 1. 摘要
@@ -357,3 +359,76 @@ bounded wait`。8 GiB 的 checkpoint 实测 98 s，16 GiB 123 s；之后 `record
 
 **需要人决定**：是先把范围收窄成"只发 create 修复"（仍然缺压力/断电读数与全量门禁），
 还是先投入定位这个写入停顿。建议：**先不要发 1.0.1**，把写停顿定性后再走完整门禁。
+
+---
+
+## 13. 根因确认与修复（2026-11-04 晚，1.0.1 候选）
+
+§12 的"写入停顿"最终确认**不在 AIM/驱动的写路径**：7 GiB write-through 实测 **12 s 完成**
+（7,516,192,768 B，digest `AF76B0B8A76FDAB57DA646151D07E028D89D594B98756D0A44EBAF143E528554`），
+卡住的是 **checkpoint 之后的分类与恢复**。四个独立缺陷，每个都有客机读数。
+
+### 13.1 `checkpoint: disposition=2` 是 `committed`，不是 `CommitIndeterminate`
+
+服务日志打印的是**管理层**枚举 `CheckpointCommitDisposition`
+（`not_committed=0, commit_indeterminate=1, committed=2`，`service_core.h:40`）；
+`DiskCheckpointDisposition`（`committed=0, not_committed=1, commit_indeterminate=2`，`disk_runtime.h:42`）
+是另一个枚举，日志从未打印它。日志已改为 `to_string` 打枚举名；同一段日志现在读
+`checkpoint: disposition=committed observed_dirty_epoch=… worker_error=0`，而且
+`valid_checkpoint_evidence` 对 `committed` 要求"无 error"，旧日志一直满足。
+
+### 13.2 提交成功却永远 Dirty：非 stop checkpoint 的"干净"判据用了一个不存在的 epoch
+
+旧判据（`service_core.cpp`）：`live_dirty_epoch == cut_dirty_epoch`。
+worker 的 `observe()` **从不设置** `dirty_epoch`（只有 `m5_worker_protocol.cpp` 的 wire 解码会读它），
+所以 `live` 恒为 0，而 `cut` 是 `maintenance_stats().generation`（backing generation 1,2,…）。
+后果：每个**已提交**的 checkpoint 都被记成 `succeeded_dirty`，profile 永远 `persistence=Dirty`，
+维护 checkpoint 每 60 s 再来一次。
+
+**读数（旧）**：`checkpoint: disposition=2 observed_dirty_epoch=1..14 generation=2..15`，
+journal 长到 9,112,297,472 B。
+**读数（新，1.0.1 最终验收）**：create `cut=1 post_commit_dirty=0` →
+第一次维护 checkpoint `cut=2 post_commit_dirty=1`（7 GiB 写在 cut 之后，**仍脏**，正确）→
+第二次 `cut=3 post_commit_dirty=0`（**干净**）→ 之后 interval checkpoint 保持干净，
+最终 `generation=6 activity=Idle persistence=Clean`。
+
+**修法**：两条路径都用 worker 能回答的块级事实 `!post_commit_dirty`；epoch 只记录、不比较。
+
+### 13.3 恢复读端仍是 2 GiB（`b80a6e5` 只修了一半）
+
+`b80a6e5` 缩放了 M3 provider 的 recovery limits，但 `disk start` 先走
+`M4PersistenceAdapter::recover_complete`，它仍用 `production_persistence_limits()`（固定 2 GiB）。
+
+**读数**：`recover_complete_image: journal bound readback=9111699456 limit=2147483648 file=9111707648`
+→ `disk.start … select_complete_manifest_generation: no fully valid manifest generation exists`。
+**修法**：`recovery_persistence_limits(virtual, ram)` 成为所有读端的**唯一**规则
+（M3 provider、M4 adapter、worker 的 `default_recovery_options`）：2×dirty + 64 MiB，
+无预算的 profile 保持 2 GiB 历史下限。
+
+### 13.4 断电落在 start 的 `Starting/Recovering` 窗口 → profile 永久卡死
+
+**读数**：启动扫描只 retire `running`，`starting` 被跳过（`admit_auto_starts`），于是
+`runtime=Starting activity=Recovering mem=0/0` 永久；之后每次 `disk start` 都被
+`0x5605 Another exclusive profile operation is active` 拒绝（`disk show` 仍 `health=Healthy`），
+`disk repair-profile` 也无法编码命令（同一个门）。
+**修法**：① sweep 也 retire `starting`；② `recover_after_restart` 把非终止的 `disk.start`
+终止并释放 profile gate。**修复读数**：
+`restart: an interrupted start was terminalized and its profile gate released` →
+`verify.start_state=succeeded`、`generation=5`。
+
+### 13.5 验收用例的等待判据修正
+
+`thencheckpoint` 原先只等 `activity=Idle && persistence=Clean`；而 `persistence` 在第一次 checkpoint
+之前也是 `Clean`。第一次正式跑因此在 `generation=2`、`mem=7,518,027,776`（7.5 GB 未持久化）时就"通过"了。
+现在要求 **generation 超过写入前代次** 且 Idle/Clean（实测 2→5）。
+
+### 13.6 验收读数（16 GiB / fixed:12GiB，7 GiB write-through，同一用例）
+
+| 项 | 读数 |
+|---|---|
+| create | `disk create --wait` exit 0；卷 17,162,039,296 B NTFS；checkpoint generation 2 |
+| 写入 | 12 s；7,516,192,768 B；digest `AF76B0B8…E528554` |
+| checkpoint | gen 3 (`post_commit_dirty=1`) → gen 4 (0) → gen 6 `Idle/Clean`；journal 9,111,715,840 B 已提交 |
+| 硬断电后 | 自动恢复为 `already-running`（generation 6）；文件长度与 digest 一致；第二块盘被 `0x5609` 拒绝 |
+
+全量门禁、manifest 冻结与 1.0.1 打包见 `m5-release-1.0.1.md` 与 `m5-release-rehearsal.md`。

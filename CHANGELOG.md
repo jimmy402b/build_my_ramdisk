@@ -36,6 +36,47 @@ must run on a cleanly reset guest or it hangs. See `docs/operations/m5-release-r
 
 whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
+## [1.0.1] - 2026-11-04
+
+Patch release for the large-disk defects found in real use on 1.0.0. **No behaviour change
+for disks that already worked**; the fixes are on the ≥8 GiB create path and on checkpoints
+whose dirty set is larger than 2 GiB.
+
+### Fixed
+
+- **≥8 GiB `disk create` deadlocked** (`7a1d4d1`). Three independent causes, each with a
+  guest reading: the automatic budget was not block-aligned (`M3Provider::open provider
+  limits are invalid`); a create's generation-zero checkpoint was bounded by the ordinary
+  120 s worker command even though its cost grows with the disk (`4107
+  WorkerPipeChannel::read`); and the service's `operation wait` ceiling collided with the
+  CLI's own 30 s exchange budget. Measured after the fix: 8 GiB automatic 125 s, 16 GiB
+  fixed:12GiB 314 s, 16 GiB automatic 327 s, all `disk create --wait` exit 0.
+- **A checkpoint that committed was still classified dirty** (`disposition=committed`
+  fourteen times with generation 2→15, `persistence=Dirty`, maintenance checkpointing
+  forever, 9,112,297,472 B journal). Cleanliness is now the worker's block-level answer
+  (`post_commit_dirty`), not a comparison of a per-process epoch the worker never reports.
+- **The M4 recovery adapter read every bundle with a fixed 2 GiB journal bound**, so a
+  committed 9.1 GiB journal made the next `disk start` refuse its own bundle
+  (`no fully valid manifest generation exists`). Every reader now shares
+  `recovery_persistence_limits()`: twice the dirty set plus overhead, unbudgeted profiles
+  unchanged.
+- **A power cut inside a start's `Starting/Recovering` window wedged the profile.** The
+  startup sweep now retires `starting` as well as `running`, and an interrupted
+  `disk.start` record is terminalized with its operation gate released; before that, every
+  later start was refused with `0x5605` while `disk show` still said `health=Healthy`.
+
+### Guest acceptance (16 GiB, fixed 12 GiB budget, 7 GiB write-through)
+
+- create exit 0, volume 17,162,039,296 B NTFS, checkpoint generation 2;
+- write 12 s, 7,516,192,768 B, SHA-256 `AF76B0B8…E528554`;
+- checkpoints generation 3 (`post_commit_dirty=1`, writes landed after the cut) → 4
+  (`post_commit_dirty=0`, clean) → 5 (`Idle`/`Clean`), journal 9,112,285,184 B committed;
+- hard power cut, next boot: interrupted start repaired, `disk start` succeeded, file
+  length and digest matched, second disk still refused with `0x5609`.
+
+Full gate rerun, frozen manifest and the packaged hashes are recorded in
+`docs/operations/m5-release-1.0.1.md`.
+
 ## [1.0.0] - 2026-10-30 (release candidate)
 
 First release. **Supported platform: Windows 11 only** (Win10 / Server are not supported).

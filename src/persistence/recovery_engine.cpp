@@ -1,6 +1,7 @@
 #include "src/persistence/recovery_engine.h"
 
 #include "src/common/crc32c.h"
+#include "src/common/diagnostic_trace.h"
 #include "src/persistence/byte_codec.h"
 #include "src/persistence/image_paths.h"
 #include "src/persistence/journal_format.h"
@@ -713,6 +714,23 @@ void validate_candidate(
         committed < 2 * kJournalAlignment ||
         committed % kJournalAlignment != 0 ||
         resources.journal_windows_identity.size < committed) {
+        // **The three numbers that decide a committed journal's readability.**  The bound
+        // failure used to say only "journal committed length is unavailable", which is the
+        // same sentence for "the manifest names more than the reader allows" and "the file is
+        // shorter than the manifest claims".  A checkpoint that wrote 7 GiB against a 2 GiB
+        // reader bound failed here while the write itself succeeded, and neither number was
+        // in any log.  `readback` is what the manifest names, `limit` is this reader's bound,
+        // `file` is the journal's actual size; a single line distinguishes all four clauses.
+        {
+            const std::string line =
+                "recover_complete_image: journal bound readback="
+                + std::to_string(committed)
+                + " limit="
+                + std::to_string(options.limits.max_journal_committed_bytes)
+                + " file="
+                + std::to_string(resources.journal_windows_identity.size);
+            diagnostic_trace(line.c_str());
+        }
         fail(evidence, ManifestCandidateCheck::JournalCommittedLength,
              ManifestCandidateCheckStatus::Corrupt,
              recovery_error(PersistenceErrorCode::JournalCorrupt,
