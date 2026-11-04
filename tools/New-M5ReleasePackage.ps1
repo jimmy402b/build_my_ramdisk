@@ -26,7 +26,12 @@ $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
 $name = "MyRamDisk-$Version-win11-x64"
-$target = Join-Path $OutputRoot $name
+# **Absolute, because the sums are computed by slicing each file's full path.**  With a
+# relative `-OutputRoot` (e.g. `out/release`) the substring below cut the absolute path at
+# the relative string's length and wrote entries like
+# `disk/.worktrees/m5-lifecycle/out/release/.../bin/myrd-cli.exe` -- valid hashes, useless
+# paths.  Measured on the 1.0.1 package; 1.0.0 used the default absolute root and was fine.
+$target = [System.IO.Path]::GetFullPath((Join-Path $OutputRoot $name))
 $manifestPath = Join-Path $EvidenceDirectory 'release-manifest.json'
 
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "the frozen manifest is missing: $manifestPath" }

@@ -280,3 +280,40 @@ workers 未保护 + 服务启动        -> build_state failed: ... not protected
 **卡死**：产品侧无需（也无法）修改——fault 注入后 Windows WMI/PowerShell 被拖住，而原生程序
 （`cmd`、`myrd-cli`）正常；驱动服务不支持 `sc stop`（1052），只能重启 VM。运行器已按“每例一次
 干净重启 + PowerShell 就绪探针”固定下来。
+
+---
+
+## 13. 2026-11-04 1.0.1 执行记录（≥8 GiB 验收 + 全量门禁）
+
+**构建**：`feature/m5-lifecycle` @ `77161f6`；同一工作树两次 `--clean-first`，四个二进制 SHA-256
+完全一致（service `3c4a0b28…`、cli `78c1c89c…`、gui `57c90a9c…`、worker `8b38ff28…`），版本 1.0.1。
+
+**验收**（`integration.m5.bigdisk`，16 GiB / fixed:12GiB，同一用例）：
+create exit 0（卷 17,162,039,296 B、gen 2）→ 7 GiB write-through 12 s、digest `AF76…E528554` →
+checkpoint gen 3 `post_commit_dirty=1` → gen 4 `0` → gen 6 `Idle/Clean`（journal 9,111,715,840 B）→
+硬断电 → 重启 `already-running`（gen 6）、digest/size 一致、第二块盘 `0x5609`。
+
+**门禁运行**（每条之前 reset 客机；fault 逐例硬重启）：
+
+| 运行 | 请求 id | 例数 | 结果 |
+|---|---|---|---|
+| A1 | `e53280c0c461461ba031f0c5cfc16b30` | 158 | **158/158 passed**（12:40–12:51Z） |
+| A2 | `2c341c8c28ce484b9609cb0bb1faf174` | 158 | **158/158 passed**（12:51–13:03Z） |
+| B | `e359524cf0454948b6d16a625d186625` | 5 | **5/5 passed**（13:12–13:19Z） |
+| fault | 逐例 | 6 | **6/6 passed**（13:20–14:07Z） |
+
+fault 各例：`process_kills` `bac7fb5a…`、`service_kill` `351c5944…`、`bundle_corruption` `5ad1a28b…`、
+`stop_after_restore` `4201c95a…`、`hostile_acl` `3a24dd79…`、`volume_full` `c9b3692f…`。
+`stop_after_restore` 第一次因硬重启后 420 s 内客机未就绪而跳过，重试一次通过；
+`Invoke-M5FaultGroup.ps1` 本轮在 process_kills 完成后卡住（客机已完成、结果 `.done` 已写），
+改为逐例手动跑（同样每例前硬重启 + reset）。
+
+**过滤器的变化**：158 例过滤器新增 `|integration\.m5\.bigdisk` 排除（新验收用例约 25 min，
+不进默认门禁）；`support_bundle` 原先硬编码检查 `1.0.0`，已改为读被测 CLI 自报版本。
+
+**冻结**：`out/m5-evidence/release-manifest.json`，`frozen_at=2026-11-04T14:07:34Z`，
+4 个二进制 + 9 份读数；`Verify-M5Evidence.ps1` → **accepted**（自检 6 个坏证据集全部被拒）。
+
+**打包**：`out/release/MyRamDisk-1.0.1-win11-x64/`，11 个文件；`SHA256SUMS` 10 条逐条复算
+**0 mismatch**。打包脚本的 `-OutputRoot` 用相对路径时曾写出切片路径
+（`disk/.worktrees/…`），已改为 `GetFullPath` 解析目标目录后重新生成。

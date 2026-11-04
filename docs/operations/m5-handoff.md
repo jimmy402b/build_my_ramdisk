@@ -5713,4 +5713,48 @@ PowerShell/`Get-Process` 挂起而 `cmd` 可用。**这是与 create 不同的�
 
 **下一步（需要人决定）**：① 先定位写停顿再走完整验收（建议）；或 ② 把 1.0.1 范围收窄为"create 修复"
 （仍缺压力/断电读数与全量门禁）。在选定之前**不重新冻结 manifest、不打包、不打 tag**。
+
+---
+
+### 3.234 2026-11-04 22:10：**1.0.1 完成——四个缺陷已修、验收与全量门禁通过、manifest 冻结、打包复算一致**
+
+**结论**：§3.233 的"写入停顿"**不在 AIM/驱动的写路径**。7 GiB write-through 实测 **12 s 完成**
+（7,516,192,768 B，digest `AF76B0B8…E528554`），卡住的是 checkpoint 之后的**分类与恢复**。
+四个独立缺陷，全部已修（`77161f6`），每个都有客机读数：
+
+1. **`checkpoint: disposition=2` 是 `committed`**：服务日志打印管理层
+   `CheckpointCommitDisposition`（`committed=2`），run 层 `DiskCheckpointDisposition`
+   （`committed=0`）是另一个枚举。日志已改打枚举名。
+2. **已提交的 checkpoint 永远 Dirty**：非 stop 路径比较 `live_dirty_epoch`（worker 的
+   `observe()` 从不设置，恒 0）与 cut 代次（backing generation）。旧读数 generation 2→15、
+   journal 9,112,297,472 B、维护 checkpoint 每 60 s 重来。改用块级 `post_commit_dirty`。
+3. **恢复读端仍 2 GiB**：`b80a6e5` 只缩放了 M3 provider；`disk start` 先走的
+   `M4PersistenceAdapter` 仍用 2 GiB，于是 9.1 GiB 已提交 journal 被自己的盘拒绝
+   （`journal bound readback=9111699456 limit=2147483648 file=9111707648`）。新增
+   `recovery_persistence_limits()` 作为 M3 provider / M4 adapter / worker 默认值的唯一规则。
+4. **断电落在 start 的 `Starting/Recovering` 窗口 → profile 永久卡死**：sweep 只 retire
+   `running`；非终止的 `disk.start` 一直占 profile gate，之后所有 start 被 `0x5605` 拒绝而
+   `disk show` 仍 Healthy。sweep 现在也 retire `starting`，`recover_after_restart` 终止中断的
+   start 并释放门（读数：`restart: an interrupted start was terminalized and its profile gate released`）。
+
+**验收（1.0.1，16 GiB / fixed:12GiB，同一用例）**：create exit 0（卷 17,162,039,296 B、gen 2）→
+7 GiB 写 12 s、digest `AF76…E528554` → checkpoint gen 3 `post_commit_dirty=1` → gen 4 `0` →
+gen 6 `Idle/Clean`（journal 9,111,715,840 B）→ `vmrun stop hard` → 重启后 `already-running`（gen 6）、
+digest/size 一致、第二块盘 `0x5609`。
+
+**门禁**：A1 `e53280c0…` 158/158、A2 `2c341c8c…` 158/158、B `e359524c…` 5/5、fault 6/6
+（逐例硬重启；stop_after_restore 一次 420 s 未就绪、重试通过）。过滤器新增 `|bigdisk` 排除；
+`support_bundle` 的硬编码 `1.0.0` 已改为读 CLI 自报版本（测试缺陷）。
+
+**冻结/发布**：manifest `frozen_at=2026-11-04T14:07:34Z`（4 binaries + 9 readings）、
+validator **accepted**、包 `MyRamDisk-1.0.1-win11-x64` 11 files、`SHA256SUMS` 10 条复算 0 mismatch。
+二进制：service `3c4a0b28…`、cli `78c1c89c…`、gui `57c90a9c…`、worker `8b38ff28…`。
+版本 1.0.1；release notes `docs/operations/m5-release-1.0.1.md`。
+
+**遗留（如实记录）**：
+- 断电打断**正在执行的操作**（start/checkpoint）时，操作不会续跑：start 会被标记失败并自动重来；
+  checkpoint 走既有的 `resolving`/reconcile 路径。语义已写进 release notes §6。
+- 启动时 auto-start 可能被其它 reconciled 操作的 gate 拒绝一次（实测一次，之后 profile 退成
+  stopped、可显式 `disk start`）；未加自动重试。
+- `unit.m3.vhdx_reader` 偶发、fault 后 PowerShell/WMI 拖住等 1.0.0 已知项不变。
 工作树：`feature/m5-lifecycle` @ 本提交（干净），客机已 hard reset 到可用状态（1 盘、0 worker）。

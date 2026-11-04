@@ -59,8 +59,33 @@ myrd-m5-worker.exe  8B38FF285CAEF6217BBCA2A8A1662431574FD6616F311B84421230421FBE
 
 ## 4. 全量门禁与证据
 
-（待本轮门禁完成后填写：A1/A2 各 158、B 5、fault 6、manifest `frozen_at`、validator 结果、
-发布包复算。）
+每条之前都 reset 客机；A/B 用一条 `-Run -Filter` 命令，fault 组逐例硬重启。
+
+| 运行 | 请求 id | 例数 | 结果 |
+|---|---|---|---|
+| A1（主套件） | `e53280c0c461461ba031f0c5cfc16b30` | 158 | **158/158 passed**（12:40–12:51Z） |
+| A2（主套件复跑） | `2c341c8c28ce484b9609cb0bb1faf174` | 158 | **158/158 passed**（12:51–13:03Z） |
+| B（性能/簇大小/兼容性/soak/support-bundle） | `e359524cf0454948b6d16a625d186625` | 5 | **5/5 passed**（13:12–13:19Z） |
+| fault（6 例，逐例硬重启） | 见下 | 6 | **6/6 passed** |
+
+fault 组各例请求：`process_kills` `bac7fb5a…`（19.6 s）、`service_kill` `351c5944…`（18.4 s）、
+`bundle_corruption` `5ad1a28b…`（41.8 s）、`stop_after_restore` `4201c95a…`（18.5 s）、
+`hostile_acl` `3a24dd79…`（79.2 s）、`volume_full` `c9b3692f…`（88.7 s）。
+`stop_after_restore` 第一次因客机重启 420 s 未就绪被跳过，重试一次通过（1.0.0 同款慢启动）。
+
+**门禁过滤器的变化**：`integration.m5.bigdisk` 是本次单独跑的验收用例（约 25 min），
+已加入 158 例过滤器的排除项；否则它会以 verify 模式在干净客机上失败。
+B 里的 `support_bundle` 原先硬编码检查 `1.0.0`，已改为读取被测 CLI 自报的版本
+（`myrd-cli 1.0.1`）——这是测试缺陷，不是产品回归。
+
+**冻结**：`out/m5-evidence/release-manifest.json`，`frozen_at=2026-11-04T14:07:34Z`，
+4 个二进制 + 9 份读数（每份 `failed=0`）。`Verify-M5Evidence.ps1` →
+**`accepted: out/m5-evidence meets the evidence requirements`**（自检也确认 6 个坏证据集全部被拒）。
+
+**打包**：`out/release/MyRamDisk-1.0.1-win11-x64/`，11 个文件；`SHA256SUMS` 10 条**逐条复算 0 mismatch**。
+打包脚本的 `-OutputRoot` 传相对路径时曾把 SHA256SUMS 写成
+`disk/.worktrees/…` 这样的切片路径（哈希正确、路径不可用）；已改为把目标目录解析成绝对路径，
+并用默认绝对 `-OutputRoot` 重新生成。
 
 ## 5. 支持与限制（照 `docs/operations/m5-support.md`）
 
@@ -83,4 +108,7 @@ BitLocker/SMB 上的 bundle、运行中 export、改簇大小。未签名，以 
 
 ## 7. 构建与提交
 
-（待填：最终 commit、manifest `frozen_at`、validator 输出、打包复算。）
+**构建**：`feature/m5-lifecycle` @ `77161f6`（本轮修复与文档；tag 前的最终文档提交见 Git 历史）。
+四个二进制由同一工作树两次 `--clean-first` 构建，SHA-256 完全一致（见 §1）。
+**冻结**：`frozen_at=2026-11-04T14:07:34Z`；9 份读数；validator `accepted`。
+**发布物**：`out/release/MyRamDisk-1.0.1-win11-x64/`，`SHA256SUMS` 10 条复算一致。
