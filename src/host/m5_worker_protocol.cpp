@@ -29,6 +29,11 @@ constexpr std::uint32_t kHasCommitReply = 1U << 10;
 constexpr std::uint32_t kHasRemovalReply = 1U << 11;
 constexpr std::uint32_t kHasAbortReply = 1U << 12;
 constexpr std::uint32_t kHasExportPath = 1U << 13;
+constexpr std::uint32_t kHasCompactionPrepared = 1U << 14;
+constexpr std::uint32_t kHasCompactionCommit = 1U << 15;
+constexpr std::uint32_t kHasCompactionReply = 1U << 16;
+constexpr std::uint32_t kHasCompactionCorrelation = 1U << 17;
+constexpr std::uint32_t kHasCompactionRecovery = 1U << 18;
 
 Error protocol_error(const std::uint32_t code, const wchar_t* operation,
                      const wchar_t* message) {
@@ -49,6 +54,11 @@ std::uint32_t presence_mask(const WorkerMessage& message) {
     if (message.handshake.has_value()) mask |= kHasHandshake;
     if (message.prepared.has_value()) mask |= kHasPrepared;
     if (message.commit.has_value()) mask |= kHasCommit;
+    if (message.compaction_prepared.has_value()) mask |= kHasCompactionPrepared;
+    if (message.compaction_commit.has_value()) mask |= kHasCompactionCommit;
+    if (message.compaction_reply.has_value()) mask |= kHasCompactionReply;
+    if (message.compaction_correlation.has_value()) mask |= kHasCompactionCorrelation;
+    if (message.compaction_recovery.has_value()) mask |= kHasCompactionRecovery;
     if (message.status.has_value()) mask |= kHasStatus;
     if (message.commit_reply.has_value()) mask |= kHasCommitReply;
     if (message.removal_reply.has_value()) mask |= kHasRemovalReply;
@@ -134,6 +144,30 @@ PayloadShape shape_for(const WorkerMessageKind kind, const WorkerCommand command
         return {kBase | kHasOperationId |
                     (kind == WorkerMessageKind::request ? kHasCommit
                                                         : kHasCommitReply),
+                kHasError};
+    case WorkerCommand::compaction_prepare:
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasCompactionPrepared
+                                                      : 0U),
+                kHasError};
+    case WorkerCommand::compaction_commit:
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::request
+                         ? kHasCompactionCommit
+                         : kHasCompactionReply),
+                kHasError};
+    case WorkerCommand::compaction_abort:
+        // The abort answer is the same one the checkpoint aborts use: it names
+        // whether anything was cancelled and, when it was, the generation left
+        // committed.
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply ? kHasAbortReply : 0U),
+                kHasError};
+    case WorkerCommand::inspect_compaction:
+        return {kBase | kHasOperationId |
+                    (kind == WorkerMessageKind::reply
+                         ? kHasCompactionRecovery
+                         : kHasCompactionCorrelation),
                 kHasError};
     case WorkerCommand::recovery_proof:
         // A recovery proof request must carry the P4 correlation to judge
@@ -399,6 +433,52 @@ Result<WorkerRuntimeStatus> read_status(detail::WorkerBytesReader& reader) {
     return Result<WorkerRuntimeStatus>::success(std::move(status));
 }
 
+void write_compaction_metrics(detail::WorkerBytesWriter& writer,
+                              const WorkerCompactionMetrics& metrics) {
+    writer.u64(metrics.source_generation);
+    writer.u64(metrics.committed_generation);
+    writer.u64(metrics.source_base_bytes);
+    writer.u64(metrics.source_journal_bytes);
+    writer.u64(metrics.candidate_base_bytes);
+    writer.u64(metrics.candidate_journal_bytes);
+    writer.u64(metrics.required_peak_free_bytes);
+    writer.u64(metrics.available_free_bytes);
+    writer.u64(metrics.live_extent_count);
+    writer.u64(metrics.candidate_payloads);
+    writer.u64(metrics.snapshot_records);
+    writer.u64(metrics.data_records);
+    writer.u64(metrics.zero_records);
+    writer.u64(metrics.discard_records);
+    writer.u64(metrics.index_nodes);
+    writer.u64(metrics.newer_dirty_preserved);
+    writer.u64(metrics.retained_candidate_count);
+    writer.u64(metrics.deleted_candidate_count);
+}
+
+WorkerCompactionMetrics read_compaction_metrics(
+    detail::WorkerBytesReader& reader) {
+    WorkerCompactionMetrics metrics{};
+    metrics.source_generation = reader.u64();
+    metrics.committed_generation = reader.u64();
+    metrics.source_base_bytes = reader.u64();
+    metrics.source_journal_bytes = reader.u64();
+    metrics.candidate_base_bytes = reader.u64();
+    metrics.candidate_journal_bytes = reader.u64();
+    metrics.required_peak_free_bytes = reader.u64();
+    metrics.available_free_bytes = reader.u64();
+    metrics.live_extent_count = reader.u64();
+    metrics.candidate_payloads = reader.u64();
+    metrics.snapshot_records = reader.u64();
+    metrics.data_records = reader.u64();
+    metrics.zero_records = reader.u64();
+    metrics.discard_records = reader.u64();
+    metrics.index_nodes = reader.u64();
+    metrics.newer_dirty_preserved = reader.u64();
+    metrics.retained_candidate_count = reader.u64();
+    metrics.deleted_candidate_count = reader.u64();
+    return metrics;
+}
+
 Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t mask,
                         WorkerMessage& message) {
     if ((mask & kHasBinding) != 0) {
@@ -454,12 +534,34 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         prepared.candidate_bytes_digest = reader.digest();
         message.prepared = prepared;
     }
+    if ((mask & kHasCompactionPrepared) != 0) {
+        WorkerCompactionPrepared prepared{};
+        prepared.prior_generation = reader.u64();
+        prepared.candidate_generation = reader.u64();
+        prepared.native_operation_id = reader.u64();
+        prepared.cut_dirty_epoch = reader.u64();
+        prepared.source_base_bytes = reader.u64();
+        prepared.source_journal_bytes = reader.u64();
+        prepared.required_peak_free_bytes = reader.u64();
+        prepared.available_free_bytes = reader.u64();
+        prepared.candidate_base_bytes = reader.u64();
+        prepared.candidate_journal_bytes = reader.u64();
+        prepared.live_extent_count = reader.u64();
+        prepared.candidate_payloads = reader.u64();
+        message.compaction_prepared = prepared;
+    }
     if ((mask & kHasCommit) != 0) {
         WorkerCheckpointCommit commit{};
         commit.native_operation_id = reader.u64();
         commit.manifest_slot = reader.u8();
         commit.candidate_bytes_digest = reader.digest();
         message.commit = commit;
+    }
+    if ((mask & kHasCompactionCommit) != 0) {
+        WorkerCompactionCommit commit{};
+        commit.native_operation_id = reader.u64();
+        commit.cut_dirty_epoch = reader.u64();
+        message.compaction_commit = commit;
     }
     // Read in wire order, which is the order `write_body` writes: the commit
     // reply precedes the bare status.  The reader is a cursor, so a block read
@@ -507,6 +609,50 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
                 L"commit reply is truncated"));
         }
         message.commit_reply = std::move(reply);
+    }
+    if ((mask & kHasCompactionReply) != 0) {
+        WorkerCompactionCommitReply reply{};
+        const auto disposition = reader.u8();
+        if (disposition
+            > static_cast<std::uint8_t>(
+                WorkerCommitDisposition::committed_needs_reconciliation)) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"compaction disposition is not a value this protocol defines"));
+        }
+        reply.disposition = static_cast<WorkerCommitDisposition>(disposition);
+        reply.generation = reader.u64();
+        reply.dirty_epoch = reader.u64();
+        reply.metrics = read_compaction_metrics(reader);
+        if (reader.boolean()) {
+            WorkerCommitFailure failure{};
+            failure.operation = reader.text_ascii();
+            failure.code = reader.u32();
+            failure.phase = reader.u8();
+            failure.native_code = reader.u32();
+            failure.native_operation_id = reader.u64();
+            failure.image_uuid = reader.image_uuid();
+            failure.generation = reader.u64();
+            failure.safe_context = reader.text_ascii();
+            if (!reader.ok()) {
+                return Result<void>::failure(protocol_error(
+                    static_cast<std::uint32_t>(
+                        OperationErrorCode::protocol_malformed),
+                    L"decode_worker_message",
+                    L"compaction failure evidence is truncated"));
+            }
+            reply.failure = std::move(failure);
+        }
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"compaction reply is truncated"));
+        }
+        message.compaction_reply = std::move(reply);
     }
     if ((mask & kHasRemovalReply) != 0) {
         WorkerRemoveAndStopReply reply{};
@@ -569,6 +715,14 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         recovery.candidate_bytes_digest = reader.digest();
         message.recovery = recovery;
     }
+    if ((mask & kHasCompactionRecovery) != 0) {
+        WorkerCompactionRecoveryProof recovery{};
+        recovery.outcome = static_cast<WorkerRecoveryOutcome>(reader.u8());
+        recovery.observed_generation = reader.u64();
+        recovery.candidate_base_bytes = reader.u64();
+        recovery.candidate_journal_bytes = reader.u64();
+        message.compaction_recovery = recovery;
+    }
     if ((mask & kHasCorrelation) != 0) {
         // Read in wire order; the product id has no default constructor, so it
         // is parsed before the aggregate is built.
@@ -596,6 +750,23 @@ Result<void> parse_body(detail::WorkerBytesReader& reader, const std::uint32_t m
         }
         message.correlation = WorkerRecoveryCorrelation{
             *product_operation_id, checkpoint};
+    }
+    if ((mask & kHasCompactionCorrelation) != 0) {
+        WorkerCompactionCorrelation correlation{};
+        correlation.image_uuid = reader.image_uuid();
+        correlation.source_generation = reader.u64();
+        correlation.candidate_generation = reader.u64();
+        correlation.native_operation_id = reader.u64();
+        correlation.cut_dirty_epoch = reader.u64();
+        correlation.cut_dirty_epoch_known = reader.boolean();
+        if (!reader.ok()) {
+            return Result<void>::failure(protocol_error(
+                static_cast<std::uint32_t>(
+                    OperationErrorCode::protocol_malformed),
+                L"decode_worker_message",
+                L"compaction correlation body is truncated"));
+        }
+        message.compaction_correlation = correlation;
     }
     if ((mask & kHasRemoval) != 0) {
         auto removal_operation_id = reader.uuid();
@@ -726,10 +897,29 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.u8(message.prepared->manifest_slot);
         writer.digest(message.prepared->candidate_bytes_digest);
     }
+    if (message.compaction_prepared.has_value()) {
+        const auto& prepared = *message.compaction_prepared;
+        writer.u64(prepared.prior_generation);
+        writer.u64(prepared.candidate_generation);
+        writer.u64(prepared.native_operation_id);
+        writer.u64(prepared.cut_dirty_epoch);
+        writer.u64(prepared.source_base_bytes);
+        writer.u64(prepared.source_journal_bytes);
+        writer.u64(prepared.required_peak_free_bytes);
+        writer.u64(prepared.available_free_bytes);
+        writer.u64(prepared.candidate_base_bytes);
+        writer.u64(prepared.candidate_journal_bytes);
+        writer.u64(prepared.live_extent_count);
+        writer.u64(prepared.candidate_payloads);
+    }
     if (message.commit.has_value()) {
         writer.u64(message.commit->native_operation_id);
         writer.u8(message.commit->manifest_slot);
         writer.digest(message.commit->candidate_bytes_digest);
+    }
+    if (message.compaction_commit.has_value()) {
+        writer.u64(message.compaction_commit->native_operation_id);
+        writer.u64(message.compaction_commit->cut_dirty_epoch);
     }
     if (message.commit_reply.has_value()) {
         write_status(writer, message.commit_reply->status);
@@ -740,6 +930,25 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.boolean(message.commit_reply->failure.has_value());
         if (message.commit_reply->failure.has_value()) {
             const auto& failure = *message.commit_reply->failure;
+            writer.text_ascii(failure.operation);
+            writer.u32(failure.code);
+            writer.u8(failure.phase);
+            writer.u32(failure.native_code);
+            writer.u64(failure.native_operation_id);
+            writer.image_uuid(failure.image_uuid);
+            writer.u64(failure.generation);
+            writer.text_ascii(failure.safe_context);
+        }
+    }
+    if (message.compaction_reply.has_value()) {
+        const auto& reply = *message.compaction_reply;
+        writer.u8(static_cast<std::uint8_t>(reply.disposition));
+        writer.u64(reply.generation);
+        writer.u64(reply.dirty_epoch);
+        write_compaction_metrics(writer, reply.metrics);
+        writer.boolean(reply.failure.has_value());
+        if (reply.failure.has_value()) {
+            const auto& failure = *reply.failure;
             writer.text_ascii(failure.operation);
             writer.u32(failure.code);
             writer.u8(failure.phase);
@@ -769,6 +978,13 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.u8(message.recovery->manifest_slot);
         writer.digest(message.recovery->candidate_bytes_digest);
     }
+    if (message.compaction_recovery.has_value()) {
+        writer.u8(
+            static_cast<std::uint8_t>(message.compaction_recovery->outcome));
+        writer.u64(message.compaction_recovery->observed_generation);
+        writer.u64(message.compaction_recovery->candidate_base_bytes);
+        writer.u64(message.compaction_recovery->candidate_journal_bytes);
+    }
     if (message.correlation.has_value()) {
         writer.uuid(message.correlation->product_operation_id);
         writer.image_uuid(message.correlation->checkpoint.image_uuid);
@@ -777,6 +993,15 @@ void write_body(detail::WorkerBytesWriter& writer, const WorkerMessage& message)
         writer.u64(message.correlation->checkpoint.native_operation_id);
         writer.u8(message.correlation->checkpoint.manifest_slot);
         writer.digest(message.correlation->checkpoint.candidate_bytes_digest);
+    }
+    if (message.compaction_correlation.has_value()) {
+        const auto& correlation = *message.compaction_correlation;
+        writer.image_uuid(correlation.image_uuid);
+        writer.u64(correlation.source_generation);
+        writer.u64(correlation.candidate_generation);
+        writer.u64(correlation.native_operation_id);
+        writer.u64(correlation.cut_dirty_epoch);
+        writer.boolean(correlation.cut_dirty_epoch_known);
     }
     if (message.removal.has_value()) {
         writer.uuid(message.removal->removal_operation_id);
@@ -947,6 +1172,24 @@ Result<void> require_matching_candidate(
             static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
             L"require_matching_candidate",
             L"commit digest is not the prepared candidate"));
+    }
+    return Result<void>::success();
+}
+
+Result<void> require_matching_compaction(
+    const WorkerCompactionCommit& commit,
+    const WorkerCompactionPrepared& prepared) {
+    if (commit.native_operation_id != prepared.native_operation_id) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_matching_compaction",
+            L"commit native operation id is not the prepared compaction"));
+    }
+    if (commit.cut_dirty_epoch != prepared.cut_dirty_epoch) {
+        return Result<void>::failure(protocol_error(
+            static_cast<std::uint32_t>(OperationErrorCode::unknown_request),
+            L"require_matching_compaction",
+            L"commit cut epoch is not the prepared compaction"));
     }
     return Result<void>::success();
 }

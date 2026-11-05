@@ -1,6 +1,7 @@
 #include "src/management/service_worker_control.h"
 
 #include "src/common/diagnostic_trace.h"
+#include "src/common/m5_native_operation_id.h"
 #include "src/management/windows_worker_observation.h"
 
 #include <algorithm>
@@ -104,6 +105,76 @@ CheckpointPersistenceErrorContext to_management_context(
     context.disposition = disposition;
     context.safe_context = failure.safe_context;
     return context;
+}
+
+CompactionPersistenceErrorContext to_management_compaction_context(
+    const m5::WorkerCommitFailure& failure,
+    const CompactionCommitDisposition disposition) {
+    CompactionPersistenceErrorContext context{};
+    context.operation = failure.operation;
+    context.code = failure.code;
+    context.phase = failure.phase;
+    context.native_code = failure.native_code;
+    context.native_operation_id = failure.native_operation_id;
+    context.image_uuid = failure.image_uuid.bytes;
+    context.generation = failure.generation;
+    context.disposition = disposition;
+    context.safe_context = failure.safe_context;
+    return context;
+}
+
+CompactionCommitDisposition to_compaction_disposition(
+    const CheckpointCommitDisposition disposition) noexcept {
+    switch (disposition) {
+    case CheckpointCommitDisposition::not_committed:
+        return CompactionCommitDisposition::not_committed;
+    case CheckpointCommitDisposition::commit_indeterminate:
+        return CompactionCommitDisposition::commit_indeterminate;
+    case CheckpointCommitDisposition::committed:
+        return CompactionCommitDisposition::committed;
+    case CheckpointCommitDisposition::committed_needs_reconciliation:
+        return CompactionCommitDisposition::committed_needs_reconciliation;
+    }
+    return CompactionCommitDisposition::commit_indeterminate;
+}
+
+CompactionMetrics compaction_metrics_from_worker(
+    const m5::WorkerCompactionMetrics& source) noexcept {
+    CompactionMetrics metrics{};
+    metrics.source_generation = source.source_generation;
+    metrics.committed_generation = source.committed_generation;
+    metrics.source_base_bytes = source.source_base_bytes;
+    metrics.source_journal_bytes = source.source_journal_bytes;
+    metrics.candidate_base_bytes = source.candidate_base_bytes;
+    metrics.candidate_journal_bytes = source.candidate_journal_bytes;
+    metrics.required_peak_free_bytes = source.required_peak_free_bytes;
+    metrics.available_free_bytes = source.available_free_bytes;
+    metrics.live_extent_count = source.live_extent_count;
+    metrics.candidate_payloads = source.candidate_payloads;
+    metrics.snapshot_records = source.snapshot_records;
+    metrics.data_records = source.data_records;
+    metrics.zero_records = source.zero_records;
+    metrics.discard_records = source.discard_records;
+    metrics.index_nodes = source.index_nodes;
+    metrics.newer_dirty_preserved = source.newer_dirty_preserved;
+    metrics.retained_candidate_count = source.retained_candidate_count;
+    metrics.deleted_candidate_count = source.deleted_candidate_count;
+    return metrics;
+}
+
+CompactionMetrics compaction_metrics_from_prepared(
+    const m5::WorkerCompactionPrepared& prepared) noexcept {
+    CompactionMetrics metrics{};
+    metrics.source_generation = prepared.prior_generation;
+    metrics.source_base_bytes = prepared.source_base_bytes;
+    metrics.source_journal_bytes = prepared.source_journal_bytes;
+    metrics.required_peak_free_bytes = prepared.required_peak_free_bytes;
+    metrics.available_free_bytes = prepared.available_free_bytes;
+    metrics.candidate_base_bytes = prepared.candidate_base_bytes;
+    metrics.candidate_journal_bytes = prepared.candidate_journal_bytes;
+    metrics.live_extent_count = prepared.live_extent_count;
+    metrics.candidate_payloads = prepared.candidate_payloads;
+    return metrics;
 }
 
 // The worker takes a drive letter, so a launch target that is not one has to be
@@ -1486,6 +1557,390 @@ Result<WorkerActionResult> ServiceWorkerControl::execute_checkpoint(
     const CheckpointCommitBoundaryHandler& boundary) {
     std::unique_lock lock(command_gate_);
     return checkpoint_across_boundary(request, boundary);
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::execute_compaction(
+    const WorkerActionRequest& request,
+    const CompactionMutationBoundaryHandler& boundary,
+    const CompactionCutPublicationHandler& cut) {
+    std::unique_lock lock(command_gate_);
+    return compaction_across_boundary(request, boundary, cut);
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::compaction_across_boundary(
+    const WorkerActionRequest& request,
+    const CompactionMutationBoundaryHandler& boundary,
+    const CompactionCutPublicationHandler& cut) {
+    if (!request.durable_profile.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.compaction",
+            L"The compaction needs the operation's durable profile"));
+    }
+    auto session = require_session(request.profile_id, true);
+    if (!session.ok()) {
+        return Result<WorkerActionResult>::failure(session.error());
+    }
+    auto bound = verify_binding(request, *session.value());
+    if (!bound.ok()) return bound;
+
+    const auto& profile = request.durable_profile.value();
+    auto prepared = session.value()->prepare_compaction(
+        provisioning_context(), request.operation_id);
+    if (!prepared.ok()) {
+        // A worker may still hold a prepare from a previous service session that
+        // crashed before recording its boundary.  That prepare is unpublished
+        // and therefore safe to discard; doing so here is what lets a retried
+        // compaction proceed instead of failing forever on "already prepared".
+        auto discarded = session.value()->abort_compaction(
+            context(), request.operation_id, 0);
+        if (!discarded.ok()) {
+            return Result<WorkerActionResult>::failure(prepared.error());
+        }
+        prepared = session.value()->prepare_compaction(
+            provisioning_context(), request.operation_id);
+        if (!prepared.ok()) {
+            return Result<WorkerActionResult>::failure(prepared.error());
+        }
+    }
+    const auto& value = prepared.value();
+    if (value.prior_generation
+        == (std::numeric_limits<std::uint64_t>::max)()) {
+        (void)session.value()->abort_compaction(
+            context(), request.operation_id, value.native_operation_id);
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.compaction",
+            L"The prepared generation cannot be advanced"));
+    }
+    const auto expected_candidate = value.prior_generation + 1;
+    const auto expected_native = m5_native_operation_id(expected_candidate);
+    if (value.candidate_generation != expected_candidate
+        || !expected_native.has_value()
+        || value.native_operation_id != *expected_native
+        || value.cut_dirty_epoch == 0
+        || value.source_base_bytes == 0
+        || value.source_journal_bytes == 0
+        || value.required_peak_free_bytes == 0
+        || value.available_free_bytes < value.required_peak_free_bytes) {
+        (void)session.value()->abort_compaction(
+            context(), request.operation_id, value.native_operation_id);
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.compaction",
+            L"The worker prepared a compaction this service cannot re-derive"));
+    }
+
+    const auto& binding = session.value()->binding();
+    CompactionMutationBoundaryEvidence evidence{
+        request.operation_id,
+        request.profile_id,
+        profile.profile.image_uuid,
+        binding.process_id,
+        binding.process_creation_time,
+        binding.session_generation,
+        value.prior_generation,
+        value.candidate_generation,
+        0,
+        value.source_base_bytes,
+        value.source_journal_bytes,
+        value.required_peak_free_bytes,
+        value.available_free_bytes,
+        value.native_operation_id,
+        false};
+    auto decision = boundary(evidence);
+    if (!decision.ok()) {
+        (void)session.value()->abort_compaction(
+            context(), request.operation_id, value.native_operation_id);
+        return Result<WorkerActionResult>::failure(decision.error());
+    }
+    if (!decision.value().continue_compaction) {
+        (void)session.value()->abort_compaction(
+            context(), request.operation_id, value.native_operation_id);
+        WorkerActionResult result = completed_result();
+        result.compaction = WorkerCompactionEvidence{
+            evidence,
+            CompactionCommitDisposition::not_committed,
+            evidence.prior_generation,
+            0,
+            compaction_metrics_from_prepared(value),
+            std::nullopt,
+            std::nullopt};
+        return Result<WorkerActionResult>::success(std::move(result));
+    }
+
+    auto cut_evidence = evidence;
+    cut_evidence.cut_dirty_epoch = value.cut_dirty_epoch;
+    cut_evidence.cut_dirty_epoch_known = true;
+    auto cut_decision = cut(cut_evidence);
+    if (!cut_decision.ok()) {
+        (void)session.value()->abort_compaction(
+            context(), request.operation_id, value.native_operation_id);
+        return Result<WorkerActionResult>::failure(cut_decision.error());
+    }
+    if (!cut_decision.value().continue_compaction) {
+        (void)session.value()->abort_compaction(
+            context(), request.operation_id, value.native_operation_id);
+        WorkerActionResult result = completed_result();
+        result.compaction = WorkerCompactionEvidence{
+            cut_evidence,
+            CompactionCommitDisposition::not_committed,
+            cut_evidence.prior_generation,
+            cut_evidence.cut_dirty_epoch,
+            compaction_metrics_from_prepared(value),
+            std::nullopt,
+            std::nullopt};
+        return Result<WorkerActionResult>::success(std::move(result));
+    }
+
+    auto committed = session.value()->commit_compaction(
+        provisioning_context(), request.operation_id,
+        m5::WorkerCompactionCommit{value.native_operation_id,
+                                   value.cut_dirty_epoch});
+    if (!committed.ok()) {
+        // The transport failed, so the commit's fate is not knowable here.  It
+        // is reported as a failure and ServiceCore parks the operation for
+        // reconciliation; guessing either way would destroy the outcome.
+        return Result<WorkerActionResult>::failure(committed.error());
+    }
+    const auto& reply = committed.value();
+    const auto checkpoint_disposition =
+        to_management_disposition(reply.disposition);
+    if (!checkpoint_disposition.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.compaction",
+            L"The worker reported an unknown compaction disposition"));
+    }
+    const auto disposition =
+        to_compaction_disposition(*checkpoint_disposition);
+    const bool landed =
+        disposition == CompactionCommitDisposition::committed
+        || disposition
+            == CompactionCommitDisposition::committed_needs_reconciliation;
+    if (landed && reply.failure.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.compaction",
+            L"A committed compaction reported failure evidence"));
+    }
+    if (!landed && !reply.failure.has_value()) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::worker_reply_unexpected,
+            L"service_worker_control.compaction",
+            L"A compaction that did not land reported no failure evidence"));
+    }
+
+    std::optional<Error> failure;
+    std::optional<CompactionPersistenceErrorContext> failure_context;
+    if (!landed && reply.failure.has_value()) {
+        failure_context = to_management_compaction_context(
+            reply.failure.value(), disposition);
+        failure = Error{
+            ErrorDomain::persistence,
+            reply.failure->code,
+            std::wstring(reply.failure->operation.begin(),
+                         reply.failure->operation.end()),
+            L"The worker compaction did not land",
+            reply.failure->native_code};
+    }
+    auto observed_epoch = (std::max)(
+        value.cut_dirty_epoch, reply.dirty_epoch);
+    if (reply.metrics.newer_dirty_preserved != 0
+        && observed_epoch
+            != (std::numeric_limits<std::uint64_t>::max)()) {
+        // Post-cut writes were preserved into the new journal, so the runtime is
+        // genuinely dirty even if its counter happens to read low after the
+        // backing install.  Reporting clean here would let a later stop drop
+        // writes that were acknowledged before the compaction.
+        observed_epoch = (std::max)(observed_epoch, value.cut_dirty_epoch + 1);
+    }
+    last_compaction_epoch_ = CompactionEpochObservation{
+        cut_evidence, observed_epoch};
+    WorkerActionResult result = completed_result();
+    result.compaction = WorkerCompactionEvidence{
+        cut_evidence,
+        disposition,
+        reply.generation,
+        observed_epoch,
+        compaction_metrics_from_worker(reply.metrics),
+        std::move(failure),
+        std::move(failure_context)};
+    return Result<WorkerActionResult>::success(std::move(result));
+}
+
+Result<WorkerActionResult> ServiceWorkerControl::reconcile_compaction(
+    const WorkerActionRequest& request,
+    const CompactionMutationBoundaryEvidence& correlation) {
+    std::unique_lock lock(command_gate_);
+    if (correlation.native_m3_operation_id == std::nullopt
+        || correlation.native_m3_operation_id.value() == 0
+        || correlation.prior_generation
+            >= (std::numeric_limits<std::uint64_t>::max)() - 1
+        || correlation.candidate_generation
+            != correlation.prior_generation + 1) {
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::recovery_not_provable,
+            L"service_worker_control.reconcile_compaction",
+            L"The durable compaction correlation is incomplete"));
+    }
+
+    // An inspection answers the question and is then closed: a session left open
+    // is a worker nobody commands and a bundle nobody can take for writing.  A
+    // live worker holding the runtime is used directly.
+    auto* const held = find_session(request.profile_id);
+    std::unique_ptr<ServiceWorkerSession> inspection;
+    ServiceWorkerSession* session = held;
+    std::uint32_t inspection_pid{};
+    std::uint64_t inspection_created{};
+    if (session == nullptr) {
+        if (!request.durable_profile.has_value()) {
+            return Result<WorkerActionResult>::failure(control_error(
+                ServiceWorkerControlError::invalid_argument,
+                L"service_worker_control.reconcile_compaction",
+                L"The reconciliation needs the operation's durable profile to "
+                L"launch an inspection"));
+        }
+        auto launch_request =
+            make_launch_request(request.durable_profile.value());
+        if (!launch_request.ok()) {
+            return Result<WorkerActionResult>::failure(launch_request.error());
+        }
+        auto launched = sessions_.launch(launch_request.value(), context());
+        if (!launched.ok()) {
+            return Result<WorkerActionResult>::failure(launched.error());
+        }
+        inspection = launched.move_value();
+        const auto binding = inspection->binding();
+        inspection_pid = binding.process_id;
+        inspection_created = binding.process_creation_time;
+        session = inspection.get();
+    }
+    auto bound = verify_binding(request, *session);
+    if (!bound.ok()) return bound;
+
+    m5::WorkerCompactionCorrelation wire{};
+    wire.image_uuid = to_image_uuid(correlation.image_id);
+    wire.source_generation = correlation.prior_generation;
+    wire.candidate_generation = correlation.candidate_generation;
+    wire.native_operation_id = correlation.native_m3_operation_id.value();
+    wire.cut_dirty_epoch = correlation.cut_dirty_epoch;
+    wire.cut_dirty_epoch_known = correlation.cut_dirty_epoch_known;
+    auto proof = session->inspect_compaction(
+        context(), request.operation_id, wire);
+    if (inspection) {
+        inspection.reset();
+        (void)worker_process_gone(inspection_pid, inspection_created, 5000);
+    }
+    if (!proof.ok()) {
+        return Result<WorkerActionResult>::failure(proof.error());
+    }
+    if (proof.value().outcome
+        == m5::WorkerRecoveryOutcome::ownership_unprovable) {
+        // The bundle supports neither claim.  Reporting a disposition here
+        // would be inventing one; the caller parks the operation instead.
+        return Result<WorkerActionResult>::failure(control_error(
+            ServiceWorkerControlError::recovery_not_provable,
+            L"service_worker_control.reconcile_compaction",
+            L"The bundle proves neither the source nor the candidate generation"));
+    }
+
+    CompactionMetrics metrics{};
+    metrics.source_generation = correlation.prior_generation;
+    metrics.source_base_bytes = correlation.source_base_bytes;
+    metrics.source_journal_bytes = correlation.source_journal_bytes;
+    metrics.required_peak_free_bytes =
+        correlation.required_peak_free_bytes;
+    metrics.available_free_bytes = correlation.available_free_bytes;
+    if (proof.value().outcome
+        == m5::WorkerRecoveryOutcome::candidate_generation_proved) {
+        metrics.committed_generation = correlation.candidate_generation;
+        metrics.candidate_base_bytes = proof.value().candidate_base_bytes;
+        metrics.candidate_journal_bytes =
+            proof.value().candidate_journal_bytes;
+        // Conservative by construction: a recovered candidate may have
+        // preserved writes that landed after the cut, and this inspection
+        // cannot prove they are gone.  Reporting dirty costs one later
+        // checkpoint; reporting clean could let a stop drop them.
+        const auto observed = correlation.cut_dirty_epoch
+            == (std::numeric_limits<std::uint64_t>::max)()
+            ? correlation.cut_dirty_epoch
+            : correlation.cut_dirty_epoch + 1;
+        recovery_compaction_epoch_ = CompactionEpochObservation{
+            correlation, observed};
+        WorkerActionResult result = completed_result();
+        result.compaction = WorkerCompactionEvidence{
+            correlation,
+            CompactionCommitDisposition::committed,
+            correlation.candidate_generation,
+            observed,
+            metrics,
+            std::nullopt,
+            std::nullopt};
+        return Result<WorkerActionResult>::success(std::move(result));
+    }
+
+    WorkerActionResult result = completed_result();
+    result.compaction = WorkerCompactionEvidence{
+        correlation,
+        CompactionCommitDisposition::not_committed,
+        correlation.prior_generation,
+        correlation.cut_dirty_epoch,
+        metrics,
+        std::nullopt,
+        std::nullopt};
+    return Result<WorkerActionResult>::success(std::move(result));
+}
+
+Result<void> ServiceWorkerControl::publish_compaction_epoch(
+    const WorkerActionRequest& request,
+    const CompactionMutationBoundaryEvidence& correlation,
+    const CompactionEpochPublicationHandler& publish) {
+    std::unique_lock lock(command_gate_);
+    if (!publish) {
+        return Result<void>::failure(control_error(
+            ServiceWorkerControlError::invalid_argument,
+            L"service_worker_control.publish_compaction_epoch",
+            L"The dirty-epoch fence was not supplied"));
+    }
+    // The commit that just finished already observed what it left behind, and
+    // that observation is the only one guaranteed to be at or above the cut --
+    // a fresh status read after a backing install is not required to be
+    // monotonic.  Use it when it belongs to this correlation.
+    if (last_compaction_epoch_.has_value()
+        && last_compaction_epoch_->correlation == correlation) {
+        const auto observation = *last_compaction_epoch_;
+        last_compaction_epoch_.reset();
+        return publish(observation);
+    }
+    auto session = require_session(request.profile_id, true);
+    if (session.ok()) {
+        auto status = session.value()->require_runtime_observation(context());
+        if (status.ok()) {
+            const auto observed = (std::max)(
+                correlation.cut_dirty_epoch, status.value().dirty_epoch);
+            return publish(CompactionEpochObservation{
+                correlation, observed});
+        }
+    }
+    // A recovery inspection has already closed the worker it asked.  Its own
+    // conservative observation is the only honest answer left, and it is
+    // consumed once so a later publication cannot replay it.
+    if (recovery_compaction_epoch_.has_value()
+        && recovery_compaction_epoch_->correlation == correlation) {
+        const auto observation = *recovery_compaction_epoch_;
+        recovery_compaction_epoch_.reset();
+        return publish(observation);
+    }
+    return Result<void>::failure(session.ok()
+        ? control_error(
+              ServiceWorkerControlError::worker_reply_unexpected,
+              L"service_worker_control.publish_compaction_epoch",
+              L"The worker could not observe the post-compaction dirty epoch")
+        : control_error(
+              ServiceWorkerControlError::execution_not_bound,
+              L"service_worker_control.publish_compaction_epoch",
+              L"No live worker can confirm the post-compaction dirty epoch"));
 }
 
 Result<WorkerActionResult> ServiceWorkerControl::reconcile_checkpoint(

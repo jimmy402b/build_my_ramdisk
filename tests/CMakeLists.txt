@@ -765,6 +765,24 @@ set_tests_properties(integration.m5.cli_e2e PROPERTIES
     RUN_SERIAL TRUE
     TIMEOUT 1800)
 
+# ---- M5 online-compaction acceptance (T4-03) ---------------------------------
+# Four guest-only scenarios, one entry point.  `manual` is the completion
+# criterion's 16 GiB disk: 1 GiB -> checkpoint -> compact -> SHA-256 unchanged
+# -> stop/start.  `auto` drives 200 checkpoints past a low threshold and
+# requires at least one automatic compaction with a bounded journal.  `churn`
+# writes and deletes 10 GiB three times.  `kill` cuts a compaction after its
+# manifest was published, restarts the service, and requires the data back.
+foreach (scenario IN ITEMS manual auto churn regression kill)
+    add_test(
+        NAME "integration.m5.compaction_${scenario}"
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/e2e/test-m5-compaction-e2e.ps1"
+                -Scenario ${scenario})
+    set_tests_properties("integration.m5.compaction_${scenario}" PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 5400)
+endforeach()
+
 # ---- M5 power-cut acceptance (T1-09) -----------------------------------------
 # Two guest-side halves with a host-side power cut between them, because neither half
 # can do the other's job: the guest cannot cut its own power, and the host cannot see

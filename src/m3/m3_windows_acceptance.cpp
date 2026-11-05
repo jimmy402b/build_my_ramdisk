@@ -754,6 +754,64 @@ Result<void> M3AimRuntime::abort_checkpoint(
     return provider_->abort_checkpoint(native_operation_id);
 }
 
+Result<M3CompactionPrepared> M3AimRuntime::prepare_compaction(
+    const OperationContext& context,
+    const M3CompactionRequest request) {
+    if (!started_ || !provider_) {
+        return Result<M3CompactionPrepared>::failure(Error{
+            ErrorDomain::internal,
+            static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
+            L"M3AimRuntime::prepare_compaction",
+            L"runtime is not started"});
+    }
+    return provider_->prepare_compaction(context, request);
+}
+
+M3CompactionOutcome M3AimRuntime::commit_compaction(
+    const OperationContext& context,
+    const std::uint64_t native_operation_id,
+    const std::uint64_t cut_dirty_epoch) {
+    if (!started_ || !provider_) {
+        return {persistence::CommitDisposition::NotCommitted, 0, {}, {},
+                Error{ErrorDomain::internal,
+                      static_cast<std::uint32_t>(
+                          OperationErrorCode::internal_invariant),
+                      L"M3AimRuntime::commit_compaction",
+                      L"runtime is not started"},
+                std::nullopt};
+    }
+    return provider_->commit_compaction(
+        context, native_operation_id, cut_dirty_epoch);
+}
+
+Result<void> M3AimRuntime::abort_compaction(
+    const std::uint64_t native_operation_id) {
+    if (!started_ || !provider_) {
+        return Result<void>::failure(Error{
+            ErrorDomain::internal,
+            static_cast<std::uint32_t>(OperationErrorCode::internal_invariant),
+            L"M3AimRuntime::abort_compaction",
+            L"runtime is not started"});
+    }
+    return provider_->abort_compaction(native_operation_id);
+}
+
+M3CompactionOutcome M3AimRuntime::reconcile_compaction(
+    const OperationContext& context,
+    const M3CompactionBoundaryEvidence& boundary) {
+    if (!started_ || !provider_) {
+        return {persistence::CommitDisposition::CommitIndeterminate, 0, boundary,
+                {},
+                Error{ErrorDomain::internal,
+                      static_cast<std::uint32_t>(
+                          OperationErrorCode::internal_invariant),
+                      L"M3AimRuntime::reconcile_compaction",
+                      L"runtime is not started"},
+                std::nullopt};
+    }
+    return provider_->reconcile_compaction(context, boundary);
+}
+
 DynamicBlockStoreStats M3AimRuntime::storage_stats() const {
     if (provider_) return provider_->storage_stats();
     return {};

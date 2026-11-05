@@ -112,6 +112,52 @@ void pause_at_p4_for_testing(const std::uint64_t generation) {
     }
 }
 
+// The compaction counterpart of the P4 window: the manifest has been published
+// and the service has not yet recorded the evidence.  Same environment contract
+// and the same reason -- the window is milliseconds wide and a fault experiment
+// must cut at a *proven* moment, not a guessed one.
+void pause_after_compaction_commit_for_testing(
+    const std::uint64_t generation) {
+    wchar_t mode[32]{};
+    const auto mode_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_AT", mode, 32);
+    if (mode_length == 0 || mode_length >= 32) return;
+    if (std::wstring_view(mode, mode_length) != L"compaction-committed") return;
+    wchar_t file[512]{};
+    const auto file_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_FILE", file, 512);
+    if (file_length == 0 || file_length >= 512) return;
+    const std::string text =
+        "compaction-committed generation=" + std::to_string(generation)
+        + " pid=" + std::to_string(GetCurrentProcessId()) + "\n";
+    const HANDLE marker = CreateFileW(
+        file, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (marker == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    static_cast<void>(WriteFile(
+        marker, text.data(), static_cast<DWORD>(text.size()), &written,
+        nullptr));
+    CloseHandle(marker);
+    diagnostic_trace(("test pause: compaction-committed generation="
+        + std::to_string(generation)).c_str());
+
+    std::uint32_t seconds = 180;
+    wchar_t raw[16]{};
+    const auto raw_length =
+        GetEnvironmentVariableW(L"MYRD_M5_TEST_PAUSE_SECONDS", raw, 16);
+    if (raw_length > 0 && raw_length < 16) {
+        const auto parsed = wcstoul(raw, nullptr, 10);
+        if (parsed > 0 && parsed <= 3600)
+            seconds = static_cast<std::uint32_t>(parsed);
+    }
+    const ULONGLONG deadline =
+        GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000ULL;
+    while (GetTickCount64() < deadline) {
+        Sleep(50);
+    }
+}
+
 // Wraps the reclaim's start sequence so each step is recorded before and after it runs.
 //
 // The names are the `DiskRuntime` steps, in the order that runtime calls them, because the
@@ -1100,6 +1146,160 @@ Result<WorkerRecoveryProof> DiskWorkerRuntime::prove_recovery(
     proof.manifest_slot = inspection.value().selected_manifest_slot;
     proof.candidate_bytes_digest = inspection.value().selected_manifest_digest;
     return Result<WorkerRecoveryProof>::success(proof);
+}
+
+Result<WorkerCompactionPrepared> DiskWorkerRuntime::prepare_compaction(
+    const std::uint64_t native_operation_id) {
+    auto& impl = *impl_;
+    if (!impl.runtime || !impl.identity_verified) {
+        return Result<WorkerCompactionPrepared>::failure(runtime_error(
+            L"DiskWorkerRuntime::prepare_compaction",
+            L"the worker runtime is not running"));
+    }
+    auto prepared = impl.runtime->prepare_compaction(native_operation_id);
+    if (!prepared.ok()) {
+        return Result<WorkerCompactionPrepared>::failure(prepared.error());
+    }
+    const auto& value = prepared.value();
+    WorkerCompactionPrepared reply{};
+    reply.prior_generation = value.prior_generation;
+    reply.candidate_generation = value.candidate_generation;
+    reply.native_operation_id = value.native_operation_id;
+    reply.cut_dirty_epoch = value.cut_dirty_epoch;
+    reply.source_base_bytes = value.source_base_bytes;
+    reply.source_journal_bytes = value.source_journal_bytes;
+    reply.required_peak_free_bytes = value.required_peak_free_bytes;
+    reply.available_free_bytes = value.available_free_bytes;
+    reply.candidate_base_bytes = value.candidate_base_bytes;
+    reply.candidate_journal_bytes = value.candidate_journal_bytes;
+    reply.live_extent_count = value.live_extent_count;
+    reply.candidate_payloads = value.candidate_payloads;
+    return Result<WorkerCompactionPrepared>::success(std::move(reply));
+}
+
+Result<WorkerCompactionCommitReply> DiskWorkerRuntime::commit_compaction(
+    const WorkerCompactionCommit& commit) {
+    auto& impl = *impl_;
+    if (!impl.runtime) {
+        return Result<WorkerCompactionCommitReply>::failure(runtime_error(
+            L"DiskWorkerRuntime::commit_compaction",
+            L"the worker runtime is not running"));
+    }
+    auto committed = impl.runtime->commit_compaction(
+        commit.native_operation_id, commit.cut_dirty_epoch);
+    if (!committed.ok()) {
+        return Result<WorkerCompactionCommitReply>::failure(committed.error());
+    }
+    const auto& value = committed.value();
+    WorkerCompactionCommitReply reply{};
+    reply.disposition = protocol_disposition(value.disposition);
+    reply.generation = value.generation;
+    reply.metrics.source_generation = value.metrics.source_generation;
+    reply.metrics.committed_generation = value.metrics.committed_generation;
+    reply.metrics.source_base_bytes = value.metrics.source_base_bytes;
+    reply.metrics.source_journal_bytes = value.metrics.source_journal_bytes;
+    reply.metrics.candidate_base_bytes = value.metrics.candidate_base_bytes;
+    reply.metrics.candidate_journal_bytes = value.metrics.candidate_journal_bytes;
+    reply.metrics.required_peak_free_bytes =
+        value.metrics.required_peak_free_bytes;
+    reply.metrics.available_free_bytes = value.metrics.available_free_bytes;
+    reply.metrics.live_extent_count = value.metrics.live_extent_count;
+    reply.metrics.candidate_payloads = value.metrics.candidate_payloads;
+    reply.metrics.snapshot_records = value.metrics.snapshot_records;
+    reply.metrics.data_records = value.metrics.data_records;
+    reply.metrics.zero_records = value.metrics.zero_records;
+    reply.metrics.discard_records = value.metrics.discard_records;
+    reply.metrics.index_nodes = value.metrics.index_nodes;
+    reply.metrics.newer_dirty_preserved = value.metrics.newer_dirty_preserved;
+    reply.metrics.retained_candidate_count =
+        value.metrics.retained_candidate_count;
+    reply.metrics.deleted_candidate_count =
+        value.metrics.deleted_candidate_count;
+    if (reply.landed()) {
+        auto status = observe();
+        if (status.ok()) reply.dirty_epoch = status.value().dirty_epoch;
+    } else if (value.error_context.has_value()) {
+        const auto& context = value.error_context.value();
+        WorkerCommitFailure failure{};
+        failure.operation = context.operation;
+        failure.code = context.code;
+        failure.phase = context.phase;
+        failure.native_code = context.native_code;
+        failure.native_operation_id = context.native_operation_id;
+        failure.image_uuid = persistence::ImageUuid{context.image_uuid};
+        failure.generation = context.generation;
+        failure.safe_context = context.safe_context;
+        reply.failure = std::move(failure);
+    }
+    if (!reply.landed() && !reply.failure.has_value()) {
+        return Result<WorkerCompactionCommitReply>::failure(runtime_error(
+            L"DiskWorkerRuntime::commit_compaction",
+            L"a compaction that did not land reported no failure evidence"));
+    }
+    if (reply.landed()) {
+        pause_after_compaction_commit_for_testing(reply.generation);
+    }
+    return Result<WorkerCompactionCommitReply>::success(std::move(reply));
+}
+
+Result<WorkerCheckpointAbortReply> DiskWorkerRuntime::abort_compaction(
+    const std::uint64_t native_operation_id) {
+    auto& impl = *impl_;
+    if (!impl.runtime) {
+        return Result<WorkerCheckpointAbortReply>::failure(runtime_error(
+            L"DiskWorkerRuntime::abort_compaction",
+            L"the worker runtime is not running"));
+    }
+    auto aborted = impl.runtime->abort_compaction(native_operation_id);
+    if (!aborted.ok()) {
+        return Result<WorkerCheckpointAbortReply>::failure(aborted.error());
+    }
+    WorkerCheckpointAbortReply reply{};
+    reply.aborted = true;
+    reply.generation = impl.runtime->maintenance_stats().generation;
+    reply.refusal = WorkerAbortRefusal::none;
+    return Result<WorkerCheckpointAbortReply>::success(reply);
+}
+
+Result<WorkerCompactionRecoveryProof> DiskWorkerRuntime::inspect_compaction(
+    const WorkerCompactionCorrelation& correlation) {
+    auto& impl = *impl_;
+    // Deliberately callable before `start()`: this is the read-only question a
+    // fresh worker must answer before it may take the writer lock or mount.
+    persistence::ImageInspectOptions options{};
+    options.manifest_relative_name = impl.config.manifest_name;
+    options.recovery = impl.config.recovery;
+    persistence::CompactionRecoveryCorrelation expected{};
+    expected.image_uuid = correlation.image_uuid;
+    expected.source_generation = correlation.source_generation;
+    expected.candidate_generation = correlation.candidate_generation;
+    expected.native_operation_id = correlation.native_operation_id;
+    expected.cut_dirty_epoch = correlation.cut_dirty_epoch;
+    expected.cut_dirty_epoch_known = correlation.cut_dirty_epoch_known;
+    auto inspected = persistence::inspect_compaction(
+        context(), impl.config.bundle, options, expected);
+    if (!inspected.ok()) {
+        return Result<WorkerCompactionRecoveryProof>::failure(
+            inspected.error());
+    }
+    WorkerCompactionRecoveryProof proof{};
+    switch (inspected.value().verdict) {
+    case persistence::CompactionRecoveryVerdict::SourceGenerationProved:
+        proof.outcome = WorkerRecoveryOutcome::prior_generation_proved;
+        break;
+    case persistence::CompactionRecoveryVerdict::CandidateGenerationProved:
+        proof.outcome = WorkerRecoveryOutcome::candidate_generation_proved;
+        break;
+    case persistence::CompactionRecoveryVerdict::Unprovable:
+    default:
+        proof.outcome = WorkerRecoveryOutcome::ownership_unprovable;
+        break;
+    }
+    proof.observed_generation = inspected.value().observed_generation;
+    proof.candidate_base_bytes = inspected.value().candidate_base_bytes;
+    proof.candidate_journal_bytes =
+        inspected.value().candidate_journal_bytes;
+    return Result<WorkerCompactionRecoveryProof>::success(proof);
 }
 
 Result<WorkerRemoveAndStopReply> DiskWorkerRuntime::remove_and_stop(

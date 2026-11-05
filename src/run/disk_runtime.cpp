@@ -340,10 +340,10 @@ Result<DiskCheckpointResult> DiskRuntime::checkpoint() {
     // The M4 one-shot path and the M5 two-phase path share one candidate slot.
     // Letting the one-shot call run while a candidate is prepared would publish
     // a generation the prepared transaction never observed.
-    if (pending_checkpoint_)
+    if (pending_checkpoint_ || pending_compaction_native_operation_id_)
         return Result<DiskCheckpointResult>::failure(runtime_error(
             L"checkpoint",
-            L"a two-phase checkpoint is prepared; commit or abort it first"));
+            L"a checkpoint or compaction is prepared; resolve it first"));
     return operations_.checkpoint();
 }
 
@@ -352,10 +352,10 @@ Result<DiskCheckpointPrepared> DiskRuntime::prepare_checkpoint(
     std::lock_guard<std::mutex> guard(mutex_);
     if (!started_ || !operations_.prepare_checkpoint)
         return missing<DiskCheckpointPrepared>(L"prepare_checkpoint");
-    if (pending_checkpoint_)
+    if (pending_checkpoint_ || pending_compaction_native_operation_id_)
         return Result<DiskCheckpointPrepared>::failure(runtime_error(
             L"prepare_checkpoint",
-            L"a checkpoint candidate is already prepared"));
+            L"a checkpoint or compaction is already prepared"));
     // Zero is the "no operation" encoding and cannot identify a prepare, so it
     // is refused before any state changes (design spec 3.3).
     if (request.native_operation_id == 0)
@@ -430,6 +430,77 @@ Result<void> DiskRuntime::abort_pending_checkpoint_locked() {
     return aborted;
 }
 
+Result<DiskCompactionPrepared> DiskRuntime::prepare_compaction(
+    const std::uint64_t native_operation_id) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!started_ || !operations_.prepare_compaction)
+        return missing<DiskCompactionPrepared>(L"prepare_compaction");
+    if (pending_checkpoint_ || pending_compaction_native_operation_id_)
+        return Result<DiskCompactionPrepared>::failure(runtime_error(
+            L"prepare_compaction",
+            L"a checkpoint or compaction is already prepared"));
+    if (native_operation_id == 0)
+        return Result<DiskCompactionPrepared>::failure(runtime_error(
+            L"prepare_compaction",
+            L"zero native operation id cannot identify an M5 compaction"));
+    auto prepared = operations_.prepare_compaction(native_operation_id);
+    if (!prepared.ok()) return prepared;
+    pending_compaction_native_operation_id_ = native_operation_id;
+    return prepared;
+}
+
+Result<DiskCompactionResult> DiskRuntime::commit_compaction(
+    const std::uint64_t native_operation_id,
+    const std::uint64_t cut_dirty_epoch) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!started_ || !operations_.commit_compaction)
+        return missing<DiskCompactionResult>(L"commit_compaction");
+    if (!pending_compaction_native_operation_id_)
+        return Result<DiskCompactionResult>::failure(runtime_error(
+            L"commit_compaction", L"no compaction is prepared"));
+    if (*pending_compaction_native_operation_id_ != native_operation_id)
+        return Result<DiskCompactionResult>::failure(runtime_error(
+            L"commit_compaction",
+            L"commit does not match the prepared compaction"));
+    auto committed = operations_.commit_compaction(
+        native_operation_id, cut_dirty_epoch);
+    // Once M3 has been asked to publish, the transaction belongs to M3.  An
+    // indeterminate outcome is M3's to reconcile, so this runtime must never
+    // attempt a later abort of it (the checkpoint path follows the same rule).
+    pending_compaction_native_operation_id_.reset();
+    return committed;
+}
+
+Result<void> DiskRuntime::abort_compaction(
+    const std::uint64_t native_operation_id) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!pending_compaction_native_operation_id_)
+        return Result<void>::success();
+    if (*pending_compaction_native_operation_id_ != native_operation_id)
+        return Result<void>::failure(runtime_error(
+            L"abort_compaction",
+            L"abort does not match the prepared compaction"));
+    return abort_pending_compaction_locked();
+}
+
+bool DiskRuntime::compaction_prepared() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return pending_compaction_native_operation_id_.has_value();
+}
+
+Result<void> DiskRuntime::abort_pending_compaction_locked() {
+    if (!pending_compaction_native_operation_id_)
+        return Result<void>::success();
+    if (!operations_.abort_compaction)
+        return missing_void(L"abort_compaction");
+    auto aborted = operations_.abort_compaction(
+        *pending_compaction_native_operation_id_);
+    if (aborted.ok()) {
+        pending_compaction_native_operation_id_.reset();
+    }
+    return aborted;
+}
+
 Result<void> DiskRuntime::shutdown_clean() {
     std::lock_guard<std::mutex> guard(mutex_);
     return shutdown_clean_locked();
@@ -458,6 +529,15 @@ Result<void> DiskRuntime::shutdown_clean_locked() {
     // An unpublished prepare must be released before M3 is stopped.  Stopping
     // M3 while a transaction is pending would let the provider resume and
     // publish a candidate no caller authorised (design spec 3.5, rule 1).
+    if (pending_compaction_native_operation_id_) {
+        record(abort_pending_compaction_locked());
+        if (pending_compaction_native_operation_id_) {
+            // The abort is unproven, so the transaction is still live: retain
+            // everything for a later retry, exactly as the checkpoint branch below does.
+            started_ = true;
+            return first_error;
+        }
+    }
     if (pending_checkpoint_) {
         record(abort_pending_checkpoint_locked());
         if (pending_checkpoint_) {

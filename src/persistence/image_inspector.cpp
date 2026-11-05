@@ -213,6 +213,71 @@ Result<CheckpointRecoveryInspection> inspect_checkpoint(
         std::move(inspection));
 }
 
+Result<CompactionRecoveryInspection> inspect_compaction(
+    const OperationContext& context,
+    const std::filesystem::path& bundle_root,
+    const ImageInspectOptions& options,
+    const CompactionRecoveryCorrelation& expected) {
+    auto valid = validate_options(options);
+    if (!valid.ok()) {
+        return Result<CompactionRecoveryInspection>::failure(valid.error());
+    }
+    auto outcome = recover_complete_image(
+        context, bundle_root, options.manifest_relative_name,
+        options.recovery);
+    if (!outcome.ok() &&
+        (!outcome.error.has_value() ||
+         !is_expected_rejection(*outcome.error))) {
+        return Result<CompactionRecoveryInspection>::failure(
+            outcome.error.value_or(inspection_error(
+                PersistenceErrorCode::FatalInternalInvariant,
+                L"recovery returned neither an image nor an error")));
+    }
+
+    CompactionRecoveryInspection inspection{};
+    if (!outcome.image.has_value()) {
+        // Readable but nothing recoverable.  No generation can be attributed,
+        // so the only honest verdict is the one that forbids both answers.
+        inspection.verdict = CompactionRecoveryVerdict::Unprovable;
+        return Result<CompactionRecoveryInspection>::success(
+            std::move(inspection));
+    }
+
+    const auto& image = *outcome.image;
+    inspection.image_uuid = image.image_uuid;
+    inspection.observed_generation = image.checkpoint_generation;
+    inspection.candidate_base_bytes =
+        image.selected_manifest.base_expected_length;
+    inspection.candidate_journal_bytes =
+        image.backing_identity.journal_committed_length;
+    if (!(image.image_uuid == expected.image_uuid)) {
+        inspection.verdict = CompactionRecoveryVerdict::Unprovable;
+        return Result<CompactionRecoveryInspection>::success(
+            std::move(inspection));
+    }
+    if (image.checkpoint_generation == expected.source_generation) {
+        inspection.verdict =
+            CompactionRecoveryVerdict::SourceGenerationProved;
+        return Result<CompactionRecoveryInspection>::success(
+            std::move(inspection));
+    }
+    if (image.checkpoint_generation == expected.candidate_generation) {
+        // A candidate whose cut epoch the service never recorded cannot be
+        // confirmed: the new journal may contain post-cut writes that were
+        // preserved, and without the cut there is no boundary to attribute them
+        // to.  Fail closed as unprovable rather than promote a generation whose
+        // provenance is incomplete.
+        inspection.verdict = expected.cut_dirty_epoch_known
+            ? CompactionRecoveryVerdict::CandidateGenerationProved
+            : CompactionRecoveryVerdict::Unprovable;
+        return Result<CompactionRecoveryInspection>::success(
+            std::move(inspection));
+    }
+    inspection.verdict = CompactionRecoveryVerdict::Unprovable;
+    return Result<CompactionRecoveryInspection>::success(
+        std::move(inspection));
+}
+
 Result<ImageVerificationReport> verify_image(
     const OperationContext& context,
     const std::filesystem::path& bundle_root,

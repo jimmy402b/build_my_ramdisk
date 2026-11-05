@@ -83,6 +83,62 @@ struct DiskCheckpointResult final {
     std::optional<DiskCheckpointErrorContext> error_context;
 };
 
+// The management-side mirror of the persistence layer's compaction metrics.
+// Same reason as the disposition above: DiskRuntime is the engine boundary and
+// stays free of M3 headers; the shared adapter translates one into the other.
+struct DiskCompactionMetrics final {
+    std::uint64_t source_generation{};
+    std::uint64_t committed_generation{};
+    std::uint64_t source_base_bytes{};
+    std::uint64_t source_journal_bytes{};
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+    std::uint64_t required_peak_free_bytes{};
+    std::uint64_t available_free_bytes{};
+    std::uint64_t live_extent_count{};
+    std::uint64_t candidate_payloads{};
+    std::uint64_t snapshot_records{};
+    std::uint64_t data_records{};
+    std::uint64_t zero_records{};
+    std::uint64_t discard_records{};
+    std::uint64_t index_nodes{};
+    std::uint64_t newer_dirty_preserved{};
+    std::uint64_t retained_candidate_count{};
+    std::uint64_t deleted_candidate_count{};
+
+    bool operator==(const DiskCompactionMetrics&) const noexcept = default;
+};
+
+// What a prepared compaction observed before the service records its durable
+// boundary.  `boundary` fields are carried explicitly rather than as a
+// persistence struct, and the cut epoch is separate because the mutation
+// boundary is published before the cut.
+struct DiskCompactionPrepared final {
+    std::uint64_t prior_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint64_t native_operation_id{};
+    std::uint64_t cut_dirty_epoch{};
+    std::uint64_t source_base_bytes{};
+    std::uint64_t source_journal_bytes{};
+    std::uint64_t required_peak_free_bytes{};
+    std::uint64_t available_free_bytes{};
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+    std::uint64_t live_extent_count{};
+    std::uint64_t candidate_payloads{};
+};
+
+struct DiskCompactionResult final {
+    DiskCheckpointDisposition disposition{
+        DiskCheckpointDisposition::not_committed};
+    std::uint64_t generation{};
+    // The dirty epoch observed after the publish, when the adapter can read it.
+    // A failed commit has no meaningful epoch, so it stays zero.
+    std::uint64_t dirty_epoch{};
+    DiskCompactionMetrics metrics{};
+    std::optional<DiskCheckpointErrorContext> error_context;
+};
+
 struct DiskMaintenanceStats final {
     std::uint64_t dirty_bytes{};
     std::uint64_t journal_bytes{};
@@ -278,6 +334,17 @@ struct DiskRuntimeOperations final {
         commit_checkpoint;
     std::function<Result<void>(std::uint64_t native_operation_id)>
         abort_checkpoint;
+
+    // The online-compaction boundary.  Prepare holds an unpublished transaction
+    // in the provider; commit publishes it; abort discards it.  A foreground M4
+    // run leaves these unset.
+    std::function<Result<DiskCompactionPrepared>(std::uint64_t native_operation_id)>
+        prepare_compaction;
+    std::function<Result<DiskCompactionResult>(
+        std::uint64_t native_operation_id, std::uint64_t cut_dirty_epoch)>
+        commit_compaction;
+    std::function<Result<void>(std::uint64_t native_operation_id)>
+        abort_compaction;
 };
 
 class DiskRuntime final {
@@ -374,6 +441,18 @@ public:
     // rather than stop M3 blindly (design spec 3.5).
     [[nodiscard]] bool checkpoint_prepared() const;
 
+    // The online-compaction counterpart of the two-phase checkpoint above.
+    // `prepare_compaction` folds the durable image and cuts a consistent
+    // snapshot without publishing a manifest; `commit_compaction` publishes
+    // exactly that prepared generation.  Only one compaction may be pending,
+    // and a checkpoint/compaction may not be pending at the same time.
+    Result<DiskCompactionPrepared> prepare_compaction(
+        std::uint64_t native_operation_id);
+    Result<DiskCompactionResult> commit_compaction(
+        std::uint64_t native_operation_id, std::uint64_t cut_dirty_epoch);
+    Result<void> abort_compaction(std::uint64_t native_operation_id);
+    [[nodiscard]] bool compaction_prepared() const;
+
     // May only be called after a successful start (or after a failed start has
     // completed its owned-resource cleanup). Repeated calls are harmless.
     Result<void> shutdown_clean();
@@ -386,6 +465,7 @@ private:
     // failure when the transaction could not be resolved, in which case the
     // caller must retain the runtime rather than stop it.
     Result<void> abort_pending_checkpoint_locked();
+    Result<void> abort_pending_compaction_locked();
     Result<void> shutdown_clean_locked();
     // The freeze release without the runtime mutex, for the teardown that is
     // already holding it.  Separate from the public call so the two cannot drift
@@ -418,6 +498,10 @@ private:
     // commit/abort must repeat to publish or release it.
     std::optional<DiskCheckpointPrepared> pending_checkpoint_;
     std::uint64_t pending_native_operation_id_{};
+    // Engaged exactly between a successful `prepare_compaction` and its commit
+    // or abort.  Kept here rather than only in the provider so shutdown can
+    // discard it even when the worker was never told to.
+    std::optional<std::uint64_t> pending_compaction_native_operation_id_{};
     // The retained write freeze.  Owned here rather than by the provider so its
     // lifetime -- and with it the window in which the volume accepts no write --
     // is the runtime's decision and not one function's scope.

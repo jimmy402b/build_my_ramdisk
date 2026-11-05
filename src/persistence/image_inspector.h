@@ -169,4 +169,62 @@ struct CheckpointRecoveryInspection final {
     const ImageInspectOptions& options,
     const CheckpointRecoveryCorrelation& expected);
 
+// ---------------------------------------------------------------------------
+// M5 online-compaction recovery inspection
+// ---------------------------------------------------------------------------
+// The compaction counterpart of `CheckpointRecoveryCorrelation`.  Compaction
+// publishes a whole new generation through the same two-slot manifest, so the
+// question after a crash is the same shape: did the candidate generation become
+// authoritative, or is the source still the one on disk?
+//
+// It is *not* the checkpoint correlation with different labels: a compaction
+// candidate is identified by the generations it folds, and the consistency cut
+// epoch is part of the durable proof.  A candidate generation found on disk
+// without a known cut epoch cannot be confirmed by this read side, because the
+// new journal's post-cut records cannot be attributed to a cut the service
+// recorded -- so that combination is Unprovable rather than CandidateProved.
+struct CompactionRecoveryCorrelation final {
+    ImageUuid image_uuid{};
+    std::uint64_t source_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint64_t native_operation_id{};
+    std::uint64_t cut_dirty_epoch{};
+    bool cut_dirty_epoch_known{};
+
+    bool operator==(const CompactionRecoveryCorrelation&) const noexcept =
+        default;
+};
+
+enum class CompactionRecoveryVerdict : std::uint8_t {
+    // The bundle does not support either claim.  Never read this as "the
+    // compaction did not happen": it forbids confirming and forbids rolling
+    // back, and the operation must be parked for reconciliation.
+    Unprovable = 0,
+    // The bundle is still at the generation the compaction folded, so the
+    // candidate manifest was never published.
+    SourceGenerationProved = 1,
+    // The committed generation is this operation's candidate.
+    CandidateGenerationProved = 2,
+};
+
+struct CompactionRecoveryInspection final {
+    ImageUuid image_uuid{};
+    std::uint64_t observed_generation{};
+    // The candidate's own sizes, read from the committed manifest and backing
+    // identity.  Zero when no image was recoverable.
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+    CompactionRecoveryVerdict verdict{CompactionRecoveryVerdict::Unprovable};
+};
+
+// Read-only for the same reason `inspect_checkpoint` is: a fresh worker may
+// have to answer this before it is allowed to start anything.  A readable
+// bundle that contradicts `expected` is a successful inspection with an
+// Unprovable verdict; only an unreadable bundle is an outer failure.
+[[nodiscard]] Result<CompactionRecoveryInspection> inspect_compaction(
+    const OperationContext& context,
+    const std::filesystem::path& bundle_root,
+    const ImageInspectOptions& options,
+    const CompactionRecoveryCorrelation& expected);
+
 } // namespace myrd::persistence

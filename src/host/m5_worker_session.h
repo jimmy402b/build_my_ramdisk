@@ -81,6 +81,37 @@ public:
     // translating a parallel field set.
     virtual Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) = 0;
+    // The online-compaction boundary.  Defaults refuse, like the checkpoint
+    // methods: a runtime with no fold must not report one.  `inspect_compaction`
+    // is the only one allowed before `start()`; it is read-only.
+    virtual Result<WorkerCompactionPrepared> prepare_compaction(
+        std::uint64_t native_operation_id) {
+        (void)native_operation_id;
+        return Result<WorkerCompactionPrepared>::failure(Error{
+            ErrorDomain::internal, 1, L"prepare_compaction",
+            L"this runtime does not compact a live bundle", 0});
+    }
+    virtual Result<WorkerCompactionCommitReply> commit_compaction(
+        const WorkerCompactionCommit& commit) {
+        (void)commit;
+        return Result<WorkerCompactionCommitReply>::failure(Error{
+            ErrorDomain::internal, 1, L"commit_compaction",
+            L"this runtime does not compact a live bundle", 0});
+    }
+    virtual Result<WorkerCheckpointAbortReply> abort_compaction(
+        std::uint64_t native_operation_id) {
+        (void)native_operation_id;
+        return Result<WorkerCheckpointAbortReply>::failure(Error{
+            ErrorDomain::internal, 1, L"abort_compaction",
+            L"this runtime does not compact a live bundle", 0});
+    }
+    virtual Result<WorkerCompactionRecoveryProof> inspect_compaction(
+        const WorkerCompactionCorrelation& correlation) {
+        (void)correlation;
+        return Result<WorkerCompactionRecoveryProof>::failure(Error{
+            ErrorDomain::internal, 1, L"inspect_compaction",
+            L"this runtime cannot inspect a compaction", 0});
+    }
     // Removes this profile's *verified own* resources and stops.  The
     // implementation is expected to re-check the authorization against what it
     // actually holds; the session's gate refuses first, so a runtime is never
@@ -160,6 +191,10 @@ private:
     bool cleaned_up_{};
     bool shutdown_requested_{};
     std::optional<WorkerPreparedCandidate> prepared_;
+    // Engaged between a successful `compaction_prepare` and its commit/abort.
+    // The checkpoint candidate and the compaction are mutually exclusive, exactly
+    // as they are in the provider: both own a publish lease.
+    std::optional<WorkerCompactionPrepared> prepared_compaction_;
 };
 
 } // namespace myrd::m5

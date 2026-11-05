@@ -40,7 +40,7 @@ inline constexpr std::uint16_t kWorkerProtocolMajor = 1;
 // handshake requires an exact match, so bumping the minor is what makes a stale
 // worker fail the handshake instead of decoding a status one byte short and
 // reporting a plausible runtime that was never observed.
-inline constexpr std::uint16_t kWorkerProtocolMinor = 1;
+inline constexpr std::uint16_t kWorkerProtocolMinor = 2;
 // One prepared candidate carries a digest and small integer fields only, so the
 // bound is comfortably above every message this protocol defines.
 inline constexpr std::uint32_t kMaxWorkerMessageBytes = 64U * 1024U;
@@ -141,6 +141,17 @@ enum class WorkerCommand : std::uint16_t {
     // manifest, base or journal is written.  Appended for the same wire reason as
     // every command above.
     export_bundle = 17,
+    // M5 online compaction.  Prepare folds the durable image into a new base and
+    // journal and cuts the consistency snapshot, but publishes no manifest; the
+    // service writes its durable mutation boundary and cut between prepare and
+    // commit.  Appended, like every command above, because these values are on
+    // the wire.
+    compaction_prepare = 18,
+    compaction_commit = 19,
+    compaction_abort = 20,
+    // Read-only: answers whether the candidate generation is authoritative after
+    // a crash, without opening a runtime or taking the writer transaction.
+    inspect_compaction = 21,
 };
 
 // Identity of one worker process bound to one profile for one session.
@@ -196,12 +207,40 @@ struct WorkerPreparedCandidate final {
     bool operator==(const WorkerPreparedCandidate&) const noexcept = default;
 };
 
+// What a compaction prepare established before the service records its durable
+// mutation boundary.  `cut_dirty_epoch` is separate from the boundary fields for
+// the same reason the persistence type splits it: the boundary is published
+// first with the cut unknown, then the cut callback records this epoch.
+struct WorkerCompactionPrepared final {
+    std::uint64_t prior_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint64_t native_operation_id{};
+    std::uint64_t cut_dirty_epoch{};
+    std::uint64_t source_base_bytes{};
+    std::uint64_t source_journal_bytes{};
+    std::uint64_t required_peak_free_bytes{};
+    std::uint64_t available_free_bytes{};
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+    std::uint64_t live_extent_count{};
+    std::uint64_t candidate_payloads{};
+
+    bool operator==(const WorkerCompactionPrepared&) const noexcept = default;
+};
+
 struct WorkerCheckpointCommit final {
     std::uint64_t native_operation_id{};
     std::uint8_t manifest_slot{};
     Sha256Digest candidate_bytes_digest{};
 
     bool operator==(const WorkerCheckpointCommit&) const noexcept = default;
+};
+
+struct WorkerCompactionCommit final {
+    std::uint64_t native_operation_id{};
+    std::uint64_t cut_dirty_epoch{};
+
+    bool operator==(const WorkerCompactionCommit&) const noexcept = default;
 };
 
 // What a commit actually did.  The persistence layer's `CommitDisposition`
@@ -456,6 +495,50 @@ struct WorkerCheckpointCommitReply final {
     bool operator==(const WorkerCheckpointCommitReply&) const noexcept = default;
 };
 
+// The compaction analytics the service records as its own evidence.  Mirrored
+// field for field from the persistence layer for the same reason the checkpoint
+// disposition is: a summary would name numbers that were never measured.
+struct WorkerCompactionMetrics final {
+    std::uint64_t source_generation{};
+    std::uint64_t committed_generation{};
+    std::uint64_t source_base_bytes{};
+    std::uint64_t source_journal_bytes{};
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+    std::uint64_t required_peak_free_bytes{};
+    std::uint64_t available_free_bytes{};
+    std::uint64_t live_extent_count{};
+    std::uint64_t candidate_payloads{};
+    std::uint64_t snapshot_records{};
+    std::uint64_t data_records{};
+    std::uint64_t zero_records{};
+    std::uint64_t discard_records{};
+    std::uint64_t index_nodes{};
+    std::uint64_t newer_dirty_preserved{};
+    std::uint64_t retained_candidate_count{};
+    std::uint64_t deleted_candidate_count{};
+
+    bool operator==(const WorkerCompactionMetrics&) const noexcept = default;
+};
+
+struct WorkerCompactionCommitReply final {
+    WorkerCommitDisposition disposition{
+        WorkerCommitDisposition::not_committed};
+    std::uint64_t generation{};
+    // The dirty epoch observed after the publish.  Zero on a commit that did not
+    // land, where there is no post-commit epoch to report.
+    std::uint64_t dirty_epoch{};
+    WorkerCompactionMetrics metrics{};
+    std::optional<WorkerCommitFailure> failure;
+
+    [[nodiscard]] bool landed() const noexcept {
+        return disposition == WorkerCommitDisposition::committed
+            || disposition
+                == WorkerCommitDisposition::committed_needs_reconciliation;
+    }
+    bool operator==(const WorkerCompactionCommitReply&) const noexcept = default;
+};
+
 // Why an abort did not succeed.
 //
 // The historical reply carried a persistence failure context here, and this one
@@ -572,6 +655,32 @@ struct WorkerRecoveryProof final {
     bool operator==(const WorkerRecoveryProof&) const noexcept = default;
 };
 
+// The durable correlation a fresh worker judges a compaction against.  It is
+// deliberately not a checkpoint correlation: compaction has no manifest slot or
+// candidate digest, and it does have the consistency cut epoch that a committed
+// candidate must be attributable to.
+struct WorkerCompactionCorrelation final {
+    persistence::ImageUuid image_uuid{};
+    std::uint64_t source_generation{};
+    std::uint64_t candidate_generation{};
+    std::uint64_t native_operation_id{};
+    std::uint64_t cut_dirty_epoch{};
+    bool cut_dirty_epoch_known{};
+
+    bool operator==(const WorkerCompactionCorrelation&) const noexcept =
+        default;
+};
+
+struct WorkerCompactionRecoveryProof final {
+    WorkerRecoveryOutcome outcome{WorkerRecoveryOutcome::ownership_unprovable};
+    std::uint64_t observed_generation{};
+    std::uint64_t candidate_base_bytes{};
+    std::uint64_t candidate_journal_bytes{};
+
+    bool operator==(const WorkerCompactionRecoveryProof&) const noexcept =
+        default;
+};
+
 // One typed private message.
 //
 // `payload` selects which optional is meaningful, and the codec refuses any
@@ -587,6 +696,11 @@ struct WorkerMessage final {
     std::optional<WorkerHandshake> handshake;
     std::optional<WorkerPreparedCandidate> prepared;
     std::optional<WorkerCheckpointCommit> commit;
+    std::optional<WorkerCompactionPrepared> compaction_prepared;
+    std::optional<WorkerCompactionCommit> compaction_commit;
+    std::optional<WorkerCompactionCommitReply> compaction_reply;
+    std::optional<WorkerCompactionCorrelation> compaction_correlation;
+    std::optional<WorkerCompactionRecoveryProof> compaction_recovery;
     // The commit reply.  Distinct from `status` on purpose: a commit answers with
     // its disposition *and* an observation, and folding them into `status` is
     // what lost the disposition in the first place.
@@ -638,6 +752,12 @@ struct WorkerMessage final {
 [[nodiscard]] Result<void> require_matching_candidate(
     const WorkerCheckpointCommit& commit,
     const WorkerPreparedCandidate& prepared);
+
+// The compaction counterpart: a commit must name exactly the prepared native
+// operation id and the cut epoch that prepare measured.
+[[nodiscard]] Result<void> require_matching_compaction(
+    const WorkerCompactionCommit& commit,
+    const WorkerCompactionPrepared& prepared);
 
 // The removal gate.  A removal is refused unless every part of the ownership
 // proof is present and the authorization names this worker's own profile and

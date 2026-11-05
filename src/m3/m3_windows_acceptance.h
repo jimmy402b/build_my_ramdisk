@@ -99,6 +99,19 @@ public:
         const M3CheckpointCommitRequest& request);
     Result<void> abort_checkpoint(std::uint64_t native_operation_id);
 
+    // The online-compaction half of the same boundary.  The runtime must be
+    // started: compaction folds the live store and its journal, not a bundle
+    // opened read-only.
+    Result<M3CompactionPrepared> prepare_compaction(
+        const OperationContext& context, M3CompactionRequest request);
+    M3CompactionOutcome commit_compaction(
+        const OperationContext& context, std::uint64_t native_operation_id,
+        std::uint64_t cut_dirty_epoch);
+    Result<void> abort_compaction(std::uint64_t native_operation_id);
+    M3CompactionOutcome reconcile_compaction(
+        const OperationContext& context,
+        const M3CompactionBoundaryEvidence& boundary);
+
     Result<void> stop();
 
     [[nodiscard]] DynamicBlockStoreStats storage_stats() const;

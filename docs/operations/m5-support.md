@@ -28,7 +28,9 @@ over-commit（固定预算超 commit limit 在 create 被拒）、BitLocker/SMB 
 | 导出只支持**已停止**的盘 | `integration.m5.cli_e2e`：停止盘 `export exit=0`、第二次 `exit=1`（拒绝覆盖）、generation 不变 |
 | 升级只有覆盖安装/重装，没有版本回滚（决策 5） | `integration.m5.upgrade`：覆盖安装/保留数据卸载/重装/脏卸载四条读数 |
 | over-commit 被拒，错误码 `0x560A`（决策 1） | `integration.m5.*` 的预算拒绝读数 |
-| **≥8 GiB 的盘 create 会卡死**（1.0.0 已知缺陷；4 GiB 已验证可用） | `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md` |
+| 在线 compaction 成功后会丢弃**上一代** base/journal；不提供回到上一代的回滚 | `integration.m5.compaction_manual`：`journal-e0001.rdj` 2,260,230,144 B → 新的 `journal-e0002-c*.rdj` 12,288 B，旧 journal 不再存在；`integration.m5.compaction_kill`：发布后杀 worker 仍能由 inspection 确认 candidate |
+| compaction 需要按 durable source + dirty bound 计算的峰值空闲空间；空间不足返回 `DiskFull`/deferred，不会半发布 | `M3Provider::prepare_compaction` 的 source-sized preflight；`integration.m5.compaction_*` |
+| **≥8 GiB 的盘 create 会卡死**（1.0.0 已知缺陷；1.0.1/1.0.2 已修） | `docs/operations/m5-known-issue-2026-11-04-large-disk-create.md` |
 | 驱动缺失/过旧时安装器拒绝 | 三个显式条件在 `tools/install/Install-MyRamDisk.ps1`；**客机无法卸载驱动，这三个分支未实测** |
 | 没有签名证书 → 未签名发布（决策 2） | 发布说明必须写 SmartScreen 后果；`docs/operations/m5-release.md` |
 
@@ -42,6 +44,9 @@ over-commit（固定预算超 commit limit 在 create 被拒）、BitLocker/SMB 
   脏盘强停会丢弃未提交写入并在日志里写明（`dirty writes discarded`）。
 - 硬断电、worker 崩溃、service 崩溃、bundle 损坏、磁盘满、权限错误六类故障都不挂死、
   不残留设备（`m5-stab-03b`、`03c`）。
+- **compaction 是一个新的持久边界**：它成功发布新一代后，上一代 base/journal 会被主动删除以
+  让 journal 有界；因此“回到 compaction 之前那一代”不是支持的回滚路径。发布之前中断则源代仍
+  是权威，发布之后中断由只读 inspection 确认 candidate（`integration.m5.compaction_kill`）。
 
 ## 4. 备份与导出
 

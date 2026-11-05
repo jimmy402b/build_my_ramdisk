@@ -710,6 +710,96 @@ TEST_CASE(m3_provider_exposes_test_only_checkpoint_durability_phases) {
     REQUIRE(provider.value()->stop(context(), {}).ok());
 }
 
+TEST_CASE(m3_provider_split_compaction_publishes_only_on_commit) {
+    TempBundle bundle;
+    create_bundle(bundle);
+    proxy::LocalNamespacePolicy policy;
+    auto probe = std::make_shared<TransportProbe>();
+    auto provider = M3Provider::open_for_test(
+        context(), policy, config(bundle), factories(probe));
+    REQUIRE(provider.ok());
+    REQUIRE(provider.value()->start(context()).ok());
+
+    std::vector<std::byte> first(kM2BlockSize, std::byte{0x51});
+    REQUIRE(probe->device->write(context(), 0, first).ok());
+    REQUIRE(provider.value()->checkpoint(
+        context(), VolumeBarrierKind::RawBlockTestNoFilesystemCache).ok());
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+
+    const auto prepared = provider.value()->prepare_compaction(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7303});
+    REQUIRE(prepared.ok());
+    REQUIRE_EQ(prepared.value().boundary.operation_id, 7303ull);
+    REQUIRE_EQ(prepared.value().boundary.source_generation, 1ull);
+    REQUIRE_EQ(prepared.value().boundary.candidate_generation, 2ull);
+    REQUIRE(!prepared.value().boundary.cut_dirty_epoch_known);
+    REQUIRE(prepared.value().cut_dirty_epoch > 0);
+    REQUIRE(prepared.value().metrics.candidate_base_bytes > 0);
+    REQUIRE(prepared.value().metrics.candidate_journal_bytes
+            >= kJournalAlignment);
+    // The manifest has not moved: an unpublished prepare must not change what
+    // normal recovery selects.
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+
+    ImageInspectOptions options{};
+    options.manifest_relative_name = "disk.rdm";
+    options.recovery = config(bundle).recovery;
+    CompactionRecoveryCorrelation correlation{};
+    correlation.image_uuid = prepared.value().boundary.image_uuid;
+    correlation.source_generation = 1;
+    correlation.candidate_generation = 2;
+    correlation.native_operation_id = 7303;
+    correlation.cut_dirty_epoch = prepared.value().cut_dirty_epoch;
+    correlation.cut_dirty_epoch_known = true;
+    auto before = inspect_compaction(
+        context(), bundle.root, options, correlation);
+    REQUIRE(before.ok());
+    REQUIRE(before.value().verdict
+            == CompactionRecoveryVerdict::SourceGenerationProved);
+
+    // An abort leaves the source authoritative and discards the transaction, so
+    // a later prepare can run at the same target generation.
+    REQUIRE(provider.value()->abort_compaction(7303).ok());
+    REQUIRE_EQ(provider.value()->generation(), 1ull);
+
+    const auto second_prepare = provider.value()->prepare_compaction(
+        context(),
+        M3CompactionRequest{
+            VolumeBarrierKind::RawBlockTestNoFilesystemCache, 7304});
+    REQUIRE(second_prepare.ok());
+    REQUIRE_EQ(second_prepare.value().boundary.source_generation, 1ull);
+    REQUIRE_EQ(second_prepare.value().boundary.candidate_generation, 2ull);
+    auto committed = provider.value()->commit_compaction(
+        context(), 7304, second_prepare.value().cut_dirty_epoch);
+    REQUIRE(committed.ok());
+    REQUIRE_EQ(committed.disposition, CommitDisposition::Committed);
+    REQUIRE_EQ(committed.generation, 2ull);
+    REQUIRE_EQ(provider.value()->generation(), 2ull);
+    // The M5 split path discards the retired source pair immediately: a bounded
+    // journal is the point of online compaction, and the generic retention path
+    // would otherwise keep the previous pair because the old manifest slot still
+    // names it.
+    REQUIRE(!std::filesystem::exists(bundle.root / L"journal-e0001.rdj"));
+    REQUIRE(!std::filesystem::exists(bundle.root / L"base-0000.vhdx"));
+
+    std::vector<std::byte> actual(kM2BlockSize);
+    REQUIRE(probe->device->read(context(), 0, actual).ok());
+    REQUIRE_EQ(actual, first);
+    REQUIRE(provider.value()->stop(context(), {}).ok());
+
+    correlation.native_operation_id = 7304;
+    correlation.cut_dirty_epoch = second_prepare.value().cut_dirty_epoch;
+    auto after = inspect_compaction(
+        context(), bundle.root, options, correlation);
+    REQUIRE(after.ok());
+    REQUIRE(after.value().verdict
+            == CompactionRecoveryVerdict::CandidateGenerationProved);
+    REQUIRE(after.value().candidate_base_bytes > 0);
+    REQUIRE(after.value().candidate_journal_bytes >= kJournalAlignment);
+}
+
 TEST_CASE(m3_provider_active_compaction_uses_read_only_boundary_and_keeps_io_live) {
     TempBundle bundle;
     create_bundle(bundle);

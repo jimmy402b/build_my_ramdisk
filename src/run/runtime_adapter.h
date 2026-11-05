@@ -92,6 +92,31 @@ public:
     virtual Result<DiskCheckpointResult> commit_checkpoint(
         const DiskCheckpointCommitRequest& request) = 0;
     virtual Result<void> abort_checkpoint(std::uint64_t native_operation_id) = 0;
+
+    // Online compaction.  Defaulted to a refusal rather than left pure for the
+    // same reason `IWorkerControl`'s defaults are: a fake with no opinion must
+    // not be forced to report a fold it never performed.
+    virtual Result<DiskCompactionPrepared> prepare_compaction(
+        std::uint64_t native_operation_id) {
+        (void)native_operation_id;
+        return Result<DiskCompactionPrepared>::failure(Error{
+            ErrorDomain::internal, 1, L"prepare_compaction",
+            L"this runtime does not compact a live bundle", 0});
+    }
+    virtual Result<DiskCompactionResult> commit_compaction(
+        std::uint64_t native_operation_id, std::uint64_t cut_dirty_epoch) {
+        (void)native_operation_id;
+        (void)cut_dirty_epoch;
+        return Result<DiskCompactionResult>::failure(Error{
+            ErrorDomain::internal, 1, L"commit_compaction",
+            L"this runtime does not compact a live bundle", 0});
+    }
+    virtual Result<void> abort_compaction(std::uint64_t native_operation_id) {
+        (void)native_operation_id;
+        return Result<void>::failure(Error{
+            ErrorDomain::internal, 1, L"abort_compaction",
+            L"this runtime does not compact a live bundle", 0});
+    }
 };
 
 // Gates that run before the engine touches a bundle.  They are seams rather
@@ -229,6 +254,12 @@ public:
     Result<DiskCheckpointResult> commit_checkpoint(
         const DiskCheckpointCommitRequest& request) override;
     Result<void> abort_checkpoint(std::uint64_t native_operation_id) override;
+    Result<DiskCompactionPrepared> prepare_compaction(
+        std::uint64_t native_operation_id) override;
+    Result<DiskCompactionResult> commit_compaction(
+        std::uint64_t native_operation_id,
+        std::uint64_t cut_dirty_epoch) override;
+    Result<void> abort_compaction(std::uint64_t native_operation_id) override;
 
 private:
     // The accepted M4/M3 pieces (`M4PersistenceAdapter`, `M3AimRuntime`,

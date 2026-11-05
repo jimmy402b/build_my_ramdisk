@@ -282,6 +282,90 @@ Result<m5::WorkerCheckpointAbortReply> ServiceWorkerSession::abort_checkpoint(
         *reply.value().abort_reply);
 }
 
+Result<m5::WorkerCompactionPrepared>
+ServiceWorkerSession::prepare_compaction(const OperationContext& context,
+                                         const product::Uuid& operation_id) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::compaction_prepare;
+    request.product_operation_id = operation_id;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) {
+        return Result<m5::WorkerCompactionPrepared>::failure(reply.error());
+    }
+    if (!reply.value().compaction_prepared.has_value()) {
+        return Result<m5::WorkerCompactionPrepared>::failure(unexpected(
+            L"ServiceWorkerSession::prepare_compaction",
+            L"the compaction prepare reply carries no evidence").error());
+    }
+    return Result<m5::WorkerCompactionPrepared>::success(
+        *reply.value().compaction_prepared);
+}
+
+Result<m5::WorkerCompactionCommitReply>
+ServiceWorkerSession::commit_compaction(
+    const OperationContext& context, const product::Uuid& operation_id,
+    const m5::WorkerCompactionCommit& commit) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::compaction_commit;
+    request.product_operation_id = operation_id;
+    request.compaction_commit = commit;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) {
+        return Result<m5::WorkerCompactionCommitReply>::failure(
+            reply.error());
+    }
+    if (!reply.value().compaction_reply.has_value()) {
+        return Result<m5::WorkerCompactionCommitReply>::failure(unexpected(
+            L"ServiceWorkerSession::commit_compaction",
+            L"the compaction commit reply carries no disposition").error());
+    }
+    return Result<m5::WorkerCompactionCommitReply>::success(
+        *reply.value().compaction_reply);
+}
+
+Result<m5::WorkerCheckpointAbortReply>
+ServiceWorkerSession::abort_compaction(
+    const OperationContext& context, const product::Uuid& operation_id,
+    const std::uint64_t native_operation_id) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::compaction_abort;
+    request.product_operation_id = operation_id;
+    (void)native_operation_id;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) {
+        return Result<m5::WorkerCheckpointAbortReply>::failure(reply.error());
+    }
+    if (!reply.value().abort_reply.has_value()) {
+        return Result<m5::WorkerCheckpointAbortReply>::failure(unexpected(
+            L"ServiceWorkerSession::abort_compaction",
+            L"the compaction abort reply carries no answer").error());
+    }
+    return Result<m5::WorkerCheckpointAbortReply>::success(
+        *reply.value().abort_reply);
+}
+
+Result<m5::WorkerCompactionRecoveryProof>
+ServiceWorkerSession::inspect_compaction(
+    const OperationContext& context, const product::Uuid& operation_id,
+    const m5::WorkerCompactionCorrelation& correlation) {
+    m5::WorkerMessage request{};
+    request.command = m5::WorkerCommand::inspect_compaction;
+    request.product_operation_id = operation_id;
+    request.compaction_correlation = correlation;
+    auto reply = exchange(context, std::move(request));
+    if (!reply.ok()) {
+        return Result<m5::WorkerCompactionRecoveryProof>::failure(
+            reply.error());
+    }
+    if (!reply.value().compaction_recovery.has_value()) {
+        return Result<m5::WorkerCompactionRecoveryProof>::failure(unexpected(
+            L"ServiceWorkerSession::inspect_compaction",
+            L"the compaction inspection reply carries no proof").error());
+    }
+    return Result<m5::WorkerCompactionRecoveryProof>::success(
+        *reply.value().compaction_recovery);
+}
+
 Result<m5::WorkerRecoveryProof> ServiceWorkerSession::recovery_proof(
     const OperationContext& context,
     const m5::WorkerRecoveryCorrelation& correlation) {

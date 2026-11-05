@@ -1089,6 +1089,162 @@ TEST_CASE(m5_worker_protocol_reclaim_leftover_is_operation_scoped) {
     REQUIRE(encode(request).ok());
 }
 
+TEST_CASE(m5_worker_protocol_compaction_prepare_and_commit_round_trip) {
+    WorkerCompactionPrepared prepared{};
+    prepared.prior_generation = 5;
+    prepared.candidate_generation = 6;
+    prepared.native_operation_id = 6 + kM5CheckpointOperationOffset;
+    prepared.cut_dirty_epoch = 44;
+    prepared.source_base_bytes = 4 * 1024 * 1024;
+    prepared.source_journal_bytes = 9 * 4096;
+    prepared.required_peak_free_bytes = 1000;
+    prepared.available_free_bytes = 2000;
+    prepared.candidate_base_bytes = 8 * 1024 * 1024;
+    prepared.candidate_journal_bytes = 3 * 4096;
+    prepared.live_extent_count = 2;
+    prepared.candidate_payloads = 2;
+
+    WorkerMessage reply{};
+    reply.kind = WorkerMessageKind::reply;
+    reply.command = WorkerCommand::compaction_prepare;
+    reply.sequence = 2;
+    reply.binding = session_binding();
+    reply.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    reply.compaction_prepared = prepared;
+    auto bytes = encode(reply);
+    REQUIRE(bytes.ok());
+    auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().compaction_prepared.has_value());
+    REQUIRE(*decoded.value().compaction_prepared == prepared);
+
+    WorkerCompactionCommit commit{prepared.native_operation_id,
+                                  prepared.cut_dirty_epoch};
+    REQUIRE(require_matching_compaction(commit, prepared).ok());
+    REQUIRE(!require_matching_compaction(
+        WorkerCompactionCommit{prepared.native_operation_id + 1,
+                               prepared.cut_dirty_epoch},
+        prepared).ok());
+    REQUIRE(!require_matching_compaction(
+        WorkerCompactionCommit{prepared.native_operation_id,
+                               prepared.cut_dirty_epoch + 1},
+        prepared).ok());
+
+    WorkerMessage request{};
+    request.kind = WorkerMessageKind::request;
+    request.command = WorkerCommand::compaction_commit;
+    request.sequence = 3;
+    request.binding = session_binding();
+    request.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    request.compaction_commit = commit;
+    bytes = encode(request);
+    REQUIRE(bytes.ok());
+    decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(*decoded.value().compaction_commit == commit);
+}
+
+TEST_CASE(m5_worker_protocol_compaction_commit_reply_round_trips_metrics_and_failure) {
+    WorkerCompactionCommitReply reply{};
+    reply.disposition = WorkerCommitDisposition::committed;
+    reply.generation = 6;
+    reply.dirty_epoch = 45;
+    reply.metrics.source_generation = 5;
+    reply.metrics.committed_generation = 6;
+    reply.metrics.source_base_bytes = 4;
+    reply.metrics.source_journal_bytes = 5;
+    reply.metrics.candidate_base_bytes = 6;
+    reply.metrics.candidate_journal_bytes = 7;
+    reply.metrics.required_peak_free_bytes = 8;
+    reply.metrics.available_free_bytes = 9;
+    reply.metrics.live_extent_count = 10;
+    reply.metrics.candidate_payloads = 11;
+    reply.metrics.snapshot_records = 12;
+    reply.metrics.data_records = 13;
+    reply.metrics.zero_records = 14;
+    reply.metrics.discard_records = 15;
+    reply.metrics.index_nodes = 16;
+    reply.metrics.newer_dirty_preserved = 17;
+    reply.metrics.retained_candidate_count = 18;
+    reply.metrics.deleted_candidate_count = 19;
+
+    WorkerMessage message{};
+    message.kind = WorkerMessageKind::reply;
+    message.command = WorkerCommand::compaction_commit;
+    message.sequence = 4;
+    message.binding = session_binding();
+    message.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    message.compaction_reply = reply;
+    auto bytes = encode(message);
+    REQUIRE(bytes.ok());
+    auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().compaction_reply.has_value());
+    REQUIRE(*decoded.value().compaction_reply == reply);
+
+    WorkerCompactionCommitReply failed{};
+    failed.disposition = WorkerCommitDisposition::not_committed;
+    failed.generation = 5;
+    WorkerCommitFailure failure{};
+    failure.operation = "compaction.publish";
+    failure.code = 15;
+    failure.phase = 3;
+    failure.native_code = 0;
+    failure.native_operation_id = 6 + kM5CheckpointOperationOffset;
+    failure.image_uuid = image_uuid(0x11);
+    failure.generation = 5;
+    failure.safe_context = "compaction publication failed";
+    failed.failure = failure;
+    message.compaction_reply = failed;
+    bytes = encode(message);
+    REQUIRE(bytes.ok());
+    decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().compaction_reply.has_value());
+    REQUIRE(decoded.value().compaction_reply->failure.has_value());
+    REQUIRE(*decoded.value().compaction_reply == failed);
+}
+
+TEST_CASE(m5_worker_protocol_compaction_inspection_round_trips) {
+    WorkerCompactionCorrelation correlation{};
+    correlation.image_uuid = image_uuid(0x22);
+    correlation.source_generation = 8;
+    correlation.candidate_generation = 9;
+    correlation.native_operation_id = 9 + kM5CheckpointOperationOffset;
+    correlation.cut_dirty_epoch = 77;
+    correlation.cut_dirty_epoch_known = true;
+
+    WorkerMessage request{};
+    request.kind = WorkerMessageKind::request;
+    request.command = WorkerCommand::inspect_compaction;
+    request.sequence = 5;
+    request.binding = session_binding();
+    request.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    request.compaction_correlation = correlation;
+    auto bytes = encode(request);
+    REQUIRE(bytes.ok());
+    auto decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().compaction_correlation.has_value());
+    REQUIRE(*decoded.value().compaction_correlation == correlation);
+
+    WorkerMessage reply{};
+    reply.kind = WorkerMessageKind::reply;
+    reply.command = WorkerCommand::inspect_compaction;
+    reply.sequence = 6;
+    reply.binding = session_binding();
+    reply.product_operation_id = uuid("99999999-8888-7777-6666-555555555555");
+    reply.compaction_recovery = WorkerCompactionRecoveryProof{
+        WorkerRecoveryOutcome::candidate_generation_proved, 9, 1048576, 4096};
+    bytes = encode(reply);
+    REQUIRE(bytes.ok());
+    decoded = decode_worker_message(bytes.value());
+    REQUIRE(decoded.ok());
+    REQUIRE(decoded.value().compaction_recovery.has_value());
+    REQUIRE(*decoded.value().compaction_recovery
+            == reply.compaction_recovery.value());
+}
+
 TEST_CASE(m5_worker_protocol_refuses_an_unknown_command_value) {
     // The command is a wire value, so a peer that speaks a different protocol
     // must be refused rather than decoded into whichever command happens to

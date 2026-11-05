@@ -22,6 +22,16 @@ last committed checkpoint. The release is **unsigned** and ships SHA-256 checksu
 | Memory | `--memory-mode automatic` = `min(physical RAM / 4, capacity)`; `fixed` must be <= capacity and <= the machine's commit limit (`0x560A` when it exceeds it) |
 | Commands | `disk list/show/create/import/start/stop/checkpoint/compact/export/forget/repair-profile/rebind/config`; `operation show/wait/cancel` |
 | Persistence | interval / dirty-threshold / memory-pressure / suspend checkpoints; automatic recovery after a hard power cut |
+| Compaction | **online** `disk compact` (and automatic at the profile's checkpoint-count threshold): folds the journal into a new base/journal without stopping the disk, then discards the retired pair so the journal stays bounded |
+
+**Compaction boundary**: the disk stays mounted and writable. A compaction takes a consistent
+snapshot, prepares the new artifacts, publishes a new manifest generation and switches the
+backing. A crash before that publish leaves the source generation authoritative; a crash after it
+is resolved by a read-only inspection. A successful compaction intentionally discards the
+**previous** generation pair, so only the latest committed generation is guaranteed afterwards
+(there is no rollback to the generation before it). Peak free space is proportional to the durable
+source plus the store's dirty bound; a low-space attempt ends `DiskFull`/deferred rather than
+publishing partially.
 
 **Not supported**: Windows 10 / Server / ARM64; multiple disks (deferred); volume labels; in-place
 version rollback (reinstall only); over-commit beyond the commit limit; BitLocker or SMB bundle

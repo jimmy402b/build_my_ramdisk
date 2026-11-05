@@ -16,6 +16,7 @@
 #include "src/storage/dynamic_block_store.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -196,6 +197,17 @@ struct M3CompactionOutcome final {
     }
 };
 
+// What a prepared-but-unpublished compaction gives the caller before the
+// service records its own durable boundary.  `boundary` deliberately has no cut
+// epoch: the mutation boundary is published first, then the cut callback fills
+// the epoch it was measured at.  `cut_dirty_epoch` is the value that callback
+// must receive.
+struct M3CompactionPrepared final {
+    M3CompactionBoundaryEvidence boundary{};
+    std::uint64_t cut_dirty_epoch{};
+    M3CompactionMetrics metrics{};
+};
+
 struct M3StopRequest final {
     bool checkpoint{};
     std::optional<persistence::VolumeBarrierKind> barrier{};
@@ -270,6 +282,20 @@ public:
         M3CompactionRequest request,
         const M3CompactionBoundaryHandler& boundary,
         const M3CompactionCutHandler& cut);
+    // The M5 worker's two-phase compaction.  `prepare_compaction` runs
+    // preflight, folds the durable image into a new base and journal, takes the
+    // consistency cut and writes the dirty delta, then **holds** the unpublished
+    // transaction; no manifest slot is touched.  `commit_compaction` publishes
+    // exactly that prepared transaction.  Only one compaction may be pending,
+    // and it must be aborted or committed before the provider stops.
+    Result<M3CompactionPrepared> prepare_compaction(
+        const OperationContext& context,
+        M3CompactionRequest request);
+    M3CompactionOutcome commit_compaction(
+        const OperationContext& context,
+        std::uint64_t native_operation_id,
+        std::uint64_t cut_dirty_epoch);
+    Result<void> abort_compaction(std::uint64_t native_operation_id);
     M3CompactionOutcome reconcile_compaction(
         const OperationContext& context,
         const M3CompactionBoundaryEvidence& boundary);
@@ -349,6 +375,65 @@ private:
     M3CheckpointOutcome publish_prepared_checkpoint(
         const OperationContext& context);
 
+    // The shared body of `compact` and `prepare_compaction`.  When the two
+    // handlers are non-null they are invoked exactly where the one-shot compact
+    // invoked them (boundary after preflight, cut inside the snapshot begin);
+    // the split M5 path passes null and performs those durable writes above this
+    // layer between prepare and commit.  On failure `evidence` and `metrics`
+    // still carry whatever was established, so the one-shot caller can report
+    // the same outcome it always did.
+    Result<M3CompactionPrepared> prepare_compaction_impl(
+        const OperationContext& context,
+        M3CompactionRequest request,
+        const M3CompactionBoundaryHandler* boundary,
+        const M3CompactionCutHandler* cut,
+        bool source_sized_space,
+        M3CompactionBoundaryEvidence& evidence,
+        M3CompactionMetrics& metrics,
+        std::optional<persistence::PersistenceErrorContext>& error_context);
+    M3CompactionOutcome commit_compaction_impl(
+        const OperationContext& context);
+    // Deletes the source pair a just-published compaction retired.
+    //
+    // The generic retention path keeps one retired pair because the previous
+    // manifest slot still names it.  Online compaction's whole purpose is a
+    // bounded journal, so the M5 split path asks for that pair to be discarded
+    // once the candidate manifest is published and installed.  Every deletion is
+    // still identity-anchored: the named file must be the file object the
+    // artifact record observed, or it is left alone.  A failure is retention,
+    // not a failed compaction.
+    Result<void> purge_retired_compaction_artifacts(
+        const OperationContext& context);
+
+    // Everything an unpublished compaction holds between prepare and commit.
+    // The transaction owns the snapshot and the new journal file; the journal
+    // writer must outlive it because the delta was written through that writer.
+    // Move-only, like the transaction it carries.
+    struct PendingCompaction final {
+        PendingCompaction(
+            std::uint64_t native_operation_id,
+            std::uint64_t source_generation,
+            std::uint64_t candidate_generation,
+            std::uint64_t cut_dirty_epoch,
+            M3CompactionBoundaryEvidence boundary,
+            M3CompactionMetrics metrics,
+            persistence::PreparedCheckpointTransaction transaction,
+            std::unique_ptr<persistence::JournalWriter> journal_writer,
+            std::array<persistence::OwnedImmutableArtifact, 2>
+                candidate_artifacts) noexcept;
+
+        std::uint64_t native_operation_id{};
+        std::uint64_t source_generation{};
+        std::uint64_t candidate_generation{};
+        std::uint64_t cut_dirty_epoch{};
+        M3CompactionBoundaryEvidence boundary{};
+        M3CompactionMetrics metrics{};
+        persistence::PreparedCheckpointTransaction transaction;
+        std::unique_ptr<persistence::JournalWriter> journal_writer;
+        std::array<persistence::OwnedImmutableArtifact, 2>
+            candidate_artifacts{};
+    };
+
     mutable std::mutex operation_mutex_;
     std::atomic<M3ProviderState> state_{M3ProviderState::Constructed};
     M3ProviderConfig config_;
@@ -370,6 +455,11 @@ private:
 #endif
     std::optional<persistence::PreparedCheckpointTransaction>
         pending_checkpoint_{};
+    // Engaged exactly between a successful `prepare_compaction` and its commit
+    // or abort.  The two pending kinds are mutually exclusive: a compaction
+    // folds the durable view and a checkpoint cuts the live one, and allowing
+    // both at once would let them publish over one another.
+    std::optional<PendingCompaction> pending_compaction_{};
     // Engaged exactly while a two-phase prepare is outstanding and unpublished.
     // Cleared by abort, by commit, and by any prepare that fails after the point
     // where the previous correlation was replaced.

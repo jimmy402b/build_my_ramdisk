@@ -125,6 +125,30 @@ DiskCheckpointErrorContext map_error_context(
     return mirrored;
 }
 
+DiskCompactionMetrics map_compaction_metrics(
+    const m3::M3CompactionMetrics& source) noexcept {
+    DiskCompactionMetrics metrics{};
+    metrics.source_generation = source.source_generation;
+    metrics.committed_generation = source.committed_generation;
+    metrics.source_base_bytes = source.source_base_bytes;
+    metrics.source_journal_bytes = source.source_journal_bytes;
+    metrics.candidate_base_bytes = source.candidate_base_bytes;
+    metrics.candidate_journal_bytes = source.candidate_journal_bytes;
+    metrics.required_peak_free_bytes = source.required_peak_free_bytes;
+    metrics.available_free_bytes = source.available_free_bytes;
+    metrics.live_extent_count = source.live_extent_count;
+    metrics.candidate_payloads = source.candidate_payloads;
+    metrics.snapshot_records = source.snapshot_records;
+    metrics.data_records = source.data_records;
+    metrics.zero_records = source.zero_records;
+    metrics.discard_records = source.discard_records;
+    metrics.index_nodes = source.index_nodes;
+    metrics.newer_dirty_preserved = source.newer_dirty_preserved;
+    metrics.retained_candidate_count = source.retained_candidate_count;
+    metrics.deleted_candidate_count = source.deleted_candidate_count;
+    return metrics;
+}
+
 } // namespace
 
 Result<DiskBundleKind> classify_bundle(const std::filesystem::path& bundle) {
@@ -304,6 +328,16 @@ Result<DiskRuntimeOperations> make_runtime_operations(
         };
     operations.abort_checkpoint = [&m3](const std::uint64_t native_operation_id) {
         return m3.abort_checkpoint(native_operation_id);
+    };
+    operations.prepare_compaction = [&m3](const std::uint64_t native_operation_id) {
+        return m3.prepare_compaction(native_operation_id);
+    };
+    operations.commit_compaction = [&m3](const std::uint64_t native_operation_id,
+                                        const std::uint64_t cut_dirty_epoch) {
+        return m3.commit_compaction(native_operation_id, cut_dirty_epoch);
+    };
+    operations.abort_compaction = [&m3](const std::uint64_t native_operation_id) {
+        return m3.abort_compaction(native_operation_id);
     };
     return Result<DiskRuntimeOperations>::success(std::move(operations));
 }
@@ -826,6 +860,82 @@ Result<void> ProductionRuntimeAdapter::abort_checkpoint(
             L"M3 runtime is unavailable"));
     }
     return impl_->aim_runtime->abort_checkpoint(native_operation_id);
+}
+
+Result<DiskCompactionPrepared> ProductionRuntimeAdapter::prepare_compaction(
+    const std::uint64_t native_operation_id) {
+    if (!impl_->aim_runtime) {
+        return Result<DiskCompactionPrepared>::failure(adapter_error(
+            ErrorDomain::internal, 1, L"prepare_compaction",
+            L"M3 runtime is unavailable"));
+    }
+    m3::M3CompactionRequest request{};
+    request.barrier = persistence::VolumeBarrierKind::WindowsVolumeFlushed;
+    request.operation_id = native_operation_id;
+    auto prepared =
+        impl_->aim_runtime->prepare_compaction(impl_->context, request);
+    if (!prepared.ok()) {
+        return Result<DiskCompactionPrepared>::failure(prepared.error());
+    }
+    const auto& value = prepared.value();
+    DiskCompactionPrepared result{};
+    result.prior_generation = value.boundary.source_generation;
+    result.candidate_generation = value.boundary.candidate_generation;
+    result.native_operation_id = value.boundary.operation_id;
+    result.cut_dirty_epoch = value.cut_dirty_epoch;
+    result.source_base_bytes = value.boundary.source_base_bytes;
+    result.source_journal_bytes = value.boundary.source_journal_bytes;
+    result.required_peak_free_bytes =
+        value.boundary.required_peak_free_bytes;
+    result.available_free_bytes = value.boundary.available_free_bytes;
+    result.candidate_base_bytes = value.metrics.candidate_base_bytes;
+    result.candidate_journal_bytes = value.metrics.candidate_journal_bytes;
+    result.live_extent_count = value.metrics.live_extent_count;
+    result.candidate_payloads = value.metrics.candidate_payloads;
+    return Result<DiskCompactionPrepared>::success(std::move(result));
+}
+
+Result<DiskCompactionResult> ProductionRuntimeAdapter::commit_compaction(
+    const std::uint64_t native_operation_id,
+    const std::uint64_t cut_dirty_epoch) {
+    if (!impl_->aim_runtime) {
+        return Result<DiskCompactionResult>::failure(adapter_error(
+            ErrorDomain::internal, 1, L"commit_compaction",
+            L"M3 runtime is unavailable"));
+    }
+    const auto outcome = impl_->aim_runtime->commit_compaction(
+        impl_->context, native_operation_id, cut_dirty_epoch);
+    const auto disposition = map_disposition(outcome.disposition);
+    const bool landed = checkpoint_landed(disposition);
+    if (landed && outcome.error.has_value()) {
+        return Result<DiskCompactionResult>::failure(adapter_error(
+            ErrorDomain::internal, 1, L"commit_compaction",
+            L"a landed compaction reported failure evidence"));
+    }
+    if (!landed && !outcome.error.has_value()) {
+        return Result<DiskCompactionResult>::failure(adapter_error(
+            ErrorDomain::internal, 1, L"commit_compaction",
+            L"a compaction that did not land reported no failure"));
+    }
+    DiskCompactionResult result{};
+    result.disposition = disposition;
+    result.generation = outcome.generation;
+    result.metrics = map_compaction_metrics(outcome.metrics);
+    if (!landed && outcome.error_context.has_value()) {
+        result.error_context =
+            map_error_context(*outcome.error_context, disposition);
+    }
+    return Result<DiskCompactionResult>::success(std::move(result));
+}
+
+Result<void> ProductionRuntimeAdapter::abort_compaction(
+    const std::uint64_t native_operation_id) {
+    if (!impl_->aim_runtime) {
+        return Result<void>::failure(adapter_error(
+            ErrorDomain::internal, 1, L"abort_compaction",
+            L"M3 runtime is unavailable"));
+    }
+    return impl_->aim_runtime->abort_compaction(native_operation_id);
 }
 
 } // namespace myrd

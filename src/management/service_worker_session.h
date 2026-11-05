@@ -114,6 +114,23 @@ public:
         const OperationContext& context, const product::Uuid& operation_id,
         std::uint64_t native_operation_id);
 
+    // The online-compaction commands.  Prepare names no native id: the worker
+    // derives it from the generation it observes, exactly as it does for a
+    // checkpoint, and the reply carries both so the service can re-check the
+    // identity before recording its durable boundary.
+    [[nodiscard]] Result<m5::WorkerCompactionPrepared> prepare_compaction(
+        const OperationContext& context, const product::Uuid& operation_id);
+    [[nodiscard]] Result<m5::WorkerCompactionCommitReply> commit_compaction(
+        const OperationContext& context, const product::Uuid& operation_id,
+        const m5::WorkerCompactionCommit& commit);
+    [[nodiscard]] Result<m5::WorkerCheckpointAbortReply> abort_compaction(
+        const OperationContext& context, const product::Uuid& operation_id,
+        std::uint64_t native_operation_id);
+    // Read-only.  A fresh worker may answer this before `start()`.
+    [[nodiscard]] Result<m5::WorkerCompactionRecoveryProof> inspect_compaction(
+        const OperationContext& context, const product::Uuid& operation_id,
+        const m5::WorkerCompactionCorrelation& correlation);
+
     // Judged by the worker against the bundle, never by the service against its
     // own durable record: that is the whole point of the proof.
     [[nodiscard]] Result<m5::WorkerRecoveryProof> recovery_proof(

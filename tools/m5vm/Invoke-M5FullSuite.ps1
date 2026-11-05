@@ -39,7 +39,12 @@ param(
     [switch]$IncludeMemoryExhaustion,
     # R-04: the process-kill case.  Opt-in while its recorded recovery defect is open; it
     # is a real-disk case and is serialised in its own group with a guest reset.
-    [switch]$IncludeFaultMatrix
+    [switch]$IncludeFaultMatrix,
+    # T4-03's five online-compaction scenarios are real 10-16 GiB workloads and take ~35
+    # minutes together -- longer than one guest agent request.  They are gated separately
+    # (`integration.m5.compaction_*`) so the default A1/A2 suite keeps its 158-case shape;
+    # pass this switch (or `-Only compaction`) to run them through the suite too.
+    [switch]$IncludeCompaction
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,7 +124,7 @@ function Invoke-Group([string]$name, [string]$filter) {
     Write-Host "`n=== group $name (filter $filter)"
     Reset-Guest
     $groupStarted = Get-Date
-    $text = & $harness -Run -Filter $filter -MinTimeoutSeconds 900 -DeadlineSeconds 1800 6>&1 2>&1 | Out-String
+    $text = & $harness -Run -Filter $filter -MinTimeoutSeconds 900 -DeadlineSeconds 5400 -TimeoutSeconds 5400 6>&1 2>&1 | Out-String
     Write-Host $text
     $match = [regex]::Match([string]$text, 'request ([0-9a-f]{32}) submitted')
     if (-not $match.Success) { throw "the $name group produced no request id" }
@@ -181,6 +186,7 @@ if ($allTests.Count -eq 0) { throw 'the staged tests.json is empty' }
 # `tools/m5vm/Test-M5P4P5PowerCut.ps1`.
 $wantMemoryExhaustion = $IncludeMemoryExhaustion -or ($Only -contains 'memory')
 $wantFaultMatrix = $IncludeFaultMatrix -or ($Only -contains 'fault')
+$wantCompaction = $IncludeCompaction -or ($Only -contains 'compaction')
 $selectedTests = New-Object System.Collections.ArrayList
 foreach ($t in $allTests) {
     if ($t.name -eq 'integration.m5.memory_exhaustion' -and -not $wantMemoryExhaustion) {
@@ -223,6 +229,7 @@ $assign = {
     if ($name -match '^integration\.m2\.') { return 'integration.m2' }
     if ($name -match '^integration\.m3\.') { return 'integration.m3' }
     if ($name -match '^integration\.m5\.powerloss') { return 'powerloss' }
+    if ($name -match '^integration\.m5\.compaction_') { return 'compaction' }
     if ($name -match '^integration\.m5\.') { return 'integration.m5' }
     if ($name -match '^structural\.') { return 'structural' }
     return 'unassigned'
@@ -266,6 +273,11 @@ if ($wantMemoryExhaustion) {
     # R-01's one-command exhaustion experiment.  Its own group, so it gets a fresh guest
     # and its failure cannot take another group with it.
     $filters['memory'] = '^integration\.m5\.memory_exhaustion$'
+}
+if ($wantCompaction) {
+    # The five real-workload compaction scenarios, separated because together they exceed
+    # one guest agent request.  Each case has its own ctest timeout (5400 s).
+    $filters['compaction'] = '^integration\.m5\.compaction_'
 }
 if ($Only.Count -ne 0) {
     foreach ($name in $Only) {

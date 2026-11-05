@@ -77,6 +77,14 @@ public:
         std::uint64_t native_operation_id) override;
     Result<WorkerRecoveryProof> prove_recovery(
         const WorkerRecoveryCorrelation& correlation) override;
+    Result<WorkerCompactionPrepared> prepare_compaction(
+        std::uint64_t native_operation_id) override;
+    Result<WorkerCompactionCommitReply> commit_compaction(
+        const WorkerCompactionCommit& commit) override;
+    Result<WorkerCheckpointAbortReply> abort_compaction(
+        std::uint64_t native_operation_id) override;
+    Result<WorkerCompactionRecoveryProof> inspect_compaction(
+        const WorkerCompactionCorrelation& correlation) override;
     Result<WorkerRemoveAndStopReply> remove_and_stop(
         const WorkerRemovalAuthorization& authorization) override;
     Result<void> shutdown() override;

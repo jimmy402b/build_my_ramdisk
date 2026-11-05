@@ -426,6 +426,116 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
         return Result<WorkerMessage>::success(std::move(reply));
     }
 
+    case WorkerCommand::compaction_prepare: {
+        if (!started_) {
+            reply.error = refusal(L"prepare_compaction",
+                                  L"the runtime has not been started");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        if (prepared_.has_value() || prepared_compaction_.has_value()) {
+            reply.error = refusal(
+                L"prepare_compaction",
+                L"a checkpoint or compaction candidate is already prepared");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        auto status = runtime_.observe();
+        if (!status.ok()) {
+            reply.error = status.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const std::uint64_t expected_candidate =
+            status.value().committed_generation + 1;
+        const auto native_operation_id =
+            m5_native_operation_id(expected_candidate);
+        if (!native_operation_id.has_value()) {
+            reply.error = refusal(
+                L"prepare_compaction",
+                L"candidate generation has no valid M5 native operation id");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto candidate =
+            runtime_.prepare_compaction(*native_operation_id);
+        if (!candidate.ok()) {
+            reply.error = candidate.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto frozen =
+            m5_native_operation_id(candidate.value().candidate_generation);
+        if (candidate.value().candidate_generation != expected_candidate ||
+            !frozen.has_value() ||
+            *frozen != candidate.value().native_operation_id) {
+            (void)runtime_.abort_compaction(
+                candidate.value().native_operation_id);
+            reply.error = refusal(
+                L"prepare_compaction",
+                L"M3 prepared a compaction this worker cannot re-derive");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        prepared_compaction_ = candidate.value();
+        reply.compaction_prepared = candidate.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::compaction_commit: {
+        if (!prepared_compaction_.has_value() ||
+            !request.compaction_commit.has_value()) {
+            reply.error = refusal(L"commit_compaction",
+                                  L"no compaction is prepared to commit");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto matching = require_matching_compaction(
+            *request.compaction_commit, *prepared_compaction_);
+        if (!matching.ok()) {
+            reply.error = matching.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto committed =
+            runtime_.commit_compaction(*request.compaction_commit);
+        // Once the runtime has been asked to publish, the transaction belongs to
+        // it; this session must never abort it afterwards.
+        prepared_compaction_.reset();
+        if (!committed.ok()) {
+            reply.error = committed.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.compaction_reply = committed.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::compaction_abort: {
+        if (!prepared_compaction_.has_value()) {
+            reply.error = refusal(L"abort_compaction",
+                                  L"no compaction is prepared to abort");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto aborted = runtime_.abort_compaction(
+            prepared_compaction_->native_operation_id);
+        if (!aborted.ok()) {
+            reply.error = aborted.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        prepared_compaction_.reset();
+        reply.abort_reply = aborted.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
+    case WorkerCommand::inspect_compaction: {
+        if (!request.compaction_correlation.has_value()) {
+            reply.error = refusal(
+                L"inspect_compaction",
+                L"the inspection carries no compaction correlation");
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        const auto proof =
+            runtime_.inspect_compaction(*request.compaction_correlation);
+        if (!proof.ok()) {
+            reply.error = proof.error();
+            return Result<WorkerMessage>::success(std::move(reply));
+        }
+        reply.compaction_recovery = proof.value();
+        return Result<WorkerMessage>::success(std::move(reply));
+    }
+
     case WorkerCommand::recovery_proof: {
         if (!request.correlation.has_value()) {
             reply.error = refusal(L"recovery_proof",
@@ -447,13 +557,13 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
                                   L"the runtime has not been started");
             return Result<WorkerMessage>::success(std::move(reply));
         }
-        if (prepared_.has_value()) {
+        if (prepared_.has_value() || prepared_compaction_.has_value()) {
             // A prepared-but-unpublished candidate is an open two-phase
             // boundary.  Removing the bundle underneath it would destroy the
             // evidence of an operation the service has not resolved yet.
             reply.error = refusal(
                 L"remove_and_stop",
-                L"a checkpoint candidate is prepared and must be resolved first");
+                L"a checkpoint or compaction candidate is prepared and must be resolved first");
             return Result<WorkerMessage>::success(std::move(reply));
         }
         if (!request.removal.has_value()) {
@@ -488,14 +598,14 @@ Result<WorkerMessage> WorkerSession::dispatch(const WorkerMessage& request) {
     }
 
     case WorkerCommand::shutdown: {
-        if (prepared_.has_value()) {
+        if (prepared_.has_value() || prepared_compaction_.has_value()) {
             // §3.5: an unresolved session is resolved before the worker goes
-            // away.  Terminating here would abandon a candidate whose P4 record
-            // the service still has to reconcile, which is exactly the state
-            // the recovery proof exists to avoid.
+            // away.  Terminating here would abandon a candidate whose durable
+            // record the service still has to reconcile, which is exactly the
+            // state the recovery proof exists to avoid.
             reply.error = refusal(
                 L"shutdown",
-                L"a checkpoint candidate is prepared and must be resolved first");
+                L"a checkpoint or compaction candidate is prepared and must be resolved first");
             return Result<WorkerMessage>::success(std::move(reply));
         }
         const auto stopped = runtime_.shutdown();

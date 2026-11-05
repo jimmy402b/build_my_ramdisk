@@ -320,6 +320,22 @@ public:
     Result<WorkerActionResult> execute_checkpoint(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryHandler& boundary) override;
+    // The online-compaction boundary.  Prepare runs the fold and holds an
+    // unpublished transaction; the service's boundary and cut handlers are
+    // invoked between prepare and commit so both durable records land before
+    // any manifest is published.  This is the production realization the class
+    // comment used to say did not exist.
+    Result<WorkerActionResult> execute_compaction(
+        const WorkerActionRequest& request,
+        const CompactionMutationBoundaryHandler& boundary,
+        const CompactionCutPublicationHandler& cut) override;
+    Result<WorkerActionResult> reconcile_compaction(
+        const WorkerActionRequest& request,
+        const CompactionMutationBoundaryEvidence& correlation) override;
+    Result<void> publish_compaction_epoch(
+        const WorkerActionRequest& request,
+        const CompactionMutationBoundaryEvidence& correlation,
+        const CompactionEpochPublicationHandler& publish) override;
     // Realized through `recovery_proof`, now that the durable correlation carries
     // the manifest slot and the bytes digest the proof needs.  Before that
     // widening it stayed fail-closed, because there was nothing to build a
@@ -486,6 +502,10 @@ private:
     Result<WorkerActionResult> checkpoint_across_boundary(
         const WorkerActionRequest& request,
         const CheckpointCommitBoundaryHandler& boundary);
+    Result<WorkerActionResult> compaction_across_boundary(
+        const WorkerActionRequest& request,
+        const CompactionMutationBoundaryHandler& boundary,
+        const CompactionCutPublicationHandler& cut);
 
     IWorkerSessionProvider& sessions_;
     std::uint32_t control_timeout_ms_{};
@@ -514,6 +534,18 @@ private:
         sessions_by_profile_;
     std::vector<HeldCandidate> held_candidates_;
     std::vector<HeldRemoval> held_removals_;
+    // The epoch a recovery inspection observed for a committed compaction.  The
+    // inspection session is deliberately closed as soon as it answers, so the
+    // later `publish_compaction_epoch` has no live worker to ask.  This is the
+    // worker's own conservative observation (cut+1: a recovered candidate may
+    // hold post-cut writes that were never checkpointed), kept only until it is
+    // published once.
+    std::optional<CompactionEpochObservation> recovery_compaction_epoch_;
+    // The epoch the just-finished commit is known to have left.  Kept so the
+    // separate epoch-publication call cannot report a live status that regressed
+    // below the cut: a compaction installs a new backing and its epoch baseline
+    // is not required to be monotonic across the install.  Consumed once.
+    std::optional<CompactionEpochObservation> last_compaction_epoch_;
 };
 
 } // namespace myrd::management
