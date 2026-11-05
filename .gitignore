@@ -2,6 +2,11 @@
 /out/
 /.worktrees/
 
+# Stray configure artifacts at the repository root (the real build tree is out/build/msvc)
+/CMakeCache.txt
+/CMakeFiles/
+/*.obj
+
 # Reports (test output, diagnostics, evidence reports)
 /reports/
 
