@@ -5758,3 +5758,48 @@ validator **accepted**、包 `MyRamDisk-1.0.1-win11-x64` 11 files、`SHA256SUMS`
   stopped、可显式 `disk start`）；未加自动重试。
 - `unit.m3.vhdx_reader` 偶发、fault 后 PowerShell/WMI 拖住等 1.0.0 已知项不变。
 工作树：`feature/m5-lifecycle` @ 本提交（干净），客机已 hard reset 到可用状态（1 盘、0 worker）。
+
+---
+
+### 3.235 2026-11-05 18:00：**1.0.2 完成——“写 10 GiB→删→写 1 GiB→checkpoint”测试暴露 journal 尾巴缺陷，已修、验收与门禁通过**
+
+**用户要测的场景**：往 RAM disk 写 10 GiB，在下一个 checkpoint 前删除，再写 1 GiB，checkpoint 后
+看 1 GiB 是否落盘。
+
+**1.0.1 上的结果：不落盘，而且盘会永久卡死**。读数：
+- 10 GiB write-through **14 s**（generation 不变，确实无中间 checkpoint）、删除瞬间、1 GiB **2 s**；
+- 自动 checkpoint 以 `code=11 SnapshotResourceExhausted` 中止（`snapshot was aborted`，10 GiB 删除的
+  discard backlog），但 journal 已被追加 ~490 MB；
+- 之后所有重试 `code=15 opened bundle file identity differs from the expected identity`；
+- 重启服务 → generation 929、**1 GiB 文件消失**；再 checkpoint 在 publish 失败
+  `reopened journal identity changed before publish`，profile `blocked/needs-attention/CommitIndeterminate`，
+  `stop`/`start`/`forget`/`repair-profile` 全部被拒。
+
+**修复（`4d219f2`，1.0.2）**：所有不提交的退出路径把 journal 截回已提交长度：
+`checkpoint_prepare_impl` 打开后先裁超长尾巴 + 回滚守卫；`PreparedCheckpointTransaction::abort()`
+裁回 `previous_committed_length_`；compaction 的新 journal 不动。
+
+**修复后同一测试（1.0.2，宿主机）**：checkpoint 先中止 2 次，第 3 次提交 gen 12 → interval 到
+`Idle/Clean`；journal 2,945,921,024 → 4,841,418,752 B；`disk stop`+`start` → gen 13、
+`Z:\one.bin` 1,073,741,824 B、SHA-256 `1460863F…D092F` 一致、10 GiB 文件不存在。
+
+**门禁**：A1 `6c1d321a…` 158/158、A2 `058c0418…` 158/158；B **5/5**（逐例跑：
+`26dbdc8b` performance、`0a27c053` cluster_size、`61dfa32f` compatibility、`6b1d4cb0` soak、
+`f73b4eb3` support_bundle）；fault **6/6**（`8fb8bd53` process_kills、`04eebce7` service_kill、
+`3ac18204` bundle_corruption、`9cfa7d25` stop_after_restore、`2232885e` hostile_acl、
+`c8c5eeb5` volume_full）。
+**B 为什么逐例**：一条命令跑 5 例时，runner 的“每例后 kill 所有 myrd* + SCM 重启 + 启动扫描
+auto-start”会把上一个用例的盘拉起来，下一个用例的 create 被**正确地**以单盘规则拒绝（`0x5609`）；
+两次单命令复跑都是 3/5。每例前 hard reset + reset 后全部通过——harness artifact，不是产品回归。
+
+**冻结/发布**：manifest `frozen_at=2026-11-05T09:57:51Z`（4 binaries + 13 readings）、validator
+**accepted**；包 `MyRamDisk-1.0.2-win11-x64` 11 files、`SHA256SUMS` 10 条复算 0 mismatch。
+二进制：service `86e10b2c…`、cli `5c9b265c…`、gui `4c07693c…`、worker `8948fcb1…`。
+版本 1.0.2；release notes `docs/operations/m5-release-1.0.2.md`、缺陷记录
+`m5-known-issue-2026-11-04-large-disk-create.md` §14。
+
+**遗留（如实记录）**：
+- 大删除会让紧接着的 checkpoint 先自动中止 1–2 次（`SnapshotResourceExhausted`）再成功；
+  这是重试代价，不是数据丢失。根因（discard backlog 与 snapshot COW 预算的竞争）未单独修。
+- 断电打断正在执行的操作不续跑；启动时 auto-start 可能被 reconciled 操作的 gate 拒一次
+  ——与 1.0.1 相同。

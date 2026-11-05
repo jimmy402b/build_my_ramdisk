@@ -317,3 +317,35 @@ fault 各例：`process_kills` `bac7fb5a…`、`service_kill` `351c5944…`、`b
 **打包**：`out/release/MyRamDisk-1.0.1-win11-x64/`，11 个文件；`SHA256SUMS` 10 条逐条复算
 **0 mismatch**。打包脚本的 `-OutputRoot` 用相对路径时曾写出切片路径
 （`disk/.worktrees/…`），已改为 `GetFullPath` 解析目标目录后重新生成。
+
+---
+
+## 14. 2026-11-05 1.0.2 执行记录（journal 尾巴修复）
+
+**触发**：宿主机测试“写 10 GiB → 删 → 写 1 GiB → checkpoint”。1.0.1 上暴露：checkpoint 中止
+（`SnapshotResourceExhausted`）后 journal 多出 490 MB 未提交尾巴，之后永远无法 checkpoint，
+重启丢掉 1 GiB 且 profile 卡在 `blocked/needs-attention`（无 CLI 出路）。修复见 `4d219f2`
+（`docs/operations/m5-known-issue-2026-11-04-large-disk-create.md` §14）。
+
+**修复后同一测试**：checkpoint 先中止 2 次，第 3 次提交 gen 12 → `Idle/Clean`；`disk stop`+`start`
+→ gen 13、`one.bin` 1,073,741,824 B、SHA-256 `1460863F…D092F` 一致、10 GiB 文件不存在。
+
+**门禁**（每条前 reset；fault 逐例硬重启）：
+
+| 运行 | 请求 id | 例数 | 结果 |
+|---|---|---|---|
+| A1 | `6c1d321a532b4ed18d822de4459754cd` | 158 | **158/158 passed**（08:17–08:29Z） |
+| A2 | `058c041868cc40ccaccff6ac21a6e953` | 158 | **158/158 passed**（08:30–08:40Z） |
+| B（逐例） | `26dbdc8b` / `0a27c053` / `61dfa32f` / `6b1d4cb0` / `f73b4eb3` | 5 | **5/5 passed** |
+| fault（逐例） | `8fb8bd53` / `04eebce7` / `3ac18204` / `9cfa7d25` / `2232885e` / `c8c5eeb5` | 6 | **6/6 passed** |
+
+**B 的跑法变化**：一条命令跑 5 例时，runner 的“每例后 kill 所有 myrd* + SCM 重启 + 启动扫描
+auto-start”把上一个用例的盘拉起来，下一个用例的 create 被正确地以单盘规则拒绝（`0x5609`）；
+两次单命令复跑都是 3/5。改为每例前 hard reset + reset、单用例提交后 5/5。这是 harness 的跨用例
+清理 artifact，不是产品回归。
+
+**冻结**：`out/m5-evidence-1.0.2/release-manifest.json`，`frozen_at=2026-11-05T09:57:51Z`，
+4 个二进制 + **13 份读数**；`Verify-M5Evidence.ps1` → **accepted**。
+
+**打包**：`out/release/MyRamDisk-1.0.2-win11-x64/`，11 个文件；`SHA256SUMS` 10 条复算
+**0 mismatch**。两次 `--clean-first` 构建的四个二进制 SHA-256 一致。

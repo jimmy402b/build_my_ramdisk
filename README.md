@@ -1,6 +1,6 @@
 # MyRamDisk
 
-**1.0.1 (2026-11-04)** — a single-disk RAM disk for Windows 11 x64. Data lives in RAM and is
+**1.0.2 (2026-11-05)** — a single-disk RAM disk for Windows 11 x64. Data lives in RAM and is
 checkpointed to a bundle on disk; after a reboot or a power cut the disk comes back from its
 last committed checkpoint. The release is **unsigned** and ships SHA-256 checksums.
 

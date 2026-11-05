@@ -432,3 +432,41 @@ journal 长到 9,112,297,472 B。
 | 硬断电后 | 自动恢复为 `already-running`（generation 6）；文件长度与 digest 一致；第二块盘被 `0x5609` 拒绝 |
 
 全量门禁、manifest 冻结与 1.0.1 打包见 `m5-release-1.0.1.md` 与 `m5-release-rehearsal.md`。
+
+---
+
+## 14. 后续缺陷：中止的 checkpoint 把 journal 写长，之后永远无法 checkpoint（2026-11-05，1.0.2）
+
+**触发**（宿主机，1.0.1）：写 10 GiB → 在下一个 checkpoint 前删除 → 写 1 GiB → checkpoint。
+
+**现象与读数**：
+- 10 GiB write-through **14 s**（generation 不变，说明确实没有中间 checkpoint），删除瞬间完成，
+  1 GiB 写 **2 s**；
+- 随后每次自动 checkpoint 都失败：`action=flush-volume code=11 step=checkpoint.prepare
+  detail=snapshot was aborted`（`SnapshotResourceExhausted`，10 GiB 删除留下的 discard backlog）；
+- 之后每次重试都变成：`code=15 step=checkpoint.prepare
+  detail=opened bundle file identity differs from the expected identity`，永久失败；
+- 重启服务后盘回到 generation 929，**1 GiB 文件消失**（中止前接受的写入只在 RAM）；
+- 再手动 checkpoint 在 publish 失败：`code=8 step=checkpoint.publish
+  detail=reopened journal identity changed before publish`，profile 进入
+  `blocked/needs-attention/CommitIndeterminate`；`disk stop`、`start`、`forget`、`repair-profile`
+  全部被拒（`0x5605`/`0x5608`），没有产品级出路。
+
+**根因**：journal writer 在切快照时已经追加了记录；中止的 checkpoint 没有把文件截回**已提交长度**
+（实测 journal 1,414,406,144 → 1,904,615,424 B，多出 490 MB）。下一次打开 journal 时比较的是完整
+Windows 文件 identity（含 size），于是永久不匹配；重启后走 publish，size != 新的 committed length，
+同样失败。
+
+**修复（1.0.2，`4d219f2`）**：
+1. `M3Provider::checkpoint_prepare_impl`：打开 journal 后若文件长于已提交长度，先截断；准备过程
+   没有走到 pending transaction 时，由回滚守卫再截一次；
+2. `PreparedCheckpointTransaction::abort()`：截回自己的 `previous_committed_length_`；
+3. compaction 的新 journal 产物没有尾巴可裁，保持不动。
+
+**修复后读数（1.0.2，同一场景，宿主机）**：checkpoint 先中止 2 次
+（`SnapshotResourceExhausted`），第 3 次提交 generation 12；再经 interval 到 `Idle/Clean`；
+journal 2,945,921,024 → 4,841,418,752 B（已提交）；`disk stop` + `disk start` 后 generation 13，
+`Z:\one.bin` 1,073,741,824 B、SHA-256 `1460863F…D092F` 一致，10 GiB 文件不存在。
+
+**仍存在的限制**：大删除会让紧接着的 checkpoint 先自动中止 1–2 次（`SnapshotResourceExhausted`），
+这是重试代价；checkpoint 现在能恢复，而不是永久卡死。已写进 `m5-release-1.0.2.md` §6。
