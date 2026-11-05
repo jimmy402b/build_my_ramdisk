@@ -75,13 +75,17 @@ operation gate 会由终态释放，不会永久卡死。
 
 | 运行 | 请求 id | 例数 | 结果 |
 |---|---|---|---|
-| A1 | （待填） |  |  |
-| A2 | （待填） |  |  |
-| B（5 例逐例） | （待填） | 5 |  |
-| fault（6 例逐例） | （待填） | 6 |  |
+| A1（部分） | 分组请求 `251bee5f…`（unit）、`f3079d47…`（model）、m1m4/m2/m3 | 97+15+5+4+31 | **已过**；`integration.m5` 组（14 例，含 B 的 5 例）超过 agent 3600 s 被停止，无终态 results.json |
+| A2 | 未跑 |  | **未完成** |
+| B（5 例逐例） | 未跑 | 5 | **未完成** |
+| fault（6 例逐例） | 未跑 | 6 | **未完成** |
+| compaction 五项 | 见 §3 的五个请求 id | 5 | **全部 PASSED**（manual/auto/churn/regression/kill） |
 
-门禁每例前 reset 客机；B/fault 逐例硬重启。新加的 5 个 compaction 用例也随 A1/A2 跑；
-因此本期 A1/A2 的总例数比 1.0.2 的 158 多 5。
+**这是一份未完成门禁的发布候选记录，不能据此发布 1.0.3。** 已知阻塞：`integration.m5` 组
+在同一次 agent 请求里包含多个真实盘用例和 B 的 5 例，超过客机 3600 s 请求窗口；客机在多次
+超时/硬重启后还会出现 SSH/WMI 不稳。`Invoke-M5FullSuite.ps1` 已把五个 compaction 场景从
+默认 A1/A2 中拆出（`-Only compaction` 单独跑），但 B 的 5 例仍需“逐例 reset + 单例 Run”，
+A1/A2 的非 B 用例也需要拆小；之后才能冻结/打包。
 
 ## 5. 已知限制（如实记录）
 

@@ -5803,3 +5803,50 @@ auto-start”会把上一个用例的盘拉起来，下一个用例的 create �
   这是重试代价，不是数据丢失。根因（discard backlog 与 snapshot COW 预算的竞争）未单独修。
 - 断电打断正在执行的操作不续跑；启动时 auto-start 可能被 reconciled 操作的 gate 拒一次
   ——与 1.0.1 相同。
+
+---
+
+### 3.236 2026-11-06 07:20：**在线 compaction 已实现并通过五项客机验收；全量门禁未完成（客机 m5 组超时）**
+
+**代码**：`fbc561c`（`feat(m5): implement online compaction (T4-03)`）。worker 新增
+`compaction_prepare/commit/abort/inspect_compaction`；M3 拆出 prepare/commit/abort 与只读
+inspection；服务侧 `execute_compaction/reconcile_compaction/publish_compaction_epoch` 实装。
+关键设计：prepare 先折叠并持有未发布事务，服务在 prepare 与 commit 之间写 mutation boundary
+和真实 cut epoch；commit 发布新 manifest、切换 backing，然后**按身份删除上一代 base/journal**
+（generic retention 会因旧 manifest slot 仍引用而永远保留它）。空间 preflight 在 M5 split 路径
+按 durable source + store dirty bound 计算，而不是整个 `virtual_bytes`。
+
+**客机验收（Release，全部 pass）**：
+- `integration.m5.compaction_manual`（`74a113d7…`）：16 GiB 盘写 1 GiB → checkpoint →
+  compact；journal `journal-e0001.rdj` **2,260,230,144 B → journal-e0002-c6.rdj 12,288 B**；
+  旧 journal 消失；SHA-256 `A83FAAC5…D052AF` 在 compact 后与 stop/start 后一致。
+- `integration.m5.compaction_auto`（`1d9babe0…`）：200 代 checkpoint、阈值 16；generation
+  **213**、`compactions=6`、journal **20,480 B**。
+- `integration.m5.compaction_churn`（`bf50f8ee…`）：10 GiB 写→删 ×3；每轮 checkpoint
+  （大删除后最多 1 次 `SnapshotResourceExhausted` 重试）与 compact 成功，journal 每轮
+  **8,192 B**；最终 stop/start 后 marker SHA-256 不变。
+- `integration.m5.compaction_regression`（`a922671c…`）：1.0.2 的 10 GiB→删→1 GiB→
+  checkpoint→stop/start；checkpoint 第 6 次成功，1 GiB SHA-256 不变。
+- `integration.m5.compaction_kill`（`d30b8f90…`）：在 `compaction-committed` 暂停点
+  （manifest 已发布、服务未记录 evidence）杀 worker；operation `reconciling`；重启服务后
+  `disk start` 成功，SHA-256 不变。
+
+**本地**：`--clean-first` Release 构建 453/453 目标成功；`integration.m3.provider`（含新增
+split prepare/commit/abort/inspect 用例）、`integration.m3.compaction`、`unit.m5.worker_protocol`
+（含新 payload 往返）、`unit.m5.worker_session`、`unit.m5.service_worker_control`、
+`unit.m4.disk_runtime` 全绿。
+
+**全量门禁：未完成，不能发布 1.0.3**。A1 的 unit 97/97、model 15/15、m1m4 5/5、m2 4/4、
+m3 31/31 已通过；`integration.m5` 组（14 例，含 B 的 5 例和多个真实盘用例）在同一 agent
+请求里超过 3600 s 被停止（response `5fd13ff3…` / `f48fe42f…` 形态），A2/B/fault 尚未得到
+终态读数，manifest 未冻结、未打包。客机在多次超时/硬重启后还会出现 SSH/WMI 不稳，需要
+先硬重启到安静状态再跑。
+
+**下一步（已写进 release 1.0.3 §4）**：把 B 的 5 例按“逐例 reset + 单例 Run”跑；
+`integration.m5` 的非 B 用例拆小；A1/A2 用 `-Only` 分组重跑；fault 用
+`Invoke-M5FaultGroup.ps1` 六例逐例；随后冻结/打包，**发布前问用户**。
+
+**新加的客机用例**：`tests/e2e/test-m5-compaction-e2e.ps1`（`manual/auto/churn/regression/kill`）。
+它会在开始时 reset 客机并用 `pnputil` 删除残留 Arsenal 设备（失败用例/硬重启会留下它们，
+不做这一步 create 会卡在 `driver already holds N device(s)`）。
+
