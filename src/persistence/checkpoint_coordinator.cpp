@@ -297,6 +297,24 @@ Result<void> PreparedCheckpointTransaction::abort() {
     store_ = nullptr;
     session_ = nullptr;
     manifest_file_.reset();
+    // **An aborted preparation must not grow the journal it was about to commit.**
+    // The writer appended the checkpoint's records before the caller withdrew or a later
+    // step failed; none of those bytes is named by a manifest, but they change the file's
+    // Windows identity (size included), and every later open compares the whole identity.
+    // Measured: a 490 MB tail made every subsequent checkpoint fail with "opened bundle
+    // file identity differs from the expected identity".  A compaction builds a new
+    // journal artifact instead of appending to the live one, so it has nothing to trim.
+    if (!artifact_replacement_.has_value() && journal_file_) {
+        auto current_length = journal_file_->length();
+        if (current_length.ok() &&
+            current_length.value() > previous_committed_length_) {
+            auto trimmed =
+                journal_file_->truncate(previous_committed_length_);
+            if (!trimmed.ok() && !first_error.has_value()) {
+                first_error = trimmed.error();
+            }
+        }
+    }
     journal_file_.reset();
     journal_delete_guard_.reset();
     if (artifact_replacement_.has_value()) {

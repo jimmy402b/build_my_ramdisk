@@ -37,6 +37,42 @@ Error provider_error(const wchar_t* operation, const wchar_t* message) {
             operation, message};
 }
 
+// **A failed checkpoint must not leave bytes behind in the journal.**
+//
+// The journal writer appends records while it cuts the snapshot, so a checkpoint that
+// aborts part-way (measured: `SnapshotResourceExhausted`, "snapshot was aborted") has
+// already grown the journal file -- 490 MB in the host write/delete/write test -- while no
+// manifest references that tail.  Every later open compares the whole Windows file
+// identity, size included, against the identity recorded for the last committed
+// generation, so the next checkpoint fails with `opened bundle file identity differs from
+// the expected identity`; after a restart it gets as far as publish and fails with
+// `reopened journal identity changed before publish`.  The disk then reports
+// `blocked / needs-attention / CommitIndeterminate` and can never checkpoint again, while
+// the writes it accepted are still only in RAM.  Trimming the journal back to the last
+// committed end on every non-committing exit keeps the identity/size invariant true.
+class JournalTailRollback final {
+public:
+    JournalTailRollback(std::shared_ptr<IPersistenceFile> file,
+                        const std::uint64_t length) noexcept
+        : file_(std::move(file)), length_(length) {}
+    ~JournalTailRollback() {
+        if (!armed_ || !file_) return;
+        try {
+            (void)file_->truncate(length_);
+        } catch (...) {
+        }
+    }
+    void commit() noexcept { armed_ = false; }
+
+    JournalTailRollback(const JournalTailRollback&) = delete;
+    JournalTailRollback& operator=(const JournalTailRollback&) = delete;
+
+private:
+    std::shared_ptr<IPersistenceFile> file_;
+    std::uint64_t length_{};
+    bool armed_{true};
+};
+
 class ShmProviderTransport final : public IM3ProviderTransport {
 public:
     ShmProviderTransport(proxy::SharedMemoryChannel channel,
@@ -1401,6 +1437,25 @@ M3CheckpointOutcome M3Provider::checkpoint_prepare_impl(
             "checkpoint.prepare", SessionPhase::Ready,
             "checkpoint journal open failed");
     }
+    // Drop any tail a previous aborted attempt left, then guarantee this attempt leaves
+    // none behind unless it becomes a pending transaction.  The committed length is the
+    // only end any manifest names; bytes past it are unreachable by definition.
+    const std::uint64_t committed_before =
+        image_.backing_identity.journal_committed_length;
+    {
+        auto current_length = journal_file.value()->length();
+        if (current_length.ok() && current_length.value() > committed_before) {
+            auto trimmed = journal_file.value()->truncate(committed_before);
+            if (!trimmed.ok()) {
+                return provider_checkpoint_failure(
+                    image_, operation_id, trimmed.error(),
+                    CommitDisposition::NotCommitted, target_generation,
+                    "checkpoint.prepare", SessionPhase::Ready,
+                    "the uncommitted journal tail could not be removed");
+            }
+        }
+    }
+    JournalTailRollback journal_rollback(journal_file.value(), committed_before);
     auto options = writer_options(config_.recovery.limits);
 #if defined(MYRD_ENABLE_TEST_SEAMS)
     options.phase_hook = journal_phase_hook_;
@@ -1504,6 +1559,10 @@ M3CheckpointOutcome M3Provider::checkpoint_prepare_impl(
     frozen.manifest_slot = candidate.value().slot.slot_index;
     frozen.candidate_bytes_digest = digest.value();
     frozen.publish = std::move(publish);
+    // The journal now belongs to the pending transaction: from here a failure must leave
+    // the prepared bytes alone (the commit boundary decides their fate), so the rollback
+    // guard stops owning the file's length.
+    journal_rollback.commit();
     pending_checkpoint_.emplace(std::move(transaction));
     pending_two_phase_ = std::move(frozen);
     // No error: a prepared checkpoint is pending and nothing has been published.

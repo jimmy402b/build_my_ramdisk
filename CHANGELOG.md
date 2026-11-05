@@ -36,6 +36,44 @@ must run on a cleanly reset guest or it hangs. See `docs/operations/m5-release-r
 
 whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
+## [1.0.2] - 2026-11-05
+
+Patch release for a checkpoint-resilience defect found by the host write/delete/write test:
+write 10 GiB, delete it before the next checkpoint, write 1 GiB, then checkpoint.
+
+### Fixed
+
+- **An aborted checkpoint left an uncommitted journal tail, and the disk could never
+  checkpoint again.**  The journal writer appends records while it cuts the snapshot, so a
+  checkpoint that aborts part-way (measured: `SnapshotResourceExhausted`, "snapshot was
+  aborted", after a 10 GiB delete's discard backlog) had already grown the journal by
+  490 MB.  No manifest named those bytes, but the next open compared the whole Windows
+  file identity (size included) against the last committed generation, so every retry
+  failed with `opened bundle file identity differs from the expected identity`; after a
+  restart it reached publish and failed with `reopened journal identity changed before
+  publish`, leaving the profile `blocked / needs-attention / commit_indeterminate`.  The
+  writes accepted before the abort were only in RAM and were lost on restart (measured:
+  the 1 GiB file was gone after a service restart).  A failed preparation now truncates
+  the journal back to the last committed end, an aborted prepared transaction does the
+  same, and a checkpoint that opens a journal longer than its committed length trims the
+  tail before writing.
+
+### Measured after the fix (host, 16 GiB / automatic 15.92 GiB budget)
+
+- write 10 GiB write-through 14 s; delete instant; write 1 GiB 2 s;
+- the automatic checkpoint aborted twice with `SnapshotResourceExhausted` (the delete's
+  discard backlog), then committed generation 3 (`post_commit_dirty=1`), and interval
+  checkpoints reached `Idle/Clean` at generation 5;
+- journal 1,117,143,040 → 2,944,442,368 B, committed;
+- `disk stop` + `disk start` (new worker, recovered from the bundle) → generation 6,
+  `Z:\one.bin` 1,073,741,824 B and SHA-256
+  `DD11089A99D4DEDAE1CABF0E8D55229ECBC9DECA02888BFE4DDAF9640E7221B9` unchanged, the
+  10 GiB file absent.
+
+The snapshot auto-abort itself is still a retry, not a success: a large delete can cost
+one or two aborted checkpoint attempts before the discard backlog drains.  The checkpoint
+now recovers from them instead of wedging.
+
 ## [1.0.1] - 2026-11-04
 
 Patch release for the large-disk defects found in real use on 1.0.0. **No behaviour change
