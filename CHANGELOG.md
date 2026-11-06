@@ -36,6 +36,29 @@ must run on a cleanly reset guest or it hangs. See `docs/operations/m5-release-r
 
 whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
+## [1.0.3] - 2026-11-06
+
+### Added
+
+- **Online compaction.** `disk compact` and the automatic checkpoint-count trigger now
+  actually fold the journal into a new base/journal on the running disk, publish a new
+  manifest generation, switch the backing and delete the retired generation pair. The
+  worker gained `compaction_prepare/commit/abort/inspect_compaction`; the service realizes
+  the durable mutation-boundary/cut/commit/epoch phases and the read-only recovery
+  inspection.
+- Guest acceptance in `integration.m5.compaction_{manual,auto,churn,regression,kill}`:
+  2.26 GB journal -> 12 KB on a 16 GiB disk, 213 generations / 6 automatic compactions,
+  3x10 GiB churn, the 1.0.2 regression, and a kill after the compaction publish.
+- B 5/5 and fault 6/6 gates with a fresh guest per case.
+
+### Status
+
+Release candidate. The A1/A2 full-suite gate is not complete: the `integration.m5`
+non-B cases were split and 7/9 pass individually, but `nonadmin_prepare` needs its
+host-side two-phase prepare, `cli_e2e` failed once on a dirty guest, and `bigdisk` was
+not run; A2 is not run. The manifest is **not frozen**, the package is **not built**,
+and this version is **not published**. See `docs/operations/m5-release-1.0.3.md` §4.
+
 ## [1.0.2] - 2026-11-05
 
 Patch release for a checkpoint-resilience defect found by the host write/delete/write test:

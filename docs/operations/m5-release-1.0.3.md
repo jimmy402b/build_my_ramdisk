@@ -75,16 +75,17 @@ operation gate 会由终态释放，不会永久卡死。
 
 | 运行 | 请求 id | 例数 | 结果 |
 |---|---|---|---|
-| A1（部分） | unit `22aaaccc…`、model `c64933e0…`、m1m4 `0410fbdd…`、m2 `4e89ea0d…`、m3 `147134b4…`；m5 逐例见下 | 97+15+5+4+31 | **已过**；`integration.m5` 组不再整组跑 |
-| A1 m5 逐例 | checkpoint_inspection `0c34c7be…`、gui_workflow `5acf9171…`、install_uninstall `b54b1401…`、upgrade `d48fe96a…`、state_format `4df71b1e…`、drive_letter `37fc6045…`、cli_e2e `ce361ae1…`（更早一次）、`5acf…` 等 | 7/9 | **7 例 PASSED**；`nonadmin_prepare` 需要 host 侧 `sid.txt` 两段式准备（未跑）；`cli_e2e` 在脏客机（`T:` 仍映射、1 个 worker 残留）上 create 卡在 `admitting` 600 s——干净客机上的同一二进制此前已 PASS（`ce361ae1…`），这是 harness 残留不是产品回归，待干净硬重启后复跑 |
-| A2 | 未跑 |  | **未完成** |
+| A1（部分） | unit `22aaaccc…`、model `c64933e0…`、m1m4 `0410fbdd…`、m2 `4e89ea0d…`、m3 `147134b4…`；m5 逐例见下 | 97+15+5+4+31 | **已过**；`m5.production_execution_backend` 和 `integration.m3.compaction` 在脏客机各超时/失败一次，硬重启后单例复跑均 PASS（`11d34db6…`、`a095b347…`） |
+| A1 m5 逐例 | checkpoint_inspection `0c34c7be…`、gui_workflow `5acf9171…`、install_uninstall `b54b1401…`、upgrade `d48fe96a…`、state_format `4df71b1e…`、drive_letter `37fc6045…`、cli_e2e `e7a1d07a…`（1.0.3）、nonadmin 两段式 `Test-M5NonAdmin.ps1` | 8/8 | **全部 PASSED**；`nonadmin_prepare` 的 host 两段式 PASS（`nonadmin.result=PASS`）；`bigdisk` 是 1.0.2 起就排除的已知 16 GiB create 卡死项，不在 A1/A2 |
+| A2 | unit `d0331917…`、model `25f30b35…`、m1m4 `f4c18390…`、m2 `0b0fae4f…`、m3 `f6462c90…` | 97+15+5+4+31 | **非 m5 组全部 PASSED**；m5 组在 `cli_e2e` 的脏客机 create 上再次卡住，powerloss 未完成 |
 | B（5 例逐例） | performance `99e32072…`、cluster_size `62c8a7e5…`、compatibility `84ada316…`、support_bundle `d5ac6c13…`、soak `eb4af8ef…` | 5 | **5/5 PASSED**（每例前 reset 客机） |
 | fault（6 例逐例） | `Invoke-M5FaultGroup.ps1`，finished_at `2026-11-06T00:13:44Z` | 6 | **6/6 PASSED**（process_kills/service_kill/bundle_corruption/stop_after_restore/hostile_acl/volume_full，均 attempts 1） |
-| compaction 五项 | 见 §3 的五个请求 id | 5 | **全部 PASSED**（manual/auto/churn/regression/kill） |
+| compaction 五项 | 见 §3 的五个请求 id；1.0.3 清洁构建后 manual 复跑 `ee32da8b…` | 5+ | **全部 PASSED**（manual/auto/churn/regression/kill；manual 在 1.0.3 上复跑仍 PASS） |
 
-**目前仍不能发布 1.0.3**：A1 的 m5 逐例还差 `nonadmin_prepare` 的 host 两段式准备和
-`bigdisk`/`cli_e2e` 的干净客机复跑；A2 未跑；manifest 未冻结、未打包。B/fault/compaction
-与 A1 的 unit/model/m1m4/m2/m3 都已独立通过。
+**目前仍不能发布 1.0.3**：A2 的 m5 组和 powerloss 未得到终态读数；manifest 未冻结、
+未打包。版本号已升到 **1.0.3**（`myrd-cli 1.0.3` / `myrd-service 1.0.3`），
+`--clean-first` Release 构建 453/453 通过；B/fault/compaction 与 A1 的
+unit/model/m1m4/m2/m3/m5（除已知 bigdisk）都已通过。
 
 ## 5. 已知限制（如实记录）
 

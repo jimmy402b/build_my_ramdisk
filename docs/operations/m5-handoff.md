@@ -5866,3 +5866,11 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 更早一次已 PASS（`ce361ae1…`），这是 harness 残留；`bigdisk` 未跑。**A1 仍差
 `nonadmin_prepare` 的 host 准备、`cli_e2e` 干净复跑和 `bigdisk`；A2 未跑。**
 
+**2026-11-06 版本/门禁续**：`product_version.h` 已升到 **1.0.3**（`myrd-cli 1.0.3` /
+`myrd-service 1.0.3`），`--clean-first` Release 构建 **453/453**；1.0.3 上
+`compaction_manual` 复跑 PASS（`ee32da8b…`）。`nonadmin_prepare` 用
+`Test-M5NonAdmin.ps1` 的两段式准备 **PASS**（`nonadmin.result=PASS`）；1.0.3 的
+`cli_e2e` 干净客机 PASS（`e7a1d07a…`）。A2 的 unit/model/m1m4/m2/m3 全部 PASS
+（`d0331917…`、`25f30b35…`、`f4c18390…`、`0b0fae4f…`、`f6462c90…`），但 m5 组在
+`cli_e2e` 的脏客机 create 上再次卡住，powerloss 未完成。**结论不变：不能冻结/打包/发布 1.0.3。**
+

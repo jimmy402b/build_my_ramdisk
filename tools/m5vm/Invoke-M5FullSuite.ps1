@@ -231,6 +231,8 @@ $assign = {
     if ($name -match '^integration\.m5\.powerloss') { return 'powerloss' }
     if ($name -match '^integration\.m5\.compaction_') { return 'compaction' }
     if ($name -match '^integration\.m5\.(performance|cluster_size|compatibility|soak|support_bundle)$') { return 'b' }
+    if ($name -eq 'integration.m5.bigdisk') { return 'bigdisk' }
+    if ($name -eq 'integration.m5.nonadmin_prepare') { return 'nonadmin' }
     if ($name -match '^integration\.m5\.') { return 'integration.m5' }
     if ($name -match '^structural\.') { return 'structural' }
     return 'unassigned'
@@ -257,7 +259,7 @@ $filters = [ordered]@{
     'integration.m1m4' = '^integration\.(m1|m4)\.|^integration\.shm$'
     'integration.m2' = '^integration\.m2\.'
     'integration.m3' = '^integration\.m3\.'
-    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion|process_kills|p4p5_|performance|cluster_size|compatibility|soak|support_bundle|compaction_)'
+    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion|process_kills|service_kill|bundle_corruption|stop_after_restore|hostile_acl|volume_full|p4p5_|performance|cluster_size|compatibility|soak|support_bundle|compaction_|bigdisk|nonadmin_prepare)'
     'structural'     = '^structural\.'
 }
 if ($wantFaultMatrix) {
@@ -284,6 +286,11 @@ if ($Only -contains 'b') {
     # B is always run per-case with a fresh guest (the handoff's 5/5 evidence); this group
     # exists only so `-Only b` can reproduce that set in one request if asked.
     $filters['b'] = '^integration\.m5\.(performance|cluster_size|compatibility|soak|support_bundle)$'
+}
+if ($Only -contains 'bigdisk') {
+    # The 16 GiB create is a known-stalling large-disk case (handoff §3.233), excluded from
+    # A1/A2 since 1.0.2; this group only exists to run it deliberately.
+    $filters['bigdisk'] = '^integration\.m5\.bigdisk$'
 }
 if ($Only.Count -ne 0) {
     foreach ($name in $Only) {
