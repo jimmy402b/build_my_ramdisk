@@ -5859,3 +5859,10 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 请求里超过 3600 s，A2 未跑。**因此：compaction 5/5、B 5/5、fault 6/6 有终态证据；A1/A2
 不完整；manifest 未冻结、未打包、未发布。** 下一步是逐例跑 m5 的 9 个非 B 用例，再跑 A1/A2。
 
+**m5 非 B 逐例结果（2026-11-06 续）**：`checkpoint_inspection`、`gui_workflow`、
+`install_uninstall`、`upgrade`、`state_format`、`drive_letter` **7 例 PASS**；
+`nonadmin_prepare` 需要 host 侧两段式 `sid.txt` 准备，未跑；`cli_e2e` 在本次脏客机
+（`T:` 仍映射、1 个 worker 残留）上 create 卡在 `admitting` 600 s，同一批二进制在干净客机
+更早一次已 PASS（`ce361ae1…`），这是 harness 残留；`bigdisk` 未跑。**A1 仍差
+`nonadmin_prepare` 的 host 准备、`cli_e2e` 干净复跑和 `bigdisk`；A2 未跑。**
+

@@ -75,16 +75,16 @@ operation gate 会由终态释放，不会永久卡死。
 
 | 运行 | 请求 id | 例数 | 结果 |
 |---|---|---|---|
-| A1（部分） | unit `22aaaccc…`、model `c64933e0…`、m1m4 `0410fbdd…`、m2 `4e89ea0d…`、m3 `147134b4…` | 97+15+5+4+31 | **已过**；`integration.m5` 组仍未在 3600 s agent 窗口内完成（多次 reset 后重试） |
+| A1（部分） | unit `22aaaccc…`、model `c64933e0…`、m1m4 `0410fbdd…`、m2 `4e89ea0d…`、m3 `147134b4…`；m5 逐例见下 | 97+15+5+4+31 | **已过**；`integration.m5` 组不再整组跑 |
+| A1 m5 逐例 | checkpoint_inspection `0c34c7be…`、gui_workflow `5acf9171…`、install_uninstall `b54b1401…`、upgrade `d48fe96a…`、state_format `4df71b1e…`、drive_letter `37fc6045…`、cli_e2e `ce361ae1…`（更早一次）、`5acf…` 等 | 7/9 | **7 例 PASSED**；`nonadmin_prepare` 需要 host 侧 `sid.txt` 两段式准备（未跑）；`cli_e2e` 在脏客机（`T:` 仍映射、1 个 worker 残留）上 create 卡在 `admitting` 600 s——干净客机上的同一二进制此前已 PASS（`ce361ae1…`），这是 harness 残留不是产品回归，待干净硬重启后复跑 |
 | A2 | 未跑 |  | **未完成** |
 | B（5 例逐例） | performance `99e32072…`、cluster_size `62c8a7e5…`、compatibility `84ada316…`、support_bundle `d5ac6c13…`、soak `eb4af8ef…` | 5 | **5/5 PASSED**（每例前 reset 客机） |
 | fault（6 例逐例） | `Invoke-M5FaultGroup.ps1`，finished_at `2026-11-06T00:13:44Z` | 6 | **6/6 PASSED**（process_kills/service_kill/bundle_corruption/stop_after_restore/hostile_acl/volume_full，均 attempts 1） |
 | compaction 五项 | 见 §3 的五个请求 id | 5 | **全部 PASSED**（manual/auto/churn/regression/kill） |
 
-**目前仍不能发布 1.0.3**：A1/A2 的 `integration.m5` 组（9 个非 B 用例，含 install/upgrade/cli_e2e/bigdisk 等）
-在同一个 agent 请求里多次超过 3600 s；A2 未跑；manifest 未冻结、未打包。B/fault/compaction
-已经独立通过。下一步是把 m5 组再拆小（或逐例 reset + 单例 Run），然后 A1/A2 重跑、powerloss
-单独确认，最后才冻结/打包。
+**目前仍不能发布 1.0.3**：A1 的 m5 逐例还差 `nonadmin_prepare` 的 host 两段式准备和
+`bigdisk`/`cli_e2e` 的干净客机复跑；A2 未跑；manifest 未冻结、未打包。B/fault/compaction
+与 A1 的 unit/model/m1m4/m2/m3 都已独立通过。
 
 ## 5. 已知限制（如实记录）
 
