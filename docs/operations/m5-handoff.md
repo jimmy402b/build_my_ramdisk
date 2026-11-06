@@ -5850,3 +5850,12 @@ m3 31/31 已通过；`integration.m5` 组（14 例，含 B 的 5 例和多个真
 它会在开始时 reset 客机并用 `pnputil` 删除残留 Arsenal 设备（失败用例/硬重启会留下它们，
 不做这一步 create 会卡在 `driver already holds N device(s)`）。
 
+**2026-11-06 续**：B 已用“逐例 reset + 单例 Run”**5/5 PASSED**
+（performance `99e32072…`、cluster_size `62c8a7e5…`、compatibility `84ada316…`、
+support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5FaultGroup.ps1`
+**6/6 PASSED**（finished_at `2026-11-06T00:13:44Z`，全部 attempts 1，含两次 VM 首次启动
+10 分钟不应答后的补一次硬重启）。A1 的 unit 97、model 15、m1m4 5、m2 4、m3 31 再次通过；
+`integration.m5` 非 B 组（9 例，含 cli_e2e/install/upgrade/bigdisk 等）仍在同一 agent
+请求里超过 3600 s，A2 未跑。**因此：compaction 5/5、B 5/5、fault 6/6 有终态证据；A1/A2
+不完整；manifest 未冻结、未打包、未发布。** 下一步是逐例跑 m5 的 9 个非 B 用例，再跑 A1/A2。
+

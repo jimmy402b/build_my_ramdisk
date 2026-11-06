@@ -230,6 +230,7 @@ $assign = {
     if ($name -match '^integration\.m3\.') { return 'integration.m3' }
     if ($name -match '^integration\.m5\.powerloss') { return 'powerloss' }
     if ($name -match '^integration\.m5\.compaction_') { return 'compaction' }
+    if ($name -match '^integration\.m5\.(performance|cluster_size|compatibility|soak|support_bundle)$') { return 'b' }
     if ($name -match '^integration\.m5\.') { return 'integration.m5' }
     if ($name -match '^structural\.') { return 'structural' }
     return 'unassigned'
@@ -256,7 +257,7 @@ $filters = [ordered]@{
     'integration.m1m4' = '^integration\.(m1|m4)\.|^integration\.shm$'
     'integration.m2' = '^integration\.m2\.'
     'integration.m3' = '^integration\.m3\.'
-    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion|process_kills|p4p5_)'
+    'integration.m5' = '^integration\.m5\.(?!powerloss|memory_exhaustion|process_kills|p4p5_|performance|cluster_size|compatibility|soak|support_bundle|compaction_)'
     'structural'     = '^structural\.'
 }
 if ($wantFaultMatrix) {
@@ -278,6 +279,11 @@ if ($wantCompaction) {
     # The five real-workload compaction scenarios, separated because together they exceed
     # one guest agent request.  Each case has its own ctest timeout (5400 s).
     $filters['compaction'] = '^integration\.m5\.compaction_'
+}
+if ($Only -contains 'b') {
+    # B is always run per-case with a fresh guest (the handoff's 5/5 evidence); this group
+    # exists only so `-Only b` can reproduce that set in one request if asked.
+    $filters['b'] = '^integration\.m5\.(performance|cluster_size|compatibility|soak|support_bundle)$'
 }
 if ($Only.Count -ne 0) {
     foreach ($name in $Only) {

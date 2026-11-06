@@ -75,17 +75,16 @@ operation gate 会由终态释放，不会永久卡死。
 
 | 运行 | 请求 id | 例数 | 结果 |
 |---|---|---|---|
-| A1（部分） | 分组请求 `251bee5f…`（unit）、`f3079d47…`（model）、m1m4/m2/m3 | 97+15+5+4+31 | **已过**；`integration.m5` 组（14 例，含 B 的 5 例）超过 agent 3600 s 被停止，无终态 results.json |
+| A1（部分） | unit `22aaaccc…`、model `c64933e0…`、m1m4 `0410fbdd…`、m2 `4e89ea0d…`、m3 `147134b4…` | 97+15+5+4+31 | **已过**；`integration.m5` 组仍未在 3600 s agent 窗口内完成（多次 reset 后重试） |
 | A2 | 未跑 |  | **未完成** |
-| B（5 例逐例） | 未跑 | 5 | **未完成** |
-| fault（6 例逐例） | 未跑 | 6 | **未完成** |
+| B（5 例逐例） | performance `99e32072…`、cluster_size `62c8a7e5…`、compatibility `84ada316…`、support_bundle `d5ac6c13…`、soak `eb4af8ef…` | 5 | **5/5 PASSED**（每例前 reset 客机） |
+| fault（6 例逐例） | `Invoke-M5FaultGroup.ps1`，finished_at `2026-11-06T00:13:44Z` | 6 | **6/6 PASSED**（process_kills/service_kill/bundle_corruption/stop_after_restore/hostile_acl/volume_full，均 attempts 1） |
 | compaction 五项 | 见 §3 的五个请求 id | 5 | **全部 PASSED**（manual/auto/churn/regression/kill） |
 
-**这是一份未完成门禁的发布候选记录，不能据此发布 1.0.3。** 已知阻塞：`integration.m5` 组
-在同一次 agent 请求里包含多个真实盘用例和 B 的 5 例，超过客机 3600 s 请求窗口；客机在多次
-超时/硬重启后还会出现 SSH/WMI 不稳。`Invoke-M5FullSuite.ps1` 已把五个 compaction 场景从
-默认 A1/A2 中拆出（`-Only compaction` 单独跑），但 B 的 5 例仍需“逐例 reset + 单例 Run”，
-A1/A2 的非 B 用例也需要拆小；之后才能冻结/打包。
+**目前仍不能发布 1.0.3**：A1/A2 的 `integration.m5` 组（9 个非 B 用例，含 install/upgrade/cli_e2e/bigdisk 等）
+在同一个 agent 请求里多次超过 3600 s；A2 未跑；manifest 未冻结、未打包。B/fault/compaction
+已经独立通过。下一步是把 m5 组再拆小（或逐例 reset + 单例 Run），然后 A1/A2 重跑、powerloss
+单独确认，最后才冻结/打包。
 
 ## 5. 已知限制（如实记录）
 
