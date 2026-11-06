@@ -5872,13 +5872,33 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 `Test-M5NonAdmin.ps1` 的两段式准备 **PASS**（`nonadmin.result=PASS`）；1.0.3 的
 `cli_e2e` 干净客机 PASS（`e7a1d07a…`）。A2 的 unit/model/m1m4/m2/m3 全部 PASS
 （`d0331917…`、`25f30b35…`、`f4c18390…`、`0b0fae4f…`、`f6462c90…`），但 m5 组在
-`cli_e2e` 的脏客机 create 上再次卡住，powerloss 未完成。**结论不变：不能冻结/打包/发布 1.0.3。**
+`cli_e2e` 的脏客机 create 上再次卡住，powerloss 未完成。**当时结论：不能冻结/打包/发布 1.0.3。**
 
-**2026-11-06 powerloss 读数（失败，非产品回归）**：`Test-M5PowerLoss.ps1` 在 1.0.3 上跑了两次
-`powerloss_prepare`，均失败。第一次是先有残留 `T:` profile（`the create ended failed`）；
-clean reset + PnP 清理后第二次，64 MiB create 的 operation 在 300 s 内停在 `running`
-（`the operation did not reach a terminal state within 300 s`）。同一形态与 A2 m5 组的
-`cli_e2e` create 卡住一致：**客机 create 在多次测试/硬重启后会被残留 AIM 设备或脏状态拖住**，
-与 compaction 代码无关（compaction 五项、B、fault、A1 各例均在干净时通过）。**需要先
-修复/重建客机环境（或接受 powerloss 与 A2 m5 组暂缺），才能完成全量门禁和冻结。**
+**2026-11-06 修复客机后的最终门禁（已通过）**：客机修复采用“hard reset + Reset-M5Guest +
+`pnputil` 删除全部 Arsenal 代理设备”，**没有**安装/替换/卸载 `phdskmnt`（一次尝试
+`sc stop phdskmnt` 在残留设备上挂住，hard reset 后放弃该路，改回安全清理）。修复后：
+
+- `integration.m5.performance` 探针 PASS（`42c8153e…`，64 MiB create 1 分 20 秒）；
+- `Test-M5PowerLoss.ps1` **PASS**（prepare `4f883cc9…`、verify `407514b7…`；cut 后服务/盘
+  自启动，数据验证通过）；
+- A2 的 m5 组 **7/7 PASS**（`129bd9dc…`：cli_e2e/checkpoint_inspection/gui/install/
+  upgrade/state_format/drive_letter）；
+- A1 全量 **164 例：160 passed、2 skipped（structural 的 vswhere）、0 产品失败**，
+  unit `08c541be…`、model `3feaffd0…`、m1m4 `91a109a4…`、m2 `bc41d853…`、m3 `3403ad75…`、
+  m5 `acc153ce…`、structural `fc4e2b46…`；powerloss 两例在 full-suite 的 1200 s 窗口内超时，
+  但已由上面的 `Test-M5PowerLoss.ps1` 单独 PASS；
+- A2 分组 unit/model/m1m4/m2/m3 全部 PASS（`d0331917…`、`25f30b35…`、`f4c18390…`、
+  `0b0fae4f…`、`f6462c90…`）。
+
+**结论：A1/A2、B 5/5、fault 6/6、compaction 5/5、powerloss 2/2 均有终态读数；可以进入
+第二次清洁构建、manifest 冻结、validator 与打包；发布前仍需问用户。**
+
+**2026-11-06 冻结/打包（完成，未发布）**：第二次 `--clean-first` 构建 **453/453**，四个二进制
+两次哈希完全一致（service `553f858d…`、cli `a5eb34fa…`、gui `55a5ffde…`、worker
+`022e105a…`）。`New-M5ReleaseManifest.ps1` 写出
+`out/m5-evidence-1.0.3/release-manifest.json`（4 binaries + **22 readings**，
+`frozen_at=2026-11-06T08:45:27Z`）；`Verify-M5Evidence.ps1` 回答 **accepted**。
+`New-M5ReleasePackage.ps1 -Version 1.0.3` 产出
+`out/release/MyRamDisk-1.0.3-win11-x64`（11 files），`SHA256SUMS` **10 条复算 0 mismatch**。
+**未 tag、未 push、未发布**；按约定等用户明确确认后才发布 1.0.3。
 

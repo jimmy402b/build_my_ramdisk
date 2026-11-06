@@ -3,7 +3,7 @@
 **产品**：Windows 11 x64 单盘 RAM disk（service + SYSTEM worker + AIM 虚拟盘 + NTFS 卷）。
 **版本**：`1.0.3`（四个二进制自报 `1.0.3`）。
 **分支/提交**：`feature/m5-lifecycle`；发布提交以 `git log` 为准。
-**状态**：发布候选；**未签名**。
+**状态**：已冻结、已打包；**未签名，未发布**（发布前等用户明确确认）。
 **范围**：补齐 T4-03 的在线 compaction——此前 `disk compact` 与自动 compaction 都会被调度，
 但生产 M5 worker 只返回 `The worker does not implement the compaction boundary protocol`，
 journal 是 append-only，空闲时也持续增长，最终会到上限。1.0.3 让 worker 真正执行折叠、
@@ -24,7 +24,10 @@ out/release/MyRamDisk-1.0.3-win11-x64/
 二进制哈希（与冻结 manifest 一致）：
 
 ```text
-（门禁与冻结完成后填写）
+myrd-service.exe    553f858d8ee699695c1bf6dec2675027bd2d2c69232073fd1b4ff29a49c5eaf5
+myrd-cli.exe        a5eb34fa3379765b4fe485400e85a2791ffc862364550d15b4e65decb631b7ec
+myrd-gui.exe        55a5ffde8557fe1dc3c855ba592ec032af16c60822822fb161a32304de9e4a12
+myrd-m5-worker.exe  022e105a212f484e17c77d595ccb714997a3c94d416aadca04823d0a02738bc4
 ```
 
 **可重复构建**：同一提交两次 `cmake --build out/build/msvc --config Release --clean-first`
@@ -75,22 +78,18 @@ operation gate 会由终态释放，不会永久卡死。
 
 | 运行 | 请求 id | 例数 | 结果 |
 |---|---|---|---|
-| A1（部分） | unit `22aaaccc…`、model `c64933e0…`、m1m4 `0410fbdd…`、m2 `4e89ea0d…`、m3 `147134b4…`；m5 逐例见下 | 97+15+5+4+31 | **已过**；`m5.production_execution_backend` 和 `integration.m3.compaction` 在脏客机各超时/失败一次，硬重启后单例复跑均 PASS（`11d34db6…`、`a095b347…`） |
-| A1 m5 逐例 | checkpoint_inspection `0c34c7be…`、gui_workflow `5acf9171…`、install_uninstall `b54b1401…`、upgrade `d48fe96a…`、state_format `4df71b1e…`、drive_letter `37fc6045…`、cli_e2e `e7a1d07a…`（1.0.3）、nonadmin 两段式 `Test-M5NonAdmin.ps1` | 8/8 | **全部 PASSED**；`nonadmin_prepare` 的 host 两段式 PASS（`nonadmin.result=PASS`）；`bigdisk` 是 1.0.2 起就排除的已知 16 GiB create 卡死项，不在 A1/A2 |
-| A2 | unit `d0331917…`、model `25f30b35…`、m1m4 `f4c18390…`、m2 `0b0fae4f…`、m3 `f6462c90…` | 97+15+5+4+31 | **非 m5 组全部 PASSED**；m5 组在 `cli_e2e` 的脏客机 create 上再次卡住，powerloss 未完成 |
+| A1 全量 | unit `08c541be…`、model `3feaffd0…`、m1m4 `91a109a4…`、m2 `bc41d853…`、m3 `3403ad75…`、m5 `acc153ce…`、structural `fc4e2b46…` | 164 | **160 passed、2 skipped（structural 的 vswhere）、0 failed（产品）；powerloss 两例在 full-suite 的 1200 s 请求窗口内超时**。powerloss 单独运行 **PASS**（prepare `4f883cc9…` / verify `407514b7…`，cut + boot + auto-start 验证通过） |
+| A2 分组 | unit `d0331917…`、model `25f30b35…`、m1m4 `f4c18390…`、m2 `0b0fae4f…`、m3 `f6462c90…`、m5 `129bd9dc…` | 159 | **全部 PASSED**；m5 7/7（cli_e2e/checkpoint_inspection/gui/install/upgrade/state_format/drive_letter） |
+| A1 m5 逐例 | 同 A1 全量的 `acc153ce…`；nonadmin 用 `Test-M5NonAdmin.ps1` | 7 + 1 | **7/7 + nonadmin PASS**；`bigdisk` 是 1.0.2 起排除的已知 16 GiB create 卡死项 |
 | B（5 例逐例） | performance `99e32072…`、cluster_size `62c8a7e5…`、compatibility `84ada316…`、support_bundle `d5ac6c13…`、soak `eb4af8ef…` | 5 | **5/5 PASSED**（每例前 reset 客机） |
 | fault（6 例逐例） | `Invoke-M5FaultGroup.ps1`，finished_at `2026-11-06T00:13:44Z` | 6 | **6/6 PASSED**（process_kills/service_kill/bundle_corruption/stop_after_restore/hostile_acl/volume_full，均 attempts 1） |
-| compaction 五项 | 见 §3 的五个请求 id；1.0.3 清洁构建后 manual 复跑 `ee32da8b…` | 5+ | **全部 PASSED**（manual/auto/churn/regression/kill；manual 在 1.0.3 上复跑仍 PASS） |
+| compaction 五项 | 见 §3 的五个请求 id；1.0.3 清洁构建后 manual 复跑 `ee32da8b…` | 5+ | **全部 PASSED**（manual/auto/churn/regression/kill） |
+| powerloss | prepare `4f883cc9…`、verify `407514b7…` | 2 | **PASS**：cut 后自动恢复、盘自启动、数据验证通过 |
 
-**目前仍不能发布 1.0.3**：A2 的 m5 组和 powerloss 未得到终态读数；manifest 未冻结、
-未打包。版本号已升到 **1.0.3**（`myrd-cli 1.0.3` / `myrd-service 1.0.3`），
-`--clean-first` Release 构建 453/453 通过；B/fault/compaction 与 A1 的
-unit/model/m1m4/m2/m3/m5（除已知 bigdisk）都已通过。
-
-`Test-M5PowerLoss.ps1` 在 1.0.3 上两次失败：第一次是残留 `T:` profile，clean reset 后第二次
-64 MiB create 在 300 s 内停在 `running`。这与 A2 m5 组 `cli_e2e` 的 create 卡住同形，
-是客机多次测试/硬重启后的残留 AIM 设备/脏状态，不是 compaction 代码路径；需要先修复或
-重建客机环境，才能补上 powerloss 与 A2 m5 组。
+**门禁结论**：A1 全量 160 passed / 2 skipped / 0 product failures；A2 分组全绿；B 5/5、
+fault 6/6、compaction 5/5、powerloss 2/2 有终态读数。唯一未在 full-suite 窗口内完成的是
+powerloss，已用 `Test-M5PowerLoss.ps1` 单独跑通。下一步：第二次 `--clean-first` 构建、
+manifest 冻结、validator accepted、打包 `SHA256SUMS`；**发布前问用户**。
 
 ## 5. 已知限制（如实记录）
 
@@ -106,5 +105,20 @@ unit/model/m1m4/m2/m3/m5（除已知 bigdisk）都已通过。
 ## 6. 可重复构建与冻结
 
 ```text
-（冻结完成后填写 frozen_at、四二进制哈希、validator 结果、两次 clean-first 一致性）
+两次 cmake --build out/build/msvc --config Release --clean-first 均 453/453；
+四个二进制两次 SHA-256 完全一致：
+  myrd-service.exe    553f858d8ee699695c1bf6dec2675027bd2d2c69232073fd1b4ff29a49c5eaf5
+  myrd-cli.exe        a5eb34fa3379765b4fe485400e85a2791ffc862364550d15b4e65decb631b7ec
+  myrd-gui.exe        55a5ffde8557fe1dc3c855ba592ec032af16c60822822fb161a32304de9e4a12
+  myrd-m5-worker.exe  022e105a212f484e17c77d595ccb714997a3c94d416aadca04823d0a02738bc4
+
+manifest: out/m5-evidence-1.0.3/release-manifest.json
+frozen_at: 2026-11-06T08:45:27Z
+readings: 22
+validator: accepted
+package: out/release/MyRamDisk-1.0.3-win11-x64（11 files）
+SHA256SUMS: 10 条，复算 0 mismatch
 ```
+
+**状态：已冻结、已打包、未发布。** 按约定，发布 1.0.3 前必须由用户明确确认；当前没有
+tag、没有 push、没有发布。
