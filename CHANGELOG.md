@@ -53,13 +53,12 @@ whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
 ### Status
 
-Frozen and packaged, **not published**. A1/A2, B 5/5, fault 6/6, compaction 5/5
+Published 2026-11-06 as tag `v1.0.3`. A1/A2, B 5/5, fault 6/6, compaction 5/5
 and powerloss 2/2 are green on the guest; two `--clean-first` builds produced
 identical binary hashes. The manifest is `frozen_at=2026-11-06T08:45:27Z`
 (22 readings), `Verify-M5Evidence.ps1` answers **accepted**, and the package
 `out/release/MyRamDisk-1.0.3-win11-x64` has a 10-entry `SHA256SUMS` with 0
-mismatch. Publication waits for explicit user confirmation. See
-`docs/operations/m5-release-1.0.3.md` §4 and §6.
+mismatch. See `docs/operations/m5-release-1.0.3.md` §4 and §6.
 
 ## [1.0.2] - 2026-11-05
 

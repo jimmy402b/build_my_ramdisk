@@ -5900,5 +5900,5 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 `frozen_at=2026-11-06T08:45:27Z`）；`Verify-M5Evidence.ps1` 回答 **accepted**。
 `New-M5ReleasePackage.ps1 -Version 1.0.3` 产出
 `out/release/MyRamDisk-1.0.3-win11-x64`（11 files），`SHA256SUMS` **10 条复算 0 mismatch**。
-**未 tag、未 push、未发布**；按约定等用户明确确认后才发布 1.0.3。
+**已发布 v1.0.3**（annotated tag `v1.0.3`、分支与 tag 已 push、GitHub release 使用同一 tag/包）。
 

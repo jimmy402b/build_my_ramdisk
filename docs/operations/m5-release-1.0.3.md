@@ -3,7 +3,7 @@
 **产品**：Windows 11 x64 单盘 RAM disk（service + SYSTEM worker + AIM 虚拟盘 + NTFS 卷）。
 **版本**：`1.0.3`（四个二进制自报 `1.0.3`）。
 **分支/提交**：`feature/m5-lifecycle`；发布提交以 `git log` 为准。
-**状态**：已冻结、已打包；**未签名，未发布**（发布前等用户明确确认）。
+**状态**：**已发布 2026-11-06（tag `v1.0.3`）**；**未签名**。
 **范围**：补齐 T4-03 的在线 compaction——此前 `disk compact` 与自动 compaction 都会被调度，
 但生产 M5 worker 只返回 `The worker does not implement the compaction boundary protocol`，
 journal 是 append-only，空闲时也持续增长，最终会到上限。1.0.3 让 worker 真正执行折叠、
@@ -120,5 +120,5 @@ package: out/release/MyRamDisk-1.0.3-win11-x64（11 files）
 SHA256SUMS: 10 条，复算 0 mismatch
 ```
 
-**状态：已冻结、已打包、未发布。** 按约定，发布 1.0.3 前必须由用户明确确认；当前没有
-tag、没有 push、没有发布。
+**状态：已冻结、已打包、已发布（tag `v1.0.3`，2026-11-06）。** 发布包仍为
+`out/release/MyRamDisk-1.0.3-win11-x64`；GitHub release 使用同一 tag/包。
