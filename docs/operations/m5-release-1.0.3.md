@@ -87,6 +87,11 @@ operation gate 会由终态释放，不会永久卡死。
 `--clean-first` Release 构建 453/453 通过；B/fault/compaction 与 A1 的
 unit/model/m1m4/m2/m3/m5（除已知 bigdisk）都已通过。
 
+`Test-M5PowerLoss.ps1` 在 1.0.3 上两次失败：第一次是残留 `T:` profile，clean reset 后第二次
+64 MiB create 在 300 s 内停在 `running`。这与 A2 m5 组 `cli_e2e` 的 create 卡住同形，
+是客机多次测试/硬重启后的残留 AIM 设备/脏状态，不是 compaction 代码路径；需要先修复或
+重建客机环境，才能补上 powerloss 与 A2 m5 组。
+
 ## 5. 已知限制（如实记录）
 
 - compaction 成功后会主动删除**上一代** base/journal；不支持回到上一代（只有最新已提交代被

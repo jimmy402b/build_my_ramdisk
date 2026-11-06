@@ -5874,3 +5874,11 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 （`d0331917…`、`25f30b35…`、`f4c18390…`、`0b0fae4f…`、`f6462c90…`），但 m5 组在
 `cli_e2e` 的脏客机 create 上再次卡住，powerloss 未完成。**结论不变：不能冻结/打包/发布 1.0.3。**
 
+**2026-11-06 powerloss 读数（失败，非产品回归）**：`Test-M5PowerLoss.ps1` 在 1.0.3 上跑了两次
+`powerloss_prepare`，均失败。第一次是先有残留 `T:` profile（`the create ended failed`）；
+clean reset + PnP 清理后第二次，64 MiB create 的 operation 在 300 s 内停在 `running`
+（`the operation did not reach a terminal state within 300 s`）。同一形态与 A2 m5 组的
+`cli_e2e` create 卡住一致：**客机 create 在多次测试/硬重启后会被残留 AIM 设备或脏状态拖住**，
+与 compaction 代码无关（compaction 五项、B、fault、A1 各例均在干净时通过）。**需要先
+修复/重建客机环境（或接受 powerloss 与 A2 m5 组暂缺），才能完成全量门禁和冻结。**
+
