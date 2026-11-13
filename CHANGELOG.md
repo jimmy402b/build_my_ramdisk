@@ -36,6 +36,27 @@ must run on a cleanly reset guest or it hangs. See `docs/operations/m5-release-r
 
 whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
+## [1.0.4] - 2026-11-13
+
+### Fixed
+
+- **Auto-start could consume the durable running intent during Windows' shutdown window.**
+  A Windows Update (or SCM failure-action) service start while `SM_SHUTTINGDOWN` was set
+  reached `create-runtime` and `OpenSCManagerW` returned `ERROR_SHUTDOWN_IN_PROGRESS`
+  (1115).  Auto-start had already published the profile as `stopped`, so the next boot
+  saw nothing to retry and the disk stayed stopped.  `ServiceHost` now checks a
+  `GetSystemMetrics(SM_SHUTTINGDOWN)` probe before `admit_auto_starts`; during shutdown it
+  leaves the durable running record untouched and skips dispatch, so the next normal boot
+  retries.  New model test:
+  `m5_host_keeps_the_running_intent_when_auto_start_runs_during_shutdown`.
+
+### Status
+
+Accepted candidate, not released.  `--clean-first` build 453/453; the focused model
+suite 5/5; guest 1.0.4 installed, a 1 GiB auto-start disk came back after a clean
+reboot with its 16 MiB test file and SHA-256 unchanged.  Full A1/A2/B/fault gates were
+not rerun for this targeted patch.  See `docs/operations/m5-release-1.0.4.md`.
+
 ## [1.0.3] - 2026-11-06
 
 ### Added

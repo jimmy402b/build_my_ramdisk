@@ -1227,8 +1227,11 @@ public:
     //
     // Admission only, like every other policy-driven action here: the scheduler is the
     // one executor.  A profile that is already running or mid-transition is skipped
-    // rather than raced.
-    Result<std::vector<product::Uuid>> admit_auto_starts();
+    // rather than raced.  `system_shutting_down` leaves the durable intent untouched:
+    // a service started inside Windows' shutdown window cannot start a worker (the SCM
+    // answers ERROR_SHUTDOWN_IN_PROGRESS), and consuming the running record there would
+    // leave the disk stopped with nothing to retry on the next boot.
+    Result<std::vector<product::Uuid>> admit_auto_starts(bool system_shutting_down);
 
     // Take the next piece of durable work, for the one executor the service
     // runs.  The claim is atomic against every other claim, and an operation is

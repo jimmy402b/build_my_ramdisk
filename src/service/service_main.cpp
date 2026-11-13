@@ -206,6 +206,9 @@ Result<std::unique_ptr<ServiceState>> build_state() {
     config.program_data_root = program_data;
     config.worker_executable = worker;
     config.host.stop_budget_ms = kStopBudgetMs;
+    config.host.system_shutting_down = []() noexcept {
+        return GetSystemMetrics(SM_SHUTTINGDOWN) != 0;
+    };
 
     auto runtime = myrd::service::ServiceRuntime::create(std::move(config));
     if (!runtime.ok()) {

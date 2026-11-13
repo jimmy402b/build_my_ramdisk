@@ -9000,7 +9000,30 @@ ipc::CallerIdentity service_caller_identity() {
     return caller;
 }
 
-Result<std::vector<product::Uuid>> ServiceCore::admit_auto_starts() {
+Result<std::vector<product::Uuid>> ServiceCore::admit_auto_starts(
+    const bool system_shutting_down) {
+    // A service can be started by the SCM's failure actions, or by a Windows
+    // Update servicing pass, while Windows is already shutting down.  The
+    // worker's driver preflight then opens the SCM, which answers
+    // ERROR_SHUTDOWN_IN_PROGRESS (1115), and the failure used to arrive *after*
+    // this function had already published `stopped` -- so the next boot saw a
+    // stopped profile and skipped it forever.  Leave the durable running intent
+    // alone and retry on the next boot instead.
+    if (system_shutting_down) {
+        auto request_id = ids_.next();
+        if (request_id.ok()) {
+            logger_.write(ServiceLogEvent{
+                ServiceLogKind::restart_reconcile,
+                request_id.value(),
+                std::nullopt,
+                std::nullopt,
+                "disk.start",
+                "auto-start",
+                "auto-start skipped: system is shutting down; durable running "
+                "state preserved for the next boot"});
+        }
+        return Result<std::vector<product::Uuid>>::success({});
+    }
     auto listed = profiles_.list_profiles();
     if (!listed.ok()) {
         return Result<std::vector<product::Uuid>>::failure(listed.error());

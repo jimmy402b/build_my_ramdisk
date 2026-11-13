@@ -124,7 +124,10 @@ Result<void> ServiceHost::start() {
     // before a start tries to take the same bundle.  Before the surface opens, so the
     // first command a client can send already sees the set of disks this boot decided
     // to serve rather than a half-populated one.
-    auto auto_started = core_.admit_auto_starts();
+    const bool shutting_down =
+        options_.system_shutting_down != nullptr
+        && options_.system_shutting_down();
+    auto auto_started = core_.admit_auto_starts(shutting_down);
     if (!auto_started.ok()) {
         // A service that cannot even ask which disks to bring back is not serving: the
         // same rule the recovery and the sweep follow.

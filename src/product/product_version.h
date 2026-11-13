@@ -8,8 +8,8 @@ namespace myrd::product {
 
 inline constexpr std::uint32_t kProductVersionMajor = 1;
 inline constexpr std::uint32_t kProductVersionMinor = 0;
-inline constexpr std::uint32_t kProductVersionPatch = 3;
-inline constexpr const char* kProductVersion = "1.0.3";
+inline constexpr std::uint32_t kProductVersionPatch = 4;
+inline constexpr const char* kProductVersion = "1.0.4";
 
 inline constexpr std::uint32_t kCliSchemaVersion = 1;
 inline constexpr std::uint32_t kPublicIpcVersionMajor = 1;

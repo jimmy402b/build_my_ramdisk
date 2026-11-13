@@ -46,6 +46,16 @@ struct ServiceHostOptions final {
     // through `ServiceHostDiagnostics::sweep_needs_attention` and the log -- so it
     // is visible rather than silent.
     bool fail_start_when_sweep_needs_attention{false};
+    // **A service can be started inside Windows' shutdown window.**
+    //
+    // The SCM's failure actions (or a Windows Update servicing pass) can start
+    // this service while the machine is already shutting down.  Auto-start must
+    // not consume the durable `running` intent then: the driver preflight opens
+    // the SCM, which answers ERROR_SHUTDOWN_IN_PROGRESS (1115), and the record
+    // would be left `stopped` with no retry on the next boot.  The production
+    // wrapper supplies `GetSystemMetrics(SM_SHUTTINGDOWN) != 0`; tests supply a
+    // deterministic lambda.  Null means "not shutting down".
+    bool (*system_shutting_down)() noexcept{nullptr};
 };
 
 // The start-up sweep, as the host sees it.

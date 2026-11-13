@@ -679,6 +679,45 @@ TEST_CASE(m5_host_auto_starts_a_profile_left_starting_by_a_power_cut) {
     REQUIRE(host.stop().ok());
 }
 
+TEST_CASE(m5_host_keeps_the_running_intent_when_auto_start_runs_during_shutdown) {
+    // **The 2026-11-13 auto-start failure, reproduced at the host level.**
+    //
+    // Windows Update (or the SCM's failure actions) can start the service while
+    // the machine is already shutting down.  The worker's driver preflight then
+    // opens the SCM, which answers ERROR_SHUTDOWN_IN_PROGRESS (1115).  The old
+    // auto-start had already published `stopped` before that failure, so the
+    // next boot saw nothing to retry.  A shutting-down host must leave the
+    // durable running intent alone.
+    FakeClock clock;
+    FakeScheduler scheduler;
+    auto durable = running_profile(product::PersistenceState::clean);
+    durable.record.profile.auto_start = true;
+    Profiles profiles(durable);
+    Operations operations;
+    Worker worker;
+    WorkerRuntimeObservation live{};
+    live.worker_alive = true;
+    live.committed_generation = 5;
+    worker.observation = live;
+    CapturingLogger logger;
+    Ids ids;
+    ids.values.push_back(uuid("44444444-4444-4444-8444-444444450000"));
+    Memory memory;
+    ServiceCore core(clock, profiles, operations, worker, logger, ids, memory);
+    ServiceHostOptions options{};
+    options.system_shutting_down = []() noexcept { return true; };
+    ServiceHost host(clock, core, scheduler, options);
+
+    REQUIRE(host.start().ok());
+    REQUIRE_EQ(host.diagnostics().auto_started_operations, 0U);
+    REQUIRE(operations.records.empty());
+    // The durable record still says "this disk was up"; the next boot is the
+    // retry, not a human.
+    REQUIRE(profiles.snapshot().state.disk.runtime
+            == product::RuntimeState::running);
+    REQUIRE(host.stop().ok());
+}
+
 TEST_CASE(m5_host_does_not_auto_start_a_profile_that_asked_not_to_be) {
     // The other side of the same policy: `auto_start == false` is a disk a human wants
     // left alone across a reboot, and starting it anyway would be the service deciding

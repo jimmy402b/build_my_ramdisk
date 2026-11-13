@@ -5902,3 +5902,47 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 `out/release/MyRamDisk-1.0.3-win11-x64`（11 files），`SHA256SUMS` **10 条复算 0 mismatch**。
 **已发布 v1.0.3**（annotated tag `v1.0.3`、分支与 tag 已 push、GitHub release 使用同一 tag/包）。
 
+---
+
+### 3.237 2026-11-13：**1.0.4 修关机窗口 auto-start —— Z 盘重启后不自动拉起**
+
+**现象**：2026-11-13 05:32 重启后 `Z:` 停在 `stopped/configured`，服务是 Running/Automatic。
+服务日志：
+
+```text
+150274 disk.start auto-start: durable running state had no worker, so it was retired
+150277 disk.start auto-start: this profile was running when the service last had it
+150280 disk.start create-runtime failed
+150281 action=create-runtime code=1115 native=0 step=OpenSCManagerW
+       detail=service control manager could not be opened
+```
+
+`1115` = `ERROR_SHUTDOWN_IN_PROGRESS`（系统正在关机）。系统事件显示这次是 Windows Update
+计划重启（1074：`MoUsoCoreWorker.exe` / `TrustedInstaller.exe`，reason=计划内），
+**没有 Kernel-Power 41**。服务在关机窗口被启动，auto-start 先把 durable `running` 发布成
+`stopped`，worker 的驱动预检 `OpenSCManagerW` 返回 1115；失败后 profile 留在 stopped。
+下一次开机 `admit_auto_starts()` 只看 `running/starting`，看到 stopped 直接跳过——这是
+“永久不重试”的状态机缺陷，不是盘/数据损坏。
+
+**修复**：
+- `ServiceHostOptions::system_shutting_down` 探针；`service_main` 传
+  `GetSystemMetrics(SM_SHUTTINGDOWN) != 0`。
+- `ServiceHost::start()` 在 `admit_auto_starts()` 前读探针。
+- `ServiceCore::admit_auto_starts(bool system_shutting_down)`：关机时**不改写任何 durable
+  状态、不派发 auto-start**，只写一条 `restart-reconcile` 日志；下一次正常启动仍看到
+  `running`，会重试。
+- 模型测试 `m5_host_keeps_the_running_intent_when_auto_start_runs_during_shutdown`：
+  shutdown 探针 true → `auto_started_operations=0`、无 operation、durable runtime 仍 running。
+
+**验收（1.0.4 候选）**：
+- `--clean-first` 构建 **453/453，无 warning/error**；CLI/service 自报 **1.0.4**。
+- 本机聚焦测试 5/5（`m5.service_host`、`service_orchestration`、`service_maintenance`、
+  `execution_scheduler`、`unit.m5.worker_protocol`）。
+- 客机（myrd-vm）请求 `req31339f48bad0` 安装 1.0.4，创建 1 GiB fixed `T:`，`auto_start=true`，
+  写 16,777,216 B，SHA-256 `8FC208BE…5FE0A`，checkpoint；重启客机后请求
+  `req879d70d25acf`：`T:` **running**、generation 2、文件大小/哈希不变，`AUTO_START_OK`。
+
+**未做**：完整 A1/A2/B/fault、manifest 冻结、打包、发布；1.0.4 目前是**定向验收候选**。
+**数据完整性**：本次只做了 1 GiB/16 MiB 的自动拉起验证；宿主上 1.0.3 的 16 GiB Z 盘数据
+（QQFLY 等）未动，数据完整性检查仍待用户决定。
+
