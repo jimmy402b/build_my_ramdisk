@@ -5944,7 +5944,7 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 - manifest `out/m5-evidence-1.0.4-final/release-manifest.json`，
   `frozen_at=2026-11-13T11:54:56Z`、9 readings、validator **accepted**；
   包 `out/release/MyRamDisk-1.0.4-win11-x64`（11 files、SHA256SUMS 10 条 0 mismatch）。
-- **本地 tag `v1.0.4`、manifest 和包已就绪；push 与 GitHub release 被网络阻断，尚未完成。**
+- **已发布 2026-11-13，tag `v1.0.4`；分支与 tag 已 push，GitHub release 使用同一 tag/包。**
   未签名。按用户裁定，**不包含 12h/24h soak，也不重跑完整 A1/A2/B/fault**；这些不是 1.0.4
   补丁的门禁范围。
 - 宿主 1.0.3 已卸载，Z 盘数据备份在 `C:\MyRamDisk-backup-20261113-1907`；数据完整性检查

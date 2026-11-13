@@ -2,7 +2,7 @@
 
 **产品**：Windows 11 x64 单盘 RAM disk。
 **版本**：`1.0.4`（四个二进制自报 `1.0.4`）。
-**状态**：**已冻结、已打包；tag `v1.0.4` 已在本地创建；push/GitHub release 因网络失败未完成。**
+**状态**：**已发布 2026-11-13（tag `v1.0.4`）；未签名。**
 **范围**：只修 1.0.3 的 auto-start 缺陷。按用户裁定，本版门禁只覆盖**自动拉起 harness**，
 不包含 12h/24h 无崩溃 soak 或完整 A1/A2/B/fault 矩阵。
 
@@ -114,6 +114,6 @@ binary hashes:
   myrd-m5-worker.exe  022e105a212f484e17c77d595ccb714997a3c94d416aadca04823d0a02738bc4
 ```
 
-**发布状态：本地 tag `v1.0.4`、冻结 manifest 和包已就绪；push 与 GitHub release 被网络阻断，
-尚未完成。** 未签名；网络恢复后只需 push 分支/tag 并上传同一 zip。
+**已发布 2026-11-13，tag `v1.0.4`；分支和 tag 已 push，GitHub release 使用同一 tag/包。**
+未签名。
 

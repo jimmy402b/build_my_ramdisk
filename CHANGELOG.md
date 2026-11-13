@@ -52,11 +52,10 @@ whole history. Dates are the dates the change landed on `feature/m5-lifecycle`.
 
 ### Status
 
-Frozen and packaged on 2026-11-13; local tag `v1.0.4` exists, but the branch/tag push
-and GitHub release failed because github.com was unreachable.  Gate scope was limited
-by the user to the auto-start harness: focused model suite 5/5, guest 1 GiB auto-start
-disk rebooted with its 16 MiB file and SHA-256 unchanged, clean build 453/453.
-Manifest `frozen_at=2026-11-13T11:54:56Z` (9 readings) is accepted; package
+Published 2026-11-13 as tag `v1.0.4`. Gate scope was limited by the user to the
+auto-start harness: focused model suite 5/5, guest 1 GiB auto-start disk rebooted with
+its 16 MiB file and SHA-256 unchanged, clean build 453/453. Manifest
+`frozen_at=2026-11-13T11:54:56Z` (9 readings) is accepted; package
 `out/release/MyRamDisk-1.0.4-win11-x64` has a 10-entry `SHA256SUMS` with 0 mismatch.
 No 12h/24h soak and no full A1/A2/B/fault rerun were part of this patch gate.
 
