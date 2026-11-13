@@ -1,9 +1,9 @@
 # MyRamDisk
 
-**1.0.3 (2026-11-06)** — a single-disk RAM disk for Windows 11 x64. Data lives in RAM and is
+**1.0.4 (2026-11-13)** — a single-disk RAM disk for Windows 11 x64. Data lives in RAM and is
 checkpointed to a bundle on disk; after a reboot or a power cut the disk comes back from its
-last committed checkpoint. 1.0.3 adds **online compaction**: the journal is folded into a new
-generation while the disk stays mounted. The release is **unsigned** and ships SHA-256 checksums.
+last committed checkpoint. 1.0.4 fixes auto-start being consumed inside Windows' shutdown
+window; 1.0.3 added **online compaction**. The release is **unsigned** and ships SHA-256 checksums.
 
 ## What it is
 
@@ -62,6 +62,7 @@ interval, 60 s by default (`--checkpoint-interval`, or `off` for a volatile disk
 ## Documentation
 
 - support scope, driver requirement, uninstall and logs: [`docs/operations/m5-support.md`](docs/operations/m5-support.md)
+- 1.0.4 release notes, auto-start fix and scoped gate: [`docs/operations/m5-release-1.0.4.md`](docs/operations/m5-release-1.0.4.md)
 - 1.0.3 release notes, online-compaction acceptance readings and gate status: [`docs/operations/m5-release-1.0.3.md`](docs/operations/m5-release-1.0.3.md)
 - 1.0.1 release notes, acceptance readings and gate results: [`docs/operations/m5-release-1.0.1.md`](docs/operations/m5-release-1.0.1.md)
 - the ≥8 GiB / large-journal defect and its fix record: [`docs/operations/m5-known-issue-2026-11-04-large-disk-create.md`](docs/operations/m5-known-issue-2026-11-04-large-disk-create.md)

@@ -5934,15 +5934,18 @@ support_bundle `d5ac6c13…`、soak `eb4af8ef…`）；fault 用 `Invoke-M5Fault
 - 模型测试 `m5_host_keeps_the_running_intent_when_auto_start_runs_during_shutdown`：
   shutdown 探针 true → `auto_started_operations=0`、无 operation、durable runtime 仍 running。
 
-**验收（1.0.4 候选）**：
+**验收与发布（1.0.4，门禁范围由用户限定为自动拉起 harness）**：
 - `--clean-first` 构建 **453/453，无 warning/error**；CLI/service 自报 **1.0.4**。
 - 本机聚焦测试 5/5（`m5.service_host`、`service_orchestration`、`service_maintenance`、
   `execution_scheduler`、`unit.m5.worker_protocol`）。
-- 客机（myrd-vm）请求 `req31339f48bad0` 安装 1.0.4，创建 1 GiB fixed `T:`，`auto_start=true`，
-  写 16,777,216 B，SHA-256 `8FC208BE…5FE0A`，checkpoint；重启客机后请求
-  `req879d70d25acf`：`T:` **running**、generation 2、文件大小/哈希不变，`AUTO_START_OK`。
-
-**未做**：完整 A1/A2/B/fault、manifest 冻结、打包、发布；1.0.4 目前是**定向验收候选**。
-**数据完整性**：本次只做了 1 GiB/16 MiB 的自动拉起验证；宿主上 1.0.3 的 16 GiB Z 盘数据
-（QQFLY 等）未动，数据完整性检查仍待用户决定。
+- 客机（myrd-vm）请求 `reqc9ef501dc62f` 安装 1.0.4，创建 1 GiB fixed `T:`，`auto_start=true`，
+  写 16,777,216 B，SHA-256 `2C08064F…F04CC`，checkpoint；重启后请求
+  `reqe07403f07ca0`：`T:` **running**、generation 2、文件大小/哈希不变，`AUTO_START_OK`。
+- manifest `out/m5-evidence-1.0.4-final/release-manifest.json`，
+  `frozen_at=2026-11-13T11:54:56Z`、9 readings、validator **accepted**；
+  包 `out/release/MyRamDisk-1.0.4-win11-x64`（11 files、SHA256SUMS 10 条 0 mismatch）。
+- **已发布 2026-11-13，tag `v1.0.4`**；未签名。按用户裁定，**不包含 12h/24h soak，也不重跑
+  完整 A1/A2/B/fault**；这些不是 1.0.4 补丁的门禁范围。
+- 宿主 1.0.3 已卸载，Z 盘数据备份在 `C:\MyRamDisk-backup-20261113-1907`；数据完整性检查
+  仍待用户决定。
 

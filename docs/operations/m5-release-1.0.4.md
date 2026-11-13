@@ -2,8 +2,9 @@
 
 **产品**：Windows 11 x64 单盘 RAM disk。
 **版本**：`1.0.4`（四个二进制自报 `1.0.4`）。
-**状态**：**已通过定向验收的候选；未冻结、未打包、未发布。**
-**范围**：只修 1.0.3 的 auto-start 缺陷。
+**状态**：**已发布 2026-11-13（tag `v1.0.4`）；未签名。**
+**范围**：只修 1.0.3 的 auto-start 缺陷。按用户裁定，本版门禁只覆盖**自动拉起 harness**，
+不包含 12h/24h 无崩溃 soak 或完整 A1/A2/B/fault 矩阵。
 
 ## 1. 问题
 
@@ -58,33 +59,60 @@ operation，且 profile 的 durable runtime 仍是 `running`。
 
 ### 3.2 客机（myrd-vm）1.0.4 自动拉起
 
-请求 `req31339f48bad0`（安装/准备）、`req879d70d25acf`（重启后验证）：
+请求 `reqc9ef501dc62f`（安装/准备）、`reqe07403f07ca0`（重启后验证）：
 
 ```text
 安装：myrd-cli 1.0.4 / MyRamDiskService 1.0.4
-盘：  6f685e69-ae79-48bd-9bc1-fc57274fc58c  T:  1 GiB fixed
+盘：  af3da520-39d1-4e9d-b252-7f61c7d514fc  T:  1 GiB fixed
 写：  16,777,216 B
-hash：8FC208BE964FC1AD2DAA2BCFAD283DFF85A7E57ACF2C4898C86B5B7DAAD5FE0A
+hash：2C08064F0DA3B4D5E8EF949E188F69F0D9875DC57815CEB3D62D8C694F1F04CC
 ```
 
 重启客机后：
 
 ```text
-6f685e69-…  T:  Ready  running  runtime=Running  activity=Idle
+af3da520-…  T:  Ready  running  runtime=Running  activity=Idle
 persistence=Dirty  health=Healthy  generation=2
 file size=16,777,216
-sha256=8FC208BE964FC1AD2DAA2BCFAD283DFF85A7E57ACF2C4898C86B5B7DAAD5FE0A
+sha256=2C08064F0DA3B4D5E8EF949E188F69F0D9875DC57815CEB3D62D8C694F1F04CC
 AUTO_START_OK
 ```
 
 说明 1.0.4 在正常重启路径上能自动拉起并保留已 checkpoint 的文件。
 
-## 4. 未覆盖与边界
+## 4. 发布门禁（按用户裁定的范围）
 
-- 本次是**定向验收**，没有重跑完整的 A1/A2/B/fault 矩阵；1.0.3 的发布证据仍是那些门禁的
-  基线。若要把 1.0.4 作为正式发布，仍需完整门禁、manifest 冻结和打包。
-- 该修复针对**关机窗口内的 auto-start**。如果 auto-start 在其他非关机原因下失败（例如磁盘
-  bundle 损坏、驱动缺失），当前产品仍可能停在 stopped/needs-attention；这类失败是否需要
-  跨启动重试，是下一步设计问题。
-- 未修改 `phdskmnt`；客机/宿主驱动均为 1.2.28.93。
-- 1.0.4 候选未 tag、未 push、未发布。
+**1.0.4 只验证自动拉起 harness，不包含 12h/24h 无崩溃 soak，也不重跑完整 A1/A2/B/fault 矩阵。**
+这是用户对补丁发布范围的明确裁定。
+
+- 模型测试 `m5.service_host` 5/5，包括
+  `m5_host_keeps_the_running_intent_when_auto_start_runs_during_shutdown`；
+- 客机 1.0.4 自动拉起：1 GiB fixed `T:`，`auto_start=true`，16 MiB 文件
+  SHA-256 `2C08064F…F04CC`，重启后 running 且哈希不变；
+- 客机 1.0.4 的 unit/model/m1m4/m2/m3 分组连同 smoke 作为辅助读数；
+- `--clean-first` 构建 453/453，无 warning/error。
+
+**未覆盖**：B performance/cluster/support 的逐例重跑、fault 的 hostile_acl/volume_full、
+powerloss、完整 A1/A2 suite、12h/24h soak。1.0.3 的这些证据仍是历史基线，但不属于本补丁
+的门禁范围。
+
+## 5. 冻结与打包
+
+```text
+manifest: out/m5-evidence-1.0.4-final/release-manifest.json
+frozen_at: 2026-11-13T11:54:56Z
+readings: 9
+validator: accepted
+
+package: out/release/MyRamDisk-1.0.4-win11-x64（11 files）
+SHA256SUMS: 10 条，复算 0 mismatch
+
+binary hashes:
+  myrd-service.exe    672065cfbdad8e4c89e31b2a8b6bd004af705716d12f5992d056a530126c4a4c
+  myrd-cli.exe        2e8b8ad53e75e3e7959315abb46ddc29a31db14f9e699aacc3532d9b37300964
+  myrd-gui.exe        b2378c5e3c9d4e8bc534e1b0603c06bf56eb7657982582dcc0babfe5e067b60a
+  myrd-m5-worker.exe  022e105a212f484e17c77d595ccb714997a3c94d416aadca04823d0a02738bc4
+```
+
+**已发布 2026-11-13，tag `v1.0.4`。** 未签名；发布前已由用户明确确认范围。
+
