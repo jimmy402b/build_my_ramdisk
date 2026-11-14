@@ -4,7 +4,8 @@
 
 设计：`docs/superpowers/specs/2026-10-14-m5-service-cli-gui-design-v3.md`
 任务清单：`docs/superpowers/plans/2026-10-14-m5-v3-tasklist.md`（**唯一状态来源**）
-基线：`cb3df08`（clean M4），实现分支 `feature/m5-lifecycle`
+基线：`cb3df08`（clean M4，**历史起点**），实现分支 `feature/m5-lifecycle`。
+当前发布 **v1.0.4**（tag 打在分支上）；`main` 停在 **1.0.2**，不代表最新代码。
 交接入口：`docs/operations/m5-handoff.md`（现在在哪、下一步做什么）
 已付学费：`docs/operations/m5-lessons.md`（动手前扫一遍）
 
